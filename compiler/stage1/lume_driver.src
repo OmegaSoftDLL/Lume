@@ -160,6 +160,86 @@ fn ld_pkg(root, action, dir) = if action != "check" and action != "manifest" the
 
 fn ld_pkg_entry(root) = if os_arg_count() == 3 then ld_pkg(root, os_arg_at(2), ".") else if os_arg_count() == 4 then ld_pkg(root, os_arg_at(2), os_arg_at(3)) else ctfail("usage: lume_driver pkg check [dir]\n")
 
+fn ld_pubkeys_lines(lines) = match lines
+    Nil => ""
+    Cons(h, t) => let line = ld_trim(h) in (if line == "" or ld_starts(line, "#") == 1 then "" else "@pubkey " + line + "\n") + ld_pubkeys_lines(t)
+
+fn ld_evolve_path(source, default_path) = let selected = if source == "" then default_path else source in if fs_path_exists(selected + "/proposal.bundle") == 1 then selected + "/proposal.bundle" else selected
+
+fn ld_evolve_fixpoint(root) = let stage2 = root + "/build/bootstrap/lumec2" in let stage3 = root + "/build/bootstrap/lumec3" in if fs_path_exists(stage2) == 1 and fs_path_exists(stage3) == 1 then fs_files_equal(stage2, stage3) else 1
+
+fn ld_evolve_input(root, bundle, approval) = ld_pubkeys_lines(ld_lines(fs_read_file(root + "/evolve/maintainers.pub"), 0)) + bundle + approval
+
+fn ld_evolve_evaluate(root, bundle, approval) = if ld_evolve_fixpoint(root) != 1 then ctfail("lume evolve: stage2 != stage3 binary fixpoint failure\n") else ld_request(root, "levolve", ld_evolve_input(root, bundle, approval))
+
+fn ld_evolve_propose(root, source, domain) = let path = ld_evolve_path(source, root + "/evolve/proposals/0001_math_clamp/proposal.bundle") in if fs_path_exists(path) == 1 or (source == "" and domain == "") then let result = if fs_path_exists(path) == 1 then ld_evolve_evaluate(root, fs_read_file(path), "") else ctfail("native evolve cannot read " + path + "\n") in if ld_contains_at(result, "\"gates_ok\":true", 0) == 1 then result else ctfail(result + "\n") else let generated = ld_request(root, "lcli", "@cmd evolve-propose\n@part " + domain + "\n@goal " + source + "\n") in let result = ld_evolve_evaluate(root, generated + "\n", "") in if ld_contains_at(result, "\"gates_ok\":true", 0) == 1 then result else ctfail(result + "\n")
+
+fn ld_evolve_propose_args(args, source, domain) = match args
+    Nil => {source: source, domain: domain}
+    Cons(h, t) => if h == "--json" then ld_evolve_propose_args(t, source, domain) else if h == "--domain" then (match t
+        Nil => ctfail("usage: lume_driver evolve propose [goal|proposal.bundle] [--domain <domain>]\n")
+        Cons(v, r) => ld_evolve_propose_args(r, source, v)) else if slice(h, 0, 1) == "-" then ctfail("usage: lume_driver evolve propose [goal|proposal.bundle] [--domain <domain>]\n") else ld_evolve_propose_args(t, h, domain)
+
+fn ld_evolve_apply_args(args, source, by, sig, target, apply_root) = match args
+    Nil => {source: source, by: by, sig: sig, target: target, apply_root: apply_root}
+    Cons(h, t) => if h == "--json" then ld_evolve_apply_args(t, source, by, sig, target, apply_root) else if h == "--by" then (match t
+        Nil => ctfail("usage: lume_driver evolve apply|grow [proposal.bundle] [--by <maintainer>] [--sig <signature>] [--target <file>] [--root <dir>]\n")
+        Cons(v, r) => ld_evolve_apply_args(r, source, v, sig, target, apply_root)) else if h == "--sig" then (match t
+        Nil => ctfail("usage: lume_driver evolve apply|grow [proposal.bundle] [--by <maintainer>] [--sig <signature>] [--target <file>] [--root <dir>]\n")
+        Cons(v, r) => ld_evolve_apply_args(r, source, by, v, target, apply_root)) else if h == "--target" then (match t
+        Nil => ctfail("usage: lume_driver evolve apply|grow [proposal.bundle] [--by <maintainer>] [--sig <signature>] [--target <file>] [--root <dir>]\n")
+        Cons(v, r) => ld_evolve_apply_args(r, source, by, sig, v, apply_root)) else if h == "--root" then (match t
+        Nil => ctfail("usage: lume_driver evolve apply|grow [proposal.bundle] [--by <maintainer>] [--sig <signature>] [--target <file>] [--root <dir>]\n")
+        Cons(v, r) => ld_evolve_apply_args(r, source, by, sig, target, v)) else if slice(h, 0, 1) == "-" then ctfail("usage: lume_driver evolve apply|grow [proposal.bundle] [--by <maintainer>] [--sig <signature>] [--target <file>] [--root <dir>]\n") else ld_evolve_apply_args(t, h, by, sig, target, apply_root)
+
+fn ld_evolve_approval(args) = if args.sig != "" then "\n@approval signed:" + (if args.by == "" then "ricardo" else args.by) + ":" + args.sig + "\n" else if args.by != "" then "\n@approval approved:" + args.by + "\n" else ""
+
+fn ld_evolve_has_files(lines) = match lines
+    Nil => 0
+    Cons(h, t) => if ld_starts(h, "@file ") == 1 then 1 else ld_evolve_has_files(t)
+
+fn ld_evolve_target(lines) = match lines
+    Nil => ""
+    Cons(h, t) => if ld_starts(h, "@target ") == 1 then ld_trim(slice(h, 8, count(h))) else ld_evolve_target(t)
+
+fn ld_evolve_candidates(root, bundle, approval, paths) = match paths
+    Nil => Nil
+    Cons(h, t) => Cons({path: h, candidate: ld_request(root, "levolve", "@mode apply\n@apply_file " + h + "\n" + ld_evolve_input(root, bundle, approval))}, ld_evolve_candidates(root, bundle, approval, t))
+
+fn ld_evolve_resolve(apply_root, path) = if ld_starts(path, "/") == 1 then path else apply_root + "/" + path
+
+fn ld_evolve_snapshots(apply_root, candidates) = match candidates
+    Nil => Nil
+    Cons(h, t) => let path = ld_evolve_resolve(apply_root, h.path) in let existed = fs_path_exists(path) in Cons({path: path, existed: existed, original: if existed == 1 then fs_read_file(path) else "", candidate: h.candidate}, ld_evolve_snapshots(apply_root, t))
+
+fn ld_evolve_mkdirs(path) = if path == "" or fs_path_exists(path) == 1 then 1 else if ld_evolve_mkdirs(ld_dir(path)) == 1 then fs_mkdir(path) else 0
+
+fn ld_evolve_prepare_dirs(files) = match files
+    Nil => 1
+    Cons(h, t) => if ld_evolve_mkdirs(ld_dir(h.path)) == 1 then ld_evolve_prepare_dirs(t) else 0
+
+fn ld_evolve_write_files(files) = match files
+    Nil => ""
+    Cons(h, t) => if fs_write_sync(h.path, h.candidate) != 1 then h.path else ld_evolve_write_files(t)
+
+fn ld_evolve_rollback(files) = match files
+    Nil => ""
+    Cons(h, t) => let rest = ld_evolve_rollback(t) in let restored = if h.existed == 1 then fs_write_sync(h.path, h.original) else os_run("/bin/rm", Cons("-f", Cons(h.path, Nil))) in if (h.existed == 1 and restored != 1) or (h.existed == 0 and restored != 0) then h.path else rest
+
+fn ld_evolve_fail(files, message) = let failed = ld_evolve_rollback(files) in ctfail(message + (if failed == "" then "All target files were rolled back.\n" else "Rollback also failed for " + failed + "; manual restoration is required.\n"))
+
+fn ld_evolve_test_lines(lines) = match lines
+    Nil => 0
+    Cons(h, t) => if ld_starts(ld_trim(h), "fn test_") == 1 then 1 else ld_evolve_test_lines(t)
+
+fn ld_evolve_run_tests(root, files) = match files
+    Nil => ""
+    Cons(h, t) => if ld_evolve_test_lines(ld_lines(fs_read_file(h.path), 0)) == 0 then ld_evolve_run_tests(root, t) else let output = root + "/build/lume-evolve-test.out" in let errors = root + "/build/lume-evolve-test.err" in let status = os_run_capture_timeout(ld_tool(root, "lume_driver"), Cons("test", Cons(h.path, Nil)), output, errors, 120000) in if status != 0 then h.path + ":\n" + fs_read_file(output) + fs_read_file(errors) else ld_evolve_run_tests(root, t)
+
+fn ld_evolve_apply(root, args) = let path = ld_evolve_path(args.source, root + "/evolve/proposals/0003_decimal_clamp/proposal.bundle") in if fs_path_exists(path) == 0 then ctfail("native evolve cannot read " + path + "\n") else let bundle = fs_read_file(path) in let approval = ld_evolve_approval(args) in let result = ld_evolve_evaluate(root, bundle, approval) in if ld_contains_at(result, "\"can_merge\":true", 0) == 0 or ld_contains_at(result, "\"signature_verified\":true", 0) == 0 then ctfail(result + "\n") else let apply_root = if args.apply_root == "" then root else args.apply_root in let lines = ld_lines(bundle, 0) in let candidates = if ld_evolve_has_files(lines) == 1 then let listed = ld_request(root, "levolve", "@mode list-files\n" + ld_evolve_input(root, bundle, approval)) in ld_evolve_candidates(root, bundle, approval, ld_lines(listed, 0)) else let target = if args.target != "" then args.target else ld_evolve_target(lines) in if target == "" then ctfail("lume evolve apply: proposal has no @target and --target was not specified\n") else Cons({path: target, candidate: ld_request(root, "levolve", "@mode apply\n" + ld_evolve_input(root, bundle, approval))}, Nil) in let files = ld_evolve_snapshots(apply_root, candidates) in if ld_evolve_prepare_dirs(files) == 0 then ctfail("lume evolve apply: cannot create target directories; no target files were written\n") else let failed_write = ld_evolve_write_files(files) in if failed_write != "" then ld_evolve_fail(files, "lume evolve apply: cannot write " + failed_write + "\n") else let failed_test = ld_evolve_run_tests(root, files) in if failed_test != "" then ld_evolve_fail(files, "lume evolve apply: target test suite failed after apply on " + failed_test + "\n") else result
+
+fn ld_evolve_entry(root) = if os_arg_count() < 3 then ctfail("usage: lume_driver evolve propose|apply|grow [goal|proposal.bundle]\n") else let action = os_arg_at(2) in if action == "propose" then let args = ld_evolve_propose_args(ld_args_from(3), "", "") in ld_evolve_propose(root, args.source, args.domain) else if action == "apply" or action == "grow" then let args = ld_evolve_apply_args(ld_args_from(3), "", "", "", "", "") in ld_evolve_apply(root, args) else ctfail("usage: lume_driver evolve propose|apply|grow [goal|proposal.bundle]\n")
+
 fn ld_rfind_dot(path, i) = if i < 0 then 0 - 1 else if at(path, i) == "." then i else ld_rfind_dot(path, i - 1)
 
 fn ld_artifacts_default(out) = let dot = ld_rfind_dot(out, count(out) - 1) in if dot < 0 then out + ".artifacts" else slice(out, 0, dot) + ".artifacts"
@@ -168,8 +248,8 @@ fn ld_economy(root, out, artifacts, self_test) = if out == "" then ctfail("lume 
 
 fn ld_economy_entry(root) = if os_arg_at(2) != "--output" then ctfail("usage: lume_driver economy --output <results.json> [--artifacts <dir>] [--self-test]\n") else if os_arg_count() == 4 then ld_economy(root, os_arg_at(3), "", 0) else if os_arg_count() == 6 and os_arg_at(4) == "--artifacts" then ld_economy(root, os_arg_at(3), os_arg_at(5), 0) else if os_arg_count() == 6 and os_arg_at(4) == "--self-test" then ld_economy(root, os_arg_at(3), "", 1) else if os_arg_count() == 7 and os_arg_at(4) == "--artifacts" and os_arg_at(6) == "--self-test" then ld_economy(root, os_arg_at(3), os_arg_at(5), 1) else if os_arg_count() == 7 and os_arg_at(4) == "--self-test" and os_arg_at(5) == "--artifacts" then ld_economy(root, os_arg_at(3), os_arg_at(6), 1) else ctfail("usage: lume_driver economy --output <results.json> [--artifacts <dir>] [--self-test]\n")
 
-fn ld_info(root) = if os_arg_count() != 2 then ctfail("usage: lume_driver --version|--help|describe|targets|build [--target <triple>] <source> [-o <out>]|run <source> [args]|test <source.src>|intent build|verify <file.intent>|compile [--json] [--run] <source.src>|agent <mode> <source.src>|certify|verify-cert <source>|check <source.src> [--json]|fmt <source.src> [--check|--stdout]|pkg check [dir]|doc <source.src> [--json]|prove <source.src>|adapt c <header.h>|mesh <request.mesh>|economy --output <results.json>\n") else let command = os_arg_at(1) in if command == "--version" or command == "version" then ld_request(root, "lcli", "@cmd version\n") else if command == "--help" or command == "-h" or command == "help" then ld_request(root, "lcli", "@cmd help\n") else if command == "describe" or command == "--describe" then ld_request(root, "lcli", "@cmd describe\n") else if command == "targets" or command == "--targets" then ld_request(root, "ltarget", "@targets-json\n") else ctfail("unknown native driver command: " + command + "\n")
+fn ld_info(root) = if os_arg_count() != 2 then ctfail("usage: lume_driver --version|--help|describe|targets|build [--target <triple>] <source> [-o <out>]|run <source> [args]|test <source.src>|intent build|verify <file.intent>|compile [--json] [--run] <source.src>|agent <mode> <source.src>|evolve propose|apply|grow|certify|verify-cert <source>|check <source.src> [--json]|fmt <source.src> [--check|--stdout]|pkg check [dir]|doc <source.src> [--json]|prove <source.src>|adapt c <header.h>|mesh <request.mesh>|economy --output <results.json>\n") else let command = os_arg_at(1) in if command == "--version" or command == "version" then ld_request(root, "lcli", "@cmd version\n") else if command == "--help" or command == "-h" or command == "help" then ld_request(root, "lcli", "@cmd help\n") else if command == "describe" or command == "--describe" then ld_request(root, "lcli", "@cmd describe\n") else if command == "targets" or command == "--targets" then ld_request(root, "ltarget", "@targets-json\n") else ctfail("unknown native driver command: " + command + "\n")
 
-fn ld_entry(root) = if os_arg_count() >= 2 and os_arg_at(1) == "build" then ld_build_entry(root) else if os_arg_count() >= 3 and os_arg_at(1) == "run" then os_exit(ld_run(root, os_arg_at(2))) else if os_arg_at(1) == "test" then (if os_arg_count() != 3 then ctfail("usage: lume_driver test <source.src>\n") else os_exit(ld_test(root, os_arg_at(2)))) else if os_arg_at(1) == "intent" then ld_intent_entry(root) else if os_arg_at(1) == "compile" then ld_compile_entry(root) else if os_arg_at(1) == "agent" then ld_agent_entry(root) else if os_arg_at(1) == "certify" or os_arg_at(1) == "verify-cert" then ld_certify_entry(root) else if os_arg_at(1) == "check" then ld_check_entry(root) else if os_arg_at(1) == "fmt" then ld_fmt_entry(root) else if os_arg_at(1) == "pkg" then ld_pkg_entry(root) else if os_arg_at(1) == "doc" then ld_doc_entry(root) else if os_arg_at(1) == "prove" then ld_prove_entry(root) else if os_arg_at(1) == "adapt" then ld_adapt_entry(root) else if os_arg_at(1) == "mesh" then ld_mesh_entry(root) else if os_arg_at(1) == "economy" then ld_economy_entry(root) else ld_info(root)
+fn ld_entry(root) = if os_arg_count() >= 2 and os_arg_at(1) == "build" then ld_build_entry(root) else if os_arg_count() >= 3 and os_arg_at(1) == "run" then os_exit(ld_run(root, os_arg_at(2))) else if os_arg_at(1) == "test" then (if os_arg_count() != 3 then ctfail("usage: lume_driver test <source.src>\n") else os_exit(ld_test(root, os_arg_at(2)))) else if os_arg_at(1) == "intent" then ld_intent_entry(root) else if os_arg_at(1) == "compile" then ld_compile_entry(root) else if os_arg_at(1) == "agent" then ld_agent_entry(root) else if os_arg_at(1) == "evolve" then ld_evolve_entry(root) else if os_arg_at(1) == "certify" or os_arg_at(1) == "verify-cert" then ld_certify_entry(root) else if os_arg_at(1) == "check" then ld_check_entry(root) else if os_arg_at(1) == "fmt" then ld_fmt_entry(root) else if os_arg_at(1) == "pkg" then ld_pkg_entry(root) else if os_arg_at(1) == "doc" then ld_doc_entry(root) else if os_arg_at(1) == "prove" then ld_prove_entry(root) else if os_arg_at(1) == "adapt" then ld_adapt_entry(root) else if os_arg_at(1) == "mesh" then ld_mesh_entry(root) else if os_arg_at(1) == "economy" then ld_economy_entry(root) else ld_info(root)
 
 print ld_entry(ld_root())
