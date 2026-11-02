@@ -174,7 +174,59 @@ fn ld_doc_entry(root) = if os_arg_count() == 3 then ld_doc(root, os_arg_at(2), 0
 
 fn ld_pkg(root, action, dir) = if action != "check" and action != "manifest" then ctfail("usage: lume_driver pkg check [dir]\n") else let manifest = dir + "/lume.toml" in if fs_path_exists(manifest) == 0 then ctfail("lume pkg: missing " + manifest + "\n") else ld_request(root, "lmod", "@manifest\n" + fs_read_file(manifest))
 
-fn ld_pkg_entry(root) = if os_arg_count() == 3 then ld_pkg(root, os_arg_at(2), ".") else if os_arg_count() == 4 then ld_pkg(root, os_arg_at(2), os_arg_at(3)) else ctfail("usage: lume_driver pkg check [dir]\n")
+fn ld_pkg_clean_dir(dir) = if count(dir) > 1 and at(dir, count(dir) - 1) == "/" then ld_pkg_clean_dir(slice(dir, 0, count(dir) - 1)) else dir
+
+fn ld_pkg_name(dir) = let clean = ld_pkg_clean_dir(dir) in if clean == "." or clean == "" then ld_base(fs_current_dir()) else ld_base(clean)
+
+fn ld_pkg_mkdirs(dir) = if fs_path_exists(dir) == 1 then 1 else let parent = ld_dir(dir) in let made = if parent == "" or parent == dir then 1 else ld_pkg_mkdirs(parent) in if made != 1 then 0 else fs_mkdir(dir)
+
+fn ld_pkg_init(root, dir) = let pkg = ld_pkg_name(dir) in let made = ld_pkg_mkdirs(ld_pkg_clean_dir(dir)) in if made != 1 then ctfail("lume pkg: cannot create " + dir + "\n") else let manifest = dir + "/lume.toml" in let main = dir + "/main.src" in let manifest_written = if fs_path_exists(manifest) == 1 then 1 else fs_write_sync(manifest, ld_request(root, "lmod", "@pkg-init\n@pkg " + pkg + "\n@part toml\n") + "\n") in let main_written = if fs_path_exists(main) == 1 then 1 else fs_write_sync(main, ld_request(root, "lmod", "@pkg-init\n@pkg " + pkg + "\n@part main\n") + "\n") in if manifest_written != 1 or main_written != 1 then ctfail("lume pkg: cannot initialize " + dir + "\n") else "lume pkg: initialized " + pkg + " in " + manifest
+
+fn ld_pkg_manifest(root, dir) = let manifest = dir + "/lume.toml" in if fs_path_exists(manifest) == 0 then ctfail("lume pkg: missing " + manifest + "\n") else ld_request(root, "lmod", "@manifest\n" + fs_read_file(manifest))
+
+fn ld_pkg_source(path, include_lume) = ld_suffix(path, ".src") or (include_lume == 1 and ld_suffix(path, ".lume"))
+
+fn ld_pkg_join_rel(parent, name) = if parent == "" then name else parent + "/" + name
+
+fn ld_pkg_walk(dir, rel, depth, include_lume) = if rel != "" and ld_pkg_source(rel, include_lume) then Cons(rel, Nil) else if rel != "" and depth >= 2 then Nil else ld_pkg_walk_entries(dir, rel, depth, include_lume, ld_lines(fs_read_dir(ld_pkg_join_rel(dir, rel)), 0))
+
+fn ld_pkg_walk_entries(dir, rel, depth, include_lume, entries) = match entries
+    Nil => Nil
+    Cons(h, t) => let child = ld_pkg_join_rel(rel, h) in let rest = ld_pkg_walk_entries(dir, rel, depth, include_lume, t) in match ld_pkg_walk(dir, child, depth + 1, include_lume)
+        Nil => rest
+        files => ld_list_append(files, rest)
+
+fn ld_list_append(xs, ys) = match xs
+    Nil => ys
+    Cons(h, t) => Cons(h, ld_list_append(t, ys))
+
+fn ld_pkg_insert(paths, path) = match paths
+    Nil => Cons(path, Nil)
+    Cons(h, t) => if path < h then Cons(path, Cons(h, t)) else Cons(h, ld_pkg_insert(t, path))
+
+fn ld_pkg_sort(paths) = match paths
+    Nil => Nil
+    Cons(h, t) => ld_pkg_insert(ld_pkg_sort(t), h)
+
+fn ld_pkg_files(dir, include_lume) = ld_pkg_sort(ld_pkg_walk(dir, "", 0, include_lume))
+
+fn ld_pkg_lock_modules(root, dir, paths) = match paths
+    Nil => ""
+    Cons(h, t) => "@module " + fs_sha256_file(dir + "/" + h) + " " + h + "\n" + ld_pkg_lock_modules(root, dir, t)
+
+fn ld_pkg_expected_lock(root, dir) = let manifest = ld_pkg_manifest(root, dir) in ld_request(root, "lmod", "@pkg-lock\n@manifest " + manifest + "\n@manifest_sha256 " + fs_sha256_file(dir + "/lume.toml") + "\n" + ld_pkg_lock_modules(root, dir, ld_pkg_files(dir, 1))) + "\n"
+
+fn ld_pkg_lock(root, dir) = let generated = ld_pkg_expected_lock(root, dir) in let path = dir + "/lume.lock" in let written = fs_write_sync(path, generated) in if written != 1 then ctfail("lume pkg: cannot write " + path + "\n") else "lume pkg: wrote " + path
+
+fn ld_pkg_verify(root, dir) = let lock = dir + "/lume.lock" in if fs_path_exists(dir + "/lume.toml") == 0 or fs_path_exists(lock) == 0 then ctfail("lume pkg: missing lume.toml or lume.lock in " + dir + "\n") else let expected = ld_pkg_expected_lock(root, dir) in if fs_read_file(lock) != expected then ctfail("lume pkg: lockfile verification failed (source or manifest drift detected)\n") else "lume pkg: verified " + lock + " (all SHA-256 digests match)"
+
+fn ld_pkg_tree_sources(dir, paths) = match paths
+    Nil => ""
+    Cons(h, t) => "@modsrc " + h + "\n" + fs_read_file(dir + "/" + h) + "\n@end\n" + ld_pkg_tree_sources(dir, t)
+
+fn ld_pkg_tree(root, dir) = let manifest = ld_pkg_manifest(root, dir) in ld_request(root, "lmod", "@pkg-tree\n@manifest " + manifest + "\n" + ld_pkg_tree_sources(dir, ld_pkg_files(dir, 0)))
+
+fn ld_pkg_entry(root) = if os_arg_count() == 3 then ld_pkg(root, os_arg_at(2), ".") else if os_arg_count() == 4 then ld_pkg(root, os_arg_at(2), os_arg_at(3)) else ctfail("usage: lume_driver pkg init|check|manifest|lock|verify|tree [dir]\n")
 
 fn ld_pubkeys_lines(lines) = match lines
     Nil => ""
@@ -356,7 +408,7 @@ fn ld_economy(root, out, artifacts, self_test) = if out == "" then ctfail("lume 
 
 fn ld_economy_entry(root) = if os_arg_at(2) != "--output" then ctfail("usage: lume_driver economy --output <results.json> [--artifacts <dir>] [--self-test]\n") else if os_arg_count() == 4 then ld_economy(root, os_arg_at(3), "", 0) else if os_arg_count() == 6 and os_arg_at(4) == "--artifacts" then ld_economy(root, os_arg_at(3), os_arg_at(5), 0) else if os_arg_count() == 6 and os_arg_at(4) == "--self-test" then ld_economy(root, os_arg_at(3), "", 1) else if os_arg_count() == 7 and os_arg_at(4) == "--artifacts" and os_arg_at(6) == "--self-test" then ld_economy(root, os_arg_at(3), os_arg_at(5), 1) else if os_arg_count() == 7 and os_arg_at(4) == "--self-test" and os_arg_at(5) == "--artifacts" then ld_economy(root, os_arg_at(3), os_arg_at(6), 1) else ctfail("usage: lume_driver economy --output <results.json> [--artifacts <dir>] [--self-test]\n")
 
-fn ld_info(root) = if os_arg_count() != 2 then ctfail("usage: lume_driver --version|--help|describe|targets|build [--target <triple>] <source> [-o <out>]|run <source> [args]|test <source.src>|intent build|run|verify|status|clean <file.intent>|compile [--json] [--run] <source.src>|agent <mode> <source.src>|evolve goals|budgets|propose|apply|grow|verify|status|approve|lsp|dap [--json <source.src>|--stdio [source.src]]|repl [--json <source.src>|--kernel|--stdio]|certify|verify-cert <source>|mcp [--json] <source.src>|check <source.src> [--json]|fmt <source.src> [--check|--stdout]|pkg check [dir]|doc <source.src> [--json]|prove [--diff|--share|--compositional] <source.src> [new.src]|adapt c <header.h>|mesh <request.mesh>|economy --output <results.json>\n") else let command = os_arg_at(1) in if command == "--version" or command == "version" then ld_request(root, "lcli", "@cmd version\n") else if command == "--help" or command == "-h" or command == "help" then ld_request(root, "lcli", "@cmd help\n") else if command == "describe" or command == "--describe" then ld_request(root, "lcli", "@cmd describe\n") else if command == "targets" or command == "--targets" then ld_request(root, "ltarget", "@targets-json\n") else ctfail("unknown native driver command: " + command + "\n")
+fn ld_info(root) = if os_arg_count() != 2 then ctfail("usage: lume_driver --version|--help|describe|targets|build [--target <triple>] <source> [-o <out>]|run <source> [args]|test <source.src>|intent build|run|verify|status|clean <file.intent>|compile [--json] [--run] <source.src>|agent <mode> <source.src>|evolve goals|budgets|propose|apply|grow|verify|status|approve|lsp|dap [--json <source.src>|--stdio [source.src]]|repl [--json <source.src>|--kernel|--stdio]|certify|verify-cert <source>|mcp [--json] <source.src>|check <source.src> [--json]|fmt <source.src> [--check|--stdout]|pkg init|check|lock|verify|tree|manifest [dir]|doc <source.src> [--json]|prove [--diff|--share|--compositional] <source.src> [new.src]|adapt c <header.h>|mesh <request.mesh>|economy --output <results.json>\n") else let command = os_arg_at(1) in if command == "--version" or command == "version" then ld_request(root, "lcli", "@cmd version\n") else if command == "--help" or command == "-h" or command == "help" then ld_request(root, "lcli", "@cmd help\n") else if command == "describe" or command == "--describe" then ld_request(root, "lcli", "@cmd describe\n") else if command == "targets" or command == "--targets" then ld_request(root, "ltarget", "@targets-json\n") else ctfail("unknown native driver command: " + command + "\n")
 
 fn ld_entry(root) = if os_arg_count() >= 2 and os_arg_at(1) == "build" then ld_build_entry(root) else if os_arg_count() >= 3 and os_arg_at(1) == "run" then os_exit(ld_run(root, os_arg_at(2))) else if os_arg_at(1) == "test" then (if os_arg_count() != 3 then ctfail("usage: lume_driver test <source.src>\n") else os_exit(ld_test(root, os_arg_at(2)))) else if os_arg_at(1) == "intent" then ld_intent_entry(root) else if os_arg_at(1) == "compile" then ld_compile_entry(root) else if os_arg_at(1) == "agent" then ld_agent_entry(root) else if os_arg_at(1) == "evolve" then ld_evolve_entry(root) else if os_arg_at(1) == "lsp" or os_arg_at(1) == "dap" then ld_protocol_entry(root, os_arg_at(1)) else if os_arg_at(1) == "repl" then ld_repl_entry(root)else if os_arg_at(1) == "mcp" then ld_mcp_entry(root) else if os_arg_at(1) == "certify" or os_arg_at(1) == "verify-cert" then ld_certify_entry(root) else if os_arg_at(1) == "check" then ld_check_entry(root) else if os_arg_at(1) == "fmt" then ld_fmt_entry(root) else if os_arg_at(1) == "pkg" then ld_pkg_entry(root) else if os_arg_at(1) == "doc" then ld_doc_entry(root) else if os_arg_at(1) == "prove" then ld_prove_entry(root) else if os_arg_at(1) == "adapt" then ld_adapt_entry(root) else if os_arg_at(1) == "mesh" then ld_mesh_entry(root) else if os_arg_at(1) == "economy" then ld_economy_entry(root) else ld_info(root)
 
