@@ -1,6 +1,6 @@
 # Lume top-level convenience targets. The real build lives in the staged
 # bootstrap (scripts/bootstrap.src) and the seed Makefile (bootstrap/lume0).
-.PHONY: amalgamate bootstrap seed zero-c test asan clean
+.PHONY: amalgamate bootstrap seed zero-c native-orchestrator test test-legacy native-test asan asan-legacy native-asan clean
 
 ## Generate compiler/stage1/lumec.src by concatenating compiler/stage1/lume/*.src
 ## (SQLite-style amalgamation). lumec.src is a build artifact, not a source file;
@@ -38,13 +38,28 @@ zero-c: amalgamate
 	chmod +x build/zero_c_gate && \
 	printf '@root %s\n' "$(CURDIR)" | build/zero_c_gate
 
-## Conformance suite (includes the self-host and zero-C-loop tests).
-test: amalgamate
-	$(MAKE) -C bootstrap/lume0 test
+native-orchestrator: seed
+	./lume build compiler/stage1/lmod.src -o build/bin/lmod
+	./lume build compiler/stage1/ltest.src -o build/bin/ltest
+	./lume build compiler/stage1/lume_driver.src -o build/bin/lume_driver
+	./lume build scripts/lume_make.src -o build/bin/lume_make
 
-## Same suite under AddressSanitizer/UBSan.
-asan: amalgamate
-	$(MAKE) -C bootstrap/lume0 asan
+## The legacy suite remains the default until native coverage reaches parity.
+test: test-legacy
+
+test-legacy: amalgamate
+	$(MAKE) -C bootstrap/lume0 test-legacy
+
+native-test: native-orchestrator
+	build/bin/lume_make test
+
+asan: asan-legacy
+
+asan-legacy: amalgamate
+	$(MAKE) -C bootstrap/lume0 asan-legacy
+
+native-asan: native-orchestrator
+	build/bin/lume_make asan
 
 clean:
 	$(MAKE) -C bootstrap/lume0 clean

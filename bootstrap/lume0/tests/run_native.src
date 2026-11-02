@@ -1,0 +1,51 @@
+fn nt_line_end(text, i) = if i >= count(text) or at(text, i) == "\n" then i else nt_line_end(text, i + 1)
+
+fn nt_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else slice(input, 6, nt_line_end(input, 0))
+
+fn nt_contains_at(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else nt_contains_at(text, part, i + 1)
+
+fn nt_contains(text, part) = nt_contains_at(text, part, 0)
+
+fn nt_run(path, args, out) = os_run_capture_timeout(path, args, out, out + ".err", 120000)
+
+fn nt_seed(root, args, out) = nt_run(root + "/bootstrap/lume0/lume0", args, out)
+
+fn nt_driver(root, args, out) = nt_run(root + "/build/bin/lume_driver", args, out)
+
+fn nt_process_problem(label, status, out) = if status == 0 then "" else label + " failed with native status " + str(status) + "\nstdout:\n" + fs_read_file(out) + "\nstderr:\n" + fs_read_file(out + ".err") + "\n"
+
+fn nt_output_problem(label, status, out, expected) = let process = nt_process_problem(label, status, out) in if process != "" then process else if fs_files_equal(out, expected) != 1 then label + " output differs from " + expected + "\nactual:\n" + fs_read_file(out) + "\nexpected:\n" + fs_read_file(expected) else ""
+
+fn nt_check_case(root, name) = let source = root + "/examples/" + name + ".lume" in let out = root + "/build/native-test/check-" + name + ".out" in let checked = nt_seed(root, Cons("check", Cons(source, Nil)), out) in let problem = nt_process_problem("seed check " + name, checked, out) in if problem != "" then problem else let parsed = nt_seed(root, Cons("parse", Cons(source, Nil)), root + "/build/native-test/parse-" + name + ".out") in nt_process_problem("seed parse " + name, parsed, root + "/build/native-test/parse-" + name + ".out")
+
+fn nt_check_cases(root, names) = match names
+    Nil => ""
+    Cons(h, t) => let problem = nt_check_case(root, h) in if problem != "" then problem else nt_check_cases(root, t)
+
+fn nt_stage0_case(root, name) = let source = root + "/examples/" + name + ".lume" in let expected = root + "/tests/conformance/stage0/" + name + ".expected" in let out = root + "/build/native-test/run-" + name + ".out" in let status = nt_seed(root, Cons("run", Cons(source, Nil)), out) in let problem = nt_output_problem("seed run " + name, status, out, expected) in if problem != "" then problem else let encoded = root + "/build/native-test/" + name + ".lbe" in let emitted = nt_seed(root, Cons("emit", Cons(source, Cons(encoded, Nil))), root + "/build/native-test/emit-" + name + ".out") in let emit_problem = nt_process_problem("seed LBE emit " + name, emitted, root + "/build/native-test/emit-" + name + ".out") in if emit_problem != "" then emit_problem else let lbe_out = root + "/build/native-test/lbe-" + name + ".out" in let executed = nt_seed(root, Cons("run", Cons(encoded, Nil)), lbe_out) in nt_output_problem("seed LBE run " + name, executed, lbe_out, expected)
+
+fn nt_stage0_cases(root, names) = match names
+    Nil => ""
+    Cons(h, t) => let problem = nt_stage0_case(root, h) in if problem != "" then problem else nt_stage0_cases(root, t)
+
+fn nt_token_case(root, name) = let source = root + "/bootstrap/lume0/tests/lexer/" + name + ".lume" in let expected = root + "/bootstrap/lume0/tests/lexer/" + name + ".tokens" in let out = root + "/build/native-test/tokens-" + name + ".out" in let status = nt_seed(root, Cons("tokens", Cons(source, Nil)), out) in nt_output_problem("seed tokens " + name, status, out, expected)
+
+fn nt_token_cases(root, names) = match names
+    Nil => ""
+    Cons(h, t) => let problem = nt_token_case(root, h) in if problem != "" then problem else nt_token_cases(root, t)
+
+fn nt_negative_seed(root, relative, code) = let source = root + "/bootstrap/lume0/tests/" + relative in let out = root + "/build/native-test/negative-" + code + ".out" in let status = nt_seed(root, Cons("check", Cons(source, Cons("--json", Nil))), out) in if status == 0 then "seed accepted negative fixture " + relative else if nt_contains(fs_read_file(out), "\"code\":\"" + code + "\"") == 0 then "seed emitted the wrong diagnostic for " + relative + "\n" + fs_read_file(out) + fs_read_file(out + ".err") else ""
+
+fn nt_negative_seeds(root) = let lexer = nt_negative_seed(root, "lexer/bad_escape.lume", "L0021") in if lexer != "" then lexer else let parser = nt_negative_seed(root, "parser/bad_fn.lume", "P0040") in if parser != "" then parser else nt_negative_seed(root, "resolve/bad_undefined_var.lume", "R0200")
+
+fn nt_native_build(root) = let binary = root + "/build/native-test/nfib" in let out = root + "/build/native-test/native-build.out" in let status = nt_driver(root, Cons("build", Cons(root + "/compiler/stage1/nfib.src", Cons("-o", Cons(binary, Nil)))), out) in let problem = nt_process_problem("native driver build nfib", status, out) in if problem != "" then problem else let run_out = root + "/build/native-test/native-nfib.out" in let executed = nt_run(binary, Nil, run_out) in nt_output_problem("native nfib execution", executed, run_out, root + "/tests/conformance/stage1/nfib_asm.expected")
+
+fn nt_native_tests(root) = let out = root + "/build/native-test/native-ltest.out" in let status = nt_driver(root, Cons("test", Cons(root + "/compiler/stage1/sample_test.src", Nil)), out) in nt_output_problem("native driver test discovery", status, out, root + "/tests/conformance/stage1/ltest_pass_asm.expected")
+
+fn nt_negative_native(root) = let source = root + "/build/native-test/failing_test.src" in let written = fs_write_sync(source, "fn test_ok() = 2 + 2 == 4\nfn test_broken() = 2 + 2 == 5\n") in if written != 1 then "native negative test fixture could not be written" else let out = root + "/build/native-test/native-ltest-fail.out" in let status = nt_driver(root, Cons("test", Cons(source, Nil)), out) in if status == 0 then "native driver accepted a failing Lume test" else let output = fs_read_file(out) in if nt_contains(output, "FAIL test_broken") == 0 or nt_contains(output, "1 passed, 1 failed") == 0 then "native driver failure output is incomplete\n" + output + fs_read_file(out + ".err") else ""
+
+fn nt_main(root) = let made = fs_mkdir(root + "/build/native-test") in if made != 1 then "cannot create native test artifact directory" else let checked = nt_check_cases(root, Cons("01_hello", Cons("02_basics", Cons("03_records_enums", Cons("04_errors_optionals", Cons("05_collections_closures", Cons("06_traits_generics", Cons("07_contracts_defer", Cons("08_shell_script", Cons("09_stdlib", Nil)))))))))) in if checked != "" then checked else let tokens = nt_token_cases(root, Cons("literals", Cons("indent", Nil))) in if tokens != "" then tokens else let stage0 = nt_stage0_cases(root, Cons("01_hello", Cons("02_basics", Cons("03_records_enums", Cons("04_errors_optionals", Cons("05_collections_closures", Cons("06_traits_generics", Cons("07_contracts_defer", Cons("09_stdlib", Nil))))))))) in if stage0 != "" then stage0 else let negative = nt_negative_seeds(root) in if negative != "" then negative else let built = nt_native_build(root) in if built != "" then built else let tested = nt_native_tests(root) in if tested != "" then tested else nt_negative_native(root)
+
+fn nt_dispatch(input) = let root = nt_root(input) in if root == "" then ctfail("native test runner requires @root\n") else let problem = nt_main(root) in if problem != "" then ctfail("native test runner failed: " + problem + "\n") else "PASS: bounded native Lume test gate (seed checks, Stage 0, LBE, native build, and test discovery)"
+
+print nt_dispatch(readall())

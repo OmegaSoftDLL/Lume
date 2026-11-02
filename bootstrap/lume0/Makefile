@@ -9,14 +9,24 @@ all: $(BIN)
 $(BIN): $(SRC) lume0.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) -lm
 
-test: $(BIN)
+test: test-legacy
+
+test-legacy: $(BIN)
 	./tests/run.sh
 
-asan: CFLAGS += -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
-asan: clean $(BIN)
+native-test:
+	$(MAKE) -C ../.. native-test
+
+asan: asan-legacy
+
+asan-legacy: CFLAGS += -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
+asan-legacy: clean $(BIN)
 	LUME0_ASAN=1 ./tests/run.sh
+
+native-asan:
+	$(MAKE) -C ../.. native-asan
 
 clean:
 	rm -f $(BIN)
 
-.PHONY: all test asan clean
+.PHONY: all test test-legacy native-test asan asan-legacy native-asan clean
