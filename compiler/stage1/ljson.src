@@ -1,0 +1,55 @@
+fn lj_isnil(xs) = match xs
+    Nil => 1
+    Cons(h, t) => 0
+fn lj_rev_acc(xs, acc) = match xs
+    Nil => acc
+    Cons(h, t) => lj_rev_acc(t, Cons(h, acc))
+fn lj_rev(xs) = lj_rev_acc(xs, Nil)
+fn lj_joinall(xs) = match xs
+    Nil => ""
+    Cons(h, t) => h + lj_joinall(t)
+fn lj_startswith(s, p) = let m = count(p) in if count(s) < m then 0 else slice(s, 0, m) == p
+fn lj_ltrim(s, i) = if i >= count(s) then "" else let c = at(s, i) in if c == " " or c == "\n" or c == "\r" or c == "\t" then lj_ltrim(s, i + 1) else slice(s, i, count(s))
+fn lj_rtrim(s) = let n = count(s) in if n == 0 then "" else let c = at(s, n - 1) in if c == " " or c == "\n" or c == "\r" or c == "\t" then lj_rtrim(slice(s, 0, n - 1)) else s
+fn lj_trim(s) = lj_rtrim(lj_ltrim(s, 0))
+
+fn lj_err(pos, message) = {ok: 0, pos: pos, kind: "error", text: message, num: 0, items: Nil, fields: Nil}
+fn lj_val(pos, kind, text, num, items, fields) = {ok: 1, pos: pos, kind: kind, text: text, num: num, items: items, fields: fields}
+fn lj_ws(s, i) = if i >= count(s) then i else let c = at(s, i) in if c == " " or c == "\n" or c == "\r" or c == "\t" then lj_ws(s, i + 1) else i
+fn lj_hex_val(c) = if c >= "0" and c <= "9" then ord(c) - 48 else if c >= "a" and c <= "f" then ord(c) - 87 else if c >= "A" and c <= "F" then ord(c) - 55 else 0 - 1
+fn lj_hex4(s, i) = if i + 4 > count(s) then 0 - 1 else let a = lj_hex_val(at(s, i)) in let b = lj_hex_val(at(s, i + 1)) in let c = lj_hex_val(at(s, i + 2)) in let d = lj_hex_val(at(s, i + 3)) in if a < 0 or b < 0 or c < 0 or d < 0 then 0 - 1 else a * 4096 + b * 256 + c * 16 + d
+fn lj_unicode_pair(s, i, high) = if i + 11 > count(s) or at(s, i + 5) != "\\" or at(s, i + 6) != "u" then lj_err(i, "high surrogate requires a following low surrogate") else let low = lj_hex4(s, i + 7) in if low < 56320 or low > 57343 then lj_err(i, "high surrogate requires a valid low surrogate") else lj_val(i + 11, "string", utf8_chr(65536 + (high - 55296) * 1024 + low - 56320), 0, Nil, Nil)
+fn lj_unicode(s, i) = let code = lj_hex4(s, i + 1) in if code < 0 then lj_err(i, "invalid four-digit Unicode escape") else if code == 0 then lj_err(i, "NUL cannot be represented in a native Lume string") else if code >= 55296 and code <= 56319 then lj_unicode_pair(s, i, code) else if code >= 56320 and code <= 57343 then lj_err(i, "unexpected low surrogate") else lj_val(i + 5, "string", utf8_chr(code), 0, Nil, Nil)
+fn lj_escape(s, i) = if i >= count(s) then lj_err(i, "unterminated string escape") else let c = at(s, i) in if c == "u" then lj_unicode(s, i) else let decoded = if c == "n" then "\n" else if c == "r" then "\r" else if c == "t" then "\t" else if c == "b" then utf8_chr(8) else if c == "f" then utf8_chr(12) else if c == "\"" then "\"" else if c == "\\" then "\\" else if c == "/" then "/" else "" in if decoded == "" then lj_err(i, "unsupported JSON escape") else lj_val(i + 1, "string", decoded, 0, Nil, Nil)
+fn lj_string_loop(s, i, acc) = if i >= count(s) then lj_err(i, "unterminated JSON string") else let c = at(s, i) in if c == "\"" then lj_val(i + 1, "string", lj_joinall(lj_rev(acc)), 0, Nil, Nil) else if c == "\\" then let escaped = lj_escape(s, i + 1) in if escaped.ok == 0 then escaped else lj_string_loop(s, escaped.pos, Cons(escaped.text, acc)) else if ord(c) < 32 then lj_err(i, "unescaped control character in JSON string") else lj_string_loop(s, i + 1, Cons(c, acc))
+fn lj_string(s, i) = if i >= count(s) or at(s, i) != "\"" then lj_err(i, "expected JSON string") else lj_string_loop(s, i + 1, Nil)
+fn lj_digit(c) = c >= "0" and c <= "9"
+fn lj_number_digits(s, i) = if i < count(s) and lj_digit(at(s, i)) then lj_number_digits(s, i + 1) else i
+fn lj_number(s, i) = let start = i in let negative = if i < count(s) and at(s, i) == "-" then 1 else 0 in let first = i + negative in if first >= count(s) or lj_digit(at(s, first)) == 0 then lj_err(i, "expected JSON integer") else let finish = lj_number_digits(s, first) in let text = slice(s, start, finish) in lj_val(finish, "number", text, toint(text), Nil, Nil)
+fn lj_literal(s, i, text, kind, num) = let end = i + count(text) in if end <= count(s) and slice(s, i, end) == text then lj_val(end, kind, text, num, Nil, Nil) else lj_err(i, "invalid JSON literal")
+fn lj_array(s, i) = let p = lj_ws(s, i + 1) in if p < count(s) and at(s, p) == "]" then lj_val(p + 1, "array", "", 0, Nil, Nil) else lj_array_items(s, p, Nil)
+fn lj_array_items(s, i, acc) = let value = lj_value(s, i) in if value.ok == 0 then value else let p = lj_ws(s, value.pos) in if p >= count(s) then lj_err(p, "unterminated JSON array") else let c = at(s, p) in if c == "," then lj_array_items(s, lj_ws(s, p + 1), Cons(value, acc)) else if c == "]" then lj_val(p + 1, "array", "", 0, lj_rev(Cons(value, acc)), Nil) else lj_err(p, "expected ',' or ']' in JSON array")
+fn lj_object(s, i) = let p = lj_ws(s, i + 1) in if p < count(s) and at(s, p) == "}" then lj_val(p + 1, "object", "", 0, Nil, Nil) else lj_object_fields(s, p, Nil)
+fn lj_object_fields(s, i, acc) = let key = lj_string(s, i) in if key.ok == 0 then key else let colon = lj_ws(s, key.pos) in if colon >= count(s) or at(s, colon) != ":" then lj_err(colon, "expected ':' after JSON object key") else let value = lj_value(s, lj_ws(s, colon + 1)) in if value.ok == 0 then value else let p = lj_ws(s, value.pos) in if p >= count(s) then lj_err(p, "unterminated JSON object") else let c = at(s, p) in let field = {key: key.text, value: value} in if c == "," then lj_object_fields(s, lj_ws(s, p + 1), Cons(field, acc)) else if c == "}" then lj_val(p + 1, "object", "", 0, Nil, lj_rev(Cons(field, acc))) else lj_err(p, "expected ',' or '}' in JSON object")
+fn lj_value(s, i) = let p = lj_ws(s, i) in if p >= count(s) then lj_err(p, "expected JSON value") else let c = at(s, p) in if c == "{" then lj_object(s, p) else if c == "[" then lj_array(s, p) else if c == "\"" then lj_string(s, p) else if c == "t" then lj_literal(s, p, "true", "bool", 1) else if c == "f" then lj_literal(s, p, "false", "bool", 0) else if c == "n" then lj_literal(s, p, "null", "null", 0) else lj_number(s, p)
+fn lj_parse(s) = let value = lj_value(s, 0) in if value.ok == 0 then value else let p = lj_ws(s, value.pos) in if p == count(s) then value else lj_err(p, "trailing data after JSON value")
+fn lj_get_fields(fields, key) = match fields
+    Nil => lj_val(0, "missing", "", 0, Nil, Nil)
+    Cons(h, t) => if h.key == key then h.value else lj_get_fields(t, key)
+fn lj_get(obj, key) = lj_get_fields(obj.fields, key)
+fn lj_path2(obj, a, b) = lj_get(lj_get(obj, a), b)
+fn lj_path3(obj, a, b, c) = lj_get(lj_path2(obj, a, b), c)
+fn lj_first(items) = match items
+    Nil => lj_val(0, "missing", "", 0, Nil, Nil)
+    Cons(h, t) => h
+
+fn lj_escape_text(s, i) = if i >= count(s) then "" else let c = at(s, i) in let encoded = if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "\n" then "\\n" else if c == "\r" then "\\r" else if c == "\t" then "\\t" else if ord(c) == 8 then "\\b" else if ord(c) == 12 then "\\f" else c in encoded + lj_escape_text(s, i + 1)
+fn lj_fields_json(fields) = match fields
+    Nil => ""
+    Cons(h, t) => "\"" + lj_escape_text(h.key, 0) + "\":" + lj_json(h.value) + (if lj_isnil(t) == 1 then "" else "," + lj_fields_json(t))
+fn lj_items_json(items) = match items
+    Nil => ""
+    Cons(h, t) => lj_json(h) + (if lj_isnil(t) == 1 then "" else "," + lj_items_json(t))
+fn lj_json(value) = if value.kind == "object" then "{" + lj_fields_json(value.fields) + "}" else if value.kind == "array" then "[" + lj_items_json(value.items) + "]" else if value.kind == "string" then "\"" + lj_escape_text(value.text, 0) + "\"" else if value.kind == "number" then value.text else if value.kind == "bool" then (if value.num == 1 then "true" else "false") else if value.kind == "null" or value.kind == "missing" then "null" else "null"
+fn lj_ok(obj) = lj_get(obj, "ok").kind == "bool" and lj_get(obj, "ok").num == 1
+fn lj_error_message(obj) = let diagnostics = lj_get(obj, "diagnostics") in let first = lj_first(diagnostics.items) in if first.kind == "missing" then "compile error" else let message = lj_get(first, "message") in if message.kind == "string" then message.text else "compile error"
