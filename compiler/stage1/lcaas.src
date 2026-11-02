@@ -164,11 +164,11 @@ fn cs_ptypes(ts) = if cs_hdtext(ts) == ")" then {items: Nil, rest: cs_drop1(ts)}
 fn cs_ptmore(r) = if cs_hdtext(r.rest) == "," then cs_ptcons(r.node, cs_ptypes(cs_drop1(r.rest))) else {items: Cons(r.node, Nil), rest: cs_skiprp(r.rest)}
 fn cs_ptcons(n, rr) = {items: Cons(n, rr.items), rest: rr.rest}
 
-fn cs_pparams(ts) = if cs_hdtext(ts) == ")" then {items: Nil, tys: Nil, plist: Nil, rest: cs_drop1(ts)} else cs_pparamk(ts)
+fn cs_pparams(ts) = if cs_isnil(ts) == 1 then {items: Cons("__lume_unclosed_params__", Nil), tys: Nil, plist: Nil, rest: Nil} else if cs_hdtext(ts) == ")" then {items: Nil, tys: Nil, plist: Nil, rest: cs_drop1(ts)} else cs_pparamk(ts)
 fn cs_pparamk(ts) = if cs_hdtext(ts) == "comptime" then cs_pparam(cs_hdtext(cs_drop1(ts)), 1, cs_drop1(cs_drop1(ts))) else if cs_hdtext(ts) == "own" then cs_pparam(cs_hdtext(cs_drop1(ts)), 2, cs_drop1(cs_drop1(ts))) else if cs_hdtext(ts) == "mut" then cs_pparam(cs_hdtext(cs_drop1(ts)), 3, cs_drop1(cs_drop1(ts))) else cs_pparam(cs_hdtext(ts), 0, cs_drop1(ts))
 fn cs_pparam(nm, ct, ts) = if cs_hdtext(ts) == ":" then cs_pparamt(nm, ct, cs_ptype1(cs_drop1(ts))) else cs_pmore(nm, TyAny, ct, ts)
 fn cs_pparamt(nm, ct, r) = if cs_hdtext(r.rest) == "where" then (let pr = cs_expr(cs_drop1(r.rest)) in cs_pmore(nm, TyRefine(r.node, pr.node), ct, pr.rest)) else cs_pmore(nm, r.node, ct, r.rest)
-fn cs_pmore(nm, ty, ct, ts) = if cs_hdtext(ts) == "," then cs_pmcons(nm, ty, ct, cs_pparams(cs_drop1(ts))) else cs_pmend(nm, ty, ct, cs_skiprp(ts))
+fn cs_pmore(nm, ty, ct, ts) = if cs_hdtext(ts) == "," then cs_pmcons(nm, ty, ct, cs_pparams(cs_drop1(ts))) else if cs_isnil(ts) == 1 then {items: Cons(nm, Cons("__lume_unclosed_params__", Nil)), tys: Cons(ty, Nil), plist: Cons({cf: ct, pn: nm, pt: ty}, Nil), rest: Nil} else cs_pmend(nm, ty, ct, cs_skiprp(ts))
 fn cs_pmcons(nm, ty, ct, rr) = {items: if ct != 1 then Cons(nm, rr.items) else rr.items, tys: Cons(ty, rr.tys), plist: Cons({cf: ct, pn: nm, pt: ty}, rr.plist), rest: rr.rest}
 fn cs_pmend(nm, ty, ct, rest) = {items: if ct != 1 then Cons(nm, Nil) else Nil, tys: Cons(ty, Nil), plist: Cons({cf: ct, pn: nm, pt: ty}, Nil), rest: rest}
 fn cs_peffitems(ts) = if cs_hdtext(ts) == "}" then {items: Nil, rest: cs_drop1(ts)} else let enm = cs_hdtext(ts) in let t1 = cs_drop1(ts) in if cs_hdtext(t1) == "," then let rr = cs_peffitems(cs_drop1(t1)) in {items: Cons(enm, rr.items), rest: rr.rest} else {items: Cons(enm, Nil), rest: cs_dropkw(t1, "}")}
@@ -387,6 +387,16 @@ fn cs_exprty(e, tt) = match e
 fn cs_ctorty(m) = match m
     Nil        => ""
     Cons(h, t) => h.en
+
+fn cs_unclosed_delimiter_diag(want) = cs_mkdiag("P0001", "parse", "expected closing delimiter '" + want + "' before end of input", "add '" + want + "'")
+fn cs_has_unclosed_param(ps) = match ps
+    Nil => 0
+    Cons(p, r) => if p == "__lume_unclosed_params__" then 1 else cs_has_unclosed_param(r)
+fn cs_unclosed_param_diags(prog) = match prog
+    Nil => Nil
+    Cons(h, t) => match h
+        Fn(nm, ps, body) => if cs_has_unclosed_param(ps) == 1 then Cons(cs_unclosed_delimiter_diag(")"), Nil) else cs_unclosed_param_diags(t)
+        _ => cs_unclosed_param_diags(t)
 
 fn cs_mkdiag(code, phase, msg, fix) = {code: code, severity: "error", phase: phase, message: msg, fixit: fix}
 fn cs_mkwarn(code, phase, msg, fix) = {code: code, severity: "warning", phase: phase, message: msg, fixit: fix}
@@ -2176,7 +2186,7 @@ fn cs_eval_prog(prog) = cs_joinsep(cs_eval_stmts(prog, cs_buildft(prog)), "\n")
 
 ## --- PUBLIC CALLABLE LIBRARY API (`use lcaas`) ---
 fn cs_collect_holes(prog) = let tt = cs_tcollect(prog) in let osigs = cs_ocollects(prog) in let vsigs = cs_vcollect_vsigs(prog) in let laws = cs_vcollect_laws(prog) in (cs_collect_holes_stmts(prog, tt.sigs, osigs, vsigs, laws, tt.ft)).holes
-fn caas_compile(src) = let ast0 = cs_parse(src) in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kt = {ksigs: cs_kcollect_effsigs(ast), edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, tt.ft) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_stmts(ast_filled, vsigs, invs, wcets, osigs, cs_buildft(ast_filled)) in let diags = cs_app(cs_p35_diags(osigs, ast0), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil)))))) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
+fn caas_compile(src) = let ast0 = cs_parse(src) in let syntax_diags = cs_unclosed_param_diags(ast0) in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kt = {ksigs: cs_kcollect_effsigs(ast), edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, tt.ft) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_stmts(ast_filled, vsigs, invs, wcets, osigs, cs_buildft(ast_filled)) in let diags = cs_app(syntax_diags, cs_app(cs_p35_diags(osigs, ast0), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil))))))) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
 
 fn caas_check(src) = caas_compile(src)
 fn caas_fill(src) = (caas_compile(src)).holes
