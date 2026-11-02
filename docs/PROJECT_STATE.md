@@ -85,7 +85,10 @@ Seed CLI (`bootstrap/lume0/lume0`):
   - `data_asmgen.lume` -> x86-64 (a codegen **written in Lume**, boxed-value heap via `brk`).
   - driver: `data_cc.lume` (.src -> .c), `data_asm_cc.lume` (.src -> .s).
 - **Block language** — `compiler/stage1/block_*.lume`: an imperative mini-language
-  (var/while/for/if/arrays) compiled to C by `block_cc.lume`.
+  (var/while/for/if/arrays). `block_cc.lume` now routes straight-line assignments, prints,
+  expressions, and single-return functions through `block_native_codegen.lume` into the
+  native `data_asmgen` pipeline. Loops, arrays, conditionals, and multi-statement bodies
+  still require migration and fail explicitly instead of silently generating C.
 
 Historical note (`docs/10`): an earlier gap had Layer A and the ML-core not unified and `lumec`
 compiling only a subset. The triple self-build **has since been reached** (`stage 2 == stage 3`

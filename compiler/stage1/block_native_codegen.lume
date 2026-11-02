@@ -1,0 +1,31 @@
+## Native block-to-ML-core adapter. The supported increment covers straight-line
+## assignments, prints, expressions, and functions whose body is a single return.
+use block_ast
+use data_ast
+
+fn bn_expr(e: Expr) -> DExpr
+    match e
+        Num(v) => DInt(n: v)
+        Name(id) => DVar(name: id)
+        StrLit(txt) => DStr(value: txt)
+        Call(nm, args) => DCall(name: nm, args: args.map(bn_expr))
+        Bin(op, l, r) => DBin(op: op, l: bn_expr(l), r: bn_expr(r))
+        Index(nm, ix) => DCall(name: "__block_unsupported_index", args: [])
+
+fn bn_function_body(stmts: [Stmt]) -> DExpr
+    if stmts.len() == 1
+        match stmts[0]
+            Return(v) => bn_expr(v)
+            _ => DCall(name: "__block_unsupported_statement", args: [])
+    else
+        DCall(name: "__block_unsupported_statement", args: [])
+
+fn bn_program(prog: [Stmt]) -> [DStmt]
+    var out = []
+    for s in prog
+        match s
+            Fn(nm, ps, body) => out.push(DFnS(name: nm, params: ps, body: bn_function_body(body)))
+            Assign(nm, v) => out.push(DLet(name: nm, value: bn_expr(v)))
+            Print(v) => out.push(DPrint(value: bn_expr(v)))
+            _ => out.push(DExprS(value: DCall(name: "__block_unsupported_statement", args: [])))
+    out
