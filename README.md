@@ -7,7 +7,7 @@
   <a href="https://github.com/OmegaSoftDLL/lume/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/OmegaSoftDLL/lume"></a>
   <a href="https://omegasoftdll.github.io/lume/"><img alt="Documentation" src="https://img.shields.io/badge/docs-omegasoftdll.github.io%2Flume-8A2BE2"></a>
   <a href="COPYRIGHT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
-  <img alt="Status: Phases 0–5 complete · verification hardening in progress" src="https://img.shields.io/badge/status-phases%200--5%20complete%20%C2%B7%20verification%20hardening-8A2BE2">
+  <img alt="Status: Phases 0–5 complete · Phase 0 native consolidation closing" src="https://img.shields.io/badge/status-phases%200--5%20complete%20%C2%B7%20P0%20native%20consolidation%20closing-8A2BE2">
   <img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen">
 </p>
 
@@ -46,7 +46,7 @@ The one-sentence answer:
 | 7 | Data as a first-class citizen: `record`, `table`, `query`, `decimal`, dates | dBase, Clipper, SQL, COBOL |
 | 8 | Contracts in the code: `requires`, `ensures`, `invariant`, range types | Ada, Eiffel, Pascal |
 | 9 | Full control when needed: `unsafe`, `asm`, explicit memory layout | C, Assembly, Zig |
-| 10 | One tool, fast compilation (the `lume` driver is a POSIX `sh` script; the native tools are static ELF binaries, but some commands still shell out to the C seed — see Status) | Go, Cargo (Rust) |
+| 10 | One tool, fast compilation (the `lume` driver is being migrated from a POSIX `sh` launcher to the native Lume CLI driver — #408 landed; remaining commands are tracked in #337) | Go, Cargo (Rust) |
 | 11 | Ship-time protection of your own artifact (`lume build --protect <standard\|hardened\|max>`, `.lsym`, `std.secret`, `[W0001]`) | ProGuard/R8, LLVM-obfuscator, VMProtect |
 
 ## A taste
@@ -151,6 +151,7 @@ This is a **staged, self-verifying bootstrap** — the model GCC, Rust and Go us
 - [x] **Inflection — the compiler dogfoods its own features. ✅ Done.** Contracts in the lexer/parser/typecheck, effects at the I/O boundary, `own`/Perceus in hot paths, and the **intent-as-source oracle** (hole-guided `QF_LIA` synthesis + `lume prove` + `lume agent witness|repair|impact` + `lume mcp` + `lume evolve` repair, RFC 8032 Ed25519 asymmetric maintainer signature verification against `evolve/maintainers.pub`, and end-to-end `lume evolve apply` landing `0003_decimal_clamp` into `compiler/stage1/decimal.src`, #194/#195/#203) — the compiler-as-oracle of `docs/19-intent-as-source.md`. See `docs/21-inflection-plan.md`.
 - [x] **Verification trust-layer hardening (first round + P33 software protection + oracle, Ed25519 governance, `lcli.src` & C seed freeze). ✅** The proof-certificate kernel now re-derives each proof **independently** (standalone S-expression parser + Fourier–Motzkin `QF_LIA` solver) with FIPS-180-4 SHA-256, rejecting any term its own solver can't confirm (#183); autodiff rejects non-differentiable operators with `[N0400]` / `[D0001]` instead of silently zeroing (#184); WCET reports `budget_checked`, not a sound-WCET claim (#185); `std.wasm` is a labelled reference model with compile-time capability enforcement (#186); P33 software protection (`lume build --protect <standard|hardened|max> [--lsym]`, `.rodata` string encryption, `.lsym` sidecars, `std.secret` + `[W0001]`, `std.protect.guard`, `@protect model`, MBA/CFF/VM/tamper seals/white-box PRF) is implemented across Bricks W1–W5 (#188); `lume evolve` enforces `proofs_ok`, `benchmark_ok`, `stage2 == stage3` fixpoint gates, asymmetric RFC 8032 Ed25519 maintainer signature verification (`evolve/maintainers.pub`, with no unsigned bypass), and `lume evolve apply` (#194, #203); `lume agent witness|repair|impact` + `lume mcp` implement `docs/19` §2 oracle queries (#195); the CLI control plane (`compiler/stage1/lcli.src`) is compiled to native ELF (`lcli`) and verified in `stage2 == stage3` (#204); and the Stage-0 C seed (`bootstrap/lume0/*.c`) is cryptographically frozen via `bootstrap/lume0/SEED_FREEZE.sha256` (#205).
 - [x] **Language & tooling build-out (recent). ✅** Real ownership tiers `rc[T]`/`arc[T]`/`weak[T]`, `trait`/`impl`, first-class closures, refinement types, `async`/`.await`, `shard` and HM let-polymorphism (#239, #245); durable on-disk WAL `persist` (fsync + flock, cross-process crash recovery), live `lume lsp`/`lume dap` stdio servers, interactive `lume repl` + Jupyter kernel, and an LLM-generation eval CI gate (#234, #230); multi-ISA targets that **run** under emulation — AArch64 and RISC-V ELF — plus the LUMB bytecode VM (#238); compositional cross-module proof, LTL temporal logic (`temporal law`, `always`/`eventually`/`until`/`leads_to`, `QF_LIA` inductive invariants + ranking functions, `[V0005]` state-trace/lasso counterexamples, and `lcert` verification, #198), SSA GPU kernel lowering + PTX/SPIR-V VM execution (#250), and the adoption G-series — installer, proof-gated registry, proof-diff, shareable certificates (#246).
+- [ ] **Phase 0 native consolidation — closing.** Every driver subcommand, the verified registry, proof/intent/evolve/self/pkg/interactive/MCP paths, the POSIX wrapper, `run.sh`/Makefiles and the remaining C-emitting backends are being migrated to native Lume, consolidating in #337 (#408–#425). Until it lands, some commands still route through the POSIX wrapper; the frozen C seed remains only as the reproducibility root.
 - [ ] **Remaining build-out — in progress.** General-purpose OS on top of the `lume-os` microkernel — filesystems/network/userland (#241). GOLDEN RULE scales from the compiler to the ecosystem: no overclaim ships as a guarantee.
 - **Beyond the roadmap — the horizon.** Vision docs for what comes next: `docs/19` (intent-as-source / compiler-as-oracle), `docs/20` (interop), `docs/22` (AI-first adoption), and `docs/23` (the horizon: proving whole systems across time, in a form that outlives Lume).
 
@@ -192,7 +193,9 @@ lume self verify      # checks MANIFEST.sha256
 ```
 
 Downloads the Lume-built toolchain from GitHub Releases and verifies its SHA-256 — no C compiler
-needed. Prebuilt release archives (`lume-<tag>-<os>-<arch>.tar.gz` + `SHA256SUMS`) are built,
+needed. A **development pre-release** (`v0.2.0-dev1`) built from the Phase-0 native integration
+branch is published on the [Releases page](https://github.com/OmegaSoftDLL/lume/releases) for
+dogfooding — it is a moving development tag, not a stable release. Prebuilt release archives (`lume-<tag>-<os>-<arch>.tar.gz` + `SHA256SUMS`) are built,
 run-verified on native runners (`ubuntu-latest`, `macos-latest`, `windows-latest`) or `qemu-user`
 (`qemu-aarch64`, `qemu-riscv64`), and published by [`.github/workflows/release.yml`](.github/workflows/release.yml)
 for **linux-x86_64**, **linux-aarch64**, **linux-riscv64**, **macos-aarch64**, **macos-x86_64**, and
