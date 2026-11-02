@@ -104,17 +104,6 @@ if command -v cc >/dev/null 2>&1; then
     # lumec as a file-driven compiler: read .lume -> write .c -> native binary
     $BIN run ../../compiler/stage1/lumec_main.lume ../../compiler/stage1/sample.lume "$cgtmp/s.c" >/dev/null 2>&1
     if cc -o "$cgtmp/s" "$cgtmp/s.c" 2>/dev/null && "$cgtmp/s" 2>/dev/null | diff -u ../../tests/conformance/stage1/lumec_file_native.expected - >/dev/null; then ok "lumec file -> C -> native binary"; else bad "lumec file -> C -> native binary"; fi
-    # the ML-core compiler (data_codegen) lowers enum + match to C -> native binary
-    $BIN run ../../compiler/stage1/data_cc.lume ../../compiler/stage1/ev.src "$cgtmp/ev.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/ev" "$cgtmp/ev.c" 2>/dev/null && "$cgtmp/ev" 2>/dev/null | diff -u ../../tests/conformance/stage1/ev_core_native.expected - >/dev/null; then ok "ML-core enum+match -> C -> native binary"; else bad "ML-core enum+match -> C -> native"; fi
-    # the FULL core-written compiler (tokenize+parse+eval+cgen) via data_codegen -> C -> native
-    $BIN run ../../compiler/stage1/data_cc.lume ../../compiler/stage1/calc.src "$cgtmp/calc2.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/calc2" "$cgtmp/calc2.c" 2>/dev/null && "$cgtmp/calc2" 2>/dev/null | diff -u ../../tests/conformance/stage1/calc_core_native.expected - >/dev/null; then ok "core compiler (records+fields+builtins) -> C -> native binary"; else bad "core compiler -> C -> native"; fi
-    $BIN run ../../compiler/stage1/data_cc.lume ../../compiler/stage1/list.src "$cgtmp/list.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/list" "$cgtmp/list.c" 2>/dev/null && "$cgtmp/list" 2>/dev/null | diff -u ../../tests/conformance/stage1/list_core_native.expected - >/dev/null; then ok "ML-core lists + indexing -> C -> native binary"; else bad "ML-core lists + indexing -> C -> native"; fi
-    cat ../../compiler/stage1/decimal.src ../../compiler/stage1/decimal_native.src >"$cgtmp/decimal.src"
-    $BIN run ../../compiler/stage1/data_cc.lume "$cgtmp/decimal.src" "$cgtmp/decimal.c" >"$cgtmp/decimal_codegen.out" 2>"$cgtmp/decimal_codegen.err"
-    if cc -o "$cgtmp/decimal" "$cgtmp/decimal.c" 2>"$cgtmp/decimal_cc.err" && "$cgtmp/decimal" >"$cgtmp/decimal.out" 2>"$cgtmp/decimal.err" && diff -u ../../tests/conformance/stage1/decimal_native.expected "$cgtmp/decimal.out" >/dev/null; then ok "phase-2 D1: exact decimal literals + arithmetic agree in C backend"; else bad "phase-2 D1: decimal C backend"; cat "$cgtmp/decimal_codegen.err" "$cgtmp/decimal_cc.err" "$cgtmp/decimal.err"; diff -u ../../tests/conformance/stage1/decimal_native.expected "$cgtmp/decimal.out" || true; fi
     rm -rf "$cgtmp"
 fi
 
@@ -165,15 +154,15 @@ fi
 if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_ASAN:-}" ]; then
     ntmp=$(mktemp -d)
     export LUME_BIN_DIR="$ntmp"
-    for prog in nfib ev strtest modtest reclist list calc slicen; do
+    for prog in nfib ev strtest modtest reclist list calc slicen data_native_backend; do
         case "$prog" in calc) exp=calc_asm;; modtest) exp=modtest_core;; list) exp=list_core_native;; *) exp=${prog}_asm;; esac
-        $BIN run ../../compiler/stage1/data_asm_cc.lume ../../compiler/stage1/$prog.src "$ntmp/$prog.s" >/dev/null 2>&1
+        $BIN run ../../compiler/stage1/data_cc.lume ../../compiler/stage1/$prog.src "$ntmp/$prog.s" >/dev/null 2>&1
         $BIN asm "$ntmp/$prog.s" "$ntmp/$prog" >/dev/null 2>&1
-        if [ -x "$ntmp/$prog" ] && "$ntmp/$prog" 2>/dev/null | diff -u ../../tests/conformance/stage1/$exp.expected - >/dev/null; then ok "no-toolchain: $prog.src -> lume0 asm -> native (NO as/ld/cc)"; else bad "no-toolchain: $prog.src -> lume0 asm -> native"; fi
+        if [ -x "$ntmp/$prog" ] && "$ntmp/$prog" 2>/dev/null | diff -u ../../tests/conformance/stage1/$exp.expected - >/dev/null; then ok "no-toolchain data_cc: $prog.src -> lume0 asm -> native (NO as/ld/cc)"; else bad "no-toolchain data_cc: $prog.src -> lume0 asm -> native"; fi
     done
     cat ../../compiler/stage1/decimal.src ../../compiler/stage1/decimal_native.src >"$ntmp/decimal.src"
     $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/decimal.src" >"$ntmp/decimal_interp.out" 2>"$ntmp/decimal_interp.err"
-    $BIN run ../../compiler/stage1/data_asm_cc.lume "$ntmp/decimal.src" "$ntmp/decimal.s" >"$ntmp/decimal_codegen.out" 2>"$ntmp/decimal_codegen.err"
+    $BIN run ../../compiler/stage1/data_cc.lume "$ntmp/decimal.src" "$ntmp/decimal.s" >"$ntmp/decimal_codegen.out" 2>"$ntmp/decimal_codegen.err"
     $BIN asm "$ntmp/decimal.s" "$ntmp/decimal" >"$ntmp/decimal_asm.out" 2>"$ntmp/decimal_asm.err"
     if [ -x "$ntmp/decimal" ] && "$ntmp/decimal" >"$ntmp/decimal_native.out" 2>"$ntmp/decimal_native.err" && diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_interp.out" >/dev/null && diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_native.out" >/dev/null; then ok "phase-2 D1: exact decimal literals + scale-aware arithmetic agree in interpreter and native"; else bad "phase-2 D1: exact decimal literals + scale-aware arithmetic"; diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_interp.out" || true; diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_native.out" || true; cat "$ntmp/decimal_interp.err" "$ntmp/decimal_codegen.err" "$ntmp/decimal_asm.err" "$ntmp/decimal_native.err"; fi
     cat ../../compiler/stage1/table.src ../../compiler/stage1/decimal.src ../../compiler/stage1/table_test.src >"$ntmp/table.src"
