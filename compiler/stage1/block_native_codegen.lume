@@ -1,5 +1,5 @@
-## Native block-to-ML-core adapter. The supported increment covers straight-line
-## assignments, prints, expressions, and functions whose body is a single return.
+## Native block-to-ML-core adapter. Imperative statements lower to the native
+## statement-expression nodes understood by data_asmgen; no C frontend is used.
 use block_ast
 use data_ast
 
@@ -8,24 +8,41 @@ fn bn_expr(e: Expr) -> DExpr
         Num(v) => DInt(n: v)
         Name(id) => DVar(name: id)
         StrLit(txt) => DStr(value: txt)
+        Index(nm, ix) => DIndex(coll: DVar(name: nm), idx: bn_expr(ix))
         Call(nm, args) => DCall(name: nm, args: args.map(bn_expr))
-        Bin(op, l, r) => DBin(op: op, l: bn_expr(l), r: bn_expr(r))
-        Index(nm, ix) => DCall(name: "__block_unsupported_index", args: [])
+        Bin(op, l, r) => if op == "and" then DIf(cond: bn_expr(l), then_val: DIf(cond: bn_expr(r), then_val: DInt(n: 1), else_val: DInt(n: 0)), else_val: DInt(n: 0)) else if op == "or" then DIf(cond: bn_expr(l), then_val: DInt(n: 1), else_val: DIf(cond: bn_expr(r), then_val: DInt(n: 1), else_val: DInt(n: 0))) else DBin(op: op, l: bn_expr(l), r: bn_expr(r))
 
-fn bn_function_body(stmts: [Stmt]) -> DExpr
-    if stmts.len() == 1
-        match stmts[0]
-            Return(v) => bn_expr(v)
-            _ => DCall(name: "__block_unsupported_statement", args: [])
-    else
-        DCall(name: "__block_unsupported_statement", args: [])
+fn bn_stmt(s: Stmt) -> DExpr
+    match s
+        Assign(nm, v) => DAssign(name: nm, value: bn_expr(v))
+        ArrDecl(nm, sz) => DAssign(name: nm, value: DArray(size: bn_expr(sz)))
+        AssignIdx(nm, ix, v) => DSetIndex(coll: DVar(name: nm), idx: bn_expr(ix), value: bn_expr(v))
+        Print(v) => DCall(name: "printval", args: [bn_expr(v)])
+        While(c, body) => DWhile(cond: bn_expr(c), body: bn_block(body))
+        If(c, t, e) => DIf(cond: bn_expr(c), then_val: bn_block(t), else_val: bn_block(e))
+        Return(v) => DReturn(value: bn_expr(v))
+        Block(body) => bn_block(body)
+        Fn(nm, ps, body) => DBlock(exprs: [])
+
+fn bn_block(stmts: [Stmt]) -> DExpr = DBlock(exprs: stmts.map(bn_stmt))
+
+fn bn_top_stmt(s: Stmt) -> DExpr
+    match s
+        While(c, body) => DWhile(cond: bn_expr(c), body: bn_top_block(body))
+        If(c, t, e) => DIf(cond: bn_expr(c), then_val: bn_top_block(t), else_val: bn_top_block(e))
+        Return(v) => DExit(value: bn_expr(v))
+        Block(body) => bn_top_block(body)
+        _ => bn_stmt(s)
+
+fn bn_top_block(stmts: [Stmt]) -> DExpr = DBlock(exprs: stmts.map(bn_top_stmt))
 
 fn bn_program(prog: [Stmt]) -> [DStmt]
     var out = []
     for s in prog
         match s
-            Fn(nm, ps, body) => out.push(DFnS(name: nm, params: ps, body: bn_function_body(body)))
+            Fn(nm, ps, body) => out.push(DFnS(name: nm, params: ps, body: bn_block(body)))
             Assign(nm, v) => out.push(DLet(name: nm, value: bn_expr(v)))
+            ArrDecl(nm, sz) => out.push(DLet(name: nm, value: DArray(size: bn_expr(sz))))
             Print(v) => out.push(DPrint(value: bn_expr(v)))
-            _ => out.push(DExprS(value: DCall(name: "__block_unsupported_statement", args: [])))
+            _ => out.push(DExprS(value: bn_top_stmt(s)))
     out

@@ -81,14 +81,14 @@ Seed CLI (`bootstrap/lume0/lume0`):
 - **ML-core (Layer B)** — `compiler/stage1/data_*.lume`: a smaller ADT language
   (constructors, match, records, lists, strings, ints, builtins). It is the real
   self-hosting vehicle and **already lowers to code**:
-  - `data_codegen.lume` -> C (transitional scaffold / correctness oracle).
+  - `data_codegen.lume` -> x86-64 through `data_asmgen`, without C.
   - `data_asmgen.lume` -> x86-64 (a codegen **written in Lume**, boxed-value heap via `brk`).
-  - driver: `data_cc.lume` (.src -> .c), `data_asm_cc.lume` (.src -> .s).
+  - driver: `data_cc.lume` (.src -> .s), `data_asm_cc.lume` (.src -> .s).
 - **Block language** — `compiler/stage1/block_*.lume`: an imperative mini-language
-  (var/while/for/if/arrays). `block_cc.lume` now routes straight-line assignments, prints,
-  expressions, and single-return functions through `block_native_codegen.lume` into the
-  native `data_asmgen` pipeline. Loops, arrays, conditionals, and multi-statement bodies
-  still require migration and fail explicitly instead of silently generating C.
+  (var/while/for/if/arrays). `block_cc.lume` routes the complete block AST through
+  `block_native_codegen.lume` into native ML-core statement expressions and `data_asmgen`,
+  including mutable variables, zero-initialized arrays, loops, conditionals, early returns,
+  recursion, and multi-statement functions. It emits x86-64 assembly for `lasm` without C.
 
 Historical note (`docs/10`): an earlier gap had Layer A and the ML-core not unified and `lumec`
 compiling only a subset. The triple self-build **has since been reached** (`stage 2 == stage 3`
