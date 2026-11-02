@@ -52,9 +52,10 @@ Each of these is a real body of work. The staged, test-first approach here delib
       and C codegen for growing subsets — all written in Lume and run by `lume0`.
 - [x] A file-driven `lumec` CLI that compiles a Lume subset to C -> native.
 - [x] A direct x86-64 backend in the bootstrap (no C) for the arithmetic/function/recursion subset.
-- [x] The ML-core (constructors, match, records, lists, strings, builtins) lowers to C AND to
-      x86-64 via a codegen written in Lume (`data_asmgen.lume`); a full core-written compiler
-      (`calc.src`) runs natively.
+- [x] The ML-core (constructors, match, records, lists, strings, builtins) lowers directly to
+      x86-64 via a codegen written in Lume (`data_codegen.lume` delegates to `data_asmgen.lume`);
+      `data_cc.lume` emits assembly for `lume0 asm`, and a full core-written compiler (`calc.src`)
+      runs natively without a C compiler.
 - [x] A seed assembler + ELF64 writer (`lume0 asm`): the whole pipeline — Lume-written codegen,
       then `lume0 asm` — produces a native ELF with **no C and no external as/ld/cc**.
 - [x] `lume0 check` is no longer parse-only: it does static **name resolution** (R0200), basic
