@@ -88,6 +88,8 @@ Each of these is a real body of work. The staged, test-first approach here delib
       when the input length is already known (PR #112). This removes that repeated scan from the
       assembler hot path; it does not make arbitrary substring copying constant-time.
 
+- [x] **Native interactive protocol increment.** `lume_driver.src` and `linteractive.src` own the live LSP/DAP/REPL stdio loops in Lume, with real JSON parsing, exact `Content-Length` framing through `io_read_byte`, `lcaas` analysis, native expression execution, and REPL rollback. The terminal accepts single-line turns; LSP uses full-document sync, and DAP stepping exposes the existing static frame/scope model rather than instruction-level process replay. `tests/cli/interactive_gate.src` is the native multi-message acceptance gate.
+
 - [x] **Verified registry P0 increment (#337).** `lregistry.src` and `lume registry` publish and
       resolve real adapter/source/proof/test artifacts only after fresh independent proof and native
       test verification. Capability and contract-signature discovery is AST-derived; stale evidence,
