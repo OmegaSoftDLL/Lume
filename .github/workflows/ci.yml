@@ -184,16 +184,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Required files exist
-        run: |
-          set -e
-          for f in README.md CHANGELOG.md .github/workflows/release.yml \
-                   docs/00-catalog.md docs/01-survey.md docs/02-principles.md \
-                   docs/03-specification.md docs/04-roadmap.md docs/05-vision.md \
-                   grammar/lume.ebnf examples/README.md \
-                   tests/llm_gen_eval/system_prompt.md scripts/llm_gen_eval.src; do
-            test -f "$f" || { echo "missing $f"; exit 1; }
-          done
+      - name: Build seed
+        run: make -C bootstrap/lume0
+      - name: Test native documentation validator
+        run: ./lume test scripts/docs_ci.src
+      - name: Build native documentation validator
+        run: ./lume build scripts/docs_ci.src -o build/bin/docs_ci
+      - name: Validate required files, tabs, and principle citations
+        run: printf '@root %s\n' "$PWD" | build/bin/docs_ci
       - name: Every example is listed in examples/README.md
         run: |
           set -e
@@ -201,9 +199,6 @@ jobs:
             name=${f#examples/}
             grep -q "$name" examples/README.md || { echo "$name not listed in examples/README.md"; exit 1; }
           done
-      - name: No tabs in Lume sources or docs
-        run: |
-          ! grep -rnP '\t' --include='*.lume' --include='*.md' --include='*.ebnf' --exclude='bad_*.lume' . || { echo "tabs found"; exit 1; }
       - name: Canonical formatting check (lume fmt --check)
         run: |
           set -e
@@ -211,12 +206,6 @@ jobs:
           if [ -n "$files" ]; then
             ./lume fmt --check $files
           fi
-      - name: Spec cites principles that exist
-        run: |
-          set -e
-          for p in $(grep -oE '\bP[0-9]+\b' docs/03-specification.md | sort -u); do
-            grep -q "\*\*$p " docs/02-principles.md || { echo "spec cites $p but principles.md lacks it"; exit 1; }
-          done
 
   acceptance-matrix:
     name: Acceptance matrix and negative fixtures
