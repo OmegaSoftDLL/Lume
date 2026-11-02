@@ -1,0 +1,69 @@
+fn dc_required_files() = Cons("README.md", Cons("CHANGELOG.md", Cons(".github/workflows/release.yml", Cons("docs/00-catalog.md", Cons("docs/01-survey.md", Cons("docs/02-principles.md", Cons("docs/03-specification.md", Cons("docs/04-roadmap.md", Cons("docs/05-vision.md", Cons("grammar/lume.ebnf", Cons("examples/README.md", Cons("tests/llm_gen_eval/system_prompt.md", Cons("scripts/llm_gen_eval.src", Nil)))))))))))))
+fn dc_check_required(root, paths) = match paths
+    Nil => ""
+    Cons(h, t) => if fs_path_exists(root + "/" + h) != 1 then "missing " + h else let content = fs_read_file(root + "/" + h) in dc_check_required(root, t)
+
+fn dc_line_end(text, i, n) = if i >= n or at(text, i) == "\n" then i else dc_line_end(text, i + 1, n)
+fn dc_lines(text, i, n) = if i >= n then Nil else let e = dc_line_end(text, i, n) in Cons(slice(text, i, e), dc_lines(text, if e < n then e + 1 else e, n))
+fn dc_chomp(line) = let n = count(line) in if n > 0 and at(line, n - 1) == "\r" then slice(line, 0, n - 1) else line
+fn dc_root(input) = match dc_lines(input, 0, count(input))
+    Nil => ""
+    Cons(h, t) => let line = dc_chomp(h) in if count(line) >= 6 and slice(line, 0, 6) == "@root " then slice(line, 6, count(line)) else ""
+
+fn dc_contains_at(text, part, i, n, m) = if i + m > n then 0 else if slice(text, i, i + m) == part then 1 else dc_contains_at(text, part, i + 1, n, m)
+fn dc_contains(text, part) = let m = count(part) in if m == 0 then 1 else dc_contains_at(text, part, 0, count(text), m)
+fn dc_ends_with(text, suffix) = let n = count(text) in let m = count(suffix) in n >= m and slice(text, n - m, n) == suffix
+fn dc_basename_start(path, i, start) = if i >= count(path) then start else if at(path, i) == "/" then dc_basename_start(path, i + 1, i + 1) else dc_basename_start(path, i + 1, start)
+fn dc_bad_lume(path) = if dc_ends_with(path, ".lume") == 0 then 0 else let start = dc_basename_start(path, 0, 0) in count(path) - start >= 4 and slice(path, start, start + 4) == "bad_"
+fn dc_source_path(path) = (dc_ends_with(path, ".lume") or dc_ends_with(path, ".md") or dc_ends_with(path, ".ebnf")) and dc_bad_lume(path) == 0
+fn dc_has_tab_at(text, i, n) = if i >= n then 0 else if at(text, i) == "\t" then 1 else dc_has_tab_at(text, i + 1, n)
+fn dc_has_tab_lines(lines) = match lines
+    Nil => 0
+    Cons(h, t) => if dc_has_tab_at(h, 0, count(h)) == 1 then 1 else dc_has_tab_lines(t)
+fn dc_has_tab(text) = dc_has_tab_lines(dc_lines(text, 0, count(text)))
+
+fn dc_listing_entries_error(paths) = match paths
+    Nil => ""
+    Cons(h, t) => if count(h) == 0 then "git ls-files returned an empty path" else if at(h, 0) == "\"" or dc_contains(h, "\r") == 1 then "git ls-files returned an unsupported quoted path: " + h else dc_listing_entries_error(t)
+fn dc_listing_error(paths) = match paths
+    Nil => "git ls-files returned no files"
+    Cons(h, t) => dc_listing_entries_error(Cons(h, t))
+fn dc_git_listing(root) = if fs_mkdir(root + "/build") != 1 then {status: 0 - 1, text: "", error: "cannot create build directory"} else let out = root + "/build/docs-ci-git.out" in let err = root + "/build/docs-ci-git.err" in let status = os_run_capture("/usr/bin/git", Cons("-C", Cons(root, Cons("ls-files", Nil))), out, err) in {status: status, text: fs_read_file(out), error: fs_read_file(err)}
+fn dc_check_tabs(root, paths) = match paths
+    Nil => ""
+    Cons(h, t) => if dc_source_path(h) == 0 then dc_check_tabs(root, t) else if fs_path_exists(root + "/" + h) != 1 then "tracked source is missing: " + h else if dc_has_tab(fs_read_file(root + "/" + h)) == 1 then "tabs found: " + h else dc_check_tabs(root, t)
+
+fn dc_digit(c) = c >= "0" and c <= "9"
+fn dc_word(c) = dc_digit(c) or (c >= "A" and c <= "Z") or (c >= "a" and c <= "z") or c == "_"
+fn dc_digits_end(text, i, n) = if i < n and dc_digit(at(text, i)) then dc_digits_end(text, i + 1, n) else i
+fn dc_string_in(items, expected) = match items
+    Nil => 0
+    Cons(h, t) => if h == expected then 1 else dc_string_in(t, expected)
+fn dc_citation_loop(text, i, n, found) = if i >= n then found else if at(text, i) == "P" and (i == 0 or dc_word(at(text, i - 1)) == 0) and i + 1 < n and dc_digit(at(text, i + 1)) then let e = dc_digits_end(text, i + 1, n) in if e < n and dc_word(at(text, e)) then dc_citation_loop(text, i + 1, n, found) else let principle = slice(text, i, e) in dc_citation_loop(text, e, n, if dc_string_in(found, principle) == 1 then found else Cons(principle, found)) else dc_citation_loop(text, i + 1, n, found)
+fn dc_citations(text) = dc_citation_loop(text, 0, count(text), Nil)
+fn dc_check_citations(principles, citations) = match citations
+    Nil => ""
+    Cons(h, t) => if dc_contains(principles, "**" + h + " ") == 1 then dc_check_citations(principles, t) else "spec cites " + h + " but principles.md lacks it"
+
+fn dc_main(root) = let required = dc_check_required(root, dc_required_files()) in if required != "" then required else let listing = dc_git_listing(root) in if listing.status != 0 then "git ls-files failed with native status " + str(listing.status) + ": " + listing.error else let paths = dc_lines(listing.text, 0, count(listing.text)) in let listing_error = dc_listing_error(paths) in if listing_error != "" then listing_error else let tabs = dc_check_tabs(root, paths) in if tabs != "" then tabs else let spec = fs_read_file(root + "/docs/03-specification.md") in let principles = fs_read_file(root + "/docs/02-principles.md") in dc_check_citations(principles, dc_citations(spec))
+fn dc_dispatch(input) = let root = dc_root(input) in if root == "" then ctfail("documentation gate requires @root\n") else let err_msg = dc_main(root) in if err_msg != "" then ctfail("documentation gate failed: " + err_msg + "\n") else "OK: required files, tracked source tabs, and specification principle citations validated."
+fn dc_len(items) = match items
+    Nil => 0
+    Cons(h, t) => 1 + dc_len(t)
+
+fn test_required_file_inventory_is_complete() = dc_len(dc_required_files()) == 13 and dc_string_in(dc_required_files(), "README.md") == 1 and dc_string_in(dc_required_files(), "CHANGELOG.md") == 1 and dc_string_in(dc_required_files(), ".github/workflows/release.yml") == 1 and dc_string_in(dc_required_files(), "docs/00-catalog.md") == 1 and dc_string_in(dc_required_files(), "docs/01-survey.md") == 1 and dc_string_in(dc_required_files(), "docs/02-principles.md") == 1 and dc_string_in(dc_required_files(), "docs/03-specification.md") == 1 and dc_string_in(dc_required_files(), "docs/04-roadmap.md") == 1 and dc_string_in(dc_required_files(), "docs/05-vision.md") == 1 and dc_string_in(dc_required_files(), "grammar/lume.ebnf") == 1 and dc_string_in(dc_required_files(), "examples/README.md") == 1 and dc_string_in(dc_required_files(), "tests/llm_gen_eval/system_prompt.md") == 1 and dc_string_in(dc_required_files(), "scripts/llm_gen_eval.src") == 1
+fn test_required_empty_file_is_readable() = let path = "build/docs-ci-empty-required" in if fs_write_sync(path, "") != 1 then 0 else dc_check_required(".", Cons(path, Nil)) == ""
+fn test_required_missing_file_keeps_diagnostic() = dc_check_required("/definitely/missing-lume-docs", Cons("required.md", Nil)) == "missing required.md"
+fn test_line_parser_preserves_spaces_without_phantom_entry() = let text = "docs/a file.md\ngrammar/lume.ebnf\n" in let lines = dc_lines(text, 0, count(text)) in dc_len(lines) == 2 and dc_string_in(lines, "docs/a file.md") == 1 and dc_string_in(lines, "grammar/lume.ebnf") == 1
+fn test_listing_rejects_empty_input() = dc_listing_error(Nil) != ""
+fn test_listing_rejects_quoted_paths_fail_closed() = dc_listing_error(Cons("\"docs/a\\tb.md\"", Nil)) != ""
+fn test_source_selection_covers_all_existing_extensions() = dc_source_path("examples/01.lume") == 1 and dc_source_path("docs/03-specification.md") == 1 and dc_source_path("grammar/lume.ebnf") == 1 and dc_source_path("compiler/stage1/lumec.src") == 0 and dc_source_path("README.txt") == 0
+fn test_bad_lume_exclusion_applies_to_basename_only() = dc_source_path("bad_lex.lume") == 0 and dc_source_path("tests/bad_parse.lume") == 0 and dc_source_path("bad_fixtures/good.lume") == 1 and dc_source_path("bad_notes.md") == 1
+fn test_tab_scanner_rejects_leading_embedded_and_trailing_tabs() = dc_has_tab("\tfn f() = 1") == 1 and dc_has_tab("fn\tf() = 1") == 1 and dc_has_tab("docs\t") == 1 and dc_has_tab("fn f() = 1\n") == 0
+fn test_principle_parser_deduplicates_valid_citations() = let found = dc_citations("P1, P2 and P1 again; **P35**") in dc_len(found) == 3 and dc_string_in(found, "P1") == 1 and dc_string_in(found, "P2") == 1 and dc_string_in(found, "P35") == 1
+fn test_principle_parser_enforces_word_boundaries() = let found = dc_citations("XP3 _P4 9P8 P5x P6_ P7") in dc_len(found) == 1 and dc_string_in(found, "P7") == 1
+fn test_principle_parser_requires_digits() = dc_len(dc_citations("P P_ PX")) == 0
+fn test_principle_definition_does_not_prefix_match() = dc_check_citations("- **P10 — Ten", Cons("P1", Nil)) != "" and dc_check_citations("- **P1 — One", Cons("P1", Nil)) == ""
+fn test_unknown_principle_citation_is_rejected() = dc_check_citations("- **P1 — One", dc_citations("P1 and P99")) != ""
+
+print dc_dispatch(readall())
