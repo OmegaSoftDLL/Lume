@@ -81,19 +81,9 @@ if command -v cc >/dev/null 2>&1; then
     # block language with FUNCTIONS + recursion -> C -> native binary
     $BIN run ../../compiler/stage1/block_fn_demo.lume > "$cgtmp/bf.c" 2>/dev/null
     if cc -o "$cgtmp/bf" "$cgtmp/bf.c" 2>/dev/null && "$cgtmp/bf" 2>/dev/null | diff -u ../../tests/conformance/stage1/block_fn_native.expected - >/dev/null; then ok "block language (functions+recursion) -> native binary"; else bad "block language (functions) -> native binary"; fi
-    # block_cc as a file-driven CLI: compile a .blk source file -> C -> native
-    $BIN run ../../compiler/stage1/block_cc.lume ../../compiler/stage1/sample.blk "$cgtmp/bcc.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/bcc" "$cgtmp/bcc.c" 2>/dev/null && "$cgtmp/bcc" 2>/dev/null | diff -u ../../tests/conformance/stage1/block_cc_native.expected - >/dev/null; then ok "block_cc file compiler (recursion+loops) -> native binary"; else bad "block_cc file compiler -> native binary"; fi
-    $BIN run ../../compiler/stage1/block_cc.lume ../../compiler/stage1/sample2.blk "$cgtmp/bcc2.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/bcc2" "$cgtmp/bcc2.c" 2>/dev/null && "$cgtmp/bcc2" 2>/dev/null | diff -u ../../tests/conformance/stage1/block_cc2_native.expected - >/dev/null; then ok "block_cc (modulo + and/or) -> native binary"; else bad "block_cc (modulo + and/or) -> native binary"; fi
-    $BIN run ../../compiler/stage1/block_cc.lume ../../compiler/stage1/fizz.blk "$cgtmp/fz.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/fz" "$cgtmp/fz.c" 2>/dev/null && "$cgtmp/fz" 2>/dev/null | diff -u ../../tests/conformance/stage1/block_fizz_native.expected - >/dev/null; then ok "block_cc FizzBuzz (strings+nested if) -> native binary"; else bad "block_cc FizzBuzz -> native binary"; fi
-    $BIN run ../../compiler/stage1/block_cc.lume ../../compiler/stage1/sieve.blk "$cgtmp/sv.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/sv" "$cgtmp/sv.c" 2>/dev/null && "$cgtmp/sv" 2>/dev/null | diff -u ../../tests/conformance/stage1/block_sieve_native.expected - >/dev/null; then ok "block_cc Sieve (arrays+nested loops) -> native binary"; else bad "block_cc Sieve -> native binary"; fi
-    $BIN run ../../compiler/stage1/block_cc.lume ../../compiler/stage1/sort.blk "$cgtmp/sort.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/sort" "$cgtmp/sort.c" 2>/dev/null && "$cgtmp/sort" 2>/dev/null | diff -u ../../tests/conformance/stage1/block_sort_native.expected - >/dev/null; then ok "block_cc bubble sort (arrays+negatives) -> native binary"; else bad "block_cc bubble sort -> native binary"; fi
-    $BIN run ../../compiler/stage1/block_cc.lume ../../compiler/stage1/forloop.blk "$cgtmp/fl.c" >/dev/null 2>&1
-    if cc -o "$cgtmp/fl" "$cgtmp/fl.c" 2>/dev/null && "$cgtmp/fl" 2>/dev/null | diff -u ../../tests/conformance/stage1/block_for_native.expected - >/dev/null; then ok "block_cc for-loops (range desugar + nested) -> native binary"; else bad "block_cc for-loops -> native binary"; fi
+    # block_cc is now a native compiler (block_ast -> block_native_codegen ->
+    # data_asmgen asm for lume0's own ELF writer); it is exercised in the
+    # no-toolchain section below, next to the other ELF pipeline tests.
     # a full calculator compiler WRITTEN IN the ML core, reading its source from a file
     if $BIN run ../../compiler/stage1/compiler_in_core.lume ../../compiler/stage1/calc.src 2>/dev/null | diff -u ../../tests/conformance/stage1/core_compiler.expected - >/dev/null; then ok "compiler written in the ML core (lex+parse+eval)"; else bad "compiler written in the ML core"; fi
     if $BIN run ../../compiler/stage1/compiler_in_core.lume ../../compiler/stage1/modtest.src 2>/dev/null | diff -u ../../tests/conformance/stage1/modtest_core.expected - >/dev/null; then ok "ML-core interpreter: modulo + gcd (regression)"; else bad "ML-core interpreter: modulo + gcd"; fi
@@ -170,6 +160,19 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
         $BIN run ../../compiler/stage1/data_asm_cc.lume ../../compiler/stage1/$prog.src "$ntmp/$prog.s" >/dev/null 2>&1
         $BIN asm "$ntmp/$prog.s" "$ntmp/$prog" >/dev/null 2>&1
         if [ -x "$ntmp/$prog" ] && "$ntmp/$prog" 2>/dev/null | diff -u ../../tests/conformance/stage1/$exp.expected - >/dev/null; then ok "no-toolchain: $prog.src -> lume0 asm -> native (NO as/ld/cc)"; else bad "no-toolchain: $prog.src -> lume0 asm -> native"; fi
+    done
+    # block language via the native adapter: block_cc.lume (block_ast ->
+    # block_native_codegen -> data_asmgen) emits asm for lume0's own ELF writer
+    for blk in sample sample2 fizz sieve sort forloop; do
+        case "$blk" in sample) exp=block_cc_native; feat="recursion+loops";;
+            sample2) exp=block_cc2_native; feat="modulo + and/or";;
+            fizz) exp=block_fizz_native; feat="strings+nested if";;
+            sieve) exp=block_sieve_native; feat="arrays+nested loops";;
+            sort) exp=block_sort_native; feat="arrays+negatives";;
+            forloop) exp=block_for_native; feat="range desugar + nested";; esac
+        $BIN run ../../compiler/stage1/block_cc.lume ../../compiler/stage1/$blk.blk "$ntmp/blk_$blk.s" >/dev/null 2>&1
+        $BIN asm "$ntmp/blk_$blk.s" "$ntmp/blk_$blk" >/dev/null 2>&1
+        if [ -x "$ntmp/blk_$blk" ] && "$ntmp/blk_$blk" 2>/dev/null | diff -u ../../tests/conformance/stage1/$exp.expected - >/dev/null; then ok "no-toolchain: block_cc $blk.blk ($feat) -> native"; else bad "no-toolchain: block_cc $blk.blk ($feat) -> native"; fi
     done
     cat ../../compiler/stage1/decimal.src ../../compiler/stage1/decimal_native.src >"$ntmp/decimal.src"
     $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/decimal.src" >"$ntmp/decimal_interp.out" 2>"$ntmp/decimal_interp.err"
