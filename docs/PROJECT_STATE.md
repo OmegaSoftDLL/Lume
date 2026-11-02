@@ -80,10 +80,11 @@ Seed CLI (`bootstrap/lume0/lume0`):
   `examples/`. Runs on the seed interpreter. This is what `lumec` is written in.
 - **ML-core (Layer B)** — `compiler/stage1/data_*.lume`: a smaller ADT language
   (constructors, match, records, lists, strings, ints, builtins). It is the real
-  self-hosting vehicle and **already lowers to code**:
-  - `data_codegen.lume` -> C (transitional scaffold / correctness oracle).
+  self-hosting vehicle and **already lowers to native code**:
+  - `data_codegen.lume` -> x86-64 assembly through `data_asmgen`; its historical
+    `cgen_data` entry point is retained, but no longer emits C.
   - `data_asmgen.lume` -> x86-64 (a codegen **written in Lume**, boxed-value heap via `brk`).
-  - driver: `data_cc.lume` (.src -> .c), `data_asm_cc.lume` (.src -> .s).
+  - drivers: `data_cc.lume` and `data_asm_cc.lume` (.src -> .s), then `lume0 asm`.
 - **Block language** — `compiler/stage1/block_*.lume`: an imperative mini-language
   (var/while/for/if/arrays) compiled to C by `block_cc.lume`.
 
@@ -94,21 +95,21 @@ see the Phase 1–5 entries in §5 for the current state.
 
 ## 5. What is DONE (verified, with tests)
 
-- Full toolchain-free native pipeline: `lume0 run data_asm_cc.lume prog.src prog.s` (codegen
+- Full toolchain-free native pipeline: `lume0 run data_cc.lume prog.src prog.s` (codegen
   written in Lume) then `lume0 asm prog.s prog` (our ELF writer) -> native binary, with **no
   C, no as/ld, no libc**. Proven for nfib/ev/strtest/modtest/reclist/list AND the full
   core-written compiler `calc.src`, output identical to the as/ld oracle.
 - ML-core -> native covers: ints, strings (==, ordering, concat, print via write), enum
   constructors + match, records + field access, lists + indexing, builtins
-  count/at/slice/toint/str, let-in, if, recursion.
+  count/at/slice/toint/str, let-in, if, recursion. The `data_cc` regression set includes
+  `data_native_backend.src`, with independent native assertions for each of these constructs.
 - **Top-level expression statements** (`ExprS` in `lumec.src`, `DExprS` in the `data_asmgen`
   oracle / `data_parser`): a bare top-level expression is evaluated for its effect and its value
   discarded (`popq %rax`, no `printval`) — as in C/Go/Rust. This let `lasm.src`'s entry point become
   `assemble(readall())` then `flush()` (no `print`), so `lasm`'s ELF is now **byte-for-byte identical
   to the `lume0 asm` oracle** (0 diff; previously 1 trailing `\n`). The fixpoint stays bit-identical
-  (`lumec.src` itself uses no expression statements, so its parse is unchanged). The transitional C
-  backend (`data_codegen`) and the tree-walking interpreter (`data_eval`) do not lower expression
-  statements — nothing routes them there (native/asm only).
+  (`lumec.src` itself uses no expression statements, so its parse is unchanged). The tree-walking
+  interpreter (`data_eval`) does not lower expression statements — nothing routes them there.
 - `lume0 asm` encoder: mov/lea, ALU group, imul, neg/not/mul/div/idiv/inc/dec, test, cqto,
   movzbq/l, setcc, push/pop, jmp/call/jcc, syscall, ret; ModRM/SIB/REX; rip-relative;
   labels incl. GAS numeric (`1:`/`1f`/`2b`); .rodata/.ascii/.asciz; .lcomm bss.
