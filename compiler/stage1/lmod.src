@@ -1,5 +1,5 @@
 ## lmod.src -- Lume-Core module resolver, topological bundler, capability auditor, and
-## lume.toml manifest validator (Track T, brick T3; Principles P26, P28, P32).
+## package manifest/lockfile/tree engine (Track T, brick T3; Principles P26, P28, P32).
 ## Compiled to a standalone native ELF by `lumec` + `lasm` with zero C in the loop.
 ##
 ## Modes:
@@ -12,6 +12,9 @@
 ##   2. Manifest validation (`@manifest` on line 1 of stdin):
 ##      Parses `lume.toml`, validates required `[package]` fields (`name`, `version`, `edition`),
 ##      and prints machine-readable JSON metadata (or aborts via `ctfail` on invalid manifests).
+##   3. Package generation (`@pkg-init`, `@pkg-lock`, or `@pkg-tree` on line 1):
+##      Generates the standard manifest/entry source, a deterministic SHA-256 lockfile from
+##      native filesystem evidence, or a sorted dependency tree from framed source blocks.
 
 ## --- hot character & string helpers ---
 fn isws(c) = c == " " or c == "\t" or c == "\r"
@@ -135,8 +138,35 @@ fn scanmanifest(lines, st) = match lines
 
 fn checkmanifest(m) = if m.name == "" then ctfail("lume: manifest error: missing 'name' in lume.toml\n") else if m.version == "" then ctfail("lume: manifest error: missing 'version' in lume.toml\n") else if m.edition != "" and m.edition != "2026" then ctfail("lume: manifest error: unsupported edition '" + m.edition + "' in lume.toml (expected \"2026\")\n") else if m.protect != "" and m.protect != "none" and m.protect != "standard" and m.protect != "hardened" and m.protect != "max" then ctfail("lume: manifest error: unsupported protect level '" + m.protect + "' in lume.toml (expected \"none\", \"standard\", \"hardened\", or \"max\")\n") else if m.ffi_libs != "" and m.ffi_libs != "[]" and m.cap != "ffi" then ctfail("lume: capability error [E0200]: [ffi] libs in lume.toml requires \"ffi\" in [capabilities] allow\n") else "{\"name\":\"" + m.name + "\",\"version\":\"" + m.version + "\",\"edition\":\"" + (if m.edition == "" then "2026" else m.edition) + "\",\"capabilities\":\"" + m.cap + "\"" + (if m.protect != "" then ",\"protect\":\"" + m.protect + "\"" else "") + (if m.ffi_libs != "" then ",\"ffi_libs\":" + m.ffi_libs else "") + "}"
 
+## --- package init, deterministic lockfile, and source tree modes ---
+fn pkg_init_toml(pkg) = "[package]\nname = \"" + pkg + "\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[capabilities]\nallow = [\"io\"]\n\n[dependencies]"
+fn pkg_init_main(pkg) = "## " + pkg + " — entry module\nfn main_val() -> int = 42\nprint main_val()"
+
+fn pkg_fmt_lock_mods(mods) = match mods
+    Nil        => ""
+    Cons(h, t) => "\nmodule \"" + h.rel + "\" sha256 = \"" + h.sha + "\"" + pkg_fmt_lock_mods(t)
+fn pkg_lock(st) = "# lume.lock — deterministic content-addressed lockfile (P26, P32)\nversion = 1\nmanifest = " + st.manifest + "\nmanifest_sha256 = \"" + st.manifest_sha + "\"" + pkg_fmt_lock_mods(st.mods)
+
+fn pkg_scan_uses(lines) = match lines
+    Nil        => Nil
+    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then Cons(trim(slice(tr, 4, count(tr))), pkg_scan_uses(t)) else pkg_scan_uses(t)
+fn pkg_fmt_tree_mods(mods) = match mods
+    Nil        => ""
+    Cons(h, t) => let uses = pkg_scan_uses(splitlines(h.src)) in let line = if isnil(uses) == 1 then "  |-- " + h.rel else "  |-- " + h.rel + " -> " + joinsep(uses, " ") + " " in "\n" + line + pkg_fmt_tree_mods(t)
+fn pkg_tree(st) = st.manifest + pkg_fmt_tree_mods(st.mods)
+
+fn pkg_find_sp(s, i) = if i >= count(s) or at(s, i) == " " or at(s, i) == "\t" then i else pkg_find_sp(s, i + 1)
+fn pkg_parse_mod_line(text) = let sp = pkg_find_sp(text, 0) in if sp >= count(text) then ctfail("lume: package request error: malformed @module line\n") else {sha: trim(slice(text, 0, sp)), rel: trim(slice(text, sp + 1, count(text))), src: ""}
+fn pkg_source_block(lines) = let b = takeuntilend(lines) in {src: if isnil(b.body) == 1 then "" else joinsep(b.body, "\n") + "\n", rest: b.rest}
+
+fn pkg_parse(lines, st) = match lines
+    Nil        => {cmd: st.cmd, pkg: st.pkg, part: st.part, manifest: st.manifest, manifest_sha: st.manifest_sha, mods: rev(st.mods)}
+    Cons(h, t) => if h == "@pkg-init" or h == "@pkg-lock" or h == "@pkg-tree" then pkg_parse(t, {cmd: h, pkg: st.pkg, part: st.part, manifest: st.manifest, manifest_sha: st.manifest_sha, mods: st.mods}) else if startswith(h, "@pkg ") then pkg_parse(t, {cmd: st.cmd, pkg: trim(slice(h, 5, count(h))), part: st.part, manifest: st.manifest, manifest_sha: st.manifest_sha, mods: st.mods}) else if startswith(h, "@part ") then pkg_parse(t, {cmd: st.cmd, pkg: st.pkg, part: trim(slice(h, 6, count(h))), manifest: st.manifest, manifest_sha: st.manifest_sha, mods: st.mods}) else if startswith(h, "@manifest ") then pkg_parse(t, {cmd: st.cmd, pkg: st.pkg, part: st.part, manifest: trim(slice(h, 10, count(h))), manifest_sha: st.manifest_sha, mods: st.mods}) else if startswith(h, "@manifest_sha256 ") then pkg_parse(t, {cmd: st.cmd, pkg: st.pkg, part: st.part, manifest: st.manifest, manifest_sha: trim(slice(h, 17, count(h))), mods: st.mods}) else if startswith(h, "@module ") then pkg_parse(t, {cmd: st.cmd, pkg: st.pkg, part: st.part, manifest: st.manifest, manifest_sha: st.manifest_sha, mods: Cons(pkg_parse_mod_line(trim(slice(h, 8, count(h)))), st.mods)}) else if startswith(h, "@modsrc ") then let rel = trim(slice(h, 8, count(h))) in let b = pkg_source_block(t) in pkg_parse(b.rest, {cmd: st.cmd, pkg: st.pkg, part: st.part, manifest: st.manifest, manifest_sha: st.manifest_sha, mods: Cons({rel: rel, sha: "", src: b.src}, st.mods)}) else pkg_parse(t, st)
+
+fn run_package(lines) = let st = pkg_parse(lines, {cmd: "", pkg: "app", part: "toml", manifest: "{}", manifest_sha: "", mods: Nil}) in if st.cmd == "@pkg-init" then (if st.part == "main" then pkg_init_main(st.pkg) else pkg_init_toml(st.pkg)) else if st.cmd == "@pkg-lock" then pkg_lock(st) else if st.cmd == "@pkg-tree" then pkg_tree(st) else ctfail("lume: package request error: missing package mode\n")
+
 fn run_lmod(lines) = match lines
     Nil        => ""
-    Cons(h, t) => if trim(h) == "@manifest" then checkmanifest(scanmanifest(t, {name: "", version: "", edition: "", cap: "io", protect: "", ffi_libs: ""})) else bundle(lines)
+    Cons(h, t) => let mode = trim(h) in if mode == "@manifest" then checkmanifest(scanmanifest(t, {name: "", version: "", edition: "", cap: "io", protect: "", ffi_libs: ""})) else if mode == "@pkg-init" or mode == "@pkg-lock" or mode == "@pkg-tree" then run_package(lines) else bundle(lines)
 
 print chomp(run_lmod(splitlines(readall())))
