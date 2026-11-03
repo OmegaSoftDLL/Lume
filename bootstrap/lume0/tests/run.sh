@@ -435,6 +435,11 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/bytes_ok.src >"$ntmp/bytes_ok.out" 2>"$ntmp/bytes_ok.err"
     if diff -u ../../tests/conformance/stage1/bytes_ok_asm.expected "$ntmp/bytes_ok.out" >/dev/null 2>&1; then ok "std.bytes: safe byte buffers (structured errors, doubling growth, NUL-safe binary I/O)"; else bad "std.bytes: safe byte buffers"; cat "$ntmp/bytes_ok.out" "$ntmp/bytes_ok.err"; fi
     rm -f std_bytes_write_probe std_bytes_roundtrip_probe std_bytes_ok_binary_probe std_bytes_ok_empty_probe
+    # std.fs (#406): safe file wrapper over the native fs_* primitives -- structured errors,
+    # with_file close-on-all-paths (success and error values), use-after-close fails closed.
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/fs_ok.src >"$ntmp/fs_ok.out" 2>"$ntmp/fs_ok.err"
+    if diff -u ../../tests/conformance/stage1/fs_ok_asm.expected "$ntmp/fs_ok.out" >/dev/null 2>&1; then ok "std.fs (#406): safe file wrapper (structured errors, with_file close-on-all-paths, use-after-close fails closed)"; else bad "std.fs (#406): safe file wrapper"; cat "$ntmp/fs_ok.out" "$ntmp/fs_ok.err"; fi
+    rm -f std_fs_ok_probe std_fs_ok_roundtrip std_fs_ok_append std_fs_ok_with std_fs_ok_with_err std_fs_ok_badmode std_fs_ok_uac std_fs_roundtrip_probe std_fs_append_probe std_fs_size_probe std_fs_with_probe std_fs_with_err_probe std_fs_uac_probe std_fs_mode_probe
     LUME_BIN_DIR="$ntmp" ../../lume pkg init "$ntmp/pkgdemo" >/dev/null 2>&1
     LUME_BIN_DIR="$ntmp" ../../lume pkg lock "$ntmp/pkgdemo" >/dev/null 2>&1
     pkg_ok=1
@@ -880,6 +885,15 @@ PY
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/os_run_ok.src >"$ntmp/os_run_test.out" 2>"$ntmp/os_run_test.err"
     if grep -q "13 passed, 0 failed" "$ntmp/os_run_test.out"; then ok "phase-3 K7: os_run executes a Lume binary via fork+execve and reports wait status"; else bad "phase-3 K7: os_run native process execution"; cat "$ntmp/os_run_test.out" "$ntmp/os_run_test.err"; fi
     rm -f os_run_probe_path os_run_slow_probe_path os_run_input_probe_path os_run_capture_stdout os_run_capture_stderr os_run_timeout_stdout os_run_timeout_stderr os_run_input_data os_run_input_stdout os_run_input_stderr os_run_input_missing_stdout os_run_input_missing_stderr
+    # std.process (#406): safe process wrapper composing os_run_capture / os_run_input_capture_timeout.
+    "$ntmp/lc" <../../compiler/stage1/process_probe.src >"$ntmp/process_probe.s" 2>"$ntmp/process_probe.err"
+    "$ntmp/lasm" <"$ntmp/process_probe.s" >"$ntmp/process_probe" 2>/dev/null
+    chmod +x "$ntmp/process_probe"
+    printf '%s' "$ntmp/process_probe" > process_probe_path
+    printf '%s' "$ntmp/os_run_slow_probe" > std_process_slow_probe_path
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/process_ok.src >"$ntmp/process_ok.out" 2>"$ntmp/process_ok.err"
+    if diff -u ../../tests/conformance/stage1/process_ok_asm.expected "$ntmp/process_ok.out" >/dev/null 2>&1; then ok "std.process (#406): run_collect/with-input over real child processes (separated streams, exit status, timeout kill, fail-closed missing binary)"; else bad "std.process (#406): safe process wrapper"; cat "$ntmp/process_ok.out" "$ntmp/process_ok.err"; fi
+    rm -f process_probe_path std_process_slow_probe_path std_process_stdin_probe std_process_stdout_probe std_process_stderr_probe
     # S0001: unstructured `spawn` outside `scope`, capturing non-`Send` `rc[T]`, or capturing unmoved `var`/`mut` across `spawn`
     printf 'fn bad_unscoped() -> int = spawn(42)\nprint bad_unscoped()\n' >"$ntmp/s1a.src"
     "$ntmp/lc" <"$ntmp/s1a.src" >"$ntmp/s1a.s" 2>"$ntmp/s1a.err"; s1ac=$?
