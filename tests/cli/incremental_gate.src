@@ -1,0 +1,63 @@
+fn ig_wait_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
+
+fn ig_run(root, args, name) = let output = root + "/build/cli-" + name + ".out" in let errors = root + "/build/cli-" + name + ".err" in let status = os_run_capture_timeout(root + "/build/bin/lume_driver", args, output, errors, 120000) in {status: ig_wait_exit(status), output: fs_read_file(output), errors: fs_read_file(errors)}
+
+fn ig_contains_at(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else ig_contains_at(text, part, i + 1)
+
+fn ig_contains(text, part) = ig_contains_at(text, part, 0)
+
+fn ig_line_end(text, i) = if i >= count(text) or at(text, i) == "\n" then i else ig_line_end(text, i + 1)
+
+fn ig_execute(root, binary, expected, name) = let output = root + "/build/cli-" + name + ".out" in let errors = root + "/build/cli-" + name + ".err" in let status = os_run_capture_timeout(binary, Nil, output, errors, 10000) in if status != 0 then name + " execution failed: " + fs_read_file(errors) else if fs_read_file(output) != expected then name + " output mismatch: " + fs_read_file(output) else ""
+
+fn ig_build_fixture(root) = let leaf = fs_write_sync(root + "/build/inc_leaf.src", "fn leaf_value() = 7\n") in let mid = fs_write_sync(root + "/build/inc_mid.src", "use inc_leaf\nfn mid_value() = leaf_value() + 1\n") in let main = fs_write_sync(root + "/build/inc_main.src", "use inc_mid\nprint mid_value()\n") in leaf == 1 and mid == 1 and main == 1
+
+fn ig_inc_build(root, name) = ig_run(root, Cons("build", Cons("--incremental", Cons(root + "/build/inc_main.src", Cons("-o", Cons(root + "/build/inc-demo", Nil))))), name)
+
+fn ig_frag_dir(root) = root + "/build/cache"
+
+fn ig_clean_cache(root) = let dir = ig_frag_dir(root) in if fs_path_exists(dir) == 0 then 1 else ig_clean_entries(dir, fs_read_dir(dir))
+
+fn ig_clean_entries(dir, entries) = if count(entries) == 0 then 1 else let e = ig_line_end(entries, 0) in let name = slice(entries, 0, e) in let removed = if ig_contains(name, ".frag") == 1 then fs_remove(dir + "/" + name) else 1 in if removed != 1 then 0 else ig_clean_entries(dir, if e >= count(entries) then "" else slice(entries, e + 1, count(entries)))
+
+fn ig_count_frags(root) = if fs_path_exists(ig_frag_dir(root)) == 0 then 0 else ig_count_frags_entries(fs_read_dir(ig_frag_dir(root)), 0)
+
+fn ig_count_frags_entries(entries, acc) = if count(entries) == 0 then acc else let e = ig_line_end(entries, 0) in let name = slice(entries, 0, e) in ig_count_frags_entries(if e >= count(entries) then "" else slice(entries, e + 1, count(entries)), if ig_contains(name, ".frag") == 1 then acc + 1 else acc)
+
+fn ig_frag_names(root) = if fs_path_exists(ig_frag_dir(root)) == 0 then "" else fs_read_dir(ig_frag_dir(root))
+
+fn ig_names_kept(before, after) = if count(before) == 0 then 1 else let e = ig_line_end(before, 0) in let name = slice(before, 0, e) in if count(name) > 0 and ig_contains(after, name) == 0 then 0 else ig_names_kept(if e >= count(before) then "" else slice(before, e + 1, count(before)), after)
+
+## cold then warm builds must be byte-identical and run correctly (determinism of the cache)
+fn ig_determinism(root) = if ig_build_fixture(root) == 0 then "cannot write incremental fixtures" else let cleaned = ig_clean_cache(root) in if cleaned != 1 then "cannot clean incremental cache" else let cold = ig_inc_build(root, "inc-cold") in if cold.status != 0 then "incremental cold build failed: " + cold.errors else let run1 = ig_execute(root, root + "/build/inc-demo", "8\n", "inc-cold-run") in if run1 != "" then run1 else let saved = fs_write_sync(root + "/build/inc-demo-cold.bin", fs_read_file(root + "/build/inc-demo")) in if saved != 1 then "cannot preserve cold artifact" else let warm = ig_inc_build(root, "inc-warm") in if warm.status != 0 then "incremental warm build failed: " + warm.errors else if fs_files_equal(root + "/build/inc-demo-cold.bin", root + "/build/inc-demo") != 1 then "incremental warm build is not byte-identical to the cold build" else ig_execute(root, root + "/build/inc-demo", "8\n", "inc-warm-run")
+
+## a formatting-only change (comment + blank line) hashes equal: cache hit, byte-identical artifact
+fn ig_formatting_hit(root) = let rewritten = fs_write_sync(root + "/build/inc_leaf.src", "## leaf module\n\nfn leaf_value() = 7\n") in if rewritten != 1 then "cannot rewrite leaf fixture" else let kept = fs_write_sync(root + "/build/inc-demo-before-fmt.bin", fs_read_file(root + "/build/inc-demo")) in if kept != 1 then "cannot preserve pre-format artifact" else let before = ig_count_frags(root) in let built = ig_inc_build(root, "inc-format") in if built.status != 0 then "incremental formatting build failed: " + built.errors else if fs_files_equal(root + "/build/inc-demo-before-fmt.bin", root + "/build/inc-demo") != 1 then "formatting-only change did not hit the cache byte-identically" else let after = ig_count_frags(root) in if after != before then "formatting-only change grew the cache (" + str(before) + " -> " + str(after) + ")" else ig_execute(root, root + "/build/inc-demo", "8\n", "inc-format-run")
+
+## a semantic change to a leaf module recompiles exactly that module (one new cache entry),
+## keeps the unchanged modules' entries (cache hits), and the new binary shows the new behavior
+fn ig_stale_invalidation(root) = let before_names = ig_frag_names(root) in let before_count = ig_count_frags(root) in let rewritten = fs_write_sync(root + "/build/inc_leaf.src", "fn leaf_value() = 10\n") in if rewritten != 1 then "cannot rewrite leaf fixture" else let kept = fs_write_sync(root + "/build/inc-demo-before-stale.bin", fs_read_file(root + "/build/inc-demo")) in if kept != 1 then "cannot preserve pre-change artifact" else let built = ig_inc_build(root, "inc-stale") in if built.status != 0 then "incremental stale build failed: " + built.errors else if fs_files_equal(root + "/build/inc-demo-before-stale.bin", root + "/build/inc-demo") == 1 then "semantic change did not change the artifact" else let after_count = ig_count_frags(root) in if after_count != before_count + 1 then "semantic change recompiled " + str(after_count - before_count) + " modules (expected exactly 1)" else if ig_names_kept(before_names, ig_frag_names(root)) != 1 then "unchanged module cache entries were lost" else ig_execute(root, root + "/build/inc-demo", "11\n", "inc-stale-run")
+
+## a construct that is not incrementally self-contained falls back to the whole-bundle build
+fn ig_fallback(root) = let typed = fs_write_sync(root + "/build/inc_typed.src", "type IncColor = enum IncRed | IncBlue\nfn pick() = 1\n") in let main = fs_write_sync(root + "/build/inc_typed_main.src", "use inc_typed\nprint pick()\n") in if typed != 1 or main != 1 then "cannot write fallback fixtures" else let built = ig_run(root, Cons("build", Cons("--incremental", Cons(root + "/build/inc_typed_main.src", Cons("-o", Cons(root + "/build/inc-typed-demo", Nil))))), "inc-fallback") in if built.status != 0 then "incremental fallback build failed: " + built.errors else if ig_contains(built.errors, "falling back") == 0 then "incremental fallback did not report itself on stderr" else ig_execute(root, root + "/build/inc-typed-demo", "1\n", "inc-fallback-run")
+
+## the pure-grant capability audit still applies to incremental builds (mirrors the bundler)
+fn ig_capability(root) = let dir = root + "/build/inc-pure" in let made = fs_mkdir(dir) in let manifest = fs_write_sync(dir + "/lume.toml", "[package]\nname = \"inc_pure\"\nversion = \"0.1.0\"\n[capabilities]\nallow = [\"pure\"]\n") in let lib = fs_write_sync(dir + "/inc_pure_io.src", "fn read_secret() = readall()\n") in let main = fs_write_sync(dir + "/main.src", "use inc_pure_io\nprint 0\n") in if made != 1 or manifest != 1 or lib != 1 or main != 1 then "cannot write incremental capability fixtures" else let rejected = ig_run(root, Cons("build", Cons("--incremental", Cons(dir + "/main.src", Cons("-o", Cons(dir + "/main", Nil))))), "inc-capability") in if rejected.status == 0 then "incremental build accepted I/O in a pure imported module" else if ig_contains(rejected.errors, "capability error") == 0 then "incremental capability diagnostic mismatch: " + rejected.errors else ""
+
+## a corrupted cache entry is detected at link time and healed by recompiling that module.
+## the cache is rebuilt from scratch first so exactly one fragment per current module exists.
+fn ig_tamper(root) = let cleaned = ig_clean_cache(root) in if cleaned != 1 then "cannot clean incremental cache" else let fresh = ig_inc_build(root, "inc-tamper-fresh") in if fresh.status != 0 then "incremental fresh build failed: " + fresh.errors else let names = fs_read_dir(ig_frag_dir(root)) in let target = ig_find_frag(names, "inc_leaf") in if target == "" then "no leaf fragment to tamper with" else let path = ig_frag_dir(root) + "/" + target in let original = fs_read_file(path) in let tampered = ig_flip_has_sys(original) in if tampered == "" then "cannot tamper fragment" else let broken = fs_write_sync(path, tampered) in if broken != 1 then "cannot write tampered fragment" else let built = ig_inc_build(root, "inc-tamper") in if built.status != 0 then "incremental build with a tampered cache entry failed: " + built.errors else let restored = fs_read_file(path) in if restored == tampered then "tampered cache entry was not healed" else if ig_contains(restored, "has_sys=0") == 0 then "healed fragment is malformed: " + slice(restored, 0, 200) else ig_execute(root, root + "/build/inc-demo", "11\n", "inc-tamper-run")
+
+fn ig_find_frag(entries, modname) = if count(entries) == 0 then "" else let e = ig_line_end(entries, 0) in let name = slice(entries, 0, e) in if ig_contains(name, modname + "__") == 1 then name else ig_find_frag(if e >= count(entries) then "" else slice(entries, e + 1, count(entries)), modname)
+
+fn ig_flip_has_sys(text) = let marker = "has_sys=0" in let start = ig_find_sub_pos(text, marker, 0) in if start >= count(text) then "" else slice(text, 0, start) + "has_sys=1" + slice(text, start + count(marker), count(text))
+
+fn ig_find_sub_pos(text, part, i) = if i + count(part) > count(text) then count(text) else if slice(text, i, i + count(part)) == part then i else ig_find_sub_pos(text, part, i + 1)
+
+fn ig_main(root) = let first = ig_determinism(root) in if first != "" then first else let second = ig_formatting_hit(root) in if second != "" then second else let third = ig_stale_invalidation(root) in if third != "" then third else let fourth = ig_fallback(root) in if fourth != "" then fourth else let fifth = ig_capability(root) in if fifth != "" then fifth else ig_tamper(root)
+
+fn ig_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else slice(input, 6, ig_line_end(input, 0))
+
+fn ig_dispatch(input) = let root = ig_root(input) in if root == "" then ctfail("native incremental gate requires @root\n") else let problem = ig_main(root) in if problem != "" then ctfail("native incremental gate failed: " + problem + "\n") else "native incremental build gate passed: cold/warm byte-identical artifacts, formatting-only cache hits, per-module invalidation with unchanged-module hits, whole-bundle fallback, pure-grant audit, and corrupt-cache healing"
+
+print ig_dispatch(readall())

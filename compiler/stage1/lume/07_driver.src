@@ -6,4 +6,269 @@ fn lumec_check(src) / pure = tcheck(ocheck(parseprogram(src)))
 fn lumec_expand(src) / pure = cfold(own gerase(own tcheck(ocheck(parseprogram(src)))))
 fn lumec_compile(src) / pure = lgen(lumec_expand(src))
 fn lumec_drive() / {CompilerIO} = lumec_compile(read_source())
-print with handler CompilerIO { fn read_source() -> str = readall() } in lumec_drive()
+
+## ============================================================================================================
+## Incremental compilation support (#310, docs/38): AST canonical hashing, the self-containment predicate, and
+## the `--ast-hash` / `--module` / `--link` lumec modes. The default driver below is unchanged.
+## ============================================================================================================
+
+## --- SHA-256 (FIPS 180-4) over a string, ported from lcert.src's official-vector-validated implementation ---
+fn lsh_ord_lo(c) = if c < "0" then (if c < "(" then (if c == " " then 32 else if c == "!" then 33 else if c == "\"" then 34 else if c == "#" then 35 else if c == "$" then 36 else if c == "%" then 37 else if c == "&" then 38 else 39) else (if c == "(" then 40 else if c == ")" then 41 else if c == "*" then 42 else if c == "+" then 43 else if c == "," then 44 else if c == "-" then 45 else if c == "." then 46 else 47)) else (if c < ":" then 48 + toint(c) else (if c == ":" then 58 else if c == ";" then 59 else if c == "<" then 60 else if c == "=" then 61 else if c == ">" then 62 else if c == "?" then 63 else 64))
+fn lsh_ord_up(c) = if c < "N" then (if c < "G" then (if c == "A" then 65 else if c == "B" then 66 else if c == "C" then 67 else if c == "D" then 68 else if c == "E" then 69 else 70) else (if c == "G" then 71 else if c == "H" then 72 else if c == "I" then 73 else if c == "J" then 74 else if c == "K" then 75 else if c == "L" then 76 else 77)) else (if c < "U" then (if c == "N" then 78 else if c == "O" then 79 else if c == "P" then 80 else if c == "Q" then 81 else if c == "R" then 82 else if c == "S" then 83 else 84) else (if c == "U" then 85 else if c == "V" then 86 else if c == "W" then 87 else if c == "X" then 88 else if c == "Y" then 89 else if c == "Z" then 90 else if c == "[" then 91 else if c == "\\" then 92 else if c == "]" then 93 else if c == "^" then 94 else if c == "_" then 95 else 96))
+fn lsh_ord_az(c) = if c < "n" then (if c < "g" then (if c == "a" then 97 else if c == "b" then 98 else if c == "c" then 99 else if c == "d" then 100 else if c == "e" then 101 else 102) else (if c == "g" then 103 else if c == "h" then 104 else if c == "i" then 105 else if c == "j" then 106 else if c == "k" then 107 else if c == "l" then 108 else 109)) else (if c < "u" then (if c == "n" then 110 else if c == "o" then 111 else if c == "p" then 112 else if c == "q" then 113 else if c == "r" then 114 else if c == "s" then 115 else 116) else (if c == "u" then 117 else if c == "v" then 118 else if c == "w" then 119 else if c == "x" then 120 else if c == "y" then 121 else if c == "z" then 122 else if c == "|" then 124 else if c == "~" then 126 else if c > "z" and c < "|" then 123 else 125))
+fn lsh_ord(c) = if c == "\n" then 10 else if c == "\r" then 13 else if c == "\t" then 9 else if c > "~" then ord(c) else if c < "A" then lsh_ord_lo(c) else if c < "a" then lsh_ord_up(c) else lsh_ord_az(c)
+fn lsh_u32(x) = let r = x % 4294967296 in if r < 0 then r + 4294967296 else r
+fn lsh_pow2(n) = if n <= 0 then 1 else if n >= 16 then 65536 * lsh_pow2(n - 16) else if n >= 8 then 256 * lsh_pow2(n - 8) else if n >= 4 then 16 * lsh_pow2(n - 4) else if n == 3 then 8 else if n == 2 then 4 else 2
+fn lsh_shr(x, n) = x / lsh_pow2(n)
+fn lsh_rotr(x, n) = let p = lsh_pow2(n) in (x / p) + ((x % p) * lsh_pow2(32 - n))
+fn lsh_xor3(x, y, z, nibs) = if nibs <= 0 then 0 else ((x % 16) + (y % 16) + (z % 16)) % 2 + 2 * (((x / 2) % 16 + (y / 2) % 16 + (z / 2) % 16) % 2) + 4 * (((x / 4) % 16 + (y / 4) % 16 + (z / 4) % 16) % 2) + 8 * (((x / 8) % 16 + (y / 8) % 16 + (z / 8) % 16) % 2) + 16 * lsh_xor3(x / 16, y / 16, z / 16, nibs - 1)
+fn lsh_big_sig0(a) = lsh_xor3(lsh_rotr(a, 2), lsh_rotr(a, 13), lsh_rotr(a, 22), 8)
+fn lsh_big_sig1(e) = lsh_xor3(lsh_rotr(e, 6), lsh_rotr(e, 11), lsh_rotr(e, 25), 8)
+fn lsh_sml_sig0(x) = lsh_xor3(lsh_rotr(x, 7), lsh_rotr(x, 18), lsh_shr(x, 3), 8)
+fn lsh_sml_sig1(x) = lsh_xor3(lsh_rotr(x, 17), lsh_rotr(x, 19), lsh_shr(x, 10), 8)
+fn lsh_ch(e, f, g, nibs) = if nibs <= 0 then 0 else (if (e % 2) == 1 then (f % 2) else (g % 2)) + 2 * (if ((e / 2) % 2) == 1 then ((f / 2) % 2) else ((g / 2) % 2)) + 4 * (if ((e / 4) % 2) == 1 then ((f / 4) % 2) else ((g / 4) % 2)) + 8 * (if ((e / 8) % 2) == 1 then ((f / 8) % 2) else ((g / 8) % 2)) + 16 * lsh_ch(e / 16, f / 16, g / 16, nibs - 1)
+fn lsh_maj(a, b, c, nibs) = if nibs <= 0 then 0 else (if (a % 2) + (b % 2) + (c % 2) >= 2 then 1 else 0) + 2 * (if ((a / 2) % 2) + ((b / 2) % 2) + ((c / 2) % 2) >= 2 then 1 else 0) + 4 * (if ((a / 4) % 2) + ((b / 4) % 2) + ((c / 4) % 2) >= 2 then 1 else 0) + 8 * (if ((a / 8) % 2) + ((b / 8) % 2) + ((c / 8) % 2) >= 2 then 1 else 0) + 16 * lsh_maj(a / 16, b / 16, c / 16, nibs - 1)
+fn lsh_k(t) = if t < 16 then (if t == 0 then 1116352408 else if t == 1 then 1899447441 else if t == 2 then 3049323471 else if t == 3 then 3921009573 else if t == 4 then 961987163 else if t == 5 then 1508970993 else if t == 6 then 2453635748 else if t == 7 then 2870763221 else if t == 8 then 3624381080 else if t == 9 then 310598401 else if t == 10 then 607225278 else if t == 11 then 1426881987 else if t == 12 then 1925078388 else if t == 13 then 2162078206 else if t == 14 then 2614888103 else 3248222580) else if t < 32 then (if t == 16 then 3835390401 else if t == 17 then 4022224774 else if t == 18 then 264347078 else if t == 19 then 604807628 else if t == 20 then 770255983 else if t == 21 then 1249150122 else if t == 22 then 1555081692 else if t == 23 then 1996064986 else if t == 24 then 2554220882 else if t == 25 then 2821834349 else if t == 26 then 2952996808 else if t == 27 then 3210313671 else if t == 28 then 3336571891 else if t == 29 then 3584528711 else if t == 30 then 113926993 else 338241895) else if t < 48 then (if t == 32 then 666307205 else if t == 33 then 773529912 else if t == 34 then 1294757372 else if t == 35 then 1396182291 else if t == 36 then 1695183700 else if t == 37 then 1986661051 else if t == 38 then 2177026350 else if t == 39 then 2456956037 else if t == 40 then 2730485921 else if t == 41 then 2820302411 else if t == 42 then 3259730800 else if t == 43 then 3345764771 else if t == 44 then 3516065817 else if t == 45 then 3600352804 else if t == 46 then 4094571909 else 275423344) else (if t == 48 then 430227734 else if t == 49 then 506948616 else if t == 50 then 659060556 else if t == 51 then 883997877 else if t == 52 then 958139571 else if t == 53 then 1322822218 else if t == 54 then 1537002063 else if t == 55 then 1747873779 else if t == 56 then 1955562222 else if t == 57 then 2024104815 else if t == 58 then 2227730452 else if t == 59 then 2361852424 else if t == 60 then 2428436474 else if t == 61 then 2756734187 else if t == 62 then 3204031479 else 3329325298)
+fn lsh_nth(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i <= 0 then h else lsh_nth(t, i - 1)
+fn lsh_msg_byte(s, len, total, idx) = if idx < len then lsh_ord(at(s, idx)) else if idx == len then 128 else if idx >= total - 8 then ((len * 8) / lsh_pow2(8 * (total - 1 - idx))) % 256 else 0
+fn lsh_msg_word(s, len, total, base) = lsh_msg_byte(s, len, total, base) * 16777216 + lsh_msg_byte(s, len, total, base + 1) * 65536 + lsh_msg_byte(s, len, total, base + 2) * 256 + lsh_msg_byte(s, len, total, base + 3)
+fn lsh_w_build(s, len, total, blk_off, t, w_rev) = if t >= 64 then w_rev else let wt = (if t < 16 then lsh_msg_word(s, len, total, blk_off + t * 4) else lsh_u32(lsh_nth(w_rev, 15) + lsh_sml_sig0(lsh_nth(w_rev, 14)) + lsh_nth(w_rev, 6) + lsh_sml_sig1(lsh_nth(w_rev, 1)))) in lsh_w_build(s, len, total, blk_off, t + 1, Cons(wt, w_rev))
+fn lsh_round(st, wt, kt) = let t1 = lsh_u32(st.h + lsh_big_sig1(st.e) + lsh_ch(st.e, st.f, st.g, 8) + kt + wt) in let t2 = lsh_u32(lsh_big_sig0(st.a) + lsh_maj(st.a, st.b, st.c, 8)) in {a: lsh_u32(t1 + t2), b: st.a, c: st.b, d: st.c, e: lsh_u32(st.d + t1), f: st.e, g: st.f, h: st.g}
+fn lsh_rounds(st, w_rev, t) = if t >= 64 then st else lsh_rounds(lsh_round(st, lsh_nth(w_rev, 63 - t), lsh_k(t)), w_rev, t + 1)
+fn lsh_blocks(s, len, total, blk_off, st) = if blk_off >= total then st else let w_rev = lsh_w_build(s, len, total, blk_off, 0, Nil) in let r = lsh_rounds(st, w_rev, 0) in lsh_blocks(s, len, total, blk_off + 64, {a: lsh_u32(st.a + r.a), b: lsh_u32(st.b + r.b), c: lsh_u32(st.c + r.c), d: lsh_u32(st.d + r.d), e: lsh_u32(st.e + r.e), f: lsh_u32(st.f + r.f), g: lsh_u32(st.g + r.g), h: lsh_u32(st.h + r.h)})
+fn lsh_hex1(n) = at("0123456789abcdef", n % 16)
+fn lsh_hex32(w) = lsh_hex1(w / 268435456) + lsh_hex1(w / 16777216) + lsh_hex1(w / 1048576) + lsh_hex1(w / 65536) + lsh_hex1(w / 4096) + lsh_hex1(w / 256) + lsh_hex1(w / 16) + lsh_hex1(w)
+fn lsh256(s) = let len = count(s) in let total = ((len + 9 + 63) / 64) * 64 in let fin = lsh_blocks(s, len, total, 0, {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in lsh_hex32(fin.a) + lsh_hex32(fin.b) + lsh_hex32(fin.c) + lsh_hex32(fin.d) + lsh_hex32(fin.e) + lsh_hex32(fin.f) + lsh_hex32(fin.g) + lsh_hex32(fin.h)
+
+## --- lossless canonical AST serialization (length-prefixed atoms; loud failure on any unhandled node) ---
+fn lcs_atom(s) = str(count(s)) + ":" + s
+fn lcs_strs(xs) = match xs
+    Nil        => "()"
+    Cons(h, t) => "(" + lcs_atom(h) + lcs_strs_rest(t) + ")"
+fn lcs_strs_rest(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => " " + lcs_atom(h) + lcs_strs_rest(t)
+fn lcs_tys(xs) = match xs
+    Nil        => "()"
+    Cons(h, t) => "(" + lcs_ty(h) + lcs_tys_rest(t) + ")"
+fn lcs_tys_rest(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => " " + lcs_ty(h) + lcs_tys_rest(t)
+fn lcs_es(xs) = match xs
+    Nil        => "()"
+    Cons(h, t) => "(" + lcs_e(h) + lcs_es_rest(t) + ")"
+fn lcs_es_rest(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => " " + lcs_e(h) + lcs_es_rest(t)
+fn lcs_pats(xs) = match xs
+    Nil        => "()"
+    Cons(h, t) => "(" + lcs_pat(h) + lcs_pats_rest(t) + ")"
+fn lcs_pats_rest(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => " " + lcs_pat(h) + lcs_pats_rest(t)
+fn lcs_recitems(xs) = match xs
+    Nil        => "()"
+    Cons(h, t) => "(item " + lcs_atom(h.key) + " " + lcs_e(h.val) + lcs_recitems_rest(t) + ")"
+fn lcs_recitems_rest(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => " (item " + lcs_atom(h.key) + " " + lcs_e(h.val) + ")" + lcs_recitems_rest(t)
+fn lcs_arms(xs) = match xs
+    Nil        => "()"
+    Cons(h, t) => "(arm " + lcs_pat(h.pat) + " " + lcs_e(h.body) + lcs_arms_rest(t) + ")"
+fn lcs_arms_rest(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => " (arm " + lcs_pat(h.pat) + " " + lcs_e(h.body) + ")" + lcs_arms_rest(t)
+fn lcs_ty(ty) = match ty
+    TyAny         => "(any)"
+    TyName(n)     => "(name " + lcs_atom(n) + ")"
+    TyList(t)     => "(list " + lcs_ty(t) + ")"
+    TyApply(k, t) => "(apply " + lcs_atom(k) + " " + lcs_ty(t) + ")"
+    TyDecimal(p, sc) => "(decimal " + str(p) + " " + str(sc) + ")"
+    TyTensor(t, ds) => "(tensor " + lcs_ty(t) + " " + lcs_strs(ds) + ")"
+    TyRefine(t, p) => "(refine " + lcs_ty(t) + " " + lcs_e(p) + ")"
+    _             => ctfail("lume: incremental error: unhashable type node (module is not incrementally compilable)\n")
+fn lcs_pat(p) = match p
+    PBind(nm)      => "(bind " + lcs_atom(nm) + ")"
+    PCons(tag, xs) => "(pcons " + lcs_atom(tag) + " " + lcs_pats(xs) + ")"
+    PInt(n)        => "(pint " + str(n) + ")"
+    PStr(v)        => "(pstr " + lcs_atom(v) + ")"
+    PWild          => "(wild)"
+    _              => ctfail("lume: incremental error: unhashable pattern node (module is not incrementally compilable)\n")
+fn lcs_e(e) = match e
+    Num(n)        => "(num " + str(n) + ")"
+    Str(v)        => "(str " + lcs_atom(v) + ")"
+    Var(nm)       => "(var " + lcs_atom(nm) + ")"
+    Bin(op, a, b) => "(bin " + lcs_atom(op) + " " + lcs_e(a) + " " + lcs_e(b) + ")"
+    If(c, t, e2)  => "(if " + lcs_e(c) + " " + lcs_e(t) + " " + lcs_e(e2) + ")"
+    LetIn(nm, v, b)  => "(let " + lcs_atom(nm) + " " + lcs_e(v) + " " + lcs_e(b) + ")"
+    VarIn(nm, v, b)  => "(varin " + lcs_atom(nm) + " " + lcs_e(v) + " " + lcs_e(b) + ")"
+    Call(nm, args)   => "(call " + lcs_atom(nm) + " " + lcs_es(args) + ")"
+    Rec(items)       => "(rec " + lcs_recitems(items) + ")"
+    RecT(tn, items)  => "(rect " + lcs_atom(tn) + " " + lcs_recitems(items) + ")"
+    Field(o, nm)     => "(field " + lcs_e(o) + " " + lcs_atom(nm) + ")"
+    Match(sc, arms)  => "(match " + lcs_e(sc) + " " + lcs_arms(arms) + ")"
+    LambdaE(ps, tys, rt, b) => "(lambda " + lcs_strs(ps) + " " + lcs_tys(tys) + " " + lcs_ty(rt) + " " + lcs_e(b) + ")"
+    OwnE(i)       => "(own " + lcs_e(i) + ")"
+    MutE(i)       => "(mut " + lcs_e(i) + ")"
+    DeferE(c, b)  => "(defer " + lcs_e(c) + " " + lcs_e(b) + ")"
+    ErrDeferE(c, b) => "(errdefer " + lcs_e(c) + " " + lcs_e(b) + ")"
+    WithAllocE(a, b) => "(withalloc " + lcs_e(a) + " " + lcs_e(b) + ")"
+    ScopeE(snm, b) => "(scope " + lcs_atom(snm) + " " + lcs_e(b) + ")"
+    SpawnE(i)     => "(spawn " + lcs_e(i) + ")"
+    AwaitE(i)     => "(await " + lcs_e(i) + ")"
+    ShardE(vnm, lo, hi, b) => "(shard " + lcs_atom(vnm) + " " + lcs_e(lo) + " " + lcs_e(hi) + " " + lcs_e(b) + ")"
+    _             => ctfail("lume: incremental error: unhashable expression node (module is not incrementally compilable)\n")
+fn lcs_stmt(s0) = match s0
+    Fn(nm, ps, b)     => "(fn " + lcs_atom(nm) + " " + lcs_strs(ps) + " " + lcs_e(b) + ")"
+    Print(v)          => "(print " + lcs_e(v) + ")"
+    ExprS(v)          => "(expr " + lcs_e(v) + ")"
+    FFILink(libs)     => "(ffilink " + lcs_strs(libs) + ")"
+    KCapGrant(items)  => "(capgrant " + lcs_strs(items) + ")"
+    WcetSig(fnm, w)   => "(wcet " + lcs_atom(fnm) + " " + str(w) + ")"
+    KEffSig(nm, effs) => "(keffsig " + lcs_atom(nm) + " " + lcs_strs(effs) + ")"
+    _                 => ctfail("lume: incremental error: unhashable statement node (module is not incrementally compilable)\n")
+fn lcs_progjoin(prog, acc) = match prog
+    Nil        => "(program " + acc + ")"
+    Cons(h, t) => lcs_progjoin(t, if acc == "" then lcs_stmt(h) else acc + " " + lcs_stmt(h))
+fn lumec_asthash_ser(src) = lsh256(lcs_progjoin(parseprogram(src), ""))
+fn lumec_asthash_prog(prog0) = lsh256(lcs_progjoin(prog0, ""))
+
+## --- self-containment predicate (#310): a module is incrementally compilable only when its compilation
+## cannot depend on another module's content. Returns "" when self-contained, else a hyphenated reason. ---
+fn lsc_reserved_defn(nm) = nm == "borrow" or nm == "borrow_mut" or nm == "move" or nm == "evolve_approve" or nm == "old" or nm == "verify" or nm == "law_check" or nm == "drop" or nm == "get" or nm == "set" or nm == "resolve" or nm == "version" or nm == "block_on" or nm == "shard" or nm == "vmap" or nm == "_call" or nm == "rc" or nm == "arc" or nm == "rc_new" or nm == "arc_new" or nm == "rc_clone" or nm == "arc_clone" or nm == "rc_drop" or nm == "arc_drop" or nm == "rc_get" or nm == "arc_get" or nm == "rc_strong_count" or nm == "arc_strong_count" or nm == "weak_downgrade" or nm == "weak_upgrade" or nm == "downgrade" or nm == "upgrade" or nm == "strong_count" or nm == "promise" or nm == "promise_new" or nm == "promise_resolve" or nm == "promise_await" or nm == "signal" or nm == "signal_new" or nm == "signal_get" or nm == "signal_set" or nm == "signal_version" or nm == "cap_page_map" or nm == "llm_complete" or nm == "prob_sample" or nm == "sample_dist" or nm == "observe_lik"
+fn lsc_reserved_call(nm) = nm == "grad" or nm == "value_and_grad" or nm == "jvp" or nm == "vjp" or nm == "jit" or nm == "vmap" or nm == "verify" or nm == "law_check" or nm == "evolve_approve"
+fn lsc_hole_name(nm) = nm == "_" or (count(nm) > 5 and slice(nm, 0, 5) == "_hole")
+fn lsc_join(a, b) = if a != "" then a else b
+fn lsc_e(e) = match e
+    Num(n)        => ""
+    Str(v)        => ""
+    Var(nm)       => if lsc_hole_name(nm) == 1 then "typed-holes" else ""
+    Bin(op, a, b) => lsc_join(lsc_e(a), lsc_e(b))
+    If(c, t, e2)  => lsc_join(lsc_e(c), lsc_join(lsc_e(t), lsc_e(e2)))
+    LetIn(nm, v, b)  => lsc_join(lsc_e(v), lsc_e(b))
+    VarIn(nm, v, b)  => lsc_join(lsc_e(v), lsc_e(b))
+    Call(nm, args)   => if lsc_reserved_call(nm) == 1 then "special-call" else lsc_es(args)
+    Rec(items)       => lsc_recitems(items)
+    RecT(tn, items)  => lsc_recitems(items)
+    Field(o, nm)     => lsc_e(o)
+    Match(sc, arms)  => lsc_join(lsc_e(sc), lsc_arms(arms))
+    LambdaE(ps, tys, rt, b) => lsc_e(b)
+    OwnE(i)       => lsc_e(i)
+    MutE(i)       => lsc_e(i)
+    DeferE(c, b)  => lsc_join(lsc_e(c), lsc_e(b))
+    ErrDeferE(c, b) => lsc_join(lsc_e(c), lsc_e(b))
+    WithAllocE(a, b) => lsc_join(lsc_e(a), lsc_e(b))
+    ScopeE(snm, b) => lsc_e(b)
+    SpawnE(i)     => lsc_e(i)
+    AwaitE(i)     => lsc_e(i)
+    ShardE(vnm, lo, hi, b) => "shard-expressions"
+    CT(i)         => "comptime"
+    Quote(i)      => "comptime"
+    Splice(i)     => "comptime"
+    WithHandlerE(en, hs, b) => "effect-handlers"
+    _             => "unknown-expression-node"
+fn lsc_es(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => lsc_join(lsc_e(h), lsc_es(t))
+fn lsc_recitems(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => lsc_join(lsc_e(h.val), lsc_recitems(t))
+fn lsc_arms(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => lsc_join(lsc_e(h.body), lsc_arms(t))
+fn lsc_stmt(s0) = match s0
+    Fn(nm, ps, b)     => if lsc_reserved_defn(nm) == 1 then "defines-special-name" else lsc_e(b)
+    Sig(nm, ps, tys, rt) => "type-signatures"
+    GSig(nm, plist, rt)  => "type-signatures"
+    OSig(nm, pubf, freef, pl, rty, fromp) => "annotated-functions"
+    KEffSig(nm, effs) => ""
+    VContractSig(nm, ps, reqs, enss) => "contracts"
+    TypeS(nm, k, items)    => "declared-types"
+    TypeRefineS(nm, b, p)  => "declared-types"
+    OType(nm, k)           => "declared-types"
+    VTypeInvariant(nm, items, inv) => "declared-types"
+    VLawDecl(nm, ps, b)    => "laws"
+    KEffectDecl(enm, ops)  => "effect-declarations"
+    TraitDecl(tnm, ops)    => "traits"
+    ImplDecl(tnm, tty, ops) => "traits"
+    KCapGrant(items) => ""
+    FFILink(libs)    => ""
+    WcetSig(fnm, w)  => ""
+    Print(v) => lsc_e(v)
+    ExprS(v) => lsc_e(v)
+    _        => "unknown-statement-node"
+fn lsc_prog(prog) = match prog
+    Nil        => ""
+    Cons(h, t) => lsc_join(lsc_stmt(h), lsc_prog(t))
+
+## --- line framing helpers for the incremental modes ---
+fn lil_line_end(s, i) = if i >= count(s) then i else if at(s, i) == "\n" then i else lil_line_end(s, i + 1)
+fn lil_lines(s, i) = if i >= count(s) then Nil else let e = lil_line_end(s, i) in Cons(slice(s, i, e), lil_lines(s, if e >= count(s) then e else e + 1))
+fn lil_ltrim(s, i) = if i >= count(s) then "" else if at(s, i) == " " or at(s, i) == "\t" or at(s, i) == "\r" then lil_ltrim(s, i + 1) else slice(s, i, count(s))
+fn lil_rtrim(s) = if count(s) == 0 then "" else if at(s, count(s) - 1) == " " or at(s, count(s) - 1) == "\t" or at(s, count(s) - 1) == "\r" or at(s, count(s) - 1) == "\n" then lil_rtrim(slice(s, 0, count(s) - 1)) else s
+fn lil_trim(s) = lil_rtrim(lil_ltrim(s, 0))
+fn lil_starts(s, p) = if count(s) < count(p) then 0 else slice(s, 0, count(p)) == p
+fn lil_field_after(line, prefix) = slice(line, count(prefix), count(line))
+fn lil_takeuntil(lines, marker) = match lines
+    Nil        => {lines: Nil, rest: Nil}
+    Cons(h, t) => if lil_trim(h) == marker then {lines: Nil, rest: t} else let r = lil_takeuntil(t, marker) in {lines: Cons(h, r.lines), rest: r.rest}
+fn lil_joinlines(lines) = match lines
+    Nil        => ""
+    Cons(h, t) => if isnil(t) == 1 then h else h + "\n" + lil_joinlines(t)
+fn lil_hashblock(lines, out) = match lines
+    Nil        => out
+    Cons(h, t) => let tr = lil_trim(h) in if lil_starts(tr, "@begin ") then let rest1 = lil_field_after(tr, "@begin ") in let sp = lil_findsp(rest1, 0) in let name = slice(rest1, 0, sp) in let role = lil_trim(slice(rest1, sp + 1, count(rest1))) in let body = lil_takeuntil(t, "@end-mod") in let text = lil_joinlines(body.lines) in let line = lil_hashline(name, role, text) in lil_hashblock(body.rest, if out == "" then line else out + "\n" + line) else lil_hashblock(t, out)
+fn lil_findsp(s, i) = if i >= count(s) then i else if at(s, i) == " " then i else lil_findsp(s, i + 1)
+fn lil_hashline(name, role, text) = let prog0 = parseprogram(text) in let reason0 = lsc_prog(prog0) in let reason = if reason0 == "" and role == "lib" and lil_has_mainstmts(prog0) == 1 then "library-top-level-statements" else reason0 in if reason != "" then name + " " + role + " 0 " + reason + " -" else name + " " + role + " 1 - " + lumec_asthash_prog(prog0)
+
+## --- module fragment emission ---
+fn lil_has_mainstmts(prog) = match prog
+    Nil        => 0
+    Cons(h, t) => if lil_is_mainstmt(h) == 1 then 1 else lil_has_mainstmts(t)
+fn lil_is_mainstmt(s0) = match s0
+    Print(v) => 1
+    ExprS(v) => 1
+    _        => 0
+fn lumec_module_fragment(name, role, toolchain, prog0) = let reason = lsc_prog(prog0) in if reason != "" then ctfail("lume: incremental fallback: module " + name + " uses " + reason + "\n") else if role == "lib" and lil_has_mainstmts(prog0) == 1 then ctfail("lume: incremental fallback: library module " + name + " has top-level statements\n") else let h = lumec_asthash_prog(prog0) in let expanded = cfold(own gerase(own tcheck(own ocheck(prog0)))) in let an = lgen_analysis(expanded, "m_" + name + "_") in if isnil(an.ffi_osigs) == 0 then ctfail("lume: incremental fallback: module " + name + " declares foreign signatures\n") else let flagsline = "is_krn=" + str(an.is_krn) + " isr=" + (if an.isr_fn == "" then "-" else an.isr_fn) + " has_sys=" + str(an.has_sys) + " has_tier=" + str(an.has_tier) + " has_mem=" + str(an.has_mem) + " uses_fs=" + str(an.uses_fs) in let fraghash = lsh256(flagsline + "\n" + an.ffi_links + an.dt_s + an.funcs_raw + an.mains_s) in "@lume-fragment 1\n@name " + name + "\n@role " + role + "\n@toolchain " + toolchain + "\n@asthash " + h + "\n@fraghash " + fraghash + "\n@flags " + flagsline + "\n@mframe " + str(an.mframe) + "\n@ffilinks\n" + an.ffi_links + "@end\n@dt\n" + an.dt_s + "@end\n@funcs\n" + an.funcs_raw + "@end\n@mains\n" + an.mains_s + "@end"
+
+## --- fragment parsing (position-based; the emitter above fixes the layout) and the link step ---
+fn lil_expect(line, marker) = if lil_trim(line) == marker then 0 else ctfail("lume: incremental error: malformed module fragment (expected " + marker + ")\n")
+fn lil_expect_starts(line, prefix) = if lil_starts(lil_trim(line), prefix) == 1 then 0 else ctfail("lume: incremental error: malformed module fragment (expected " + prefix + ")\n")
+fn lil_flagval(line, key) = let start = lil_findsub(line, key, 0) in if start >= count(line) then ctfail("lume: incremental error: malformed module fragment flags\n") else let vstart = start + count(key) in let vend = lil_findsp_from(line, vstart) in toint(slice(line, vstart, vend))
+fn lil_findsub(s, sub, i) = if i + count(sub) > count(s) then count(s) else if slice(s, i, i + count(sub)) == sub then i else lil_findsub(s, sub, i + 1)
+fn lil_findsp_from(s, i) = if i >= count(s) then i else if at(s, i) == " " then i else lil_findsp_from(s, i + 1)
+fn lil_flagstr(line, key) = let start = lil_findsub(line, key, 0) in if start >= count(line) then ctfail("lume: incremental error: malformed module fragment flags\n") else let vstart = start + count(key) in let vend = lil_findsp_from(line, vstart) in slice(line, vstart, vend)
+fn lil_hd(xs) = match xs
+    Cons(h, t) => h
+    Nil => ctfail("lume: incremental error: malformed module fragment\n")
+fn lil_tl(xs) = match xs
+    Cons(h, t) => t
+    Nil => ctfail("lume: incremental error: malformed module fragment\n")
+fn lil_frag_parse(lines) = let h0 = lil_hd(lines) in let t0 = lil_tl(lines) in let z0 = lil_expect(h0, "@lume-fragment 1") in let h1 = lil_hd(t0) in let t1 = lil_tl(t0) in let name = lil_field_after(lil_trim(h1), "@name ") in let h2 = lil_hd(t1) in let t2 = lil_tl(t1) in let role = lil_field_after(lil_trim(h2), "@role ") in let h3 = lil_hd(t2) in let t3 = lil_tl(t2) in let toolchain = lil_field_after(lil_trim(h3), "@toolchain ") in let h4 = lil_hd(t3) in let t4 = lil_tl(t3) in let asthash = lil_field_after(lil_trim(h4), "@asthash ") in let h4b = lil_hd(t4) in let t4b = lil_tl(t4) in let fraghash = lil_field_after(lil_trim(h4b), "@fraghash ") in let h5 = lil_hd(t4b) in let t5 = lil_tl(t4b) in let flags = lil_trim(h5) in let is_krn = lil_flagval(flags, "is_krn=") in let isr = lil_flagstr(flags, "isr=") in let has_sys = lil_flagval(flags, "has_sys=") in let has_tier = lil_flagval(flags, "has_tier=") in let has_mem = lil_flagval(flags, "has_mem=") in let uses_fs = lil_flagval(flags, "uses_fs=") in let h6 = lil_hd(t5) in let t6 = lil_tl(t5) in let mframe = toint(lil_field_after(lil_trim(h6), "@mframe ")) in let h7 = lil_hd(t6) in let t7 = lil_tl(t6) in let z7 = lil_expect(h7, "@ffilinks") in let blk1 = lil_takeuntil(t7, "@end") in let h8 = lil_hd(blk1.rest) in let t8 = lil_tl(blk1.rest) in let z8 = lil_expect(h8, "@dt") in let blk2 = lil_takeuntil(t8, "@end") in let h9 = lil_hd(blk2.rest) in let t9 = lil_tl(blk2.rest) in let z9 = lil_expect(h9, "@funcs") in let blk3 = lil_takeuntil(t9, "@end") in let h10 = lil_hd(blk3.rest) in let t10 = lil_tl(blk3.rest) in let z10 = lil_expect(h10, "@mains") in let blk4 = lil_takeuntil(t10, "@end") in {name: name, role: role, toolchain: toolchain, asthash: asthash, fraghash: fraghash, is_krn: is_krn, isr: isr, has_sys: has_sys, has_tier: has_tier, has_mem: has_mem, uses_fs: uses_fs, mframe: mframe, ffi_links: lil_joinlines_end(blk1.lines), dt: lil_joinlines_end(blk2.lines), funcs: lil_joinlines_end(blk3.lines), mains: lil_joinlines_end(blk4.lines)}
+fn lil_joinlines_end(lines) = match lines
+    Nil        => ""
+    Cons(h, t) => if isnil(t) == 1 then h + "\n" else h + "\n" + lil_joinlines_end(t)
+
+## --- link-mode input parsing: `@lume-link 1`, `@target <t>`, then per module `@mod <name> <hash>`,
+## the verbatim fragment lines, and `@stop`; terminated by `@end`. ---
+fn lil_link_parse(lines, target, mods) = match lines
+    Nil        => {target: target, mods: mods}
+    Cons(h, t) => let tr = lil_trim(h) in if lil_starts(tr, "@target ") then lil_link_parse(t, lil_field_after(tr, "@target "), mods) else if lil_starts(tr, "@mod ") then let rest1 = lil_field_after(tr, "@mod ") in let sp = lil_findsp(rest1, 0) in let name = slice(rest1, 0, sp) in let hash = lil_trim(slice(rest1, sp + 1, count(rest1))) in let body = lil_takeuntil(t, "@stop") in lil_link_parse(body.rest, target, Cons({name: name, hash: hash, lines: body.lines}, mods)) else if tr == "@end" then {target: target, mods: mods} else lil_link_parse(t, target, mods)
+fn lil_link_verify(mod, frag) = if frag.name != mod.name or frag.asthash != mod.hash then ctfail("lume: incremental error: stale or mismatched cache entry for module " + mod.name + "\n") else let flagsline = "is_krn=" + str(frag.is_krn) + " isr=" + frag.isr + " has_sys=" + str(frag.has_sys) + " has_tier=" + str(frag.has_tier) + " has_mem=" + str(frag.has_mem) + " uses_fs=" + str(frag.uses_fs) in if lsh256(flagsline + "\n" + frag.ffi_links + frag.dt + frag.funcs + frag.mains) != frag.fraghash then ctfail("lume: incremental error: corrupt cache entry for module " + mod.name + "\n") else 0
+fn lil_rev_acc(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lil_rev_acc(t, Cons(h, acc))
+fn lil_rev(xs) = lil_rev_acc(xs, Nil)
+fn lil_link_identity() = {is_krn: 0, isr_fn: "", has_sys: 0, has_tier: 0, has_mem: 0, uses_fs: 0, ffi_links: "", ffi_osigs: Nil, dt_s: "", funcs_raw: "", mains_s: "", mframe: 0}
+fn lil_link_analysis(mods) = match mods
+    Nil        => lil_link_identity()
+    Cons(h, t) => let frag = lil_frag_parse(h.lines) in let z = lil_link_verify(h, frag) in let rest = lil_link_analysis(t) in {is_krn: (if frag.is_krn == 1 or rest.is_krn == 1 then 1 else 0), isr_fn: (if frag.isr != "-" then frag.isr else rest.isr_fn), has_sys: (if frag.has_sys == 1 or rest.has_sys == 1 then 1 else 0), has_tier: (if frag.has_tier == 1 or rest.has_tier == 1 then 1 else 0), has_mem: (if frag.has_mem == 1 or rest.has_mem == 1 then 1 else 0), uses_fs: (if frag.uses_fs == 1 or rest.uses_fs == 1 then 1 else 0), ffi_links: frag.ffi_links + rest.ffi_links, ffi_osigs: Nil, dt_s: frag.dt + rest.dt_s, funcs_raw: frag.funcs + rest.funcs_raw, mains_s: (if frag.role == "entry" then frag.mains else rest.mains_s), mframe: (if frag.role == "entry" then frag.mframe else rest.mframe)}
+
+## --- mode entry points (dispatched from lumec_main) ---
+fn lumec_mode_asthash() = let input = read_source() in lil_hashblock(lil_lines(input, 0), "")
+fn lumec_mode_module(name, role, toolchain) = lumec_module_fragment(name, role, toolchain, parseprogram(read_source()))
+fn lumec_mode_link() = let input = read_source() in let parsed = lil_link_parse(lil_lines(input, 0), "", Nil) in if isnil(parsed.mods) == 1 then ctfail("lume: incremental error: link request has no modules\n") else lgen_emit(lil_link_analysis(lil_rev(parsed.mods)))
+fn lumec_main() = if os_arg_count() >= 2 and os_arg_at(1) == "--ast-hash" then lumec_mode_asthash() else if os_arg_count() >= 5 and os_arg_at(1) == "--module" then lumec_mode_module(os_arg_at(2), os_arg_at(3), os_arg_at(4)) else if os_arg_count() >= 2 and os_arg_at(1) == "--link" then lumec_mode_link() else lumec_compile(read_source())
+print with handler CompilerIO { fn read_source() -> str = readall() } in lumec_main()
