@@ -11,7 +11,7 @@ $(BIN): $(SRC) lume0.h
 
 test: test-legacy
 
-test-legacy: $(BIN)
+test-legacy: clean $(BIN)
 	./tests/run.sh
 
 native-test:
