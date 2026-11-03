@@ -572,6 +572,8 @@ cp -R "$FROM_LOCAL/compiler/stage1/." "$PREFIX/compiler/stage1/"
 [ -f "$FROM_LOCAL/evolve/maintainers.pub" ] && cp "$FROM_LOCAL/evolve/maintainers.pub" "$PREFIX/evolve/maintainers.pub" || true
 [ -f "$FROM_LOCAL/scripts/amalgamate.src" ] && cp "$FROM_LOCAL/scripts/amalgamate.src" "$PREFIX/scripts/amalgamate.src" || true
 [ -f "$FROM_LOCAL/scripts/install.src" ] && cp "$FROM_LOCAL/scripts/install.src" "$PREFIX/scripts/install.src" || true
+[ -f "$FROM_LOCAL/scripts/lume_legacy.sh" ] && cp "$FROM_LOCAL/scripts/lume_legacy.sh" "$PREFIX/scripts/lume_legacy.sh" || true
+[ -f "$FROM_LOCAL/scripts/lume_make.src" ] && cp "$FROM_LOCAL/scripts/lume_make.src" "$PREFIX/scripts/lume_make.src" || true
 [ -f "$FROM_LOCAL/docs/install.src" ] && cp "$FROM_LOCAL/docs/install.src" "$PREFIX/docs/install.src" || true
 SRC_BIN="${FROM_DIR:-$FROM_LOCAL/build/bin}"
 for _bn in lc lumec lumec0 lumec1 lumec2 lumec3 lasm lasm0 lasm1 lasm2 lasm3 lcli lcli0 lcli1 lcli2 lcli3 lmod lcaas lcert levolve ldoc ltest lfmt lprotect ltarget lregistry lregistry_cid lmesh los lume0 lume0.exe lume-target-check lume-target-trap lume-target-check.exe lume-target-trap.exe; do
