@@ -1357,7 +1357,7 @@ EOF
     mkdir -p ../../build/bin
     cp -f "$ntmp"/l* ../../build/bin/ 2>/dev/null || true
     LUME_BIN_DIR="$ntmp" ../../lume build ../../scripts/llm_gen_eval.src -o "$ntmp/llm_gen_eval" >/dev/null 2>&1 && printf '@root %s\n@mode summary\n' "$(CDPATH= cd -- ../.. && pwd)" | "$ntmp/llm_gen_eval" >"$ntmp/llm_gen_eval.json" 2>/dev/null || true
-    rm -rf ../../build/llm-gen-eval ../../build/bin
+    rm -rf ../../build/llm-gen-eval
     if grep -q '"mode":"hashes"' "$ntmp/sub_hashes.json" && grep -Eq '"ast_hash":"sha256:[0-9a-f]{64}"' "$ntmp/sub_hashes.json" && grep -q '"proof_status":"proven"' "$ntmp/sub_hashes.json" && grep -q '"mode":"grammar"' "$ntmp/sub_grammar.json" && grep -q '"format":"lume-constrained-grammar-v1"' "$ntmp/sub_grammar.json" && grep -q '"mode":"project"' "$ntmp/sub_project.json" && grep -q '"roundtrip_ast_equal":true' "$ntmp/sub_project.json" && grep -q '"code":"V0001"' "$ntmp/lsp_session.out" && grep -q '"diagnostics":\[\],"proofs":\[{"name":"step_up","kind":"contract","status":"proven"' "$ntmp/lsp_session.out" && grep -q 'Proof status: `proven`' "$ntmp/lsp_session.out" && grep -q "Content-Length:" "$ntmp/lsp_framed.out" && grep -q '"command":"stepBack","body":{"step":2,"replay":true}' "$ntmp/dap_session.out" && grep -q '"traceHistory":"1,2,3,2"' "$ntmp/dap_session.out" && grep -q '"command":"evaluate","body":{"result":"42"' "$ntmp/dap_session.out" && grep -q '"event":"terminated"' "$ntmp/dap_session.out" && grep -q "\[1\] defined" "$ntmp/repl_interactive.out" && grep -q "^42$" "$ntmp/repl_interactive.out" && grep -q "^error:" "$ntmp/repl_interactive.out" && grep -q "^17$" "$ntmp/repl_interactive.out" && grep -q '"msg_type":"kernel_info_reply"' "$ntmp/repl_kernel.out" && grep -q '"msg_type":"execute_reply","execution_count":2' "$ntmp/repl_kernel.out" && grep -q '"text/plain":"42"' "$ntmp/repl_kernel.out" && grep -q '"msg_type":"execute_reply","execution_count":3' "$ntmp/repl_kernel.out" && grep -q '"mime":"application/vnd.lume.table+json"' "$ntmp/repl_kernel.out" && grep -q '"msg_type":"shutdown_reply"' "$ntmp/repl_kernel.out" && grep -q '"gate":"llm-gen-eval"' "$ntmp/llm_gen_eval.json" && grep -q '"pass_at_1":3,"pass_at_2":4' "$ntmp/llm_gen_eval.json" && grep -q '"compiles_alone_rejected":true' "$ntmp/llm_gen_eval.json"; then ok "tooling, live stdio servers & LLM eval (#209, #210, #211, #230): live lume lsp/dap stdio servers, interactive lume repl & Jupyter kernel, and LLM-gen eval gate"; else bad "tooling, live stdio servers & LLM eval (#209, #210, #211, #230)"; cat "$ntmp/lsp_session.out" "$ntmp/lsp_framed.out" "$ntmp/dap_session.out" "$ntmp/repl_interactive.out" "$ntmp/repl_kernel.out" "$ntmp/llm_gen_eval.json" 2>/dev/null; fi
 
     # 6. Phase 3 Track S (#193) + K7: Real OS Multi-Process Parallelism (`sys_fork` + `sys_pipe` + `sys_wait4`) & Hardware Atomics (`lock xaddq`, spinlocks):
@@ -1578,7 +1578,7 @@ EOF
         cp -f "$ntmp"/l* ../../build/bin/ 2>/dev/null || true
         LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/registry/gate.src -o "$ntmp/registry_gate" >"$ntmp/registry_gate_build.out" 2>"$ntmp/registry_gate_build.err" || true
         if printf '@root %s\n' "$(CDPATH= cd -- ../.. && pwd)" | "$ntmp/registry_gate" >"$ntmp/verified_registry.out" 2>&1; then ok "verified registry (#337): real artifact CIDs, independent proofs, native tests, discovery, freshness, target checks & adversarial rejection"; else bad "verified registry (#337): publication/resolution adversarial checks"; cat "$ntmp/registry_gate_build.err" "$ntmp/verified_registry.out"; fi
-        rm -rf ../../build/registry-gate ../../build/bin
+        rm -rf ../../build/registry-gate
         if LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/lregistry_cid_lib.src >"$ntmp/registry_cid_test.out" 2>"$ntmp/registry_cid_test.err" && grep -q "3 passed, 0 failed" "$ntmp/registry_cid_test.out"; then ok "verified registry (#337): Lume-native CID oracle recomputation, canonical capabilities, and schema rejection"; else bad "verified registry (#337): Lume-native CID oracle"; cat "$ntmp/registry_cid_test.err" "$ntmp/registry_cid_test.out"; fi
     else
         ok "verified registry (#337): native execution covered by the dedicated Ubuntu gate; not applicable in this host/configuration"
@@ -1629,7 +1629,7 @@ EOF
     mkdir -p ../../build/bin
     cp -f "$ntmp"/l* ../../build/bin/ 2>/dev/null || true
     _g1_lb=$(printf '@root %s\n@mode leaderboard\n' "$(CDPATH= cd -- ../.. && pwd)" | "$ntmp/llm_gen_eval" 2>/dev/null || true)
-    rm -rf ../../build/llm-gen-eval ../../build/bin
+    rm -rf ../../build/llm-gen-eval
     "$ntmp/lc" <../../examples/interop/sidecar/payment_core.src >"$ntmp/sc.s" 2>/dev/null
     "$ntmp/lasm" <"$ntmp/sc.s" >"$ntmp/sc.elf" 2>/dev/null; chmod +x "$ntmp/sc.elf"
     _g2_out=$("$ntmp/sc.elf" 2>/dev/null | tr '\n' ',' || true)

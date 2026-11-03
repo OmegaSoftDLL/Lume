@@ -576,7 +576,7 @@ cp -R "$FROM_LOCAL/compiler/stage1/." "$PREFIX/compiler/stage1/"
 [ -f "$FROM_LOCAL/scripts/lume_make.src" ] && cp "$FROM_LOCAL/scripts/lume_make.src" "$PREFIX/scripts/lume_make.src" || true
 [ -f "$FROM_LOCAL/docs/install.src" ] && cp "$FROM_LOCAL/docs/install.src" "$PREFIX/docs/install.src" || true
 SRC_BIN="${FROM_DIR:-$FROM_LOCAL/build/bin}"
-for _bn in lc lumec lumec0 lumec1 lumec2 lumec3 lasm lasm0 lasm1 lasm2 lasm3 lcli lcli0 lcli1 lcli2 lcli3 lmod lcaas lcert levolve ldoc ltest lfmt lprotect ltarget lregistry lregistry_cid lmesh los lume0 lume0.exe lume-target-check lume-target-trap lume-target-check.exe lume-target-trap.exe; do
+for _bn in lc lumec lumec0 lumec1 lumec2 lumec3 lasm lasm0 lasm1 lasm2 lasm3 lcli lcli0 lcli1 lcli2 lcli3 lmod lcaas lcert levolve ldoc ltest lfmt lprotect ltarget lregistry lregistry_cid lsha lmesh los lume0 lume0.exe lume-target-check lume-target-trap lume-target-check.exe lume-target-trap.exe; do
     if [ -f "$SRC_BIN/$_bn" ]; then
         cp "$SRC_BIN/$_bn" "$PREFIX/build/bin/$_bn" && chmod +x "$PREFIX/build/bin/$_bn"
         cp "$SRC_BIN/$_bn" "$PREFIX/bin/$_bn" && chmod +x "$PREFIX/bin/$_bn"
@@ -599,7 +599,7 @@ MANIFEST="$PREFIX/MANIFEST.sha256"
 : > "$MANIFEST"
 printf '%s  lume\n' "$(sha256_of "$PREFIX/lume")" >> "$MANIFEST"
 printf '%s  bin/lume\n' "$(sha256_of "$PREFIX/bin/lume")" >> "$MANIFEST"
-for _bn in lc lumec lumec0 lumec1 lumec2 lumec3 lasm lasm0 lasm1 lasm2 lasm3 lcli lcli0 lcli1 lcli2 lcli3 lmod lcaas lcert levolve ldoc ltest lfmt lprotect ltarget lregistry lregistry_cid lmesh los lume0 lume0.exe lume-target-check lume-target-trap lume-target-check.exe lume-target-trap.exe; do
+for _bn in lc lumec lumec0 lumec1 lumec2 lumec3 lasm lasm0 lasm1 lasm2 lasm3 lcli lcli0 lcli1 lcli2 lcli3 lmod lcaas lcert levolve ldoc ltest lfmt lprotect ltarget lregistry lregistry_cid lsha lmesh los lume0 lume0.exe lume-target-check lume-target-trap lume-target-check.exe lume-target-trap.exe; do
     if [ -f "$PREFIX/build/bin/$_bn" ]; then
         printf '%s  build/bin/%s\n' "$(sha256_of "$PREFIX/build/bin/$_bn")" "$_bn" >> "$MANIFEST"
     fi
