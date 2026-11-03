@@ -1,0 +1,31 @@
+## compiler/stage1/capsule.src -- Capability-Sealed Data Capsules (Issue #430)
+## Import with `use capsule` (or `use std.capsule`).
+##
+## A capsule binds an immutable payload to an explicit capability grant and
+## a FIPS 180-4 SHA-256 integrity digest over `(magic, name, cap_grant, payload)`.
+## Opening or mutating a capsule without the required capability grant or with
+## a tampered payload/digest fails closed with `[C0430]`.
+
+use fs_sha256_file
+
+fn capsule_sha256_text(data) = let len = count(data) in let total = ((len + 9 + 63) / 64) * 64 in let fin = fs_blocks(data, len, total, total / 64, 0, 1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225) in sha_hex32(fin.a) + sha_hex32(fin.b) + sha_hex32(fin.c) + sha_hex32(fin.d) + sha_hex32(fin.e) + sha_hex32(fin.f) + sha_hex32(fin.g) + sha_hex32(fin.h)
+
+fn capsule_digest_for(name, cap_grant, payload) = capsule_sha256_text("LUME_CAPSULE_1:" + name + ":" + cap_grant + "\n" + payload)
+
+fn capsule_seal(name, cap_grant, payload) = {magic: "LUME_CAPSULE_1", name: name, cap_grant: cap_grant, payload: payload, digest: capsule_digest_for(name, cap_grant, payload)}
+
+fn capsule_verify(cap) = if cap.magic != "LUME_CAPSULE_1" then 0 else if cap.name == "" or cap.cap_grant == "" then 0 else if cap.digest == capsule_digest_for(cap.name, cap.cap_grant, cap.payload) then 1 else 0
+
+fn capsule_grant_allows(granted, required) = if granted == required then 1 else if granted == "io" and required == "pure" then 1 else 0
+
+fn capsule_open(cap, required_cap) = if capsule_verify(cap) == 0 then {ok: 0, value: "", error: "[C0430] capsule integrity check failed for '" + cap.name + "'"} else if capsule_grant_allows(cap.cap_grant, required_cap) == 0 then {ok: 0, value: "", error: "[C0430] capsule '" + cap.name + "' requires capability '" + cap.cap_grant + "', caller holds '" + required_cap + "'"} else {ok: 1, value: cap.payload, error: ""}
+
+fn capsule_rebind(cap, required_cap, new_payload) = let opened = capsule_open(cap, required_cap) in if opened.ok == 0 then {ok: 0, cap: cap, error: opened.error} else {ok: 1, cap: capsule_seal(cap.name, cap.cap_grant, new_payload), error: ""}
+
+fn cap_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else cap_line_end(s, i + 1)
+
+fn cap_serialize(cap) = "@capsule LUME_CAPSULE_1\n@name " + cap.name + "\n@grant " + cap.cap_grant + "\n@digest " + cap.digest + "\n@payload\n" + cap.payload
+
+fn cap_starts(s, p) = if count(s) < count(p) then 0 else slice(s, 0, count(p)) == p
+
+fn cap_deserialize(text) = let e1 = cap_line_end(text, 0) in let l1 = slice(text, 0, e1) in let e2 = cap_line_end(text, e1 + 1) in let l2 = slice(text, e1 + 1, e2) in let e3 = cap_line_end(text, e2 + 1) in let l3 = slice(text, e2 + 1, e3) in let e4 = cap_line_end(text, e3 + 1) in let l4 = slice(text, e3 + 1, e4) in let e5 = cap_line_end(text, e4 + 1) in let l5 = slice(text, e4 + 1, e5) in if l1 != "@capsule LUME_CAPSULE_1" or cap_starts(l2, "@name ") == 0 or cap_starts(l3, "@grant ") == 0 or cap_starts(l4, "@digest ") == 0 or l5 != "@payload" then {magic: "INVALID", name: "", cap_grant: "", payload: "", digest: ""} else {magic: "LUME_CAPSULE_1", name: slice(l2, 6, count(l2)), cap_grant: slice(l3, 7, count(l3)), digest: slice(l4, 8, count(l4)), payload: slice(text, e5 + 1, count(text))}

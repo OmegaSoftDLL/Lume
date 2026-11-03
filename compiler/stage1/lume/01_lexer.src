@@ -20,12 +20,17 @@ fn decscan(s, i, coefficient, scale, past, digits) requires i >= 0 requires scal
 fn decnode(s, negative) = let d = decscan(s, 0, 0, 0, 0, 0) in Rec(Cons({key: "coefficient", val: Num(if negative then 0 - d.coefficient else d.coefficient)}, Cons({key: "scale", val: Num(d.scale)}, Cons({key: "precision", val: Num(0)}, Nil))))
 fn strend(s, n, i) = if i >= n then i else if at(s, i) == "\"" then i + 1 else if at(s, i) == "\\" then strend(s, n, i + 2) else strend(s, n, i + 1)
 ## String literal value: drop the delimiting quotes and decode \n \t \r (any other \x -> x, so \\ and \" decode to themselves), like the seed lexer.
+fn lex_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lex_rev(t, Cons(h, acc))
 fn unesc1(c) = if c == "n" then "\n" else if c == "t" then "\t" else if c == "r" then "\r" else c
-fn unescl(s, i, n) = if i >= n then Nil else if at(s, i) == "\\" and i + 1 < n then Cons(unesc1(at(s, i + 1)), unescl(s, i + 2, n)) else Cons(at(s, i), unescl(s, i + 1, n))
+fn unescl_acc(s, i, n, acc) = if i >= n then lex_rev(acc, Nil) else if at(s, i) == "\\" and i + 1 < n then unescl_acc(s, i + 2, n, Cons(unesc1(at(s, i + 1)), acc)) else unescl_acc(s, i + 1, n, Cons(at(s, i), acc))
+fn unescl(s, i, n) = unescl_acc(s, i, n, Nil)
 fn strval(t) = let tn = count(t) in let b = slicen(t, tn, 1, tn - 1) in joinall(own unescl(b, 0, tn - 2))
 fn two(s, n, i) = slicen(s, n, i, if i + 2 > n then n else i + 2)
 fn istwo(t) = t == "==" or t == "!=" or t == "<=" or t == ">="
-fn lexn(s, n, i) = if i >= n then Nil else let c = at(s, i) in if c == " " or c == "\t" or c == "\n" or c == "\r" then lexn(s, n, i + 1) else if c == "#" then lexn(s, n, lineend(s, n, i)) else if isdigit(c) then let jn = numendn(s, n, i) in let j = decimalendn(s, n, i) in Cons({kind: if j > jn then "decimal" else "int", text: slicen(s, n, i, j)}, lexn(s, n, j)) else if isalpha(c) then let j = idend(s, n, i) in Cons({kind: "id", text: slicen(s, n, i, j)}, lexn(s, n, j)) else if c == "\"" then let j = strend(s, n, i + 1) in Cons({kind: "str", text: slicen(s, n, i, j)}, lexn(s, n, j)) else if (c == "=" or c == "!" or c == "<" or c == ">") and istwo(two(s, n, i)) then Cons({kind: "op", text: two(s, n, i)}, lexn(s, n, i + 2)) else Cons({kind: "op", text: c}, lexn(s, n, i + 1))
+fn lexn_acc(s, n, i, acc) = if i >= n then lex_rev(acc, Nil) else let c = at(s, i) in if c == " " or c == "\t" or c == "\n" or c == "\r" then lexn_acc(s, n, i + 1, acc) else if c == "#" then lexn_acc(s, n, lineend(s, n, i), acc) else if isdigit(c) then let jn = numendn(s, n, i) in let jd = decimalendn(s, n, i) in lexn_acc(s, n, jd, Cons({kind: if jd > jn then "decimal" else "int", text: slicen(s, n, i, jd)}, acc)) else if isalpha(c) then let ji = idend(s, n, i) in lexn_acc(s, n, ji, Cons({kind: "id", text: slicen(s, n, i, ji)}, acc)) else if c == "\"" then let js = strend(s, n, i + 1) in lexn_acc(s, n, js, Cons({kind: "str", text: slicen(s, n, i, js)}, acc)) else if (c == "=" or c == "!" or c == "<" or c == ">") and istwo(two(s, n, i)) then lexn_acc(s, n, i + 2, Cons({kind: "op", text: two(s, n, i)}, acc)) else lexn_acc(s, n, i + 1, Cons({kind: "op", text: c}, acc))
+fn lexn(s, n, i) = lexn_acc(s, n, i, Nil)
 fn lex(s, i) = lexn(s, count(s), i)
 
 ## --- token-list helpers (avoid nested match in expressions) ---

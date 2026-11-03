@@ -109,10 +109,14 @@ fn tg_numend(s, i, n) = if i >= n then i else if tg_isdigit(at(s, i)) then tg_nu
 fn tg_idend(s, i, n) = if i >= n then i else if tg_isalnum(at(s, i)) then tg_idend(s, i + 1, n) else i
 fn tg_lineend(s, i, n) = if i >= n then i else if at(s, i) == "\n" then i + 1 else tg_lineend(s, i + 1, n)
 fn tg_escch(c) = if c == "n" then "\n" else if c == "t" then "\t" else if c == "\"" then "\"" else if c == "\\" then "\\" else c
-fn tg_strend(s, i, n, acc) = if i >= n then {txt: acc, next: n} else let c = at(s, i) in if c == "\"" then {txt: acc, next: i + 1} else if c == "\\" then tg_strend(s, i + 2, n, acc + tg_escch(at(s, i + 1))) else tg_strend(s, i + 1, n, acc + c)
-fn tg_istwo(s, i, n) = if i + 1 >= n then 0 else let p = slice(s, i, i + 2) in if p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "->" then 1 else 0
+fn tg_unesc_acc(s, i, n, acc) = if i >= n then acc else let c = at(s, i) in if c == "\\" and i + 1 < n then tg_unesc_acc(s, i + 2, n, acc + tg_escch(at(s, i + 1))) else tg_unesc_acc(s, i + 1, n, acc + c)
+fn tg_strscan(s, i, n, has_esc) = if i >= n then {end: n, next: n, esc: has_esc} else let c = at(s, i) in if c == "\"" then {end: i, next: i + 1, esc: has_esc} else if c == "\\" then tg_strscan(s, i + 2, n, 1) else tg_strscan(s, i + 1, n, has_esc)
+fn tg_strend(s, i, n, acc) = let r = tg_strscan(s, i, n, 0) in let raw = slicen(s, n, i, r.end) in {txt: (if r.esc == 0 then acc + raw else tg_unesc_acc(raw, 0, count(raw), acc)), next: r.next}
+fn tg_istwo(s, i, n) = if i + 1 >= n then 0 else let p = slicen(s, n, i, i + 2) in if p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "->" then 1 else 0
 
-fn tg_lex(s, i, n) = if i >= n then Nil else let c = at(s, i) in if tg_isws(c) then tg_lex(s, i + 1, n) else if c == "#" then tg_lex(s, tg_lineend(s, i + 1, n), n) else if tg_isdigit(c) then (let j = tg_numend(s, i, n) in Cons({k: "NM", t: slice(s, i, j)}, tg_lex(s, j, n))) else if tg_isalpha(c) then (let j = tg_idend(s, i, n) in Cons({k: "ID", t: slice(s, i, j)}, tg_lex(s, j, n))) else if c == "\"" then (let r = tg_strend(s, i + 1, n, "") in Cons({k: "ST", t: r.txt}, tg_lex(s, r.next, n))) else if tg_istwo(s, i, n) == 1 then Cons({k: "SY", t: slice(s, i, i + 2)}, tg_lex(s, i + 2, n)) else Cons({k: "SY", t: c}, tg_lex(s, i + 1, n))
+fn tg_lex_acc(s, i, n, acc) = if i >= n then tg_rev(acc) else let c = at(s, i) in if tg_isws(c) then tg_lex_acc(s, i + 1, n, acc) else if c == "#" then tg_lex_acc(s, tg_lineend(s, i + 1, n), n, acc) else if tg_isdigit(c) then (let j = tg_numend(s, i, n) in tg_lex_acc(s, j, n, Cons({k: "NM", t: slicen(s, n, i, j)}, acc))) else if tg_isalpha(c) then (let j = tg_idend(s, i, n) in tg_lex_acc(s, j, n, Cons({k: "ID", t: slicen(s, n, i, j)}, acc))) else if c == "\"" then (let r = tg_strend(s, i + 1, n, "") in tg_lex_acc(s, r.next, n, Cons({k: "ST", t: r.txt}, acc))) else if tg_istwo(s, i, n) == 1 then tg_lex_acc(s, i + 2, n, Cons({k: "SY", t: slicen(s, n, i, i + 2)}, acc)) else tg_lex_acc(s, i + 1, n, Cons({k: "SY", t: c}, acc))
+
+fn tg_lex(s, i, n) = tg_lex_acc(s, i, n, Nil)
 
 fn tg_hd(ts) = match ts
     Nil        => {k: "EOF", t: ""}
@@ -164,11 +168,13 @@ fn tg_contracts(ts, reqs, enss) = let kw = tg_hdt(ts) in if kw == "requires" the
 fn tg_skip_attr(ts) = let t1 = tg_drop(ts) in if tg_hdt(t1) == "(" then tg_skip_paren(tg_drop(t1)) else t1
 fn tg_skip_paren(ts) = if tg_hdt(ts) == ")" or tg_hdk(ts) == "EOF" then tg_drop(ts) else tg_skip_paren(tg_drop(ts))
 
-fn tg_parse_prog(ts) = if tg_hdk(ts) == "EOF" then {fns: Nil, prints: Nil} else let t = tg_hdt(ts) in if t == "@" then tg_parse_prog(tg_skip_attr(tg_drop(ts))) else if t == "pub" or t == "kernel" or t == "total" then tg_parse_prog(tg_drop(ts)) else if t == "fn" then tg_parse_fn(tg_drop(ts)) else if t == "print" then tg_parse_print(tg_drop(ts)) else tg_parse_prog(tg_drop(ts))
+fn tg_parse_prog_acc(ts, fns_acc, prints_acc) = if tg_hdk(ts) == "EOF" then {fns: tg_rev(fns_acc), prints: tg_rev(prints_acc)} else let t = tg_hdt(ts) in if t == "@" then tg_parse_prog_acc(tg_skip_attr(tg_drop(ts)), fns_acc, prints_acc) else if t == "pub" or t == "kernel" or t == "total" then tg_parse_prog_acc(tg_drop(ts), fns_acc, prints_acc) else if t == "fn" then tg_parse_fn_acc(tg_drop(ts), fns_acc, prints_acc) else if t == "print" then tg_parse_print_acc(tg_drop(ts), fns_acc, prints_acc) else tg_parse_prog_acc(tg_drop(ts), fns_acc, prints_acc)
 
-fn tg_parse_fn(ts) = let nm = tg_hdt(ts) in let pr = tg_params(tg_dropkw(tg_drop(ts), "(")) in let t1 = tg_skip_eff(tg_skip_ty(pr.rest)) in let cr = tg_contracts(t1, Nil, Nil) in let br = tg_expr(tg_dropkw(cr.rest, "=")) in let rest = tg_parse_prog(br.rest) in {fns: Cons({nm: nm, ps: pr.ps, reqs: cr.reqs, enss: cr.enss, body: br.e}, rest.fns), prints: rest.prints}
+fn tg_parse_fn_acc(ts, fns_acc, prints_acc) = let nm = tg_hdt(ts) in let pr = tg_params(tg_dropkw(tg_drop(ts), "(")) in let t1 = tg_skip_eff(tg_skip_ty(pr.rest)) in let cr = tg_contracts(t1, Nil, Nil) in let br = tg_expr(tg_dropkw(cr.rest, "=")) in tg_parse_prog_acc(br.rest, Cons({nm: nm, ps: pr.ps, reqs: cr.reqs, enss: cr.enss, body: br.e}, fns_acc), prints_acc)
 
-fn tg_parse_print(ts) = let r = tg_expr(ts) in let rest = tg_parse_prog(r.rest) in {fns: rest.fns, prints: Cons(r.e, rest.prints)}
+fn tg_parse_print_acc(ts, fns_acc, prints_acc) = let r = tg_expr(ts) in tg_parse_prog_acc(r.rest, fns_acc, Cons(r.e, prints_acc))
+
+fn tg_parse_prog(ts) = tg_parse_prog_acc(ts, Nil, Nil)
 
 ## --- QF_LIA Linearity & Sound Guard Elision Check ---
 
