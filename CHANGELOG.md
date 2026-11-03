@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Incremental module compile cache (#310, wave 1):** Opt-in `lume build --incremental` compiles
+  self-contained bundle modules separately (new `lumec --ast-hash` / `--module` / `--link` modes),
+  caches content-addressed module fragments under `build/cache/` keyed by parsed-AST SHA-256 +
+  module name + lumec binary hash, and reuses unchanged modules on rebuild (formatting-only edits
+  hit; a semantic change recompiles exactly the changed module). Not self-contained bundles fall
+  back to the whole-bundle build; fragments are SHA-256 integrity-checked at link with one
+  self-healing recompile; byte-identical output within the mode; `tests/cli/incremental_gate.src`.
+  See `docs/38-incremental-compilation.md`.
+
 ### Changed
 - Replaced the self-hosted assembler's linear symbol scan with 256 hash buckets while preserving
   byte-identical ELF output, colliding-label behavior, native execution, and the assembler fixpoint.
