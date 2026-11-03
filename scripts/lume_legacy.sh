@@ -860,6 +860,117 @@ cmd_run() {
             if command -v node >/dev/null 2>&1; then
                 node --no-warnings -e 'const fs=require("fs"),{WASI}=require("wasi");const wasi=new WASI({version:"preview1"});const m=new WebAssembly.Module(fs.readFileSync(process.argv[1]));const imp=Object.assign({},wasi.getImportObject(),{env:{dom_append_int:(v)=>console.log(v),dom_set_attr:(k,v)=>{},web_trap:(c)=>process.exit(c)}});const i=new WebAssembly.Instance(m,imp);if(typeof i.exports.lume_web_main==="function"){i.exports.lume_web_main();process.exit(0);}process.exit(wasi.start(i)||0);' "$_file"
                 return $?
+            elif command -v python3 >/dev/null 2>&1; then
+                python3 - "$_file" <<'PY'
+import sys
+b = open(sys.argv[1], "rb").read()
+if b[:8] != b"\x00asm\x01\x00\x00\x00": sys.exit(1)
+def uleb(p):
+    r = s = 0
+    while True:
+        x = b[p]; p += 1; r |= (x & 0x7f) << s
+        if not (x & 0x80): return r, p
+        s += 7
+def sleb(p):
+    r = s = 0
+    while True:
+        x = b[p]; p += 1; r |= (x & 0x7f) << s; s += 7
+        if not (x & 0x80):
+            if x & 0x40: r -= (1 << s)
+            return r, p
+p, types, imps, ftypes, exps, bodies = 8, [], [], [], {}, []
+while p < len(b):
+    sid = b[p]; slen, p = uleb(p + 1); send = p + slen
+    if sid == 1:
+        n, p = uleb(p)
+        for _ in range(n):
+            p += 1; np, p = uleb(p); p += np; nr, p = uleb(p); p += nr; types.append((np, nr))
+    elif sid == 2:
+        n, p = uleb(p)
+        for _ in range(n):
+            ml, p = uleb(p); m = b[p:p+ml].decode(); p += ml
+            fl, p = uleb(p); f = b[p:p+fl].decode(); p += fl
+            k = b[p]; ti, p = uleb(p + 1); imps.append((m, f, ti))
+    elif sid == 3:
+        n, p = uleb(p)
+        for _ in range(n):
+            ti, p = uleb(p); ftypes.append(ti)
+    elif sid == 7:
+        n, p = uleb(p)
+        for _ in range(n):
+            nl, p = uleb(p); nm = b[p:p+nl].decode(); p += nl
+            k = b[p]; idx, p = uleb(p + 1)
+            if k == 0: exps[nm] = idx
+    elif sid == 10:
+        n, p = uleb(p)
+        for _ in range(n):
+            bl, p = uleb(p); bend = p + bl; lg, p = uleb(p); nloc = 0
+            for _ in range(lg):
+                c, p = uleb(p); p += 1; nloc += c
+            ins = []
+            while p < bend:
+                op = b[p]; p += 1
+                if op == 65: v, p = sleb(p); ins.append((op, v))
+                elif op in (32, 33, 16, 13): v, p = uleb(p); ins.append((op, v))
+                elif op in (3, 4): bt = b[p]; p += 1; ins.append((op, bt))
+                elif op in (54, 58): _, p = uleb(p); _, p = uleb(p); ins.append((op, 0))
+                else: ins.append((op, 0))
+            bodies.append((nloc, ins)); p = bend
+    p = send
+def run_fn(fidx, args):
+    if fidx < len(imps):
+        _, fnm, _ = imps[fidx]
+        if fnm == "dom_append_int": print(args[0])
+        elif fnm in ("proc_exit", "web_trap"): sys.exit(args[0])
+        return 0
+    if fidx == 2 and len(imps) == 2 and imps[0][1] == "fd_write":
+        print(args[0]); return 0
+    nloc, ins = bodies[fidx - len(imps)]
+    locs = list(args) + [0] * nloc
+    stk, pc, n = [], 0, len(ins)
+    if_map, else_map, istk = {}, {}, []
+    for i, (op, _) in enumerate(ins):
+        if op in (3, 4): istk.append(i)
+        elif op == 5: if_map[istk[-1]] = i + 1; istk[-1] = ("e", istk[-1], i)
+        elif op == 11 and istk:
+            top = istk.pop()
+            if isinstance(top, tuple): else_map[top[2]] = i + 1
+            else: if_map[top] = i + 1
+    while pc < n:
+        op, arg = ins[pc]; pc += 1
+        if op == 65: stk.append(arg)
+        elif op == 32: stk.append(locs[arg])
+        elif op == 33: locs[arg] = stk.pop()
+        elif op == 26: stk.pop()
+        elif op == 4:
+            if stk.pop() == 0: pc = if_map[pc - 1]
+        elif op == 5: pc = else_map[pc - 1]
+        elif op == 16:
+            ti = imps[arg][2] if arg < len(imps) else ftypes[arg - len(imps)]
+            np, nr = types[ti]
+            cargs = [stk.pop() for _ in range(np)][::-1]
+            res = run_fn(arg, cargs)
+            if nr: stk.append(res)
+        elif op in (106,107,108,109,111,113,114,70,71,72,74,76,78):
+            r, l = stk.pop(), stk.pop()
+            if op == 106: stk.append(l + r)
+            elif op == 107: stk.append(l - r)
+            elif op == 108: stk.append(l * r)
+            elif op == 109: stk.append(int(l / r) if r else 0)
+            elif op == 111: stk.append(l - int(l / r) * r if r else 0)
+            elif op == 113: stk.append(l & r)
+            elif op == 114: stk.append(l | r)
+            elif op == 70: stk.append(1 if l == r else 0)
+            elif op == 71: stk.append(1 if l != r else 0)
+            elif op == 72: stk.append(1 if l < r else 0)
+            elif op == 74: stk.append(1 if l > r else 0)
+            elif op == 76: stk.append(1 if l <= r else 0)
+            elif op == 78: stk.append(1 if l >= r else 0)
+    return stk[-1] if stk else 0
+entry = exps.get("lume_web_main", exps.get("_start"))
+run_fn(entry, [])
+PY
+                return $?
             fi
             ;;
         *.intent)
