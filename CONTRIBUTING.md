@@ -41,8 +41,14 @@ bug reports, and design proposals are welcome.
    ```
 
    The seed build is strict: `-Werror -Wconversion -Wpedantic -Wshadow`.
-   Changes affecting the self-hosted toolchain must also preserve `make bootstrap`
-   (`stage 2 == stage 3`) and `make zero-c`.
+   Changes affecting the self-hosted toolchain must also preserve the staged self-build
+   (`stage 2 == stage 3`) and the Zero-C gate:
+
+   ```sh
+   ./lume --version              # first call bootstraps the native toolchain on a fresh clone
+   build/bin/lume_make bootstrap # stage 2 == stage 3, bit-identical
+   build/bin/lume_make zero-c    # no cc/as/ld in the loop
+   ```
 5. Review the complete diff, remove generated artifacts, and verify that unrelated files are unchanged.
 6. Open a pull request and complete the PR template. All required CI checks must pass before merge.
 

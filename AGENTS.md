@@ -13,7 +13,7 @@ is the short version.
 - **Do not use Rust** to implement Lume.
 - **Edit the self-hosted compiler in `compiler/stage1/lume/NN_*.src`, never the generated
   `compiler/stage1/lumec.src`.** `lumec.src` is a build artifact (git-ignored), amalgamated
-  from the modules in numeric order by `scripts/amalgamate.src` (`make amalgamate`); the
+  from the modules in numeric order by `scripts/amalgamate.src` (`build/bin/lume_make amalgamate`); the
   concatenation is byte-identical to the historical monolith. See `docs/13-module-split-plan.md`.
 - **Do not fake completion.** The triple self-build (Phase 1 exit) **is done** — `stage 2 == stage 3` holds in CI (the `bootstrap` gate) — so never regress it, and never claim a milestone that is not real. Phases 1–5, the compiler-self-hosting inflection, verification/trust-layer hardening (`#183`, `#184`, `#185`, `#186`), P33 software protection (`#188`), `lume evolve` fixpoint/proof/benchmark gates + RFC 8032 Ed25519 asymmetric maintainer signature verification (`evolve/maintainers.pub`) + end-to-end `lume evolve apply` (`0003_decimal_clamp`, `#194`, `#203`), the self-hosted `lcli.src` CLI control plane (`#204`), the frozen C seed (`bootstrap/lume0/SEED_FREEZE.sha256`, `#205`), and `docs/19` §2 oracle `witness`/`repair`/`impact` queries (`#195`) are complete; remaining build-out items are tracked in `#191`–`#193`, `#196`–`#198`, `#206`. State features at their real level: shipped, a model/stub, or planned.
 - **C is the disposable seed only.** The end state is no C and no external `as`/`ld` (Lume
@@ -47,7 +47,7 @@ detail: `docs/28-delivery-rules.md`.
    case (forged signature rejected, false contract refuted *with the counterexample*, out-of-fragment
    → `runtime_checked`), asm asserts ("no residual `call …`"), behaviour-identical-across-levels,
    official vectors, and runs-on-QEMU. **A green CI does not prove soundness.**
-5. **GOLDEN RULE preserved:** `stage 2 == stage 3`, `make zero-c`, and the oracle byte-equivalence
+5. **GOLDEN RULE preserved:** `stage 2 == stage 3`, `build/bin/lume_make zero-c`, and the oracle byte-equivalence
    stay green; new features/backends are in Lume, not new C in the frozen seed (`#205`); every fix
    ships a regression test. If a shortcut is unavoidable, it ships labelled `model`/`planned` — never
    as a guarantee. Zero theater inside Lume.
@@ -77,6 +77,13 @@ detail: `docs/28-delivery-rules.md`.
 - One change → one branch → one green PR → merge. Keep CI green (`gh`).
 - Before committing: `make -C bootstrap/lume0 test` and `make -C bootstrap/lume0 asan`, both
   `0 failed`. The build is strict: `-Werror -Wconversion -Wpedantic -Wshadow`.
+- There is no top-level Makefile. `./lume` is a thin bootstrap shim: the first call on a
+  fresh clone builds the frozen seed and the native toolchain, then execs
+  `build/bin/lume_driver` (which implements every command natively). Build orchestration is
+  `build/bin/lume_make amalgamate|bootstrap|zero-c|seed|test|asan|clean`; `make` remains only
+  inside the frozen seed (`bootstrap/lume0/Makefile`, frozen). On non-native hosts (macOS,
+  Windows, qemu) the shim routes to `scripts/lume_legacy.sh` — keep that file read-only
+  unless you are migrating a piece of it to Lume.
 - Commit messages end with `Co-Authored-By: ...` (see the session's attribution note); PR
   bodies end with the Claude Code generation line. Use `git commit -F <file>` to avoid shell
   quoting issues.
@@ -84,12 +91,15 @@ detail: `docs/28-delivery-rules.md`.
 ## Build & run
 
 ```
-make -C bootstrap/lume0
-bootstrap/lume0/lume0 check  <file.lume>     # lex + parse + name/type/duplicate checks
-bootstrap/lume0/lume0 run    <file.lume>     # interpret
-bootstrap/lume0/lume0 emit-asm <f.lume> f.s  # x86-64 (integer subset)
-bootstrap/lume0/lume0 asm    f.s  out        # assemble+link to native ELF, NO as/ld/cc
-bootstrap/lume0/lume0 describe --json        # self-description for a model
+make -C bootstrap/lume0                          # build the frozen seed (the only make left)
+./lume --version                                 # bootstrap the native toolchain (fresh clone)
+build/bin/lume_make bootstrap                    # staged self-host, asserts stage 2 == stage 3
+build/bin/lume_driver build <file.src> -o <out>  # compile Lume-Core to a native ELF
+bootstrap/lume0/lume0 check  <file.lume>         # lex + parse + name/type/duplicate checks
+bootstrap/lume0/lume0 run    <file.lume>         # interpret
+bootstrap/lume0/lume0 emit-asm <f.lume> f.s      # x86-64 (integer subset)
+bootstrap/lume0/lume0 asm    f.s  out            # assemble+link to native ELF, NO as/ld/cc
+bootstrap/lume0/lume0 describe --json            # self-description for a model
 ```
 
 See `docs/PROJECT_STATE.md` §9 for the pitfalls (reserved keywords, `{{`/`}}` escaping, flat
