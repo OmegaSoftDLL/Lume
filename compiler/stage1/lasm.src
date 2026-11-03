@@ -158,6 +158,12 @@ fn symaddr_h(syms, nm, hash) = match syms
     Cons(b, t) => if b.bucket == hash then let v = symaddr_bucket(b.entries, nm) in if v >= 0 then v else symaddr_h(t, nm, hash) else symaddr_h(t, nm, hash)
 
 fn symaddr(syms, nm) = symaddr_h(syms, nm, symhash(nm))
+## strict-mode predicate: is `nm` defined anywhere in the symbol table? (symaddr alone cannot
+## distinguish "defined at address 0" from "missing"; real addresses are always >= 32768.)
+fn symlocated_h(syms, nm, hash) = match syms
+    Nil        => 0
+    Cons(b, t) => if b.bucket == hash then (if symaddr_bucket(b.entries, nm) >= 0 then 1 else symlocated_h(t, nm, hash)) else symlocated_h(t, nm, hash)
+fn symlocated(syms, nm) = symlocated_h(syms, nm, symhash(nm))
 
 ## --- encoder: ModRM/SIB/REX + displacement (port of emit_rm) ---
 fn scalebits(x) = if x == 2 then 1 else if x == 4 then 2 else if x == 8 then 3 else 0
@@ -240,6 +246,18 @@ fn emitcode2b(encs, syms, tbase) = match encs
     Cons(e, t) => app(if e.reloc == 1 then enc(e.ins, tbase + e.off + e.ln, syms) else e.bytes, emitcode2b(t, syms, tbase))
 fn emitcode2(encs, syms) = emitcode2b(encs, syms, 4194424)
 
+## --- strict mode (#428): fail closed on unresolved symbols instead of silently encoding
+## address 0. Every relocatable reference (jump/call/jcc target, %rip-relative operand) must
+## resolve against the final symbol table; the first missing symbol aborts with [L0001] naming
+## it, on stderr, with a non-zero exit (via ctfail), before a single ELF byte is flushed. ---
+fn chksym(syms, nm, ctx) = if nm == "" then 0 else if symlocated(syms, nm) == 1 then 0 else ctfail("lasm: link error [L0001]: undefined symbol '" + nm + "' (" + ctx + ")\n")
+fn chkinsref(r, syms) = if isjump(r.mn) then chksym(syms, r.tgt, r.mn + " target") else if r.a.rip == 1 then chksym(syms, r.a.sym, r.mn + " operand") else if r.b.rip == 1 then chksym(syms, r.b.sym, r.mn + " operand") else 0
+fn chkrefs(encs, syms, strict) = if strict == 0 then 0 else chkrefs1(encs, syms)
+fn chkrefs1(encs, syms) = match encs
+    Nil        => 0
+    Cons(e, t) => let z = if e.reloc == 1 then chkinsref(e.ins, syms) else 0 in chkrefs1(t, syms)
+fn chkentry(syms, strict) = if strict == 1 and symlocated(syms, "_start") == 0 then ctfail("lasm: link error [L0001]: undefined entry symbol '_start'\n") else 0
+
 ## --- ELF64 container (VBASE 0x400000, 120-byte headers, one RWX PT_LOAD; or 232-byte dynamic ELF64 with PT_INTERP/PT_DYNAMIC/DT_NEEDED/PLT/GOT) ---
 fn identbytes() = Cons(127, Cons(69, Cons(76, Cons(70, Cons(2, Cons(1, Cons(1, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Nil))))))))))))))))
 fn ehdr(entry) = app(identbytes(), app(b2(2), app(b2(62), app(b4(1), app(b8(entry), app(b8(64), app(b8(0), app(b4(0), app(b2(64), app(b2(56), app(b2(1), app(b2(0), app(b2(0), b2(0))))))))))))))
@@ -280,7 +298,7 @@ fn ehdr_dyn(entry) = app(identbytes(), app(b2(2), app(b2(62), app(b4(1), app(b8(
 fn phdr_interp(ioff) = app(b4(3), app(b4(4), app(b8(ioff), app(b8(4194304 + ioff), app(b8(4194304 + ioff), app(b8(28), app(b8(28), b8(1))))))))
 fn phdr_dynamic(doff, dsz) = app(b4(2), app(b4(6), app(b8(doff), app(b8(4194304 + doff), app(b8(4194304 + doff), app(b8(dsz), app(b8(dsz), b8(8))))))))
 fn interp_bytes() = app(str_nul_bytes("/lib64/ld-linux-x86-64.so.2", 0, 27), zeros(4))
-fn asmdyn(lay, needs, exts) = let nexts = len(exts) in let cs0 = lay.co in let cs = cs0 + nexts * 6 in let rs0 = len(lay.robytes) in let pad0 = (8 - ((232 + cs + rs0) % 8)) % 8 in let interp_off = 232 + cs + rs0 + pad0 in let hash_off = interp_off + 32 in let hwords = 3 + nexts in let hash_sz = (hwords + (hwords % 2)) * 4 in let dynsym_off = hash_off + hash_sz in let dynsym_sz = (1 + nexts) * 24 in let dynstr_off = dynsym_off + dynsym_sz in let pn = dynstr_pack(needs, 1) in let pe = dynstr_pack(exts, pn.end) in let dpad = (8 - (pe.end % 8)) % 8 in let dynstr_sz = pe.end + dpad in let got_off = dynstr_off + dynstr_sz in let got_sz = (3 + nexts) * 8 in let rela_off = got_off + got_sz in let rela_sz = nexts * 24 in let dyn_off = rela_off + rela_sz in let dyn_sz = (len(needs) + 10) * 16 in let filesz = dyn_off + dyn_sz in let memsz = filesz + lay.boff in let tls_all = app(mk_plt_tls(exts, cs0, 0), lay.tls) in let syms = app(mapsym(tls_all, 4194536), app(mapsym(lay.rls, 4194536 + cs), mapsym(lay.bls, 4194304 + filesz))) in let code = app(emitcode2b(lay.encs, syms, 4194536), mk_plt_code(nexts, 0, cs0, got_off)) in let hash_bs = app(b4(1), app(b4(1 + nexts), zeros((1 + nexts + (hwords % 2)) * 4))) in let dynsym_bs = app(zeros(24), mk_dynsym(pe.offs)) in let dynstr_bs = app(Cons(0, app(pn.bytes, pe.bytes)), zeros(dpad)) in let got_bs = zeros(got_sz) in let rela_bs = mk_rela(nexts, 0, got_off) in let dyn_bs = app(mk_dt_needed(pn.offs), app(b8(4), app(b8(4194304 + hash_off), app(b8(5), app(b8(4194304 + dynstr_off), app(b8(6), app(b8(4194304 + dynsym_off), app(b8(10), app(b8(pe.end), app(b8(11), app(b8(24), app(b8(3), app(b8(4194304 + got_off), app(b8(7), app(b8(4194304 + rela_off), app(b8(8), app(b8(rela_sz), app(b8(9), app(b8(24), app(b8(0), b8(0))))))))))))))))))))) in let hdrs = app(ehdr_dyn(symaddr(syms, "_start")), app(phdr_interp(interp_off), app(phdr(filesz, memsz), phdr_dynamic(dyn_off, dyn_sz)))) in let tail = app(lay.robytes, app(zeros(pad0), app(interp_bytes(), app(hash_bs, app(dynsym_bs, app(dynstr_bs, app(got_bs, app(rela_bs, dyn_bs)))))))) in emitall(app(hdrs, app(code, tail)))
+fn asmdyn(lay, needs, exts, strict) = let nexts = len(exts) in let cs0 = lay.co in let cs = cs0 + nexts * 6 in let rs0 = len(lay.robytes) in let pad0 = (8 - ((232 + cs + rs0) % 8)) % 8 in let interp_off = 232 + cs + rs0 + pad0 in let hash_off = interp_off + 32 in let hwords = 3 + nexts in let hash_sz = (hwords + (hwords % 2)) * 4 in let dynsym_off = hash_off + hash_sz in let dynsym_sz = (1 + nexts) * 24 in let dynstr_off = dynsym_off + dynsym_sz in let pn = dynstr_pack(needs, 1) in let pe = dynstr_pack(exts, pn.end) in let dpad = (8 - (pe.end % 8)) % 8 in let dynstr_sz = pe.end + dpad in let got_off = dynstr_off + dynstr_sz in let got_sz = (3 + nexts) * 8 in let rela_off = got_off + got_sz in let rela_sz = nexts * 24 in let dyn_off = rela_off + rela_sz in let dyn_sz = (len(needs) + 10) * 16 in let filesz = dyn_off + dyn_sz in let memsz = filesz + lay.boff in let tls_all = app(mk_plt_tls(exts, cs0, 0), lay.tls) in let syms = app(mapsym(tls_all, 4194536), app(mapsym(lay.rls, 4194536 + cs), mapsym(lay.bls, 4194304 + filesz))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = app(emitcode2b(lay.encs, syms, 4194536), mk_plt_code(nexts, 0, cs0, got_off)) in let hash_bs = app(b4(1), app(b4(1 + nexts), zeros((1 + nexts + (hwords % 2)) * 4))) in let dynsym_bs = app(zeros(24), mk_dynsym(pe.offs)) in let dynstr_bs = app(Cons(0, app(pn.bytes, pe.bytes)), zeros(dpad)) in let got_bs = zeros(got_sz) in let rela_bs = mk_rela(nexts, 0, got_off) in let dyn_bs = app(mk_dt_needed(pn.offs), app(b8(4), app(b8(4194304 + hash_off), app(b8(5), app(b8(4194304 + dynstr_off), app(b8(6), app(b8(4194304 + dynsym_off), app(b8(10), app(b8(pe.end), app(b8(11), app(b8(24), app(b8(3), app(b8(4194304 + got_off), app(b8(7), app(b8(4194304 + rela_off), app(b8(8), app(b8(rela_sz), app(b8(9), app(b8(24), app(b8(0), b8(0))))))))))))))))))))) in let hdrs = app(ehdr_dyn(symaddr(syms, "_start")), app(phdr_interp(interp_off), app(phdr(filesz, memsz), phdr_dynamic(dyn_off, dyn_sz)))) in let tail = app(lay.robytes, app(zeros(pad0), app(interp_bytes(), app(hash_bs, app(dynsym_bs, app(dynstr_bs, app(got_bs, app(rela_bs, dyn_bs)))))))) in emitall(app(hdrs, app(code, tail)))
 
 fn has_krn(items) = match items
     Nil        => 0
@@ -293,21 +311,27 @@ fn mbr_part2(entry) = app(Cons(102, Cons(184, Cons(16, Cons(0, Cons(142, Cons(21
 fn mbr_gdt() = app(zeros(8), app(Cons(255, Cons(255, Cons(0, Cons(0, Cons(0, Cons(154, Cons(175, Cons(0, Cons(255, Cons(255, Cons(0, Cons(0, Cons(0, Cons(146, Cons(207, Cons(0, Nil)))))))))))))))), Cons(23, Cons(0, Cons(192, Cons(124, Cons(0, Cons(0, Nil))))))))
 fn mbr_dap(nsects) = app(Cons(16, Cons(0, app(b2(nsects), Cons(0, Cons(128, Cons(0, Cons(0, Nil))))))), b8(1))
 fn mbr_sector(entry, nsects) = let p1 = mbr_part1() in let p2 = mbr_part2(entry) in let p3 = mbr_gdt() in let p4 = mbr_dap(nsects) in app(p1, app(zeros(128 - len(p1)), app(p2, app(zeros(64 - len(p2)), app(p3, app(zeros(48 - len(p3)), app(p4, app(zeros(270 - len(p4)), Cons(85, Cons(170, Nil))))))))))
-fn asmkernel(lay) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, lay.robytes) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 64 then 64 else nsects in let pad_sz = (64 * 512) - blen in emitall(app(mbr_sector(symaddr(syms, "_start"), nsects_clamped), app(body, zeros(if pad_sz > 0 then pad_sz else 512))))
+fn asmkernel(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, lay.robytes) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 64 then 64 else nsects in let pad_sz = (64 * 512) - blen in emitall(app(mbr_sector(symaddr(syms, "_start"), nsects_clamped), app(body, zeros(if pad_sz > 0 then pad_sz else 512))))
 
-## --- the assembler: read stdin, two passes, emit the ELF (or bootable kernel image) to stdout ---
+## --- the assembler: read input, two passes, emit the ELF (or bootable kernel image) to stdout.
+## Modes: `lasm [--strict|--lenient] [file.s]` (file arg => ELF to stdout; no arg => stdin/stdout).
+## The driver and the bootstrap shim invoke `--strict` so an unresolved call target is a named
+## compile error ([L0001]) instead of a silent jump to address 0 (#428); `--lenient` keeps the
+## historical address-0 resolution for inputs that intentionally rely on it. ---
 fn buildsyms(lay, cs, rs) = app(mapsym(lay.tls, 4194424), app(mapsym(lay.rls, 4194424 + cs), mapsym(lay.bls, 4194424 + cs + rs)))
-fn assemble(src) = let items = reslocals(parseitems(splitlines(src, 0), 0), Nil) in if has_krn(items) == 1 then asmkernel(layout(items, 0, 0, 0)) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(layout(items, 0, 0, 0)) else asmdyn(layout(items, 0, 0, 0), needs, exts)
-fn asm2(lay) = asm3(lay, lay.co, len(lay.robytes))
-fn asm3(lay, cs, rs) = asm4(lay, cs, rs, buildsyms(lay, cs, rs))
-fn asm4(lay, cs, rs, syms) = asm6(lay, syms, symaddr(syms, "_start"), 120 + cs + rs, 120 + cs + rs + lay.boff, emitcode2(lay.encs, syms))
+fn assemble_mode(src, strict) = let items = reslocals(parseitems(splitlines(src, 0), 0), Nil) in if has_krn(items) == 1 then asmkernel(layout(items, 0, 0, 0), strict) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(layout(items, 0, 0, 0), strict) else asmdyn(layout(items, 0, 0, 0), needs, exts, strict)
+fn assemble(src) = assemble_mode(src, 0)
+fn asm2(lay, strict) = asm3(lay, lay.co, len(lay.robytes), strict)
+fn asm3(lay, cs, rs, strict) = asm4(lay, cs, rs, buildsyms(lay, cs, rs), strict)
+fn asm4(lay, cs, rs, syms, strict) = let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in asm6(lay, syms, symaddr(syms, "_start"), 120 + cs + rs, 120 + cs + rs + lay.boff, emitcode2(lay.encs, syms))
 fn asm6(lay, syms, entry, filesz, memsz, code) = emitall(app(ehdr(entry), app(phdr(filesz, memsz), app(code, lay.robytes))))
+fn asmargs(i, strict, file) = if i >= os_arg_count() then {strict: strict, file: file} else if os_arg_at(i) == "--strict" then asmargs(i + 1, 1, file) else if os_arg_at(i) == "--lenient" then asmargs(i + 1, 0, file) else asmargs(i + 1, strict, os_arg_at(i))
 
-## Entry point: two top-level expression statements. `assemble` emits every ELF byte into the
+## Entry point: two top-level expression statements. `assemble_mode` emits every ELF byte into the
 ## buffer as a side effect; `flush` then writes the whole buffer to stdout in one syscall. There
 ## is no `print`, so stdout is the ELF byte-for-byte with no trailing newline -- byte-identical to
-## the `lume0 asm` oracle (the old `print emitelf(...)` form appended one `\n` past the filesz).
-## The native driver invokes lasm as `lasm <file.s>` (file arg, ELF to stdout); with no argument
-## lasm reads the assembly from stdin, which keeps the bootstrap shim and the POSIX wrapper working.
-assemble(if os_arg_count() >= 2 then fs_read_file(os_arg_at(1)) else readall())
+## the `lume0 asm` oracle. With no argument lasm reads the assembly from stdin, which keeps the
+## bootstrap shim and the POSIX wrapper working; flags are accepted in any position before/after
+## the optional file argument.
+let asm_cli = asmargs(1, 0, "") in assemble_mode(if asm_cli.file != "" then fs_read_file(asm_cli.file) else readall(), asm_cli.strict)
 flush()

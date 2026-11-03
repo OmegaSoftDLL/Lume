@@ -132,6 +132,20 @@ see the Phase 1–5 entries in §5 for the current state.
   `tests/harness/lasm_fixtures.src` generates the colliding-label, local-label, ELF hello, and
   movabs-boundary assembly fixtures in Lume; `tests/harness/lasm_gate.src` requires byte-identical
   ELF output with the `lume0 asm` oracle plus successful native execution and nearest-label behavior.
+- **Fail-closed toolchain soundness (#428):** `lasm --strict` (invoked by the native driver in
+  `lume_driver.src` and by the `lume`/`lume_legacy.sh` bootstrap shims; the default mode keeps the
+  historical address-0 resolution for compat) fails the build with `[L0001]` naming the first
+  unresolved jump/call/`%rip` symbol. The gradual checker now performs real name resolution
+  (`orscheck`, `compiler/stage1/lume/06b_phase3.src`): undefined variables (R0200-class, covering
+  unbound string-interpolation holes) and calls with no visible definition in the bundle are
+  compile errors before codegen, not runtime SIGSEGVs. The parser rejects duplicated/misplaced
+  branch keywords (`else else`, `else elif`, `else then`, `then then`) with `[P0002]`. The
+  driver's hardcoded 120 s build timeout defaults to 10 min for known-large inputs, is
+  configurable via `lume build --build-timeout-ms <n>` (an env var cannot work yet — the native
+  runtime execs children with an empty environment), and a killed-by-timeout reports
+  "killed by timeout after Ns". Negative regressions: `nt_negative_soundness`/`nt_lasm_strict`
+  in `bootstrap/lume0/tests/run_native.src`, `la_strict_undefined` in `tests/harness/lasm_gate.src`,
+  and a CI step in `.github/workflows/ci.yml`. `stage2 == stage3` stays byte-identical.
 - **Semantic `check`** (`resolve.c`): `R0200` undefined name, `T0001` literal type mismatch
   vs annotation, `D0001` duplicate parameter, `D0002` duplicate top-level function.
 - **P35 test coverage warning** (`compiler/stage1/lcaas.src`): `lume agent check` reports

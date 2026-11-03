@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Toolchain soundness: fail closed instead of silent wrong-code (#428).** Three classes of
+  "garbage in, crash later" now produce named compile-time errors: (1) `lasm --strict` (invoked by
+  the native driver and the bootstrap shims; default mode keeps byte-compatible address-0
+  resolution) fails the build with `[L0001]` naming the first unresolved jump/call/`%rip` symbol —
+  no more call-to-address-0 segfaults from a typo'd callee (#417, #420); (2) the `lumec` gradual
+  checker performs real name resolution for the first time (`orscheck` in `06b_phase3.src`):
+  an undefined variable — including a string-interpolation hole naming an unbound name (#423) — is
+  `[R0200]`, and a call with no visible definition in the bundle (user function, declared
+  signature, effect operation, trait operation, impl method, runtime builtin, or lowering
+  intrinsic) is `[R0200]`, both before any code is emitted; (3) the parser rejects duplicated or
+  misplaced branch keywords — `else else`, `else elif`, `else then`, `then then` — with `[P0002]`
+  instead of silently parsing the second keyword as a variable (the #417-merge `lume_driver`
+  port bug). The driver also stops killing slow compiles with an empty stderr: the hardcoded 120 s
+  build timeout defaults to 10 min for known-large inputs and is configurable with
+  `lume build --build-timeout-ms <n>`, and a timed-out child reports
+  "killed by timeout after Ns" naming the tool. Regression negatives live in
+  `bootstrap/lume0/tests/run_native.src` (`nt_negative_soundness`, `nt_lasm_strict`),
+  `tests/harness/lasm_gate.src` (`la_strict_undefined`), and a CI step in
+  `.github/workflows/ci.yml`; `stage2 == stage3` stays byte-identical.
+
 ### Changed
 - Replaced the self-hosted assembler's linear symbol scan with 256 hash buckets while preserving
   byte-identical ELF output, colliding-label behavior, native execution, and the assembler fixpoint.

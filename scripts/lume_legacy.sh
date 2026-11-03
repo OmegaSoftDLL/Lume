@@ -140,7 +140,7 @@ ensure_core_tool() {
     ensure_native_toolchain
     if [ "$1" = "lmod" ] || ! grep -Eq '^[ \t]*use[ \t]+' "$SRC_DIR/$1.src"; then
         "$LUMEC" < "$SRC_DIR/$1.src" > "$BIN_DIR/$1.s"
-        "$LASM" < "$BIN_DIR/$1.s" > "$BIN_DIR/$1"
+        "$LASM" --strict < "$BIN_DIR/$1.s" > "$BIN_DIR/$1"
         chmod +x "$BIN_DIR/$1"
         rm -f "$BIN_DIR/$1.s"
     else
@@ -148,7 +148,7 @@ ensure_core_tool() {
         _ect_bun=$(mktemp)
         bundle_src_if_needed "$SRC_DIR/$1.src" "$_ect_bun"
         "$LUMEC" < "$_ect_bun" > "$BIN_DIR/$1.s"
-        "$LASM" < "$BIN_DIR/$1.s" > "$BIN_DIR/$1"
+        "$LASM" --strict < "$BIN_DIR/$1.s" > "$BIN_DIR/$1"
         chmod +x "$BIN_DIR/$1"
         rm -f "$_ect_bun" "$BIN_DIR/$1.s"
     fi
@@ -766,7 +766,7 @@ EOF_RI
         cat "$_tmps" >> "$_tmps_nd"
         mv "$_tmps_nd" "$_tmps"
     fi
-    "$LASM" < "$_tmps" > "$_out"
+    "$LASM" --strict < "$_tmps" > "$_out"
     chmod +x "$_out"
     rm -f "$_bundled" "$_tmps"
 }
@@ -945,7 +945,7 @@ cmd_compile() {
         _didrun=1
         if is_linux_x86_64 && { [ -x "$BIN_DIR/lc" ] || [ -x "$BIN_DIR/lumec" ] || [ -z "${LUME0_ASAN:-}" ]; }; then
             ensure_native_toolchain
-            "$LASM" < "$_asm" > "$_bin" 2>/dev/null; chmod +x "$_bin"
+            "$LASM" --strict < "$_asm" > "$_bin" 2>/dev/null; chmod +x "$_bin"
         else
             ensure_seed
             run_l0 asm "$_asm" "$_bin" >/dev/null 2>&1; chmod +x "$_bin"

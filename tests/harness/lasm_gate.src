@@ -18,10 +18,18 @@ fn la_local_labels(root, tmp) = let source = lf_write(tmp, "local_labels") in if
 
 fn la_movabs(root, tmp) = let source = lf_write(tmp, "movabs_boundaries") in if source != 1 then "cannot generate movabs boundary fixture" else let native = tmp + "/movabs-native" in let seed = tmp + "/movabs-seed" in let assembled = la_input(tmp + "/lasm", tmp + "/movabs_boundaries.s", native) in if assembled != 0 then "native lasm rejected movabs boundaries" else let oracle = la_run(la_seed(root), Cons("asm", Cons(tmp + "/movabs_boundaries.s", Cons(seed, Nil))), tmp + "/movabs-seed.out") in if oracle != 0 then "seed assembler rejected movabs boundaries" else if fs_files_equal(native, seed) != 1 then "native and seed ELFs differ for movabs boundaries" else ""
 
+## --- strict mode (#428): an unresolved call target must be a named compile error ([L0001], exit
+## non-zero, no ELF bytes), while the default mode keeps the historical address-0 resolution so
+## the byte-compat oracle above is unaffected. FAILs the gate if either property regresses.
+fn la_contains_at(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else la_contains_at(text, part, i + 1)
+fn la_contains(text, part) = la_contains_at(text, part, 0)
+
+fn la_strict_undefined(root, tmp) = let asm = tmp + "/undefined_call.s" in let written = fs_write_sync(asm, "    .section .text\n_start:\n    call missing_fn\n    ret\n") in if written != 1 then "cannot write undefined-call fixture" else let strict_out = tmp + "/undef-strict.elf" in let strict_status = la_run(tmp + "/lasm", Cons("--strict", Cons(asm, Nil)), strict_out) in if strict_status == 0 then "lasm --strict accepted an undefined call target (expected [L0001])" else let err = fs_read_file(strict_out + ".err") in if la_contains(err, "missing_fn") == 0 or la_contains(err, "[L0001]") == 0 then "lasm --strict error must name the symbol with [L0001], got:\n" + err else let lenient_out = tmp + "/undef-lenient.elf" in let lenient_status = la_run(tmp + "/lasm", Cons(asm, Nil), lenient_out) in if lenient_status != 0 then "lasm default mode rejected the undefined-call fixture (compat address-0 resolution must be preserved)" else if fs_files_equal(strict_out, lenient_out) == 1 then "lasm --strict still emitted an ELF for the undefined-call fixture" else ""
+
 fn la_line_end(text, i) = if i >= count(text) or at(text, i) == "\n" then i else la_line_end(text, i + 1)
 fn la_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else slice(input, 6, la_line_end(input, 0))
 
-fn la_main(root) = if lf_self_test() == 0 then "assembly fixture integrity check failed" else let tmp = root + "/build/lasm-gate" in let prepared = la_prepare(root, tmp) in if prepared != "" then prepared else let hello = la_hello(root, tmp) in if hello != "" then hello else let collisions = la_collisions(root, tmp) in if collisions != "" then collisions else let locals = la_local_labels(root, tmp) in if locals != "" then locals else la_movabs(root, tmp)
+fn la_main(root) = if lf_self_test() == 0 then "assembly fixture integrity check failed" else let tmp = root + "/build/lasm-gate" in let prepared = la_prepare(root, tmp) in if prepared != "" then prepared else let hello = la_hello(root, tmp) in if hello != "" then hello else let collisions = la_collisions(root, tmp) in if collisions != "" then collisions else let locals = la_local_labels(root, tmp) in if locals != "" then locals else let strict = la_strict_undefined(root, tmp) in if strict != "" then strict else la_movabs(root, tmp)
 
 fn la_dispatch(input) = let root = la_root(input) in if root == "" then ctfail("native assembly gate requires @root\n") else let problem = la_main(root) in if problem != "" then ctfail("native assembly gate failed: " + problem + "\n") else "native Lume-generated assembly fixtures passed execution, ELF identity, collisions, and local-label checks"
 
