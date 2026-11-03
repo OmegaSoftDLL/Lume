@@ -1,0 +1,32 @@
+## bytes_ok.src -- conformance tests for `std.bytes` (refs #406 / #407-adjacent
+## stdlib work; the std.fs/std.process siblings live in PR #429).
+## Exercises the module exactly as a consumer does (`use bytes`; the spec-level
+## name is `std.bytes` -- the bundler strips the `std.` prefix, but surface code
+## writes the bare module name) on real probe files in the caller's working
+## directory: deterministic doubling growth across several doublings, exact
+## bytes for NUL and high bytes, ASCII decode, structured errors (out_of_bounds,
+## bad_byte, not_ascii, not_found), and a NUL-safe binary file round-trip
+## cross-checked against the raw fs_read_byte/fs_write_hex_file primitives.
+## The module's own unit tests (bundled via `use bytes`) run ahead of these.
+
+use bytes
+
+fn test_bytes_ok_growth_chain_doubles_deterministically() = let b1 = bextend(bnew(1), "abcdefghij").buf in let b2 = bpush(b1, 200).buf in let b3 = bextend(b2, "0123456789").buf in blen(b3) == 21 and b3.cap == 32 and bget(b3, 0).byte == 97 and bget(b3, 10).byte == 200 and bget(b3, 20).byte == 57
+
+fn test_bytes_ok_mixed_push_extend_preserves_order() = let b1 = bpush(bnew(0), 65).buf in let b2 = bextend(b1, "BC").buf in let b3 = bpush(b2, 10).buf in bto_str(b3).value == "ABC\n"
+
+fn test_bytes_ok_bget_rejects_past_end() = let b = bextend(bnew(0), "ab").buf in bget(b, 2).err == "out_of_bounds"
+
+fn test_bytes_ok_bslice_bounds_and_ascii() = let b = bextend(bnew(0), "lume-bytes").buf in let r = bslice(b, 5, 5) in let hi = bslice(b, 6, 5) in r.ok == 1 and r.value == "bytes" and hi.ok == 0 and hi.err == "out_of_bounds"
+
+fn test_bytes_ok_bto_str_is_exact_for_ascii_with_newline() = bto_str(bextend(bnew(0), "line one\nline two\n").buf).value == "line one\nline two\n"
+
+fn test_bytes_ok_high_bytes_are_exact_via_bget() = let b = bextend(bnew(0), "A").buf in let b2 = bpush(b, 128).buf in let b3 = bpush(b2, 255).buf in blen(b3) == 3 and bget(b3, 1).byte == 128 and bget(b3, 2).byte == 255 and bslice(b3, 1, 1).err == "not_ascii"
+
+fn test_bytes_ok_push_rejects_bad_byte_without_mutation() = let b = bextend(bnew(0), "ok").buf in let r = bpush(b, 300) in r.ok == 0 and r.err == "bad_byte" and blen(r.buf) == 2
+
+fn test_bytes_ok_binary_file_roundtrip_with_nul_and_high_bytes() = let src = bextend(bpush(bpush(bnew(0), 0).buf, 255).buf, "End").buf in let w = bwrite_file("std_bytes_ok_binary_probe", src) in let r = bload_file("std_bytes_ok_binary_probe") in w.ok == 1 and r.ok == 1 and blen(r.buf) == 5 and fs_read_byte("std_bytes_ok_binary_probe", 1) == 255 and bget(r.buf, 0).byte == 0 and bget(r.buf, 1).byte == 255 and bget(r.buf, 4).byte == 100
+
+fn test_bytes_ok_bload_missing_fails_closed() = let r = bload_file("definitely_missing_std_bytes_ok_probe") in r.ok == 0 and r.err == "not_found"
+
+fn test_bytes_ok_empty_buffer_roundtrips() = let w = bwrite_file("std_bytes_ok_empty_probe", bnew(0)) in let r = bload_file("std_bytes_ok_empty_probe") in w.ok == 1 and r.ok == 1 and blen(r.buf) == 0 and bto_str(r.buf).value == ""

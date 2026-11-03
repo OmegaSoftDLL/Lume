@@ -429,6 +429,12 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     if grep -q "2 passed, 0 failed" "$ntmp/fs_sha256_file.out"; then ok "phase-2 binary evidence: fs_sha256_file matches FIPS 180-4 empty and abc vectors"; else bad "phase-2 binary evidence: fs_sha256_file"; cat "$ntmp/fs_sha256_file.out" "$ntmp/fs_sha256_file.err"; fi
     rm -f fs_sha256_empty_probe fs_sha256_abc_probe
     if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/fs_sha256_file_producer_ok.src >"$ntmp/fs_sha256_producer.out" 2>"$ntmp/fs_sha256_producer.err" && LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/fs_sha256_file_verifier_ok.src >"$ntmp/fs_sha256_verifier.out" 2>"$ntmp/fs_sha256_verifier.err" && diff -u "$ntmp/fs_sha256_producer.out" "$ntmp/fs_sha256_verifier.out" >/dev/null; then ok "phase-2 binary evidence: independent lcaas/lcert SHA-256 implementations agree on a real ELF with NUL and non-ASCII bytes"; else bad "phase-2 binary evidence: independent ELF SHA-256"; cat "$ntmp/fs_sha256_producer.out" "$ntmp/fs_sha256_producer.err" "$ntmp/fs_sha256_verifier.out" "$ntmp/fs_sha256_verifier.err"; fi
+    # std.bytes (#406/#407-adjacent stdlib work): safe byte buffers over the native
+    # fs_read_byte/fs_write_hex_file primitives -- structured errors, deterministic
+    # doubling growth, NUL-safe binary file round-trip.
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/bytes_ok.src >"$ntmp/bytes_ok.out" 2>"$ntmp/bytes_ok.err"
+    if diff -u ../../tests/conformance/stage1/bytes_ok_asm.expected "$ntmp/bytes_ok.out" >/dev/null 2>&1; then ok "std.bytes: safe byte buffers (structured errors, doubling growth, NUL-safe binary I/O)"; else bad "std.bytes: safe byte buffers"; cat "$ntmp/bytes_ok.out" "$ntmp/bytes_ok.err"; fi
+    rm -f std_bytes_write_probe std_bytes_roundtrip_probe std_bytes_ok_binary_probe std_bytes_ok_empty_probe
     LUME_BIN_DIR="$ntmp" ../../lume pkg init "$ntmp/pkgdemo" >/dev/null 2>&1
     LUME_BIN_DIR="$ntmp" ../../lume pkg lock "$ntmp/pkgdemo" >/dev/null 2>&1
     pkg_ok=1

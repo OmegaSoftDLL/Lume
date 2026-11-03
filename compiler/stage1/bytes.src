@@ -1,0 +1,138 @@
+## bytes.src -- Lume standard library: safe byte buffers (`std.bytes`, refs #406
+## and the #407-adjacent stdlib expansion; `std.fs`/`std.process` in PR #429).
+## Import with `use bytes` (spec-level name `std.bytes`; the bundler strips the
+## `std.` prefix, lmod.src `modname_clean`). The exported names are the short
+## spec-level `b*` API (`bnew`/`bpush`/...): they are the std.bytes surface,
+## the same way `sfile_`/`sprc_` mark their modules in the flat bundled
+## namespace.
+##
+## A buffer is the record {data, len, cap}:
+## - `data` carries the bytes as lowercase hexadecimal, two ASCII chars per
+##   byte. The runtime string is NUL-terminated and sizes by strlen, so raw
+##   bytes with embedded NUL cannot live in a plain str, and no builtin turns
+##   an int back into a raw byte (utf8_chr encodes >= 128 as two UTF-8 bytes
+##   and rejects 0). Hex is the NUL-safe, high-byte-safe carrier, and it lines
+##   up directly with the binary runtime: `bwrite_file` is exactly
+##   `fs_write_hex_file`, and `bload_file` is the `fs_read_byte` loop.
+## - `len` is the logical byte count; `cap` the byte capacity. Growth is
+##   deterministic doubling when full, so appends are amortized O(1), a buffer
+##   is copied at most once per doubling, and `cap` is observable for tests.
+##
+## Structured errors, never silent; every fallible op returns {ok, ..., err}
+## with the std.fs vocabulary extended by byte-domain errors:
+## - "bad_byte"      -- bpush of anything outside 0..255 (buffer unchanged)
+## - "out_of_bounds" -- bget/bslice outside 0..len
+## - "not_ascii"     -- bslice/bto_str over a range holding byte 0 or >= 128:
+##                      the runtime str cannot faithfully carry such bytes, so
+##                      the op fails closed instead of re-encoding silently
+## - "not_found"     -- bload_file on a missing path
+## - "write_failed"  -- bwrite_file rejected by the runtime
+##
+## Real-level limits, stated not hidden: `bget`/`blen` are exact for every
+## byte value including NUL and 255; `bslice`/`bto_str` decode only bytes
+## 1..127 (ASCII) and fail closed otherwise; `bextend` is strlen-bound (a str
+## argument with an embedded NUL is copied up to the first NUL -- full binary
+## loads go through `bload_file`). NUL-safe persistence is `bwrite_file` +
+## `bload_file`, never str carriers.
+##
+## Composition only: str/int builtins (at/ord/count/toint/utf8_chr) plus the
+## existing fs_path_exists/fs_read_byte/fs_write_hex_file runtime primitives.
+## No new builtins, no C, no compiler or driver changes; the stage2 == stage3
+## fixpoint is untouched.
+
+fn bhex1(n) = at("0123456789abcdef", n % 16)
+
+fn bhexval(c) = if c >= "0" and c <= "9" then toint(c) else if c == "a" then 10 else if c == "b" then 11 else if c == "c" then 12 else if c == "d" then 13 else if c == "e" then 14 else if c == "f" then 15 else 0 - 1
+
+fn bnew(cap) = {data: "", len: 0, cap: (if cap < 0 then 0 else cap)}
+
+fn blen(buf) = buf.len
+
+fn bgrow(buf) = {data: buf.data, len: buf.len, cap: (if buf.cap < 1 then 1 else buf.cap * 2)}
+
+fn bpush(buf, byte) = if byte < 0 or byte > 255 then {ok: 0, buf: buf, err: "bad_byte"} else let grown = (if buf.len >= buf.cap then bgrow(buf) else buf) in {ok: 1, buf: {data: grown.data + bhex1(byte / 16) + bhex1(byte), len: grown.len + 1, cap: grown.cap}, err: ""}
+
+fn bextend_i(buf, s, i, n) = if i >= n then {ok: 1, buf: buf, err: ""} else let r = bpush(buf, ord(at(s, i))) in if r.ok == 0 then r else bextend_i(r.buf, s, i + 1, n)
+
+fn bextend(buf, s) = bextend_i(buf, s, 0, count(s))
+
+fn bget(buf, i) = if i < 0 or i >= buf.len then {ok: 0, byte: 0 - 1, err: "out_of_bounds"} else {ok: 1, byte: bhexval(at(buf.data, i * 2)) * 16 + bhexval(at(buf.data, i * 2 + 1)), err: ""}
+
+## Decoding hex back to a str is a two-pass design: first validate every byte
+## is in 1..127 (utf8_chr(0) traps and >= 128 would re-encode, never silently),
+## then build the chars forward and join through a balanced concat tree --
+## O(n) total, no quadratic concat chain. The helpers carry the `b` prefix
+## because the bundled namespace is flat (lmod) and every tool brings its own
+## unprefixed joinall/rev; bslice/bto_str are the only public surface.
+fn bslice_ok(data, j, end) = if j >= end then 1 else let b = bhexval(at(data, j)) * 16 + bhexval(at(data, j + 1)) in if b == 0 or b > 127 then 0 else bslice_ok(data, j + 2, end)
+
+fn bslice_chars(data, j, end) = if j >= end then Nil else Cons(utf8_chr(bhexval(at(data, j)) * 16 + bhexval(at(data, j + 1))), bslice_chars(data, j + 2, end))
+
+fn bempty(xs) = match xs
+    Nil        => 1
+    Cons(a, t) => 0
+
+fn bpairs2(a, t) = match t
+    Nil        => Cons(a, Nil)
+    Cons(b, r) => Cons(a + b, bpairs(r))
+
+fn bpairs(xs) = match xs
+    Nil        => Nil
+    Cons(a, t) => bpairs2(a, t)
+
+fn bjoinall(xs) = match xs
+    Nil        => ""
+    Cons(a, t) => if bempty(t) == 1 then a else bjoinall(bpairs(xs))
+
+fn bslice(buf, i, n) = if i < 0 or n < 0 or i + n > buf.len then {ok: 0, value: "", err: "out_of_bounds"} else if bslice_ok(buf.data, i * 2, (i + n) * 2) == 0 then {ok: 0, value: "", err: "not_ascii"} else {ok: 1, value: bjoinall(bslice_chars(buf.data, i * 2, (i + n) * 2)), err: ""}
+
+fn bto_str(buf) = bslice(buf, 0, buf.len)
+
+fn bwrite_file(path, buf) = if fs_write_hex_file(path, buf.data) == 1 then {ok: 1, err: ""} else {ok: 0, err: "write_failed"}
+
+fn bload_acc(path, i, acc) = let byte = fs_read_byte(path, i) in if byte < 0 then {ok: 1, buf: acc, err: ""} else let r = bpush(acc, byte) in bload_acc(path, i + 1, r.buf)
+
+fn bload_file(path) = if fs_path_exists(path) == 0 then {ok: 0, buf: bnew(0), err: "not_found"} else bload_acc(path, 0, bnew(64))
+
+## --- unit tests (`lume test compiler/stage1/bytes.src`) ---
+## Pure in-memory except the two file round-trip probes; the consumer-side
+## conformance lives in bytes_ok.src.
+fn test_bnew_starts_empty_with_capacity() = let b = bnew(4) in blen(b) == 0 and b.cap == 4
+
+fn test_bnew_clamps_negative_capacity() = (bnew(0 - 3)).cap == 0
+
+fn test_bpush_appends_exact_byte() = let r = bpush(bnew(2), 65) in r.ok == 1 and blen(r.buf) == 1 and bget(r.buf, 0).byte == 65
+
+fn test_bpush_rejects_out_of_range_byte() = let lo = bpush(bnew(2), 0 - 1) in let hi = bpush(bnew(2), 256) in lo.ok == 0 and lo.err == "bad_byte" and blen(lo.buf) == 0 and hi.ok == 0 and hi.err == "bad_byte"
+
+fn test_bpush_growth_doubles_capacity() = let b1 = bpush(bnew(2), 1).buf in let b2 = bpush(b1, 2).buf in let b3 = bpush(b2, 3).buf in blen(b3) == 3 and b3.cap == 4 and bget(b3, 0).byte == 1 and bget(b3, 2).byte == 3
+
+fn test_bpush_from_zero_capacity_grows() = let b1 = bpush(bnew(0), 7).buf in let b2 = bpush(b1, 8).buf in blen(b2) == 2 and b2.cap == 2 and bget(b2, 1).byte == 8
+
+fn test_bextend_appends_all_bytes() = let r = bextend(bnew(0), "aZ") in r.ok == 1 and blen(r.buf) == 2 and bget(r.buf, 0).byte == 97 and bget(r.buf, 1).byte == 90
+
+fn test_bextend_empty_keeps_buffer() = let b = bnew(3) in let r = bextend(b, "") in r.ok == 1 and r.buf.cap == 3 and blen(r.buf) == 0
+
+fn test_bget_out_of_bounds_fails_closed() = let b = bpush(bnew(1), 65).buf in let hi = bget(b, 1) in let neg = bget(b, 0 - 1) in hi.ok == 0 and hi.err == "out_of_bounds" and hi.byte == 0 - 1 and neg.ok == 0 and neg.err == "out_of_bounds"
+
+fn test_bget_is_exact_for_nul_byte() = bget(bpush(bnew(1), 0).buf, 0).byte == 0
+
+fn test_bget_is_exact_for_high_byte() = bget(bpush(bnew(1), 255).buf, 0).byte == 255
+
+fn test_bslice_extracts_ascii_range() = let b = bextend(bnew(0), "hello").buf in let r = bslice(b, 1, 3) in r.ok == 1 and r.value == "ell"
+
+fn test_bslice_empty_range_is_empty() = bslice(bextend(bnew(0), "abc").buf, 1, 0).value == ""
+
+fn test_bslice_out_of_bounds_fails_closed() = let b = bextend(bnew(0), "abc").buf in let hi = bslice(b, 1, 99) in let neg = bslice(b, 0 - 1, 1) in hi.ok == 0 and hi.err == "out_of_bounds" and neg.ok == 0 and neg.err == "out_of_bounds"
+
+fn test_bslice_rejects_non_ascii_range() = let b = bpush(bnew(1), 200).buf in let r = bslice(b, 0, 1) in r.ok == 0 and r.err == "not_ascii" and r.value == ""
+
+fn test_bto_str_decodes_ascii_buffer() = bto_str(bextend(bnew(0), "hi").buf).value == "hi"
+
+fn test_bto_str_rejects_non_ascii_buffer() = let b = bpush(bextend(bnew(0), "a").buf, 128).buf in bto_str(b).err == "not_ascii"
+
+fn test_bwrite_file_writes_exact_bytes() = let w = bwrite_file("std_bytes_write_probe", bextend(bpush(bnew(0), 255).buf, "\n").buf) in w.ok == 1 and fs_read_byte("std_bytes_write_probe", 0) == 255 and fs_read_byte("std_bytes_write_probe", 1) == 10
+
+fn test_bwrite_bload_roundtrip_is_nul_safe() = let src = bextend(bpush(bpush(bnew(0), 0).buf, 10).buf, "A").buf in let w = bwrite_file("std_bytes_roundtrip_probe", src) in let r = bload_file("std_bytes_roundtrip_probe") in w.ok == 1 and r.ok == 1 and blen(r.buf) == 3 and bget(r.buf, 0).byte == 0 and bget(r.buf, 1).byte == 10 and bget(r.buf, 2).byte == 65
+
+fn test_bload_missing_fails_closed() = let r = bload_file("definitely_missing_std_bytes_probe") in r.ok == 0 and r.err == "not_found" and blen(r.buf) == 0

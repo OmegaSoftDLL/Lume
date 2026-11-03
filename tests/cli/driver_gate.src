@@ -1,4 +1,5 @@
 use fs_sha256_file
+use bytes
 
 fn dg_wait_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
 
@@ -132,13 +133,14 @@ fn dg_pkg_lock_and_tree(root) = let dir = dg_pkg_dir(root) in let lock = dir + "
 
 fn dg_self(root) = let prefix = root + "/build/cli_self" in let made = fs_mkdir(prefix) in let artifact = prefix + "/artifact.txt" in let written = fs_write_sync(artifact, "abc") in let manifest = fs_write_sync(prefix + "/MANIFEST.sha256", fs_sha256_file(artifact) + "  artifact.txt\n") in if made != 1 or written != 1 or manifest != 1 then "cannot write native self fixtures" else let verified = dg_part(root, "self-verify", Cons("self", Cons("verify", Cons("--prefix", Cons(prefix, Nil)))), "\"manifest_verified\":true") in if verified != "" then verified else let counted = dg_part(root, "self-count", Cons("self", Cons("verify", Cons("--prefix", Cons(prefix, Nil)))), "\"verified_files\":1") in if counted != "" then counted else let tampered = fs_write_sync(artifact, "tampered") in if tampered != 1 then "cannot tamper native self fixture" else let rejected = dg_run(root, Cons("self", Cons("verify", Cons("--prefix", Cons(prefix, Nil)))), "self-tampered") in if rejected.status == 0 then "native self accepted a tampered manifest" else let in_tree = dg_part(root, "self-status", Cons("self", Cons("status", Cons("--prefix", Cons(root + "/build", Nil)))), "\"mode\":\"in-tree\"") in if in_tree != "" then in_tree else let updated = dg_part(root, "self-update", Cons("self", Cons("update", Cons("--prefix", Cons(prefix, Nil)))), "\"manifest_verified\":true") in if updated != "" then updated else let verified_update = dg_run(root, Cons("self", Cons("verify", Cons("--prefix", Cons(prefix, Nil)))), "self-verify-update") in if verified_update.status != 0 then "native self update produced an invalid manifest" else ""
 
-fn dg_binary_match(path, text, offset, i) = if i >= count(text) then 1 else if fs_read_byte(path, offset + i) != ord(at(text, i)) then 0 else dg_binary_match(path, text, offset, i + 1)
+fn dg_bload_acc(path, i, size, acc) = if i >= size then acc else let r = bpush(acc, fs_read_byte(path, i)) in dg_bload_acc(path, i + 1, size, r.buf)
 
-fn dg_binary_bound(path, offset) = if fs_read_byte(path, offset) < 0 then offset else dg_binary_bound(path, offset * 2)
+## std.bytes proof (driver_gate pain point): the old dg_binary_match re-issued
+## an open/lseek/read/close chain per needle byte at every probe position.
+## Load the artifact into a std.bytes buffer once, then scan it in memory.
+fn dg_binary_scan(buf, size, text, pos) = if pos + count(text) > size then 0 else let part = bslice(buf, pos, count(text)) in if part.ok == 1 and part.value == text then 1 else dg_binary_scan(buf, size, text, pos + 1)
 
-fn dg_binary_contains_range(path, text, start, finish) = if finish - start <= 1 then (if fs_read_byte(path, start) < 0 then 0 else dg_binary_match(path, text, start, 0)) else let middle = start + (finish - start) / 2 in if dg_binary_contains_range(path, text, start, middle) == 1 then 1 else dg_binary_contains_range(path, text, middle, finish)
-
-fn dg_binary_contains(path, text) = if fs_read_byte(path, 0) < 0 then 0 else dg_binary_contains_range(path, text, 0, dg_binary_bound(path, 1))
+fn dg_binary_contains(path, text) = let size = fs_file_size(path, 0) in if size == 0 then 0 else dg_binary_scan(dg_bload_acc(path, 0, size, bnew(size)), size, text, 0)
 
 fn dg_execute(root, binary, expected, name) = let output = root + "/build/cli-" + name + ".out" in let errors = root + "/build/cli-" + name + ".err" in let status = os_run_capture_timeout(binary, Nil, output, errors, 10000) in if status != 0 then name + " execution failed: " + fs_read_file(errors) else if fs_read_file(output) != expected then name + " output mismatch: " + fs_read_file(output) else ""
 
