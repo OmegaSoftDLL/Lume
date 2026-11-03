@@ -1,0 +1,57 @@
+fn ng_chomp(s) = let n = count(s) in if n == 0 then "" else let c = at(s, n - 1) in if c == "\n" or c == "\r" then ng_chomp(slice(s, 0, n - 1)) else s
+
+fn ng_remote_head_matches(resolved, expected_sha) = let prefix = expected_sha + "\t" in count(expected_sha) > 0 and count(resolved) >= count(prefix) and slice(resolved, 0, count(prefix)) == prefix
+
+fn ng_arg_at(args, index) = match args
+    Nil => ""
+    Cons(h, t) => if index == 0 then h else ng_arg_at(t, index - 1)
+
+fn ng_run(req, name, path, args) = let stdout_path = req.source_repo + "-" + name + ".stdout" in let stderr_path = req.source_repo + "-" + name + ".stderr" in let status = os_run_capture(path, args, stdout_path, stderr_path) in {status: status, stdout_path: stdout_path, stderr_path: stderr_path}
+
+fn ng_git_args(req, args) = Cons("PATH=" + req.path, Cons("HOME=" + req.home, Cons("USER=" + req.user, Cons("LANG=" + req.lang, Cons("/usr/bin/git", args)))))
+
+fn ng_git(req, name, args) = ng_run(req, name, "/usr/bin/env", ng_git_args(req, args))
+
+fn ng_failure(name, result) = name + " failed with native status " + str(result.status) + "\nstdout:\n" + fs_read_file(result.stdout_path) + "\nstderr:\n" + fs_read_file(result.stderr_path) + "\n"
+
+fn ng_insteadof_key(source_repo) = "url.file://" + source_repo + ".insteadOf"
+
+fn ng_add_grammar_args(req) = Cons("-C", Cons(req.linguist, Cons("PATH=" + req.path, Cons("HOME=" + req.home, Cons("USER=" + req.user, Cons("LANG=" + req.lang, Cons("script/add-grammar", Cons("https://github.com/OmegaSoftDLL/lume", Nil))))))))
+
+fn ng_add_grammar(req) = let result = ng_run(req, "add-grammar", "/usr/bin/env", ng_add_grammar_args(req)) in if result.status != 0 then ng_failure("Linguist script/add-grammar", result) else ""
+
+fn ng_remote_head(req, expected_sha) = let result = ng_git(req, "ls-remote", Cons("ls-remote", Cons("https://github.com/OmegaSoftDLL/lume.git", Cons("HEAD", Nil)))) in if result.status != 0 then ng_failure("git ls-remote", result) else let resolved = fs_read_file(result.stdout_path) in if ng_remote_head_matches(resolved, expected_sha) == 0 then "remote HEAD did not resolve to " + expected_sha + ":\n" + resolved else ng_add_grammar(req)
+
+fn ng_expected_revision(req) = let result = ng_git(req, "rev-parse", Cons("--git-dir=" + req.source_repo, Cons("rev-parse", Cons("refs/heads/main", Nil)))) in if result.status != 0 then ng_failure("git rev-parse refs/heads/main", result) else ng_remote_head(req, ng_chomp(fs_read_file(result.stdout_path)))
+
+fn ng_protocol_file(req) = let result = ng_git(req, "protocol-file", Cons("config", Cons("--global", Cons("protocol.file.allow", Cons("always", Nil))))) in if result.status != 0 then ng_failure("git config protocol.file.allow", result) else ng_expected_revision(req)
+
+fn ng_insteadof(req) = let result = ng_git(req, "instead-of", Cons("config", Cons("--global", Cons(ng_insteadof_key(req.source_repo), Cons("https://github.com/OmegaSoftDLL/lume.git", Nil))))) in if result.status != 0 then ng_failure("git config insteadOf", result) else ng_protocol_file(req)
+
+fn ng_grammar_present(req) = let result = ng_git(req, "grammar-present", Cons("--git-dir=" + req.source_repo, Cons("cat-file", Cons("-e", Cons("refs/heads/main:contrib/textmate/syntaxes/Lume.tmLanguage.json", Nil))))) in if result.status != 0 then ng_failure("Lume grammar presence check", result) else ng_insteadof(req)
+
+fn ng_main_ref(req) = let result = ng_git(req, "symbolic-ref", Cons("--git-dir=" + req.source_repo, Cons("symbolic-ref", Cons("HEAD", Cons("refs/heads/main", Nil))))) in if result.status != 0 then ng_failure("git symbolic-ref HEAD", result) else ng_grammar_present(req)
+
+fn ng_revision_ref(req) = let result = ng_git(req, "update-ref", Cons("--git-dir=" + req.source_repo, Cons("update-ref", Cons("refs/heads/main", Cons(req.revision, Nil))))) in if result.status != 0 then ng_failure("git update-ref refs/heads/main", result) else ng_main_ref(req)
+
+fn ng_validate(req) = let result = ng_git(req, "bare-clone", Cons("clone", Cons("--bare", Cons(req.checkout, Cons(req.source_repo, Nil))))) in if result.status != 0 then ng_failure("bare Lume clone", result) else ng_revision_ref(req)
+
+fn ng_entry() = if os_arg_count() != 9 then ctfail("usage: lume run scripts/linguist_grammar.src <lume-checkout> <bare-repository> <github-sha> <linguist-checkout> <path> <home> <user> <lang>\n") else let req = {checkout: os_arg_at(1), source_repo: os_arg_at(2), revision: os_arg_at(3), linguist: os_arg_at(4), path: os_arg_at(5), home: os_arg_at(6), user: os_arg_at(7), lang: os_arg_at(8)} in let problem = ng_validate(req) in if problem != "" then ctfail("Linguist grammar validation failed: " + problem + "\n") else "Linguist grammar validation passed for " + req.revision
+
+fn test_remote_head_accepts_expected_revision() = let sha = "0123456789abcdef0123456789abcdef01234567" in ng_remote_head_matches(sha + "\tHEAD\n", sha) == 1
+
+fn test_remote_head_rejects_different_revision() = let sha = "0123456789abcdef0123456789abcdef01234567" in ng_remote_head_matches(sha + "0\tHEAD\n", sha) == 0
+
+fn test_remote_head_requires_tab_separator() = let sha = "0123456789abcdef0123456789abcdef01234567" in ng_remote_head_matches(sha + " HEAD\n", sha) == 0 and ng_remote_head_matches(sha + "\n", sha) == 0
+
+fn test_remote_head_rejects_empty_expected_revision() = ng_remote_head_matches("\tHEAD\n", "") == 0
+
+fn test_revision_output_is_chomped_before_comparison() = let sha = "0123456789abcdef0123456789abcdef01234567" in ng_remote_head_matches(sha + "\tHEAD\n", ng_chomp(sha + "\n")) == 1
+
+fn test_git_receives_explicit_environment() = let req = {checkout: "", source_repo: "", revision: "", linguist: "", path: "/usr/bin:/bin", home: "/home/runner", user: "runner", lang: "C.UTF-8"} in let args = ng_git_args(req, Cons("status", Nil)) in ng_arg_at(args, 0) == "PATH=/usr/bin:/bin" and ng_arg_at(args, 1) == "HOME=/home/runner" and ng_arg_at(args, 2) == "USER=runner" and ng_arg_at(args, 3) == "LANG=C.UTF-8" and ng_arg_at(args, 4) == "/usr/bin/git" and ng_arg_at(args, 5) == "status" and ng_arg_at(args, 6) == ""
+
+fn test_add_grammar_runs_inside_linguist_checkout() = let req = {checkout: "", source_repo: "", revision: "", linguist: "/work/linguist", path: "/usr/bin:/bin", home: "/home/runner", user: "runner", lang: "C.UTF-8"} in let args = ng_add_grammar_args(req) in ng_arg_at(args, 0) == "-C" and ng_arg_at(args, 1) == "/work/linguist" and ng_arg_at(args, 2) == "PATH=/usr/bin:/bin" and ng_arg_at(args, 3) == "HOME=/home/runner" and ng_arg_at(args, 4) == "USER=runner" and ng_arg_at(args, 5) == "LANG=C.UTF-8" and ng_arg_at(args, 6) == "script/add-grammar" and ng_arg_at(args, 7) == "https://github.com/OmegaSoftDLL/lume" and ng_arg_at(args, 8) == ""
+
+fn test_insteadof_key_addresses_bare_repository() = ng_insteadof_key("/tmp/lume-grammar.git") == "url.file:///tmp/lume-grammar.git.insteadOf"
+
+print ng_entry()

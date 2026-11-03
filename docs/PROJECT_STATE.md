@@ -314,9 +314,19 @@ non-trivial project samples under contrib/. The .lume extension has no current L
 lume-lang/tree-sitter-lume grammar uses syntax different from this project's specification, so it
 is not used as the grammar source.
 
-**Validation:** .github/workflows/linguist-grammar.yml runs Linguist's script/add-grammar against
-the current Lume revision in a temporary Linguist checkout. The workflow uses the public Lume
-repository as the grammar source and does not publish changes to github/linguist.
+**Validation:** .github/workflows/linguist-grammar.yml runs Lume unit tests and then invokes
+`scripts/linguist_grammar.src` through the native `./lume run` toolchain. The script executes the
+bare-clone, revision/ref, grammar-presence, `insteadOf`/`protocol.file`, remote-HEAD, and Linguist
+`script/add-grammar` checks directly without POSIX shell orchestration. Because native process
+execution starts with an empty environment, the workflow passes `PATH`, `HOME`, `USER` and `LANG`
+explicitly and the script supplies them through `/usr/bin/env` to both Git and
+`script/add-grammar`: `USER` is required by Linguist's `script/grammar-compiler` for its `id`
+user mapping, and `LANG=C.UTF-8` keeps Ruby's default external encoding UTF-8 so
+`script/list-grammars` can scan `vendor/README.md`. Its Lume tests cover remote-HEAD matching and
+command/environment arguments that do not require the external service; the real Git/Ruby/Linguist
+integration remains exercised only by the workflow.
+The workflow uses the public Lume repository as the grammar source and does not publish changes to
+github/linguist.
 
 **Submission gate:** adding the language definition and samples to github/linguist remains subject
 to the existing maturity gate below.
