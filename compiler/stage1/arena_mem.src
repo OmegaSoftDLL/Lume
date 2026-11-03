@@ -1,0 +1,73 @@
+## arena_mem.src -- #404 memory-peak evidence program (run with `lume run`).
+##
+## Prints boolean-first, machine-checkable lines (the gate greps these) plus
+## raw numbers for humans. Three claims, each self-asserted in-program so a
+## regression fails the gate instead of drifting silently:
+##   arena_drop 1 ...        -- one O(1) bump of 24,000,000 bytes = 1M
+##                              24-byte cells in an arena, then arena_reset:
+##                              used falls by ~24 MiB (used_mid - used_after)
+##                              while heap_peak_used() keeps the high-water.
+##                              (The near-baseline unit assert lives in
+##                              arena_ok.src, which has no page-touch loop;
+##                              this program's touch loop itself spends
+##                              ~1 MB of dead boxed arithmetic on the normal
+##                              heap, visible in used_after.)
+##   monotonic_growth 1 ...  -- 300k small records WITHOUT an arena: used
+##                              grows monotonically (the gap GC closes)
+##   vmhwm_at_least_24m 1 ...-- peak RSS (VmHWM from /proc/self/status) really
+##                              reached the arena region: the region's pages
+##                              are touched (one 8-byte write per 4 KiB page
+##                              via mmio_volatile_write64), since a pure
+##                              pointer bump would not make the kernel
+##                              supply the pages
+##
+## Why one bulk bump rather than 1M individual calls: the boxed calling
+## convention spends ~5 dead argument allocations per call on the normal
+## heap, so 1M individual calls would pin the heap ceiling long before the
+## cells were allocated (see docs/38-memory-management.md). The bulk bump is
+## the arena's primary use case -- bulk scratch memory, O(1) -- and isolates
+## the accounting claim; compiler/stage1/arena_ok.src covers the per-cell
+## path at 50k cells with the garbage measured into the bounds.
+##
+## VmHWM is the kernel high-water mark: arena_reset releases the region to
+## the runtime instantly (heap_stats().used drops) but the brk mapping stays
+## with the process, so VmHWM does NOT drop. That asymmetry is the honest
+## picture and is documented in docs/38-memory-management.md.
+use arena
+
+fn rec_fill(i) = if i == 0 then 0 else let r = {cellv: i} in rec_fill(i - 1)
+
+## Touch one 8-byte word in every 4 KiB page of the 24 MiB arena region so
+## peak RSS reflects the allocation (demand paging is page-granular).
+fn touch_region(base, off) = if off >= 24000000 then 0 else let w = mmio_volatile_write64(base + off, 12345) in touch_region(base, off + 4096)
+
+## Byte-level /proc/self/status scanner (the native runtime has no split, and
+## fs_read_file sizes by lseek which procfs reports as 0, so read byte-wise).
+fn slurp_status(i, acc) = let b = fs_read_byte("/proc/self/status", i) in if b < 0 then acc else slurp_status(i + 1, acc + utf8_chr(b))
+
+fn vm_find(text, i) = if i + 6 > count(text) then 0 - 1 else if slice(text, i, i + 6) == "VmHWM:" then i else vm_find(text, i + 1)
+
+fn vm_skip_nondigit(text, i) = if i >= count(text) then i else let c = at(text, i) in if c >= "0" and c <= "9" then i else vm_skip_nondigit(text, i + 1)
+
+fn vm_digits(text, i, acc) = if i >= count(text) then acc else let c = at(text, i) in if c >= "0" and c <= "9" then vm_digits(text, i + 1, acc * 10 + toint(c)) else acc
+
+fn vmhwm_kb() = let t = slurp_status(0, "") in let i = vm_find(t, 0) in if i < 0 then 0 - 1 else vm_digits(t, vm_skip_nondigit(t, i + 6), 0)
+
+print (let before = heap_stats() in
+       let a = arena_new(33554432) in
+       let base = arena_alloc(a, 24000000) in
+       let t = touch_region(base, 0) in
+       let mid = heap_stats() in
+       let r = arena_reset(a) in
+       let d = arena_destroy(a) in
+       let after = heap_stats() in
+       let peak = heap_peak_used() in
+       "arena_drop " + (if mid.used - after.used >= 20000000 then "1" else "0") + " used_before=" + str(before.used) + " used_mid=" + str(mid.used) + " used_after=" + str(after.used) + " peak=" + str(peak))
+
+print (let before2 = heap_stats() in
+       let f2 = rec_fill(300000) in
+       let after2 = heap_stats() in
+       "monotonic_growth " + (if after2.used >= before2.used + 16000000 then "1" else "0") + " used_before=" + str(before2.used) + " used_after=" + str(after2.used))
+
+print (let vm = vmhwm_kb() in
+       "vmhwm_at_least_24m " + (if vm >= 24576 then "1" else "0") + " vmhwm_kb=" + str(vm))

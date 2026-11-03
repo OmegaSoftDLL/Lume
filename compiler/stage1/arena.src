@@ -1,0 +1,61 @@
+## arena.src -- Lume standard library: heap observability and arena
+## (region) allocation over the native runtime (refs #404).
+## Import with `use arena` (spec-level name `std.arena`; the bundler strips the
+## `std.` prefix, lmod.src `modname_clean`).
+##
+## This module is a thin, honest wrapper over the runtime primitives that
+## `compiler/stage1/lume/05_codegen.src` (and the ML-core
+## `compiler/stage1/data_asmgen.lume`) emit when a program calls the
+## `__lume_*` names below. The runtime owns the real memory; this module only
+## gives it a documented Lume surface. Composition would be impossible here:
+## a region cannot be built from str/int builtins, so these ARE new
+## runtime builtins, wired exactly like the `__lume_rc_*`/`__lume_promise_*`
+## memory-tier builtins (Track O).
+##
+## Real level, stated not hidden:
+## - `heap_stats() -> {used, cap, allocs}` and `heap_peak_used() -> int` are
+##   SHIPPED. `used` = live bytes on the runtime heap: the normal bump heap
+##   PLUS every live arena's used bytes; `cap` = the configured LUME_HEAP_CAP
+##   in bytes, or the total mapped heap (normal + arena regions) when no cap
+##   is configured; `allocs` = allocation calls (`alloc` + `arena_alloc`).
+##   `heap_peak_used()` is the high-water mark of `used` over the process
+##   lifetime. After `arena_reset`, `used` drops immediately (the region is
+##   reusable); `heap_peak_used()` keeps the high-water mark.
+## - Arenas are real second heap regions: `arena_new(cap_hint)` carves a
+##   dedicated `brk` region ABOVE the normal heap, so arena allocation
+##   INTERLEAVES freely with ordinary boxed allocation (no LIFO discipline,
+##   no scope restrictions). Up to 4 arenas are live at once; `arena_new`
+##   fails closed beyond that. `cap_hint` (<= 0 means default 1 MiB) is a HARD
+##   per-arena budget enforced at `arena_alloc`.
+## - Stated limitation (real, fail-closed): while any arena is live, the
+##   normal heap cannot grow past the lowest arena base -- the arena "pins
+##   the heap ceiling". A normal allocation that would need to grow beyond
+##   the pin fails closed with a clear diagnostic (exit 12); reset/destroy
+##   the arenas to unpin. Arena regions are carved on demand and bounded by
+##   LUME_HEAP_CAP like every other mapping.
+## - `arena_alloc(arena, n)` is an O(1) bump: it returns the address of `n`
+##   raw bytes as a boxed int. The address DANGLES after `arena_reset`/
+##   `arena_destroy` (the next alloc reuses it); only the handle is stable
+##   across a reset. Writing through the address needs the raw-memory
+##   builtins (`mmio_volatile_write64`); the memory-peak tests touch cells
+##   with it so the kernel really supplies the pages.
+## - Fail-closed diagnostics go to stderr and exit with status 12 (the memory
+##   error family, same as out-of-memory): heap cap exceeded, invalid
+##   LUME_HEAP_CAP at startup, arena too-many/dead-handle/budget/size, heap
+##   ceiling pinned by an arena. Observability and arenas are HOSTED-runtime
+##   features; `@freestanding` kernel images keep their fixed heap and do not
+##   get these builtins.
+##
+## Relationship to ownership.src: the O-track `arena_new`/`arena_alloc` there
+## are a pure ACCOUNTING model of a region (records carrying {cap, used}),
+## used to check `with alloc = arena` at compile time. This module is the
+## real runtime arena. The names would collide in one bundle, so a program
+## uses one or the other; the accounting model is for the checker, this one
+## is for actual memory.
+##
+fn arena_new(cap_hint) = __lume_arena_new(cap_hint)
+fn arena_alloc(arena, n) = __lume_arena_alloc(arena, n)
+fn arena_reset(arena) = __lume_arena_reset(arena)
+fn arena_destroy(arena) = __lume_arena_destroy(arena)
+fn heap_stats() = __lume_heap_stats()
+fn heap_peak_used() = __lume_heap_peak_used()
