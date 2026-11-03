@@ -313,10 +313,13 @@ is not used as the grammar source.
 `scripts/linguist_grammar.src` through the native `./lume run` toolchain. The script executes the
 bare-clone, revision/ref, grammar-presence, `insteadOf`/`protocol.file`, remote-HEAD, and Linguist
 `script/add-grammar` checks directly without POSIX shell orchestration. Because native process
-execution starts with an empty environment, the workflow passes `PATH` and `HOME` explicitly and
-the script supplies them through `/usr/bin/env` to both Git and `script/add-grammar`. Its Lume
-tests cover remote-HEAD matching and command/environment arguments that do not require the
-external service; the real Git/Ruby/Linguist integration remains exercised only by the workflow.
+execution starts with an empty environment, the workflow passes `PATH`, `HOME`, `USER` and `LANG`
+explicitly and the script supplies them through `/usr/bin/env` to both Git and
+`script/add-grammar`: `USER` is required by Linguist's `script/grammar-compiler` for its `id`
+user mapping, and `LANG=C.UTF-8` keeps Ruby's default external encoding UTF-8 so
+`script/list-grammars` can scan `vendor/README.md`. Its Lume tests cover remote-HEAD matching and
+command/environment arguments that do not require the external service; the real Git/Ruby/Linguist
+integration remains exercised only by the workflow.
 The workflow uses the public Lume repository as the grammar source and does not publish changes to
 github/linguist.
 
