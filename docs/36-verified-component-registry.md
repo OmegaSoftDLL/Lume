@@ -12,6 +12,13 @@ or the SaaS/kernel capstones.
 This increment executes components only on `x86_64-linux-elf`. Publication and resolution reject
 other targets instead of substituting interpreted results or claiming cross-target evidence.
 
+The self-hosted `compiler/stage1/lume_driver.src` implements the complete command orchestration
+natively in Lume. It invokes `lcaas`, `lcert`, `ltest`, and `lregistry` directly through native
+process execution, uses native filesystem operations for artifact contents and hashes, and does not
+invoke the POSIX `lume` wrapper. Directory staging, atomic publication moves, cleanup, and store
+enumeration use direct process execution without a shell. The native toolchain identity binds the
+`lume_driver` executable rather than the wrapper.
+
 ## Commands
 
 ```sh
@@ -104,8 +111,9 @@ Adversarial coverage includes a false proof with a maliciously recomputed certif
 mismatched adapter hash, source/proof staleness, test-output tampering with a recomputed component
 CID, stale toolchain identity, failing tests, capability and contract-signature discovery, and target
 incompatibility. The Stage-0 suite invokes this gate only in its native Linux x86-64 configuration.
-The dedicated Ubuntu job is the execution-evidence gate; ASan/UBSan, interpreter, and other-host
-configurations do not claim target execution coverage.
+The dedicated Ubuntu job builds `lume_driver` and all required native tools, so this same gate
+exercises the native driver rather than the POSIX wrapper. It is the execution-evidence gate;
+ASan/UBSan, interpreter, and other-host configurations do not claim target execution coverage.
 
 The increment authenticates content and evidence freshness, not publisher identity or repository
 permissions. SHA-256 collision resistance is assumed. Proof guarantees are limited to the existing
