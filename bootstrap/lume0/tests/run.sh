@@ -437,7 +437,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     rm -f std_bytes_write_probe std_bytes_roundtrip_probe std_bytes_ok_binary_probe std_bytes_ok_empty_probe
     # #404: real memory management -- heap observability, scoped arenas, heap cap.
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/arena_ok.src >"$ntmp/arena_ok.out" 2>"$ntmp/arena_ok.err"
-    if grep -q "7 passed, 0 failed" "$ntmp/arena_ok.out"; then ok "#404: heap_stats + scoped arena (bump/reset/destroy, 1M-cell used-drop, monotonic no-arena growth)"; else bad "#404: heap_stats + scoped arena"; cat "$ntmp/arena_ok.out" "$ntmp/arena_ok.err"; fi
+    if grep -q "8 passed, 0 failed" "$ntmp/arena_ok.out"; then ok "#404: heap_stats + arenas (bump/reset/destroy, 1M-cell bulk used-drop, monotonic no-arena growth)"; else bad "#404: heap_stats + scoped arena"; cat "$ntmp/arena_ok.out" "$ntmp/arena_ok.err"; fi
     if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/arena_mem.src >"$ntmp/arena_mem.out" 2>"$ntmp/arena_mem.err" && grep -q "^arena_drop 1" "$ntmp/arena_mem.out" && grep -q "^monotonic_growth 1" "$ntmp/arena_mem.out" && grep -q "^vmhwm_at_least_24m 1" "$ntmp/arena_mem.out"; then ok "#404: memory-peak evidence (heap_stats used drop + peak high-water + VmHWM peak RSS)"; else bad "#404: memory-peak evidence"; cat "$ntmp/arena_mem.out" "$ntmp/arena_mem.err"; fi
     memfail=0
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/heap_cap_fail.src -o "$ntmp/heap_cap_fail.elf" 2>"$ntmp/hcf_build.err" || memfail=1
