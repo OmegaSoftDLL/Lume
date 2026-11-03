@@ -1,0 +1,53 @@
+## process.src -- Lume standard library: safe process abstractions (`std.process`, issue #406).
+## Import with `use process` (spec-level name `std.process`; the bundler strips
+## the `std.` prefix). Surface `.src` files write the bare module name: the
+## canonical formatter does not preserve dotted `std.` imports yet. Exports
+## carry the `sprc_` prefix (flat bundled namespace, like `sfile_`, `actor_`).
+##
+## Composes the native fork/execve/wait4 runtime (`os_run_capture`,
+## `os_run_input_capture_timeout`, `os_last_timed_out`) into records with
+## structured errors -- no shell, no stringly status, no raw crash:
+## - `sprc_run_collect(cmd_path, args)`: run a binary and capture its streams into
+##   {status, stdout, stderr, err}. Fail-closed on a missing binary: the record
+##   carries `status: -1` and `err: "not_found"`, and the process is never spawned.
+## - `sprc_run_input(cmd_path, args, stdin_text, timeout_ms)`: write `stdin_text`
+##   to a deterministic scratch file, forward it as the child's stdin, enforce the
+##   millisecond deadline, and report {status, stdout, stderr, timed_out, err}.
+##   After the run the scratch input is truncated back to empty: bounded cleanup by
+##   deterministic reuse, because the runtime has no `fs_remove` yet.
+## - `sprc_tmp_write(text)` / `sprc_exit_code(status)`: the two small pieces above,
+##   exported for reuse and testing.
+##
+## `status` is the raw wait4 status, exactly like `os_run`: 0 for exit 0, N*256
+## for exit N, negative only when a guard rejected the call before spawning.
+## Guards run cheapest-first: timeout, then binary presence, then scratch write.
+## Limits: capture scratch files use fixed names in the caller's working directory
+## (one capture at a time per directory), and `args` is a Cons/Nil list of exact
+## argument strings (never a shell line).
+
+fn sprc_run_collect(cmd_path, args) = if fs_path_exists(cmd_path) == 0 then {status: 0 - 1, stdout: "", stderr: "", err: "not_found"} else let status = os_run_capture(cmd_path, args, "std_process_stdout_probe", "std_process_stderr_probe") in {status: status, stdout: fs_read_file("std_process_stdout_probe"), stderr: fs_read_file("std_process_stderr_probe"), err: ""}
+
+## Decode a raw wait status: exit code N reports as N*256; negative statuses are
+## the wrapper's own rejections and pass through unchanged.
+fn sprc_exit_code(status) = if status < 0 then status else status / 256
+
+fn sprc_tmp_write(text) = if fs_write_sync("std_process_stdin_probe", text) == 1 then {ok: 1, path: "std_process_stdin_probe", err: ""} else {ok: 0, path: "", err: "input_write_failed"}
+
+fn sprc_run_input(cmd_path, args, stdin_text, timeout_ms) = if timeout_ms <= 0 then {status: 0 - 1, stdout: "", stderr: "", timed_out: 0, err: "bad_timeout"} else if fs_path_exists(cmd_path) == 0 then {status: 0 - 1, stdout: "", stderr: "", timed_out: 0, err: "not_found"} else let tmp = sprc_tmp_write(stdin_text) in if tmp.ok == 0 then {status: 0 - 1, stdout: "", stderr: "", timed_out: 0, err: tmp.err} else let status = os_run_input_capture_timeout(cmd_path, args, tmp.path, "std_process_stdout_probe", "std_process_stderr_probe", timeout_ms) in let out = fs_read_file("std_process_stdout_probe") in let errf = fs_read_file("std_process_stderr_probe") in let tout = os_last_timed_out() in let cleared = fs_write_sync(tmp.path, "") in {status: status, stdout: out, stderr: errf, timed_out: tout, err: ""}
+
+## --- unit tests (`lume test compiler/stage1/process.src`) ---
+## These stay spawn-free: the real child-process runs live in process_ok.src,
+## which `use`s this module and runs against the process_probe fixture.
+fn test_sprc_missing_binary_fails_closed() = let r = sprc_run_collect("/definitely/missing-std-process-tool", Nil) in r.status == 0 - 1 and r.err == "not_found" and r.stdout == "" and r.stderr == ""
+
+fn test_sprc_empty_cmd_fails_closed() = let r = sprc_run_collect("", Nil) in r.status == 0 - 1 and r.err == "not_found"
+
+fn test_sprc_bad_timeout_rejected() = let r = sprc_run_input("/definitely/missing-std-process-tool", Nil, "x", 0) in r.status == 0 - 1 and r.err == "bad_timeout"
+
+fn test_sprc_negative_timeout_rejected() = let r = sprc_run_input("/definitely/missing-std-process-tool", Nil, "x", 0 - 5) in r.status == 0 - 1 and r.err == "bad_timeout"
+
+fn test_sprc_missing_binary_after_timeout_guard() = let r = sprc_run_input("/definitely/missing-std-process-tool", Nil, "x", 1000) in r.status == 0 - 1 and r.err == "not_found" and r.timed_out == 0
+
+fn test_sprc_tmp_write_roundtrip() = let t = sprc_tmp_write("stdin-scratch\n") in t.ok == 1 and t.path == "std_process_stdin_probe" and fs_read_file(t.path) == "stdin-scratch\n"
+
+fn test_sprc_exit_code_decodes_wait_status() = sprc_exit_code(0) == 0 and sprc_exit_code(1792) == 7 and sprc_exit_code(0 - 1) == 0 - 1

@@ -1,0 +1,26 @@
+## process_ok.src -- conformance tests for `std.process` (issue #406).
+## Exercises the module through the public import (`use process`; spec-level name
+## `std.process`) against real
+## child processes: process_probe (built by run.sh; path via the
+## `process_probe_path` file) and the slow os_run_slow_probe (path via
+## `std_process_slow_probe_path`). Covers the acceptance cases: success path with
+## separated stdout/stderr streams, empty args, exit-status reporting, fail-closed
+## missing binary, stdin round-trip through the scratch tmp file, timeout kill,
+## and post-run scratch cleanup. The module's own unit tests (bundled via
+## `use process`) run ahead of these.
+
+use process
+
+fn probe_path() = fs_read_file("process_probe_path")
+
+fn test_sprc_ok_collect_captures_stdout_and_stderr() = let r = sprc_run_collect(probe_path(), Cons("alpha", Nil)) in r.err == "" and r.status == 0 and r.stdout == "probe-out:alpha\n" and r.stderr == "probe-err:alpha\n"
+
+fn test_sprc_ok_collect_empty_args() = let r = sprc_run_collect(probe_path(), Nil) in r.err == "" and r.status == 0 and r.stdout == "probe-out:\n" and r.stderr == "probe-err:\n"
+
+fn test_sprc_ok_collect_reports_exit_status() = let r = sprc_run_collect(probe_path(), Cons("exit7", Nil)) in r.err == "" and r.status == 1792 and sprc_exit_code(r.status) == 7 and r.stdout == "" and r.stderr == ""
+
+fn test_sprc_ok_collect_missing_binary_fails_closed() = let r = sprc_run_collect("/definitely/missing-std-process-tool", Nil) in r.status == 0 - 1 and r.err == "not_found" and r.stdout == "" and r.stderr == ""
+
+fn test_sprc_ok_input_stdin_roundtrip_and_cleanup() = let r = sprc_run_input(probe_path(), Cons("stdin", Nil), "hello-stdin\n", 5000) in r.err == "" and r.status == 0 and r.timed_out == 0 and r.stdout == "probe-echo:hello-stdin\n" and fs_read_file("std_process_stdin_probe") == ""
+
+fn test_sprc_ok_input_timeout_kills_slow_child() = let p = fs_read_file("std_process_slow_probe_path") in let r = sprc_run_input(p, Nil, "x\n", 50) in r.err == "" and r.status != 0 and r.timed_out == 1

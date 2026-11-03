@@ -1,0 +1,28 @@
+## fs_ok.src -- conformance tests for `std.fs` (issue #406).
+## Exercises the module exactly as a consumer does (`use fs`; the spec-level name
+## is `std.fs` -- the bundler strips the `std.` prefix, but surface code writes the
+## bare module name) on real files in
+## the caller's working directory: success path, missing file, round-trip
+## write/read, append, size, close-on-all-paths (success value, error value, and
+## open-guard rejection), and use-after-close failing closed. The module's own
+## unit tests (bundled via `use fs`) run ahead of these.
+
+use fs
+
+fn test_sfile_ok_exists_and_size() = let w = sfile_write("std_fs_ok_probe", "lume-std-fs") in let s = sfile_size("std_fs_ok_probe") in w.ok == 1 and s.ok == 1 and s.size == 11 and sfile_exists("std_fs_ok_probe") == 1
+
+fn test_sfile_ok_read_missing_fails_closed() = let r = sfile_read("definitely_missing_std_fs_ok_probe") in r.ok == 0 and r.err == "not_found" and r.value == ""
+
+fn test_sfile_ok_roundtrip_write_read() = let w = sfile_write("std_fs_ok_roundtrip", "first line\nsecond line\n") in let r = sfile_read("std_fs_ok_roundtrip") in w.ok == 1 and r.ok == 1 and r.value == "first line\nsecond line\n"
+
+fn test_sfile_ok_append_accumulates() = let w1 = sfile_write("std_fs_ok_append", "ab") in let a1 = sfile_append("std_fs_ok_append", "cd") in let a2 = sfile_append("std_fs_ok_append", "ef") in let r = sfile_read("std_fs_ok_append") in w1.ok == 1 and a1.ok == 1 and a2.ok == 1 and r.value == "abcdef"
+
+fn test_sfile_ok_with_success_writes_and_closes() = let res = sfile_with("std_fs_ok_with", "w", fn(h) = sfile_handle_write(h, "payload")) in let r = sfile_read("std_fs_ok_with") in res.ran == 1 and res.err == "" and res.handle.closed == 1 and res.value.ok == 1 and r.value == "payload"
+
+fn test_sfile_ok_with_error_value_still_closes() = let res = sfile_with("std_fs_ok_with_err", "w", fn(h) = 0 - 1) in res.ran == 1 and res.value == 0 - 1 and res.handle.closed == 1
+
+fn test_sfile_ok_with_open_guard_skips_body() = let res = sfile_with("definitely_missing_std_fs_ok_guard", "r", fn(h) = 1) in res.ran == 0 and res.err == "not_found"
+
+fn test_sfile_ok_with_bad_mode_skips_body() = let res = sfile_with("std_fs_ok_badmode", "x", fn(h) = 1) in res.ran == 0 and res.err == "bad_mode"
+
+fn test_sfile_ok_use_after_close_fails_closed() = let res = sfile_with("std_fs_ok_uac", "w", fn(h) = sfile_handle_append(h, "x")) in let again = sfile_handle_write(res.handle, "y") in res.handle.closed == 1 and again.ok == 0 and again.err == "closed"

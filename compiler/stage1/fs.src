@@ -1,0 +1,94 @@
+## fs.src -- Lume standard library: safe file abstractions (`std.fs`, issue #406).
+## Import with `use fs` (spec-level name `std.fs`; the bundler strips the `std.`
+## prefix, lmod.src `modname_clean`). Surface `.src` files write the bare module
+## name: the canonical formatter does not preserve dotted `std.` imports yet.
+## Exports carry the `sfile_` prefix because bundled modules share one flat namespace
+## (same convention as `actor_`, `lclock_`, `chan_`).
+##
+## What "safe" means here, at the real level of today's runtime:
+## - Structured errors: every operation returns a record carrying `err`
+##   ("not_found", "bad_mode", "open_failed", "write_failed", "append_failed",
+##   "closed", "wrong_mode") instead of silently returning "" or crashing.
+## - Fail-closed reads: `sfile_read` checks `fs_path_exists` first because the
+##   underlying `fs_read_file` returns "" for a missing path.
+## - `sfile_with(path, mode, body)` guarantees the close transition on every path
+##   Lume-Core can express today: functions are expression-form with no early
+##   return, so evaluating `body` before `sfile_close` -- exactly the lowering of
+##   `defer ... in ...` (06b_phase3.src `olowere`) -- closes on success values and
+##   on error values alike, and returns the closed handle for audit. A native
+##   `panic` statement does not exist yet (only the `panic` effect-row label), so
+##   panic-unwinding cleanup is deliberately NOT claimed; it arrives with it.
+## - No OS file descriptor outlives an operation: the native fs_* primitives already
+##   open/fsync/close per call, so a handle is a protocol token; every op on a
+##   closed handle fails closed with "closed" (no use-after-close).
+##
+## Limits, stated not hidden: text-oriented. `fs_write_sync` sizes writes with
+## strlen, so embedded NUL truncates; NUL-safe binary I/O is the job of
+## `fs_write_hex_file`/`fs_read_byte` (covered by fs_hex_file_ok.src and
+## fs_read_byte_ok.src). `sfile_size` counts the bytes of the read content.
+## No `fs_remove` builtin exists yet, so "cleanup" is the bounded, deterministic
+## scratch-file reuse you see in the tests, not deletion.
+
+fn sfile_exists(path) = fs_path_exists(path)
+
+fn sfile_read(path) = if fs_path_exists(path) == 0 then {ok: 0, value: "", err: "not_found"} else {ok: 1, value: fs_read_file(path), err: ""}
+
+fn sfile_write(path, text) = if fs_write_sync(path, text) == 1 then {ok: 1, value: "", err: ""} else {ok: 0, value: "", err: "write_failed"}
+
+fn sfile_append(path, text) = if fs_append_sync(path, text) == 1 then {ok: 1, value: "", err: ""} else {ok: 0, value: "", err: "append_failed"}
+
+fn sfile_size(path) = if fs_path_exists(path) == 0 then {ok: 0, size: 0 - 1, err: "not_found"} else {ok: 1, size: count(fs_read_file(path)), err: ""}
+
+fn sfile_mode_ok(mode) = mode == "r" or mode == "w" or mode == "a"
+
+## A handle is a protocol token: {path, mode, closed}. The native fs_* primitives
+## never hold an OS fd open across calls, so closing is this state transition.
+fn sfile_handle(path, mode, closed) = {path: path, mode: mode, closed: closed}
+fn sfile_close(h) = sfile_handle(h.path, h.mode, 1)
+
+## Side effects live only in the selected branch: `and`/`or` do not short-circuit
+## in this runtime, so conditions here stay pure.
+fn sfile_open_read(path, mode) = if fs_path_exists(path) == 1 then {ok: 1, handle: sfile_handle(path, mode, 0), err: ""} else {ok: 0, handle: sfile_handle(path, mode, 1), err: "not_found"}
+
+fn sfile_open_write(path, mode) = if fs_write_sync(path, "") == 1 then {ok: 1, handle: sfile_handle(path, mode, 0), err: ""} else {ok: 0, handle: sfile_handle(path, mode, 1), err: "open_failed"}
+
+fn sfile_open_append(path, mode) = if fs_append_sync(path, "") == 1 then {ok: 1, handle: sfile_handle(path, mode, 0), err: ""} else {ok: 0, handle: sfile_handle(path, mode, 1), err: "open_failed"}
+
+## Open guards: mode check, then a mode-specific pre-flight (read: path exists;
+## write: create/truncate succeeds; append: open-for-append succeeds).
+fn sfile_open(path, mode) = if sfile_mode_ok(mode) == 0 then {ok: 0, handle: sfile_handle(path, mode, 1), err: "bad_mode"} else if mode == "r" then sfile_open_read(path, mode) else if mode == "w" then sfile_open_write(path, mode) else sfile_open_append(path, mode)
+
+fn sfile_handle_read(h) = if h.closed == 1 then {ok: 0, value: "", err: "closed"} else if h.mode != "r" then {ok: 0, value: "", err: "wrong_mode"} else sfile_read(h.path)
+
+fn sfile_handle_write(h, text) = if h.closed == 1 then {ok: 0, value: "", err: "closed"} else if h.mode == "r" then {ok: 0, value: "", err: "wrong_mode"} else sfile_write(h.path, text)
+
+fn sfile_handle_append(h, text) = if h.closed == 1 then {ok: 0, value: "", err: "closed"} else if h.mode == "r" then {ok: 0, value: "", err: "wrong_mode"} else sfile_append(h.path, text)
+
+## with_file: run `body(handle)` and guarantee the close transition afterwards.
+## `body` must be a one-argument lambda. If an open guard fails, `body` never
+## runs (ran: 0) and no handle is exposed. The result carries the closed handle
+## so the guarantee is directly auditable (and testable).
+fn sfile_with(path, mode, body) = let opened = sfile_open(path, mode) in if opened.ok == 0 then {ran: 0, value: 0, err: opened.err, handle: opened.handle} else let result = body(opened.handle) in let closed = sfile_close(opened.handle) in {ran: 1, value: result, err: "", handle: closed}
+
+## --- unit tests (`lume test compiler/stage1/fs.src`) ---
+fn test_sfile_rejects_bad_mode() = let o = sfile_open("std_fs_probe_x", "x") in o.ok == 0 and o.err == "bad_mode" and o.handle.closed == 1
+
+fn test_sfile_open_read_missing_fails_closed() = let o = sfile_open("definitely_missing_std_fs_probe", "r") in o.ok == 0 and o.err == "not_found" and o.handle.closed == 1
+
+fn test_sfile_read_write_roundtrip() = let w = sfile_write("std_fs_roundtrip_probe", "std.fs roundtrip\n") in let r = sfile_read("std_fs_roundtrip_probe") in w.ok == 1 and r.ok == 1 and r.err == "" and r.value == "std.fs roundtrip\n"
+
+fn test_sfile_append_builds_content() = let w = sfile_write("std_fs_append_probe", "ab") in let a = sfile_append("std_fs_append_probe", "cd") in let r = sfile_read("std_fs_append_probe") in w.ok == 1 and a.ok == 1 and r.value == "abcd"
+
+fn test_sfile_size_counts_bytes() = let w = sfile_write("std_fs_size_probe", "12345") in let s = sfile_size("std_fs_size_probe") in w.ok == 1 and s.ok == 1 and s.size == 5
+
+fn test_sfile_size_missing_fails_closed() = let s = sfile_size("definitely_missing_std_fs_size_probe") in s.ok == 0 and s.size == 0 - 1 and s.err == "not_found"
+
+fn test_sfile_with_closes_on_success() = let res = sfile_with("std_fs_with_probe", "w", fn(h) = sfile_handle_write(h, "with-body")) in res.ran == 1 and res.err == "" and res.handle.closed == 1 and res.value.ok == 1 and fs_read_file("std_fs_with_probe") == "with-body"
+
+fn test_sfile_with_closes_on_error_value() = let res = sfile_with("std_fs_with_err_probe", "w", fn(h) = 0 - 3) in res.ran == 1 and res.value == 0 - 3 and res.handle.closed == 1
+
+fn test_sfile_with_skips_body_when_open_fails() = let res = sfile_with("definitely_missing_std_fs_with_probe", "r", fn(h) = 99) in res.ran == 0 and res.err == "not_found"
+
+fn test_sfile_handle_rejects_use_after_close() = let res = sfile_with("std_fs_uac_probe", "w", fn(h) = sfile_handle_write(h, "x")) in let rd = sfile_handle_read(res.handle) in let wr = sfile_handle_write(res.handle, "y") in let ap = sfile_handle_append(res.handle, "z") in res.handle.closed == 1 and rd.err == "closed" and wr.err == "closed" and ap.err == "closed"
+
+fn test_sfile_handle_rejects_wrong_mode() = let o = sfile_open("std_fs_mode_probe", "w") in let rd = sfile_handle_read(o.handle) in let w2 = sfile_handle_write(o.handle, "m") in let r = sfile_read("std_fs_mode_probe") in o.ok == 1 and rd.err == "wrong_mode" and w2.ok == 1 and r.value == "m"
