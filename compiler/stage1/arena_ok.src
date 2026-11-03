@@ -1,0 +1,76 @@
+## arena_ok.src -- #404 memory management: heap observability and scoped
+## arenas over the native runtime. Exercises the module exactly as a consumer
+## does (`use arena`). Run with `lume test`.
+##
+## The fail-closed paths (heap cap exceeded, invalid LUME_HEAP_CAP, arena
+## busy/dead/handle/order/budget) EXIT the process with status 12, so they
+## cannot be unit-tested in-process; they are covered driver-level in
+## bootstrap/lume0/tests/run.sh against tests/memory/*_fail.src.
+##
+## Scope discipline the tests rely on (enforced by the runtime): while an
+## arena is live, arena_alloc is the ONLY allocation allowed; heap_stats()
+## allocates its result record, so every measurement happens AFTER
+## arena_destroy.
+use arena
+
+## 1M cells x (24-byte cell + 24-byte result box) = 48 MiB of region growth.
+fn ar_fill(a, i) = if i == 0 then 0 else let x = arena_alloc(a, 24) in ar_fill(a, i - 1)
+
+## 300k small records on the plain heap: nothing is ever freed, so `used`
+## must grow monotonically. This is the allocation gap scoped arenas close
+## today and a true GC will close in general (docs/38-memory-management.md).
+fn rec_fill(i) = if i == 0 then 0 else let r = {cellv: i} in rec_fill(i - 1)
+
+fn test_heap_stats_fields() = let s = heap_stats() in s.used >= 0 and s.cap > 0 and s.allocs > 0
+
+fn test_heap_peak_tracked() = let s = heap_stats() in heap_peak_used() >= s.used
+
+fn test_arena_bump_in_range() =
+    let before = heap_stats() in
+    let a = arena_new(4096) in
+    let p1 = arena_alloc(a, 100) in
+    let p2 = arena_alloc(a, 100) in
+    let d = arena_destroy(a) in
+    let after = heap_stats() in
+    d == a and p2 > p1 and after.used <= before.used + 4096
+
+fn test_arena_reset_reuses_base() =
+    let before = heap_stats() in
+    let a = arena_new(4096) in
+    let p1 = arena_alloc(a, 100) in
+    let r = arena_reset(a) in
+    let q1 = arena_alloc(a, 100) in
+    let d = arena_destroy(a) in
+    let after = heap_stats() in
+    r == a and d == a and q1 == p1 and after.used <= before.used + 4096
+
+fn test_arena_stays_live_after_reset() =
+    let a = arena_new(8192) in
+    let p1 = arena_alloc(a, 100) in
+    let r = arena_reset(a) in
+    let q1 = arena_alloc(a, 100) in
+    let p2 = arena_alloc(a, 100) in
+    let d = arena_destroy(a) in
+    q1 == p1 and p2 > q1 and d == a
+
+## The #404 memory-peak regression: 1M small cells in a scoped arena, then
+## arena_reset. heap_stats().used must return near baseline (only the handle
+## box survives outside the region), while heap_peak_used() keeps the
+## high-water mark proving the cells were really allocated.
+fn test_arena_scope_used_drop() =
+    let before = heap_stats() in
+    let a = arena_new(67108864) in
+    let f = ar_fill(a, 1000000) in
+    let r = arena_reset(a) in
+    let d = arena_destroy(a) in
+    let after = heap_stats() in
+    let peak = heap_peak_used() in
+    f == 0 and r == a and d == a and after.used <= before.used + 4096 and peak >= before.used + 40000000
+
+## Same shape WITHOUT an arena: 300k live records, used grows monotonically
+## and never comes back (documents the gap GC will close).
+fn test_without_arena_monotonic_growth() =
+    let before = heap_stats() in
+    let f = rec_fill(300000) in
+    let after = heap_stats() in
+    f == 0 and after.used >= before.used + 16000000 and heap_peak_used() >= after.used

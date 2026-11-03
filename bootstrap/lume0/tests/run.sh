@@ -435,6 +435,27 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/bytes_ok.src >"$ntmp/bytes_ok.out" 2>"$ntmp/bytes_ok.err"
     if diff -u ../../tests/conformance/stage1/bytes_ok_asm.expected "$ntmp/bytes_ok.out" >/dev/null 2>&1; then ok "std.bytes: safe byte buffers (structured errors, doubling growth, NUL-safe binary I/O)"; else bad "std.bytes: safe byte buffers"; cat "$ntmp/bytes_ok.out" "$ntmp/bytes_ok.err"; fi
     rm -f std_bytes_write_probe std_bytes_roundtrip_probe std_bytes_ok_binary_probe std_bytes_ok_empty_probe
+    # #404: real memory management -- heap observability, scoped arenas, heap cap.
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/arena_ok.src >"$ntmp/arena_ok.out" 2>"$ntmp/arena_ok.err"
+    if grep -q "7 passed, 0 failed" "$ntmp/arena_ok.out"; then ok "#404: heap_stats + scoped arena (bump/reset/destroy, 1M-cell used-drop, monotonic no-arena growth)"; else bad "#404: heap_stats + scoped arena"; cat "$ntmp/arena_ok.out" "$ntmp/arena_ok.err"; fi
+    if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/arena_mem.src >"$ntmp/arena_mem.out" 2>"$ntmp/arena_mem.err" && grep -q "^arena_drop 1" "$ntmp/arena_mem.out" && grep -q "^monotonic_growth 1" "$ntmp/arena_mem.out" && grep -q "^vmhwm_at_least_24m 1" "$ntmp/arena_mem.out"; then ok "#404: memory-peak evidence (heap_stats used drop + peak high-water + VmHWM peak RSS)"; else bad "#404: memory-peak evidence"; cat "$ntmp/arena_mem.out" "$ntmp/arena_mem.err"; fi
+    memfail=0
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/heap_cap_fail.src -o "$ntmp/heap_cap_fail.elf" 2>"$ntmp/hcf_build.err" || memfail=1
+    LUME_HEAP_CAP=32m "$ntmp/heap_cap_fail.elf" >"$ntmp/hcf.out" 2>"$ntmp/hcf.err"; hcf_rc=$?
+    if [ "$hcf_rc" != 12 ] || ! grep -q "heap cap exceeded" "$ntmp/hcf.err" || ! grep -q "33554432" "$ntmp/hcf.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/heap_env_bad_fail.src -o "$ntmp/heap_env_bad_fail.elf" 2>"$ntmp/heb_build.err" || memfail=1
+    LUME_HEAP_CAP=bogus "$ntmp/heap_env_bad_fail.elf" >"$ntmp/heb.out" 2>"$ntmp/heb.err"; heb_rc=$?
+    if [ "$heb_rc" != 12 ] || ! grep -q "invalid LUME_HEAP_CAP" "$ntmp/heb.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/arena_busy_fail.src -o "$ntmp/arena_busy_fail.elf" 2>"$ntmp/abf_build.err" || memfail=1
+    "$ntmp/arena_busy_fail.elf" >"$ntmp/abf.out" 2>"$ntmp/abf.err"; abf_rc=$?
+    if [ "$abf_rc" != 12 ] || ! grep -q "too many live arenas" "$ntmp/abf.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/arena_budget_fail.src -o "$ntmp/arena_budget_fail.elf" 2>"$ntmp/abg_build.err" || memfail=1
+    "$ntmp/arena_budget_fail.elf" >"$ntmp/abg.out" 2>"$ntmp/abg.err"; abg_rc=$?
+    if [ "$abg_rc" != 12 ] || ! grep -q "capacity exceeded" "$ntmp/abg.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/arena_pin_fail.src -o "$ntmp/arena_pin_fail.elf" 2>"$ntmp/ap_build.err" || memfail=1
+    "$ntmp/arena_pin_fail.elf" >"$ntmp/ap.out" 2>"$ntmp/ap.err"; ap_rc=$?
+    if [ "$ap_rc" != 12 ] || ! grep -q "pinned by a live arena" "$ntmp/ap.err"; then memfail=1; fi
+    if [ "$memfail" = 0 ]; then ok "#404: heap cap + arena fail-closed diagnostics (cap/bad-env/too-many/budget/pin, exit 12)"; else bad "#404: heap cap + arena fail-closed diagnostics"; cat "$ntmp/hcf.err" "$ntmp/heb.err" "$ntmp/abf.err" "$ntmp/abg.err" "$ntmp/ap.err" "$ntmp/hcf_build.err" "$ntmp/heb_build.err" "$ntmp/abf_build.err" "$ntmp/abg_build.err" "$ntmp/ap_build.err"; fi
     LUME_BIN_DIR="$ntmp" ../../lume pkg init "$ntmp/pkgdemo" >/dev/null 2>&1
     LUME_BIN_DIR="$ntmp" ../../lume pkg lock "$ntmp/pkgdemo" >/dev/null 2>&1
     pkg_ok=1
