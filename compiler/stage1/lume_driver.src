@@ -198,7 +198,11 @@ fn ld_check(root, source, json) = if fs_path_exists(source) == 0 then ctfail("na
 
 fn ld_check_entry(root) = if os_arg_count() == 3 then ld_check(root, os_arg_at(2), 0) else if os_arg_count() == 4 and os_arg_at(2) == "--json" then ld_check(root, os_arg_at(3), 1) else if os_arg_count() == 4 and os_arg_at(3) == "--json" then ld_check(root, os_arg_at(2), 1) else ctfail("usage: lume_driver check <source.src> [--json]\n")
 
-fn ld_fmt(root, source, mode) = if fs_path_exists(source) == 0 then ctfail("native fmt cannot read " + source + "\n") else let formatted = ld_request(root, "lfmt", fs_read_file(source)) in let generated = formatted + "\n" in if mode == "--stdout" then let written = fs_write_sync("/dev/stdout", generated) in if written != 1 then ctfail("native fmt cannot write formatted output\n") else 0 else if mode == "--check" then (if fs_read_file(source) == generated then 0 else let reported = fs_write_sync("/dev/stderr", "lume fmt: " + source + " is not canonically formatted\n") in 1) else let written = fs_write_sync(source, generated) in if written != 1 then ctfail("native fmt cannot rewrite " + source + "\n") else 0
+fn ld_fmt(root, source, mode) = if fs_path_exists(source) == 0 then ctfail("native fmt cannot read " + source + "\n") else let formatted = ld_request(root, "lfmt", fs_read_file(source)) in let generated = formatted + "\n" in if mode == "--check" then (if fs_read_file(source) == generated then 0 else let reported = fs_write_sync("/dev/stderr", "lume fmt: " + source + " is not canonically formatted\n") in 1) else let written = fs_write_sync(source, generated) in if written != 1 then ctfail("native fmt cannot rewrite " + source + "\n") else 0
+
+fn ld_fmt_stdout_all(root, sources) = match sources
+    Nil => ""
+    Cons(h, t) => if fs_path_exists(h) == 0 then ctfail("native fmt cannot read " + h + "\n") else let formatted = ld_request(root, "lfmt", fs_read_file(h)) in formatted + "\n" + ld_fmt_stdout_all(root, t)
 
 fn ld_fmt_files(root, sources, mode, overall) = match sources
     Nil => overall
@@ -208,7 +212,7 @@ fn ld_fmt_args(args, sources, mode) = match args
     Nil => {sources: ld_rev(sources), mode: mode}
     Cons(h, t) => if h == "--check" or h == "--stdout" then (if mode != "" and mode != h then ctfail("native fmt --check and --stdout are mutually exclusive\n") else ld_fmt_args(t, sources, h)) else if h != "" and at(h, 0) == "-" then ctfail("usage: lume_driver fmt <source.src>... [--check|--stdout]\n") else ld_fmt_args(t, Cons(h, sources), mode)
 
-fn ld_fmt_entry(root) = let args = ld_fmt_args(ld_args_from(2), Nil, "") in if ld_has_links(args.sources) == 0 then ctfail("usage: lume_driver fmt <source.src>... [--check|--stdout]\n") else os_exit(ld_fmt_files(root, args.sources, args.mode, 0))
+fn ld_fmt_entry(root) = let args = ld_fmt_args(ld_args_from(2), Nil, "") in if ld_has_links(args.sources) == 0 then ctfail("usage: lume_driver fmt <source.src>... [--check|--stdout]\n") else if args.mode == "--stdout" then let written = fs_write_sync("/dev/stdout", ld_fmt_stdout_all(root, args.sources)) in if written != 1 then ctfail("native fmt cannot write formatted output\n") else os_exit(0) else os_exit(ld_fmt_files(root, args.sources, args.mode, 0))
 
 fn ld_line_count_at(text, i) = if i >= count(text) then 0 else (if at(text, i) == "\n" then 1 else 0) + ld_line_count_at(text, i + 1)
 
