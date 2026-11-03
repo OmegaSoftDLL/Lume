@@ -7,19 +7,20 @@ fn primid(name, t) = if headtext(t) == "(" then let a = arglist(droponce(t)) in 
 ## The hole expression is scope-checked like any other expression: an identifier that is not bound at the use
 ## site is a compile error [R0200] from orscheck (#428), not silent garbage at runtime.
 fn isbadholech(c) = c == ":" or c == "\"" or c == "\n" or c == "{" or c == "}"
-fn hasbadhole(s, i) = if i >= count(s) then 0 else if isbadholech(at(s, i)) then 1 else hasbadhole(s, i + 1)
-fn isvalidhole(s) = if count(s) == 0 then 0 else let c0 = at(s, 0) in if (isalpha(c0) or isdigit(c0) or c0 == "(") and hasbadhole(s, 0) == 0 then 1 else 0
+fn hasbadhole(s, i, n) = if i >= n then 0 else if isbadholech(at(s, i)) then 1 else hasbadhole(s, i + 1, n)
+fn isvalidhole(s) = let n = count(s) in if n == 0 then 0 else let c0 = at(s, 0) in if (isalpha(c0) or isdigit(c0) or c0 == "(") and hasbadhole(s, 0, n) == 0 then 1 else 0
 fn findcloseb(s, j) requires j >= 0 ensures result < 0 or result >= j = if j >= count(s) then 0 - 1 else if at(s, j) == "}" then j else findcloseb(s, j + 1)
-fn findinterp(s, i) = if i >= count(s) then 0 - 1 else if at(s, i) == "{" then (if i + 1 < count(s) and at(s, i + 1) == "{" then findinterp(s, i + 2) else let j = findcloseb(s, i + 1) in if j > i + 1 and isvalidhole(slice(s, i + 1, j)) == 1 then i else findinterp(s, i + 1)) else findinterp(s, i + 1)
-fn hasescbrace(s, i) = if i + 1 >= count(s) then 0 else if (at(s, i) == "{" and at(s, i + 1) == "{") or (at(s, i) == "}" and at(s, i + 1) == "}") then 1 else hasescbrace(s, i + 1)
+fn findclosebn(s, j, n) = if j >= n then 0 - 1 else if at(s, j) == "}" then j else findclosebn(s, j + 1, n)
+fn findinterp(s, i, n) = if i >= n then 0 - 1 else if at(s, i) == "{" then (if i + 1 < n and at(s, i + 1) == "{" then findinterp(s, i + 2, n) else let j = findclosebn(s, i + 1, n) in if j > i + 1 and isvalidhole(slicen(s, n, i + 1, j)) == 1 then i else findinterp(s, i + 1, n)) else findinterp(s, i + 1, n)
+fn hasescbrace(s, i, n) = if i + 1 >= n then 0 else if (at(s, i) == "{" and at(s, i + 1) == "{") or (at(s, i) == "}" and at(s, i + 1) == "}") then 1 else hasescbrace(s, i + 1, n)
 fn unescbracel(s, i, n) = if i >= n then Nil else if i + 1 < n and ((at(s, i) == "{" and at(s, i + 1) == "{") or (at(s, i) == "}" and at(s, i + 1) == "}")) then Cons(at(s, i), unescbracel(s, i + 2, n)) else Cons(at(s, i), unescbracel(s, i + 1, n))
-fn unescbraces(s) = if hasescbrace(s, 0) == 0 then s else joinall(own unescbracel(s, 0, count(s)))
+fn unescbraces(s) = let n = count(s) in if hasescbrace(s, 0, n) == 0 then s else joinall(own unescbracel(s, 0, n))
 fn sjoin(acc, piece) = match acc
     Nil => piece
     _   => Bin("+", acc, piece)
-fn strinterp(s) = if findinterp(s, 0) < 0 then Str(unescbraces(s)) else strinterploop(Nil, s)
-fn strinterploop(acc, s) = strinterploop2(acc, s, findinterp(s, 0))
-fn strinterploop2(acc, s, i) = if i < 0 then (let tail = unescbraces(s) in if count(tail) == 0 then acc else sjoin(acc, Str(tail))) else let j = findcloseb(s, i + 1) in let pre = unescbraces(slice(s, 0, i)) in let hole = Call("str", Cons((expr(lex(slice(s, i + 1, j), 0))).node, Nil)) in let acc1 = if count(pre) == 0 then acc else sjoin(acc, Str(pre)) in strinterploop(sjoin(acc1, hole), slice(s, j + 1, count(s)))
+fn strinterp(s) = if findinterp(s, 0, count(s)) < 0 then Str(unescbraces(s)) else strinterploop(Nil, s)
+fn strinterploop(acc, s) = strinterploop2(acc, s, findinterp(s, 0, count(s)))
+fn strinterploop2(acc, s, i) = if i < 0 then (let tail = unescbraces(s) in if count(tail) == 0 then acc else sjoin(acc, Str(tail))) else let n = count(s) in let j = findclosebn(s, i + 1, n) in let pre = unescbraces(slicen(s, n, 0, i)) in let hole = Call("str", Cons((expr(lex(slicen(s, n, i + 1, j), 0))).node, Nil)) in let acc1 = if count(pre) == 0 then acc else sjoin(acc, Str(pre)) in strinterploop(sjoin(acc1, hole), slicen(s, n, j + 1, n))
 fn drop_lambda_sep(ts) = if isarrow(ts) then droponce(droponce(ts)) else dropkw(ts, "=")
 fn parselambda(t) = let ps = parseparams(dropkw(t, "(")) in let rt = parseret(ps.rest) in let b = expr(drop_lambda_sep(rt.rest)) in {node: LambdaE(ps.items, ps.tys, rt.ty, b.node), rest: b.rest}
 fn parseshard_body(ts) = let hb = if headtext(ts) == "{" then 1 else 0 in let sep = if hb == 1 then droponce(ts) else if isarrow(ts) then droponce(droponce(ts)) else dropin(ts) in let rb = expr(sep) in {node: rb.node, rest: if hb == 1 then skiprb(rb.rest) else rb.rest}
