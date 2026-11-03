@@ -57,14 +57,15 @@ fn cs_idend(s, i, n) = if i >= n then i else if cs_isalnum(at(s, i)) then cs_ide
 fn cs_lineend(s, i, n) = if i >= n then i else if at(s, i) == "\n" then i + 1 else cs_lineend(s, i + 1, n)
 fn cs_escchar(c) = if c == "n" then "\n" else if c == "t" then "\t" else if c == "\"" then "\"" else if c == "\\" then "\\" else c
 fn cs_strplain(s, i, n) = if i >= n then i else let c = at(s, i) in if c == "\"" or c == "\\" then i else cs_strplain(s, i + 1, n)
-fn cs_strend(s, i, n, acc) = let j = cs_strplain(s, i, n) in let acc2 = if j > i then acc + slice(s, i, j) else acc in if j >= n then {txt: acc2, next: n} else if at(s, j) == "\"" then {txt: acc2, next: j + 1} else cs_strend(s, j + 2, n, acc2 + cs_escchar(at(s, j + 1)))
+fn cs_strend(s, i, n, acc) = let j = cs_strplain(s, i, n) in let acc2 = if j > i then acc + slice(s, i, j) else acc in if j >= n then {txt: acc2, next: n, closed: 0} else if at(s, j) == "\"" then {txt: acc2, next: j + 1, closed: 1} else cs_strend(s, j + 2, n, acc2 + cs_escchar(at(s, j + 1)))
 fn cs_istwo(s, i, n) = if i + 1 >= n then 0 else cs_istwopair(slice(s, i, i + 2))
 fn cs_istwopair(p) = p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "=>" or p == ".."
-fn cs_lex(s, i) = if i >= count(s) then Nil else cs_lex1(s, i, count(s), at(s, i))
-fn cs_lex1(s, i, n, c) = if cs_isws(c) then cs_lex(s, i + 1) else if c == "#" then cs_lex(s, cs_lineend(s, i + 1, n)) else if cs_isdigit(c) then cs_lexnum(s, i, cs_numend(s, i, n)) else if cs_isalpha(c) then cs_lexid(s, i, cs_idend(s, i, n)) else if c == "\"" then cs_lexstr(s, cs_strend(s, i + 1, n, "")) else if cs_istwo(s, i, n) == 1 then Cons({kind: "SY", text: slice(s, i, i + 2)}, cs_lex(s, i + 2)) else Cons({kind: "SY", text: c}, cs_lex(s, i + 1))
-fn cs_lexnum(s, i, j) = Cons({kind: "NM", text: slice(s, i, j)}, cs_lex(s, j))
-fn cs_lexid(s, i, j) = Cons({kind: "ID", text: slice(s, i, j)}, cs_lex(s, j))
-fn cs_lexstr(s, r) = Cons({kind: "ST", text: r.txt}, cs_lex(s, r.next))
+## Lexer with source positions: every token carries its 1-based (line, col), and genuinely
+## malformed input (an unterminated string literal) is collected as an L0001 diagnostic with
+## the exact span of the string start instead of being silently swallowed.
+fn cs_pos_adv(line, col, text, i, n) = if i >= n then {line: line, col: col} else if at(text, i) == "\n" then cs_pos_adv(line + 1, 1, text, i + 1, n) else cs_pos_adv(line, col + 1, text, i + 1, n)
+fn cs_lexsp(s, i, line, col, diags) = if i >= count(s) then {tokens: Nil, diags: diags} else cs_lexsp1(s, i, count(s), at(s, i), line, col, diags)
+fn cs_lexsp1(s, i, n, c, line, col, diags) = if cs_isws(c) then (if c == "\n" then cs_lexsp(s, i + 1, line + 1, 1, diags) else cs_lexsp(s, i + 1, line, col + 1, diags)) else if c == "#" then let e = cs_lineend(s, i + 1, n) in (if e < n then cs_lexsp(s, e + 1, line + 1, 1, diags) else {tokens: Nil, diags: diags}) else if cs_isdigit(c) then let j = cs_numend(s, i, n) in let r = cs_lexsp(s, j, line, col + (j - i), diags) in {tokens: Cons({kind: "NM", text: slice(s, i, j), line: line, col: col}, r.tokens), diags: r.diags} else if cs_isalpha(c) then let j = cs_idend(s, i, n) in let r = cs_lexsp(s, j, line, col + (j - i), diags) in {tokens: Cons({kind: "ID", text: slice(s, i, j), line: line, col: col}, r.tokens), diags: r.diags} else if c == "\"" then let st = cs_strend(s, i + 1, n, "") in let p = cs_pos_adv(line, col, s, i, st.next) in let r = cs_lexsp(s, st.next, p.line, p.col, if st.closed == 0 then Cons({code: "L0001", severity: "error", phase: "lex", message: "lex error: unterminated string literal", fixit: "close the string with a double quote", subj: "", sug: "append a closing double quote to terminate the string literal", repl: "\"", span: {file: "", line: line, col: col}}, diags) else diags) in {tokens: Cons({kind: "ST", text: st.txt, line: line, col: col}, r.tokens), diags: r.diags} else if cs_istwo(s, i, n) == 1 then let r = cs_lexsp(s, i + 2, line, col + 2, diags) in {tokens: Cons({kind: "SY", text: slice(s, i, i + 2), line: line, col: col}, r.tokens), diags: r.diags} else let r = cs_lexsp(s, i + 1, line, col + 1, diags) in {tokens: Cons({kind: "SY", text: c, line: line, col: col}, r.tokens), diags: r.diags}
 
 ## --- parser ---
 fn cs_hd(ts) = match ts
@@ -232,7 +233,7 @@ fn cs_pcapat(t) = let t1 = cs_drop1(t) in let er = if cs_hdtext(t1) == "{" then 
 fn cs_pboundval(ts) = if cs_hdtext(ts) != "(" then 0 else let t1 = cs_drop1(ts) in if cs_hdtext(cs_drop1(t1)) == ":" then toint(cs_hdtext(cs_drop1(cs_drop1(t1)))) else toint(cs_hdtext(t1))
 fn cs_progfnwcet(wcet, fnm, r) = if wcet > 0 then Cons(WcetSig(fnm, wcet), cs_pprogfn(r)) else cs_pprogfn(r)
 fn cs_parseattrs(ts, freef, wcet) = if cs_hdtext(ts) == "@" then (let t1 = cs_drop1(ts) in let anm = cs_hdtext(t1) in let t2 = cs_drop1(t1) in if anm == "freestanding" then cs_parseattrs(cs_skipatparen(t2), freef + 1, wcet) else if anm == "interrupt" then cs_parseattrs(cs_skipatparen(t2), freef + 16, wcet) else if anm == "export" then cs_parseattrs(cs_skipatparen(t2), if (freef / 32) % 2 == 0 then freef + 32 else freef, wcet) else if anm == "protect" then cs_parseattrs(cs_skipatparen(t2), freef + 64, wcet) else if anm == "bound" then cs_parseattrs(cs_skipatparen(t2), freef, cs_pboundval(t2)) else cs_parseattrs(cs_skipatparen(t2), freef, wcet)) else if cs_hdtext(ts) == "pub" and cs_hdtext(cs_drop1(ts)) == "extern" then cs_progextern(cs_drop1(cs_drop1(ts)), 1) else if cs_hdtext(ts) == "extern" then cs_progextern(cs_drop1(ts), 0) else if cs_hdtext(ts) == "pub" and cs_hdtext(cs_drop1(ts)) == "fn" then let ft = cs_drop1(cs_drop1(ts)) in cs_progfnwcet(wcet, cs_hdtext(ft), cs_pfnp(ft, 1, freef)) else if cs_hdtext(ts) == "fn" then let ft = cs_drop1(ts) in cs_progfnwcet(wcet, cs_hdtext(ft), cs_pfnp(ft, if (freef / 32) % 2 == 1 then 1 else 0, freef)) else cs_pprog(ts)
-fn cs_progat(t) = if cs_hdtext(t) == "gc" then cs_progtyped("gc", cs_ptype(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "soa" and cs_hdtext(cs_drop1(t)) == "type" then cs_progtyped("soa", cs_ptype(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "capability" or cs_hdtext(t) == "grant" then cs_pcapat(t) else if cs_hdtext(t) == "link" or cs_hdtext(t) == "need" then cs_pprog(cs_skipatparen(cs_drop1(t))) else cs_parseattrs(Cons({kind: "op", text: "@"}, t), 0, 0)
+fn cs_progat(t) = if cs_hdtext(t) == "gc" then cs_progtyped("gc", cs_ptype(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "soa" and cs_hdtext(cs_drop1(t)) == "type" then cs_progtyped("soa", cs_ptype(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "capability" or cs_hdtext(t) == "grant" then cs_pcapat(t) else if cs_hdtext(t) == "link" or cs_hdtext(t) == "need" then cs_pprog(cs_skipatparen(cs_drop1(t))) else cs_parseattrs(Cons({kind: "op", text: "@", line: 0, col: 0}, t), 0, 0)
 fn cs_progextern(t, pubf) = if cs_hdtext(t) == "llm" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), pubf, 4)) else if cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), pubf, 32)) else if cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), pubf, 32)) else cs_pprogfn(cs_pfnp(cs_drop1(t), pubf, 4))
 fn cs_progpub(t) = if cs_hdtext(t) == "total" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 2)) else if cs_hdtext(t) == "llm" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 4)) else if cs_hdtext(t) == "extern" then cs_progextern(cs_drop1(t), 1) else if cs_hdtext(t) == "kernel" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 8)) else if cs_hdtext(t) == "rule" then cs_progrule(cs_prule(cs_drop1(t))) else if cs_hdtext(t) == "effect" then let r = cs_peffect(cs_drop1(t)) in Cons(r.node, cs_pprog(r.rest)) else if cs_hdtext(t) == "temporal" and cs_hdtext(cs_drop1(t)) == "law" then cs_proglaw(cs_plaw(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "law" then cs_proglaw(cs_plaw(cs_drop1(t))) else cs_pprogfn(cs_pfnp(cs_drop1(t), 1, 0))
 fn cs_pprog(ts) = match ts
@@ -242,7 +243,8 @@ fn cs_pprogfn(r) = cs_pprogfn2(r.vsg, cs_pprogfn2(r.ksg, cs_pprogfn2(r.osg, cs_p
 fn cs_pprogfn2(sg, rest) = match sg
     Nil => rest
     _   => Cons(sg, rest)
-fn cs_parse(src) = cs_pprog(cs_lex(src, 0))
+fn cs_parse_full(src) = let lr = cs_lexsp(src, 0, 1, 1, Nil) in {prog: cs_pprog(lr.tokens), diags: lr.diags}
+fn cs_parse(src) = (cs_parse_full(src)).prog
 
 ## --- symbol table extraction ---
 fn cs_tystr(ty) = match ty
@@ -388,7 +390,7 @@ fn cs_ctorty(m) = match m
     Nil        => ""
     Cons(h, t) => h.en
 
-fn cs_unclosed_delimiter_diag(want) = cs_mkdiag("P0001", "parse", "expected closing delimiter '" + want + "' before end of input", "add '" + want + "'")
+fn cs_unclosed_delimiter_diag(want) = cs_mkdiag_s("P0001", "parse", "expected closing delimiter '" + want + "' before end of input", "add '" + want + "'", want, "insert '" + want + "' to close the delimiter before end of input", want)
 fn cs_has_unclosed_param(ps) = match ps
     Nil => 0
     Cons(p, r) => if p == "__lume_unclosed_params__" then 1 else cs_has_unclosed_param(r)
@@ -398,8 +400,31 @@ fn cs_unclosed_param_diags(prog) = match prog
         Fn(nm, ps, body) => if cs_has_unclosed_param(ps) == 1 then Cons(cs_unclosed_delimiter_diag(")"), Nil) else cs_unclosed_param_diags(t)
         _ => cs_unclosed_param_diags(t)
 
-fn cs_mkdiag(code, phase, msg, fix) = {code: code, severity: "error", phase: phase, message: msg, fixit: fix}
-fn cs_mkwarn(code, phase, msg, fix) = {code: code, severity: "warning", phase: phase, message: msg, fixit: fix}
+## Diagnostics carry an AI-first repair payload in addition to the human message:
+##   subj: the identifier/construct the diagnostic is about (drives span location)
+##   sug / repl: machine-readable suggestion (edit description + replacement text)
+##   span: source location {file, line, col}; line/col are resolved by `cs_diags_spanned`
+##         against the real source, and `file` is bound by the entry point that knows it.
+fn cs_mkdiag(code, phase, msg, fix) = {code: code, severity: "error", phase: phase, message: msg, fixit: fix, subj: "", sug: "", repl: "", span: {file: "", line: 0, col: 0}}
+fn cs_mkwarn(code, phase, msg, fix) = {code: code, severity: "warning", phase: phase, message: msg, fixit: fix, subj: "", sug: "", repl: "", span: {file: "", line: 0, col: 0}}
+fn cs_mkdiag_s(code, phase, msg, fix, subj, sug, repl) = {code: code, severity: "error", phase: phase, message: msg, fixit: fix, subj: subj, sug: sug, repl: repl, span: {file: "", line: 0, col: 0}}
+
+## --- source-span resolution: locate each diagnostic's subject in the real source ---
+## Diagnostics that already carry a concrete span (lex errors) keep it; every other
+## diagnostic is located by searching the source for its subject identifier (the `subj`
+## field, or the first single-quoted token of the message) with identifier word boundaries;
+## P0001 (unclosed delimiter) and subjects absent from the source point at end of input,
+## which is where the missing closer belongs. Every emitted diagnostic therefore carries a
+## real 1-based {line, col}, never a placeholder.
+fn cs_quoted_first(msg) = let a = cs_find_substr(msg, "'", 0, count(msg), 1) in if a >= count(msg) then "" else let b = cs_find_substr(msg, "'", a + 1, count(msg), 1) in if b >= count(msg) then "" else slice(msg, a + 1, b)
+fn cs_diag_subject(d) = if count(d.subj) > 0 then d.subj else cs_quoted_first(d.message)
+fn cs_span_scan(s, sub, i) = if i + count(sub) > count(s) then 0 - 1 else if slice(s, i, i + count(sub)) == sub then (if i == 0 or cs_isalnum(at(s, i - 1)) == 0 then (if i + count(sub) >= count(s) or cs_isalnum(at(s, i + count(sub))) == 0 then i else cs_span_scan(s, sub, i + 1)) else cs_span_scan(s, sub, i + 1)) else cs_span_scan(s, sub, i + 1)
+fn cs_lc_at(s, i, line, col, j) = if j >= i then {line: line, col: col} else if at(s, j) == "\n" then cs_lc_at(s, i, line + 1, 1, j + 1) else cs_lc_at(s, i, line, col + 1, j + 1)
+fn cs_eofpos(s) = cs_lc_at(s, count(s), 1, 1, 0)
+fn cs_diag_spanned(src, d) = if d.span.line > 0 then d else let subj = cs_diag_subject(d) in let ep = cs_eofpos(src) in let sp = (if count(subj) > 0 and cs_isalpha(at(subj, 0)) == 1 then (let i = cs_span_scan(src, subj, 0) in if i < 0 then ep else cs_lc_at(src, i, 1, 1, 0)) else ep) in {code: d.code, severity: d.severity, phase: d.phase, message: d.message, fixit: d.fixit, subj: d.subj, sug: d.sug, repl: d.repl, span: {file: d.span.file, line: sp.line, col: sp.col}}
+fn cs_diags_spanned(src, ds) = match ds
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_diag_spanned(src, h), cs_diags_spanned(src, t))
 fn cs_has_error_diags(ds) = match ds
     Nil        => 0
     Cons(h, t) => if h.severity == "error" then 1 else cs_has_error_diags(t)
@@ -2186,7 +2211,7 @@ fn cs_eval_prog(prog) = cs_joinsep(cs_eval_stmts(prog, cs_buildft(prog)), "\n")
 
 ## --- PUBLIC CALLABLE LIBRARY API (`use lcaas`) ---
 fn cs_collect_holes(prog) = let tt = cs_tcollect(prog) in let osigs = cs_ocollects(prog) in let vsigs = cs_vcollect_vsigs(prog) in let laws = cs_vcollect_laws(prog) in (cs_collect_holes_stmts(prog, tt.sigs, osigs, vsigs, laws, tt.ft)).holes
-fn caas_compile(src) = let ast0 = cs_parse(src) in let syntax_diags = cs_unclosed_param_diags(ast0) in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kt = {ksigs: cs_kcollect_effsigs(ast), edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, tt.ft) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_stmts(ast_filled, vsigs, invs, wcets, osigs, cs_buildft(ast_filled)) in let diags = cs_app(syntax_diags, cs_app(cs_p35_diags(osigs, ast0), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil))))))) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
+fn caas_compile(src) = let pf = cs_parse_full(src) in let ast0 = pf.prog in let syntax_diags = cs_app(pf.diags, cs_unclosed_param_diags(ast0)) in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kt = {ksigs: cs_kcollect_effsigs(ast), edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, tt.ft) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_stmts(ast_filled, vsigs, invs, wcets, osigs, cs_buildft(ast_filled)) in let diags = cs_diags_spanned(src, cs_app(syntax_diags, cs_app(cs_p35_diags(osigs, ast0), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil))))))) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
 
 fn caas_check(src) = caas_compile(src)
 fn caas_fill(src) = (caas_compile(src)).holes
@@ -2213,7 +2238,8 @@ fn cs_proof_json(p) = "{\"name\":\"" + cs_jesc(p.name) + "\",\"kind\":\"" + cs_j
 fn cs_proofs_json(ps) = match ps
     Nil        => ""
     Cons(h, t) => cs_proof_json(h) + (if cs_isnil(t) == 1 then "" else "," + cs_proofs_json(t))
-fn cs_diag_json(d) = "{\"code\":\"" + cs_jesc(d.code) + "\",\"severity\":\"" + cs_jesc(d.severity) + "\",\"phase\":\"" + cs_jesc(d.phase) + "\",\"message\":\"" + cs_jesc(d.message) + "\",\"fixit\":\"" + cs_jesc(d.fixit) + "\"}"
+fn cs_span_json(sp) = "{\"file\":\"" + cs_jesc(if count(sp.file) > 0 then sp.file else "module.src") + "\",\"line\":" + str(sp.line) + ",\"col\":" + str(sp.col) + "}"
+fn cs_diag_json(d) = "{\"code\":\"" + cs_jesc(d.code) + "\",\"severity\":\"" + cs_jesc(d.severity) + "\",\"phase\":\"" + cs_jesc(d.phase) + "\",\"message\":\"" + cs_jesc(d.message) + "\",\"fixit\":\"" + cs_jesc(d.fixit) + "\",\"span\":" + cs_span_json(d.span) + (if count(d.sug) > 0 then ",\"suggestion\":{\"description\":\"" + cs_jesc(d.sug) + "\",\"replacement\":\"" + cs_jesc(d.repl) + "\"}" else "") + "}"
 fn cs_diags_json(ds) = match ds
     Nil        => ""
     Cons(h, t) => if cs_isnil(t) == 1 then cs_diag_json(h) else cs_diag_json(h) + "," + cs_diags_json(t)
