@@ -7,16 +7,29 @@ type DP = record
     toks: [Token]
     pos:  int
     decimals: [str]
+    err:  str
+
+type DParseResult = record
+    prog: [DStmt]
+    err:  str
 
 type DDecimalParts = record
     coefficient: int
     scale: int
 
-fn dcur(p: DP) -> Token = p.toks[p.pos]
+fn dcur(p: DP) -> Token = p.toks[if p.pos < p.toks.len() then p.pos else p.toks.len() - 1]
+
 fn deat(p: mut DP) -> Token
-    let t = p.toks[p.pos]
-    p.pos += 1
+    let idx = if p.pos < p.toks.len() then p.pos else p.toks.len() - 1
+    let t = p.toks[idx]
+    if p.pos + 1 < p.toks.len()
+        p.pos += 1
     t
+
+fn dunsupported(p: mut DP, construct: str, line: int)
+    if p.err == ""
+        p.err = "construct '" + construct + "' (line " + str(line) + ") not supported by the Stage-0 checker — use the native toolchain"
+
 fn dnl(p: mut DP)
     while dcur(p).kind == Newline
         deat(p)
@@ -99,31 +112,53 @@ fn dpat(p: mut DP) -> Pat
         var subs = []
         if dcur(p).kind == Op and dcur(p).text == "("
             deat(p)
-            while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End
+            while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End and p.err == ""
                 subs.push(dpat(p))
                 if dcur(p).kind == Op and dcur(p).text == ","
                     deat(p)
+                elif not (dcur(p).kind == Op and dcur(p).text == ")")
+                    dunsupported(p, "unclosed '(' or elided ')' in pattern '" + t.text + "(...)'", t.line)
+                    return PCons(tag: t.text, subs: subs)
+            if not (dcur(p).kind == Op and dcur(p).text == ")")
+                dunsupported(p, "unclosed '(' in pattern '" + t.text + "(...)'", t.line)
+                return PCons(tag: t.text, subs: subs)
             deat(p)
         PCons(tag: t.text, subs: subs)
     else
         PBind(name: t.text)
 
 fn datom(p: mut DP) -> DExpr
+    if p.err != ""
+        return DInt(n: 0)
     if dcur(p).text == "own"
         deat(p)
         return dprimary(p)
+    if dcur(p).text == "fn" or dcur(p).text == "var" or dcur(p).text == "shard" or dcur(p).text == "scope" or dcur(p).text == "spawn" or dcur(p).text == "defer" or dcur(p).text == "errdefer" or dcur(p).text == "comptime" or dcur(p).text == "quote" or dcur(p).text == "splice"
+        let ut = deat(p)
+        dunsupported(p, ut.text, ut.line)
+        return DInt(n: 0)
     if dcur(p).kind == Op and dcur(p).text == "-" and p.pos + 1 < p.toks.len() and p.toks[p.pos + 1].kind == Decimal
         deat(p)
         let t = deat(p)
         let d = ddecimal_scan(t.text, 0, 0, 0, 0, 0)
         return DDecimal(coefficient: 0 - d.coefficient, scale: d.scale)
     if dcur(p).kind == Kw and dcur(p).text == "let"
-        deat(p)
+        let lt = deat(p)
         let lname = deat(p).text
+        if dcur(p).kind == Op and dcur(p).text == ":"
+            dunsupported(p, "typed local 'let " + lname + ": ...'", lt.line)
+            return DInt(n: 0)
+        if not (dcur(p).kind == Op and dcur(p).text == "=")
+            dunsupported(p, "malformed 'let' binding", lt.line)
+            return DInt(n: 0)
         deat(p)                          # =
         let lval = dexpr(p, 0)
         let old_decimals = p.decimals
         p.decimals = if ddecimal_expr(lval, old_decimals) then [lname, ..ddecimal_remove(old_decimals, lname)] else ddecimal_remove(old_decimals, lname)
+        if not (dcur(p).kind == Kw and dcur(p).text == "in")
+            p.decimals = old_decimals
+            dunsupported(p, "'let' without 'in'", lt.line)
+            return DInt(n: 0)
         deat(p)                          # in
         let lbody = dexpr(p, 0)
         p.decimals = old_decimals
@@ -136,7 +171,7 @@ fn datom(p: mut DP) -> DExpr
         deat(p)                          # fn
         let hop_nm = deat(p).text        # op_name
         deat(p)                          # (
-        while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End
+        while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End and p.err == ""
             deat(p)
         deat(p)                          # )
         if dcur(p).kind == Op and dcur(p).text == "->"
@@ -157,24 +192,36 @@ fn datom(p: mut DP) -> DExpr
             _ => do
                 return in_body
     if dcur(p).kind == Kw and dcur(p).text == "if"
-        deat(p)
+        let it = deat(p)
         let c = dexpr(p, 0)
+        if not (dcur(p).kind == Kw and dcur(p).text == "then")
+            dunsupported(p, "'if' without 'then'", it.line)
+            return DInt(n: 0)
         deat(p)                          # then
         let a = dexpr(p, 0)
+        if dcur(p).kind == Kw and dcur(p).text == "elif"
+            dunsupported(p, "'elif' conditional chain", dcur(p).line)
+            return DInt(n: 0)
+        if not (dcur(p).kind == Kw and dcur(p).text == "else")
+            dunsupported(p, "'if' without 'else'", it.line)
+            return DInt(n: 0)
         deat(p)                          # else
         let b = dexpr(p, 0)
         return DIf(cond: c, then_val: a, else_val: b)
     if dcur(p).kind == Kw and dcur(p).text == "match"
-        deat(p)
+        let mt = deat(p)
         let scrut = dexpr(p, 0)
         dnl(p)
         var arms = []
         if dcur(p).kind == Indent
             deat(p)
             dnl(p)
-            while dcur(p).kind != Dedent and dcur(p).kind != End
+            while dcur(p).kind != Dedent and dcur(p).kind != End and p.err == ""
                 let before = p.pos
                 let pat = dpat(p)
+                if not (dcur(p).kind == Op and dcur(p).text == "=>")
+                    dunsupported(p, "malformed 'match' arm", dcur(p).line)
+                    return DMatch(scrut: scrut, arms: arms)
                 deat(p)                  # =>
                 let body = dexpr(p, 0)
                 arms.push(Arm(pat: pat, body: body))
@@ -183,6 +230,8 @@ fn datom(p: mut DP) -> DExpr
                     return DMatch(scrut: scrut, arms: arms)
             if dcur(p).kind == Dedent
                 deat(p)
+        else
+            dunsupported(p, "inline or parenthesized 'match'", mt.line)
         return DMatch(scrut: scrut, arms: arms)
     let t = deat(p)
     if t.kind == Int
@@ -194,44 +243,77 @@ fn datom(p: mut DP) -> DExpr
         DStr(value: t.text[1..t.text.len() - 1])
     elif t.kind == Op and t.text == "("
         let e = dexpr(p, 0)
+        if not (dcur(p).kind == Op and dcur(p).text == ")")
+            dunsupported(p, "unclosed '(' in parenthesized expression", t.line)
+            return e
         deat(p)
         e
     elif t.kind == Op and t.text == "["
         var elems = []
-        while not (dcur(p).kind == Op and dcur(p).text == "]") and dcur(p).kind != End
+        while not (dcur(p).kind == Op and dcur(p).text == "]") and dcur(p).kind != End and p.err == ""
             elems.push(dexpr(p, 0))
             if dcur(p).kind == Op and dcur(p).text == ","
                 deat(p)
+            elif not (dcur(p).kind == Op and dcur(p).text == "]")
+                dunsupported(p, "unclosed '[' in list literal", t.line)
+                return DList(elems: elems)
+        if not (dcur(p).kind == Op and dcur(p).text == "]")
+            dunsupported(p, "unclosed '[' in list literal", t.line)
+            return DList(elems: elems)
         deat(p)
         DList(elems: elems)
     elif t.kind == Op and t.text == "{{"
         var fields = []
-        while not (dcur(p).kind == Op and dcur(p).text == "}}") and dcur(p).kind != End
-            let fname = deat(p).text
+        while not (dcur(p).kind == Op and dcur(p).text == "}}") and dcur(p).kind != End and p.err == ""
+            let ft = deat(p)
+            if not (dcur(p).kind == Op and dcur(p).text == ":")
+                dunsupported(p, "brace block '{{ ... }}'", ft.line)
+                return DRec(fields: fields)
             deat(p)                      # :
-            fields.push(RecField(name: fname, value: dexpr(p, 0)))
+            fields.push(RecField(name: ft.text, value: dexpr(p, 0)))
             if dcur(p).kind == Op and dcur(p).text == ","
                 deat(p)
+            elif not (dcur(p).kind == Op and dcur(p).text == "}}")
+                dunsupported(p, "unclosed '{{' in record literal", ft.line)
+                return DRec(fields: fields)
+        if not (dcur(p).kind == Op and dcur(p).text == "}}")
+            dunsupported(p, "unclosed '{{' in record literal", t.line)
+            return DRec(fields: fields)
         deat(p)
         DRec(fields: fields)
     elif t.kind == Ident and is_upper(t.text)
         var args = []
+        if dcur(p).kind == Op and dcur(p).text == "{{"
+            dunsupported(p, "nominal record literal '" + t.text + "{{...}}'", t.line)
+            return DCons(tag: t.text, args: args)
         if dcur(p).kind == Op and dcur(p).text == "("
             deat(p)
-            while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End
+            while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End and p.err == ""
                 args.push(dexpr(p, 0))
                 if dcur(p).kind == Op and dcur(p).text == ","
                     deat(p)
+                elif not (dcur(p).kind == Op and dcur(p).text == ")")
+                    dunsupported(p, "unclosed '(' or elided ')' in constructor '" + t.text + "(...)'", t.line)
+                    return DCons(tag: t.text, args: args)
+            if not (dcur(p).kind == Op and dcur(p).text == ")")
+                dunsupported(p, "unclosed '(' or elided ')' in constructor '" + t.text + "(...)'", t.line)
+                return DCons(tag: t.text, args: args)
             deat(p)
         DCons(tag: t.text, args: args)
     elif t.kind == Ident
         if dcur(p).kind == Op and dcur(p).text == "("
             deat(p)
             var cargs = []
-            while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End
+            while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End and p.err == ""
                 cargs.push(dexpr(p, 0))
                 if dcur(p).kind == Op and dcur(p).text == ","
                     deat(p)
+                elif not (dcur(p).kind == Op and dcur(p).text == ")")
+                    dunsupported(p, "unclosed '(' or elided ')' in call '" + t.text + "(...)'", t.line)
+                    return DCall(name: t.text, args: cargs)
+            if not (dcur(p).kind == Op and dcur(p).text == ")")
+                dunsupported(p, "unclosed '(' or elided ')' in call '" + t.text + "(...)'", t.line)
+                return DCall(name: t.text, args: cargs)
             deat(p)
             DCall(name: t.text, args: cargs)
         else
@@ -241,10 +323,13 @@ fn datom(p: mut DP) -> DExpr
 
 fn dprimary(p: mut DP) -> DExpr
     var e = datom(p)
-    while dcur(p).kind == Op and (dcur(p).text == "[" or dcur(p).text == ".")
+    while dcur(p).kind == Op and (dcur(p).text == "[" or dcur(p).text == ".") and p.err == ""
         if dcur(p).text == "["
-            deat(p)
+            let bt = deat(p)
             let idx = dexpr(p, 0)
+            if not (dcur(p).kind == Op and dcur(p).text == "]")
+                dunsupported(p, "unclosed '[' in index expression", bt.line)
+                return e
             deat(p)
             e = DIndex(coll: e, idx: idx)
         else
@@ -254,7 +339,7 @@ fn dprimary(p: mut DP) -> DExpr
 
 fn dexpr(p: mut DP, min_bp: int) -> DExpr
     var left = dprimary(p)
-    while true
+    while p.err == ""
         let t = dcur(p)
         let isop = t.kind == Op or (t.kind == Kw and (t.text == "and" or t.text == "or"))
         if not isop
@@ -289,6 +374,9 @@ fn dwrap_contract(fname: str, low_body: DExpr, reqs: [DExpr], enss: [DExpr]) -> 
 
 fn dstmt(p: mut DP) -> DStmt
     let t = dcur(p)
+    if t.text == "type" or t.text == "trait" or t.text == "impl" or t.text == "pub" or t.text == "async" or t.text == "total" or t.text == "kernel" or t.text == "extern" or t.text == "law" or t.text == "temporal" or t.text == "rule" or t.text == "resource" or t.text == "@"
+        dunsupported(p, t.text, t.line)
+        return DExprS(value: DInt(n: 0))
     if t.text == "effect"
         deat(p)                          # effect
         let _ = deat(p).text             # EffectName
@@ -297,7 +385,7 @@ fn dstmt(p: mut DP) -> DStmt
         let opnm = deat(p).text          # op_name
         deat(p)                          # (
         var opps = []
-        while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End
+        while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End and p.err == ""
             opps.push(deat(p).text)
             if dcur(p).kind == Op and dcur(p).text == ","
                 deat(p)
@@ -312,16 +400,19 @@ fn dstmt(p: mut DP) -> DStmt
         let fname = deat(p).text
         deat(p)                          # (
         var params = []
-        while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End
+        while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End and p.err == ""
             if dcur(p).text == "own"
                 deat(p)
             params.push(deat(p).text)
             if dcur(p).kind == Op and dcur(p).text == ":"
                 deat(p)
-                while not (dcur(p).kind == Op and (dcur(p).text == "," or dcur(p).text == ")")) and dcur(p).kind != End
+                while not (dcur(p).kind == Op and (dcur(p).text == "," or dcur(p).text == ")")) and dcur(p).kind != End and p.err == ""
                     deat(p)
             if dcur(p).kind == Op and dcur(p).text == ","
                 deat(p)
+        if not (dcur(p).kind == Op and dcur(p).text == ")")
+            dunsupported(p, "unclosed parameter list in 'fn " + fname + "'", t.line)
+            return DFnS(name: fname, params: params, body: DInt(n: 0))
         deat(p)                          # )
         if dcur(p).kind == Op and dcur(p).text == "->"
             deat(p)
@@ -330,24 +421,30 @@ fn dstmt(p: mut DP) -> DStmt
             deat(p)
             if dcur(p).kind == Op and dcur(p).text == "{{"
                 deat(p)
-                while not (dcur(p).kind == Op and dcur(p).text == "}}") and dcur(p).kind != End
+                while not (dcur(p).kind == Op and dcur(p).text == "}}") and dcur(p).kind != End and p.err == ""
                     deat(p)
                 deat(p)
             else
                 deat(p)
         var reqs = []
         var enss = []
-        while dcur(p).text == "requires" or dcur(p).text == "ensures"
+        while (dcur(p).text == "requires" or dcur(p).text == "ensures") and p.err == ""
             let kw = deat(p).text
             if kw == "requires"
                 reqs.push(dexpr(p, 0))
             else
                 enss.push(dexpr(p, 0))
+        if not (dcur(p).kind == Op and dcur(p).text == "=")
+            dunsupported(p, "function declaration syntax near '" + dcur(p).text + "'", t.line)
+            return DFnS(name: fname, params: params, body: DInt(n: 0))
         deat(p)                          # =
         return DFnS(name: fname, params: params, body: dwrap_contract(fname, dexpr(p, 0), reqs, enss))
     if t.kind == Kw and t.text == "let"
         deat(p)
         let name = deat(p).text
+        if not (dcur(p).kind == Op and dcur(p).text == "=")
+            dunsupported(p, "top-level 'let " + name + "' syntax", t.line)
+            return DLet(name: name, value: DInt(n: 0))
         deat(p)                          # =
         let value = dexpr(p, 0)
         p.decimals = if ddecimal_expr(value, p.decimals) then [name, ..ddecimal_remove(p.decimals, name)] else ddecimal_remove(p.decimals, name)
@@ -360,14 +457,17 @@ fn dstmt(p: mut DP) -> DStmt
         # value is discarded. (`print` is not a keyword, so it is matched by text above.)
         DExprS(value: dexpr(p, 0))
 
-fn parse_data_program(src: str) -> [DStmt]
-    var p = DP(toks: lex_layout(src), pos: 0, decimals: [])
+fn parse_data_checked(src: str) -> DParseResult
+    var p = DP(toks: lex_layout(src), pos: 0, decimals: [], err: "")
     var prog = []
     dnl(p)
-    while dcur(p).kind != End
+    while dcur(p).kind != End and p.err == ""
         let before = p.pos
         prog.push(dstmt(p))
         dnl(p)
         if p.pos == before
-            return prog
-    prog
+            return DParseResult(prog: prog, err: p.err)
+    DParseResult(prog: prog, err: p.err)
+
+fn parse_data_program(src: str) -> [DStmt]
+    parse_data_checked(src).prog
