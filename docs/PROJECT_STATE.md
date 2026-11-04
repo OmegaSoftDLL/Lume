@@ -365,7 +365,14 @@ in its catalogue; a brand-new language like Lume cannot appear there via `.gitat
 scaffolding are vendored so the bar is not dominated by C, and the "100% Lume" signal lives in the
 README badge, the repo description and topics.
 
-## 12. Waves 1–6 Consolidation & `v0.3.0-alpha.6` Status
+## 12. Waves 1–10 Consolidation, `v0.3.0-rc.3` Status & Wave-by-Wave Audit Registry
 
-All phases (Phases 0–5), Inflection Stages A–D, and Waves 1–6 (`v0.3.0-alpha` through `v0.3.0-alpha.6`) are implemented and verified in 100% Lume (`stage2 == stage3` bit-identical, `24/24 PASS` with `0 UNKNOWN` and `0 FAIL` in `acceptance/matrix.json`, and `75` verified files on Linux / `78` on Windows in `MANIFEST.sha256`). See `docs/39-wave6-complete-roadmap.md` for full Wave 6 architecture and AI-first capability details.
+All phases (Phases 0–5), Inflection Stages A–D, and Waves 1–10 (`v0.3.0-alpha` through `v0.3.0-rc.3`) are implemented in 100% Lume (`stage2 == stage3` bit-identical, `24/24 PASS` with `0 UNKNOWN` and `0 FAIL` in `acceptance/matrix.json`). See `docs/PHASES_AND_WAVES_COMPLETE.md` for the full reference of all Stages, Phases (0–5), and Waves (1–10).
+
+### Completed Wave-by-Wave Line-by-Line Audits & Fixes
+- **Wave 1 (`v0.3.0-alpha` — `docs/WAVE_01_AUDIT.md`, commit `543dac7`):** Verified all 7 Wave 1 subsystems (`--build-timeout-ms`, `--incremental`, `arena_ok.src` `8/8`, `fs.src` `11/11`, `bytes.src` `20/20`, `fs_path_exists_ok.src` `3/3`, `fs_read_byte_ok.src` `7/7`, `lume evolve`, `linteractive.src`, `install.src` `5/5`, `llm_gen_eval.src` `4/4`) and core fixes (`#450`, `#451`, `52fb3e8`, `045adf8`, `c44b411`), plus committed the 100%-real `compiler/stage1/lume_crypto_blockchain_engine.src` (`9/9` unit tests passing, `8/8` `QF_LIA` obligations proven by `lcert`).
+- **Wave 2 (`v0.3.0-alpha.2` — `docs/WAVE_02_AUDIT.md`, commit `8ae6618`):** Verified all 6 Wave 2 subsystems (`capsule.src` `2/2`, `capsule_ok.src` `5/5`, `arena_ok.src` `8/8`, `lume build/run --memory` `RUSAGE_SELF`/`RUSAGE_CHILDREN`, `small_ints` cache `[-1..1024]`, self-tail-call `.Ltail_<fn>` at 100,000 recursion depth, and `[E0200]` rejection of `__lume_arena_new` in `/ pure`).
+- **Wave 3 (`v0.3.0-alpha.3` — `docs/WAVE_03_AUDIT.md`, commit `af4a532`):** Verified all 4 Wave 3 subsystems (`lume symbolize`, `scripts/llm_gen_eval.src` `124/250` tokens at `100%` proof coverage, 3-way oracle equivalence `lume0 == lumec == gcc -O2`), and fixed a real runtime-boundary bug in `compiler/stage1/lprotect.src` (`lp_scan_lsym` and `lp_collect_ufns` now stop at `alloc:` as well as `_start:`, preventing internal runtime labels like `alloc_done:` from being renamed during `lume build --protect standard --lsym`).
+- **Wave 4 (`v0.3.0-alpha.4` — `docs/WAVE_04_AUDIT.md`, commit `8835f9c`):** Verified all 5 Wave 4 subsystems (`scripts/amalgamate.src` `1/1`, `scripts/zero_c.src` `15/15`, `comptime embed("path")` `[E0200]`/`[C0271]`, `comptime table_schema(RecordType)` `[D0273]`, `compiler/stage1/p35_ok.src` `6/6`, `compiler/stage1/lprotect.src` `[W0002]` `2/2`), and upgraded `wasm_sandbox_verify` in `compiler/stage1/ltarget.src` (`11/11` tests passing) with a binary ULEB128 WebAssembly section walker (`wasm_read_uleb`, `wasm_walk_sections`, `wasm_verify_import_sec`, `wasm_parse_mem_sec`) that inspects Section 2 (Import Section) and Section 5 (Memory Section `1..16` pages).
+
 
