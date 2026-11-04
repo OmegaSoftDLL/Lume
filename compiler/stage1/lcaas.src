@@ -3063,9 +3063,13 @@ fn cs_tl_str(xs) = match xs
     Nil        => Nil
     Cons(_, t) => t
 
+fn cs_skip_indented_lines(ls) = match ls
+    Nil        => Nil
+    Cons(h, t) => let ch = cs_chomp(h) in let tr = lc_trim(ch) in if count(ch) > 0 and (at(ch, 0) == " " or at(ch, 0) == "\t" or (count(tr) > 0 and at(tr, 0) == "=")) then cs_skip_indented_lines(t) else ls
+
 fn cs_patch_fn_lines(ls, fn_name, new_fn, replaced) = match ls
     Nil        => {lines: Nil, hit: replaced}
-    Cons(h, t) => let tr = lc_trim(h) in let p1 = "fn " + fn_name + "(" in let p2 = "pub fn " + fn_name + "(" in if cs_startswith(tr, p1) == 1 or cs_startswith(tr, p2) == 1 then let rest = cs_patch_fn_lines(t, fn_name, new_fn, 1) in {lines: Cons(cs_chomp(new_fn), rest.lines), hit: 1} else let rest = cs_patch_fn_lines(t, fn_name, new_fn, replaced) in {lines: Cons(cs_chomp(h), rest.lines), hit: rest.hit}
+    Cons(h, t) => let tr = lc_trim(h) in let p1 = "fn " + fn_name + "(" in let p2 = "pub fn " + fn_name + "(" in if cs_startswith(tr, p1) == 1 or cs_startswith(tr, p2) == 1 then let rest = cs_patch_fn_lines(cs_skip_indented_lines(t), fn_name, new_fn, 1) in {lines: Cons(cs_chomp(new_fn), rest.lines), hit: 1} else let rest = cs_patch_fn_lines(t, fn_name, new_fn, replaced) in {lines: Cons(cs_chomp(h), rest.lines), hit: rest.hit}
 
 fn caas_patch_fn_json(body) = let sp = cs_split2(body) in let header = sp.a in let orig_src = sp.b in let ls_hdr = lc_split_lines(header, 0, count(header)) in let fn_name = lc_trim(cs_hd_str(ls_hdr)) in let new_fn = cs_chomp(cs_joinsep(cs_tl_str(ls_hdr), "\n")) in let orig_ls = lc_split_lines(orig_src, 0, count(orig_src)) in let pr = cs_patch_fn_lines(orig_ls, fn_name, new_fn, 0) in let patched_src = cs_chomp(cs_joinsep(pr.lines, "\n")) + "\n" in let r = caas_compile(patched_src) in let pcnt = lc_count_proven(r.proofs) in if pr.hit == 1 and r.ok == 1 then "{\"ok\":true,\"mode\":\"patch-fn\",\"status\":\"applied\",\"function\":\"" + cs_jesc(fn_name) + "\",\"rollback\":false,\"proven_count\":" + str(pcnt) + ",\"patched_source\":\"" + cs_jesc(patched_src) + "\",\"diagnostics\":[]}" else "{\"ok\":false,\"mode\":\"patch-fn\",\"status\":\"rolled_back\",\"function\":\"" + cs_jesc(fn_name) + "\",\"rollback\":true,\"restored_source\":\"" + cs_jesc(orig_src) + "\",\"diagnostics\":[" + cs_diags_json(r.diagnostics) + "]}"
 
