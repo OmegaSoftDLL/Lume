@@ -3083,6 +3083,15 @@ case "$_sub" in
     targets)
         cmd_targets "$@"
         ;;
+    manual|man|guide|manual-pt|man-pt|guia)
+        if [ -f "$ROOT/docs/LUME_MANUAL_PT_BR.md" ] && { [ "${1:-}" = "--pt" ] || [ "${1:-}" = "pt" ]; }; then
+            cat "$ROOT/docs/LUME_MANUAL_PT_BR.md"
+        elif [ -f "$ROOT/docs/LUME_MANUAL_EN.md" ]; then
+            cat "$ROOT/docs/LUME_MANUAL_EN.md"
+        else
+            usage
+        fi
+        ;;
     describe)
         _d_in=$(mktemp)
         printf '@cmd describe\n' > "$_d_in"

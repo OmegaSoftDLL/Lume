@@ -1,0 +1,348 @@
+# ============================================================================
+# LINGUAGEM LUME — MANUAL INTERNO PARA HUMANOS E IA (v0.3.0-rc.3 / Onda 10)
+# Edicao 2026 | Zero-C Self-Hosted | "Lume gera Lume"
+# ============================================================================
+
+Bem-vindo ao Manual Interno da Lume! Embora a Lume tenha sido projetada como
+AI-First (onde a propria linguagem sintetiza, prova e evolui codigo), ela foi
+construida para que qualquer programador humano possa programar com clareza,
+seguranca matematica e controle total da maquina.
+
+## COMO USAR ESTE MANUAL NO TERMINAL
+  lume manual --pt                Mostrar este indice em Portugues (pt-BR)
+  lume manual --pt <capitulo>     Ler um capitulo (ex: lume manual --pt sintaxe)
+  lume manual --pt tudo           Ler todos os 10 capitulos completos de uma vez
+  lume manual <chapter>           Ler o manual em Ingles (EN)
+  lume manual --json [capitulo]   Emitir manual estruturado em JSON
+  lume manual --pt --export <f>   Exportar o manual completo em Markdown (.md)
+  lume help <capitulo>            Atalho direto para qualquer capitulo
+
+## CAPITULOS DO MANUAL (10 CAPITULOS)
+  1. visao-geral (overview)   Arquitetura (.lume vs .src), Inicio Rapido e Fluxo
+  2. sintaxe     (syntax)     Gramatica Completa, fn/type/match/let e Regras do Compilador
+  3. tipos       (types)      Tipos Primitivos, Registros, ADTs, Ownership, Decimal, Tensor
+  4. contratos   (contracts)  Verificacao Formal (requires, ensures, law, QF_LIA, WCET)
+  5. efeitos     (effects)    Efeitos Algebricos (/ pure), Arenas de Memoria e E-Capsules
+  6. biblioteca  (stdlib)     Biblioteca Padrao e Modulos Soberanos (fs, db, net, gui, nn...)
+  7. alvos       (targets)    27 Alvos Universais, MIR SSA, APK/IPA/ISO/UEFI e RTL
+  8. comandos    (commands)   Guia Completo de Comandos CLI (Fases 1-5 e Ondas 1-10)
+  9. exemplos    (examples)   6 Programas Completos Prontos para Copiar e Rodar
+ 10. erros       (errors)     Tabela de Codigos de Erro ([P0002]..[W0002]) e Solucoes
+
+# CAPITULO 1: VISAO GERAL E INICIO RAPIDO PARA HUMANOS
+
+## 1.1 O Que e a Linguagem Lume?
+Lume e uma linguagem de programacao auto-hospedada (Zero-C: o compilador `lumec`,
+o montador `lasm` e o driver `lcli` sao escritos 100% em Lume e compilam a si
+mesmos de forma bit-identica `stage2 == stage3`).
+
+Ela possui duas camadas de sintaxe:
+1. `.src` (Lume-Core): A sintaxe funcional/expressiva canonica compilada diretamente
+   pelo compilador nativo `lumec`. E a forma mais direta e recomendada para programar.
+2. `.lume` (Surface Lume): Sintaxe de blocos/indentacao que desce para Lume-Core.
+
+## 1.2 Seu Primeiro Programa em 30 Segundos
+1. Crie o arquivo `ola.src` (sempre com quebras de linha LF `\n`):
+   ```lume
+   fn dobro_positivo(x: int) -> int
+     requires x >= 0
+     ensures result >= x
+   = x * 2
+
+   fn test_dobro() = dobro_positivo(21) == 42
+
+   print "Resultado: " + str(dobro_positivo(21))
+   ```
+2. Executar imediatamente:
+   `lume run ola.src`             -> imprime `Resultado: 42`
+3. Rodar os testes unitarios (`fn test_*()`):
+   `lume test ola.src`            -> executa todas as funcoes `test_*`
+4. Provar matematicamente os contratos (`requires`/`ensures`):
+   `lume prove ola.src`           -> gera a prova formal `QF_LIA` em JSON
+5. Compilar um executavel nativo independente (ELF64 / PE64):
+   `lume build ola.src -o ola`
+
+# CAPITULO 2: SINTAXE, GRAMATICA E REGRAS DO COMPILADOR
+
+## 2.1 Declaracoes de Topo em Arquivos `.src`
+Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaracoes:
+- `use <modulo>`               Importa um modulo (ex: `use fs`, `use map`, `use db`).
+- `type Nome = ...`            Define um Tipo Algebrico (ADT) ou registro.
+- `fn nome(a, b) = expr`       Define uma funcao.
+- `pub fn nome(a, b) = expr`   Define uma funcao publica exportada.
+- `law nome(a: int) = expr`    Define uma lei matematica universal provada pelo compilador.
+- `print <expr>`               Ponto de entrada executavel do programa.
+
+REGRA DE OURO 1: Nao existe `let x = 10` solto no topo do arquivo `.src`! Em Lume,
+`let x = valor in corpo` e uma expressao usada dentro de `fn` ou `print`.
+
+## 2.2 Expressoes, Variaveis Locais e Operadores
+- Variavel local (`let..in`): `let a = 10 in let b = 20 in a + b`
+- Condicional (`if..then..else`): `if x > 0 then "positivo" else "zero ou negativo"`
+- Operadores logicos (curto-circuito): `a == 1 and b == 2`, `x < 0 or x > 10`, `not ativo`
+- Aritmetica: `+`, `-`, `*`, `/`, `%`
+- Comparacao: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Concatenacao/interpolacao: `"Valor = " + str(100)` (nota: `{ident}` dentro de strings
+                             faz interpolacao automatica; separe `"{" + s + "}"` para chave literal)
+- Registros (Structs): `let p = {x: 10, y: 20} in p.x + p.y`
+- Listas encadeadas: `Nil` (lista vazia) e `Cons(cabeca, cauda)`
+- Comentarios: `## Comentarios comecam com dois sustenidos`
+
+## 2.3 Reconhecimento de Padroes (`match`)
+Voce pode usar `match` de duas formas:
+1. No topo do corpo de uma funcao auxiliar (padrao classico da Lume):
+   ```lume
+   fn soma_lista(xs) = match xs
+       Nil        => 0
+       Cons(h, t) => h + soma_lista(t)
+   ```
+2. Inline com chaves `match expr { Padrao => corpo, ... }` (introduzido na Onda 7):
+   ```lume
+   fn tamanho_um(xs) = let r = match xs { Nil => 0, Cons(_, Nil) => 1, Cons(_, _) => 2 } in r
+   ```
+REGRA DE OURO 2: Nunca coloque um `match` sem chaves dentro de `let x = ... in match ...`;
+use uma funcao auxiliar `fn aux(x) = match x ...` ou use chaves `match x { ... }`.
+REGRA DE OURO 3: Salve sempre seus arquivos com quebra de linha LF (`\n`), nunca CRLF (`\r\n`).
+
+# CAPITULO 3: SISTEMA DE TIPOS, OWNERSHIP, FINANCAS E TENSORES
+
+## 3.1 Tipos Fundamentais
+- `int`               Inteiro de 64 bits com sinal
+- `bool`              Booleano (`true` / `false`, ou `1` / `0` em Lume-Core)
+- `str`               String UTF-8 imutavel com tamanho em cache `O(1)` (`count(s)`)
+- `bytes`             Buffer de bytes seguro com verificacao de limites (`std.bytes`)
+- `List[T]`           Lista imutavel (`Nil` | `Cons(h, t)`)
+- `Option[T]`         `None` | `Some(v)`
+- `Result[T, E]`      `Ok(v)` | `Err(e)`
+
+## 3.2 Tipos de Dados Algebricos (`type`)
+```lume
+type Pagamento =
+    Pix(int)
+  | Cartao(int, int)
+
+fn taxa(p) = match p
+    Pix(valor)            => 0
+    Cartao(valor, tarifa) => tarifa
+```
+
+## 3.3 Tipos Financeiros e de Dados (`decimal`, `money`, `table`)
+- `decimal(p, s)`     Decimal exato de ponto fixo (sem erros de ponto flutuante IEEE 754).
+- `money[BRL]`        Dinheiro tipado por moeda (`money[BRL]`, `money[USD]`). Somar moedas
+                      diferentes sem conversao explicita gera erro em tempo de compilacao!
+- `table[T]`          Tabela relacional tipada com suporte a `persist table` (WAL duravel).
+
+## 3.4 Tensores Verificados e Diferenciacao Automatica (`tensor`)
+- `tensor[f32, 64, 128]` Verifica dimensoes em tempo de compilacao (`[T0300]`).
+- Suporta autodiff reverso e direto (`grad`, `value_and_grad`, `jvp`, `vjp`).
+
+## 3.5 Ownership, Borrow Checker e Capacidades de Hardware
+- `own T` (posse linear), `ref T` (emprestimo compartilhado), `mut T` (emprestimo exclusivo)
+  verificados em tempo de compilacao (`[O0001]`..`[O0030]`) com reuso Perceus.
+- Capacidades lineares de hardware para sistemas operacionais: `cap[Page]`, `cap[Port]`, `cap[Irq]`.
+
+# CAPITULO 4: CONTRATOS, LEIS MATEMATICAS E VERIFICACAO FORMAL
+
+## 4.1 Pre-condicoes (`requires`) e Pos-condicoes (`ensures`)
+Qualquer funcao em Lume pode carregar contratos provados matematicamente pelo solver
+`QF_LIA` embutido no compilador:
+```lume
+fn sacar(saldo: int, valor: int) -> int
+  requires saldo >= valor and valor > 0
+  ensures result >= 0 and result < saldo
+= saldo - valor
+```
+Se houver qualquer possibilidade de `result < 0`, o compilador rejeita o codigo com
+`[V0001]` e mostra o contraexemplo exato!
+
+## 4.2 Leis Universais (`law`)
+```lume
+law simetria_soma(a: int, b: int) = (a + b) == (b + a)
+```
+
+## 4.3 Limite de Ciclos de Tempo Real (`@bound(cycles: N)`)
+Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
+
+## 4.4 Comandos de Prova e Autocura
+- `lume prove <arquivo.src>`           Prova todos os contratos e leis.
+- `lume certify <arquivo.src> --json`  Gera certificado criptografico de prova.
+- `lume heal <arquivo.src>`            Repara automaticamente contratos violados!
+- `lume equiv <spec.src> <rapido.src>` Prova que duas funcoes fazem a mesma coisa.
+- `lume agent cegis <arquivo.src>`     Sintetiza lacunas `??` usando CEGIS.
+
+# CAPITULO 5: EFEITOS ALGEBRICOS, MEMORIA DETERMINISTICA E ARENAS
+
+## 5.1 Efeitos Algebricos (`/ pure`, `/ {io, fs, net}`)
+- Funcoes marcadas com `/ pure` sao matematicamente puras: nao podem acessar disco,
+  rede, processos ou mutar estado externo. Qualquer violacao gera `[E0200]`.
+
+## 5.2 Memoria sem Pausas de Garbage Collector (`std.arena`)
+A Lume usa reuso estatico Perceus + cache de inteiros pequenos (`[-1024..1024]`) +
+tail-call `jmp` + arenas regionais `O(1)`:
+- `let a = arena_new(65536)`   Cria uma arena de 64 KB
+- `arena_enter(a)` / `arena_leave(a)` / `arena_reset(a)` / `arena_destroy(a)`
+- `heap_stats()`               Retorna estatisticas do heap em tempo real
+- `lume run --memory <arq.src>` Mede o pico de memoria fisica (RSS em KB)
+
+## 5.3 E-Capsules Reprodutiveis (`std.capsule`)
+- `lume capsule seal <arq.src> -o <saida.lcaps>` Sela codigo, entradas, saidas e SHA-256.
+- `lume capsule replay <saida.lcaps>`            Reproduz e audita a execucao selada.
+
+# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME
+
+## 6.1 Funcoes Nativas (Sempre Disponiveis sem `use`)
+- Texto (`str`): `count(s)`, `at(s, i)`, `slice(s, ini, fim)`, `slicen(s, ini, tam)`,
+                 `ord(c)`, `str_from_byte(n)`, `str(n)`, `toint(s)`
+- Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`, `fs_write_sync(caminho, texto)`,
+                   `fs_path_exists(caminho)`, `fs_read_byte(caminho, offset)`, `fs_file_size(caminho)`
+- Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`, `os_getpid()`, `os_exit(cod)`,
+                  `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`
+- Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)
+
+## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)
+- `use fs`             Arquivos seguros com `with_file` (fechamento garantido)
+- `use bytes`          Buffers binarios verificados (`bytes_from_str`, `bytes_get`)
+- `use map`            Dicionario hash de 256 buckets (`map_empty`, `map_put`, `map_get`)
+- `use arena`          Arenas de memoria de alta velocidade (`with_arena`)
+- `use capsule`        Capsulas de auditoria e replay deterministico
+- `use fs_sha256_file` Hash criptografico FIPS 180-4 (`lc_sha256(s)`, `fs_sha256_file(p)`)
+- `use db`             Banco de dados B+Tree + WAL ACID com recuperacao de falhas e SQL
+- `use net`            Redes TCP/IP, checksum RFC 793, HTTP/1.1 e TLS 1.3 binario (RFC 8446)
+- `use gui`            Cliente grafico binario X11 (`0x42` MSB) e arvore reativa Web
+- `use nn`             Redes neurais, serializador binario `.safetensors` e Protobuf `.onnx`
+- `use async_rt`       Pool de processos paralelos do SO (`async_run_workers_os`)
+- `use protect`        Protecao de software P33 (ofuscacao CFG, criptografia de strings, `[W0002]`)
+- `use lgenesis`       Sintetizador autonomo full-stack para 8 alvos simultaneos
+- `use lsentience`     Motor Transcendente (Computacao Quantica, DNA, HDC, DEQ, LLM-Forge, Triade)
+- `use lume_crypto_blockchain_engine` Criptomoedas, SHA-256 PoW, UTXO, DeFi AMM e Kelly Criterion
+
+# CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES
+
+## 7.1 Compilacao Cruzada Direta (`lume build --target <alvo> <arq.src> -o <saida>`)
+- Desktop/Servidor: `x86_64-linux-elf`, `aarch64-linux-elf`, `riscv64-linux-elf`,
+                    `x86_64-windows-pe` (PE64 nativo com IAT `kernel32.dll`), `aarch64-macos-macho`
+- Mobile (Lojas):   `aarch64-android-apk`, `aarch64-ios-ipa`
+- Bare-Metal / SO:  `x86_64-uefi-pe`, `x86_64-boot-iso`, `x86_64-baremetal-kernel`, `ihex`
+- Web / Bytecode:   `wasm32-wasi` (com `@wasm-sandbox` `[I0275]`), `lumb`
+- GPUs / IA:        `nvptx64-nvidia-cuda` (CUDA PTX 8.0), `spirv64-vulkan-shader` (SPIR-V 1.6)
+- Silicio / FPGA:   `verilog-rtl-2005` (IEEE 1364), `vhdl-rtl-2008` (IEEE 1076)
+- Quantico e Bio:   `qasm3-quantum` (OpenQASM 3.0), `dna-quaternary` (`A,C,G,T`)
+
+## 7.2 Empacotadores de Loja/Boot, LumeMIR e Silicio Diferenciavel
+- `lume mir <alvo> <arq.src>`                     Inspeciona a IR SSA universal `LumeMIR`.
+- `lume package apk|ipa|iso|uefi <src> -o <out>`  Gera pacotes prontos para Android/iOS/BIOS/UEFI.
+- `lume neural-kernel [--json] <arq.src>`         Sintetiza PTX + SPIR-V + Verilog + VHDL com
+                                                  prova de equivalencia de hardware em 3 vias.
+
+# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES 1-5 E ONDAS 1-10)
+
+## 8.1 Comandos Essenciais do Programador
+  lume build [--incremental] [--memory] [--protect [hardened|max]] [--target <t>] <src> [-o <out>]
+  lume run [--memory] <src> [args...]    Compila e executa imediatamente
+  lume test <src.src>...                 Executa todos os testes `fn test_*()`
+  lume check <src.src> [--json]          Verifica tipos, ownership e efeitos
+  lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo
+  lume doc <src.src> [--json]            Gera documentacao e executa doctests
+  lume repl [--stdio|--kernel]           REPL interativo com verificacao de contratos
+  lume lsp / lume dap                    Servidores de IDE (LSP e Debug Adapter)
+  lume manual [--pt] [capitulo]          Abre este Manual Interno da Linguagem Lume
+
+## 8.2 Verificacao Formal, Superpoderes IA e Evolucao (Ondas 1-8)
+  lume prove <src.src>                   Prover matematico `QF_LIA` / Logica de Separacao
+  lume certify / verify-cert <src.src>   Emite e audita certificados de prova formal
+  lume patch-fn <src> <fn_name> <patch>  Substitui uma unica funcao na AST cirurgicamente
+  lume trace <src.src>                   Rastreamento estruturado de execucao em JSON
+  lume diff-semver <antigo> <novo>       Calcula impacto SemVer (MAJOR/MINOR/PATCH)
+  lume symbolize <arq.lsym> <consulta>   Desofusca simbolos e enderecos P33
+  lume genesis <nome_app> [dominio]      Sintetiza sistema full-stack para 8 alvos
+  lume heal <src.src>                    Autocura contratos violados usando contraexemplos
+  lume equiv <spec.src> <fast.src>       Prova equivalencia algoritmica e superotimiza
+  lume morph <arquivo_legado>            Transmuta SQL, Python, C ou OpenAPI para Lume
+  lume neural-kernel <src.src>           Sintetiza kernels GPU/FPGA diferenciaveis
+
+## 8.3 Comandos Transcendentes e Soberanos (Ondas 9 e 10)
+  lume morph-ast / awaken / quantum / bio-dna / cosmic-tmr / hologram / chronos
+  lume omega-net / llm-forge / consult / laws / memory / replicate / hive
+  lume os-control / bios-core / web-research / reverse-engineer / crypto-engine
+  lume sensory-cortex / multimodal / file-indexer / interface / self-build
+
+# CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
+
+## Exemplo 1: Listas, Recursao e Pattern Matching (`lista.src`)
+```lume
+fn dobrar_todos(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(h * 2, dobrar_todos(t))
+
+fn somar(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => h + somar(t)
+
+fn test_soma() = somar(dobrar_todos(Cons(5, Cons(10, Nil)))) == 30
+print str(somar(dobrar_todos(Cons(5, Cons(10, Nil)))))
+```
+
+## Exemplo 2: Transferencia Bancaria com Prova Formal (`banco.src`)
+```lume
+fn transferir(origem: int, destino: int, valor: int) -> int
+  requires origem >= valor and valor >= 0 and destino >= 0
+  ensures result == origem + destino
+= (origem - valor) + (destino + valor)
+
+law conserva_total(o: int, d: int, v: int) = ((o - v) + (d + v)) == (o + d)
+print str(transferir(1000, 500, 250))
+```
+
+## Exemplo 3: Dicionario Hash (`std.map`) e SHA-256 (`dicionario.src`)
+```lume
+use fs_sha256_file
+use map
+
+fn executar() =
+    let m0 = map_empty() in
+    let m1 = map_put(m0, "autor", lc_sha256("Ricardo Bueno")) in
+    map_get(m1, "autor", "nao_encontrado")
+
+print executar()
+```
+
+## Exemplo 4: Banco de Dados B+Tree + WAL ACID (`banco_dados.src`)
+```lume
+use db
+print str(db_btree_self_test())
+```
+
+## Exemplo 5: Motor Cripto, Mineracao PoW SHA-256 e DeFi AMM (`cripto.src`)
+```lume
+use lume_crypto_blockchain_engine
+print crypto_blockchain_full_report()
+```
+
+## Exemplo 6: Kernel Bare-Metal com Limite de Ciclos WCET (`rtc_kernel.src`)
+```lume
+@bound(cycles: 128)
+fn bcd_para_binario(bcd: int) -> int
+  requires bcd >= 0 and bcd <= 153
+  ensures result >= 0
+= ((bcd / 16) * 10) + (bcd % 16)
+
+print str(bcd_para_binario(35))
+```
+
+# CAPITULO 10: TABELA DE CODIGOS DE ERRO E COMO CORRIGIR
+
+| Codigo    | Categoria            | Causa e Como Resolver |
+|-----------|----------------------|-----------------------|
+| `[P0002]` | Sintaxe / Parser     | Token inesperado, `let` solto no topo de `.src`, ou `match` sem chaves aninhado. Mova o `match` para `fn aux(x) = match x ...` ou use `match x { ... }`, e garanta quebras de linha LF (`\n`). |
+| `[R0200]` | Escopo / Nomes       | Funcao ou variavel nao declarada. Verifique a grafia ou adicione `use <modulo>` no topo do arquivo. |
+| `[T0300]` | Tipos / Tensores     | Tipos incompativeis, soma de moedas distintas (`money[BRL]` + `money[USD]`) ou dimensoes invalidas em `tensor[...]`. |
+| `[E0200]` | Efeitos Algebricos   | Funcao marcada com `/ pure` tentou fazer I/O, rede, `arena_new` ou `embed`. Remova `/ pure` ou declare o efeito. |
+| `[O0001]` | Ownership / Borrow   | Uso de valor apos transferencia de posse (`move`) ou uso de arquivo ja fechado. |
+| `[V0001]` | Prova de Contrato    | Contrato `requires`/`ensures` ou `law` refutado pelo solver `QF_LIA`. Veja o contraexemplo impresso ou rode `lume heal <arq.src>`. |
+| `[V0002]` | Limite de Ciclos     | Funcao excedeu o orcamento `@bound(cycles: N)` ou possui recursao ilimitada em `@interrupt`. |
+| `[I0003]` | Interop C (`adapt c`)| Declaracao C insegura sem tamanho explicito. Adicione anotacoes de tamanho ou `@repr(c)`. |
+| `[I0275]` | Sandbox WASM         | Importacao de host proibida dentro de modulo `@wasm-sandbox`. |
+| `[C0271]` | Comptime Embed       | Caminho em `comptime embed("...")` tenta sair da raiz do projeto (`..`) ou nao existe. |
+| `[D0273]` | Esquema de Tabela    | `comptime table_schema(T)` chamado sobre um tipo que nao e registro. |
+| `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |
+| `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |
