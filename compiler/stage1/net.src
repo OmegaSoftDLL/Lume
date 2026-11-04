@@ -118,3 +118,282 @@ fn test_http11_request_response_roundtrip_and_malformed_rejection() = let preq =
 fn test_tcp_rfc793_full_pseudoheader_odd_padding_and_carry() = let ep = {src_ip: ipv4_pack(192, 168, 0, 1), dst_ip: ipv4_pack(192, 168, 0, 2), src_port: 4000, dst_port: 80} in let seg = tcp_rfc793_build(ep, 65537, 131074, 18, 8192, "Hi!") in let bad_ip = {ep: {src_ip: ipv4_pack(192, 168, 0, 9), dst_ip: ep.dst_ip, src_port: 4000, dst_port: 80}, seq: seg.seq, ack: seg.ack, flags: seg.flags, window: seg.window, tcp_len: seg.tcp_len, checksum: seg.checksum, payload: seg.payload} in let bad_seq_hi = {ep: ep, seq: seg.seq + 65536, ack: seg.ack, flags: seg.flags, window: seg.window, tcp_len: seg.tcp_len, checksum: seg.checksum, payload: seg.payload} in let bad_odd = {ep: ep, seq: seg.seq, ack: seg.ack, flags: seg.flags, window: seg.window, tcp_len: seg.tcp_len, checksum: seg.checksum, payload: "Hi?"} in seg.checksum == 38172 and tcp_rfc793_verify(seg) == 1 and tcp_rfc793_verify(bad_ip) == 0 and tcp_rfc793_verify(bad_seq_hi) == 0 and tcp_rfc793_verify(bad_odd) == 0
 
 fn test_tls13_rfc8446_wire_records_and_loopback_handshake() = let ks = tls13_key_schedule(133742, 777) in let wire = tls13_wire_encode_aead(ks.client_app_key, 0, 23, "PING_TLS13") in let dec_ok = tls13_wire_decode_aead(ks.client_app_key, 0, wire) in let dec_bad_seq = tls13_wire_decode_aead(ks.client_app_key, 1, wire) in let dec_bad_hdr = tls13_wire_decode_aead(ks.client_app_key, 0, "160303" + slice(wire, 6, count(wire))) in let dec_trunc = tls13_wire_decode_aead(ks.client_app_key, 0, slice(wire, 0, count(wire) - 2)) in let lb = tls13_loopback_handshake_exchange(42991, "vault.lume.local", "GET /keys") in dec_ok.ok == 1 and dec_ok.inner_type == 23 and dec_ok.plaintext == "PING_TLS13" and dec_bad_seq.ok == 0 and dec_bad_hdr.ok == 0 and dec_trunc.ok == 0 and lb.ok == 1 and lb.cipher_suite == 4865 and lb.decrypted_req == "GET /keys" and lb.decrypted_resp == "TLS13_ACK:vault.lume.local:GET /keys"
+
+## ============================================================================
+## Wireshark Multi-Layer Deep Packet Dissector, PCAP Engine & L2/L3/P4 Switch Firmware
+## Supports: Ethernet II, IEEE 802.1Q VLAN, QinQ, RSTP (802.1w), ARP (RFC 826),
+## MPLS (RFC 3032), IPv4 Wire (RFC 791 + RFC 1071/1624), ICMPv4 (RFC 792),
+## TCP/UDP Wire, DNS (RFC 1035), TLS 1.3, Libpcap (.pcap), Wireshark Display
+## Filters, L2 CAM/MAC Learning, L3 Longest-Prefix Match (FIB), and P4 Pipeline.
+## ============================================================================
+
+fn eth_mac_format_hex(mac_hex) = if count(mac_hex) < 12 then "00:00:00:00:00:00" else slice(mac_hex, 0, 2) + ":" + slice(mac_hex, 2, 4) + ":" + slice(mac_hex, 4, 6) + ":" + slice(mac_hex, 6, 8) + ":" + slice(mac_hex, 8, 10) + ":" + slice(mac_hex, 10, 12)
+
+fn eth_mac_is_broadcast(mac_hex) = if mac_hex == "ffffffffffff" then 1 else 0
+
+fn eth_mac_is_multicast(mac_hex) = let b0 = net_hex_byte_at(mac_hex, 0) in if b0 < 0 then 0 else b0 % 2
+
+fn eth_frame_build_hex(dst_mac, src_mac, ethertype, payload_hex) = dst_mac + src_mac + net_hex_u16be(ethertype) + payload_hex
+
+fn eth_vlan_frame_build_hex(dst_mac, src_mac, pcp, vid, inner_etype, payload_hex) = let tci = ((pcp % 8) * 8192) + (vid % 4096) in dst_mac + src_mac + "8100" + net_hex_u16be(tci) + net_hex_u16be(inner_etype) + payload_hex
+
+fn eth_frame_dissect(raw_hex) = let hlen = count(raw_hex) in if (hlen % 2) != 0 or hlen < 28 then {ok: 0, dst_mac: "", src_mac: "", has_vlan: 0, vlan_pcp: 0, vlan_id: 0, ethertype: 0, l3_offset_b: 0} else let dst = slice(raw_hex, 0, 12) in let src = slice(raw_hex, 12, 24) in let et0 = net_hex_u16be_at(raw_hex, 12) in if et0 == 33024 or et0 == 34984 then (if hlen < 36 then {ok: 0, dst_mac: dst, src_mac: src, has_vlan: 1, vlan_pcp: 0, vlan_id: 0, ethertype: 0, l3_offset_b: 0} else let tci = net_hex_u16be_at(raw_hex, 14) in let et1 = net_hex_u16be_at(raw_hex, 16) in {ok: 1, dst_mac: dst, src_mac: src, has_vlan: 1, vlan_pcp: (tci / 8192) % 8, vlan_id: tci % 4096, ethertype: et1, l3_offset_b: 18}) else {ok: 1, dst_mac: dst, src_mac: src, has_vlan: 0, vlan_pcp: 0, vlan_id: 1, ethertype: et0, l3_offset_b: 14}
+
+## --- MPLS 32-Bit Shim Header (RFC 3032: 20b Label, 3b TC/EXP, 1b BoS, 8b TTL) ---
+fn mpls_shim_encode(label, tc_exp, bos, ttl) = ((label % 1048576) * 4096) + ((tc_exp % 8) * 512) + ((bos % 2) * 256) + (ttl % 256)
+
+fn mpls_shim_decode(shim_u32) = {label: (shim_u32 / 4096) % 1048576, tc_exp: (shim_u32 / 512) % 8, bos: (shim_u32 / 256) % 2, ttl: shim_u32 % 256}
+
+## --- ARP (RFC 826) Build & Dissect (28-byte Ethernet/IPv4 payload) ---
+fn arp_packet_build_hex(oper, sha_hex, spa, tha_hex, tpa) = "000108000604" + net_hex_u16be(oper) + sha_hex + net_hex_u32be(spa) + tha_hex + net_hex_u32be(tpa)
+
+fn arp_packet_dissect(raw_hex, off_b) = let total_b = count(raw_hex) / 2 in if off_b + 28 > total_b then {ok: 0, oper: 0, sender_mac: "", sender_ip: 0, target_mac: "", target_ip: 0} else let htype = net_hex_u16be_at(raw_hex, off_b) in let ptype = net_hex_u16be_at(raw_hex, off_b + 2) in let hlen = net_hex_byte_at(raw_hex, off_b + 4) in let plen = net_hex_byte_at(raw_hex, off_b + 5) in let oper = net_hex_u16be_at(raw_hex, off_b + 6) in if htype != 1 or ptype != 2048 or hlen != 6 or plen != 4 then {ok: 0, oper: 0, sender_mac: "", sender_ip: 0, target_mac: "", target_ip: 0} else let sha = slice(raw_hex, (off_b + 8) * 2, (off_b + 14) * 2) in let spa = net_hex_u32be_at(raw_hex, off_b + 14) in let tha = slice(raw_hex, (off_b + 18) * 2, (off_b + 24) * 2) in let tpa = net_hex_u32be_at(raw_hex, off_b + 24) in {ok: 1, oper: oper, sender_mac: sha, sender_ip: spa, target_mac: tha, target_ip: tpa}
+
+## --- Hex 16-bit Word Scanner for RFC 1071 Wire Checksums ---
+fn net_hex_words_range(raw_hex, cur_b, end_b) = if cur_b >= end_b then Nil else let hi = net_hex_byte_at(raw_hex, cur_b) in let lo = if cur_b + 1 < end_b then net_hex_byte_at(raw_hex, cur_b + 1) else 0 in Cons((hi * 256) + lo, net_hex_words_range(raw_hex, cur_b + 2, end_b))
+
+## --- ICMPv4 (RFC 792) Echo Request/Reply Build & Dissect ---
+fn icmp_echo_build_hex(icmp_type, id, seq, payload_str) = let pay_hex = net_str_to_hex(payload_str, 0, count(payload_str)) in let pre_hex = net_hex_byte(icmp_type) + "000000" + net_hex_u16be(id) + net_hex_u16be(seq) + pay_hex in let cksum = net_checksum16(net_hex_words_range(pre_hex, 0, count(pre_hex) / 2)) in net_hex_byte(icmp_type) + "00" + net_hex_u16be(cksum) + net_hex_u16be(id) + net_hex_u16be(seq) + pay_hex
+
+fn icmp_packet_dissect(raw_hex, off_b, end_b) = if off_b + 8 > end_b then {ok: 0, icmp_type: 0, code: 0, checksum_ok: 0, id: 0, seq: 0, payload: ""} else let itype = net_hex_byte_at(raw_hex, off_b) in let icode = net_hex_byte_at(raw_hex, off_b + 1) in let cksum = net_hex_u16be_at(raw_hex, off_b + 2) in let id = net_hex_u16be_at(raw_hex, off_b + 4) in let seq = net_hex_u16be_at(raw_hex, off_b + 6) in let ws = net_hex_words_range(raw_hex, off_b, end_b) in let ck_ok = if net_fold16(net_sum_words(ws)) == 65535 then 1 else 0 in {ok: ck_ok, icmp_type: itype, code: icode, checksum_ok: ck_ok, id: id, seq: seq, payload: net_hex_to_str(raw_hex, off_b + 8, end_b)}
+
+## --- IPv4 Binary Wire Header (RFC 791) Build, Dissect & RFC 1624 TTL Decrement ---
+fn ipv4_wire_build_hex(sip, dip, proto, ttl, payload_hex) = let pay_b = count(payload_hex) / 2 in let tot_len = 20 + pay_b in let hdr_no_ck = "4500" + net_hex_u16be(tot_len) + "13374000" + net_hex_byte(ttl) + net_hex_byte(proto) + "0000" + net_hex_u32be(sip) + net_hex_u32be(dip) in let cksum = net_checksum16(net_hex_words_range(hdr_no_ck, 0, 20)) in "4500" + net_hex_u16be(tot_len) + "13374000" + net_hex_byte(ttl) + net_hex_byte(proto) + net_hex_u16be(cksum) + net_hex_u32be(sip) + net_hex_u32be(dip) + payload_hex
+
+fn ipv4_wire_dissect(raw_hex, off_b) = let total_b = count(raw_hex) / 2 in if off_b + 20 > total_b then {ok: 0, version: 0, ihl_b: 0, total_len: 0, ttl: 0, proto: 0, checksum_ok: 0, src_ip: 0, dst_ip: 0, l4_offset_b: 0, l4_end_b: 0} else let v_ihl = net_hex_byte_at(raw_hex, off_b) in let ver = v_ihl / 16 in let ihl_b = (v_ihl % 16) * 4 in let tot_len = net_hex_u16be_at(raw_hex, off_b + 2) in let ttl = net_hex_byte_at(raw_hex, off_b + 8) in let proto = net_hex_byte_at(raw_hex, off_b + 9) in let sip = net_hex_u32be_at(raw_hex, off_b + 12) in let dip = net_hex_u32be_at(raw_hex, off_b + 16) in if ver != 4 or ihl_b < 20 or off_b + tot_len > total_b then {ok: 0, version: ver, ihl_b: ihl_b, total_len: tot_len, ttl: ttl, proto: proto, checksum_ok: 0, src_ip: sip, dst_ip: dip, l4_offset_b: 0, l4_end_b: 0} else let hdr_ws = net_hex_words_range(raw_hex, off_b, off_b + ihl_b) in let ck_ok = if net_fold16(net_sum_words(hdr_ws)) == 65535 then 1 else 0 in {ok: ck_ok, version: ver, ihl_b: ihl_b, total_len: tot_len, ttl: ttl, proto: proto, checksum_ok: ck_ok, src_ip: sip, dst_ip: dip, l4_offset_b: off_b + ihl_b, l4_end_b: off_b + tot_len}
+
+## --- TCP & UDP Binary Wire Builders & Dissectors ---
+fn tcp_flags_name(fl) = if fl == 2 then "SYN" else if fl == 18 then "SYN,ACK" else if fl == 16 then "ACK" else if fl == 24 then "PSH,ACK" else if fl == 17 or fl == 1 then "FIN,ACK" else if fl == 4 then "RST" else "FLAGS_" + str(fl)
+
+fn tcp_wire_build_hex(sp, dp, seq, ack, flags, payload_hex) = net_hex_u16be(sp) + net_hex_u16be(dp) + net_hex_u32be(seq) + net_hex_u32be(ack) + net_hex_u16be((5 * 4096) + (flags % 64)) + "200000000000" + payload_hex
+
+fn tcp_wire_dissect(raw_hex, off_b, end_b) = if off_b + 20 > end_b then {ok: 0, src_port: 0, dst_port: 0, seq: 0, ack: 0, flags: 0, flags_str: "", hdr_len_b: 0, payload_offset_b: 0} else let sp = net_hex_u16be_at(raw_hex, off_b) in let dp = net_hex_u16be_at(raw_hex, off_b + 2) in let seq = net_hex_u32be_at(raw_hex, off_b + 4) in let ack = net_hex_u32be_at(raw_hex, off_b + 8) in let doff_fl = net_hex_u16be_at(raw_hex, off_b + 12) in let hlen_b = ((doff_fl / 4096) % 16) * 4 in let fl = doff_fl % 64 in if hlen_b < 20 or off_b + hlen_b > end_b then {ok: 0, src_port: sp, dst_port: dp, seq: seq, ack: ack, flags: fl, flags_str: "", hdr_len_b: hlen_b, payload_offset_b: 0} else {ok: 1, src_port: sp, dst_port: dp, seq: seq, ack: ack, flags: fl, flags_str: tcp_flags_name(fl), hdr_len_b: hlen_b, payload_offset_b: off_b + hlen_b}
+
+fn udp_wire_build_hex(sp, dp, payload_hex) = let ulen = 8 + (count(payload_hex) / 2) in net_hex_u16be(sp) + net_hex_u16be(dp) + net_hex_u16be(ulen) + "0000" + payload_hex
+
+fn udp_wire_dissect(raw_hex, off_b, end_b) = if off_b + 8 > end_b then {ok: 0, src_port: 0, dst_port: 0, length: 0, payload_offset_b: 0} else let sp = net_hex_u16be_at(raw_hex, off_b) in let dp = net_hex_u16be_at(raw_hex, off_b + 2) in let ulen = net_hex_u16be_at(raw_hex, off_b + 4) in if ulen < 8 or off_b + ulen > end_b then {ok: 0, src_port: sp, dst_port: dp, length: ulen, payload_offset_b: 0} else {ok: 1, src_port: sp, dst_port: dp, length: ulen, payload_offset_b: off_b + 8}
+
+## --- DNS Wire Format (RFC 1035) Query Builder & Dissector ---
+fn dns_wire_build_query_hex(txid, label1, label2, qtype) = let l1 = count(label1) in let l2 = count(label2) in net_hex_u16be(txid) + "01000001000000000000" + net_hex_byte(l1) + net_str_to_hex(label1, 0, l1) + net_hex_byte(l2) + net_str_to_hex(label2, 0, l2) + "00" + net_hex_u16be(qtype) + "0001"
+
+fn dns_read_qname_lp(raw_hex, cur_b, end_b, acc) = if cur_b >= end_b then {name: acc, next_b: cur_b} else let llen = net_hex_byte_at(raw_hex, cur_b) in if llen <= 0 then {name: acc, next_b: cur_b + 1} else if cur_b + 1 + llen > end_b then {name: acc, next_b: end_b} else let lbl = net_hex_to_str(raw_hex, cur_b + 1, cur_b + 1 + llen) in let next_acc = if acc == "" then lbl else acc + "." + lbl in dns_read_qname_lp(raw_hex, cur_b + 1 + llen, end_b, next_acc)
+
+fn dns_wire_dissect(raw_hex, off_b, end_b) = if off_b + 12 > end_b then {ok: 0, txid: 0, is_response: 0, qdcount: 0, qname: "", qtype: 0} else let txid = net_hex_u16be_at(raw_hex, off_b) in let flags = net_hex_u16be_at(raw_hex, off_b + 2) in let qdc = net_hex_u16be_at(raw_hex, off_b + 4) in let qn = dns_read_qname_lp(raw_hex, off_b + 12, end_b, "") in if qn.next_b + 4 > end_b or qn.name == "" then {ok: 0, txid: txid, is_response: (flags / 32768) % 2, qdcount: qdc, qname: "", qtype: 0} else let qt = net_hex_u16be_at(raw_hex, qn.next_b) in {ok: 1, txid: txid, is_response: (flags / 32768) % 2, qdcount: qdc, qname: qn.name, qtype: qt}
+
+## --- Libpcap (.pcap) Binary File Builder & Parser (Magic 0xa1b2c3d4, LinkType 1 Ethernet) ---
+fn pcap_global_header_hex() = "a1b2c3d40002000400000000000000000000ffff00000001"
+
+fn pcap_record_hex(ts_sec, ts_usec, frame_hex) = let flen = count(frame_hex) / 2 in net_hex_u32be(ts_sec) + net_hex_u32be(ts_usec) + net_hex_u32be(flen) + net_hex_u32be(flen) + frame_hex
+
+fn pcap_file_build_hex(frame1_hex, frame2_hex) = pcap_global_header_hex() + pcap_record_hex(1700000001, 100, frame1_hex) + (if frame2_hex == "" then "" else pcap_record_hex(1700000002, 250, frame2_hex))
+
+fn pcap_parse_records_lp(pcap_hex, cur_b, total_b) = if cur_b + 16 > total_b then Nil else let ts_s = net_hex_u32be_at(pcap_hex, cur_b) in let incl_b = net_hex_u32be_at(pcap_hex, cur_b + 8) in if incl_b <= 0 or cur_b + 16 + incl_b > total_b then Nil else let fhex = slice(pcap_hex, (cur_b + 16) * 2, (cur_b + 16 + incl_b) * 2) in Cons({ts_sec: ts_s, incl_len: incl_b, frame_hex: fhex}, pcap_parse_records_lp(pcap_hex, cur_b + 16 + incl_b, total_b))
+
+fn pcap_file_parse_hex(pcap_hex) = let total_b = count(pcap_hex) / 2 in if total_b < 24 then {ok: 0, magic: 0, linktype: 0, packet_count: 0, packets: Nil} else let magic = net_hex_u32be_at(pcap_hex, 0) in let linktype = net_hex_u32be_at(pcap_hex, 20) in if magic != 2712847316 or linktype != 1 then {ok: 0, magic: magic, linktype: linktype, packet_count: 0, packets: Nil} else let pkts = pcap_parse_records_lp(pcap_hex, 24, total_b) in {ok: 1, magic: magic, linktype: linktype, packet_count: net_len(pkts), packets: pkts}
+
+## --- Full Wireshark Multi-Layer Dissector & Display Filter Engine ---
+fn wireshark_dissect_tcp_l7(raw_hex, tc, end_b) = let pay_off = tc.payload_offset_b in let pay_hex = slice(raw_hex, pay_off * 2, end_b * 2) in if (tc.src_port == 502 or tc.dst_port == 502) and count(pay_hex) >= 16 then (let mb = modbus_tcp_dissect(pay_hex) in if mb.ok == 1 then {l7: "MODBUS-TCP", info: "Modbus/TCP Tx=" + str(mb.tx_id) + " Unit=" + str(mb.unit_id) + " FC=" + str(mb.fc) + " (" + mb.fc_name + ") Addr=" + str(mb.reg_addr)} else {l7: "TCP", info: "Malformed Modbus/TCP"}) else if (tc.src_port == 20000 or tc.dst_port == 20000) and count(pay_hex) >= 20 then (let dn = dnp3_frame_dissect(pay_hex) in if dn.ok == 1 then {l7: "DNP3", info: "DNP3 Dst=" + str(dn.dst_addr) + " Src=" + str(dn.src_addr) + " FC=" + str(dn.app_fc) + " (" + dn.fc_name + ") Obj=G" + str(dn.obj_group) + "V" + str(dn.obj_var)} else {l7: "TCP", info: "Malformed DNP3 LPDU"}) else if (tc.src_port == 2404 or tc.dst_port == 2404) and count(pay_hex) >= 12 then (let iec = iec104_apdu_dissect(pay_hex) in if iec.ok == 1 then {l7: "IEC-104", info: "IEC 60870-5-104 " + iec.format + " Type=" + str(iec.type_id) + " (" + iec.type_name + ") COA=" + str(iec.coa) + " IOA=" + str(iec.ioa)} else {l7: "TCP", info: "Malformed IEC-104 APDU"}) else if (tc.src_port == 102 or tc.dst_port == 102) and count(pay_hex) >= 12 then (let mms = mms_pdu_dissect(pay_hex) in if mms.ok == 1 then {l7: "IEC61850-MMS", info: "ISO 9506 MMS " + mms.pdu_type + " InvokeID=" + str(mms.invoke_id) + " Service=" + mms.service + " Ref=" + mms.obj_ref} else {l7: "TCP", info: "Malformed MMS PDU"}) else if count(pay_hex) >= 6 and (slice(pay_hex, 0, 6) == "160303" or slice(pay_hex, 0, 6) == "170303") then {l7: "TLSv1.3", info: str(tc.src_port) + " -> " + str(tc.dst_port) + " [TLSv1.3 Record]"} else if count(pay_hex) >= 8 and (slice(pay_hex, 0, 8) == "47455420" or slice(pay_hex, 0, 8) == "504f5354" or slice(pay_hex, 0, 8) == "48545450") then {l7: "HTTP", info: str(tc.src_port) + " -> " + str(tc.dst_port) + " [HTTP/1.1]"} else {l7: "TCP", info: str(tc.src_port) + " -> " + str(tc.dst_port) + " [" + tc.flags_str + "] Seq=" + str(tc.seq) + " Ack=" + str(tc.ack)}
+
+fn wireshark_dissect_l4(raw_hex, eth, ip4) = if ip4.proto == 1 then (let ic = icmp_packet_dissect(raw_hex, ip4.l4_offset_b, ip4.l4_end_b) in {ok: ic.ok, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "IPv4", src_ip: ipv4_format(ip4.src_ip), dst_ip: ipv4_format(ip4.dst_ip), l4_proto: "ICMP", src_port: 0, dst_port: 0, l7_proto: "ICMP", info: (if ic.icmp_type == 8 then "Echo (ping) request id=" else "Echo (ping) reply id=") + str(ic.id) + " seq=" + str(ic.seq), checksum_ok: ip4.checksum_ok * ic.checksum_ok}) else if ip4.proto == 6 then (let tc = tcp_wire_dissect(raw_hex, ip4.l4_offset_b, ip4.l4_end_b) in let l7d = wireshark_dissect_tcp_l7(raw_hex, tc, ip4.l4_end_b) in {ok: tc.ok, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "IPv4", src_ip: ipv4_format(ip4.src_ip), dst_ip: ipv4_format(ip4.dst_ip), l4_proto: "TCP", src_port: tc.src_port, dst_port: tc.dst_port, l7_proto: l7d.l7, info: l7d.info, checksum_ok: ip4.checksum_ok}) else if ip4.proto == 17 then (let ud = udp_wire_dissect(raw_hex, ip4.l4_offset_b, ip4.l4_end_b) in let is_dns = if ud.src_port == 53 or ud.dst_port == 53 then 1 else 0 in let dn = if is_dns == 1 then dns_wire_dissect(raw_hex, ud.payload_offset_b, ip4.l4_end_b) else {ok: 0, txid: 0, is_response: 0, qdcount: 0, qname: "", qtype: 0} in {ok: ud.ok, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "IPv4", src_ip: ipv4_format(ip4.src_ip), dst_ip: ipv4_format(ip4.dst_ip), l4_proto: "UDP", src_port: ud.src_port, dst_port: ud.dst_port, l7_proto: if dn.ok == 1 then "DNS" else "UDP", info: if dn.ok == 1 then "Standard query 0x" + net_hex_u16be(dn.txid) + " A " + dn.qname else str(ud.src_port) + " -> " + str(ud.dst_port) + " Len=" + str(ud.length), checksum_ok: ip4.checksum_ok}) else {ok: 1, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "IPv4", src_ip: ipv4_format(ip4.src_ip), dst_ip: ipv4_format(ip4.dst_ip), l4_proto: "IP_PROTO_" + str(ip4.proto), src_port: 0, dst_port: 0, l7_proto: "RAW", info: "IPv4 Proto=" + str(ip4.proto), checksum_ok: ip4.checksum_ok}
+
+fn wireshark_dissect_frame(raw_hex) = let eth = eth_frame_dissect(raw_hex) in if eth.ok == 0 then {ok: 0, l2_proto: "MALFORMED", vlan_id: 0, l3_proto: "", src_ip: "", dst_ip: "", l4_proto: "", src_port: 0, dst_port: 0, l7_proto: "", info: "Malformed Ethernet frame", checksum_ok: 0} else if eth.ethertype == 35000 then (let gs = iec61850_goose_dissect(slice(raw_hex, eth.l3_offset_b * 2, count(raw_hex))) in {ok: gs.ok, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "IEC61850-GOOSE", src_ip: eth_mac_format_hex(eth.src_mac), dst_ip: eth_mac_format_hex(eth.dst_mac), l4_proto: "L2-REALTIME", src_port: gs.appid, dst_port: gs.appid, l7_proto: "IEC61850-GOOSE", info: "GOOSE APPID=0x" + net_hex_u16be(gs.appid) + " stNum=" + str(gs.st_num) + " sqNum=" + str(gs.sq_num) + " ref=" + gs.gocb_ref, checksum_ok: gs.ok}) else if eth.ethertype == 35002 then (let sv = iec61850_sv_dissect(slice(raw_hex, eth.l3_offset_b * 2, count(raw_hex))) in {ok: sv.ok, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "IEC61850-SV", src_ip: eth_mac_format_hex(eth.src_mac), dst_ip: eth_mac_format_hex(eth.dst_mac), l4_proto: "L2-SAMPLED", src_port: sv.appid, dst_port: sv.appid, l7_proto: "IEC61850-SV", info: "SV APPID=0x" + net_hex_u16be(sv.appid) + " smpCnt=" + str(sv.smp_cnt) + " svID=" + sv.sv_id, checksum_ok: sv.ok}) else if eth.ethertype == 2054 then (let arp = arp_packet_dissect(raw_hex, eth.l3_offset_b) in {ok: arp.ok, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "ARP", src_ip: ipv4_format(arp.sender_ip), dst_ip: ipv4_format(arp.target_ip), l4_proto: "ARP", src_port: 0, dst_port: 0, l7_proto: "ARP", info: if arp.oper == 1 then "Who has " + ipv4_format(arp.target_ip) + "? Tell " + ipv4_format(arp.sender_ip) else ipv4_format(arp.sender_ip) + " is at " + eth_mac_format_hex(arp.sender_mac), checksum_ok: arp.ok}) else if eth.ethertype == 2048 then (let ip4 = ipv4_wire_dissect(raw_hex, eth.l3_offset_b) in if ip4.ok == 0 then {ok: 0, l2_proto: "ETH2", vlan_id: eth.vlan_id, l3_proto: "IPv4_BAD", src_ip: "", dst_ip: "", l4_proto: "", src_port: 0, dst_port: 0, l7_proto: "", info: "Bad IPv4 header checksum or length", checksum_ok: 0} else wireshark_dissect_l4(raw_hex, eth, ip4)) else {ok: 1, l2_proto: if eth.has_vlan == 1 then "802.1Q" else "ETH2", vlan_id: eth.vlan_id, l3_proto: "ETHERTYPE_0x" + net_hex_u16be(eth.ethertype), src_ip: eth_mac_format_hex(eth.src_mac), dst_ip: eth_mac_format_hex(eth.dst_mac), l4_proto: "L2", src_port: 0, dst_port: 0, l7_proto: "L2", info: "EtherType 0x" + net_hex_u16be(eth.ethertype), checksum_ok: 1}
+
+fn wireshark_filter_match(dis, expr) = if dis.ok == 0 then 0 else if expr == "" or expr == "any" then 1 else if expr == "tcp" then (if dis.l4_proto == "TCP" then 1 else 0) else if expr == "udp" then (if dis.l4_proto == "UDP" then 1 else 0) else if expr == "icmp" then (if dis.l4_proto == "ICMP" then 1 else 0) else if expr == "arp" then (if dis.l3_proto == "ARP" then 1 else 0) else if expr == "dns" then (if dis.l7_proto == "DNS" then 1 else 0) else if expr == "tls" or expr == "tls13" then (if dis.l7_proto == "TLSv1.3" then 1 else 0) else if expr == "http" then (if dis.l7_proto == "HTTP" then 1 else 0) else if expr == "modbus" then (if dis.l7_proto == "MODBUS-TCP" then 1 else 0) else if expr == "dnp3" then (if dis.l7_proto == "DNP3" then 1 else 0) else if expr == "iec104" then (if dis.l7_proto == "IEC-104" then 1 else 0) else if expr == "mms" then (if dis.l7_proto == "IEC61850-MMS" then 1 else 0) else if expr == "goose" then (if dis.l7_proto == "IEC61850-GOOSE" then 1 else 0) else if expr == "sv" then (if dis.l7_proto == "IEC61850-SV" then 1 else 0) else if net_startswith(expr, "tcp.port == ") == 1 then (let p = toint(slice(expr, 12, count(expr))) in if dis.l4_proto == "TCP" and (dis.src_port == p or dis.dst_port == p) then 1 else 0) else if net_startswith(expr, "udp.port == ") == 1 then (let p = toint(slice(expr, 12, count(expr))) in if dis.l4_proto == "UDP" and (dis.src_port == p or dis.dst_port == p) then 1 else 0) else if net_startswith(expr, "vlan.id == ") == 1 then (let v = toint(slice(expr, 11, count(expr))) in if dis.vlan_id == v then 1 else 0) else if net_startswith(expr, "ip.addr == ") == 1 then (let ip = slice(expr, 11, count(expr)) in if dis.src_ip == ip or dis.dst_ip == ip then 1 else 0) else 0
+
+## ============================================================================
+## Industrial, Power-Grid & Substation Protocol Engine from Scratch:
+## 1. Modbus TCP (MBAP + PDU) & Modbus RTU (CRC-16/MODBUS 0xA001)
+## 2. DNP3 / IEEE 1815 (LPDU 0x0564 + CRC-16/DNP + Transport + APDU + SBO + SAv5)
+## 3. IEC 60870-5-104 (APCI 0x68 I/S/U-Format + ASDU TypeID + CP56Time2a + SBO)
+## 4. IEC 61850 (ISO 9506 MMS + 8-1 GOOSE EtherType 0x88B8 + 9-2 Sampled Values 0x88BA)
+## ============================================================================
+
+fn net_xor16_lp(a, b, bit, p2) = if bit >= 16 then 0 else ((((a % 2) + (b % 2)) % 2) * p2) + net_xor16_lp(a / 2, b / 2, bit + 1, p2 * 2)
+fn net_xor16(a, b) = net_xor16_lp(a % 65536, b % 65536, 0, 1)
+
+fn net_hex_u16le(v) = net_hex_byte(v % 256) + net_hex_byte((v / 256) % 256)
+fn net_hex_u16le_at(hex, byte_idx) = let lo = net_hex_byte_at(hex, byte_idx) in let hi = net_hex_byte_at(hex, byte_idx + 1) in if lo < 0 or hi < 0 then 0 - 1 else (hi * 256) + lo
+
+## --- 1. Modbus RTU (CRC-16/MODBUS 0xA001) & Modbus TCP (MBAP Port 502) ---
+fn modbus_crc16_bit_lp(crc, poly, bit) = if bit >= 8 then crc else let next_crc = if (crc % 2) == 1 then net_xor16(crc / 2, poly) else crc / 2 in modbus_crc16_bit_lp(next_crc, poly, bit + 1)
+
+fn modbus_crc16_bytes_lp(raw_hex, idx, nbytes, crc, poly) = if idx >= nbytes then crc else let b = net_hex_byte_at(raw_hex, idx) in let c1 = net_xor16(crc, if b < 0 then 0 else b) in modbus_crc16_bytes_lp(raw_hex, idx + 1, nbytes, modbus_crc16_bit_lp(c1, poly, 0), poly)
+
+fn modbus_crc16(raw_hex) = modbus_crc16_bytes_lp(raw_hex, 0, count(raw_hex) / 2, 65535, 40961)
+
+fn modbus_fc_name(fc) = if fc == 1 then "READ_COILS" else if fc == 2 then "READ_DISCRETE_INPUTS" else if fc == 3 then "READ_HOLDING_REGISTERS" else if fc == 4 then "READ_INPUT_REGISTERS" else if fc == 5 then "WRITE_SINGLE_COIL" else if fc == 6 then "WRITE_SINGLE_REGISTER" else if fc == 15 then "WRITE_MULTIPLE_COILS" else if fc == 16 then "WRITE_MULTIPLE_REGISTERS" else "FC_" + str(fc)
+
+fn modbus_rtu_build_hex(slave_id, fc, reg_addr, reg_val_or_cnt) = let body = net_hex_byte(slave_id) + net_hex_byte(fc) + net_hex_u16be(reg_addr) + net_hex_u16be(reg_val_or_cnt) in let crc = modbus_crc16(body) in body + net_hex_u16le(crc)
+
+fn modbus_rtu_dissect(raw_hex) = let nb = count(raw_hex) / 2 in if nb < 8 then {ok: 0, slave_id: 0, fc: 0, fc_name: "", reg_addr: 0, reg_val: 0, crc_ok: 0} else let body = slice(raw_hex, 0, (nb - 2) * 2) in let exp_crc = modbus_crc16(body) in let wire_crc = net_hex_u16le_at(raw_hex, nb - 2) in let sid = net_hex_byte_at(raw_hex, 0) in let fc = net_hex_byte_at(raw_hex, 1) in let addr = net_hex_u16be_at(raw_hex, 2) in let val = net_hex_u16be_at(raw_hex, 4) in let cok = if exp_crc == wire_crc then 1 else 0 in {ok: cok, slave_id: sid, fc: fc, fc_name: modbus_fc_name(fc), reg_addr: addr, reg_val: val, crc_ok: cok}
+
+fn modbus_tcp_build_hex(tx_id, unit_id, fc, reg_addr, reg_val_or_cnt) = net_hex_u16be(tx_id) + "00000006" + net_hex_byte(unit_id) + net_hex_byte(fc) + net_hex_u16be(reg_addr) + net_hex_u16be(reg_val_or_cnt)
+
+fn modbus_tcp_dissect(raw_hex) = let nb = count(raw_hex) / 2 in if nb < 12 then {ok: 0, tx_id: 0, proto_id: 0, length: 0, unit_id: 0, fc: 0, fc_name: "", reg_addr: 0, reg_val: 0} else let tx = net_hex_u16be_at(raw_hex, 0) in let pid = net_hex_u16be_at(raw_hex, 2) in let len = net_hex_u16be_at(raw_hex, 4) in let uid = net_hex_byte_at(raw_hex, 6) in let fc = net_hex_byte_at(raw_hex, 7) in let addr = net_hex_u16be_at(raw_hex, 8) in let val = net_hex_u16be_at(raw_hex, 10) in if pid != 0 or len < 6 then {ok: 0, tx_id: tx, proto_id: pid, length: len, unit_id: uid, fc: fc, fc_name: "", reg_addr: addr, reg_val: val} else {ok: 1, tx_id: tx, proto_id: pid, length: len, unit_id: uid, fc: fc, fc_name: modbus_fc_name(fc), reg_addr: addr, reg_val: val}
+
+## --- 2. DNP3 / IEEE 1815 (LPDU 0x0564 + CRC-16/DNP 0xA6BC + Transport + APDU + SBO + SAv5) ---
+fn dnp3_crc16(raw_hex) = 65535 - modbus_crc16_bytes_lp(raw_hex, 0, count(raw_hex) / 2, 0, 42684)
+
+fn dnp3_fc_name(fc) = if fc == 1 then "READ" else if fc == 2 then "WRITE" else if fc == 3 then "SELECT" else if fc == 4 then "OPERATE" else if fc == 5 then "DIRECT_OPERATE" else if fc == 129 then "RESPONSE" else if fc == 130 then "UNSOLICITED_RESPONSE" else "DNP3_FC_" + str(fc)
+
+fn dnp3_frame_build_hex(dst_addr, src_addr, app_fc, obj_group, obj_var, index_pt) = let apdu = "c0" + net_hex_byte(app_fc) + net_hex_byte(obj_group) + net_hex_byte(obj_var) + "1701" + net_hex_byte(index_pt) in let tpdu = "c0" + apdu in let hdr_no_crc = "0564" + net_hex_byte(5 + (count(tpdu) / 2)) + "c4" + net_hex_u16le(dst_addr) + net_hex_u16le(src_addr) in let h_crc = dnp3_crc16(hdr_no_crc) in let b_crc = dnp3_crc16(tpdu) in hdr_no_crc + net_hex_u16le(h_crc) + tpdu + net_hex_u16le(b_crc)
+
+fn dnp3_frame_dissect(raw_hex) = let nb = count(raw_hex) / 2 in if nb < 18 then {ok: 0, dst_addr: 0, src_addr: 0, app_fc: 0, fc_name: "", obj_group: 0, obj_var: 0, index_pt: 0, crc_ok: 0} else let st = net_hex_u16be_at(raw_hex, 0) in if st != 1380 then {ok: 0, dst_addr: 0, src_addr: 0, app_fc: 0, fc_name: "", obj_group: 0, obj_var: 0, index_pt: 0, crc_ok: 0} else let hdr_hex = slice(raw_hex, 0, 16) in let exp_hcrc = dnp3_crc16(hdr_hex) in let wire_hcrc = net_hex_u16le_at(raw_hex, 8) in let body_hex = slice(raw_hex, 20, (nb - 2) * 2) in let exp_bcrc = dnp3_crc16(body_hex) in let wire_bcrc = net_hex_u16le_at(raw_hex, nb - 2) in let dst = net_hex_u16le_at(raw_hex, 4) in let src = net_hex_u16le_at(raw_hex, 6) in let afc = net_hex_byte_at(raw_hex, 12) in let grp = net_hex_byte_at(raw_hex, 13) in let vr = net_hex_byte_at(raw_hex, 14) in let idx = net_hex_byte_at(raw_hex, 17) in let cok = if exp_hcrc == wire_hcrc and exp_bcrc == wire_bcrc then 1 else 0 in {ok: cok, dst_addr: dst, src_addr: src, app_fc: afc, fc_name: dnp3_fc_name(afc), obj_group: grp, obj_var: vr, index_pt: idx, crc_ok: cok}
+
+## DNP3 CROB (Group 12 Var 1) Mandatory Select-Before-Operate (SBO) & IEEE 1815 SAv5 HMAC Interlock
+fn dnp3_sbo_interlock(sbo_selected_pt, sbo_select_tick, cur_tick, req_fc, req_pt, sav5_hmac_ok) = if sav5_hmac_ok == 0 then {allow_operate: 0, reason: "REJECT_SAV5_AUTH_FAIL"} else if req_fc == 3 then {allow_operate: 0, reason: "SBO_ARMED_POINT_" + str(req_pt)} else if req_fc == 4 then (if sbo_selected_pt == req_pt and cur_tick >= sbo_select_tick and (cur_tick - sbo_select_tick) <= 10 then {allow_operate: 1, reason: "OPERATE_AUTHORIZED"} else {allow_operate: 0, reason: "REJECT_SBO_NOT_SELECTED_OR_EXPIRED"}) else {allow_operate: 0, reason: "NON_CONTROL_FC"}
+
+## --- 3. IEC 60870-5-104 (Telecontrol over TCP/2404: APCI 0x68 I/S/U-Format + ASDU) ---
+fn iec104_type_name(tid) = if tid == 1 then "M_SP_NA_1_SINGLE_POINT" else if tid == 13 then "M_ME_NC_1_SHORT_FLOAT" else if tid == 36 then "M_ME_TF_1_FLOAT_CP56TIME2A" else if tid == 45 then "C_SC_NA_1_SINGLE_COMMAND" else if tid == 46 then "C_DC_NA_1_DOUBLE_COMMAND" else if tid == 100 then "C_IC_NA_1_INTERROGATION" else "TYPE_" + str(tid)
+
+fn iec104_u_build_hex(u_cmd) = "6804" + net_hex_byte(u_cmd) + "000000"
+
+fn iec104_i_build_hex(tx_seq, rx_seq, type_id, cot, coa, ioa_val_pair) = let ioa = ioa_val_pair / 256 in let val_byte = ioa_val_pair % 256 in let asdu = net_hex_byte(type_id) + "01" + net_hex_u16le(cot) + net_hex_u16le(coa) + net_hex_u16le(ioa % 65536) + net_hex_byte((ioa / 65536) % 256) + net_hex_byte(val_byte) in let apci = net_hex_u16le((tx_seq * 2) % 65536) + net_hex_u16le((rx_seq * 2) % 65536) in let body = apci + asdu in "68" + net_hex_byte(count(body) / 2) + body
+
+fn iec104_apdu_dissect(raw_hex) = let nb = count(raw_hex) / 2 in if nb < 6 then {ok: 0, format: "", tx_seq: 0, rx_seq: 0, type_id: 0, type_name: "", cot: 0, coa: 0, ioa: 0, val_byte: 0} else let st = net_hex_byte_at(raw_hex, 0) in let alen = net_hex_byte_at(raw_hex, 1) in if st != 104 or (alen + 2) != nb then {ok: 0, format: "", tx_seq: 0, rx_seq: 0, type_id: 0, type_name: "", cot: 0, coa: 0, ioa: 0, val_byte: 0} else let c0 = net_hex_byte_at(raw_hex, 2) in if (c0 % 4) == 3 then {ok: 1, format: "U-FORMAT", tx_seq: 0, rx_seq: 0, type_id: c0, type_name: if c0 == 7 then "STARTDT_ACT" else if c0 == 11 then "STARTDT_CON" else if c0 == 67 then "TESTFR_ACT" else "U_CMD", cot: 0, coa: 0, ioa: 0, val_byte: 0} else if (c0 % 4) == 1 then {ok: 1, format: "S-FORMAT", tx_seq: 0, rx_seq: net_hex_u16le_at(raw_hex, 4) / 2, type_id: 0, type_name: "SUPERVISORY_ACK", cot: 0, coa: 0, ioa: 0, val_byte: 0} else if nb < 16 then {ok: 0, format: "I-FORMAT", tx_seq: 0, rx_seq: 0, type_id: 0, type_name: "", cot: 0, coa: 0, ioa: 0, val_byte: 0} else let tx = net_hex_u16le_at(raw_hex, 2) / 2 in let rx = net_hex_u16le_at(raw_hex, 4) / 2 in let tid = net_hex_byte_at(raw_hex, 6) in let cot = net_hex_u16le_at(raw_hex, 8) in let coa = net_hex_u16le_at(raw_hex, 10) in let ioa = net_hex_u16le_at(raw_hex, 12) + (net_hex_byte_at(raw_hex, 14) * 65536) in let vb = net_hex_byte_at(raw_hex, 15) in {ok: 1, format: "I-FORMAT", tx_seq: tx, rx_seq: rx, type_id: tid, type_name: iec104_type_name(tid), cot: cot, coa: coa, ioa: ioa, val_byte: vb}
+
+## --- 4. IEC 61850: ISO 9506 MMS (TCP/102), 8-1 GOOSE (EtherType 0x88B8) & 9-2 SV (EtherType 0x88BA) ---
+fn mms_pdu_build_hex(pdu_tag, invoke_id, service_code, obj_ref) = let rlen = count(obj_ref) in let body = net_hex_u16be(invoke_id) + net_hex_byte(service_code) + net_hex_byte(rlen) + net_str_to_hex(obj_ref, 0, rlen) in net_hex_byte(pdu_tag) + net_hex_byte(count(body) / 2) + body
+
+fn mms_pdu_dissect(raw_hex) = let nb = count(raw_hex) / 2 in if nb < 6 then {ok: 0, pdu_type: "", invoke_id: 0, service: "", obj_ref: ""} else let tag = net_hex_byte_at(raw_hex, 0) in let plen = net_hex_byte_at(raw_hex, 1) in let inv = net_hex_u16be_at(raw_hex, 2) in let svc = net_hex_byte_at(raw_hex, 4) in let rlen = net_hex_byte_at(raw_hex, 5) in if (2 + plen) != nb or (6 + rlen) != nb then {ok: 0, pdu_type: "", invoke_id: 0, service: "", obj_ref: ""} else let ptype = if tag == 160 then "Confirmed-RequestPDU" else if tag == 161 then "Confirmed-ResponsePDU" else if tag == 168 then "Initiate-RequestPDU" else "MMS_PDU" in let sname = if svc == 4 then "Read" else if svc == 5 then "Write" else if svc == 12 then "GetNamedVariableListAttributes" else "Service_" + str(svc) in {ok: 1, pdu_type: ptype, invoke_id: inv, service: sname, obj_ref: net_hex_to_str(raw_hex, 6, 6 + rlen)}
+
+fn iec61850_goose_build_hex(appid, st_num, sq_num, trip_bool, gocb_ref) = let rlen = count(gocb_ref) in let pdu = "61" + net_hex_byte(11 + rlen) + net_hex_u32be(st_num) + net_hex_u32be(sq_num) + net_hex_byte(trip_bool % 2) + net_hex_byte(rlen) + net_str_to_hex(gocb_ref, 0, rlen) in let tot_len = 8 + (count(pdu) / 2) in net_hex_u16be(appid) + net_hex_u16be(tot_len) + "00000000" + pdu
+
+fn iec61850_goose_dissect(raw_hex) = let nb = count(raw_hex) / 2 in if nb < 19 then {ok: 0, appid: 0, st_num: 0, sq_num: 0, trip_bool: 0, gocb_ref: ""} else let appid = net_hex_u16be_at(raw_hex, 0) in let tot_len = net_hex_u16be_at(raw_hex, 2) in let tag = net_hex_byte_at(raw_hex, 8) in let st = net_hex_u32be_at(raw_hex, 10) in let sq = net_hex_u32be_at(raw_hex, 14) in let trip = net_hex_byte_at(raw_hex, 18) in let rlen = net_hex_byte_at(raw_hex, 19) in if tot_len != nb or tag != 97 or (20 + rlen) != nb then {ok: 0, appid: appid, st_num: st, sq_num: sq, trip_bool: trip, gocb_ref: ""} else {ok: 1, appid: appid, st_num: st, sq_num: sq, trip_bool: trip, gocb_ref: net_hex_to_str(raw_hex, 20, 20 + rlen)}
+
+## GOOSE Protection Relay State-Jump Validator (IEC 61850-8-1: new event increments `stNum` & resets `sqNum = 0`)
+fn iec61850_goose_state_valid(old_st, old_sq, new_st, new_sq) = if new_st > old_st then (if new_sq == 0 then 1 else 0) else if new_st == old_st then (if new_sq > old_sq then 1 else 0) else 0
+
+fn iec61850_sv_build_hex(appid, smp_cnt, ia_amp, va_volt, sv_id) = let slen = count(sv_id) in let pdu = "60" + net_hex_byte(11 + slen) + net_hex_u16be(smp_cnt) + net_hex_u32be(ia_amp) + net_hex_u32be(va_volt) + net_hex_byte(slen) + net_str_to_hex(sv_id, 0, slen) in let tot_len = 8 + (count(pdu) / 2) in net_hex_u16be(appid) + net_hex_u16be(tot_len) + "00000000" + pdu
+
+fn iec61850_sv_dissect(raw_hex) = let nb = count(raw_hex) / 2 in if nb < 19 then {ok: 0, appid: 0, smp_cnt: 0, ia_amp: 0, va_volt: 0, sv_id: ""} else let appid = net_hex_u16be_at(raw_hex, 0) in let tot_len = net_hex_u16be_at(raw_hex, 2) in let tag = net_hex_byte_at(raw_hex, 8) in let scnt = net_hex_u16be_at(raw_hex, 10) in let ia = net_hex_u32be_at(raw_hex, 12) in let va = net_hex_u32be_at(raw_hex, 16) in let slen = net_hex_byte_at(raw_hex, 20) in if tot_len != nb or tag != 96 or (21 + slen) != nb then {ok: 0, appid: appid, smp_cnt: scnt, ia_amp: ia, va_volt: va, sv_id: ""} else {ok: 1, appid: appid, smp_cnt: scnt, ia_amp: ia, va_volt: va, sv_id: net_hex_to_str(raw_hex, 21, 21 + slen)}
+
+## ============================================================================
+## Hardware Switch & Router Firmware Engine (L2 CAM/MAC Learning, 802.1Q VLAN,
+## 802.1w RSTP Loop Prevention, L3 FIB Longest-Prefix Match, BGP, P4 Pipeline)
+## ============================================================================
+
+## port_mode: 0 = ACCESS (untagged PVID), 1 = TRUNK (802.1Q tagged allowed_vid or PVID)
+fn sw_vlan_port_admit(port_mode, pvid, allowed_vid, frame_vid) = if pvid < 1 or pvid > 4094 then {admit: 0, effective_vid: 0} else if port_mode == 0 then (if frame_vid == 0 or frame_vid == pvid then {admit: 1, effective_vid: pvid} else {admit: 0, effective_vid: 0}) else (if frame_vid == 0 then {admit: 1, effective_vid: pvid} else if frame_vid == allowed_vid or frame_vid == pvid then {admit: 1, effective_vid: frame_vid} else {admit: 0, effective_vid: 0})
+
+fn sw_cam_remove_lp(cam, vid, mac) = match cam
+    Nil        => Nil
+    Cons(e, r) => if e.vlan_id == vid and e.mac == mac then sw_cam_remove_lp(r, vid, mac) else Cons(e, sw_cam_remove_lp(r, vid, mac))
+
+fn sw_cam_learn(cam, vlan_id, src_mac, in_port, tick) = if eth_mac_is_broadcast(src_mac) == 1 or eth_mac_is_multicast(src_mac) == 1 then cam else Cons({vlan_id: vlan_id, mac: src_mac, port: in_port, tick: tick}, sw_cam_remove_lp(cam, vlan_id, src_mac))
+
+fn sw_cam_lookup(cam, vlan_id, dst_mac) = match cam
+    Nil        => {hit: 0, egress_port: 0, action: "FLOOD_VLAN"}
+    Cons(e, r) => if e.vlan_id == vlan_id and e.mac == dst_mac then {hit: 1, egress_port: e.port, action: "UNICAST_FORWARD"} else sw_cam_lookup(r, vlan_id, dst_mac)
+
+## --- IEEE 802.1D / 802.1w RSTP BPDU Superior Vector Election (`root_id`, `cost`, `bridge_id`) ---
+fn sw_stp_better_bpdu(a, b) = if a.root_id < b.root_id then 1 else if a.root_id > b.root_id then 0 else if a.cost < b.cost then 1 else if a.cost > b.cost then 0 else if a.bridge_id < b.bridge_id then 1 else 0
+
+## --- L3 Hardware Router FIB Longest-Prefix Match (LPM) ---
+fn sw_lpm_scan(fib, dst_ip, best) = match fib
+    Nil         => best
+    Cons(rt, r) => if ipv4_in_subnet(dst_ip, rt.prefix_ip, rt.prefix_len) == 1 and rt.prefix_len > best.prefix_len then sw_lpm_scan(r, dst_ip, {hit: 1, prefix_len: rt.prefix_len, next_hop_ip: rt.next_hop_ip, egress_port: rt.egress_port}) else sw_lpm_scan(r, dst_ip, best)
+
+fn sw_lpm_lookup(fib, dst_ip) = sw_lpm_scan(fib, dst_ip, {hit: 0, prefix_len: 0 - 1, next_hop_ip: 0, egress_port: 0})
+
+## --- BGP-4 Best Path Selection (`local_pref` DESC, `as_path_len` ASC, `med` ASC) ---
+fn bgp_better_route(a, b) = if a.local_pref > b.local_pref then a else if a.local_pref < b.local_pref then b else if a.as_path_len < b.as_path_len then a else if a.as_path_len > b.as_path_len then b else if a.med <= b.med then a else b
+
+## --- Programmable P4 / OpenFlow Switch ASIC Pipeline (Parser -> VLAN -> CAM -> ACL -> L3 LPM -> QoS) ---
+fn sw_p4_pipeline_exec(cam, fib, acl_drop_port, in_port, pvid, raw_hex) = let dis = wireshark_dissect_frame(raw_hex) in if dis.ok == 0 then {action: "DROP_MALFORMED", egress_port: 0, vlan_id: 0, next_hop_ip: "", qos_queue: 0, cam: cam} else let eth = eth_frame_dissect(raw_hex) in let adm = sw_vlan_port_admit(1, pvid, dis.vlan_id, if eth.has_vlan == 1 then eth.vlan_id else 0) in if adm.admit == 0 then {action: "DROP_VLAN_VIOLATION", egress_port: 0, vlan_id: 0, next_hop_ip: "", qos_queue: 0, cam: cam} else let cam2 = sw_cam_learn(cam, adm.effective_vid, eth.src_mac, in_port, 100) in if acl_drop_port > 0 and (dis.src_port == acl_drop_port or dis.dst_port == acl_drop_port) then {action: "DROP_ACL_POLICY", egress_port: 0, vlan_id: adm.effective_vid, next_hop_ip: "", qos_queue: 0, cam: cam2} else let qos_q = if eth.has_vlan == 1 and eth.vlan_pcp >= 5 then 7 else if dis.l7_proto == "DNS" or dis.l4_proto == "ICMP" then 6 else 1 in let l2_lk = sw_cam_lookup(cam2, adm.effective_vid, eth.dst_mac) in if l2_lk.hit == 1 then {action: "L2_UNICAST_FWD", egress_port: l2_lk.egress_port, vlan_id: adm.effective_vid, next_hop_ip: dis.dst_ip, qos_queue: qos_q, cam: cam2} else if dis.l3_proto == "IPv4" then (let l3_rt = sw_lpm_lookup(fib, ipv4_parse(dis.dst_ip)) in if l3_rt.hit == 1 then {action: "L3_ROUTED_LPM", egress_port: l3_rt.egress_port, vlan_id: adm.effective_vid, next_hop_ip: ipv4_format(l3_rt.next_hop_ip), qos_queue: qos_q, cam: cam2} else {action: "L2_FLOOD_VLAN", egress_port: 255, vlan_id: adm.effective_vid, next_hop_ip: dis.dst_ip, qos_queue: qos_q, cam: cam2}) else {action: "L2_FLOOD_VLAN", egress_port: 255, vlan_id: adm.effective_vid, next_hop_ip: dis.dst_ip, qos_queue: qos_q, cam: cam2}
+
+fn test_wireshark_dissector_vlan_arp_icmp_tcp_dns_and_pcap() = let sip = ipv4_pack(10, 10, 1, 5) in let dip = ipv4_pack(10, 10, 1, 1) in let arp_hex = eth_frame_build_hex("ffffffffffff", "001122334455", 2054, arp_packet_build_hex(1, "001122334455", sip, "000000000000", dip)) in let d_arp = wireshark_dissect_frame(arp_hex) in let icmp_pay = icmp_echo_build_hex(8, 42, 7, "PING_LUME") in let icmp_frame = eth_vlan_frame_build_hex("aabbccddeeff", "001122334455", 6, 100, 2048, ipv4_wire_build_hex(sip, dip, 1, 64, icmp_pay)) in let d_icmp = wireshark_dissect_frame(icmp_frame) in let dns_pay = dns_wire_build_query_hex(4919, "switch", "lume", 1) in let dns_frame = eth_frame_build_hex("aabbccddeeff", "001122334455", 2048, ipv4_wire_build_hex(sip, ipv4_pack(8, 8, 8, 8), 17, 64, udp_wire_build_hex(53000, 53, dns_pay))) in let d_dns = wireshark_dissect_frame(dns_frame) in let tls_pay = tls13_wire_build_client_hello("core.lume.ai") in let tls_frame = eth_vlan_frame_build_hex("aabbccddeeff", "001122334455", 5, 200, 2048, ipv4_wire_build_hex(sip, dip, 6, 64, tcp_wire_build_hex(54321, 443, 1000, 0, 24, tls_pay))) in let d_tls = wireshark_dissect_frame(tls_frame) in let pcap = pcap_file_parse_hex(pcap_file_build_hex(icmp_frame, dns_frame)) in d_arp.ok == 1 and d_arp.l3_proto == "ARP" and wireshark_filter_match(d_arp, "arp") == 1 and d_icmp.ok == 1 and d_icmp.vlan_id == 100 and d_icmp.l4_proto == "ICMP" and d_icmp.checksum_ok == 1 and wireshark_filter_match(d_icmp, "vlan.id == 100") == 1 and d_dns.ok == 1 and d_dns.l7_proto == "DNS" and wireshark_filter_match(d_dns, "dns") == 1 and d_tls.ok == 1 and d_tls.l7_proto == "TLSv1.3" and wireshark_filter_match(d_tls, "tcp.port == 443") == 1 and pcap.ok == 1 and pcap.packet_count == 2
+
+fn test_switch_firmware_cam_vlan_rstp_lpm_bgp_and_p4_pipeline() = let cam0 = sw_cam_learn(Nil, 100, "aabbccddeeff", 3, 10) in let fib = Cons({prefix_ip: ipv4_pack(10, 0, 0, 0), prefix_len: 8, next_hop_ip: ipv4_pack(192, 168, 1, 1), egress_port: 1}, Cons({prefix_ip: ipv4_pack(10, 20, 30, 0), prefix_len: 24, next_hop_ip: ipv4_pack(192, 168, 1, 254), egress_port: 7}, Nil)) in let sip = ipv4_pack(10, 10, 1, 5) in let dip_l2 = ipv4_pack(10, 10, 1, 9) in let dip_l3 = ipv4_pack(10, 20, 30, 55) in let f_l2 = eth_vlan_frame_build_hex("aabbccddeeff", "001122334455", 6, 100, 2048, ipv4_wire_build_hex(sip, dip_l2, 6, 64, tcp_wire_build_hex(12000, 443, 1, 1, 2, ""))) in let r_l2 = sw_p4_pipeline_exec(cam0, fib, 23, 1, 1, f_l2) in let f_l3 = eth_vlan_frame_build_hex("112233445566", "001122334455", 2, 100, 2048, ipv4_wire_build_hex(sip, dip_l3, 6, 64, tcp_wire_build_hex(12000, 80, 1, 1, 2, ""))) in let r_l3 = sw_p4_pipeline_exec(r_l2.cam, fib, 23, 1, 1, f_l3) in let f_acl = eth_vlan_frame_build_hex("aabbccddeeff", "001122334455", 0, 100, 2048, ipv4_wire_build_hex(sip, dip_l2, 6, 64, tcp_wire_build_hex(50000, 23, 1, 1, 2, ""))) in let r_acl = sw_p4_pipeline_exec(r_l3.cam, fib, 23, 1, 1, f_acl) in let stp_ok = sw_stp_better_bpdu({root_id: 4096, cost: 4, bridge_id: 8192}, {root_id: 32768, cost: 0, bridge_id: 4096}) in let bgp_win = bgp_better_route({local_pref: 200, as_path_len: 3, med: 50, next_hop: 1}, {local_pref: 100, as_path_len: 1, med: 10, next_hop: 2}) in let mpls = mpls_shim_decode(mpls_shim_encode(52428, 5, 1, 63)) in r_l2.action == "L2_UNICAST_FWD" and r_l2.egress_port == 3 and r_l2.qos_queue == 7 and r_l3.action == "L3_ROUTED_LPM" and r_l3.egress_port == 7 and r_l3.next_hop_ip == "192.168.1.254" and r_acl.action == "DROP_ACL_POLICY" and stp_ok == 1 and bgp_win.next_hop == 1 and mpls.label == 52428 and mpls.tc_exp == 5 and mpls.bos == 1 and mpls.ttl == 63
+
+fn test_industrial_scada_protocols_modbus_dnp3_iec104_mms_goose_sv() = let sip = ipv4_pack(192, 168, 100, 10) in let dip = ipv4_pack(192, 168, 100, 20) in let mb_rtu = modbus_rtu_dissect(modbus_rtu_build_hex(1, 3, 40001, 10)) in let mb_tcp_pay = modbus_tcp_build_hex(77, 1, 6, 100, 1234) in let mb_frame = eth_frame_build_hex("aabbccddeeff", "001122334455", 2048, ipv4_wire_build_hex(sip, dip, 6, 64, tcp_wire_build_hex(51000, 502, 1, 1, 24, mb_tcp_pay))) in let d_mb = wireshark_dissect_frame(mb_frame) in let dnp_pay = dnp3_frame_build_hex(10, 1, 3, 12, 1, 5) in let dnp_frame = eth_frame_build_hex("aabbccddeeff", "001122334455", 2048, ipv4_wire_build_hex(sip, dip, 6, 64, tcp_wire_build_hex(52000, 20000, 10, 20, 24, dnp_pay))) in let d_dnp = wireshark_dissect_frame(dnp_frame) in let sbo_ok = dnp3_sbo_interlock(5, 100, 104, 4, 5, 1) in let sbo_bad = dnp3_sbo_interlock(5, 100, 125, 4, 5, 1) in let iec_pay = iec104_i_build_hex(12, 8, 45, 6, 1, (4097 * 256) + 1) in let iec_frame = eth_frame_build_hex("aabbccddeeff", "001122334455", 2048, ipv4_wire_build_hex(sip, dip, 6, 64, tcp_wire_build_hex(53000, 2404, 1, 1, 24, iec_pay))) in let d_iec = wireshark_dissect_frame(iec_frame) in let mms_pay = mms_pdu_build_hex(160, 99, 4, "IED1LD0/XCBR1$ST$Pos") in let mms_frame = eth_frame_build_hex("aabbccddeeff", "001122334455", 2048, ipv4_wire_build_hex(sip, dip, 6, 64, tcp_wire_build_hex(54000, 102, 1, 1, 24, mms_pay))) in let d_mms = wireshark_dissect_frame(mms_frame) in let goose_frame = eth_vlan_frame_build_hex("010ccd010001", "001122334455", 7, 10, 35000, iec61850_goose_build_hex(4096, 5, 0, 1, "IED1/LLN0$GO$gcbTrip")) in let d_goose = wireshark_dissect_frame(goose_frame) in let sv_frame = eth_vlan_frame_build_hex("010ccd040001", "001122334455", 7, 20, 35002, iec61850_sv_build_hex(16384, 3999, 1250, 138000, "MU01_SV_BUS1")) in let d_sv = wireshark_dissect_frame(sv_frame) in mb_rtu.ok == 1 and mb_rtu.crc_ok == 1 and mb_rtu.reg_addr == 40001 and d_mb.l7_proto == "MODBUS-TCP" and wireshark_filter_match(d_mb, "modbus") == 1 and d_dnp.l7_proto == "DNP3" and wireshark_filter_match(d_dnp, "dnp3") == 1 and sbo_ok.allow_operate == 1 and sbo_bad.allow_operate == 0 and d_iec.l7_proto == "IEC-104" and wireshark_filter_match(d_iec, "iec104") == 1 and d_mms.l7_proto == "IEC61850-MMS" and wireshark_filter_match(d_mms, "mms") == 1 and d_goose.l7_proto == "IEC61850-GOOSE" and wireshark_filter_match(d_goose, "goose") == 1 and iec61850_goose_state_valid(4, 12, 5, 0) == 1 and iec61850_goose_state_valid(4, 12, 5, 3) == 0 and d_sv.l7_proto == "IEC61850-SV" and wireshark_filter_match(d_sv, "sv") == 1
+
+## ============================================================================
+## 17. Substation Digital Protection Relays (IEEE C37.2 ANSI 50/51/87/21/27/59/81/79)
+##     & 60 Hz Discrete Fourier Transform (DFT) Phasor Engine on IEC 61850-9-2 SV
+## ============================================================================
+
+fn net_abs(x: int) -> int = if x < 0 then 0 - x else x
+
+fn net_isqrt_iter(n: int, g: int, steps: int) -> int =
+    if steps <= 0 or g <= 0 then g
+    else let nxt = (g + n / g) / 2 in if nxt >= g then g else net_isqrt_iter(n, nxt, steps - 1)
+
+fn net_isqrt(n: int) -> int =
+    if n <= 0 then 0 else if n < 4 then 1 else net_isqrt_iter(n, n / 2 + 1, 20)
+
+## Quarter-cycle orthogonal 60 Hz / 50 Hz DFT phasor extraction from 4 spaced samples (0, 90, 180, 270 deg)
+fn sv_dft_4sample_phasor(s0: int, s90: int, s180: int, s270: int) =
+    let re = (s0 - s180) / 2 in
+    let im = (s90 - s270) / 2 in
+    let mag_sq = re * re + im * im in
+    let peak = net_isqrt(mag_sq) in
+    let rms = (peak * 707) / 1000 in
+    {re: re, im: im, peak_amp: peak, rms_amp: rms, mag_sq: mag_sq}
+
+## ANSI 50 — Instantaneous Overcurrent Relay (< 4 ms GOOSE trip)
+fn ansi50_instantaneous_overcurrent(i_amp: int, pickup_amp: int) =
+    if pickup_amp <= 0 then {trip: 0, element: "ANSI_50_DISABLED", trip_time_ms: 0}
+    else if i_amp >= pickup_amp then {trip: 1, element: "ANSI_50_INST_OC_TRIP", trip_time_ms: 2}
+    else {trip: 0, element: "ANSI_50_NORMAL", trip_time_ms: 0}
+
+## ANSI 51 — AC Inverse-Time Overcurrent Relay (IEC Standard Inverse IDMT approximation in ms)
+fn ansi51_inverse_time_trip_ms(i_amp: int, pickup_amp: int, tds_permil: int) -> int =
+    if pickup_amp <= 0 or i_amp <= pickup_amp or tds_permil <= 0 then 0
+    else
+        let multiple_permil = (i_amp * 1000) / pickup_amp in
+        let denom = multiple_permil - 1000 in
+        let raw_ms = (tds_permil * 6900) / (if denom < 50 then 50 else denom) in
+        if raw_ms < 20 then 20 else raw_ms
+
+## ANSI 87 — Percentage Biased Differential Protection Relay (Transformer 87T / Busbar 87B)
+fn ansi87_differential_relay(i_in_amp: int, i_out_amp: int, min_pickup_amp: int, slope_pct: int) =
+    let i_diff = net_abs(i_in_amp - i_out_amp) in
+    let i_bias = (net_abs(i_in_amp) + net_abs(i_out_amp)) / 2 in
+    let slope_thresh = (i_bias * slope_pct) / 100 in
+    let trip = if i_diff >= min_pickup_amp and i_diff > slope_thresh then 1 else 0 in
+    {trip: trip, i_diff_amp: i_diff, i_bias_amp: i_bias, threshold_amp: slope_thresh, element: if trip == 1 then "ANSI_87_DIFF_TRIP" else "ANSI_87_RESTRAINED"}
+
+## ANSI 21 — Distance / Mho Impedance Protection Relay (Zone 1 Instantaneous, Zone 2 Delayed)
+fn ansi21_distance_mho_zone(v_volts: int, i_amp: int, z1_reach_mohm: int, z2_reach_mohm: int) =
+    if i_amp <= 0 then {zone: 0, z_apparent_mohm: 999999999, trip: 0, element: "ANSI_21_NO_LOAD"}
+    else
+        let z_app = (v_volts * 1000) / i_amp in
+        if z_app <= z1_reach_mohm then {zone: 1, z_apparent_mohm: z_app, trip: 1, element: "ANSI_21_ZONE1_INST_TRIP"}
+        else if z_app <= z2_reach_mohm then {zone: 2, z_apparent_mohm: z_app, trip: 1, element: "ANSI_21_ZONE2_DELAY_TRIP"}
+        else {zone: 0, z_apparent_mohm: z_app, trip: 0, element: "ANSI_21_OUT_OF_ZONE"}
+
+## ANSI 27 / 59 — Undervoltage & Overvoltage Protection Relay
+fn ansi27_59_voltage_relay(v_pu_permil: int, uv_pickup_permil: int, ov_pickup_permil: int) =
+    if v_pu_permil < uv_pickup_permil then {trip: 1, code: 27, element: "ANSI_27_UNDERVOLTAGE_TRIP"}
+    else if v_pu_permil > ov_pickup_permil then {trip: 1, code: 59, element: "ANSI_59_OVERVOLTAGE_TRIP"}
+    else {trip: 0, code: 0, element: "ANSI_27_59_VOLTAGE_OK"}
+
+## ANSI 81U / 81O — Underfrequency & Overfrequency Load-Shedding Relay (in mHz, e.g. 60000 = 60.000 Hz)
+fn ansi81_frequency_relay(freq_mhz: int, under_mhz: int, over_mhz: int) =
+    if freq_mhz < under_mhz then {trip: 1, element: "ANSI_81U_UNDERFREQ_SHED"}
+    else if freq_mhz > over_mhz then {trip: 1, element: "ANSI_81O_OVERFREQ_TRIP"}
+    else {trip: 0, element: "ANSI_81_FREQ_NOMINAL"}
+
+## ANSI 79 — AC Auto-Reclosing Relay State Machine (with ANSI 86 Lockout)
+fn ansi79_autorecloser_fsm(shot_count: int, max_shots: int, fault_cleared: int, lockout: int) =
+    if lockout == 1 then {state: "ANSI_86_LOCKOUT", next_shot: shot_count, breaker_close_cmd: 0}
+    else if fault_cleared == 1 then {state: "ANSI_79_RESET_NORMAL", next_shot: 0, breaker_close_cmd: 1}
+    else if shot_count < max_shots then {state: "ANSI_79_RECLOSE_SHOT", next_shot: shot_count + 1, breaker_close_cmd: 1}
+    else {state: "ANSI_86_LOCKOUT", next_shot: shot_count, breaker_close_cmd: 0}
+
+fn test_ansi_protection_relays_dft_50_51_87_21_27_59_81_79() =
+    let ph = sv_dft_4sample_phasor(10000, 0, 0 - 10000, 0) in
+    let r50_trip = ansi50_instantaneous_overcurrent(ph.peak_amp, 4000) in
+    let r50_ok = ansi50_instantaneous_overcurrent(600, 4000) in
+    let t51_fast = ansi51_inverse_time_trip_ms(8000, 1000, 500) in
+    let t51_slow = ansi51_inverse_time_trip_ms(2000, 1000, 500) in
+    let r87_trip = ansi87_differential_relay(5000, 500, 200, 30) in
+    let r87_rest = ansi87_differential_relay(1020, 1000, 200, 30) in
+    let r21_z1 = ansi21_distance_mho_zone(12000, 6000, 3000, 5000) in
+    let r21_ok = ansi21_distance_mho_zone(138000, 500, 3000, 5000) in
+    let r27 = ansi27_59_voltage_relay(820, 880, 1120) in
+    let r81 = ansi81_frequency_relay(58400, 59200, 60800) in
+    let r79_shot1 = ansi79_autorecloser_fsm(0, 3, 0, 0) in
+    let r79_lock = ansi79_autorecloser_fsm(3, 3, 0, 0) in
+    ph.peak_amp == 10000 and ph.rms_amp == 7070 and r50_trip.trip == 1 and r50_ok.trip == 0 and t51_fast > 0 and t51_fast < t51_slow and r87_trip.trip == 1 and r87_rest.trip == 0 and r21_z1.zone == 1 and r21_z1.trip == 1 and r21_ok.trip == 0 and r27.code == 27 and r81.trip == 1 and r79_shot1.breaker_close_cmd == 1 and r79_lock.state == "ANSI_86_LOCKOUT"

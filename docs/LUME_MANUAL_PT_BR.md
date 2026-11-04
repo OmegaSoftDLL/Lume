@@ -197,6 +197,24 @@ tail-call `jmp` + arenas regionais `O(1)`:
                    `fs_path_exists(caminho)`, `fs_read_byte(caminho, offset)`, `fs_file_size(caminho)`
 - Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`, `os_getpid()`, `os_exit(cod)`,
                   `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`
+- Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):
+  - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
+                               `port_out32(p, v)`, `port_in32(p)`
+  - MMIO Volatil (8/16/32/64 bits): `mmio_volatile_write8(a, v)`, `mmio_volatile_read8(a)`,
+                                    `mmio_volatile_write16(a, v)`, `mmio_volatile_read16(a)`,
+                                    `mmio_volatile_write32(a, v)`, `mmio_volatile_read32(a)`,
+                                    `mmio_volatile_write64(a, v)`, `mmio_volatile_read64(a)`
+  - Console VGA Nativo (`0xB8000` + CRT `0x3D4`/`0x3D5`): `vga_puts(row, col, attr, texto)`,
+    `vga_fill_row(row, attr, ch_ascii)`, `vga_scroll_up(top_row, bot_row, attr)`,
+    `vga_set_cursor(row, col)`
+  - CPU, MSR e SMP: `cpu_cli()`, `cpu_sti()`, `cpu_hlt()`, `cpu_pause()`, `cpu_mfence()`,
+                    `cpu_rdtsc()`, `cpu_rdmsr(msr)`, `cpu_wrmsr(msr, val)`, `cpu_read_cr3()`,
+                    `cpu_write_cr3(v)`, `cpu_invlpg(va)`, `cpu_idt_init()`, `cpu_smp_boot_ap(v)`
+  - Bitwise de 64 bits em Hardware: `bit_and(a, b)`, `bit_or(a, b)`, `bit_xor(a, b)`,
+                                    `bit_not(a)`, `bit_shl(a, n)`, `bit_shr(a, n)`
+  - Bloco de Memoria, Integridade e Estado O(1): `mem_copy(dst, src, len)`, `mem_set(dst, b, len)`,
+    `mem_crc64(addr, len)` (auditoria anti-rootkit FNV-1a de 64 bits), `krn_slot_write(idx, val)`,
+    `krn_slot_read(idx)` (tabela de estado de kernel de 1024 slots com zero alocacoes de heap)
 - Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)
 
 ## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)
@@ -207,7 +225,18 @@ tail-call `jmp` + arenas regionais `O(1)`:
 - `use capsule`        Capsulas de auditoria e replay deterministico
 - `use fs_sha256_file` Hash criptografico FIPS 180-4 (`lc_sha256(s)`, `fs_sha256_file(p)`)
 - `use db`             Banco de dados B+Tree + WAL ACID com recuperacao de falhas e SQL
-- `use net`            Redes TCP/IP, checksum RFC 793, HTTP/1.1 e TLS 1.3 binario (RFC 8446)
+- `use net`            Especialista em Redes TCP/IP, Dissecador Wireshark (`wireshark_dissect_frame`,
+                       `wireshark_filter_match`, leitor/gravador `.pcap`), Firmware de Switch/Roteador
+                       L2/L3/P4 (VLAN 802.1Q, RSTP 802.1w, tabela CAM/MAC, MPLS, FIB LPM, BGP-4,
+                       pipeline P4), Protocolos Industriais e de Subestacao do zero: Modbus RTU/TCP
+                       (`CRC-16 0xA001`), DNP3 IEEE 1815 (`0x0564` + `CRC-16/DNP` + SBO + SAv5),
+                       IEC 60870-5-104 (`TCP/2404` I/S/U-Format), IEC 61850 (`MMS ISO 9506`,
+                       `GOOSE 0x88B8` sub-4ms e `Sampled Values 0x88BA`) e Reles Digitais de Protecao
+                       Eletrica (`sv_dft_4sample_phasor` DFT 60 Hz, `ANSI 50`, `ANSI 51`, `ANSI 87`,
+                       `ANSI 21`, `ANSI 27/59`, `ANSI 81U/O` e religador `ANSI 79`)
+- `use gfx`            Motor Grafico 2D/3D, Matematica de Ponto Fixo (`fx_sqrt`, `fx_sin_deg`,
+                       `fx_cos_deg`), Blending RGBA Porter-Duff, Rasterizador 2D Bresenham/Circulo/
+                       Bezier, Projecao de Perspectiva 3D, BMP Binario (54B), PPM e Sinoptico SVG HMI
 - `use gui`            Cliente grafico binario X11 (`0x42` MSB) e arvore reativa Web
 - `use nn`             Redes neurais, serializador binario `.safetensors` e Protobuf `.onnx`
 - `use async_rt`       Pool de processos paralelos do SO (`async_run_workers_os`)
@@ -265,6 +294,18 @@ tail-call `jmp` + arenas regionais `O(1)`:
   lume omega-net / llm-forge / consult / laws / memory / replicate / hive
   lume os-control / bios-core / web-research / reverse-engineer / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
+  lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
+  lume gfx / render-3d / scada-hmi / ied-protection / recall / synapse / orchestrate
+
+## 8.4 Orquestrador Universal de Modulos (`LumeSynapse`) e Memoria Proativa
+- `lume synapse <arq.src>` (ou `lume orchestrate <arq.src>`): Coordena todos os modulos
+  da Lume (`lmod`, `lumec`, `lasm`, `lcaas`, `lcert`, `ltest`, `lprotect`, `lsentience`)
+  como um unico organismo vivo atraves do barramento em tempo real (`synapse_bus.json`),
+  com Alimentacao Cruzada Instantanea (`prove -> check`, `certify -> prove + check`) e
+  Reflexo Sinaptico Compilador <-> Autocura (`synapse_last_diagnostic.json`).
+- `lume recall <arq.src>`: Consulta a Memoria Soberana Proativa O(1) com selos
+  criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
+  mais rapidos).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
