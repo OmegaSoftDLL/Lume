@@ -971,8 +971,32 @@ fn wasm_web_prints(ps, ifns) = match ps
 
 fn container_wasm32_web_dom(ifns, prints) = let nfns = tg_len(ifns) in let magic = Cons(0, Cons(97, Cons(115, Cons(109, Cons(1, Cons(0, Cons(0, Cons(0, Nil)))))))) in let base_types = Cons(96, Cons(2, Cons(127, Cons(127, Cons(0, Cons(96, Cons(1, Cons(127, Cons(0, Cons(96, Cons(0, Cons(0, Nil)))))))))))) in let tsec = wasm_sec(1, tg_app(wasm_uleb(3 + nfns), tg_app(base_types, wasm_fn_types(ifns)))) in let imp0 = tg_app(wasm_str("env"), tg_app(wasm_str("dom_append_int"), Cons(0, Cons(1, Nil)))) in let imp1 = tg_app(wasm_str("env"), tg_app(wasm_str("web_trap"), Cons(0, Cons(1, Nil)))) in let imp2 = tg_app(wasm_str("env"), tg_app(wasm_str("dom_set_attr"), Cons(0, Cons(0, Nil)))) in let isec = wasm_sec(2, Cons(3, tg_app(imp0, tg_app(imp1, imp2)))) in let fsec = wasm_sec(3, tg_app(wasm_uleb(1 + nfns), Cons(2, wasm_fn_type_idxs(ifns, 3)))) in let msec = wasm_sec(5, Cons(1, Cons(0, Cons(1, Nil)))) in let exp1 = tg_app(wasm_str("memory"), Cons(2, Cons(0, Nil))) in let exp2 = tg_app(wasm_str("lume_web_main"), Cons(0, Cons(3, Nil))) in let exp3 = tg_app(wasm_str("_start"), Cons(0, Cons(3, Nil))) in let esec = wasm_sec(7, Cons(3, tg_app(exp1, tg_app(exp2, exp3)))) in let start_b = Cons(0, tg_app(wasm_web_prints(prints, ifns), Cons(11, Nil))) in let csec = wasm_sec(10, tg_app(wasm_uleb(1 + nfns), tg_app(wasm_with_len(start_b), wasm_fn_bodies(ifns, ifns)))) in tg_app(magic, tg_app(tsec, tg_app(isec, tg_app(fsec, tg_app(msec, tg_app(esec, csec))))))
 
-## Binary WASM Capability Sandbox Verifier (`#275`): inspects WASM binary header (`0061736d01000000`), bounded memory pages, and rejects ungranted host capability imports (`path_open` / `sock_*`) with `[I0275]`.
-fn wasm_sandbox_verify(wasm_hex) = if count(wasm_hex) < 16 or slice(wasm_hex, 0, 16) != "0061736d01000000" then {ok: 0, diag: "[I0275] error: invalid WebAssembly binary header for capability sandbox"} else if tg_str_has(wasm_hex, "706174685f6f70656e") == 1 or tg_str_has(wasm_hex, "736f636b5f") == 1 or tg_str_has(wasm_hex, "ungranted_cap") == 1 then {ok: 0, diag: "[I0275] error: WASM module imports ungranted host capability outside sandbox policy"} else {ok: 1, diag: "{\"ok\":true,\"sandbox\":\"wasm32-capability-v1\",\"memory_pages\":1,\"allowed_imports\":[\"fd_write\",\"proc_exit\",\"dom_append_int\",\"dom_set_attr\",\"web_trap\"]}"}
+## Binary WASM Capability Sandbox Verifier (`#275`): parses binary WebAssembly sections (`Section 2` Import section & `Section 5` Memory section via ULEB128 decoding), enforces bounded memory pages (`1..16`), and rejects ungranted host capability imports (`path_open` / `sock_*`) with `[I0275]`.
+fn wasm_read_uleb_step(bs, shift, acc) = match bs
+    Nil        => {val: acc, rest: Nil}
+    Cons(b, r) => let v = acc + (b % 128) * shift in if b < 128 then {val: v, rest: r} else wasm_read_uleb_step(r, shift * 128, v)
+
+fn wasm_read_uleb(bs) = wasm_read_uleb_step(bs, 1, 0)
+
+fn wasm_read_str(bs) = let lr = wasm_read_uleb(bs) in {s: lumb_bytes_to_str(ihex_take(lr.rest, lr.val)), rest: ihex_drop(lr.rest, lr.val)}
+
+fn wasm_allowed_import(mod_nm, fld_nm) = if mod_nm == "wasi_snapshot_preview1" and (fld_nm == "fd_write" or fld_nm == "proc_exit") then 1 else if mod_nm == "env" and (fld_nm == "dom_append_int" or fld_nm == "dom_set_attr" or fld_nm == "web_trap") then 1 else 0
+
+fn wasm_skip_import_desc(bs) = match bs
+    Nil           => Nil
+    Cons(kind, r) => if kind == 0 then (wasm_read_uleb(r)).rest else ihex_drop(r, 2)
+
+fn wasm_verify_imports_n(bs, rem) = if rem <= 0 then {ok: 1, bad: ""} else let mr = wasm_read_str(bs) in let fr = wasm_read_str(mr.rest) in if wasm_allowed_import(mr.s, fr.s) == 0 then {ok: 0, bad: mr.s + "." + fr.s} else wasm_verify_imports_n(wasm_skip_import_desc(fr.rest), rem - 1)
+
+fn wasm_verify_import_sec(sec_bs) = let cr = wasm_read_uleb(sec_bs) in wasm_verify_imports_n(cr.rest, cr.val)
+
+fn wasm_parse_mem_sec(sec_bs) = let cr = wasm_read_uleb(sec_bs) in if cr.val <= 0 then 0 else let fl = wasm_read_uleb(cr.rest) in (wasm_read_uleb(fl.rest)).val
+
+fn wasm_walk_sections(bs, mem_pages) = match bs
+    Nil         => {ok: 1, mem_pages: mem_pages, diag: ""}
+    Cons(id, r) => let lr = wasm_read_uleb(r) in if tg_len(lr.rest) < lr.val then {ok: 0, mem_pages: mem_pages, diag: "[I0275] error: truncated or malformed WebAssembly section in capability sandbox"} else let sec_bs = ihex_take(lr.rest, lr.val) in let next_bs = ihex_drop(lr.rest, lr.val) in if id == 2 then let ir = wasm_verify_import_sec(sec_bs) in if ir.ok == 0 then {ok: 0, mem_pages: mem_pages, diag: "[I0275] error: WASM module imports ungranted host capability '" + ir.bad + "' outside sandbox policy"} else wasm_walk_sections(next_bs, mem_pages) else if id == 5 then let mp = wasm_parse_mem_sec(sec_bs) in if mp <= 0 or mp > 16 then {ok: 0, mem_pages: mp, diag: "[I0275] error: WASM module memory pages (" + str(mp) + ") outside capability sandbox bounds (1..16)"} else wasm_walk_sections(next_bs, mp) else wasm_walk_sections(next_bs, mem_pages)
+
+fn wasm_sandbox_verify(wasm_hex) = if count(wasm_hex) < 16 or slice(wasm_hex, 0, 16) != "0061736d01000000" then {ok: 0, diag: "[I0275] error: invalid WebAssembly binary header for capability sandbox"} else if tg_str_has(wasm_hex, "706174685f6f70656e") == 1 or tg_str_has(wasm_hex, "736f636b5f") == 1 or tg_str_has(wasm_hex, "ungranted_cap") == 1 then {ok: 0, diag: "[I0275] error: WASM module imports ungranted host capability outside sandbox policy"} else let bs = ihex_drop(tg_hex_to_bytes(wasm_hex), 8) in let wr = wasm_walk_sections(bs, 1) in if wr.ok == 0 then {ok: 0, diag: wr.diag} else {ok: 1, diag: "{\"ok\":true,\"sandbox\":\"wasm32-capability-v1\",\"memory_pages\":" + str(wr.mem_pages) + ",\"allowed_imports\":[\"fd_write\",\"proc_exit\",\"dom_append_int\",\"dom_set_attr\",\"web_trap\"]}"}
 
 ## --- 8. Top-Level Target Compilation Entrypoint ---
 
@@ -998,7 +1022,7 @@ fn test_t8_fpga_verilog_and_vhdl_rtl_sim() = let src_ok = "fn mac_step(a: int, b
 
 fn test_t9_mobile_ios_android_and_web_dom_wasm() = let src = "fn score(x: int) -> int requires x >= 0 ensures result >= 0 = x + 12\nprint score(30)\n" in let r_ios = container_macho64_ios_hdr(64, 16777228) in let r_and = target_compile("aarch64-android-elf", src) in let r_web = target_compile("wasm32-web-dom", src) in if tg_nth(r_ios, 0) == 207 and tg_nth(r_ios, 528) == 2 and r_and.ok == 1 and r_and.guards_elided == 1 and tg_nth(r_and.bytes, 0) == 127 and tg_nth(r_and.bytes, 56) == 2 and tg_nth(r_and.bytes, 188) == 65 and tg_nth(r_and.bytes, 196) == 34 and r_web.ok == 1 and r_web.guards_elided == 1 and tg_nth(r_web.bytes, 0) == 0 and tg_nth(r_web.bytes, 1) == 97 then 1 else 0
 
-fn test_t10_wasm_capability_sandbox() = let src = "fn score(x: int) -> int requires x >= 0 ensures result >= 0 = x + 12\nprint score(30)\n" in let r_wasi = target_compile("wasm32-wasi", src) in let r_web = target_compile("wasm32-web-dom", src) in let r_uefi = target_compile("x86_64-uefi-pe", src) in let sb_ok1 = wasm_sandbox_verify(r_wasi.hex) in let sb_ok2 = wasm_sandbox_verify(r_web.hex) in let sb_bad = wasm_sandbox_verify(r_wasi.hex + "706174685f6f70656e") in if sb_ok1.ok == 1 and sb_ok2.ok == 1 and sb_bad.ok == 0 and tg_str_has(sb_bad.diag, "[I0275]") == 1 and r_uefi.ok == 1 and tg_nth(r_uefi.bytes, 0) == 77 and tg_nth(r_uefi.bytes, 156) == 10 then 1 else 0
+fn test_t10_wasm_capability_sandbox() = let src = "fn score(x: int) -> int requires x >= 0 ensures result >= 0 = x + 12\nprint score(30)\n" in let r_wasi = target_compile("wasm32-wasi", src) in let r_web = target_compile("wasm32-web-dom", src) in let r_uefi = target_compile("x86_64-uefi-pe", src) in let sb_ok1 = wasm_sandbox_verify(r_wasi.hex) in let sb_ok2 = wasm_sandbox_verify(r_web.hex) in let sb_bad = wasm_sandbox_verify(r_wasi.hex + "706174685f6f70656e") in let bad_imp_sec = wasm_sec(2, Cons(1, tg_app(wasm_str("env"), tg_app(wasm_str("sys_exec"), Cons(0, Cons(0, Nil)))))) in let sb_bad_imp = wasm_sandbox_verify("0061736d01000000" + tg_bytes_to_hex(bad_imp_sec)) in let bad_mem_sec = wasm_sec(5, Cons(1, Cons(0, Cons(32, Nil)))) in let sb_bad_mem = wasm_sandbox_verify("0061736d01000000" + tg_bytes_to_hex(bad_mem_sec)) in if sb_ok1.ok == 1 and sb_ok2.ok == 1 and sb_bad.ok == 0 and tg_str_has(sb_bad.diag, "[I0275]") == 1 and sb_bad_imp.ok == 0 and tg_str_has(sb_bad_imp.diag, "env.sys_exec") == 1 and sb_bad_mem.ok == 0 and tg_str_has(sb_bad_mem.diag, "memory pages (32)") == 1 and r_uefi.ok == 1 and tg_nth(r_uefi.bytes, 0) == 77 and tg_nth(r_uefi.bytes, 156) == 10 then 1 else 0
 
 ## --- 9b. Wave 7 RC1: Unified LumeMIR Multi-Target Lowering, Win64 KERNEL32 Import Table & One-Command Packagers (`apk`/`ipa`/`iso`/`uefi`) ---
 
