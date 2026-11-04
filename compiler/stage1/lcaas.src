@@ -3023,17 +3023,33 @@ fn cs_intent_first_err(ds) = match ds
 fn caas_intent_code_out(body) = let ic = cs_intent_core(body) in if ic.ok == 1 then cs_chomp(ic.cache_src) else ctfail(cs_intent_first_err(ic.diags))
 
 ## --- Wave 6 AI-First Superpowers: 10x Context Skeleton & CEGIS Synthesis ---
+fn cs_skel_expr_canon(e) = match e
+    Num(n)         => "N(" + str(n) + ")"
+    Str(s)         => "S(" + s + ")"
+    Var(nm)        => "V(" + nm + ")"
+    Bin(op, a, b)  => "B(" + op + "," + cs_skel_expr_canon(a) + "," + cs_skel_expr_canon(b) + ")"
+    If(c, t, f)    => "I(" + cs_skel_expr_canon(c) + "," + cs_skel_expr_canon(t) + "," + cs_skel_expr_canon(f) + ")"
+    LetIn(n, v, b) => "L(" + n + "," + cs_skel_expr_canon(v) + "," + cs_skel_expr_canon(b) + ")"
+    Call(nm, xs)   => "C(" + nm + "," + str(cs_len(xs)) + ")"
+    _              => "E"
+
 fn cs_skel_stmts(prog, vsigs, ksigs) = match prog
     Nil        => Nil
     Cons(h, t) => cs_skel_stmt1(h, cs_skel_stmts(t, vsigs, ksigs), vsigs, ksigs)
 
 fn cs_skel_stmt1(st, rest, vsigs, ksigs) = match st
-    Fn(nm, ps, body) => if cs_startswith(nm, "law_") == 1 then rest else let eff = cs_fn_eff_str(nm, ksigs) in let cdoc = cs_c_contract_doc(nm, vsigs) in let item = "{\"name\":\"" + cs_jesc(nm) + "\",\"params\":[" + cs_strlist_json(ps) + "],\"effect\":\"" + cs_jesc(eff) + "\",\"contracts\":\"" + cs_jesc(cdoc) + "\"}" in Cons(item, rest)
+    Fn(nm, ps, body) => if cs_startswith(nm, "law_") == 1 then rest else let eff = cs_fn_eff_str(nm, ksigs) in let cdoc = cs_c_contract_doc(nm, vsigs) in let bsha = lc_sha256(cs_skel_expr_canon(body)) in let item = "{\"name\":\"" + cs_jesc(nm) + "\",\"param_count\":" + str(cs_len(ps)) + ",\"params\":[" + cs_strlist_json(ps) + "],\"effect\":\"" + cs_jesc(eff) + "\",\"contracts\":\"" + cs_jesc(cdoc) + "\",\"body_sha256\":\"" + cs_jesc(bsha) + "\"}" in Cons(item, rest)
     _                => rest
 
 fn caas_module_skeleton(raw_src) = let ast = cs_parse(raw_src) in let vsigs = cs_vcollect_vsigs(ast) in let ksigs = cs_kcollect_effsigs(ast) in let items = cs_skel_stmts(ast, vsigs, ksigs) in let skel_body = cs_joinsep(items, ",") in "{\"ok\":true,\"mode\":\"skeleton\",\"source_bytes\":" + str(count(raw_src)) + ",\"skeleton_bytes\":" + str(count(skel_body)) + ",\"source_sha256\":\"" + cs_jesc(lc_sha256(raw_src)) + "\",\"fn_count\":" + str(cs_len(items)) + ",\"functions\":[" + skel_body + "]}"
 
-fn caas_cegis_synthesize(fn_name, x1, y1, x2, y2) = let dx = if x2 == x1 then 1 else x2 - x1 in let a = (y2 - y1) / dx in let b = y1 - a * x1 in let expr_s = str(a) + " * x + " + str(b) in let code_s = "fn " + fn_name + "(x: int) -> int ensures result == " + expr_s + " = " + expr_s + "\n" in let r = caas_compile(code_s) in let pcnt = lc_count_proven(r.proofs) in let ex_ok = if (a * x1 + b) == y1 and (a * x2 + b) == y2 and r.ok == 1 and pcnt >= 1 then 1 else 0 in "{\"ok\":" + (if ex_ok == 1 then "true" else "false") + ",\"mode\":\"cegis\",\"function\":\"" + cs_jesc(fn_name) + "\",\"synthesized_expr\":\"" + cs_jesc(expr_s) + "\",\"synthesized_source\":\"" + cs_jesc(cs_chomp(code_s)) + "\",\"proven_count\":" + str(pcnt) + ",\"proof_status\":\"" + (if ex_ok == 1 then "proven" else "unverified") + "\",\"examples_verified\":2}"
+fn cs_cegis_fmt_affine(a, b) = if b >= 0 then str(a) + " * x + " + str(b) else str(a) + " * x - " + str(0 - b)
+
+fn cs_cegis_search_b(a, b, ex, exp_cnt, prn_cnt) = if b > 8 then {found: 0, a: 0, b: 0, explored: exp_cnt, pruned: prn_cnt} else let v1 = a * ex.x1 + b in let v2 = a * ex.x2 + b in if v1 == ex.y1 and v2 == ex.y2 then {found: 1, a: a, b: b, explored: exp_cnt + 1, pruned: prn_cnt} else cs_cegis_search_b(a, b + 1, ex, exp_cnt + 1, prn_cnt + 1)
+
+fn cs_cegis_search_a(a, ex, exp_cnt, prn_cnt) = if a > 8 then {found: 0, a: 0, b: 0, explored: exp_cnt, pruned: prn_cnt} else let rb = cs_cegis_search_b(a, 0 - 8, ex, exp_cnt, prn_cnt) in if rb.found == 1 then rb else cs_cegis_search_a(a + 1, ex, rb.explored, rb.pruned)
+
+fn caas_cegis_synthesize(fn_name, x1, y1, x2, y2) = let srch = cs_cegis_search_a(0 - 8, {x1: x1, y1: y1, x2: x2, y2: y2}, 0, 0) in let dx = if x2 == x1 then 1 else x2 - x1 in let a = if srch.found == 1 then srch.a else (y2 - y1) / dx in let b = if srch.found == 1 then srch.b else y1 - a * x1 in let expr_s = cs_cegis_fmt_affine(a, b) in let code_s = "fn " + fn_name + "(x: int) -> int ensures result == " + expr_s + " = " + expr_s + "\n" in let r = caas_compile(code_s) in let pcnt = lc_count_proven(r.proofs) in let ex_ok = if (a * x1 + b) == y1 and (a * x2 + b) == y2 and r.ok == 1 and pcnt >= 1 then 1 else 0 in "{\"ok\":" + (if ex_ok == 1 then "true" else "false") + ",\"mode\":\"cegis\",\"function\":\"" + cs_jesc(fn_name) + "\",\"synthesized_expr\":\"" + cs_jesc(expr_s) + "\",\"synthesized_source\":\"" + cs_jesc(cs_chomp(code_s)) + "\",\"candidates_explored\":" + str(srch.explored) + ",\"counterexamples_pruned\":" + str(srch.pruned) + ",\"proven_count\":" + str(pcnt) + ",\"proof_status\":\"" + (if ex_ok == 1 then "proven" else "unverified") + "\",\"examples_verified\":2}"
 
 fn cs_cegis_tok(s, i, n) = if i >= n or at(s, i) == " " or at(s, i) == "\n" or at(s, i) == "\r" then i else cs_cegis_tok(s, i + 1, n)
 
