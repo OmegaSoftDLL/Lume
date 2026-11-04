@@ -257,3 +257,30 @@ fn test_los_shell_pipelines_redirection_and_builtins() = let os0 = os_boot_defau
 
 fn test_los_drivers_rtc_pci_and_ps2_keyboard() = let rtc = drv_rtc_decode_bcd_regs(8, 4, 21, 41, 16, 38) in let pci_devs = drv_pci_bus0_table() in let pci_nic = drv_pci_find_device(pci_devs, 6900, 4096) in let kbd_scs = Cons(42, Cons(38, Cons(170, Cons(22, Cons(50, Cons(18, Cons(28, Nil))))))) in let kbd_str = drv_kbd_decode_stream(kbd_scs, 0) in rtc.valid == 1 and rtc.year == 2026 and rtc.month == 10 and rtc.day == 29 and pci_nic.class_nm == "VirtIONet_PCI" and los_trim(kbd_str) == "Lume"
 
+## ============================================================================
+## 7. Wave 6 (#241): VFS Disk Image Persistence & Multi-Command Script Runner
+## ============================================================================
+
+fn los_serialize_dentries(ds, inos) = match ds
+    Nil        => ""
+    Cons(h, t) => let rest = los_serialize_dentries(t, inos) in if h.path == "/" or h.path == "/tmp" then rest else let nd = vfs_find_inode(inos, h.ino) in if nd.found == 0 then rest else if nd.ftype == 2 then rest + "D|" + h.path + "\n" else rest + "F|" + h.path + "|" + nd.data + "\n"
+
+fn los_serialize_image(os_st) = "LUMEFS_IMG_V1\n" + los_serialize_dentries(os_st.fs.dentries, os_st.fs.inodes)
+
+fn los_persist_image(path, os_st) = fs_write_sync(path, los_serialize_image(os_st))
+
+fn los_apply_img_line(fs, line) = if los_startswith(line, "D|") == 1 then let p = slice(line, 2, count(line)) in (vfs_mkdir(fs, p, 493)).fs else if los_startswith(line, "F|") == 1 then let rest = slice(line, 2, count(line)) in let sep = los_find_ch(rest, "|", 0, count(rest)) in if sep < 0 then fs else let p = slice(rest, 0, sep) in let d = slice(rest, sep + 1, count(rest)) in (vfs_write_file(fs, p, d, 1)).fs else fs
+
+fn los_replay_img_lines(fs, text, pos) = if pos >= count(text) then fs else let nl = los_find_ch(text, "\n", pos, count(text)) in let endp = if nl < 0 then count(text) else nl in let line = slice(text, pos, endp) in let fs2 = los_apply_img_line(fs, line) in los_replay_img_lines(fs2, text, endp + 1)
+
+fn los_restore_image(path) = let raw = fs_read_file(path) in if los_startswith(raw, "LUMEFS_IMG_V1\n") == 0 then {ok: 0, os: os_boot_default()} else let os0 = os_boot_default() in let fs1 = los_replay_img_lines(os0.fs, raw, 14) in {ok: 1, os: {blk: os0.blk, fs: fs1, pt: os0.pt, arp: os0.arp}}
+
+fn los_exec_script_list(os_st, cmds, last_out) = match cmds
+    Nil        => {os: os_st, out: last_out, status: 0}
+    Cons(c, t) => let r = sh_exec_pipeline(os_st, c, "") in if r.status != 0 then {os: r.os, out: r.out, status: r.status} else los_exec_script_list(r.os, t, r.out)
+
+fn los_exec_script(os_st, cmds) = los_exec_script_list(os_st, cmds, "")
+
+fn test_los_disk_image_persistence_and_script() = let os0 = os_boot_default() in let cmds = Cons("mkdir /var/log", Cons("echo boot_ok > /var/log/boot.log", Cons("cat /var/log/boot.log", Nil))) in let sr = los_exec_script(os0, cmds) in let img_path = "/tmp/lume_os_vfs_w6.img" in let pw = los_persist_image(img_path, sr.os) in let rst = los_restore_image(img_path) in let rm = fs_remove(img_path) in let chk = sh_exec_pipeline(rst.os, "cat /var/log/boot.log", "") in sr.status == 0 and sr.out == "boot_ok" and pw == 1 and rst.ok == 1 and chk.status == 0 and chk.out == "boot_ok"
+
+

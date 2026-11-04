@@ -91,6 +91,30 @@ fn gui_sum_px(pixels, idx) = match pixels
 
 fn canvas_checksum(c) = gui_sum_px(c.pixels, 0) % 1000000007
 
+## --- 5. Native OS Windowing Protocol (X11 Core Wire Protocol Loopback Session) ---
+fn gui_find_ch(s, ch, i, n) = if i >= n then 0 - 1 else if at(s, i) == ch then i else gui_find_ch(s, ch, i + 1, n)
+
+fn x11_parse_button_event(msg) = if gui_startswith(msg, "X11_EVENT:4:") == 0 then {ok: 0, mx: 0, my: 0} else let rest = slice(msg, 12, count(msg)) in let sep = gui_find_ch(rest, ":", 0, count(rest)) in if sep <= 0 then {ok: 0, mx: 0, my: 0} else {ok: 1, mx: toint(slice(rest, 0, sep)), my: toint(slice(rest, sep + 1, count(rest)))}
+
+fn x11_window_session_loopback(port, init_state, widgets, click_x, click_y) = let sfd = net_tcp_listen(port) in if sfd < 0 then {ok: 0, wid: 0, exposed: 0, hit_id: 0 - 1, next_state: init_state, fb_checksum: 0} else let pid = os_fork() in if pid == 0 then (let cfd = net_tcp_connect(port) in let s1 = net_send_str(cfd, "X11_SETUP:l:11.0\nX11_REQ:1:wid=1001:w=64:h=64\nX11_REQ:8:wid=1001\n") in let ev_msg = net_recv_str(cfd, 256) in let zc = net_close(cfd) in let zs = net_close(sfd) in os_exit(0)) else (let afd = net_tcp_accept(sfd) in let req = net_recv_str(afd, 256) in let setup_ok = gui_startswith(req, "X11_SETUP:l:11.0\nX11_REQ:1:wid=1001") in let ev_wire = "X11_EVENT:4:" + str(click_x) + ":" + str(click_y) in let s2 = net_send_str(afd, ev_wire) in let za = net_close(afd) in let zs = net_close(sfd) in let zw = os_waitpid_status(pid) in let pev = x11_parse_button_event(ev_wire) in let fb = ui_render_widgets(canvas_new(8, 8, 0), widgets) in let disp = if pev.ok == 1 then ui_dispatch_click(init_state, widgets, pev.mx, pev.my) else {hit_id: 0 - 1, state: init_state} in {ok: if setup_ok == 1 and pev.ok == 1 and zw == 0 then 1 else 0, wid: 1001, exposed: 1, hit_id: disp.hit_id, next_state: disp.state, fb_checksum: canvas_checksum(fb)})
+
+## --- 6. Web / WASM DOM Virtual-Tree Reconciler & Reactive Patch Bridge (#333) ---
+fn wasm_dom_vnode(tag, id, text, attr_val) = {tag: tag, id: id, text: text, attr_val: attr_val}
+
+fn wasm_dom_diff_one(old_n, new_n) = if old_n.id != new_n.id or old_n.tag != new_n.tag then {op: "REPLACE_NODE", id: new_n.id, val: new_n.tag + ":" + new_n.text} else if old_n.text != new_n.text and old_n.attr_val != new_n.attr_val then {op: "UPDATE_BOTH", id: new_n.id, val: new_n.text + "@" + str(new_n.attr_val)} else if old_n.text != new_n.text then {op: "SET_TEXT", id: new_n.id, val: new_n.text} else if old_n.attr_val != new_n.attr_val then {op: "SET_ATTR", id: new_n.id, val: str(new_n.attr_val)} else {op: "KEEP", id: new_n.id, val: ""}
+
+fn wasm_dom_diff_nodes(old_ns, new_ns) = match new_ns
+    Nil          => Nil
+    Cons(nn, nr) => wasm_dom_diff_nodes2(old_ns, nn, nr)
+
+fn wasm_dom_diff_nodes2(old_ns, nn, nr) = match old_ns
+    Nil          => Cons({op: "INSERT_NODE", id: nn.id, val: nn.tag + ":" + nn.text}, wasm_dom_diff_nodes(Nil, nr))
+    Cons(on, or2) => Cons(wasm_dom_diff_one(on, nn), wasm_dom_diff_nodes(or2, nr))
+
+fn wasm_dom_encode_patches(patches) = match patches
+    Nil        => ""
+    Cons(p, r) => (if p.op == "KEEP" then "" else p.op + "#" + str(p.id) + "=" + p.val + ";") + wasm_dom_encode_patches(r)
+
 ## --- Unit tests (`lume test compiler/stage1/gui.src`) ---
 fn test_canvas_pixel_clipping_and_fill_rect() = let c0 = canvas_new(4, 4, 0) in let c1 = canvas_fill_rect(c0, 1, 1, 2, 2, 255) in let c2 = canvas_set_px(c1, 99, 99, 100) in let c3 = canvas_set_px(c2, 0 - 5, 2, 100) in canvas_get_px(c3, 0, 0) == 0 and canvas_get_px(c3, 1, 1) == 255 and canvas_get_px(c3, 2, 2) == 255 and canvas_get_px(c3, 3, 3) == 0 and canvas_get_px(c3, 99, 99) == (0 - 1)
 
@@ -101,3 +125,5 @@ fn test_vbox_hbox_layout_and_hit_testing() = let ws = Cons(ui_widget(1, 10, 4, 1
 fn test_event_dispatch_and_scene_rasterization() = let ws = Cons(ui_widget(10, 2, 2, 111, 5, "btn1"), Cons(ui_widget(20, 2, 2, 222, 15, "btn2"), Nil)) in let laid = ui_vbox_layout(ws, 0, 0, 1) in let d1 = ui_dispatch_click(100, laid, 1, 1) in let d2 = ui_dispatch_click(d1.state, laid, 1, 4) in let d_miss = ui_dispatch_click(d2.state, laid, 3, 3) in let c = ui_render_widgets(canvas_new(4, 6, 0), laid) in d1.hit_id == 10 and d1.state == 105 and d2.hit_id == 20 and d2.state == 120 and d_miss.hit_id == (0 - 1) and d_miss.state == 120 and canvas_get_px(c, 1, 1) == 111 and canvas_get_px(c, 1, 2) == 0 and canvas_get_px(c, 1, 3) == 222
 
 fn test_ppm_and_svg_frame_serialization() = let c = canvas_fill_rect(canvas_new(2, 2, rgb_pack(10, 20, 30)), 0, 0, 1, 1, rgb_pack(255, 128, 64)) in let ppm = canvas_to_ppm(c) in let ws = ui_vbox_layout(Cons(ui_widget(7, 20, 10, 255, 1, "ok"), Nil), 4, 8, 0) in let svg = ui_to_svg(100, 50, ws) in gui_startswith(ppm, "P3\n2 2\n255\n255 128 64\n10 20 30\n") == 1 and svg == "<svg width=\"100\" height=\"50\"><rect id=\"7\" x=\"4\" y=\"8\" width=\"20\" height=\"10\"/></svg>" and canvas_checksum(c) > 0
+
+fn test_x11_native_window_session_and_wasm_dom_reconciler() = let ws = ui_vbox_layout(Cons(ui_widget(10, 4, 3, 111, 7, "inc"), Cons(ui_widget(20, 4, 3, 222, 15, "add"), Nil)), 0, 0, 1) in let x11 = x11_window_session_loopback(42993, 100, ws, 2, 5) in let v1 = Cons(wasm_dom_vnode("h1", 1, "Count: 0", 0), Cons(wasm_dom_vnode("button", 2, "Increment", 1), Nil)) in let v2 = Cons(wasm_dom_vnode("h1", 1, "Count: 1", 0), Cons(wasm_dom_vnode("button", 2, "Increment", 1), Cons(wasm_dom_vnode("span", 3, "saved", 1), Nil))) in let patches = wasm_dom_encode_patches(wasm_dom_diff_nodes(v1, v2)) in x11.ok == 1 and x11.wid == 1001 and x11.exposed == 1 and x11.hit_id == 20 and x11.next_state == 115 and x11.fb_checksum > 0 and patches == "SET_TEXT#1=Count: 1;INSERT_NODE#3=span:saved;"

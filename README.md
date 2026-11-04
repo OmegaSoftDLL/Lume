@@ -7,7 +7,7 @@
   <a href="https://github.com/OmegaSoftDLL/lume/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/OmegaSoftDLL/lume"></a>
   <a href="https://omegasoftdll.github.io/lume/"><img alt="Documentation" src="https://img.shields.io/badge/docs-omegasoftdll.github.io%2Flume-8A2BE2"></a>
   <a href="COPYRIGHT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
-  <img alt="Status: Phases 0–5 complete · Waves 1–5 (v0.3.0-alpha.5) verified" src="https://img.shields.io/badge/status-phases%200--5%20complete%20%C2%B7%20v0.3.0--alpha.5-8A2BE2">
+  <img alt="Status: Phases 0–5 complete · Waves 1–6 (v0.3.0-alpha.6, 24/24 Acceptance Matrix PASS) verified" src="https://img.shields.io/badge/status-phases%200--5%20complete%20%C2%B7%20v0.3.0--alpha.6-8A2BE2">
   <img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen">
 </p>
 

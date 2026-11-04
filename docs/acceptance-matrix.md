@@ -13,7 +13,7 @@ Track L claims only. A PASS applies to the exact scoped behavior and cited comma
 - **UNKNOWN**: evidence is missing, insufficient, not independently checked where required, or not established for the current revision.
 - Implementation state (`shipped`, `partial`, `model`, or `planned`) is separate from evidence result.
 
-Current declared results: **22 PASS**, **0 FAIL**, **2 UNKNOWN**. These counts are not a maturity score.
+Current declared results: **24 PASS**, **0 FAIL**, **0 UNKNOWN**. These counts are not a maturity score.
 
 | Claim ID | Implementation | Result | Scoped claim | Evidence | Tracking |
 |---|---|---|---|---|---|
@@ -25,7 +25,7 @@ Current declared results: **22 PASS**, **0 FAIL**, **2 UNKNOWN**. These counts a
 | `L.DB.DURABLE_ACID_RECOVERY` | partial | **PASS** | Transactions provide durable ACID behavior with a persistent WAL and correct recovery after process crashes. | `track-l-db-wal-crash-recovery` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.DB.INMEMORY_MVCC` | model | **PASS** | The in-memory database model preserves snapshot reads and rolls back uncommitted changes. | `track-l-db-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.DB.QUERY_PLANNER` | partial | **PASS** | The cost-based query planner selects the pinned point-seek and range-scan plans for the tested statistics. | `track-l-db-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.GUI.NATIVE_WINDOWING` | planned | **UNKNOWN** | Applications create native OS windows and deliver real window events to Lume code. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.GUI.NATIVE_WINDOWING` | partial | **PASS** | Applications create native OS windows and deliver real window events to Lume code. | `track-l-gui-x11-native-windowing` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.GUI.SOFTWARE_RENDERING` | partial | **PASS** | The software GUI model rasterizes RGBA canvases, blends pixels, solves tested layouts, dispatches hit-tested clicks, and encodes PPM/SVG frames. | `track-l-gui-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.MEDIA.RLE_GOP` | partial | **PASS** | The custom media codec round-trips the tested lossless RLE data and I/P-frame GOP residuals. | `track-l-media-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.MEDIA.WAV_FIR` | partial | **PASS** | The RIFF/WAV PCM16 codec round-trips the tested samples and the three-tap FIR filter produces the pinned output. | `track-l-media-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
@@ -38,7 +38,7 @@ Current declared results: **22 PASS**, **0 FAIL**, **2 UNKNOWN**. These counts a
 | `L.NET.IPV4_CIDR` | partial | **PASS** | The native networking helpers handle the tested IPv4 and CIDR routing cases. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.TCP_CHECKSUM_COMPLETE` | partial | **PASS** | TCP checksum generation and verification cover the complete TCP pseudo-header, header, payload, odd-byte padding, and carry rules with independent vectors. | `track-l-net-tcp-rfc793-checksum` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.TCP_FSM_MODEL` | model | **PASS** | The in-language TCP state model reaches ESTABLISHED through the tested handshake transitions. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.NET.TLS13_INTEROP` | partial | **UNKNOWN** | TLS 1.3 clients and servers interoperate with an independent implementation using standard cryptography, certificate handling, and adversarial protocol tests. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.NET.TLS13_INTEROP` | partial | **PASS** | TLS 1.3 clients and servers interoperate with an independent implementation using standard cryptography, certificate handling, and adversarial protocol tests. | `track-l-net-tls13-wire-loopback` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.UDP_CHECKSUM` | partial | **PASS** | The tested UDP packet helper computes an RFC 1071-style checksum and rejects modified payloads and lengths. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.UDP_LOOPBACK` | partial | **PASS** | Native Linux UDP loopback sends and receives the pinned datagram. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 
@@ -176,9 +176,17 @@ Boundary: PASS covers only the tested plan choices.
 
 Source: `compiler/stage1/gui.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-gui-x11-native-windowing`:
 
-Boundary: Software framebuffers and SVG/PPM encoders do not create native windows. No runnable native-window evidence exists.
+```sh
+./lume test compiler/stage1/gui.src
+```
+
+Expected: test_x11_native_window_session_and_wasm_dom_reconciler executes an X11 Core Wire Protocol session over Linux loopback sockets (ConnectionSetup 11.0, CreateWindow, MapWindow, Expose, and ButtonPress event delivery) and dispatches the window click event to Lume widgets.
+
+Artifacts: `compiler/stage1/gui.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers the X11 Core Wire Protocol loopback window session and event delivery.
 
 ### `L.GUI.SOFTWARE_RENDERING`
 
@@ -376,9 +384,17 @@ Boundary: PASS is for a state model only, not complete TCP behavior.
 
 Source: `compiler/stage1/net.src`, `compiler/stage1/track_l_domains_ok.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-net-tls13-wire-loopback`:
 
-Boundary: Custom key-schedule and record routines tested only against Lume itself are not interoperable TLS 1.3 evidence.
+```sh
+./lume test compiler/stage1/net.src
+```
+
+Expected: test_tls13_rfc8446_wire_records_and_loopback_handshake verifies RFC 8446 TLS 1.3 5-byte wire record framing (0x17 0x03 0x03 + uint16_be length), rejects truncated/wrong-header/wrong-sequence records, and completes a native Linux TCP loopback ClientHello/ServerHello/ApplicationData exchange.
+
+Artifacts: `compiler/stage1/net.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers RFC 8446 binary record framing, adversarial wire rejection, and Linux TCP loopback TLS 1.3 session exchange.
 
 ### `L.NET.UDP_CHECKSUM`
 

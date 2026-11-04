@@ -226,3 +226,22 @@ fn test_cost_based_query_planner_and_wal_encoding() = let p_seek = db_plan_query
 fn test_btree_recursive_internal_split_multiheight() = let t9 = bm_insert_seq(bm_empty(), 1, 9, 2) in let rows = bm_range_scan(t9, 30, 70) in bm_height(t9) == 4 and bm_verify_invariant(t9) == 1 and bm_get(t9, 10, 0) == 100 and bm_get(t9, 50, 0) == 500 and bm_get(t9, 90, 0) == 900 and bm_get(t9, 999, 0 - 1) == (0 - 1) and db_len(rows) == 5 and db_sum_rows(rows, 0) == 2500
 
 fn test_durable_acid_wal_crash_recovery() = let p = "/tmp/lume_db_wal_crash_" + str(os_getpid()) + ".wal" in let r = db_crash_recovery_probe(p) in r.crashed_nonzero == 1 and r.ok == 1 and r.replayed == 2 and r.discarded == 2 and r.v10 == 100 and r.v20 == 200 and r.v30 == (0 - 1)
+
+## --- 6. SaaS Schema Migration, Snapshot Backup/Restore & Structured Metrics (#332) ---
+fn db_migrate_rows_v2_lp(rows, scale_v, min_col2, root, max_keys) = match rows
+    Nil        => root
+    Cons(r, t) => let c2 = if r.col2 < min_col2 then min_col2 else r.col2 in db_migrate_rows_v2_lp(t, scale_v, min_col2, btree_insert_node(root, {k: r.k, v: r.v * scale_v, col2: c2}, max_keys), max_keys)
+
+fn db_migrate_schema_v2(db, scale_v, min_col2) = let rows = btree_range_scan(db.committed_root, 0 - 1000000, 1000000) in let new_root = db_migrate_rows_v2_lp(rows, scale_v, min_col2, btree_empty(), db.max_keys) in {max_keys: db.max_keys, tx_id: db.tx_id + 1, in_tx: 0, committed_root: new_root, working_root: new_root, committed_cnt: db.committed_cnt + 1, rollback_cnt: db.rollback_cnt, wal_ops: db.wal_ops + db_len(rows)}
+
+fn db_backup_ops(rows, tx_id) = match rows
+    Nil        => ""
+    Cons(r, t) => db_wal_op_line(tx_id, r.k, r.v, r.col2) + db_backup_ops(t, tx_id)
+
+fn db_backup_snapshot_file(path, db) = let rows = btree_range_scan(db.committed_root, 0 - 1000000, 1000000) in let tx = if db.tx_id <= 0 then 1 else db.tx_id in fs_write_sync(path, db_backup_ops(rows, tx) + db_wal_commit_line(tx))
+
+fn db_restore_snapshot_file(path, max_keys) = db_wal_recover_file(path, max_keys)
+
+fn db_metrics_prometheus(db) = "lume_db_tx_total " + str(db.tx_id) + "\nlume_db_committed_total " + str(db.committed_cnt) + "\nlume_db_rollback_total " + str(db.rollback_cnt) + "\nlume_db_wal_ops_total " + str(db.wal_ops) + "\n"
+
+fn test_saas_schema_migration_backup_restore_and_metrics() = let d0 = db_commit_tx(db_put(db_put(db_begin_tx(db_open(2)), 10, 50, 1), 20, 80, 9)) in let d_mig = db_migrate_schema_v2(d0, 10, 5) in let snap = "/tmp/lume_db_snap_" + str(os_getpid()) + ".bak" in let w_ok = db_backup_snapshot_file(snap, d_mig) in let rest = db_restore_snapshot_file(snap, 2) in let rm = fs_remove(snap) in let prom = db_metrics_prometheus(d_mig) in w_ok == 1 and rest.ok == 1 and rest.replayed == 2 and db_read(rest.db, 10, 0) == 500 and db_read(rest.db, 20, 0) == 800 and (db_exec_range_query(d_mig, 10, 20, 5)).count == 2 and count(prom) > 40

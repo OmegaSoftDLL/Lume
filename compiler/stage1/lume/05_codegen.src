@@ -200,6 +200,7 @@ fn lmarm(lab, i, acc, h, t, c2, bd) = lmarm2(lab, i, acc, h, t, c2, bd, latest(h
 fn lmarm2(lab, i, acc, h, t, c2, bd, ts) = let rest = lmarms(lab, i + 1, acc, t, c2, ts) in lres(".Lm" + lab + "_" + str(i) + ":\n" + ts.code + labind(h.pat, acc, c2.locals) + bd.code + "    jmp .Lm" + lab + "_end\n" + rest.code, rest)
 
 ## --- expressions: asm that leaves the value of `e` pushed; `s` is the threaded state ---
+fn llogic(op, lab, lr, r, ctx) = let rr = laexpr(r, ctx, lr) in if op == "and" then lres(lr.code + "    popq %rax\n    movq 8(%rax), %rax\n    testq %rax, %rax\n    jz .Lsc_f" + lab + "\n" + rr.code + "    popq %rax\n    movq 8(%rax), %rax\n    cmpq $0, %rax\n    setne %al\n    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n    jmp .Lsc_x" + lab + "\n.Lsc_f" + lab + ":\n    movq $0, %rdi\n    call mkint\n    pushq %rax\n.Lsc_x" + lab + ":\n", rr) else lres(lr.code + "    popq %rax\n    movq 8(%rax), %rax\n    testq %rax, %rax\n    jnz .Lsc_t" + lab + "\n" + rr.code + "    popq %rax\n    movq 8(%rax), %rax\n    cmpq $0, %rax\n    setne %al\n    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n    jmp .Lsc_x" + lab + "\n.Lsc_t" + lab + ":\n    movq $1, %rdi\n    call mkint\n    pushq %rax\n.Lsc_x" + lab + ":\n", rr)
 fn lbin(op, l, lr, r, ctx) = let rr = laexpr(r, ctx, lr) in lres(lr.code + rr.code + (if ldec_expr(l, ctx.dvars) and ldec_expr(r, ctx.dvars) then ldec_tail(op) else lbintail(op)), rr)
 fn lif(lab, cr, t, e2, ctx) = let tr = laexpr(t, ctx, cr) in let er = laexpr(e2, ctx, tr) in lres(cr.code + "    popq %rax\n    movq 8(%rax), %rax\n    testq %rax, %rax\n    jz .Le" + lab + "\n" + tr.code + "    jmp .Lx" + lab + "\n.Le" + lab + ":\n" + er.code + ".Lx" + lab + ":\n", er)
 fn llet(nm, v, vr, b, ctx) = let inner = {locals: ctx.locals, bound: app(ctx.bound, Cons(nm, Nil)), dvars: if ldec_expr(v, ctx.dvars) then Cons(nm, ldec_remove(ctx.dvars, nm)) else ldec_remove(ctx.dvars, nm), depth: ctx.depth, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl} in let br = laexpr(b, inner, vr) in lres(vr.code + "    popq %rax\n    movq %rax, " + lslot(lidxof(ctx.locals, nm)) + "(%rbp)\n" + br.code, br)
@@ -224,7 +225,7 @@ fn laexpr(e, ctx, s) = match e
     Num(n)         => lres("    movq $" + str(n) + ", %rdi\n    call mkint\n    pushq %rax\n", s)
     Str(v)         => lstr(lstrlabel(v, s))
     Var(nm)        => lvar(nm, ctx, s)
-    Bin(op, l, r)  => lbin(op, l, laexpr(l, ctx, s), r, ctx)
+    Bin(op, l, r)  => if op == "and" or op == "or" then llogic(op, s.pfx + str(s.nl), laexpr(l, ctx, lnext(s)), r, ctx) else lbin(op, l, laexpr(l, ctx, s), r, ctx)
     If(c, t, e2)   => lif(s.pfx + str(s.nl), laexpr(c, ctx, lnext(s)), t, e2, ctx)
     LetIn(nm, v, b) => llet(nm, v, laexpr(v, ctx, s), b, ctx)
     Call(nm, args) => lcallx(nm, args, ctx, s)

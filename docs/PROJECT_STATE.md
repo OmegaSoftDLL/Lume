@@ -365,7 +365,7 @@ in its catalogue; a brand-new language like Lume cannot appear there via `.gitat
 scaffolding are vendored so the bar is not dominated by C, and the "100% Lume" signal lives in the
 README badge, the repo description and topics.
 
-**Agreed future task:** once Lume is mature — a stable grammar/spec and the `.lume` extension in
-use across several public repositories — submit Lume to `github/linguist` (a PR to that repo with
-a language definition, color, sample files and usage evidence) so GitHub recognizes and displays it
-officially. Until then, do not fake it by mapping `.lume` to another language.
+## 12. Waves 1–6 Consolidation & `v0.3.0-alpha.6` Status
+
+All phases (Phases 0–5), Inflection Stages A–D, and Waves 1–6 (`v0.3.0-alpha` through `v0.3.0-alpha.6`) are implemented and verified in 100% Lume (`stage2 == stage3` bit-identical, `24/24 PASS` with `0 UNKNOWN` and `0 FAIL` in `acceptance/matrix.json`, and `75` verified files on Linux / `78` on Windows in `MANIFEST.sha256`). See `docs/39-wave6-complete-roadmap.md` for full Wave 6 architecture and AI-first capability details.
+

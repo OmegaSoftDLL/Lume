@@ -252,42 +252,57 @@ fn aexpr(e: DExpr, c: mut AC)
             else
                 c.out.push("    movq " + str(0 - 8 * (k + 1)) + "(%rbp), %rax\n    pushq %rax\n")
         DBin(op, l, r) => do
-            aexpr(l, c)
-            aexpr(r, c)
-            if decimal_expr(l) and decimal_expr(r) and (op == "+" or op == "-" or op == "*" or op == "/" or op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=")
-                if op == "+" or op == "-" or op == "*" or op == "/"
-                    let callee = if op == "+" then "decimal_add" else if op == "-" then "decimal_sub" else if op == "*" then "decimal_mul" else "decimal_div"
-                    c.out.push("    popq %rsi\n    popq %rdi\n    call " + callee + "\n    pushq %rax\n")
-                else
+            if op == "and"
+                let lab = c.nlabel
+                c.nlabel = c.nlabel + 1
+                aexpr(l, c)
+                c.out.push("    popq %rax\n    movq 8(%rax), %rax\n    testq %rax, %rax\n    jz .Lsc_f" + str(lab) + "\n")
+                aexpr(r, c)
+                c.out.push("    popq %rax\n    movq 8(%rax), %rax\n    cmpq $0, %rax\n    setne %al\n    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n    jmp .Lsc_x" + str(lab) + "\n.Lsc_f" + str(lab) + ":\n    movq $0, %rdi\n    call mkint\n    pushq %rax\n.Lsc_x" + str(lab) + ":\n")
+            elif op == "or"
+                let lab = c.nlabel
+                c.nlabel = c.nlabel + 1
+                aexpr(l, c)
+                c.out.push("    popq %rax\n    movq 8(%rax), %rax\n    testq %rax, %rax\n    jnz .Lsc_t" + str(lab) + "\n")
+                aexpr(r, c)
+                c.out.push("    popq %rax\n    movq 8(%rax), %rax\n    cmpq $0, %rax\n    setne %al\n    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n    jmp .Lsc_x" + str(lab) + "\n.Lsc_t" + str(lab) + ":\n    movq $1, %rdi\n    call mkint\n    pushq %rax\n.Lsc_x" + str(lab) + ":\n")
+            else
+                aexpr(l, c)
+                aexpr(r, c)
+                if decimal_expr(l) and decimal_expr(r) and (op == "+" or op == "-" or op == "*" or op == "/" or op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=")
+                    if op == "+" or op == "-" or op == "*" or op == "/"
+                        let callee = if op == "+" then "decimal_add" else if op == "-" then "decimal_sub" else if op == "*" then "decimal_mul" else "decimal_div"
+                        c.out.push("    popq %rsi\n    popq %rdi\n    call " + callee + "\n    pushq %rax\n")
+                    else
+                        var setc = "    setl %al\n"
+                        if op == "=="
+                            setc = "    sete %al\n"
+                        elif op == "!="
+                            setc = "    setne %al\n"
+                        elif op == ">"
+                            setc = "    setg %al\n"
+                        elif op == "<="
+                            setc = "    setle %al\n"
+                        elif op == ">="
+                            setc = "    setge %al\n"
+                        c.out.push("    popq %rsi\n    popq %rdi\n    call decimal_compare\n    movq 8(%rax), %rax\n    cmpq $0, %rax\n" + setc + "    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
+                elif op == "=="
+                    c.out.push("    popq %rsi\n    popq %rdi\n    call eqv\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
+                elif op == "!="
+                    c.out.push("    popq %rsi\n    popq %rdi\n    call eqv\n    xorq $1, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
+                elif op == "+"
+                    c.out.push("    popq %rsi\n    popq %rdi\n    call addv\n    pushq %rax\n")
+                elif op == "<" or op == ">" or op == "<=" or op == ">="
                     var setc = "    setl %al\n"
-                    if op == "=="
-                        setc = "    sete %al\n"
-                    elif op == "!="
-                        setc = "    setne %al\n"
-                    elif op == ">"
+                    if op == ">"
                         setc = "    setg %al\n"
                     elif op == "<="
                         setc = "    setle %al\n"
                     elif op == ">="
                         setc = "    setge %al\n"
-                    c.out.push("    popq %rsi\n    popq %rdi\n    call decimal_compare\n    movq 8(%rax), %rax\n    cmpq $0, %rax\n" + setc + "    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
-            elif op == "=="
-                c.out.push("    popq %rsi\n    popq %rdi\n    call eqv\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
-            elif op == "!="
-                c.out.push("    popq %rsi\n    popq %rdi\n    call eqv\n    xorq $1, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
-            elif op == "+"
-                c.out.push("    popq %rsi\n    popq %rdi\n    call addv\n    pushq %rax\n")
-            elif op == "<" or op == ">" or op == "<=" or op == ">="
-                var setc = "    setl %al\n"
-                if op == ">"
-                    setc = "    setg %al\n"
-                elif op == "<="
-                    setc = "    setle %al\n"
-                elif op == ">="
-                    setc = "    setge %al\n"
-                c.out.push("    popq %rsi\n    popq %rdi\n    call cmpv\n    cmpq $0, %rax\n" + setc + "    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
-            else
-                c.out.push("    popq %rcx\n    popq %rax\n    movq 8(%rax), %rax\n    movq 8(%rcx), %rcx\n" + abin(op) + "    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
+                    c.out.push("    popq %rsi\n    popq %rdi\n    call cmpv\n    cmpq $0, %rax\n" + setc + "    movzbq %al, %rax\n    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
+                else
+                    c.out.push("    popq %rcx\n    popq %rax\n    movq 8(%rax), %rax\n    movq 8(%rcx), %rcx\n" + abin(op) + "    movq %rax, %rdi\n    call mkint\n    pushq %rax\n")
         DIf(cond, t, e2) => do
             let lab = c.nlabel
             c.nlabel = c.nlabel + 1
