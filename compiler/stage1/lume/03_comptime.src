@@ -220,8 +220,10 @@ fn cbuildft(prog) = match prog
     Nil        => Nil
     Cons(h, t) => cbuildft2(h, cbuildft(t))
 fn cbuildft2(s0, rest) = match s0
-    Fn(nm, ps, body) => Cons(s0, rest)
-    _                => rest
+    Fn(nm, ps, body)    => Cons(s0, rest)
+    KCapGrant(effs)     => Cons(s0, rest)
+    TypeS(nm, k, items) => Cons(s0, rest)
+    _                   => rest
 fn cfoldstmts(own prog, ft) = match prog
     Nil        => Nil
     Cons(h, t) => Cons(cfoldstmt(own h, ft), cfoldstmts(own t, ft))
@@ -238,10 +240,47 @@ fn cfoldct(r) = ctnode(r.v)
 ## and the self-host fixpoint stays bit-identical. Superior to C's runtime `assert`: the condition is evaluated
 ## entirely at compile time and leaves NO check in the binary (a passing assert folds to a constant), the failure
 ## is deterministic, and the error message is one an AI can read.
+fn c_cap_list_has_fs(effs) = match effs
+    Nil        => 0
+    Cons(h, t) => if h == "fs" or h == "io" then 1 else c_cap_list_has_fs(t)
+fn c_stmt_has_fs_cap(s0) = match s0
+    KCapGrant(effs) => c_cap_list_has_fs(effs)
+    _               => 0
+fn c_has_fs_cap(ft) = match ft
+    Nil        => 0
+    Cons(h, t) => if c_stmt_has_fs_cap(h) == 1 then 1 else c_has_fs_cap(t)
+fn c_has_dotdot(p, i) = if i + 2 > count(p) then 0 else if slice(p, i, i + 2) == ".." then 1 else c_has_dotdot(p, i + 1)
+fn cfoldembed(args, ft) = if len(args) != 1 then ctfail("lume: comptime error [C0271]: 'comptime embed' expects embed(\"path\")\n") else if c_has_fs_cap(ft) == 0 then ctfail("lume: capability error [E0200]: comptime embed requires '@capability fs' grant\n") else cfoldembed2(ceval(asthead(args), Nil, ft, cbudget(), 0))
+fn cfoldembed2(rp) = if (rp.v).kind != "str" then ctfail("lume: comptime error [C0271]: 'comptime embed' path must be a string\n") else let p = (rp.v).s in if p == "" or c_has_dotdot(p, 0) == 1 then ctfail("lume: comptime error [C0271]: invalid or unsafe embed path '" + p + "'\n") else if fs_path_exists(p) == 0 then ctfail("lume: comptime error [C0271]: cannot embed missing file '" + p + "'\n") else Str(fs_read_file(p))
+fn c_rec_fields_stmt(s0, rnm) = match s0
+    TypeS(nm, k, items) => if nm == rnm and k == "record" then Cons(items, Nil) else Nil
+    _                   => Nil
+fn c_lookup_rec(rnm, ft) = match ft
+    Nil        => Nil
+    Cons(h, t) => let m = c_rec_fields_stmt(h, rnm) in if isnil(m) == 0 then m else c_lookup_rec(rnm, t)
+fn c_schema_money_ccy(arg, rnm) = match arg
+    TyName(ccy) => ccy
+    _           => ctfail("lume: type error [D0273]: invalid money currency in '" + rnm + "'\n")
+fn c_schema_ty(fty, rnm) = match fty
+    TyName(tn)       => if tn == "int" or tn == "str" or tn == "bool" then tn else ctfail("lume: type error [D0273]: unsupported table column type '" + tn + "' in '" + rnm + "'\n")
+    TyDecimal(p, s)  => "decimal(" + str(p) + "," + str(s) + ")"
+    TyApply(kn, arg) => if kn == "money" then "money[" + c_schema_money_ccy(arg, rnm) + "]" else ctfail("lume: type error [D0273]: unsupported table column type '" + kn + "' in '" + rnm + "'\n")
+    _                => ctfail("lume: type error [D0273]: unsupported table column type in '" + rnm + "'\n")
+fn c_schema_fields(items, rnm) = match items
+    Nil        => ""
+    Cons(h, t) => let col = h.fname + ":" + c_schema_ty(h.fty, rnm) in if isnil(t) == 1 then col else col + "," + c_schema_fields(t, rnm)
+fn c_schema_arg_name(e) = match e
+    Var(nm) => nm
+    Str(nm) => nm
+    _       => ""
+fn cfold_table_schema(args, ft) = if len(args) != 1 then ctfail("lume: type error [D0273]: 'comptime table_schema' expects table_schema(RowType)\n") else let rnm = c_schema_arg_name(asthead(args)) in if rnm == "" then ctfail("lume: type error [D0273]: 'comptime table_schema' expects a nominal record type name\n") else cfold_table_schema2(rnm, c_lookup_rec(rnm, ft))
+fn cfold_table_schema2(rnm, m) = match m
+    Nil            => ctfail("lume: type error [D0273]: table_schema row type '" + rnm + "' is not a declared record\n")
+    Cons(items, r) => Str(rnm + "(" + c_schema_fields(items, rnm) + ")")
 fn cfoldctdispatch(inner, ft) = match inner
     Call(nm, args) => cfoldctcall(nm, args, ft)
     _              => cfoldct(ceval(inner, Nil, ft, cbudget(), 0))
-fn cfoldctcall(nm, args, ft) = if nm == "assert" and isnil(lookupfn(nm, ft)) == 1 then cfoldassert(args, ft) else cfoldct(ceval(Call(nm, args), Nil, ft, cbudget(), 0))
+fn cfoldctcall(nm, args, ft) = if nm == "assert" and isnil(lookupfn(nm, ft)) == 1 then cfoldassert(args, ft) else if nm == "embed" and isnil(lookupfn(nm, ft)) == 1 then cfoldembed(args, ft) else if nm == "table_schema" and isnil(lookupfn(nm, ft)) == 1 then cfold_table_schema(args, ft) else cfoldct(ceval(Call(nm, args), Nil, ft, cbudget(), 0))
 fn astsecond(xs) = match xs
     Nil        => Num(0)
     Cons(h, t) => asthead(t)

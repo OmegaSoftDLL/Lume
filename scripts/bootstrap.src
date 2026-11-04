@@ -20,11 +20,11 @@ fn bs_executable(path) = os_run_capture_timeout("/bin/chmod", Cons("+x", Cons(pa
 
 fn bs_modules(root) = Cons(bs_src(root) + "/lume/01_lexer.src", Cons(bs_src(root) + "/lume/02_parser.src", Cons(bs_src(root) + "/lume/03_comptime.src", Cons(bs_src(root) + "/lume/04_parser_decls.src", Cons(bs_src(root) + "/lume/05_codegen.src", Cons(bs_src(root) + "/lume/06_typecheck.src", Cons(bs_src(root) + "/lume/06b_phase3.src", Cons(bs_src(root) + "/lume/06c_phase4.src", Cons(bs_src(root) + "/lume/06d_phase5.src", Cons(bs_src(root) + "/lume/07_driver.src", Nil))))))))))
 
-fn bs_append(out, paths) = match paths
-    Nil => 1
-    Cons(h, t) => if fs_append_sync(out, fs_read_file(h)) == 1 then bs_append(out, t) else 0
+fn bs_concat(paths) = match paths
+    Nil        => ""
+    Cons(h, t) => fs_read_file(h) + bs_concat(t)
 
-fn bs_amalgamate(root) = let out = bs_src(root) + "/lumec.src" in if fs_write_sync(out, "") == 1 then bs_append(out, bs_modules(root)) else 0
+fn bs_amalgamate(root) = let out = bs_src(root) + "/lumec.src" in let text = bs_concat(bs_modules(root)) in if text == "" then 0 else fs_write_sync(out, text)
 
 fn bs_seed_tool_fresh(root, source, out) = let asm = out + ".s" in let compiled = os_run_capture_timeout(bs_l0(root), Cons("run", Cons(bs_src(root) + "/data_asm_cc.lume", Cons(source, Cons(asm, Nil)))), asm + ".log", asm + ".err", 900000) in if compiled != 0 then compiled else let assembled = os_run_input_capture_timeout(bs_l0(root), Cons("asm", Cons(asm, Cons(out, Nil))), asm, out + ".log", out + ".err", 900000) in if assembled != 0 then assembled else bs_executable(out)
 
@@ -49,7 +49,7 @@ fn bs_fixpoint(root) = let out = bs_out(root) in if bs_files_equal(out + "/lumec
 fn bs_sanity(root) = let out = bs_out(root) in let source = out + "/t.src" in let written = fs_write_sync(source, "fn fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)\nprint fib(10)\n") in let program = bs_compile(bs_out(root) + "/lumec3", bs_out(root) + "/lasm3", source, out + "/t") in if program != "" then "sanity compilation failed: " + program else let result = os_run_capture_timeout(out + "/t", Nil, out + "/t.out", out + "/t.err", 10000) in if result != 0 then bs_process_error("sanity execution", result, out + "/t.out", out + "/t.err") else if fs_read_file(out + "/t.out") != "55\n" then "sanity output mismatch" else ""
 
 fn bs_at_line(xs, idx) = match xs
-    Nil => ""
+    Nil        => ""
     Cons(h, t) => if idx == 0 then cs_chomp(h) else bs_at_line(t, idx - 1)
 
 fn bs_root(input) = let line = bs_at_line(lc_split_lines(input, 0, count(input)), 0) in if cs_startswith(line, "@root ") == 1 then slice(line, 6, count(line)) else ""
