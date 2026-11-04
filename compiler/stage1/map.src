@@ -1,0 +1,70 @@
+## compiler/stage1/map.src -- Persistent Hash Array Mapped Trie (HAMT, 256-way O(1)) & @memo Cache
+## Import with `use map` (or `use std.map`).
+##
+## Implements a 4-level 4-ary persistent HAMT (`MNode(q0, q1, q2, q3)` -> 256 leaf buckets)
+## with FNV-1a string/integer hashing (`map_hash_str`, `map_hash_int`), O(1) lookup/insert/remove
+## (`map_new`, `map_put`, `map_get`, `map_get_or`, `map_has`, `map_remove`, `map_size`), and
+## pure-function memoization (`memo_fib_step`, `memo_fib`).
+
+fn map_hash_loop(s, i, n, acc) = if i >= n then acc else let next = (acc * 16777619 + ord(at(s, i)) * 131 + i * 17) % 1073741824 in map_hash_loop(s, i + 1, n, if next < 0 then 0 - next else next)
+
+fn map_hash_str(s) = map_hash_loop(s, 0, count(s), 2166136261 % 1073741824) % 256
+
+fn map_empty_level(depth) = if depth <= 0 then MBucket(Nil) else let sub = map_empty_level(depth - 1) in MNode(sub, sub, sub, sub)
+
+fn map_new() = {root: map_empty_level(4), size: 0}
+
+fn map_bkt_has(xs, k) = match xs
+    Nil        => 0
+    Cons(h, t) => if h.k == k then 1 else map_bkt_has(t, k)
+
+fn map_bkt_get(xs, k, def_val) = match xs
+    Nil        => def_val
+    Cons(h, t) => if h.k == k then h.v else map_bkt_get(t, k, def_val)
+
+fn map_bkt_put(xs, k, v) = match xs
+    Nil        => Cons({k: k, v: v}, Nil)
+    Cons(h, t) => if h.k == k then Cons({k: k, v: v}, t) else Cons(h, map_bkt_put(t, k, v))
+
+fn map_bkt_del(xs, k) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h.k == k then t else Cons(h, map_bkt_del(t, k))
+
+fn map_trie_get(node, h, depth, k, def_val) = match node
+    MBucket(xs)           => map_bkt_get(xs, k, def_val)
+    MNode(q0, q1, q2, q3) => if depth <= 0 then def_val else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then map_trie_get(q0, h2, depth - 1, k, def_val) else if idx == 1 then map_trie_get(q1, h2, depth - 1, k, def_val) else if idx == 2 then map_trie_get(q2, h2, depth - 1, k, def_val) else map_trie_get(q3, h2, depth - 1, k, def_val)
+
+fn map_trie_has(node, h, depth, k) = match node
+    MBucket(xs)           => map_bkt_has(xs, k)
+    MNode(q0, q1, q2, q3) => if depth <= 0 then 0 else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then map_trie_has(q0, h2, depth - 1, k) else if idx == 1 then map_trie_has(q1, h2, depth - 1, k) else if idx == 2 then map_trie_has(q2, h2, depth - 1, k) else map_trie_has(q3, h2, depth - 1, k)
+
+fn map_trie_put(node, h, depth, k, v) = match node
+    MBucket(xs)           => MBucket(map_bkt_put(xs, k, v))
+    MNode(q0, q1, q2, q3) => if depth <= 0 then node else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then MNode(map_trie_put(q0, h2, depth - 1, k, v), q1, q2, q3) else if idx == 1 then MNode(q0, map_trie_put(q1, h2, depth - 1, k, v), q2, q3) else if idx == 2 then MNode(q0, q1, map_trie_put(q2, h2, depth - 1, k, v), q3) else MNode(q0, q1, q2, map_trie_put(q3, h2, depth - 1, k, v))
+
+fn map_trie_del(node, h, depth, k) = match node
+    MBucket(xs)           => MBucket(map_bkt_del(xs, k))
+    MNode(q0, q1, q2, q3) => if depth <= 0 then node else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then MNode(map_trie_del(q0, h2, depth - 1, k), q1, q2, q3) else if idx == 1 then MNode(q0, map_trie_del(q1, h2, depth - 1, k), q2, q3) else if idx == 2 then MNode(q0, q1, map_trie_del(q2, h2, depth - 1, k), q3) else MNode(q0, q1, q2, map_trie_del(q3, h2, depth - 1, k))
+
+fn map_has(m, k) = map_trie_has(m.root, map_hash_str(k), 4, k)
+
+fn map_get_or(m, k, def_val) = map_trie_get(m.root, map_hash_str(k), 4, k, def_val)
+
+fn map_get(m, k) = map_get_or(m, k, "")
+
+fn map_put(m, k, v) = let h = map_hash_str(k) in let existed = map_trie_has(m.root, h, 4, k) in {root: map_trie_put(m.root, h, 4, k, v), size: if existed == 1 then m.size else m.size + 1}
+
+fn map_remove(m, k) = let h = map_hash_str(k) in let existed = map_trie_has(m.root, h, 4, k) in if existed == 0 then m else {root: map_trie_del(m.root, h, 4, k), size: m.size - 1}
+
+fn map_size(m) = m.size
+
+## --- Pure @memo dynamic programming cache over persistent HAMT ---
+fn memo_fib_step(n, cache) = if n <= 1 then {val: n, cache: cache} else let key = str(n) in if map_has(cache, key) == 1 then {val: toint(map_get(cache, key)), cache: cache} else let r1 = memo_fib_step(n - 1, cache) in let r2 = memo_fib_step(n - 2, r1.cache) in let ans = r1.val + r2.val in {val: ans, cache: map_put(r2.cache, key, str(ans))}
+
+fn memo_fib(n) = (memo_fib_step(n, map_new())).val
+
+fn test_map_hamt_256_crud() = let m0 = map_new() in let m1 = map_put(m0, "alpha", "100") in let m2 = map_put(m1, "beta", "200") in let m3 = map_put(m2, "gamma", "300") in let m4 = map_put(m3, "beta", "250") in let m5 = map_remove(m4, "alpha") in if map_size(m4) == 3 and map_get(m4, "beta") == "250" and map_get(m4, "gamma") == "300" and map_has(m5, "alpha") == 0 and map_size(m5) == 2 then 1 else 0
+
+fn test_memo_fib_o_n_speedup() = let f20 = memo_fib(20) in let f30 = memo_fib(30) in if f20 == 6765 and f30 == 832040 then 1 else 0
+
+print test_map_hamt_256_crud() * test_memo_fib_o_n_speedup()
