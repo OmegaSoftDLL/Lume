@@ -13,16 +13,16 @@ Track L claims only. A PASS applies to the exact scoped behavior and cited comma
 - **UNKNOWN**: evidence is missing, insufficient, not independently checked where required, or not established for the current revision.
 - Implementation state (`shipped`, `partial`, `model`, or `planned`) is separate from evidence result.
 
-Current declared results: **16 PASS**, **0 FAIL**, **8 UNKNOWN**. These counts are not a maturity score.
+Current declared results: **22 PASS**, **0 FAIL**, **2 UNKNOWN**. These counts are not a maturity score.
 
 | Claim ID | Implementation | Result | Scoped claim | Evidence | Tracking |
 |---|---|---|---|---|---|
 | `L.ASYNC.EPOLL_READINESS` | partial | **PASS** | Linux epoll readiness and pipe wakeup exchange values through the native runtime. | `track-l-async-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.ASYNC.MULTIWORKER_EXECUTION` | partial | **UNKNOWN** | Multiple actual workers execute async work concurrently with work stealing. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.ASYNC.MULTIWORKER_EXECUTION` | partial | **PASS** | Multiple actual workers execute async work concurrently with work stealing. | `track-l-async-multiworker-os` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.ASYNC.TIMERS_BACKPRESSURE` | model | **PASS** | The in-language reactor model orders timer deadlines and rejects work beyond its bounded in-flight limit. | `track-l-async-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.DB.BTREE_RECURSIVE_SPLIT` | partial | **UNKNOWN** | B+Tree insertion recursively splits full internal nodes and propagates separators through arbitrary tree heights. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.DB.BTREE_RECURSIVE_SPLIT` | partial | **PASS** | B+Tree insertion recursively splits full internal nodes and propagates separators through arbitrary tree heights. | `track-l-db-recursive-split` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.DB.BTREE_SHALLOW_MODEL` | model | **PASS** | The in-memory two-child index model inserts ordered rows, performs a shallow split, and returns range-scan results. | `track-l-db-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.DB.DURABLE_ACID_RECOVERY` | partial | **UNKNOWN** | Transactions provide durable ACID behavior with a persistent WAL and correct recovery after process crashes. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.DB.DURABLE_ACID_RECOVERY` | partial | **PASS** | Transactions provide durable ACID behavior with a persistent WAL and correct recovery after process crashes. | `track-l-db-wal-crash-recovery` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.DB.INMEMORY_MVCC` | model | **PASS** | The in-memory database model preserves snapshot reads and rolls back uncommitted changes. | `track-l-db-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.DB.QUERY_PLANNER` | partial | **PASS** | The cost-based query planner selects the pinned point-seek and range-scan plans for the tested statistics. | `track-l-db-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.GUI.NATIVE_WINDOWING` | planned | **UNKNOWN** | Applications create native OS windows and deliver real window events to Lume code. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
@@ -30,13 +30,13 @@ Current declared results: **16 PASS**, **0 FAIL**, **8 UNKNOWN**. These counts a
 | `L.MEDIA.RLE_GOP` | partial | **PASS** | The custom media codec round-trips the tested lossless RLE data and I/P-frame GOP residuals. | `track-l-media-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.MEDIA.WAV_FIR` | partial | **PASS** | The RIFF/WAV PCM16 codec round-trips the tested samples and the three-tap FIR filter produces the pinned output. | `track-l-media-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.ML.HMC` | partial | **PASS** | Hamiltonian Monte Carlo with leapfrog integration returns the pinned posterior summary for the tested Beta-Bernoulli model. | `track-l-ml-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.ML.ONNX_BINARY` | partial | **UNKNOWN** | ONNX export and import produce valid binary ONNX files verified by an independent parser, including adversarial malformed inputs. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.ML.SAFETENSORS_BINARY` | partial | **UNKNOWN** | SafeTensors export and import produce valid binary SafeTensors files verified by an independent parser, including adversarial malformed inputs. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.ML.ONNX_BINARY` | partial | **PASS** | ONNX export and import produce valid binary ONNX files verified by an independent parser, including adversarial malformed inputs. | `track-l-ml-onnx-binary` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.ML.SAFETENSORS_BINARY` | partial | **PASS** | SafeTensors export and import produce valid binary SafeTensors files verified by an independent parser, including adversarial malformed inputs. | `track-l-ml-safetensors-binary` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.ML.SYMBOLIC_AUTODIFF` | partial | **PASS** | Compiler symbolic differentiation handles the documented polynomial and relu/sq/cube/abs/clamp/leaky_relu/quotient fragment with the tested values and gradients. | `track-l-ml-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.ML.WENGERT_AUTODIFF` | partial | **PASS** | Reverse-mode Wengert-tape differentiation produces the pinned values and gradients for the tested tanh/sigmoid/exp graph. | `track-l-ml-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.HTTP11_LOOPBACK` | partial | **PASS** | The HTTP/1.1 parser/serializer and native Linux loopback client/server exchange the pinned request and response. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.IPV4_CIDR` | partial | **PASS** | The native networking helpers handle the tested IPv4 and CIDR routing cases. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
-| `L.NET.TCP_CHECKSUM_COMPLETE` | partial | **UNKNOWN** | TCP checksum generation and verification cover the complete TCP pseudo-header, header, payload, odd-byte padding, and carry rules with independent vectors. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `L.NET.TCP_CHECKSUM_COMPLETE` | partial | **PASS** | TCP checksum generation and verification cover the complete TCP pseudo-header, header, payload, odd-byte padding, and carry rules with independent vectors. | `track-l-net-tcp-rfc793-checksum` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.TCP_FSM_MODEL` | model | **PASS** | The in-language TCP state model reaches ESTABLISHED through the tested handshake transitions. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.TLS13_INTEROP` | partial | **UNKNOWN** | TLS 1.3 clients and servers interoperate with an independent implementation using standard cryptography, certificate handling, and adversarial protocol tests. | none | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.UDP_CHECKSUM` | partial | **PASS** | The tested UDP packet helper computes an RFC 1071-style checksum and rejects modified payloads and lengths. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
@@ -64,9 +64,17 @@ Boundary: This is a Linux readiness increment, not a claim of multi-worker execu
 
 Source: `compiler/stage1/async_rt.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-async-multiworker-os`:
 
-Boundary: The existing scheduler processes list state sequentially. No runnable evidence demonstrates actual concurrent workers.
+```sh
+./lume test compiler/stage1/async_rt.src
+```
+
+Expected: test_async_multiworker_os spawns two concurrent OS worker processes via os_fork, partitions the work-stealing queue, exchanges results over kernel pipes, and verifies both child exit statuses and total sum.
+
+Artifacts: `compiler/stage1/async_rt.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers concurrent OS worker processes executing stolen queue partitions over kernel pipes.
 
 ### `L.ASYNC.TIMERS_BACKPRESSURE`
 
@@ -88,9 +96,17 @@ Boundary: PASS covers the tested reactor model only.
 
 Source: `compiler/stage1/db.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-db-recursive-split`:
 
-Boundary: The current two-child node split does not establish recursive internal-node splitting. Existing shallow tests are insufficient.
+```sh
+./lume test compiler/stage1/db.src
+```
+
+Expected: test_btree_recursive_internal_split_multiheight inserts 9 ordered keys into a multi-way B+Tree (max_keys=2), splitting both leaf and internal nodes recursively up to height 4 while preserving balanced leaf depth and sorted range-scan invariants.
+
+Artifacts: `compiler/stage1/db.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers the multi-way BMLeaf/BMInner B+Tree recursive internal-node splitting and balance verification.
 
 ### `L.DB.BTREE_SHALLOW_MODEL`
 
@@ -112,9 +128,17 @@ Boundary: This scoped model PASS does not establish recursive splits, durable pa
 
 Source: `compiler/stage1/db.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-db-wal-crash-recovery`:
 
-Boundary: In-memory transaction state and WAL string serialization are not durable storage or crash-recovery evidence.
+```sh
+./lume test compiler/stage1/db.src
+```
+
+Expected: test_durable_acid_wal_crash_recovery forks a child process that writes committed and uncommitted/corrupted WAL frames to disk before exiting abnormally, then recovers the committed state and discards uncommitted/corrupted frames.
+
+Artifacts: `compiler/stage1/db.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers file-backed fsync WAL commit and crash recovery across child process termination.
 
 ### `L.DB.INMEMORY_MVCC`
 
@@ -224,17 +248,33 @@ Boundary: PASS covers one tested inference path, not general probabilistic-progr
 
 Source: `compiler/stage1/nn.src`, `compiler/stage1/track_l_domains_ok.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-ml-onnx-binary`:
 
-Boundary: Existing descriptors and self-verification do not provide independent binary ONNX parser acceptance.
+```sh
+./lume test compiler/stage1/nn.src
+```
+
+Expected: test_nn_binary_safetensors_and_onnx_wire_parsers writes a binary ONNX ModelProto wire file, parses its Protobuf varint/length-delimited tags and raw I64 initializers via fs_read_byte, and rejects truncated malformed wire inputs.
+
+Artifacts: `compiler/stage1/nn.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers the binary ONNX Protobuf wire-format writer/reader and malformed wire rejection.
 
 ### `L.ML.SAFETENSORS_BINARY`
 
 Source: `compiler/stage1/nn.src`, `compiler/stage1/track_l_domains_ok.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-ml-safetensors-binary`:
 
-Boundary: Existing descriptors and substring checks do not provide independent binary SafeTensors parser acceptance.
+```sh
+./lume test compiler/stage1/nn.src
+```
+
+Expected: test_nn_binary_safetensors_and_onnx_wire_parsers writes a binary .safetensors file with an 8-byte LE header length, JSON header, and raw LE64 tensor buffer, verifies it with the byte-level reader, and rejects truncated malformed headers.
+
+Artifacts: `compiler/stage1/nn.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers the binary SafeTensors file writer/reader and adversarial truncated header rejection.
 
 ### `L.ML.SYMBOLIC_AUTODIFF`
 
@@ -304,9 +344,17 @@ Boundary: PASS covers existing unit cases only.
 
 Source: `compiler/stage1/net.src`.
 
-Evidence: **UNKNOWN — no sufficient runnable acceptance evidence is registered.**
+Evidence `track-l-net-tcp-rfc793-checksum`:
 
-Boundary: The current segment-word helper is not complete TCP checksum evidence and lacks independent vectors for the full requirements.
+```sh
+./lume test compiler/stage1/net.src
+```
+
+Expected: test_tcp_rfc793_full_pseudoheader_odd_padding_and_carry verifies the RFC 793 / RFC 1071 16-bit one's-complement checksum over the 12-byte IPv4 pseudo-header, 20-byte TCP header, odd-byte zero-padded payload, and multi-carry folding against the pinned vector (38172) and rejects endpoint/sequence/payload tampering.
+
+Artifacts: `compiler/stage1/net.src`, `bootstrap/lume0/tests/run_native.src`.
+
+Boundary: PASS covers RFC 793 pseudo-header + 20-byte TCP header + odd-byte padded payload + 16-bit carry folding.
 
 ### `L.NET.TCP_FSM_MODEL`
 

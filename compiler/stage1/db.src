@@ -107,6 +107,111 @@ fn db_encode_rows_wal(rows) = match rows
 
 fn db_wal_encode(db) = let rows = btree_range_scan(db.committed_root, 0 - 1000000, 1000000) in "LUME_DB_WAL_V1 tx=" + str(db.tx_id) + " committed=" + str(db.committed_cnt) + "\n" + db_encode_rows_wal(rows) + "COMMIT\n"
 
+## --- 4. Arbitrary-Height Recursive Multi-Way B+Tree (`BMLeaf` / `BMInner`) ---
+fn bm_nth_int(xs, idx) = match xs
+    Nil        => 0
+    Cons(h, t) => if idx <= 0 then h else bm_nth_int(t, idx - 1)
+
+fn bm_ins_at_int(xs, idx, v) = if idx <= 0 then Cons(v, xs) else bm_ins_at_int2(xs, idx, v)
+fn bm_ins_at_int2(xs, idx, v) = match xs
+    Nil        => Cons(v, Nil)
+    Cons(h, t) => Cons(h, bm_ins_at_int(t, idx - 1, v))
+
+fn bm_replace_child(cs, idx, c_new) = match cs
+    Nil        => Nil
+    Cons(h, t) => if idx <= 0 then Cons(c_new, t) else Cons(h, bm_replace_child(t, idx - 1, c_new))
+
+fn bm_splice_child(cs, idx, cl, cr) = match cs
+    Nil        => Cons(cl, Cons(cr, Nil))
+    Cons(h, t) => if idx <= 0 then Cons(cl, Cons(cr, t)) else Cons(h, bm_splice_child(t, idx - 1, cl, cr))
+
+fn bm_find_child_idx(keys, k, idx) = match keys
+    Nil        => idx
+    Cons(h, t) => if k < h then idx else bm_find_child_idx(t, k, idx + 1)
+
+fn bm_nth_child(cs, idx) = match cs
+    Nil        => BMLeaf(Nil)
+    Cons(h, t) => if idx <= 0 then h else bm_nth_child(t, idx - 1)
+
+fn bm_split_leaf(entries, max_keys) = let n = db_len(entries) in if n <= max_keys then {split: 0, sep: 0, left: BMLeaf(entries), right: BMLeaf(Nil)} else let mid = n / 2 in let l_ents = db_take(entries, mid) in let r_ents = db_drop(entries, mid) in {split: 1, sep: db_head_key(r_ents), left: BMLeaf(l_ents), right: BMLeaf(r_ents)}
+
+fn bm_split_inner(keys, cs, max_keys) = let n = db_len(keys) in if n <= max_keys then {split: 0, sep: 0, left: BMInner(keys, cs), right: BMLeaf(Nil)} else let mid = n / 2 in let up_sep = bm_nth_int(keys, mid) in let l_keys = db_take(keys, mid) in let r_keys = db_drop(keys, mid + 1) in let l_cs = db_take(cs, mid + 1) in let r_cs = db_drop(cs, mid + 1) in {split: 1, sep: up_sep, left: BMInner(l_keys, l_cs), right: BMInner(r_keys, r_cs)}
+
+fn bm_insert_rec(node, row, max_keys) = match node
+    BMLeaf(entries)   => bm_split_leaf(db_leaf_insert(entries, row), max_keys)
+    BMInner(keys, cs) => let idx = bm_find_child_idx(keys, row.k, 0) in let sub = bm_insert_rec(bm_nth_child(cs, idx), row, max_keys) in if sub.split == 0 then {split: 0, sep: 0, left: BMInner(keys, bm_replace_child(cs, idx, sub.left)), right: BMLeaf(Nil)} else bm_split_inner(bm_ins_at_int(keys, idx, sub.sep), bm_splice_child(cs, idx, sub.left, sub.right), max_keys)
+
+fn bm_empty() = BMLeaf(Nil)
+
+fn bm_insert(root, row, max_keys) = let r = bm_insert_rec(root, row, max_keys) in if r.split == 0 then r.left else BMInner(Cons(r.sep, Nil), Cons(r.left, Cons(r.right, Nil)))
+
+fn bm_put(root, k, v, col2, max_keys) = bm_insert(root, {k: k, v: v, col2: col2}, max_keys)
+
+fn bm_get(node, key, fallback) = match node
+    BMLeaf(entries)   => db_leaf_get(entries, key, fallback)
+    BMInner(keys, cs) => bm_get(bm_nth_child(cs, bm_find_child_idx(keys, key, 0)), key, fallback)
+
+fn bm_height(node) = match node
+    BMLeaf(entries)   => 1
+    BMInner(keys, cs) => 1 + bm_height(bm_nth_child(cs, 0))
+
+fn bm_range_children(cs, lo_k, hi_k) = match cs
+    Nil        => Nil
+    Cons(c, r) => db_app(bm_range_scan(c, lo_k, hi_k), bm_range_children(r, lo_k, hi_k))
+
+fn bm_range_scan(node, lo_k, hi_k) = match node
+    BMLeaf(entries)   => db_leaf_range(entries, lo_k, hi_k)
+    BMInner(keys, cs) => bm_range_children(cs, lo_k, hi_k)
+
+fn bm_all_heights_eq(cs, exp_h) = match cs
+    Nil        => 1
+    Cons(c, r) => if bm_height(c) == exp_h and bm_balanced(c) == 1 then bm_all_heights_eq(r, exp_h) else 0
+
+fn bm_balanced(node) = match node
+    BMLeaf(entries)   => 1
+    BMInner(keys, cs) => if db_len(cs) != db_len(keys) + 1 then 0 else bm_all_heights_eq(cs, bm_height(bm_nth_child(cs, 0)))
+
+fn bm_verify_invariant(node) = if bm_balanced(node) == 0 then 0 else db_check_sorted_list(bm_range_scan(node, 0 - 1000000, 1000000), 0 - 1000001)
+
+fn bm_insert_seq(root, cur, hi, max_keys) = if cur > hi then root else bm_insert_seq(bm_put(root, cur * 10, cur * 100, cur, max_keys), cur + 1, hi, max_keys)
+
+## --- 5. Persistent File-Backed ACID WAL & Crash Recovery ---
+fn db_wal_cksum(tx_id, k, v, col2) = ((tx_id * 100003) + (k * 1009) + (v * 37) + (col2 * 13) + 97) % 1000000007
+
+fn db_wal_op_line(tx_id, k, v, col2) = "OP " + str(tx_id) + " " + str(k) + " " + str(v) + " " + str(col2) + " " + str(db_wal_cksum(tx_id, k, v, col2)) + "\n"
+
+fn db_wal_commit_line(tx_id) = "COMMIT " + str(tx_id) + "\n"
+
+fn db_tok_loop(s, i, n, st, in_t) = if i >= n then (if in_t == 1 then Cons(slice(s, st, n), Nil) else Nil) else let sp = if at(s, i) == " " or at(s, i) == "\r" then 1 else 0 in if in_t == 0 then (if sp == 1 then db_tok_loop(s, i + 1, n, 0, 0) else db_tok_loop(s, i + 1, n, i, 1)) else (if sp == 1 then Cons(slice(s, st, i), db_tok_loop(s, i + 1, n, 0, 0)) else db_tok_loop(s, i + 1, n, st, 1))
+
+fn db_tokens(line) = db_tok_loop(line, 0, count(line), 0, 0)
+
+fn db_line_end(s, i, n) = if i >= n then n else if at(s, i) == "\n" then i else db_line_end(s, i + 1, n)
+
+fn db_lines_lp(s, i, n) = if i >= n then Nil else let e = db_line_end(s, i, n) in Cons(db_tokens(slice(s, i, e)), db_lines_lp(s, e + 1, n))
+
+fn db_lines(s) = db_lines_lp(s, 0, count(s))
+
+fn db_tok_at(xs, idx) = match xs
+    Nil        => ""
+    Cons(h, t) => if idx <= 0 then h else db_tok_at(t, idx - 1)
+
+fn db_int_in(xs, v) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == v then 1 else db_int_in(t, v)
+
+fn db_committed_txs(ls) = match ls
+    Nil        => Nil
+    Cons(l, r) => if db_len(l) == 2 and db_tok_at(l, 0) == "COMMIT" then Cons(toint(db_tok_at(l, 1)), db_committed_txs(r)) else db_committed_txs(r)
+
+fn db_replay_wal_lines(ls, c_txs, db, rep, disc) = match ls
+    Nil        => {ok: 1, db: db, replayed: rep, discarded: disc}
+    Cons(l, r) => if db_len(l) == 6 and db_tok_at(l, 0) == "OP" then (let tx = toint(db_tok_at(l, 1)) in let k = toint(db_tok_at(l, 2)) in let v = toint(db_tok_at(l, 3)) in let c2 = toint(db_tok_at(l, 4)) in let ck = toint(db_tok_at(l, 5)) in if db_int_in(c_txs, tx) == 1 and ck == db_wal_cksum(tx, k, v, c2) then db_replay_wal_lines(r, c_txs, db_put(db, k, v, c2), rep + 1, disc) else db_replay_wal_lines(r, c_txs, db, rep, disc + 1)) else db_replay_wal_lines(r, c_txs, db, rep, disc)
+
+fn db_wal_recover_file(path, max_keys) = let raw = fs_read_file(path) in if count(raw) == 0 then {ok: 0, db: db_open(max_keys), replayed: 0, discarded: 0} else let ls = db_lines(raw) in let c_txs = db_committed_txs(ls) in db_replay_wal_lines(ls, c_txs, db_open(max_keys), 0, 0)
+
+fn db_crash_recovery_probe(path) = let pid = os_fork() in if pid == 0 then (let w1 = fs_write_sync(path, db_wal_op_line(1, 10, 100, 1) + db_wal_op_line(1, 20, 200, 2) + db_wal_commit_line(1)) in let w2 = fs_append_sync(path, db_wal_op_line(2, 10, 999, 9) + "OP 1 30 300 3 999999\n") in os_exit(9)) else (let st = os_waitpid_status(pid) in let rec = db_wal_recover_file(path, 2) in let rm = fs_remove(path) in {crashed_nonzero: if st != 0 then 1 else 0, ok: rec.ok, replayed: rec.replayed, discarded: rec.discarded, v10: db_read(rec.db, 10, 0), v20: db_read(rec.db, 20, 0), v30: db_read(rec.db, 30, 0 - 1)})
+
 ## --- Unit tests (`lume test compiler/stage1/db.src`) ---
 fn test_btree_page_split_and_logarithmic_lookup() = let d0 = db_open(2) in let d1 = db_put(d0, 30, 300, 1) in let d2 = db_put(d1, 10, 100, 1) in let d3 = db_put(d2, 20, 200, 1) in let d4 = db_put(d3, 40, 400, 2) in let d5 = db_put(d4, 25, 250, 2) in let h = btree_height(d5.committed_root) in h >= 2 and btree_verify_invariant(d5.committed_root) == 1 and db_read(d5, 10, 0) == 100 and db_read(d5, 25, 0) == 250 and db_read(d5, 40, 0) == 400 and db_read(d5, 99, 0 - 1) == (0 - 1)
 
@@ -117,3 +222,7 @@ fn test_acid_transaction_commit_and_snapshot_isolation() = let d0 = db_put(db_op
 fn test_acid_transaction_rollback_restores_state() = let d0 = db_put(db_put(db_open(2), 10, 1000, 5), 20, 2000, 5) in let tx = db_begin_tx(d0) in let tx2 = db_put(tx, 10, 0, 0) in let tx3 = db_delete(tx2, 20) in let tx4 = db_put(tx3, 30, 3000, 5) in let rb = db_rollback_tx(tx4) in rb.in_tx == 0 and rb.rollback_cnt == 1 and db_read(rb, 10, 0) == 1000 and db_read(rb, 20, 0) == 2000 and db_read(rb, 30, 0 - 1) == (0 - 1)
 
 fn test_cost_based_query_planner_and_wal_encoding() = let p_seek = db_plan_query(1000, 1, 42, 42) in let p_range = db_plan_query(1000, 1, 10, 30) in let p_scan = db_plan_query(100, 0, 10, 30) in let d = db_commit_tx(db_put(db_begin_tx(db_open(2)), 7, 70, 3)) in let wal = db_wal_encode(d) in p_seek.plan == "IndexPointSeek" and p_range.plan == "IndexRangeScan" and p_scan.plan == "SequentialScan" and p_seek.est_cost < p_range.est_cost and p_range.est_cost < p_scan.est_cost and count(wal) > 20
+
+fn test_btree_recursive_internal_split_multiheight() = let t9 = bm_insert_seq(bm_empty(), 1, 9, 2) in let rows = bm_range_scan(t9, 30, 70) in bm_height(t9) == 4 and bm_verify_invariant(t9) == 1 and bm_get(t9, 10, 0) == 100 and bm_get(t9, 50, 0) == 500 and bm_get(t9, 90, 0) == 900 and bm_get(t9, 999, 0 - 1) == (0 - 1) and db_len(rows) == 5 and db_sum_rows(rows, 0) == 2500
+
+fn test_durable_acid_wal_crash_recovery() = let p = "/tmp/lume_db_wal_crash_" + str(os_getpid()) + ".wal" in let r = db_crash_recovery_probe(p) in r.crashed_nonzero == 1 and r.ok == 1 and r.replayed == 2 and r.discarded == 2 and r.v10 == 100 and r.v20 == 200 and r.v30 == (0 - 1)
