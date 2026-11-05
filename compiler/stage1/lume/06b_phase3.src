@@ -2657,7 +2657,43 @@ fn orscollect_eop1(st, rest) = match st
     TraitDecl(tnm, ops)   => app(orsopnames(ops, Nil), rest)
     ImplDecl(tnm, tty, mths) => app(orsopnames(mths, Nil), rest)
     _                     => rest
-fn orscheck(prog) = let fns = ocollectfnms(prog) in let onames = orssig_names(prog) in let eops = orscollect_eops(prog) in let ctx = {fns: fns, onames: onames, eops: eops, tynames: orstynames(prog)} in let z = orscheckstmts(prog, ctx) in prog
+fn k5_is_phys_write_fn(cnm) = cnm == "mmio_volatile_write8" or cnm == "mmio_volatile_write16" or cnm == "mmio_volatile_write32" or cnm == "mmio_volatile_write64" or cnm == "mem_copy" or cnm == "mem_set"
+fn k5_chk_addr_arg(a, cnm, fnm) = match a
+    Num(addr) => if addr >= 32768 and addr < 262144 then ctfail("lume: kernel memory error [K0005]: physical write via '" + cnm + "' to address " + str(addr) + " inside protected kernel .text/.rodata region [32768..262143] in '" + fnm + "' would corrupt live machine code (fix-it: use safe kernel DMA/scratch RAM >= 262144 (0x40000) or krn_slot_write)\n") else 0
+    _         => 0
+fn k5_chk_wx_e(e, fnm) = match e
+    Call(cnm, args) => let z = if k5_is_phys_write_fn(cnm) == 1 and isnil(args) == 0 then k5_chk_addr_arg(ohd_e(args), cnm, fnm) else 0 in k5_chk_wx_args(args, fnm)
+    Bin(op, l, r)   => let z = k5_chk_wx_e(l, fnm) in k5_chk_wx_e(r, fnm)
+    If(c, t, e2)    => let z1 = k5_chk_wx_e(c, fnm) in let z2 = k5_chk_wx_e(t, fnm) in k5_chk_wx_e(e2, fnm)
+    LetIn(nm, v, b) => let z = k5_chk_wx_e(v, fnm) in k5_chk_wx_e(b, fnm)
+    VarIn(nm, v, b) => let z = k5_chk_wx_e(v, fnm) in k5_chk_wx_e(b, fnm)
+    Match(sc, arms) => let z = k5_chk_wx_e(sc, fnm) in k5_chk_wx_arms(arms, fnm)
+    _               => 0
+fn k5_chk_wx_args(xs, fnm) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = k5_chk_wx_e(h, fnm) in k5_chk_wx_args(t, fnm)
+fn k5_chk_wx_arms(xs, fnm) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = k5_chk_wx_e(h.body, fnm) in k5_chk_wx_arms(t, fnm)
+fn k6_callee_calls_back(fnm, cnm, mf) = match mf
+    Nil        => 0
+    Cons(f, r) => if afn_calls_self(fnm, f.body) == 1 then ctfail("lume: kernel stack error [K0006]: mutual recursion between '" + fnm + "' and '" + cnm + "' in freestanding kernel overflows the bounded bare-metal stack (fix-it: convert '" + fnm + "' and '" + cnm + "' into direct self-tail recursion so Lume lowers the loop to 'jmp .Ltail_" + fnm + "')\n") else 0
+fn k6_chk_mutual_e(e, fnm, fns) = match e
+    Call(cnm, args) => let z = if cnm != fnm then k6_callee_calls_back(fnm, cnm, vfnlookup(cnm, fns)) else 0 in k6_chk_mutual_args(args, fnm, fns)
+    Bin(op, l, r)   => let z = k6_chk_mutual_e(l, fnm, fns) in k6_chk_mutual_e(r, fnm, fns)
+    If(c, t, e2)    => let z1 = k6_chk_mutual_e(c, fnm, fns) in let z2 = k6_chk_mutual_e(t, fnm, fns) in k6_chk_mutual_e(e2, fnm, fns)
+    LetIn(nm, v, b) => let z = k6_chk_mutual_e(v, fnm, fns) in k6_chk_mutual_e(b, fnm, fns)
+    VarIn(nm, v, b) => let z = k6_chk_mutual_e(v, fnm, fns) in k6_chk_mutual_e(b, fnm, fns)
+    Match(sc, arms) => let z = k6_chk_mutual_e(sc, fnm, fns) in k6_chk_mutual_arms(arms, fnm, fns)
+    _               => 0
+fn k6_chk_mutual_args(xs, fnm, fns) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = k6_chk_mutual_e(h, fnm, fns) in k6_chk_mutual_args(t, fnm, fns)
+fn k6_chk_mutual_arms(xs, fnm, fns) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = k6_chk_mutual_e(h.body, fnm, fns) in k6_chk_mutual_arms(t, fnm, fns)
+fn k5_chk_fn(nm, body, fns) = let z1 = k5_chk_wx_e(body, nm) in if isnil(fns) == 0 then k6_chk_mutual_e(body, nm, fns) else 0
+fn orscheck(prog) = let fns = ocollectfnms(prog) in let fn_defs = if omem("kernel_boot_entry", fns) == 1 then ocollectf(prog) else Nil in let onames = orssig_names(prog) in let eops = orscollect_eops(prog) in let ctx = {fns: fns, fn_defs: fn_defs, onames: onames, eops: eops, tynames: orstynames(prog)} in let z = orscheckstmts(prog, ctx) in prog
 
 ## builtin scalar type names (and declared `type` names) reach value positions as the erased
 ## comptime-type arguments of generics (`id(int, 42)`), so they are legal bare variables even
@@ -2677,7 +2713,7 @@ fn orscheckstmts(prog, ctx) = match prog
     Nil        => 0
     Cons(h, t) => let z = orscheckstmt(h, ctx) in orscheckstmts(t, ctx)
 fn orscheckstmt(st, ctx) = match st
-    Fn(nm, ps, body)                 => orsexpr(body, ps, ctx)
+    Fn(nm, ps, body)                 => let zk = k5_chk_fn(nm, body, ctx.fn_defs) in orsexpr(body, ps, ctx)
     Print(v)                         => orsexpr(v, Nil, ctx)
     ExprS(v)                         => orsexpr(v, Nil, ctx)
     VLawDecl(nm, ps, body)           => orsexpr(body, ps, ctx)

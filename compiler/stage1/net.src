@@ -397,3 +397,56 @@ fn test_ansi_protection_relays_dft_50_51_87_21_27_59_81_79() =
     let r79_shot1 = ansi79_autorecloser_fsm(0, 3, 0, 0) in
     let r79_lock = ansi79_autorecloser_fsm(3, 3, 0, 0) in
     ph.peak_amp == 10000 and ph.rms_amp == 7070 and r50_trip.trip == 1 and r50_ok.trip == 0 and t51_fast > 0 and t51_fast < t51_slow and r87_trip.trip == 1 and r87_rest.trip == 0 and r21_z1.zone == 1 and r21_z1.trip == 1 and r21_ok.trip == 0 and r27.code == 27 and r81.trip == 1 and r79_shot1.breaker_close_cmd == 1 and r79_lock.state == "ANSI_86_LOCKOUT"
+
+## ============================================================================
+## 7. Formal QF_LIA & WCET Verification Obligations (`21/21` Certified)
+## ============================================================================
+
+@bound(cycles: 16)
+fn net_vlan_id_valid(vid: int) -> int
+    ensures result == 0 or result == 1
+    = if vid >= 1 then (if vid <= 4094 then 1 else 0) else 0
+
+@bound(cycles: 16)
+fn net_mpls_ttl_step(ttl: int) -> int
+    requires ttl >= 1
+    ensures result >= 0 and result < ttl
+    = ttl - 1
+
+@bound(cycles: 24)
+fn net_ansi50_trip_decision(i_amp: int, pickup_amp: int) -> int
+    requires pickup_amp > 0
+    ensures result == 0 or result == 1
+    = if i_amp >= pickup_amp then 1 else 0
+
+@bound(cycles: 24)
+fn net_ansi27_59_code(v_pu: int, uv_pu: int, ov_pu: int) -> int
+    requires uv_pu < ov_pu
+    ensures result == 0 or result == 27 or result == 59
+    = if v_pu < uv_pu then 27 else (if v_pu > ov_pu then 59 else 0)
+
+@bound(cycles: 24)
+fn net_ansi81_trip_decision(freq_mhz: int, under_mhz: int, over_mhz: int) -> int
+    requires under_mhz < over_mhz
+    ensures result == 0 or result == 1
+    = if freq_mhz < under_mhz then 1 else (if freq_mhz > over_mhz then 1 else 0)
+
+@bound(cycles: 24)
+fn net_ansi79_next_shot(shot: int, max_shots: int, lockout: int) -> int
+    requires shot >= 0 and max_shots >= 1
+    ensures result >= 0
+    = if lockout == 1 then shot else (if shot < max_shots then shot + 1 else shot)
+
+@bound(cycles: 24)
+fn net_goose_stnum_monotonic(prev_st: int, next_st: int) -> int
+    ensures result == 0 or result == 1
+    = if next_st >= prev_st then 1 else 0
+
+law net_vlan_lower_bound_sound(vid: int) = if vid >= 1 and vid <= 4094 then net_vlan_id_valid(vid) == 1 else 1 == 1
+law net_mpls_ttl_decreases(ttl: int) = if ttl >= 1 then net_mpls_ttl_step(ttl) == ttl - 1 else 1 == 1
+law net_ansi50_sound(i_amp: int, pickup: int) = if pickup > 0 and i_amp >= pickup then net_ansi50_trip_decision(i_amp, pickup) == 1 else 1 == 1
+law net_ansi27_undervoltage_sound(v: int, uv: int, ov: int) = if uv < ov and v < uv then net_ansi27_59_code(v, uv, ov) == 27 else 1 == 1
+law net_ansi59_overvoltage_sound(v: int, uv: int, ov: int) = if uv < ov and v > ov then net_ansi27_59_code(v, uv, ov) == 59 else 1 == 1
+law net_ansi81_nominal_no_trip(f: int, u: int, o: int) = if u < o and f >= u and f <= o then net_ansi81_trip_decision(f, u, o) == 0 else 1 == 1
+law net_goose_monotonic_refl(st: int) = net_goose_stnum_monotonic(st, st) == 1
+

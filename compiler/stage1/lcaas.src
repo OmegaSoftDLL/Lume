@@ -2023,8 +2023,61 @@ fn cs_odiagnose_stmt1(s0, rest, osigs, sigs, kt, moved) = match s0
 fn cs_diagnose_stmts(prog, tt) = match prog
     Nil        => Nil
     Cons(h, t) => cs_app(cs_diagnose_stmt(h, tt), cs_diagnose_stmts(t, tt))
+fn cs_k5_is_phys_write_fn(cnm) = cnm == "mmio_volatile_write8" or cnm == "mmio_volatile_write16" or cnm == "mmio_volatile_write32" or cnm == "mmio_volatile_write64" or cnm == "mem_copy" or cnm == "mem_set"
+fn cs_k5_chk_addr_arg(a, cnm, fnm) = match a
+    Num(addr) => if addr >= 32768 and addr < 262144 then Cons(cs_mkdiag("K0005", "kernel_wx", "kernel memory error: physical write via '" + cnm + "' to address " + str(addr) + " inside protected kernel .text/.rodata region [32768..262143] in '" + fnm + "' would corrupt live machine code", "use safe kernel DMA/scratch RAM >= 262144 (0x40000) or krn_slot_write"), Nil) else Nil
+    _         => Nil
+fn cs_k5_chk_wx_e(e, fnm) = match e
+    Call(cnm, args) => let d0 = if cs_k5_is_phys_write_fn(cnm) == 1 and cs_isnil(args) == 0 then cs_k5_chk_addr_arg(cs_asthead(args), cnm, fnm) else Nil in cs_app(d0, cs_k5_chk_wx_args(args, fnm))
+    Bin(op, l, r)   => cs_app(cs_k5_chk_wx_e(l, fnm), cs_k5_chk_wx_e(r, fnm))
+    If(c, t, e2)    => cs_app(cs_k5_chk_wx_e(c, fnm), cs_app(cs_k5_chk_wx_e(t, fnm), cs_k5_chk_wx_e(e2, fnm)))
+    LetIn(nm, v, b) => cs_app(cs_k5_chk_wx_e(v, fnm), cs_k5_chk_wx_e(b, fnm))
+    VarIn(nm, v, b) => cs_app(cs_k5_chk_wx_e(v, fnm), cs_k5_chk_wx_e(b, fnm))
+    Match(sc, arms) => cs_app(cs_k5_chk_wx_e(sc, fnm), cs_k5_chk_wx_arms(arms, fnm))
+    _               => Nil
+fn cs_k5_chk_wx_args(xs, fnm) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_k5_chk_wx_e(h, fnm), cs_k5_chk_wx_args(t, fnm))
+fn cs_k5_chk_wx_arms(xs, fnm) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_k5_chk_wx_e(h.body, fnm), cs_k5_chk_wx_arms(t, fnm))
+fn cs_k6_fn_calls(target, e) = match e
+    Call(cnm, args) => if cnm == target then 1 else cs_k6_fn_calls_args(target, args)
+    Bin(op, l, r)   => if cs_k6_fn_calls(target, l) == 1 then 1 else cs_k6_fn_calls(target, r)
+    If(c, t, e2)    => if cs_k6_fn_calls(target, c) == 1 then 1 else if cs_k6_fn_calls(target, t) == 1 then 1 else cs_k6_fn_calls(target, e2)
+    LetIn(nm, v, b) => if cs_k6_fn_calls(target, v) == 1 then 1 else cs_k6_fn_calls(target, b)
+    VarIn(nm, v, b) => if cs_k6_fn_calls(target, v) == 1 then 1 else cs_k6_fn_calls(target, b)
+    Match(sc, arms) => if cs_k6_fn_calls(target, sc) == 1 then 1 else cs_k6_fn_calls_arms(target, arms)
+    _               => 0
+fn cs_k6_fn_calls_args(target, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_k6_fn_calls(target, h) == 1 then 1 else cs_k6_fn_calls_args(target, t)
+fn cs_k6_fn_calls_arms(target, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_k6_fn_calls(target, h.body) == 1 then 1 else cs_k6_fn_calls_arms(target, t)
+fn cs_k6_callee_body(fn0) = match fn0
+    Fn(nm, ps, body) => body
+    _                => Num(0)
+fn cs_k6_callee_calls_back(fnm, cnm, mf) = match mf
+    Nil          => Nil
+    Cons(fn0, r) => if cs_k6_fn_calls(fnm, cs_k6_callee_body(fn0)) == 1 then Cons(cs_mkdiag("K0006", "kernel_stack", "kernel stack error: mutual recursion between '" + fnm + "' and '" + cnm + "' in freestanding kernel overflows the bounded bare-metal stack", "convert '" + fnm + "' and '" + cnm + "' into direct self-tail recursion"), Nil) else Nil
+fn cs_k6_chk_mutual_e(e, fnm, ft) = match e
+    Call(cnm, args) => let d0 = if cnm != fnm then cs_k6_callee_calls_back(fnm, cnm, cs_fnlookup(cnm, ft)) else Nil in cs_app(d0, cs_k6_chk_mutual_args(args, fnm, ft))
+    Bin(op, l, r)   => cs_app(cs_k6_chk_mutual_e(l, fnm, ft), cs_k6_chk_mutual_e(r, fnm, ft))
+    If(c, t, e2)    => cs_app(cs_k6_chk_mutual_e(c, fnm, ft), cs_app(cs_k6_chk_mutual_e(t, fnm, ft), cs_k6_chk_mutual_e(e2, fnm, ft)))
+    LetIn(nm, v, b) => cs_app(cs_k6_chk_mutual_e(v, fnm, ft), cs_k6_chk_mutual_e(b, fnm, ft))
+    VarIn(nm, v, b) => cs_app(cs_k6_chk_mutual_e(v, fnm, ft), cs_k6_chk_mutual_e(b, fnm, ft))
+    Match(sc, arms) => cs_app(cs_k6_chk_mutual_e(sc, fnm, ft), cs_k6_chk_mutual_arms(arms, fnm, ft))
+    _               => Nil
+fn cs_k6_chk_mutual_args(xs, fnm, ft) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_k6_chk_mutual_e(h, fnm, ft), cs_k6_chk_mutual_args(t, fnm, ft))
+fn cs_k6_chk_mutual_arms(xs, fnm, ft) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_k6_chk_mutual_e(h.body, fnm, ft), cs_k6_chk_mutual_arms(t, fnm, ft))
+fn cs_k5_chk_fn(nm, body, ft) = let d1 = cs_k5_chk_wx_e(body, nm) in if cs_isnil(cs_fnlookup("kernel_boot_entry", ft)) == 0 then cs_app(d1, cs_k6_chk_mutual_e(body, nm, ft)) else d1
 fn cs_diagnose_stmt(s0, tt) = match s0
-    Fn(nm, ps, body) => let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: cs_fn_lenv(cs_siglookup(nm, tt.sigs))} in cs_app(cs_chk_ret(nm, body, tt2), cs_chk_expr(body, tt2))
+    Fn(nm, ps, body) => let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: cs_fn_lenv(cs_siglookup(nm, tt.sigs))} in cs_app(cs_k5_chk_fn(nm, body, tt.ft), cs_app(cs_chk_ret(nm, body, tt2), cs_chk_expr(body, tt2)))
     Print(v)         => cs_chk_expr(v, tt)
     ExprS(v)         => cs_chk_expr(v, tt)
     _                => Nil

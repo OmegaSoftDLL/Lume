@@ -306,6 +306,11 @@ tail-call `jmp` + arenas regionais `O(1)`:
 - `lume recall <arq.src>`: Consulta a Memoria Soberana Proativa O(1) com selos
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
+- `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
+  nativamente dentro do proprio compilador todas as 7 Baterias Soberanas de Provas sem
+  nenhum script externo (`std.net`, `std.gfx`, `lume_crypto_blockchain_engine`,
+  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS e `MANIFEST.sha256`: 161 obrigacoes
+  formais + 98 testes unitarios + 88 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 

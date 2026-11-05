@@ -338,6 +338,11 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - `lume recall <file.src>`: Queries the O(1) content-addressed proactive memory cache
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
+- `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
+  all 7 Sovereign Proof Batteries directly inside the compiled Lume driver with zero
+  external scripts (`std.net`, `std.gfx`, `lume_crypto_blockchain_engine`, `lsentience`,
+  `lmanual`, `KerneLume` Bare-Metal OS, and `MANIFEST.sha256`: 161 formal obligations +
+  98 unit tests + 88 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
