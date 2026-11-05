@@ -176,9 +176,11 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 - Funcoes marcadas com `/ pure` sao matematicamente puras: nao podem acessar disco,
   rede, processos ou mutar estado externo. Qualquer violacao gera `[E0200]`.
 
-## 5.2 Memoria sem Pausas de Garbage Collector (`std.arena`)
-A Lume usa reuso estatico Perceus + cache de inteiros pequenos (`[-1024..1024]`) +
-tail-call `jmp` + arenas regionais `O(1)`:
+## 5.2 Memoria sem Pausas de Garbage Collector, SRA Zero-Heap e Arenas (`std.arena`)
+A Lume usa reuso estatico Perceus + Escape Analysis / Scalar Replacement of Aggregates
+(`lsra_expr`: registros locais `let r = {k1: v1, ...} in corpo` que nao escapam sao
+alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de heap) +
+cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionais `O(1)`:
 - `let a = arena_new(65536)`   Cria uma arena de 64 KB
 - `arena_enter(a)` / `arena_leave(a)` / `arena_reset(a)` / `arena_destroy(a)`
 - `heap_stats()`               Retorna estatisticas do heap em tempo real
@@ -244,6 +246,18 @@ tail-call `jmp` + arenas regionais `O(1)`:
 - `use lgenesis`       Sintetizador autonomo full-stack para 8 alvos simultaneos
 - `use lsentience`     Motor Transcendente (Computacao Quantica, DNA, HDC, DEQ, LLM-Forge, Triade)
 - `use lume_crypto_blockchain_engine` Criptomoedas, SHA-256 PoW, UTXO, DeFi AMM e Kelly Criterion
+- `use lume_reversa_engine` Motor Reversa-Lume SDD v1.0: Engenharia reversa hibrida em 7 fases
+                       para binarios (`ELF64`, `PE64`, `UEFI`, `Mach-O`, `WASM`) e multiplas
+                       linguagens, guarda de imutabilidade SHA-256, taxonomia epistemica
+                       (`CONFIRMED`/`INFERRED`/`GAP`), `reversa_soul.md`, Mermaid `stateDiagram-v2`
+                       e C4 `flowchart TD`, `reversa_code_city_3d.svg` via `std.gfx` e descompilacao
+                       formal para Lume-Core
+- `use lume_pingora_proxy_engine` Motor Pingora-Lume Edge Proxy v1.0: Cache de borda `TinyUFO`
+                       (`S3-FIFO` + `Count-Min Sketch` de 4 hashes), anel de hash consistente
+                       `Ketama` 64 bits + balanceamento `P2C`, rate limiter de janela deslizante
+                       dupla (`429`), stampede lock de coalescencia, pool keepalive + sessao
+                       TLS 1.3 RFC 8446, circuit breaker de 3 estados + hot-upgrade zero-downtime
+                       e pipeline `ProxyHttp` completo de 7 fases
 
 # CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES
 
@@ -292,7 +306,9 @@ tail-call `jmp` + arenas regionais `O(1)`:
 ## 8.3 Comandos Transcendentes e Soberanos (Ondas 9 e 10)
   lume morph-ast / awaken / quantum / bio-dna / cosmic-tmr / hologram / chronos
   lume omega-net / llm-forge / consult / laws / memory / replicate / hive
-  lume os-control / bios-core / web-research / reverse-engineer / crypto-engine
+  lume reversa / reverse-engineer / reveng / decompile <alvo> Engenharia reversa unificada binaria + SDD
+  lume pingora / proxy / cdn / load-balancer [alvo] Proxy de borda e CDN Pingora-Lume (TinyUFO, Ketama+P2C, TLS 1.3, ProxyHttp)
+  lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
   lume gfx / render-3d / scada-hmi / ied-protection / recall / synapse / orchestrate
@@ -307,10 +323,12 @@ tail-call `jmp` + arenas regionais `O(1)`:
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 7 Baterias Soberanas de Provas sem
-  nenhum script externo (`std.net`, `std.gfx`, `lume_crypto_blockchain_engine`,
-  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS e `MANIFEST.sha256`: 161 obrigacoes
-  formais + 98 testes unitarios + 88 artefatos verificados).
+  nativamente dentro do proprio compilador todas as 9 Baterias Soberanas de Provas
+  (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
+  `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
+  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA
+  e `MANIFEST.sha256`: 241 obrigacoes formais + 108 testes unitarios + 93 artefatos
+  verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
@@ -390,5 +408,8 @@ print str(bcd_para_binario(35))
 | `[I0275]` | Sandbox WASM         | Importacao de host proibida dentro de modulo `@wasm-sandbox`. |
 | `[C0271]` | Comptime Embed       | Caminho em `comptime embed("...")` tenta sair da raiz do projeto (`..`) ou nao existe. |
 | `[D0273]` | Esquema de Tabela    | `comptime table_schema(T)` chamado sobre um tipo que nao e registro. |
+| `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy` ou `mem_set` aponta para `.text`/`.rodata` (`[0x8000..0x3FFFF]`), inclusive `base + off` simbolico. Use endereco seguro de RAM (`>= 0x40000`). |
+| `[K0006]` | Pilha de Kernel      | Ciclo de recursao mutua ilimitada (`f -> g -> f`) em modulo `@freestanding` / `kernel_boot_entry`. Use loop tail-call ou iteracao limitada. |
+| `[C0009]` | Cripto Constant-Time | Branch `if`/`match`, divisao `/` ou `%` ou curto-circuito `and`/`or` dependente de segredo (`secret_*` ou funcao `ct_*`). Use acumulacao bitwise XOR/OR em tempo constante. |
 | `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |

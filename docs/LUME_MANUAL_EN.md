@@ -190,9 +190,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Custom effects are declared with `effect Name { fn op(...) -> T }` and handled via
   `handle expr with { ... }`.
 
-## 5.2 Deterministic Memory & Scoped Arenas (`std.arena`)
+## 5.2 Deterministic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)
 - No stop-the-world GC pauses! Lume combines Perceus compile-time reference reuse,
-  small-integer caching (`[-1024..1024]`), self-tail-call `jmp`, and O(1) bump arenas.
+  Escape Analysis & Scalar Replacement of Aggregates (`lsra_expr`: non-escaping
+  `let r = {k1: v1, ...} in body` records are lowered directly into `%rbp` stack
+  slots `_sra_<r>_<k>` with 0 heap `mkrec`/`recget` allocations), small-integer
+  caching (`[-1024..1024]`), self-tail-call `jmp`, and O(1) bump arenas.
 - Builtins & `use arena`:
   - `let a = arena_new(65536)`   Create a scoped region arena
   - `arena_enter(a)` / `arena_leave(a)` / `arena_reset(a)` / `arena_destroy(a)`
@@ -262,6 +265,16 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - `use lgenesis`       Full-stack application & 8-target autonomous synthesizer
 - `use lsentience`     Wave 9-10 Quantum, DNA, HDC, DEQ, LLM-Forge, Triad & Multimodal engine
 - `use lume_crypto_blockchain_engine` SHA-256 PoW, Ed25519/Secp256k1, UTXO, AMM & Kelly Criterion
+- `use lume_reversa_engine` Reversa-Lume SDD Engine v1.0: 7-phase hybrid binary (`ELF64`, `PE64`,
+                       `UEFI`, `Mach-O`, `WASM`) + multi-language reverse engineering, SHA-256
+                       immutability guard, epistemic `CONFIRMED`/`INFERRED`/`GAP` confidence score,
+                       `reversa_soul.md`, Mermaid `stateDiagram-v2` & C4 `flowchart TD`, 3D
+                       `reversa_code_city_3d.svg` via `std.gfx`, and Lume-Core decompilation
+- `use lume_pingora_proxy_engine` Pingora-Lume Edge Proxy Engine v1.0: `TinyUFO` S3-FIFO + 4-hash
+                       Count-Min Sketch cache, `Ketama` 64-bit consistent hash ring + `P2C` load
+                       balancer, dual-window sliding rate limiter (`429`), cache stampede lock,
+                       keepalive connection pool + RFC 8446 TLS 1.3 session reuse, 3-state circuit
+                       breaker + zero-downtime graceful hot-upgrade, and 7-phase `ProxyHttp` pipeline
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
@@ -324,7 +337,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume consult [src]       Living self-consultation & evolutionary agenda
   lume laws / memory       8 Constitutional Laws + 4-vault indestructible episodic memory
   lume replicate / hive    Triad swarm self-replication & Byzantine Krum mesh sync
-  lume os-control / bios-core / web-research / reverse-engineer / crypto-engine
+  lume reversa / reverse-engineer / reveng / decompile <target> Unified binary & 7-phase SDD reverse engineering
+  lume pingora / proxy / cdn / load-balancer [target] Pingora-Lume Edge Proxy (TinyUFO, Ketama+P2C, TLS 1.3, 7-phase ProxyHttp)
+  lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
   lume gfx / render-3d / scada-hmi / ied-protection / recall / synapse / orchestrate
@@ -339,10 +354,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 7 Sovereign Proof Batteries directly inside the compiled Lume driver with zero
-  external scripts (`std.net`, `std.gfx`, `lume_crypto_blockchain_engine`, `lsentience`,
-  `lmanual`, `KerneLume` Bare-Metal OS, and `MANIFEST.sha256`: 161 formal obligations +
-  98 unit tests + 88 verified toolchain artifacts).
+  all 9 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
+  `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
+  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, `[K0005]`/`[K0006]`/`[C0009]`/SRA
+  guards, and `MANIFEST.sha256`: 241 formal obligations + 108 unit tests + 93 verified
+  toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
@@ -422,5 +439,8 @@ print str(rtc_bcd_to_bin(35))
 | `[I0275]` | WASM Sandbox         | Disallowed host import (`env.*`, `proc_exit`) in `@wasm-sandbox` module. |
 | `[C0271]` | Comptime Embed       | `comptime embed("...")` path escapes project root (`..`) or file is missing. |
 | `[D0273]` | Table Schema         | `comptime table_schema(T)` called on a non-record type. |
+| `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy`, or `mem_set` targets `.text`/`.rodata` (`[0x8000..0x3FFFF]`), including symbolic/affine `base + off`. Use a safe DMA RAM buffer (`>= 0x40000`). |
+| `[K0006]` | Kernel Stack Safety  | Unbounded mutual recursion cycle (`f -> g -> f`) in `@freestanding` / `kernel_boot_entry` module. Use tail-loop state or bounded iteration. |
+| `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup on `secret_*` or inside `ct_*`. Use bitwise XOR/OR mask accumulation. |
 | `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |
