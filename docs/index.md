@@ -34,12 +34,12 @@ All 6 official prebuilt Zero-C release archives are available at [**GitHub Relea
 
 | Platform / Architecture | Official Archive (`v1.0.0`) | SHA-256 Digest |
 | :--- | :--- | :--- |
-| **Linux x86_64 (ELF64)** | [`lume-v1.0.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-x86_64.tar.gz) | `47c831d7dbc1ca1dcfef775b2441bdf3be57c58e0c6d1d6f3ab91a4ae6006cd0` |
-| **Linux ARM64 (`aarch64` ELF64)** | [`lume-v1.0.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-aarch64.tar.gz) | `a719b97d79f3017a590a90db229f7bfe55a4b73f0ba35078697788e7e04a0387` |
-| **Linux RISC-V (`riscv64` ELF64)** | [`lume-v1.0.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-riscv64.tar.gz) | `07ea5258eb95492ba2b561e35d7a9523c55cfc6e654ecf82411ff3325763f4c3` |
-| **macOS Apple Silicon (`aarch64` Mach-O 64)** | [`lume-v1.0.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-aarch64.tar.gz) | `2109ccaa06ee1ca758960929ea378d869e52b4b086072ced1c101f2c80eaf44c` |
-| **macOS Intel (`x86_64` Mach-O 64)** | [`lume-v1.0.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-x86_64.tar.gz) | `d98052d47d87195b4cf33acf5b91073dd5aeff7b2c9e6a36715c1726d2021b89` |
-| **Windows x86_64 (`PE32+`)** | [`lume-v1.0.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz) | `b8db1dfbe5496c64888b5284803eb70dd242d177a44b71a708cfd794bf707e3d` |
+| **Linux x86_64 (ELF64)** | [`lume-v1.0.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-x86_64.tar.gz) | `03b6c910b78024a0776b519a1cc4aa2062b796a90c50dff561dd75df922c161f` |
+| **Linux ARM64 (`aarch64` ELF64)** | [`lume-v1.0.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-aarch64.tar.gz) | `cef3671b60dd674f7601b3206dfb986a321f1780a33257bfc32d39ff53fdba1e` |
+| **Linux RISC-V (`riscv64` ELF64)** | [`lume-v1.0.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-riscv64.tar.gz) | `d18f9c31b52baaab32316b19a6da0f1d5108fcacde63e1f57a1f7080c7df104b` |
+| **macOS Apple Silicon (`aarch64` Mach-O 64)** | [`lume-v1.0.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-aarch64.tar.gz) | `f1bcc77c60f628f747867c6ee170ba6de79edc60601550a34b9cb51c52c8bb07` |
+| **macOS Intel (`x86_64` Mach-O 64)** | [`lume-v1.0.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-x86_64.tar.gz) | `e44e832d9e87e4326e6f1705f85035542b249b11d167667e3f362af64dcbdebe` |
+| **Windows x86_64 (`PE32+`)** | [`lume-v1.0.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz) | `2f705bfd8f2850f9e5abdb7a6bae83ea94046bddccdf6ed73dae46a74d02290e` |
 | **Unified Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/SHA256SUMS) | Verifies all archives & standalone binaries |
 
 #### Manual Install on Linux or macOS
@@ -105,6 +105,17 @@ lume self-prove                  # Run all 14 embedded compiler proof batteries
 
 ### Reference Surveys
 - [00 — Catalog of ~260 Languages](00-catalog.md) · [01 — Language Survey](01-survey.md) · [07 — Competitive Scan](07-competitive.md)
+
+---
+
+## Contributors
+
+| Contributor | Role & Focus |
+| :--- | :--- |
+| **[Ricardo Bueno (`@OmegaSoftDLL`)](https://github.com/OmegaSoftDLL)** | Creator, Language Architect & Principal Systems Engineer |
+| **[Claude (`@claude`)](https://github.com/claude)** | Self-Hosted Compiler, Formal Verification (`QF_LIA` / `QF_NIA` / Separation Logic) & Runtime Engineering |
+| **[Kimi (`@kimi-ai` / `@MoonshotAI`)](https://github.com/kimi-ai)** | Phase 0 Consolidation, Incremental Module Cache, Memory Arenas & Conformance Engineering |
+| **[AGY — Google Antigravity (`@antigravity-bot` / `@google-deepmind`)](https://github.com/antigravity-bot)** | Compiler Performance Optimization, Multi-Platform Release Packaging & Autonomous Verification |
 
 ---
 

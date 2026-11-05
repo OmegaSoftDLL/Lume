@@ -269,6 +269,17 @@ make -C bootstrap/lume0 asan                              # Stage-0 under Addres
 
 ---
 
+## Contributors
+
+| Contributor | Role & Focus |
+| :--- | :--- |
+| **[Ricardo Bueno (`@OmegaSoftDLL`)](https://github.com/OmegaSoftDLL)** | Creator, Language Architect & Principal Systems Engineer |
+| **[Claude (`@claude`)](https://github.com/claude)** | Self-Hosted Compiler, Formal Verification (`QF_LIA` / `QF_NIA` / Separation Logic) & Runtime Engineering |
+| **[Kimi (`@kimi-ai` / `@MoonshotAI`)](https://github.com/kimi-ai)** | Phase 0 Consolidation, Incremental Module Cache, Memory Arenas & Conformance Engineering |
+| **[AGY — Google Antigravity (`@antigravity-bot` / `@google-deepmind`)](https://github.com/antigravity-bot)** | Compiler Performance Optimization, Multi-Platform Release Packaging & Autonomous Verification |
+
+---
+
 ## License
 
 Distributed under the terms of both the [MIT License](LICENSE-MIT) and the [Apache License (Version 2.0)](LICENSE-APACHE), at your option. See [COPYRIGHT](COPYRIGHT) for details.
