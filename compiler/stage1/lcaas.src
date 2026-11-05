@@ -46,10 +46,10 @@ fn cs_rtrimnl(s, e) = if e <= 0 then 0 else if at(s, e - 1) == "\n" or at(s, e -
 fn cs_chomp(s) = slice(s, 0, cs_rtrimnl(s, count(s)))
 fn cs_startswith(s, p) = if count(s) < count(p) then 0 else slice(s, 0, count(p)) == p
 
-fn cs_jesc_clean(s, i, n) = if i >= n then 1 else let c = at(s, i) in if c == "\"" or c == "\\" or c == "\n" or c == "\r" or c == "\t" then 0 else cs_jesc_clean(s, i + 1, n)
+fn cs_jesc_plain(s, i, n) = if i >= n then i else let c = at(s, i) in if c == "\"" or c == "\\" or c == "\n" or c == "\r" or c == "\t" then i else cs_jesc_plain(s, i + 1, n)
 fn cs_jesc_ch(c) = if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "\n" then "\\n" else if c == "\r" then "\\r" else if c == "\t" then "\\t" else c
-fn cs_jesc_i(s, i, n) = if i >= n then "" else cs_jesc_ch(at(s, i)) + cs_jesc_i(s, i + 1, n)
-fn cs_jesc(s) = if cs_jesc_clean(s, 0, count(s)) == 1 then s else cs_jesc_i(s, 0, count(s))
+fn cs_jesc_chunks(s, i, n, acc) = if i >= n then cs_rev(acc) else let j = cs_jesc_plain(s, i, n) in let acc1 = if j > i then Cons(slice(s, i, j), acc) else acc in if j >= n then cs_rev(acc1) else cs_jesc_chunks(s, j + 1, n, Cons(cs_jesc_ch(at(s, j)), acc1))
+fn cs_jesc(s) = let n = count(s) in let j = cs_jesc_plain(s, 0, n) in if j >= n then s else cs_joinall(cs_jesc_chunks(s, j + 1, n, if j > 0 then Cons(cs_jesc_ch(at(s, j)), Cons(slice(s, 0, j), Nil)) else Cons(cs_jesc_ch(at(s, j)), Nil)))
 
 ## --- lexer ---
 fn cs_numend(s, i, n) = if i >= n then i else if cs_isdigit(at(s, i)) then cs_numend(s, i + 1, n) else i
@@ -64,8 +64,9 @@ fn cs_istwopair(p) = p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "=
 ## malformed input (an unterminated string literal) is collected as an L0001 diagnostic with
 ## the exact span of the string start instead of being silently swallowed.
 fn cs_pos_adv(line, col, text, i, n) = if i >= n then {line: line, col: col} else if at(text, i) == "\n" then cs_pos_adv(line + 1, 1, text, i + 1, n) else cs_pos_adv(line, col + 1, text, i + 1, n)
-fn cs_lexsp(s, i, line, col, diags) = if i >= count(s) then {tokens: Nil, diags: diags} else cs_lexsp1(s, i, count(s), at(s, i), line, col, diags)
-fn cs_lexsp1(s, i, n, c, line, col, diags) = if cs_isws(c) then (if c == "\n" then cs_lexsp(s, i + 1, line + 1, 1, diags) else cs_lexsp(s, i + 1, line, col + 1, diags)) else if c == "#" then let e = cs_lineend(s, i + 1, n) in if e < n then cs_lexsp(s, e, line + 1, 1, diags) else {tokens: Nil, diags: diags} else if cs_isdigit(c) then let j = cs_numend(s, i, n) in let r = cs_lexsp(s, j, line, col + (j - i), diags) in {tokens: Cons({kind: "NM", text: slice(s, i, j), line: line, col: col}, r.tokens), diags: r.diags} else if cs_isalpha(c) then let j = cs_idend(s, i, n) in let r = cs_lexsp(s, j, line, col + (j - i), diags) in {tokens: Cons({kind: "ID", text: slice(s, i, j), line: line, col: col}, r.tokens), diags: r.diags} else if c == "\"" then let st = cs_strend(s, i + 1, n, "") in let p = cs_pos_adv(line, col, s, i, st.next) in let r = cs_lexsp(s, st.next, p.line, p.col, if st.closed == 0 then Cons({code: "L0001", severity: "error", phase: "lex", message: "lex error: unterminated string literal", fixit: "close the string with a double quote", subj: "", sug: "append a closing double quote to terminate the string literal", repl: "\"", span: {file: "", line: line, col: col}}, diags) else diags) in {tokens: Cons({kind: "ST", text: st.txt, line: line, col: col}, r.tokens), diags: r.diags} else if cs_istwo(s, i, n) == 1 then let r = cs_lexsp(s, i + 2, line, col + 2, diags) in {tokens: Cons({kind: "SY", text: slice(s, i, i + 2), line: line, col: col}, r.tokens), diags: r.diags} else let r = cs_lexsp(s, i + 1, line, col + 1, diags) in {tokens: Cons({kind: "SY", text: c, line: line, col: col}, r.tokens), diags: r.diags}
+fn cs_ws_end(s, i, n, line, col) = if i >= n then {i: i, line: line, col: col} else let c = at(s, i) in if cs_isws(c) == 0 then {i: i, line: line, col: col} else if c == "\n" then cs_ws_end(s, i + 1, n, line + 1, 1) else cs_ws_end(s, i + 1, n, line, col + 1)
+fn cs_lexsp_loop(s, n, pos, acc, diags) = let w = cs_ws_end(s, pos.i, n, pos.line, pos.col) in let k = w.i in let ln = w.line in let cl = w.col in if k >= n then {tokens: cs_rev(acc), diags: diags} else let c = at(s, k) in if c == "#" then let e = cs_lineend(s, k + 1, n) in if e < n then cs_lexsp_loop(s, n, {i: e, line: ln + 1, col: 1}, acc, diags) else {tokens: cs_rev(acc), diags: diags} else if cs_isdigit(c) then let j = cs_numend(s, k, n) in cs_lexsp_loop(s, n, {i: j, line: ln, col: cl + (j - k)}, Cons({kind: "NM", text: slice(s, k, j), line: ln, col: cl}, acc), diags) else if cs_isalpha(c) then let j = cs_idend(s, k, n) in cs_lexsp_loop(s, n, {i: j, line: ln, col: cl + (j - k)}, Cons({kind: "ID", text: slice(s, k, j), line: ln, col: cl}, acc), diags) else if c == "\"" then let st = cs_strend(s, k + 1, n, "") in let p = cs_pos_adv(ln, cl, s, k, st.next) in let diags2 = if st.closed == 0 then Cons({code: "L0001", severity: "error", phase: "lex", message: "lex error: unterminated string literal", fixit: "close the string with a double quote", subj: "", sug: "append a closing double quote to terminate the string literal", repl: "\"", span: {file: "", line: ln, col: cl}}, diags) else diags in cs_lexsp_loop(s, n, {i: st.next, line: p.line, col: p.col}, Cons({kind: "ST", text: st.txt, line: ln, col: cl}, acc), diags2) else if cs_istwo(s, k, n) == 1 then cs_lexsp_loop(s, n, {i: k + 2, line: ln, col: cl + 2}, Cons({kind: "SY", text: slice(s, k, k + 2), line: ln, col: cl}, acc), diags) else cs_lexsp_loop(s, n, {i: k + 1, line: ln, col: cl + 1}, Cons({kind: "SY", text: c, line: ln, col: cl}, acc), diags)
+fn cs_lexsp(s, i, line, col, diags) = cs_lexsp_loop(s, count(s), {i: i, line: line, col: col}, Nil, diags)
 
 ## --- parser ---
 fn cs_hd(ts) = match ts
@@ -2627,16 +2628,18 @@ fn cs_asm_args(xs) = match xs
 fn cs_asm_fn1(h) = match h
     Fn(nm, ps, body) => nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n" + cs_asm_expr(body) + "    movq %rbp, %rsp\n    popq %rbp\n    ret\n"
     _                => ""
-fn cs_asm_fns(prog) = match prog
-    Nil        => ""
-    Cons(h, t) => cs_asm_fn1(h) + cs_asm_fns(t)
+fn cs_asm_fns_list(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => let s = cs_asm_fn1(h) in if count(s) == 0 then cs_asm_fns_list(t) else Cons(s, cs_asm_fns_list(t))
+fn cs_asm_fns(prog) = cs_joinall(cs_asm_fns_list(prog))
 fn cs_asm_main1(h) = match h
     Print(v) => cs_asm_expr(v) + "    movq %rax, %rdi\n    call printval\n"
     ExprS(v) => cs_asm_expr(v)
     _        => ""
-fn cs_asm_main(prog) = match prog
-    Nil        => ""
-    Cons(h, t) => cs_asm_main1(h) + cs_asm_main(t)
+fn cs_asm_main_list(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => let s = cs_asm_main1(h) in if count(s) == 0 then cs_asm_main_list(t) else Cons(s, cs_asm_main_list(t))
+fn cs_asm_main(prog) = cs_joinall(cs_asm_main_list(prog))
 fn cs_asm_gen(prog) = ".text\n.globl _start\n" + cs_asm_fns(prog) + "_start:\n" + cs_asm_main(prog) + "    movq $60, %rax\n    xorq %rdi, %rdi\n    syscall\n"
 
 ## --- in-memory program evaluation (`result` output) ---
@@ -2666,30 +2669,36 @@ fn caas_asm(src) = (caas_compile(src)).asm
 fn caas_eval(src) = (caas_compile(src)).result
 
 ## --- JSON serialisation for `lume agent` ---
-fn cs_strlist_json(xs) = match xs
-    Nil        => ""
-    Cons(h, t) => "\"" + cs_jesc(h) + "\"" + (if cs_isnil(t) == 1 then "" else "," + cs_strlist_json(t))
+fn cs_strlist_json_items(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons("\"" + cs_jesc(h) + "\"", cs_strlist_json_items(t))
+fn cs_strlist_json(xs) = cs_joinsep(cs_strlist_json_items(xs), ",")
 fn cs_ctx1_json(c) = "{\"name\":\"" + cs_jesc(c.k) + "\",\"type\":\"" + cs_jesc(c.v) + "\"}"
-fn cs_ctx_json(cs) = match cs
-    Nil        => ""
-    Cons(h, t) => cs_ctx1_json(h) + (if cs_isnil(t) == 1 then "" else "," + cs_ctx_json(t))
+fn cs_ctx_json_items(cs) = match cs
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_ctx1_json(h), cs_ctx_json_items(t))
+fn cs_ctx_json(cs) = cs_joinsep(cs_ctx_json_items(cs), ",")
 fn cs_hole_json(h) = "{\"hole\":\"" + cs_jesc(h.hole) + "\",\"function\":\"" + cs_jesc(h.fnm) + "\",\"expected_type\":\"" + cs_jesc(h.expected_type) + "\",\"context\":[" + cs_ctx_json(h.context) + "],\"candidates\":[" + cs_strlist_json(h.candidates) + "],\"proven_candidates\":[" + cs_strlist_json(h.proven_candidates) + "]}"
-fn cs_holes_json(hs) = match hs
-    Nil        => ""
-    Cons(h, t) => cs_hole_json(h) + (if cs_isnil(t) == 1 then "" else "," + cs_holes_json(t))
+fn cs_holes_json_items(hs) = match hs
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_hole_json(h), cs_holes_json_items(t))
+fn cs_holes_json(hs) = cs_joinsep(cs_holes_json_items(hs), ",")
 fn cs_proof_json(p) = "{\"name\":\"" + cs_jesc(p.name) + "\",\"kind\":\"" + cs_jesc(p.kind) + "\",\"status\":\"" + cs_jesc(p.status) + "\",\"obligation\":\"" + cs_jesc(p.obligation) + "\",\"counterexample\":\"" + cs_jesc(p.counterexample) + "\"}"
-fn cs_proofs_json(ps) = match ps
-    Nil        => ""
-    Cons(h, t) => cs_proof_json(h) + (if cs_isnil(t) == 1 then "" else "," + cs_proofs_json(t))
+fn cs_proofs_json_items(ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_proof_json(h), cs_proofs_json_items(t))
+fn cs_proofs_json(ps) = cs_joinsep(cs_proofs_json_items(ps), ",")
 fn cs_span_json(sp, subj) = let w = if count(subj) > 0 then count(subj) else 1 in "{\"file\":\"" + cs_jesc(if count(sp.file) > 0 then sp.file else "module.src") + "\",\"line\":" + str(sp.line) + ",\"col\":" + str(sp.col) + ",\"end_line\":" + str(sp.line) + ",\"end_col\":" + str(sp.col + w) + "}"
 fn cs_diag_json(d) = "{\"code\":\"" + cs_jesc(d.code) + "\",\"severity\":\"" + cs_jesc(d.severity) + "\",\"phase\":\"" + cs_jesc(d.phase) + "\",\"message\":\"" + cs_jesc(d.message) + "\",\"fixit\":\"" + cs_jesc(d.fixit) + "\",\"span\":" + cs_span_json(d.span, cs_diag_subject(d)) + (if count(d.sug) > 0 then ",\"suggestion\":{\"description\":\"" + cs_jesc(d.sug) + "\",\"replacement\":\"" + cs_jesc(d.repl) + "\"}" else "") + "}"
-fn cs_diags_json(ds) = match ds
-    Nil        => ""
-    Cons(h, t) => if cs_isnil(t) == 1 then cs_diag_json(h) else cs_diag_json(h) + "," + cs_diags_json(t)
+fn cs_diags_json_items(ds) = match ds
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_diag_json(h), cs_diags_json_items(t))
+fn cs_diags_json(ds) = cs_joinsep(cs_diags_json_items(ds), ",")
 fn cs_sym_json(s) = "{\"name\":\"" + cs_jesc(s.name) + "\",\"kind\":\"" + cs_jesc(s.kind) + "\",\"signature\":\"" + cs_jesc(s.sig) + "\"}"
-fn cs_syms_json(ss) = match ss
-    Nil        => ""
-    Cons(h, t) => if cs_isnil(t) == 1 then cs_sym_json(h) else cs_sym_json(h) + "," + cs_syms_json(t)
+fn cs_syms_json_items(ss) = match ss
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_sym_json(h), cs_syms_json_items(t))
+fn cs_syms_json(ss) = cs_joinsep(cs_syms_json_items(ss), ",")
 fn caas_json(r) = "{\"ok\":" + (if r.ok == 1 then "true" else "false") + ",\"diagnostics\":[" + cs_diags_json(r.diagnostics) + "],\"holes\":[" + cs_holes_json(r.holes) + "],\"proofs\":[" + cs_proofs_json(r.proofs) + "],\"symbols\":[" + cs_syms_json(r.symbols) + "],\"ast\":\"" + cs_jesc(r.ast_sexpr) + "\",\"expanded\":\"" + cs_jesc(r.expanded_sexpr) + "\",\"has_asm\":" + (if count(r.asm) > 0 then "true" else "false") + ",\"result\":\"" + cs_jesc(r.result) + "\"}"
 
 ## --- Stage 5: Proof Certificates (G3/H3), C-Header Bindings (I3), and MCP Server (G1) ---
