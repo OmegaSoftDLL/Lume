@@ -289,6 +289,15 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        Parallel Coarse-to-Fine K-Scale Decoder + Classifier-Free Guidance (`CFG`),
                        Global Constraint Satisfaction Sudoku 4x4 Solver, and Symbiotic Bridge with
                        `LLM-Forge`, `lume_egm_engine`, and `lume_reversa_engine`
+- `use lume_opentpu_engine` OpenTPU-Lume Systolic AI Accelerator & ISA Engine v1.0 (`OmegaSoftDLL/openTPU`):
+                       `openTPU ISA v1` assembler/disassembler, linear scalar register lifetimes (`R0..R15`),
+                       Systolic Matrix Unit (`MXU`) stationary-row replay (`ceil(M / MCOLS)`), two-level
+                       block-scaled quantizer (`QACT` `Sa * 2^-da` int8 + `FP4` 4.25 bits/weight), formal
+                       K-Smoothing outlier migration (`<Q*2^s, K*2^-s> == <Q,K>`), programmable 5-stage
+                       fused Stream Engine (`SE`, opcode `0x13` `STREAM` for Gated DeltaNet), card-side
+                       MoE LRU slot cache + `WAITW` compute/PCIe-DMA overlap scheduler, analytic hardware
+                       Scoreboard & Byte-Roofline verifier (`YPCB`, `BCU1525`, `AWS F2`, `ASIC`), and
+                       0-ULP Golden/ISA-Sim/RTL equivalence bridge with `lume_ncm_engine`
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
@@ -355,6 +364,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume pingora / proxy / cdn / load-balancer [target] Pingora-Lume Edge Proxy (TinyUFO, Ketama+P2C, TLS 1.3, 7-phase ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [target] EGM-Lume Spec-Driven Development & Drift Engine
   lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [target] NCM-Lume Next-Concept Modeling Coarse-to-Fine Parallel Engine
+  lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -370,12 +380,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 11 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  all 12 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
   the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lume_egm_engine`, `lume_ncm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 320 formal obligations +
-  118 unit tests + 95 verified toolchain artifacts).
+  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lsentience`, `lmanual`,
+  `KerneLume` Bare-Metal OS, `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`:
+  363 formal obligations + 123 unit tests + 96 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 

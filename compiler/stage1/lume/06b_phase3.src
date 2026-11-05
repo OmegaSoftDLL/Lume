@@ -1342,6 +1342,10 @@ fn vnia_var_lb(v, hyps) = match hyps
     Nil        => 0 - 999999
     Cons(h, t) => let r = vnia_var_lb(v, t) in if len(h.cs) == 1 and vlin_coeff(v, h.cs) == 1 then (let b = 0 - h.c0 in if b > r then b else r) else r
 
+fn vnia_var_ub(v, hyps) = match hyps
+    Nil        => 999999
+    Cons(h, t) => let r = vnia_var_ub(v, t) in if len(h.cs) == 1 and vlin_coeff(v, h.cs) == 0 - 1 then (let b = h.c0 in if b < r then b else r) else r
+
 fn vnia_split_star(s, idx, n) = if idx >= n then Nil else if at(s, idx) == "*" then Cons(slice(s, 0, idx), Cons(slice(s, idx + 1, n), Nil)) else vnia_split_star(s, idx + 1, n)
 
 fn vnia_add_bvar(v, acc) = if v == "" or omem(v, acc) == 1 then acc else Cons(v, acc)
@@ -1372,7 +1376,7 @@ fn vnia_all_diff_sq(vars) = match vars
 
 fn vnia_prod_pair(v1, lb1, vars, hyps) = match vars
     Nil        => Nil
-    Cons(v2, r) => let lb2 = vnia_var_lb(v2, hyps) in let rest = vnia_prod_pair(v1, lb1, r, hyps) in if lb1 >= 0 and lb2 >= 0 then Cons({ok: 1, c0: 0 - (lb1 * lb2), cs: Cons({k: vmono_key(v1, v2), c: 1}, Nil)}, Cons(vlin_mul(vlin_sub(vlin_var(v1), vlin_const(lb1)), vlin_sub(vlin_var(v2), vlin_const(lb2))), rest)) else rest
+    Cons(v2, r) => let lb2 = vnia_var_lb(v2, hyps) in let ub1 = vnia_var_ub(v1, hyps) in let ub2 = vnia_var_ub(v2, hyps) in let rest0 = vnia_prod_pair(v1, lb1, r, hyps) in let rest = (if lb1 >= 0 and lb2 >= 0 and ub1 < 999999 and ub2 < 999999 then Cons({ok: 1, c0: ub1 * ub2, cs: Cons({k: vmono_key(v1, v2), c: 0 - 1}, Nil)}, rest0) else rest0) in if lb1 >= 0 and lb2 >= 0 then Cons({ok: 1, c0: 0 - (lb1 * lb2), cs: Cons({k: vmono_key(v1, v2), c: 1}, Nil)}, Cons(vlin_mul(vlin_sub(vlin_var(v1), vlin_const(lb1)), vlin_sub(vlin_var(v2), vlin_const(lb2))), rest)) else rest
 
 fn vnia_prod_hyps(vars, hyps) = match vars
     Nil        => Nil
@@ -1512,7 +1516,7 @@ fn vcond_pos(e, hyps, lenv, fns, d) = match e
     _               => {ok: 0, hyps: Nil}
 
 fn vcond_neg(e, hyps, lenv, fns, d) = match e
-    Bin(op, a, b)   => vcond_cmp_neg(op, vlin_expr(a, hyps, lenv, fns, d), vlin_expr(b, hyps, lenv, fns, d))
+    Bin(op, a, b)   => if op == "or" then (let r1 = vcond_neg(a, hyps, lenv, fns, d) in let r2 = vcond_neg(b, hyps, lenv, fns, d) in if r1.ok == 1 and r2.ok == 1 then {ok: 1, hyps: app(r1.hyps, r2.hyps)} else {ok: 0, hyps: Nil}) else vcond_cmp_neg(op, vlin_expr(a, hyps, lenv, fns, d), vlin_expr(b, hyps, lenv, fns, d))
     Call(cnm, args) => if cnm == "dec_ge" and len(args) == 2 then vcond_cmp_neg(">=", vlin_expr(ohd_e(args), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d)) else if cnm == "dec_gt" and len(args) == 2 then vcond_cmp_neg(">", vlin_expr(ohd_e(args), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d)) else if cnm == "dec_le" and len(args) == 2 then vcond_cmp_neg("<=", vlin_expr(ohd_e(args), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d)) else if cnm == "dec_lt" and len(args) == 2 then vcond_cmp_neg("<", vlin_expr(ohd_e(args), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d)) else if cnm == "sep_disjoint" and len(args) == 2 then vcond_cmp_pos("==", vlin_expr(ohd_e(args), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d)) else {ok: 0, hyps: Nil}
     _               => {ok: 0, hyps: Nil}
 
@@ -1557,7 +1561,15 @@ fn vprove_body(body, hyps, lenv, enss, fns, d) = match body
     If(c, t, e2)    => if vnorm_if_changed(c) == 1 then vprove_body(vnorm_if(c, t, e2), hyps, lenv, enss, fns, d) else let rp = vcond_pos(c, hyps, lenv, fns, d) in let rn = vcond_neg(c, hyps, lenv, fns, d) in if rp.ok == 1 and rn.ok == 1 and vprove_body(t, app(rp.hyps, hyps), lenv, enss, fns, d) == 1 and vprove_body(e2, app(rn.hyps, hyps), lenv, enss, fns, d) == 1 then 1 else 0
     _               => let dhyps = app(vcollect_div_hyps_e(body, hyps, lenv, fns, d), hyps) in let lb = vlin_expr(body, dhyps, lenv, fns, d) in if lb.ok == 0 then 0 else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, lenv)) in vprove_goals_all(enss, dhyps, penv, fns, d)
 
-fn vqflia_prove_fn(ps, reqs, enss, body, fns) = if isnil(enss) == 1 then 0 else let lenv = vlin_init_env(ps) in let rh = vprove_reqs_hyps(reqs, lenv, fns) in if rh.ok == 0 then 0 else vprove_body(body, rh.hyps, lenv, enss, fns, 0)
+fn vprove_req1(req, rest_reqs, hyps, ctx) = match req
+    Bin(op, a, b) => if op == "and" then vprove_req1(a, Cons(b, rest_reqs), hyps, ctx) else if op == "or" then (if vprove_req1(a, rest_reqs, hyps, ctx) == 1 and vprove_req1(b, rest_reqs, hyps, ctx) == 1 then 1 else 0) else (let r1 = vcond_pos(req, hyps, ctx.lenv, ctx.fns, 0) in if r1.ok == 0 then 0 else vprove_with_reqs(rest_reqs, app(r1.hyps, hyps), ctx))
+    _             => let r1 = vcond_pos(req, hyps, ctx.lenv, ctx.fns, 0) in if r1.ok == 0 then 0 else vprove_with_reqs(rest_reqs, app(r1.hyps, hyps), ctx)
+
+fn vprove_with_reqs(reqs, hyps, ctx) = match reqs
+    Nil        => vprove_body(ctx.body, hyps, ctx.lenv, ctx.enss, ctx.fns, 0)
+    Cons(h, t) => vprove_req1(h, t, hyps, ctx)
+
+fn vqflia_prove_fn(ps, reqs, enss, body, fns) = if isnil(enss) == 1 then 0 else let lenv = vlin_init_env(ps) in vprove_with_reqs(reqs, Nil, {body: body, lenv: lenv, enss: enss, fns: fns})
 
 fn vqflia_prove_law(ps, body, fns) = let lenv = vlin_init_env(ps) in if vprove_goal(body, Nil, lenv, fns, 0) == 1 then 1 else if len(ps) == 1 then let p0 = vlin_var(phd(ps)) in let hneg = Cons(vlin_sub(vlin_const(0 - 1), p0), Nil) in let hpos = Cons(p0, Nil) in if vprove_goal(body, hneg, lenv, fns, 0) == 1 and vprove_goal(body, hpos, lenv, fns, 0) == 1 then 1 else 0 else 0
 

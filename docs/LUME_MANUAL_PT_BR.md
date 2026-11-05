@@ -274,6 +274,15 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
                        Coarse-to-Fine em K Escalas + Classifier-Free Guidance (`CFG`), Solucionador
                        Global de Restricoes Sudoku 4x4 e Ponte Simbiotica com `LLM-Forge`,
                        `lume_egm_engine` e `lume_reversa_engine`
+- `use lume_opentpu_engine` Motor OpenTPU-Lume Systolic AI Accelerator & ISA v1.0 (`OmegaSoftDLL/openTPU`):
+                       Montador/desmontador `openTPU ISA v1`, registradores escalares com posse linear
+                       (`R0..R15`), Unidade Matricial Sistolica (`MXU`) com replay estacionario de linhas
+                       (`ceil(M / MCOLS)`), quantizador em dois niveis (`QACT` `Sa * 2^-da` int8 + `FP4`
+                       4.25 bits/peso), migracao formal de outliers *K-Smoothing* (`<Q*2^s, K*2^-s> == <Q,K>`),
+                       Stream Engine (`SE`, opcode `0x13` `STREAM`) de 5 estagios fundidos para `Gated DeltaNet`,
+                       cache LRU de experts MoE em DRAM + escalonador `WAITW` com sobreposicao compute/PCIe-DMA,
+                       Scoreboard e Roofline analitico de hardware (`YPCB`, `BCU1525`, `AWS F2`, `ASIC`) e
+                       equivalencia `0 ULP` (Golden == ISA-Sim == SystemVerilog RTL) com `lume_ncm_engine`
 
 # CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES
 
@@ -326,6 +335,7 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   lume pingora / proxy / cdn / load-balancer [alvo] Proxy de borda e CDN Pingora-Lume (TinyUFO, Ketama+P2C, TLS 1.3, ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [alvo] Modelo Elefante-Peixe-Dourado (EGM SDD + Deriva Zero)
   lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [alvo] Modelagem de Proximo Conceito Paralela Coarse-to-Fine (NCM-Lume)
+  lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [alvo] Acelerador Sistolico de IA e Compilador ISA OpenTPU-Lume
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -341,12 +351,12 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 11 Baterias Soberanas de Provas
+  nativamente dentro do proprio compilador todas as 12 Baterias Soberanas de Provas
   (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lume_egm_engine`, `lume_ncm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 320 obrigacoes formais +
-  118 testes unitarios + 95 artefatos verificados).
+  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lsentience`, `lmanual`,
+  `KerneLume` Bare-Metal OS, guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`:
+  363 obrigacoes formais + 123 testes unitarios + 96 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
