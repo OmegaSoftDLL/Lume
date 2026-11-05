@@ -258,6 +258,13 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
                        dupla (`429`), stampede lock de coalescencia, pool keepalive + sessao
                        TLS 1.3 RFC 8446, circuit breaker de 3 estados + hot-upgrade zero-downtime
                        e pipeline `ProxyHttp` completo de 7 fases
+- `use lume_egm_engine` Motor EGM-Lume Elephant-Goldfish Model v1.0: Validador formal dos 8
+                       pilares do Catecismo de Heilmeier + Shootdown de 6 Lentes, isolamento
+                       epistemico Elefante (memoria profunda) vs Peixe-Dourado (`hist == 0,
+                       bias == 0`), teste de compreensao por parafrase cega (Estagio 6), scanner
+                       lexico Anti-Glazing, revisao antagonica de 5 estagios (Estagios 5 a 9),
+                       auditor de contradicoes e detector bidirecional de deriva Spec <-> Codigo
+                       integrado ao `lume_reversa_engine`
 
 # CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES
 
@@ -308,6 +315,7 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   lume omega-net / llm-forge / consult / laws / memory / replicate / hive
   lume reversa / reverse-engineer / reveng / decompile <alvo> Engenharia reversa unificada binaria + SDD
   lume pingora / proxy / cdn / load-balancer [alvo] Proxy de borda e CDN Pingora-Lume (TinyUFO, Ketama+P2C, TLS 1.3, ProxyHttp)
+  lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [alvo] Modelo Elefante-Peixe-Dourado (EGM SDD + Deriva Zero)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -323,12 +331,12 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 9 Baterias Soberanas de Provas
+  nativamente dentro do proprio compilador todas as 10 Baterias Soberanas de Provas
   (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA
-  e `MANIFEST.sha256`: 241 obrigacoes formais + 108 testes unitarios + 93 artefatos
-  verificados).
+  `lume_egm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, guardas
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 276 obrigacoes formais + 113 testes
+  unitarios + 94 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 

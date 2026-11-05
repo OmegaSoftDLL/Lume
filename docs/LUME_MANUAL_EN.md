@@ -275,6 +275,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        balancer, dual-window sliding rate limiter (`429`), cache stampede lock,
                        keepalive connection pool + RFC 8446 TLS 1.3 session reuse, 3-state circuit
                        breaker + zero-downtime graceful hot-upgrade, and 7-phase `ProxyHttp` pipeline
+- `use lume_egm_engine` EGM-Lume Elephant-Goldfish Model Engine v1.0: 8-pillar DARPA Heilmeier
+                       Catechism validator + 6-lens Brainstorm shootdown, epistemic context isolation
+                       (`Elephant` deep memory vs `Goldfish` zero-context `hist == 0, bias == 0`),
+                       Stage 6 blind paraphrase comprehension test, Anti-Glazing lexical scanner,
+                       5-stage antagonistic Goldfish review (Stages 5..9), contradiction auditor,
+                       and bidirectional Spec <-> Code drift report integrated with `lume_reversa_engine`
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
@@ -339,6 +345,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume replicate / hive    Triad swarm self-replication & Byzantine Krum mesh sync
   lume reversa / reverse-engineer / reveng / decompile <target> Unified binary & 7-phase SDD reverse engineering
   lume pingora / proxy / cdn / load-balancer [target] Pingora-Lume Edge Proxy (TinyUFO, Ketama+P2C, TLS 1.3, 7-phase ProxyHttp)
+  lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [target] EGM-Lume Spec-Driven Development & Drift Engine
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -354,12 +361,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 9 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  all 10 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
   the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, `[K0005]`/`[K0006]`/`[C0009]`/SRA
-  guards, and `MANIFEST.sha256`: 241 formal obligations + 108 unit tests + 93 verified
-  toolchain artifacts).
+  `lume_egm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 276 formal obligations +
+  113 unit tests + 94 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
