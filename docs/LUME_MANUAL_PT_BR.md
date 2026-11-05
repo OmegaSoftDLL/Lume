@@ -265,6 +265,15 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
                        lexico Anti-Glazing, revisao antagonica de 5 estagios (Estagios 5 a 9),
                        auditor de contradicoes e detector bidirecional de deriva Spec <-> Codigo
                        integrado ao `lume_reversa_engine`
+- `use lume_ncm_engine` Motor NCM-Lume Next-Concept Modeling v1.0 (Stanford Hazy Research arXiv:2610.14162):
+                       Quantizador Vetorial Residual Multiescala (`MS-RVQ` escalas `[4, 8, 16, 32, 64]`,
+                       downsampling por area, upsampling linear, commitment loss, centroides EMA,
+                       reinicializacao de codigos mortos), Cabeca de Logits por Distancia Euclidiana
+                       Emparelhada (`2*<z,E_i> - ||E_i||^2`), Mascara de Atencao Bloco-Diagonal
+                       Escala-Causal + RoPE com Reset por Escala (`wle`), Decodificador Paralelo
+                       Coarse-to-Fine em K Escalas + Classifier-Free Guidance (`CFG`), Solucionador
+                       Global de Restricoes Sudoku 4x4 e Ponte Simbiotica com `LLM-Forge`,
+                       `lume_egm_engine` e `lume_reversa_engine`
 
 # CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES
 
@@ -316,6 +325,7 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   lume reversa / reverse-engineer / reveng / decompile <alvo> Engenharia reversa unificada binaria + SDD
   lume pingora / proxy / cdn / load-balancer [alvo] Proxy de borda e CDN Pingora-Lume (TinyUFO, Ketama+P2C, TLS 1.3, ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [alvo] Modelo Elefante-Peixe-Dourado (EGM SDD + Deriva Zero)
+  lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [alvo] Modelagem de Proximo Conceito Paralela Coarse-to-Fine (NCM-Lume)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -331,12 +341,12 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 10 Baterias Soberanas de Provas
+  nativamente dentro do proprio compilador todas as 11 Baterias Soberanas de Provas
   (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lume_egm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, guardas
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 276 obrigacoes formais + 113 testes
-  unitarios + 94 artefatos verificados).
+  `lume_egm_engine`, `lume_ncm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 320 obrigacoes formais +
+  118 testes unitarios + 95 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 

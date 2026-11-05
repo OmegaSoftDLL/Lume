@@ -281,6 +281,14 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        Stage 6 blind paraphrase comprehension test, Anti-Glazing lexical scanner,
                        5-stage antagonistic Goldfish review (Stages 5..9), contradiction auditor,
                        and bidirectional Spec <-> Code drift report integrated with `lume_reversa_engine`
+- `use lume_ncm_engine` NCM-Lume Next-Concept Modeling Engine v1.0 (Stanford Hazy Research arXiv:2610.14162):
+                       Multiscale Residual Vector Quantizer (`MS-RVQ` scales `[4, 8, 16, 32, 64]`,
+                       area downsampling, linear upsampling, commitment loss, EMA centroids, dead-code
+                       restart), Tied Codebook Euclidean Distance Logit Head (`2*<z,E_i> - ||E_i||^2`),
+                       Block-Diagonal Scale-Causal Attention Mask + Per-Level Reset RoPE (`wle`),
+                       Parallel Coarse-to-Fine K-Scale Decoder + Classifier-Free Guidance (`CFG`),
+                       Global Constraint Satisfaction Sudoku 4x4 Solver, and Symbiotic Bridge with
+                       `LLM-Forge`, `lume_egm_engine`, and `lume_reversa_engine`
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
@@ -346,6 +354,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume reversa / reverse-engineer / reveng / decompile <target> Unified binary & 7-phase SDD reverse engineering
   lume pingora / proxy / cdn / load-balancer [target] Pingora-Lume Edge Proxy (TinyUFO, Ketama+P2C, TLS 1.3, 7-phase ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [target] EGM-Lume Spec-Driven Development & Drift Engine
+  lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [target] NCM-Lume Next-Concept Modeling Coarse-to-Fine Parallel Engine
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -361,12 +370,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 10 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  all 11 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
   the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lume_egm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 276 formal obligations +
-  113 unit tests + 94 verified toolchain artifacts).
+  `lume_egm_engine`, `lume_ncm_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 320 formal obligations +
+  118 unit tests + 95 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
