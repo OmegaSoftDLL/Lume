@@ -1581,9 +1581,15 @@ fn cs_vlin_expr1(e, hyps, lenv, ft, d) = match e
     LetIn(nm, v, b) => let gfn = cs_n4_is_grad_let(v) in if gfn != "" then cs_vlin_expr(cs_n4_subst_call(b, nm, "__ad_grad_" + gfn), hyps, lenv, ft, d) else if cs_vis_struct_expr(v) == 1 then cs_vlin_expr(cs_temp_subst_var(b, nm, v), hyps, lenv, ft, d) else let lv = cs_vlin_expr(v, hyps, lenv, ft, d) in if lv.ok == 0 then cs_vlin_err() else cs_vlin_expr(b, hyps, Cons({k: nm, v: lv}, lenv), ft, d)
     VarIn(nm, v, b) => if cs_vis_struct_expr(v) == 1 then cs_vlin_expr(cs_temp_subst_var(b, nm, v), hyps, lenv, ft, d) else let lv = cs_vlin_expr(v, hyps, lenv, ft, d) in if lv.ok == 0 then cs_vlin_err() else cs_vlin_expr(b, hyps, Cons({k: nm, v: lv}, lenv), ft, d)
     Bin(op, l, r)   => cs_vlin_bin_op(op, l, r, hyps, lenv, ft, d)
-    If(c, t, e2)    => let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and rn.ok == 1 and cs_vfm_check_unsat(cs_app(rn.hyps, hyps)) == 1 then cs_vlin_expr(t, hyps, lenv, ft, d) else if rp.ok == 1 and rn.ok == 1 and cs_vfm_check_unsat(cs_app(rp.hyps, hyps)) == 1 then cs_vlin_expr(e2, hyps, lenv, ft, d) else cs_vlin_err()
+    If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_vlin_expr(cs_vnorm_if(c, t, e2), hyps, lenv, ft, d) else let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and rn.ok == 1 and cs_vfm_check_unsat(cs_app(rn.hyps, hyps)) == 1 then cs_vlin_expr(t, hyps, lenv, ft, d) else if rp.ok == 1 and rn.ok == 1 and cs_vfm_check_unsat(cs_app(rp.hyps, hyps)) == 1 then cs_vlin_expr(e2, hyps, lenv, ft, d) else cs_vlin_err()
     Call(cnm, args) => cs_vlin_call(cnm, args, hyps, lenv, ft, d)
     _               => cs_vlin_err()
+fn cs_vnorm_if_changed(c) = match c
+    Bin(op, a, b) => if op == "and" or op == "or" then 1 else 0
+    _             => 0
+fn cs_vnorm_if(c, t, e2) = match c
+    Bin(op, a, b) => if op == "and" then If(a, If(b, t, e2), e2) else if op == "or" then If(a, t, If(b, t, e2)) else If(c, t, e2)
+    _             => If(c, t, e2)
 fn cs_vlin_args(args, hyps, lenv, ft, d) = match args
     Nil        => {ok: 1, vals: Nil}
     Cons(h, t) => let rh = cs_vlin_expr(h, hyps, lenv, ft, d) in if rh.ok == 0 then {ok: 0, vals: Nil} else let rt = cs_vlin_args(t, hyps, lenv, ft, d) in if rt.ok == 0 then {ok: 0, vals: Nil} else {ok: 1, vals: Cons(rh, rt.vals)}
@@ -1609,7 +1615,7 @@ fn cs_vprove_reqs_hyps(reqs, lenv, ft) = match reqs
     Nil        => {ok: 1, hyps: Nil}
     Cons(h, t) => let r1 = cs_vcond_pos(h, Nil, lenv, ft, 0) in if r1.ok == 0 then {ok: 0, hyps: Nil} else let r2 = cs_vprove_reqs_hyps(t, lenv, ft) in if r2.ok == 0 then {ok: 0, hyps: Nil} else {ok: 1, hyps: cs_app(r1.hyps, r2.hyps)}
 fn cs_vprove_let_val(nm, v, b, hyps, lenv, ft) = match v
-    If(c, t, e2) => let rp = cs_vcond_pos(c, hyps, lenv, ft, 0) in let rn = cs_vcond_neg(c, hyps, lenv, ft, 0) in if rp.ok == 1 and rn.ok == 1 and cs_vprove_let_val(nm, t, b, cs_app(rp.hyps, hyps), lenv, ft) == 1 and cs_vprove_let_val(nm, e2, b, cs_app(rn.hyps, hyps), lenv, ft) == 1 then 1 else 0
+    If(c, t, e2) => if cs_vnorm_if_changed(c) == 1 then cs_vprove_let_val(nm, cs_vnorm_if(c, t, e2), b, hyps, lenv, ft) else let rp = cs_vcond_pos(c, hyps, lenv, ft, 0) in let rn = cs_vcond_neg(c, hyps, lenv, ft, 0) in if rp.ok == 1 and rn.ok == 1 and cs_vprove_let_val(nm, t, b, cs_app(rp.hyps, hyps), lenv, ft) == 1 and cs_vprove_let_val(nm, e2, b, cs_app(rn.hyps, hyps), lenv, ft) == 1 then 1 else 0
     _            => if cs_vis_struct_expr(v) == 1 then cs_vprove_goal(cs_temp_subst_var(b, nm, v), hyps, lenv, ft, 0) else let lv = cs_vlin_expr(v, hyps, lenv, ft, 0) in if lv.ok == 0 then 0 else cs_vprove_goal(b, cs_app(cs_vcollect_div_hyps_e(v, hyps, lenv, ft, 0), hyps), Cons({k: nm, v: lv}, lenv), ft, 0)
 fn cs_vprove_forall_range(args, hyps, lenv, ft, d) = let vnm = cs_n4_var_name(cs_asthead(args)) in let lo_e = cs_astsecond(args) in let hi_e = cs_asthead(cs_cvtl(cs_cvtl(args))) in let pred_e = cs_asthead(cs_cvtl(cs_cvtl(cs_cvtl(args)))) in let llo = cs_vlin_expr(lo_e, hyps, lenv, ft, d) in let lhi = cs_vlin_expr(hi_e, hyps, lenv, ft, d) in if vnm == "" or llo.ok == 0 or lhi.ok == 0 then 0 else let lv = cs_vlin_var("_q_" + vnm) in let hyps2 = Cons(cs_vlin_sub(lv, llo), Cons(cs_vlin_sub(lhi, lv), hyps)) in cs_vprove_goal(pred_e, hyps2, Cons({k: vnm, v: lv}, lenv), ft, d + 1)
 fn cs_vprove_exists_w(vnm, w, lo_e, hi_e, pred_e, ctx) = if cs_vprove_goal(Bin(">=", w, lo_e), ctx.hyps, ctx.lenv, ctx.ft, ctx.d) == 1 and cs_vprove_goal(Bin("<=", w, hi_e), ctx.hyps, ctx.lenv, ctx.ft, ctx.d) == 1 and cs_vprove_goal(cs_temp_subst_var(pred_e, vnm, w), ctx.hyps, ctx.lenv, ctx.ft, ctx.d) == 1 then 1 else 0
@@ -1623,7 +1629,7 @@ fn cs_vprove_goal(g, hyps, lenv, ft, d) = match g
     VarIn(nm, v, b) => cs_vprove_let_val(nm, v, b, hyps, lenv, ft)
     DeferE(c, b)    => cs_vprove_goal(b, hyps, lenv, ft, d)
     ErrDeferE(c, b) => cs_vprove_goal(b, hyps, lenv, ft, d)
-    If(c, t, e2)    => let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and cs_vprove_goal(t, cs_app(rp.hyps, hyps), lenv, ft, d) == 1 and (cs_vprove_goal(e2, hyps, lenv, ft, d) == 1 or rn.ok == 1 and cs_vprove_goal(e2, cs_app(rn.hyps, hyps), lenv, ft, d) == 1) then 1 else 0
+    If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_vprove_goal(cs_vnorm_if(c, t, e2), hyps, lenv, ft, d) else let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and cs_vprove_goal(t, cs_app(rp.hyps, hyps), lenv, ft, d) == 1 and (cs_vprove_goal(e2, hyps, lenv, ft, d) == 1 or rn.ok == 1 and cs_vprove_goal(e2, cs_app(rn.hyps, hyps), lenv, ft, d) == 1) then 1 else 0
     Bin(op, a, b)   => if op == "and" then (if cs_vprove_goal(a, hyps, lenv, ft, d) == 1 and cs_vprove_goal(b, hyps, lenv, ft, d) == 1 then 1 else 0) else if op == "or" then (if cs_vprove_goal(a, hyps, lenv, ft, d) == 1 or cs_vprove_goal(b, hyps, lenv, ft, d) == 1 then 1 else let rna = cs_vcond_neg(a, hyps, lenv, ft, d) in if rna.ok == 1 and cs_vprove_goal(b, cs_app(rna.hyps, hyps), lenv, ft, d) == 1 then 1 else let rnb = cs_vcond_neg(b, hyps, lenv, ft, d) in if rnb.ok == 1 and cs_vprove_goal(a, cs_app(rnb.hyps, hyps), lenv, ft, d) == 1 then 1 else 0) else if op == "==" then (if cs_vprove_goal(Bin(">=", a, b), hyps, lenv, ft, d) == 1 and cs_vprove_goal(Bin("<=", a, b), hyps, lenv, ft, d) == 1 then 1 else 0) else if op == "!=" then (if cs_vprove_goal(Bin(">", a, b), hyps, lenv, ft, d) == 1 or cs_vprove_goal(Bin("<", a, b), hyps, lenv, ft, d) == 1 or cs_vprove_goal(Bin(">=", Bin("*", Bin("-", a, b), Bin("-", a, b)), Num(1)), hyps, lenv, ft, d) == 1 then 1 else 0) else let dhyps = cs_app(cs_vcollect_div_hyps_e(g, hyps, lenv, ft, d), hyps) in let rn = cs_vcond_neg(g, dhyps, lenv, ft, d) in if rn.ok == 1 then cs_vfm_check_unsat(cs_app(rn.hyps, cs_vnia_enrich_hyps(rn.hyps, dhyps))) else 0
     Call(cnm, args) => if cnm == "dec_eq" and cs_len(args) == 2 then cs_vprove_goal(Bin("==", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_ge" and cs_len(args) == 2 then cs_vprove_goal(Bin(">=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_gt" and cs_len(args) == 2 then cs_vprove_goal(Bin(">", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_le" and cs_len(args) == 2 then cs_vprove_goal(Bin("<=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_lt" and cs_len(args) == 2 then cs_vprove_goal(Bin("<", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "sep_disjoint" and cs_len(args) == 2 then cs_vprove_goal(Bin("!=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "sep_valid" and cs_len(args) == 1 then cs_vsep_valid(cs_asthead(args), hyps, lenv, ft, d) else if cnm == "sep_conj" and cs_len(args) == 2 then cs_vsep_valid(g, hyps, lenv, ft, d) else if cnm == "forall_range" and cs_len(args) == 4 then cs_vprove_forall_range(args, hyps, lenv, ft, d) else if cnm == "exists_range" and cs_len(args) == 4 then cs_vprove_exists_range(args, hyps, lenv, ft, d) else 0
     _               => 0
@@ -1635,7 +1641,7 @@ fn cs_vprove_body(body, hyps, lenv, enss, ft, d) = match body
     VarIn(nm, v, b) => if cs_vis_struct_expr(v) == 1 then cs_vprove_body(cs_temp_subst_var(b, nm, v), hyps, lenv, enss, ft, d) else let lv = cs_vlin_expr(v, hyps, lenv, ft, d) in if lv.ok == 0 then 0 else cs_vprove_body(b, cs_app(cs_vcollect_div_hyps_e(v, hyps, lenv, ft, d), hyps), Cons({k: nm, v: lv}, lenv), enss, ft, d)
     DeferE(c, b)    => cs_vprove_body(b, hyps, lenv, enss, ft, d)
     ErrDeferE(c, b) => cs_vprove_body(b, hyps, lenv, enss, ft, d)
-    If(c, t, e2)    => let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and rn.ok == 1 and cs_vprove_body(t, cs_app(rp.hyps, hyps), lenv, enss, ft, d) == 1 and cs_vprove_body(e2, cs_app(rn.hyps, hyps), lenv, enss, ft, d) == 1 then 1 else 0
+    If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_vprove_body(cs_vnorm_if(c, t, e2), hyps, lenv, enss, ft, d) else let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and rn.ok == 1 and cs_vprove_body(t, cs_app(rp.hyps, hyps), lenv, enss, ft, d) == 1 and cs_vprove_body(e2, cs_app(rn.hyps, hyps), lenv, enss, ft, d) == 1 then 1 else 0
     _               => let dhyps = cs_app(cs_vcollect_div_hyps_e(body, hyps, lenv, ft, d), hyps) in let lb = cs_vlin_expr(body, dhyps, lenv, ft, d) in if lb.ok == 0 then 0 else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, lenv)) in cs_vprove_goals_all(enss, dhyps, penv, ft, d)
 fn cs_vqflia_prove_fn(ps, reqs, enss, body, ft) = if cs_isnil(enss) == 1 then 0 else let lenv = cs_vlin_init_env(ps) in let rh = cs_vprove_reqs_hyps(reqs, lenv, ft) in if rh.ok == 0 then 0 else cs_vprove_body(body, rh.hyps, lenv, enss, ft, 0)
 fn cs_vqflia_prove_law(ps, body, ft) = let lenv = cs_vlin_init_env(ps) in if cs_vprove_goal(body, Nil, lenv, ft, 0) == 1 then 1 else if cs_len(ps) == 1 then let p0 = cs_vlin_var(cs_hd_str(ps, "")) in let hneg = Cons(cs_vlin_sub(cs_vlin_const(0 - 1), p0), Nil) in let hpos = Cons(p0, Nil) in if cs_vprove_goal(body, hneg, lenv, ft, 0) == 1 and cs_vprove_goal(body, hpos, lenv, ft, 0) == 1 then 1 else 0 else 0
@@ -1650,7 +1656,7 @@ fn cs_vcollect_body_hyps(body, hyps, lenv, enss, ft, d) = match body
     VarIn(nm, v, b) => let lv = cs_vlin_expr(v, hyps, lenv, ft, d) in if lv.ok == 0 then hyps else cs_vcollect_body_hyps(b, hyps, Cons({k: nm, v: lv}, lenv), enss, ft, d)
     DeferE(c, b)    => cs_vcollect_body_hyps(b, hyps, lenv, enss, ft, d)
     ErrDeferE(c, b) => cs_vcollect_body_hyps(b, hyps, lenv, enss, ft, d)
-    If(c, t, e2)    => let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in cs_app(cs_vcollect_body_hyps(t, cs_app(rp.hyps, hyps), lenv, enss, ft, d), cs_vcollect_body_hyps(e2, cs_app(rn.hyps, hyps), lenv, enss, ft, d))
+    If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_vcollect_body_hyps(cs_vnorm_if(c, t, e2), hyps, lenv, enss, ft, d) else let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in cs_app(cs_vcollect_body_hyps(t, cs_app(rp.hyps, hyps), lenv, enss, ft, d), cs_vcollect_body_hyps(e2, cs_app(rn.hyps, hyps), lenv, enss, ft, d))
     _               => let lb = cs_vlin_expr(body, hyps, lenv, ft, d) in if lb.ok == 0 then hyps else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, lenv)) in cs_app(cs_vneg_goals_hyps(enss, hyps, penv, ft, d), hyps)
 fn cs_vmem_int(x, xs) = match xs
     Nil        => 0
@@ -1714,7 +1720,7 @@ fn cs_cert_clean_e(e, ft, d) = if d > 4 then e else cs_cert_clean_e1(e, ft, d)
 fn cs_cert_clean_e1(e, ft, d) = match e
     Call(cnm, args) => let cargs = cs_cert_clean_args(args, ft, d) in if (cnm == "verify" or cnm == "old" or cnm == "law_check" or cnm == "evolve_approve" or cnm == "borrow" or cnm == "borrow_mut" or cnm == "move" or cnm == "clone") and cs_len(cargs) >= 1 then cs_asthead(cargs) else if cnm == "grad" and cs_len(cargs) >= 2 then cs_cert_inline_ufn("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), cs_cvtl(cargs), cs_fnlookup("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), ft), ft, d) else if cnm == "jit" and cs_len(cargs) >= 2 then cs_cert_inline_ufn(cs_n4_var_name(cs_asthead(args)), cs_cvtl(cargs), cs_fnlookup(cs_n4_var_name(cs_asthead(args)), ft), ft, d) else if cnm == "dec_add" and cs_len(cargs) == 2 then Bin("+", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_sub" and cs_len(cargs) == 2 then Bin("-", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_eq" and cs_len(cargs) == 2 then Bin("==", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_ge" and cs_len(cargs) == 2 then Bin(">=", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_gt" and cs_len(cargs) == 2 then Bin(">", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_le" and cs_len(cargs) == 2 then Bin("<=", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_lt" and cs_len(cargs) == 2 then Bin("<", cs_asthead(cargs), cs_astsecond(cargs)) else if cs_vis_m1_intrinsic(cnm) == 1 then Call(cnm, cargs) else cs_cert_inline_ufn(cnm, cargs, cs_fnlookup(cnm, ft), ft, d)
     Bin(op, a, b)   => Bin(op, cs_cert_clean_e(a, ft, d), cs_cert_clean_e(b, ft, d))
-    If(c, t, e2)    => If(cs_cert_clean_e(c, ft, d), cs_cert_clean_e(t, ft, d), cs_cert_clean_e(e2, ft, d))
+    If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_cert_clean_e(cs_vnorm_if(c, t, e2), ft, d) else If(cs_cert_clean_e(c, ft, d), cs_cert_clean_e(t, ft, d), cs_cert_clean_e(e2, ft, d))
     LetIn(nm, v, b) => let gfn = cs_n4_is_grad_let(v) in if gfn != "" then cs_cert_clean_e(cs_n4_subst_call(b, nm, "__ad_grad_" + gfn), ft, d) else LetIn(nm, cs_cert_clean_e(v, ft, d), cs_cert_clean_e(b, ft, d))
     VarIn(nm, v, b) => LetIn(nm, cs_cert_clean_e(v, ft, d), cs_cert_clean_e(b, ft, d))
     _               => e
@@ -1723,7 +1729,7 @@ fn cs_cert_embed_body(body, enss, ft) = match body
     VarIn(nm, v, b) => LetIn(nm, cs_cert_clean_e(v, ft, 0), cs_cert_embed_body(b, enss, ft))
     DeferE(c, b)    => cs_cert_embed_body(b, enss, ft)
     ErrDeferE(c, b) => cs_cert_embed_body(b, enss, ft)
-    If(c, t, e2)    => If(cs_cert_clean_e(c, ft, 0), cs_cert_embed_body(t, enss, ft), cs_cert_embed_body(e2, enss, ft))
+    If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_cert_embed_body(cs_vnorm_if(c, t, e2), enss, ft) else If(cs_cert_clean_e(c, ft, 0), cs_cert_embed_body(t, enss, ft), cs_cert_embed_body(e2, enss, ft))
     _               => cs_cert_clean_e(cs_cert_subst_res(cs_cert_conj(enss), body), ft, 0)
 fn cs_cert_reqs_sexpr(reqs, ft) = if cs_isnil(reqs) == 1 then "(and)" else "(and " + cs_exprs_sexpr(cs_cert_clean_args(reqs, ft, 0)) + ")"
 fn cs_cert_term_fn(reqs, enss, body, ft) = "(implies " + cs_cert_reqs_sexpr(reqs, ft) + " " + cs_expr_sexpr(cs_cert_embed_body(body, enss, ft)) + ")"
@@ -2024,23 +2030,72 @@ fn cs_diagnose_stmts(prog, tt) = match prog
     Nil        => Nil
     Cons(h, t) => cs_app(cs_diagnose_stmt(h, tt), cs_diagnose_stmts(t, tt))
 fn cs_k5_is_phys_write_fn(cnm) = cnm == "mmio_volatile_write8" or cnm == "mmio_volatile_write16" or cnm == "mmio_volatile_write32" or cnm == "mmio_volatile_write64" or cnm == "mem_copy" or cnm == "mem_set"
-fn cs_k5_chk_addr_arg(a, cnm, fnm) = match a
-    Num(addr) => if addr >= 32768 and addr < 262144 then Cons(cs_mkdiag("K0005", "kernel_wx", "kernel memory error: physical write via '" + cnm + "' to address " + str(addr) + " inside protected kernel .text/.rodata region [32768..262143] in '" + fnm + "' would corrupt live machine code", "use safe kernel DMA/scratch RAM >= 262144 (0x40000) or krn_slot_write"), Nil) else Nil
-    _         => Nil
-fn cs_k5_chk_wx_e(e, fnm) = match e
-    Call(cnm, args) => let d0 = if cs_k5_is_phys_write_fn(cnm) == 1 and cs_isnil(args) == 0 then cs_k5_chk_addr_arg(cs_asthead(args), cnm, fnm) else Nil in cs_app(d0, cs_k5_chk_wx_args(args, fnm))
-    Bin(op, l, r)   => cs_app(cs_k5_chk_wx_e(l, fnm), cs_k5_chk_wx_e(r, fnm))
-    If(c, t, e2)    => cs_app(cs_k5_chk_wx_e(c, fnm), cs_app(cs_k5_chk_wx_e(t, fnm), cs_k5_chk_wx_e(e2, fnm)))
-    LetIn(nm, v, b) => cs_app(cs_k5_chk_wx_e(v, fnm), cs_k5_chk_wx_e(b, fnm))
-    VarIn(nm, v, b) => cs_app(cs_k5_chk_wx_e(v, fnm), cs_k5_chk_wx_e(b, fnm))
-    Match(sc, arms) => cs_app(cs_k5_chk_wx_e(sc, fnm), cs_k5_chk_wx_arms(arms, fnm))
+fn cs_k5_lookup_env(nm, env) = match env
+    Nil        => {ok: 0, v: 0}
+    Cons(h, t) => if h.k == nm then {ok: 1, v: h.v} else cs_k5_lookup_env(nm, t)
+fn cs_k5_eval_bin(op, rl, rr) = if rl.ok == 0 or rr.ok == 0 then {ok: 0, v: 0} else if op == "+" then {ok: 1, v: rl.v + rr.v} else if op == "-" then {ok: 1, v: rl.v - rr.v} else if op == "*" then {ok: 1, v: rl.v * rr.v} else if op == "/" and rr.v != 0 then {ok: 1, v: rl.v / rr.v} else {ok: 0, v: 0}
+fn cs_k5_eval_addr(e, env) = match e
+    Num(n)        => {ok: 1, v: n}
+    Var(nm)       => cs_k5_lookup_env(nm, env)
+    Bin(op, l, r) => cs_k5_eval_bin(op, cs_k5_eval_addr(l, env), cs_k5_eval_addr(r, env))
+    _             => {ok: 0, v: 0}
+fn cs_k5_has_wx_base(e, env) = match e
+    Num(n)        => if n >= 32768 and n < 262144 then 1 else 0
+    Var(nm)       => let r = cs_k5_lookup_env(nm, env) in if r.ok == 1 and r.v >= 32768 and r.v < 262144 then 1 else 0
+    Bin(op, l, r) => if cs_k5_has_wx_base(l, env) == 1 then 1 else cs_k5_has_wx_base(r, env)
+    _             => 0
+fn cs_k5_eval_zero_vars(e, env) = match e
+    Num(n)        => {ok: 1, v: n}
+    Var(nm)       => let r = cs_k5_lookup_env(nm, env) in if r.ok == 1 then r else {ok: 1, v: 0}
+    Bin(op, l, r) => cs_k5_eval_bin(op, cs_k5_eval_zero_vars(l, env), cs_k5_eval_zero_vars(r, env))
+    _             => {ok: 0, v: 0}
+fn cs_k5_chk_addr_arg(a, env, cnm, fnm) = let r0 = cs_k5_eval_addr(a, env) in let r1 = if r0.ok == 1 then r0 else if cs_k5_has_wx_base(a, env) == 1 then cs_k5_eval_zero_vars(a, env) else {ok: 0, v: 0} in if r1.ok == 1 and r1.v >= 32768 and r1.v < 262144 then Cons(cs_mkdiag("K0005", "kernel_wx", "kernel memory error: physical write via '" + cnm + "' to address " + str(r1.v) + " inside protected kernel .text/.rodata region [32768..262143] in '" + fnm + "' would corrupt live machine code", "use safe kernel DMA/scratch RAM >= 262144 (0x40000) or krn_slot_write"), Nil) else Nil
+fn cs_k5_chk_wx_e(e, env, fnm) = match e
+    Call(cnm, args) => let d0 = if cs_k5_is_phys_write_fn(cnm) == 1 and cs_isnil(args) == 0 then cs_k5_chk_addr_arg(cs_asthead(args), env, cnm, fnm) else Nil in cs_app(d0, cs_k5_chk_wx_args(args, env, fnm))
+    Bin(op, l, r)   => cs_app(cs_k5_chk_wx_e(l, env, fnm), cs_k5_chk_wx_e(r, env, fnm))
+    If(c, t, e2)    => cs_app(cs_k5_chk_wx_e(c, env, fnm), cs_app(cs_k5_chk_wx_e(t, env, fnm), cs_k5_chk_wx_e(e2, env, fnm)))
+    LetIn(nm, v, b) => let d0 = cs_k5_chk_wx_e(v, env, fnm) in let rv = cs_k5_eval_addr(v, env) in let env2 = if rv.ok == 1 then Cons({k: nm, v: rv.v}, env) else env in cs_app(d0, cs_k5_chk_wx_e(b, env2, fnm))
+    VarIn(nm, v, b) => let d0 = cs_k5_chk_wx_e(v, env, fnm) in let rv = cs_k5_eval_addr(v, env) in let env2 = if rv.ok == 1 then Cons({k: nm, v: rv.v}, env) else env in cs_app(d0, cs_k5_chk_wx_e(b, env2, fnm))
+    Match(sc, arms) => cs_app(cs_k5_chk_wx_e(sc, env, fnm), cs_k5_chk_wx_arms(arms, env, fnm))
     _               => Nil
-fn cs_k5_chk_wx_args(xs, fnm) = match xs
+fn cs_k5_chk_wx_args(xs, env, fnm) = match xs
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_k5_chk_wx_e(h, fnm), cs_k5_chk_wx_args(t, fnm))
-fn cs_k5_chk_wx_arms(xs, fnm) = match xs
+    Cons(h, t) => cs_app(cs_k5_chk_wx_e(h, env, fnm), cs_k5_chk_wx_args(t, env, fnm))
+fn cs_k5_chk_wx_arms(xs, env, fnm) = match xs
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_k5_chk_wx_e(h.body, fnm), cs_k5_chk_wx_arms(t, fnm))
+    Cons(h, t) => cs_app(cs_k5_chk_wx_e(h.body, env, fnm), cs_k5_chk_wx_arms(t, env, fnm))
+fn cs_c9_secret_params(ps) = match ps
+    Nil        => Nil
+    Cons(p, r) => if p == "secret" or cs_startswith(p, "secret_") == 1 then Cons(p, cs_c9_secret_params(r)) else cs_c9_secret_params(r)
+fn cs_c9_init_secrets(nm, ps) = let sp = cs_c9_secret_params(ps) in if cs_startswith(nm, "ct_") == 1 then (if cs_isnil(sp) == 0 then sp else ps) else sp
+fn cs_c9_mentions_secret_args(xs, svars) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_c9_mentions_secret(h, svars) == 1 then 1 else cs_c9_mentions_secret_args(t, svars)
+fn cs_c9_mentions_secret(e, svars) = match e
+    Var(x)          => cs_omem(x, svars)
+    Bin(op, l, r)   => if cs_c9_mentions_secret(l, svars) == 1 then 1 else cs_c9_mentions_secret(r, svars)
+    If(c, t, e2)    => if cs_c9_mentions_secret(c, svars) == 1 then 1 else if cs_c9_mentions_secret(t, svars) == 1 then 1 else cs_c9_mentions_secret(e2, svars)
+    LetIn(nm, v, b) => let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else svars in if cs_c9_mentions_secret(v, svars) == 1 then 1 else cs_c9_mentions_secret(b, sv2)
+    VarIn(nm, v, b) => let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else svars in if cs_c9_mentions_secret(v, svars) == 1 then 1 else cs_c9_mentions_secret(b, sv2)
+    Call(cnm, args) => cs_c9_mentions_secret_args(args, svars)
+    Field(o, k)     => cs_c9_mentions_secret(o, svars)
+    _               => 0
+fn cs_c9_is_mem_idx_call(cnm, args, svars) = if (cnm == "at" or cnm == "slice" or cnm == "slicen") and cs_len(args) >= 2 then cs_c9_mentions_secret(cs_astsecond(args), svars) else if (cnm == "mmio_volatile_read8" or cnm == "mmio_volatile_read16" or cnm == "mmio_volatile_read32" or cnm == "mmio_volatile_read64" or cs_k5_is_phys_write_fn(cnm) == 1) and cs_isnil(args) == 0 then cs_c9_mentions_secret(cs_asthead(args), svars) else 0
+fn cs_c9_chk_ct_args(xs, svars, fnm) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h, svars, fnm), cs_c9_chk_ct_args(t, svars, fnm))
+fn cs_c9_chk_ct_arms(xs, svars, fnm) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.body, svars, fnm), cs_c9_chk_ct_arms(t, svars, fnm))
+fn cs_c9_chk_ct_e(e, svars, fnm) = match e
+    If(c, t, e2)    => let d0 = if cs_c9_mentions_secret(c, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: branch condition in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking bv_xor/bv_and/bv_or/bv_shr instead of branching on secrets"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(t, svars, fnm), cs_c9_chk_ct_e(e2, svars, fnm)))
+    Match(sc, arms) => let d0 = if cs_c9_mentions_secret(sc, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking instead of pattern matching on secrets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_arms(arms, svars, fnm))
+    Bin(op, l, r)   => let d0 = if (op == "/" or op == "%" or op == "and" or op == "or") and (cs_c9_mentions_secret(l, svars) == 1 or cs_c9_mentions_secret(r, svars) == 1) then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value", "use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(l, svars, fnm), cs_c9_chk_ct_e(r, svars, fnm)))
+    Call(cnm, args) => let d0 = if cs_c9_is_mem_idx_call(cnm, args, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information", "avoid indexing memory or strings by secret offsets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_args(args, svars, fnm))
+    LetIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
+    VarIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
+    _               => Nil
+fn cs_c9_chk_fn(nm, ps, body) = let svars = cs_c9_init_secrets(nm, ps) in if cs_isnil(svars) == 1 then Nil else cs_c9_chk_ct_e(body, svars, nm)
 fn cs_k6_fn_calls(target, e) = match e
     Call(cnm, args) => if cnm == target then 1 else cs_k6_fn_calls_args(target, args)
     Bin(op, l, r)   => if cs_k6_fn_calls(target, l) == 1 then 1 else cs_k6_fn_calls(target, r)
@@ -2075,9 +2130,9 @@ fn cs_k6_chk_mutual_args(xs, fnm, ft) = match xs
 fn cs_k6_chk_mutual_arms(xs, fnm, ft) = match xs
     Nil        => Nil
     Cons(h, t) => cs_app(cs_k6_chk_mutual_e(h.body, fnm, ft), cs_k6_chk_mutual_arms(t, fnm, ft))
-fn cs_k5_chk_fn(nm, body, ft) = let d1 = cs_k5_chk_wx_e(body, nm) in if cs_isnil(cs_fnlookup("kernel_boot_entry", ft)) == 0 then cs_app(d1, cs_k6_chk_mutual_e(body, nm, ft)) else d1
+fn cs_k5_chk_fn(nm, ps, body, ft) = let d0 = cs_c9_chk_fn(nm, ps, body) in let d1 = cs_app(d0, cs_k5_chk_wx_e(body, Nil, nm)) in if cs_isnil(cs_fnlookup("kernel_boot_entry", ft)) == 0 then cs_app(d1, cs_k6_chk_mutual_e(body, nm, ft)) else d1
 fn cs_diagnose_stmt(s0, tt) = match s0
-    Fn(nm, ps, body) => let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: cs_fn_lenv(cs_siglookup(nm, tt.sigs))} in cs_app(cs_k5_chk_fn(nm, body, tt.ft), cs_app(cs_chk_ret(nm, body, tt2), cs_chk_expr(body, tt2)))
+    Fn(nm, ps, body) => let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: cs_fn_lenv(cs_siglookup(nm, tt.sigs))} in cs_app(cs_k5_chk_fn(nm, ps, body, tt.ft), cs_app(cs_chk_ret(nm, body, tt2), cs_chk_expr(body, tt2)))
     Print(v)         => cs_chk_expr(v, tt)
     ExprS(v)         => cs_chk_expr(v, tt)
     _                => Nil

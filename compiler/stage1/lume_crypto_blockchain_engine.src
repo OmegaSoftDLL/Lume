@@ -104,11 +104,15 @@ pub fn sc_audit_contract_ops(ops) = sc_audit_ops_loop(ops, 0, 0, 0, 0, 0)
 ## --- 8. Quantitative Kelly Criterion & Risk-Capped Position Sizing ---
 pub fn kelly_clamp_bp(raw_bp: int) -> int requires raw_bp >= 0 ensures result >= 0 and result <= 2500 = if raw_bp > 2500 then 2500 else raw_bp
 
+pub fn kelly_band_window_bp(alloc_bp: int) -> int requires alloc_bp >= 0 ensures result >= 0 and result <= 2500 = if alloc_bp >= 100 and alloc_bp <= 2500 then alloc_bp else 0
+
+pub fn ct_tag_xor_diff(secret_plain: int, secret_key: int) -> int requires secret_plain >= 0 and secret_key >= 0 ensures result == secret_plain = bv_xor(bv_xor(secret_plain, secret_key), secret_key)
+
 pub fn kelly_optimal_fraction_bp(win_prob_bp: int, odds_num: int) = let loss_bp = 10000 - win_prob_bp in let raw = ((win_prob_bp * odds_num) - loss_bp) / odds_num in if raw < 0 then 0 else kelly_clamp_bp(raw)
 
 pub fn quant_position_size_sats(bankroll_sats: int, win_prob_bp: int, odds_num: int) = let frac_bp = kelly_optimal_fraction_bp(win_prob_bp, odds_num) in let pos_sats = (bankroll_sats * frac_bp) / 10000 in {kelly_fraction_bp: frac_bp, position_sats: pos_sats, reserve_sats: bankroll_sats - pos_sats}
 
-## --- 9. Self-Verification Test Suite for All 7 Engines ---
+## --- 9. Self-Verification Test Suite for All 8 Engines ---
 fn test_hd_wallet_and_signatures() = let w0 = hd_derive_wallet("ricardo-bueno-sovereign-seed-2026", 0, 0) in let w1 = hd_derive_wallet("ricardo-bueno-sovereign-seed-2026", 0, 1) in let digest = capsule_sha256_text("tx_payload_1") in let sig = crypto_sign_tx_digest(w0.privkey, digest) in let valid = crypto_verify_tx_sig(w0.pubkey, digest, sig) in let invalid = crypto_verify_tx_sig(w1.pubkey, digest, sig) in if w0.address != w1.address and valid == 1 and invalid == 0 then 1 else 0
 
 fn test_dynamic_merkle_and_pow() = let txs = Cons("tx1", Cons("tx2", Cons("tx3", Cons("tx4", Cons("tx5", Nil))))) in let mr = merkle_root_from_txs(txs) in let blk = pow_mine_block("000000000019d6689c085ae165831e93", mr, 1730690000, 1, 0, 256) in if count(mr) == 64 and blk.valid_pow == 1 and at(blk.block_hash, 0) == "0" then 1 else 0
@@ -123,4 +127,6 @@ fn test_smart_contract_cei_security_audit() = let vuln_ops = Cons("check_auth", 
 
 fn test_quant_kelly_sizing() = let q = quant_position_size_sats(100000000, 6000, 2) in if q.kelly_fraction_bp == 2500 and q.position_sats == 25000000 and q.reserve_sats == 75000000 then 1 else 0
 
-print test_hd_wallet_and_signatures() + test_dynamic_merkle_and_pow() + test_halving_and_21m_supply_cap() + test_utxo_ledger_and_double_spend_rejection() + test_defi_amm_fee_and_two_pool_arbitrage() + test_smart_contract_cei_security_audit() + test_quant_kelly_sizing()
+fn test_constant_time_and_compound_qflia() = let sra_pkt = {d0: ct_tag_xor_diff(777, 123), d1: ct_tag_xor_diff(888, 456), band: kelly_band_window_bp(1250)} in if sra_pkt.d0 == 777 and sra_pkt.d1 == 888 and sra_pkt.band == 1250 and kelly_band_window_bp(50) == 0 then 1 else 0
+
+print test_hd_wallet_and_signatures() + test_dynamic_merkle_and_pow() + test_halving_and_21m_supply_cap() + test_utxo_ledger_and_double_spend_rejection() + test_defi_amm_fee_and_two_pool_arbitrage() + test_smart_contract_cei_security_audit() + test_quant_kelly_sizing() + test_constant_time_and_compound_qflia()
