@@ -104,6 +104,10 @@ This document records all **12 reference architectures** analyzed from GitHub re
    - Added dynamic candidate ratio extraction (`cs_vlin_cand_ks`, `lk_lin_cand_ks`) proving arbitrary integer ratio bounds `a >= k * b => a / b >= k` and `a < (k + 1) * b => a / b <= k` for any constant $k$ appearing in the hypotheses, plus full variable modulo `%` bounds (`0 <= a % b <= b - 1`, `a < b => a % b == a`, `b % b == 0`).
 8. **NUL-Safe Binary String & Byte-Buffer Runtime Primitives (`05_codegen.src`, `06b_phase3.src`, `data_asmgen.lume`):**
    - Added native `chr(0..255)` returning a 1-byte string with cached length `8(%rax) = 1`, upgraded `eqvs` (`==` / `!=`) to compare cached byte lengths `8(%rdi)`/`8(%rsi)` across embedded `0x00` bytes instead of stopping at NUL, and upgraded `fs_write_sync` and `fs_append_sync` to write the exact cached byte length `8(%rsi)` so binary files (`.wav`, `.bmp`, `.qbin`, `.otpu`) with embedded `0x00` bytes are written losslessly.
+9. **10/10 Developer Experience & Ergonomics Upgrades (`01_lexer.src`, `02_parser.src`, `03_comptime.src`, `04_parser_decls.src`, `lcaas.src`):**
+   - **Native String Interpolation (`f"..."`, `"{expr}"`, and `"${expr}"`):** Desugars interpolation holes (including inside JSON strings containing `{` and `}`) into type-checked string concatenation chains across both `lumec` and `lcaas`.
+   - **Pipe Operator (`|>`) & Functional Record Update (`{ s with field: val }` / `TypeName { s with field: val }`):** Left-associative `|>` piping and static record field expansion (`expand_prog_sugar` / `cs_expand_prog_sugar`), preserving full `QF_LIA` / `QF_NIA` contract provability and Scalar Replacement of Aggregates (`SRA`).
+   - **Top-Level Module Constants (`const` / `pub const` / top-level `let`) & Direct `let` Destructuring (`let (a, b) = ...`, `let {x, y} = ...`, `let Cons(h, t) = ...`):** Module-level constants inline cleanly into functions, `requires`/`ensures` contracts, and `law` declarations, while tuple literals `(a, b)` and record/ADT destructuring work seamlessly in `let` bindings and `comptime` evaluation.
 
 ---
 

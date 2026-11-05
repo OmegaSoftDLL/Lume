@@ -70,14 +70,17 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - `type Nome = ...`            Define um Tipo Algebrico (ADT) ou registro.
 - `fn nome(a, b) = expr`       Define uma funcao.
 - `pub fn nome(a, b) = expr`   Define uma funcao publica exportada.
+- `const NOME: T = expr`       Define uma constante de modulo (disponivel em funcoes e contratos).
 - `law nome(a: int) = expr`    Define uma lei matematica universal provada pelo compilador.
 - `print <expr>`               Ponto de entrada executavel do programa.
 
-REGRA DE OURO 1: Nao existe `let x = 10` solto no topo do arquivo `.src`! Em Lume,
-`let x = valor in corpo` e uma expressao usada dentro de `fn` ou `print`.
-
-## 2.2 Expressoes, Variaveis Locais e Operadores
+## 2.2 Expressoes, Desestruturacao e Operadores Ergonomicos (DX 10/10)
 - Variavel local (`let..in`): `let a = 10 in let b = 20 in a + b`
+- Desestruturacao de tupla:   `let (a, b) = (10, 20) in a + b`
+- Desestruturacao de record:  `let {x, y} = ponto in x + y`
+- Operador Pipe (`|>`):       `x |> etapa1(5) |> etapa2`
+- Record Update (`with`):     `{ estado with contador: estado.contador + 1 }`
+- Interpolacao de Strings:    `f"valor={x}"` ou `"valor=${x}"`
 - Condicional (`if..then..else`): `if x > 0 then "positivo" else "zero ou negativo"`
 - Operadores logicos (curto-circuito): `a == 1 and b == 2`, `x < 0 or x > 10`, `not ativo`
 - Aritmetica: `+`, `-`, `*`, `/`, `%`
@@ -88,21 +91,27 @@ REGRA DE OURO 1: Nao existe `let x = 10` solto no topo do arquivo `.src`! Em Lum
 - Listas encadeadas: `Nil` (lista vazia) e `Cons(cabeca, cauda)`
 - Comentarios: `## Comentarios comecam com dois sustenidos`
 
-## 2.3 Reconhecimento de Padroes (`match`)
-Voce pode usar `match` de duas formas:
-1. No topo do corpo de uma funcao auxiliar (padrao classico da Lume):
+## 2.3 Reconhecimento de Padroes (`match` — DX 10/10)
+Voce pode usar `match` de tres formas em qualquer lugar:
+1. No topo do corpo de uma funcao:
    ```lume
    fn soma_lista(xs) = match xs
        Nil        => 0
        Cons(h, t) => h + soma_lista(t)
    ```
-2. Inline com chaves `match expr { Padrao => corpo, ... }` (introduzido na Onda 7):
+2. Aninhado por indentacao dentro de `let ... in` ou `if ... then ... else`:
+   ```lume
+   fn cabeca_ou_zero(xs) =
+       let y = match xs
+           Nil        => 0
+           Cons(h, _) => h
+       in y + 1
+   ```
+3. Inline com chaves `match expr { Padrao => corpo, ... }`:
    ```lume
    fn tamanho_um(xs) = let r = match xs { Nil => 0, Cons(_, Nil) => 1, Cons(_, _) => 2 } in r
    ```
-REGRA DE OURO 2: Nunca coloque um `match` sem chaves dentro de `let x = ... in match ...`;
-use uma funcao auxiliar `fn aux(x) = match x ...` ou use chaves `match x { ... }`.
-REGRA DE OURO 3: Salve sempre seus arquivos com quebra de linha LF (`\n`), nunca CRLF (`\r\n`).
+REGRA DE OURO: Salve sempre seus arquivos com quebra de linha LF (`\n`), nunca CRLF (`\r\n`).
 
 # CAPITULO 3: SISTEMA DE TIPOS, OWNERSHIP, FINANCAS E TENSORES
 
@@ -292,6 +301,13 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
                        Multi-Provedor LLM consciente de quota, `Open-Notebook` grounding de citacoes e
                        podcast RIFF/WAVE PCM de 3 vozes (`open_notebook_podcast.wav`), e `Doory` CRDT
                        `LWW-Element-Set` + slide vetorial (`doory_continuum_slide.svg`)
+- `use lume_quantum_nexus_engine` Motor Quantico Soberano Lume Quantum Nexus v1.0 (5 Inovacoes Quanticas):
+                       Verificador de Tipos Lineares `Qubit` estilo `Silq` (`No-Cloning`/`No-Measure-Reuse`) e
+                       Descomputacao Automatica $U^\dagger$ de Ancillas (`qfree_safe == 1`), Fusao de Aranhas
+                       ZX-Calculus `QuiZX/PyZX` e Reducao de $T$-Count (`7x` menos portas $T$), Simulador
+                       Estabilizador `Google Stim` Gottesman-Knill $O(n^2)$ (`GHZ_8`), Codigo Topologico
+                       de Superficie `[[9, 1, 3]]` QEC (`27/27` erros de Pauli corrigidos) e VQE Diferenciavel
+                       por Parameter-Shift Exato (`PennyLane/Catalyst`) + sintetizador de pulsos `.qbin`
 
 # CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES
 
@@ -346,6 +362,7 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [alvo] Modelagem de Proximo Conceito Paralela Coarse-to-Fine (NCM-Lume)
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [alvo] Acelerador Sistolico de IA e Compilador ISA OpenTPU-Lume
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [alvo] Motor Lume Continuum Nexus v1.0 (7 Motores de Referencia)
+  lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [alvo] Motor Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -361,12 +378,13 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 13 Baterias Soberanas de Provas
+  nativamente dentro do proprio compilador todas as 14 Baterias Soberanas de Provas
   (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
-  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA
-  e `MANIFEST.sha256`: 387 obrigacoes formais + 128 testes unitarios + 97 artefatos verificados).
+  `lume_quantum_nexus_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 396 obrigacoes formais +
+  134 testes unitarios + 98 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
@@ -449,5 +467,7 @@ print str(bcd_para_binario(35))
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy` ou `mem_set` aponta para `.text`/`.rodata` (`[0x8000..0x3FFFF]`), inclusive `base + off` simbolico. Use endereco seguro de RAM (`>= 0x40000`). |
 | `[K0006]` | Pilha de Kernel      | Ciclo de recursao mutua ilimitada (`f -> g -> f`) em modulo `@freestanding` / `kernel_boot_entry`. Use loop tail-call ou iteracao limitada. |
 | `[C0009]` | Cripto Constant-Time | Branch `if`/`match`, divisao `/` ou `%` ou curto-circuito `and`/`or` dependente de segredo (`secret_*` ou funcao `ct_*`). Use acumulacao bitwise XOR/OR em tempo constante. |
+| `[Q0001]` | Linearidade Quantica | Violacao de `No-Cloning` (duplicacao de `Qubit`) ou reuso de qubit medido. Consuma cada fio `Qubit` linearmente. |
+| `[Q0002]` | Uncompute `qfree`    | Fio ancilla nao descomputado em funcao `qfree` (`anc_leaked > 0`). Aplique o adjunto $U^\dagger$ (`q_silq_qfree_verify`) antes de retornar. |
 | `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |

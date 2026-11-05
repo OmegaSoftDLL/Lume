@@ -72,38 +72,46 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `type Name = ...`            Algebraic Data Type (ADT) or record type definition.
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
+- `const NAME: T = expr`       Module-level constant (inlined into functions & contracts).
 - `law name(a: int) = expr`    Universal mathematical law proven across all inputs.
 - `print <expr>`               Top-level program entrypoint expression.
 
-IMPORTANT RULE: Do NOT write top-level `let x = ...` in `.src` files! `let x = v in body`
-is a scoped expression used inside `fn` or `print`.
-
-## 2.2 Expressions & Operators
+## 2.2 Expressions, Destructuring & Ergonomic Operators (10/10 DX)
 - Local binding:      `let x = 10 in let y = 20 in x + y`
+- Tuple destructure:  `let (a, b) = (10, 20) in a + b`
+- Record destructure: `let {x, y} = point in x + y`
+- Pipe operator:      `x |> step1(5) |> step2`
+- Record update:      `{ state with count: state.count + 1 }`
 - Conditional:        `if a > b then a else b`
 - Logical (short-circuit): `a == 1 and b == 2`, `x < 0 or x > 10`, `not flag`
 - Arithmetic:         `+`, `-`, `*`, `/`, `%`
 - Comparison:         `==`, `!=`, `<`, `<=`, `>`, `>=`
-- String concat/interp: `"hello " + str(42)` or interpolated `"hello "` (note: `{ident}`
-                        inside strings is evaluated as interpolation; split `"{" + s + "}"` for raw braces)
+- String concat/interp: `f"val={x}"`, `"val=${x}"`, or `"hello " + str(42)`
+                        (split `"{" + s + "}"` when building raw brace templates)
 - Record literal:     `{id: 1, name: "alice"}` (field access: `r.id`, `r.name`)
 - List constructors:  `Nil`, `Cons(head, tail)`
 - Comments:           `## Double hash starts a comment line`
 
-## 2.3 Pattern Matching (`match`)
-Lume supports two `match` forms:
-1. Top-level function body `match` (recommended for ADTs and lists):
+## 2.3 Pattern Matching (`match` — 10/10 DX)
+Lume supports three `match` forms everywhere:
+1. Top-level function body `match`:
    ```lume
    fn sum_list(xs) = match xs
        Nil        => 0
        Cons(h, t) => h + sum_list(t)
    ```
-2. Inline braced `match expr { Pat => body, ... }` (added in Wave 7):
+2. Nested indentation-sensitive `match` inside `let ... in` or `if ... then ... else`:
+   ```lume
+   fn head_or_zero(xs) =
+       let y = match xs
+           Nil        => 0
+           Cons(h, _) => h
+       in y + 1
+   ```
+3. Inline braced `match expr { Pat => body, ... }`:
    ```lume
    fn is_empty(xs) = let res = match xs { Nil => 1, Cons(_, _) => 0 } in res
    ```
-Note: Unbraced indentation-sensitive `match` must always be at the top level of a helper
-function (`fn f(x) = match x ...`), never nested unbraced inside `let ... in match ...`.
 
 ## 2.4 Essential Technical Rules for Humans & AI
 1. Pure LF (`\n`) Line Endings: Always save `.src` and `.lume` files with Unix LF (`\n`),
@@ -211,7 +219,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 
 ## 6.1 Core Builtin Functions (Always Available in `.src`)
 - Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, start, len)`,
-            `ord(ch)`, `str_from_byte(code)`, `str(n)`, `toint(s)`
+            `ord(ch)`, `chr(code)`, `str_from_byte(code)`, `str(n)`, `toint(s)`
 - I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,
             `fs_path_exists(path)`, `fs_read_byte(path, offset)`, `fs_file_size(path)`
 - Process:  `os_arg_count()`, `os_arg_at(i)`, `os_getpid()`, `os_exit(code)`,
@@ -307,6 +315,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        Quota-Aware Multi-Provider LLM Router, `Open-Notebook` grounded citation spans &
                        3-speaker binary RIFF/WAVE PCM podcast (`open_notebook_podcast.wav`), and `Doory`
                        conflict-free `LWW-Element-Set` CRDT scene-graph & vector slide (`doory_continuum_slide.svg`)
+- `use lume_quantum_nexus_engine` Lume Sovereign Quantum Nexus Engine v1.0 (5 Quantum Innovations):
+                       `Silq` Linear Qubit Type Checker (`No-Cloning`/`No-Measure-Reuse`) & Automatic $U^\dagger$
+                       Ancilla Uncomputation (`qfree_safe == 1`), `QuiZX/PyZX` Graphical ZX-Calculus Spider Fusion
+                       & $T$-Count Optimizer (`7x` $T$-gate reduction), `Google Stim` Gottesman-Knill $O(n^2)$
+                       Stabilizer Tableau Simulator (`GHZ_8`), Rotated Surface Code `[[9, 1, 3]]` Topological QEC
+                       (`27/27` Pauli errors corrected), and `PennyLane/Catalyst` Exact Parameter-Shift VQE
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
@@ -375,6 +389,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [target] NCM-Lume Next-Concept Modeling Coarse-to-Fine Parallel Engine
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
+  lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -390,12 +405,13 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 13 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  all 14 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
   the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
-  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, `[K0005]`/`[K0006]`/`[C0009]`/SRA guards,
-  and `MANIFEST.sha256`: 387 formal obligations + 128 unit tests + 97 verified toolchain artifacts).
+  `lume_quantum_nexus_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 396 formal obligations +
+  134 unit tests + 98 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
@@ -478,5 +494,7 @@ print str(rtc_bcd_to_bin(35))
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy`, or `mem_set` targets `.text`/`.rodata` (`[0x8000..0x3FFFF]`), including symbolic/affine `base + off`. Use a safe DMA RAM buffer (`>= 0x40000`). |
 | `[K0006]` | Kernel Stack Safety  | Unbounded mutual recursion cycle (`f -> g -> f`) in `@freestanding` / `kernel_boot_entry` module. Use tail-loop state or bounded iteration. |
 | `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup on `secret_*` or inside `ct_*`. Use bitwise XOR/OR mask accumulation. |
+| `[Q0001]` | Quantum Linearity    | Non-linear `Qubit` duplication (No-Cloning violation) or reuse of measured qubit. Ensure each `Qubit` wire is consumed linearly. |
+| `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\dagger$ (`q_silq_qfree_verify`) before returning. |
 | `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |

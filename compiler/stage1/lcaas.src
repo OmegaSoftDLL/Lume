@@ -59,7 +59,7 @@ fn cs_escchar(c) = if c == "n" then "\n" else if c == "t" then "\t" else if c ==
 fn cs_strplain(s, i, n) = if i >= n then i else let c = at(s, i) in if c == "\"" or c == "\\" then i else cs_strplain(s, i + 1, n)
 fn cs_strend(s, i, n, acc) = let j = cs_strplain(s, i, n) in let acc2 = if j > i then acc + slice(s, i, j) else acc in if j >= n then {txt: acc2, next: n, closed: 0} else if at(s, j) == "\"" then {txt: acc2, next: j + 1, closed: 1} else cs_strend(s, j + 2, n, acc2 + cs_escchar(at(s, j + 1)))
 fn cs_istwo(s, i, n) = if i + 1 >= n then 0 else cs_istwopair(slice(s, i, i + 2))
-fn cs_istwopair(p) = p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "=>" or p == ".."
+fn cs_istwopair(p) = p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "=>" or p == ".." or p == "|>"
 ## Lexer with source positions: every token carries its 1-based (line, col), and genuinely
 ## malformed input (an unterminated string literal) is collected as an L0001 diagnostic with
 ## the exact span of the string start instead of being silently swallowed.
@@ -81,10 +81,27 @@ fn cs_dropkw(ts, kw) = if cs_hdtext(ts) == kw then cs_drop1(ts) else ts
 fn cs_skiprp(ts) = cs_dropkw(ts, ")")
 fn cs_skiprk(ts) = cs_dropkw(ts, "]")
 
+fn cs_isbadholech(c) = c == ":" or c == "\"" or c == "\n" or c == "{" or c == "}"
+fn cs_hasbadhole(s, i, n) = if i >= n then 0 else if cs_isbadholech(at(s, i)) then 1 else cs_hasbadhole(s, i + 1, n)
+fn cs_isvalidhole(s) = let n = count(s) in if n == 0 then 0 else let c0 = at(s, 0) in if (cs_isalpha(c0) or cs_isdigit(c0) or c0 == "(") and cs_hasbadhole(s, 0, n) == 0 then 1 else 0
+fn cs_findclosebn(s, j, n) = if j >= n then 0 - 1 else if at(s, j) == "}" then j else cs_findclosebn(s, j + 1, n)
+fn cs_findinterp(s, i, n) = if i >= n then 0 - 1 else if at(s, i) == "{" then (if i + 1 < n and at(s, i + 1) == "{" then cs_findinterp(s, i + 2, n) else let j = cs_findclosebn(s, i + 1, n) in if j > i + 1 and cs_isvalidhole(slice(s, i + 1, j)) == 1 then i else cs_findinterp(s, i + 1, n)) else cs_findinterp(s, i + 1, n)
+fn cs_hasescbrace(s, i, n) = if i + 1 >= n then 0 else if (at(s, i) == "{" and at(s, i + 1) == "{") or (at(s, i) == "}" and at(s, i + 1) == "}") then 1 else cs_hasescbrace(s, i + 1, n)
+fn cs_unescbracel(s, i, n) = if i >= n then Nil else if i + 1 < n and ((at(s, i) == "{" and at(s, i + 1) == "{") or (at(s, i) == "}" and at(s, i + 1) == "}")) then Cons(at(s, i), cs_unescbracel(s, i + 2, n)) else Cons(at(s, i), cs_unescbracel(s, i + 1, n))
+fn cs_unescbraces(s) = let n = count(s) in if cs_hasescbrace(s, 0, n) == 0 then s else cs_joinall(cs_unescbracel(s, 0, n))
+fn cs_sjoin(acc, piece) = match acc
+    Nil => piece
+    _   => Bin("+", acc, piece)
+fn cs_strinterp(s) = if cs_findinterp(s, 0, count(s)) < 0 then Str(cs_unescbraces(s)) else cs_strinterploop(Nil, s)
+fn cs_strinterploop(acc, s) = cs_strinterploop2(acc, s, cs_findinterp(s, 0, count(s)))
+fn cs_strinterploop2(acc, s, i) = if i < 0 then (let tail = cs_unescbraces(s) in if count(tail) == 0 then acc else cs_sjoin(acc, Str(tail))) else let n = count(s) in let j = cs_findclosebn(s, i + 1, n) in let pre_i = if i > 0 and at(s, i - 1) == "$" then i - 1 else i in let pre = cs_unescbraces(slice(s, 0, pre_i)) in let hole = Call("str", Cons((cs_expr((cs_lexsp(slice(s, i + 1, j), 0, 1, 1, Nil)).tokens)).node, Nil)) in let acc1 = if count(pre) == 0 then acc else cs_sjoin(acc, Str(pre)) in cs_strinterploop(cs_sjoin(acc1, hole), slice(s, j + 1, n))
+
 fn cs_prim(ts) = cs_postfix(cs_atom(ts))
-fn cs_atom(ts) = if cs_hdkind(ts) == "NM" then {node: Num(toint(cs_hdtext(ts))), rest: cs_drop1(ts)} else if cs_hdtext(ts) == "-" then (let r = cs_prim(cs_drop1(ts)) in {node: Bin("-", Num(0), r.node), rest: r.rest}) else if cs_hdkind(ts) == "ST" then {node: Str(cs_hdtext(ts)), rest: cs_drop1(ts)} else if cs_hdtext(ts) == "(" then cs_paren(cs_drop1(ts)) else if cs_hdtext(ts) == "[" then let r = cs_expr(cs_drop1(ts)) in {node: Call("_tylist_", Cons(r.node, Nil)), rest: cs_skiprk(r.rest)} else if cs_hdtext(ts) == "{" then cs_rec(cs_drop1(ts)) else if cs_hdtext(ts) == "if" then cs_if(cs_drop1(ts)) else if cs_hdtext(ts) == "let" then cs_let(cs_drop1(ts)) else if cs_hdtext(ts) == "var" then cs_var(cs_drop1(ts)) else if cs_hdtext(ts) == "own" then cs_owne(cs_drop1(ts)) else if cs_hdtext(ts) == "mut" then cs_mute(cs_drop1(ts)) else if cs_hdtext(ts) == "defer" then cs_defer(cs_drop1(ts)) else if cs_hdtext(ts) == "errdefer" then cs_errdefer(cs_drop1(ts)) else if cs_hdtext(ts) == "with" then cs_with(cs_drop1(ts)) else if cs_hdtext(ts) == "scope" then cs_scope(cs_drop1(ts)) else if cs_hdtext(ts) == "spawn" then cs_spawn(cs_drop1(ts)) else if cs_hdtext(ts) == "shard" then cs_shard(cs_drop1(ts)) else if cs_hdtext(ts) == "match" then cs_match(cs_drop1(ts)) else if cs_hdtext(ts) == "comptime" then cs_ct(cs_drop1(ts)) else if cs_hdtext(ts) == "quote" then cs_quote(cs_drop1(ts)) else if cs_hdtext(ts) == "splice" then cs_splice(cs_drop1(ts)) else if cs_hdkind(ts) == "ID" then cs_ident(cs_hdtext(ts), cs_drop1(ts)) else {node: Num(0), rest: cs_drop1(ts)}
-fn cs_paren(ts) = let r = cs_expr(ts) in {node: r.node, rest: cs_skiprp(r.rest)}
-fn cs_ident(nm, ts) = if cs_hdtext(ts) == "(" then cs_call(nm, cs_arglist(cs_drop1(ts))) else if cs_hdtext(ts) == "{" then cs_rect(nm, cs_rec(cs_drop1(ts))) else if cs_hdtext(ts) == "[" then let ta = cs_expr(cs_drop1(ts)) in let t2 = cs_skiprk(ta.rest) in if cs_hdtext(t2) == "{" then cs_rect(nm, cs_rec(cs_drop1(t2))) else {node: Call("_tyapp_" + nm, Cons(ta.node, Nil)), rest: t2} else {node: Var(nm), rest: ts}
+fn cs_atom(ts) = if cs_hdkind(ts) == "NM" then {node: Num(toint(cs_hdtext(ts))), rest: cs_drop1(ts)} else if cs_hdtext(ts) == "-" then (let r = cs_prim(cs_drop1(ts)) in {node: Bin("-", Num(0), r.node), rest: r.rest}) else if cs_hdkind(ts) == "ST" then {node: cs_strinterp(cs_hdtext(ts)), rest: cs_drop1(ts)} else if cs_hdtext(ts) == "(" then cs_paren(cs_drop1(ts)) else if cs_hdtext(ts) == "[" then let r = cs_expr(cs_drop1(ts)) in {node: Call("_tylist_", Cons(r.node, Nil)), rest: cs_skiprk(r.rest)} else if cs_hdtext(ts) == "{" then cs_rec(cs_drop1(ts)) else if cs_hdtext(ts) == "if" then cs_if(cs_drop1(ts)) else if cs_hdtext(ts) == "let" then cs_let(cs_drop1(ts)) else if cs_hdtext(ts) == "var" then cs_var(cs_drop1(ts)) else if cs_hdtext(ts) == "own" then cs_owne(cs_drop1(ts)) else if cs_hdtext(ts) == "mut" then cs_mute(cs_drop1(ts)) else if cs_hdtext(ts) == "defer" then cs_defer(cs_drop1(ts)) else if cs_hdtext(ts) == "errdefer" then cs_errdefer(cs_drop1(ts)) else if cs_hdtext(ts) == "with" then cs_with(cs_drop1(ts)) else if cs_hdtext(ts) == "scope" then cs_scope(cs_drop1(ts)) else if cs_hdtext(ts) == "spawn" then cs_spawn(cs_drop1(ts)) else if cs_hdtext(ts) == "shard" then cs_shard(cs_drop1(ts)) else if cs_hdtext(ts) == "match" then cs_match(cs_drop1(ts)) else if cs_hdtext(ts) == "comptime" then cs_ct(cs_drop1(ts)) else if cs_hdtext(ts) == "quote" then cs_quote(cs_drop1(ts)) else if cs_hdtext(ts) == "splice" then cs_splice(cs_drop1(ts)) else if cs_hdkind(ts) == "ID" then cs_ident(cs_hdtext(ts), cs_drop1(ts)) else {node: Num(0), rest: cs_drop1(ts)}
+fn cs_tupmore(idx, ts) = let r = cs_expr(ts) in if cs_hdtext(r.rest) == "," then let rr = cs_tupmore(idx + 1, cs_drop1(r.rest)) in {items: Cons({key: "_" + str(idx), val: r.node}, rr.items), rest: rr.rest} else {items: Cons({key: "_" + str(idx), val: r.node}, Nil), rest: cs_skiprp(r.rest)}
+fn cs_paren(ts) = let r = cs_expr(ts) in if cs_hdtext(r.rest) == "," then let rr = cs_tupmore(1, cs_drop1(r.rest)) in {node: Rec(Cons({key: "_0", val: r.node}, rr.items)), rest: rr.rest} else {node: r.node, rest: cs_skiprp(r.rest)}
+fn cs_isrecwith(ts) = cs_hdtext(ts) != "}" and cs_hdtext(cs_drop1(ts)) == "with"
+fn cs_ident(nm, ts) = if nm == "f" and cs_hdkind(ts) == "ST" then {node: cs_strinterp(cs_hdtext(ts)), rest: cs_drop1(ts)} else if cs_hdtext(ts) == "(" then cs_call(nm, cs_arglist(cs_drop1(ts))) else if cs_hdtext(ts) == "{" and cs_isrecwith(cs_drop1(ts)) then let t1 = cs_drop1(ts) in let bnm = cs_hdtext(t1) in let rf = cs_recfields(cs_drop1(cs_drop1(t1))) in {node: Call("__lume_rec_with", Cons(Str(nm), Cons(Var(bnm), Cons(rf.node, Nil)))), rest: rf.rest} else if cs_hdtext(ts) == "{" then cs_rect(nm, cs_rec(cs_drop1(ts))) else if cs_hdtext(ts) == "[" then let ta = cs_expr(cs_drop1(ts)) in let t2 = cs_skiprk(ta.rest) in if cs_hdtext(t2) == "{" then cs_rect(nm, cs_rec(cs_drop1(t2))) else {node: Call("_tyapp_" + nm, Cons(ta.node, Nil)), rest: t2} else {node: Var(nm), rest: ts}
 fn cs_call(nm, a) = {node: Call(nm, a.items), rest: a.rest}
 fn cs_rect(nm, r) = cs_rect2(nm, r.node, r.rest)
 fn cs_rect2(nm, nd, rest) = match nd
@@ -93,7 +110,7 @@ fn cs_rect2(nm, nd, rest) = match nd
 fn cs_arglist(ts) = if cs_hdtext(ts) == ")" then {items: Nil, rest: cs_drop1(ts)} else cs_argmore(cs_expr(ts))
 fn cs_argmore(r) = if cs_hdtext(r.rest) == "," then cs_argcons(r.node, cs_arglist(cs_drop1(r.rest))) else {items: Cons(r.node, Nil), rest: cs_skiprp(r.rest)}
 fn cs_argcons(h, rr) = {items: Cons(h, rr.items), rest: rr.rest}
-fn cs_rec(ts) = if cs_hdtext(ts) == "}" then {node: Rec(Nil), rest: cs_drop1(ts)} else cs_recfields(ts)
+fn cs_rec(ts) = if cs_hdtext(ts) == "}" then {node: Rec(Nil), rest: cs_drop1(ts)} else if cs_isrecwith(ts) then let bnm = cs_hdtext(ts) in let rf = cs_recfields(cs_drop1(cs_drop1(ts))) in {node: Call("__lume_rec_with", Cons(Str(""), Cons(Var(bnm), Cons(rf.node, Nil)))), rest: rf.rest} else if cs_hdtext(cs_drop1(ts)) == ":" then cs_recfields(ts) else let r = cs_expr(ts) in {node: r.node, rest: cs_dropkw(r.rest, "}")}
 fn cs_recfields(ts) = let k = cs_hdtext(ts) in let r = cs_expr(cs_dropkw(cs_drop1(ts), ":")) in if cs_hdtext(r.rest) == "," then cs_reccons(k, r.node, cs_recfields(cs_drop1(r.rest))) else {node: Rec(Cons({key: k, val: r.node}, Nil)), rest: cs_dropkw(r.rest, "}")}
 fn cs_reccons(k, v, rr) = cs_reccons2(k, v, rr.node, rr.rest)
 fn cs_reccons2(k, v, nd, rest) = match nd
@@ -122,11 +139,34 @@ fn cs_andloop(l) = if cs_hdtext(l.rest) == "and" then cs_andloop(cs_mkbin("and",
 fn cs_or(ts) = cs_orloop(cs_and(ts))
 fn cs_orloop(l) = if cs_hdtext(l.rest) == "or" then cs_orloop(cs_mkbin("or", l.node, cs_and(cs_drop1(l.rest)))) else l
 fn cs_mkbin(op, a, r) = {node: Bin(op, a, r.node), rest: r.rest}
-fn cs_expr(ts) = cs_or(ts)
+fn cs_mkpipe(lhs, rhs) = match rhs
+    Call(nm, args) => Call(nm, Cons(lhs, args))
+    Var(nm)        => Call(nm, Cons(lhs, Nil))
+    _              => Call("_call", Cons(rhs, Cons(lhs, Nil)))
+fn cs_pipeloop(r) = if cs_hdtext(r.rest) == "|>" then let r2 = cs_or(cs_drop1(r.rest)) in cs_pipeloop({node: cs_mkpipe(r.node, r2.node), rest: r2.rest}) else r
+fn cs_expr(ts) = cs_pipeloop(cs_or(ts))
 
 fn cs_if(ts) = let c = cs_expr(ts) in let t = cs_expr(cs_dropkw(c.rest, "then")) in let e2 = cs_expr(cs_dropkw(t.rest, "else")) in {node: If(c.node, t.node, e2.node), rest: e2.rest}
 fn cs_dropin(ts) = if cs_hdtext(ts) == "in" or cs_hdtext(ts) == ";" then cs_drop1(ts) else ts
-fn cs_let(ts) = if cs_hdtext(ts) == "mut" then cs_var(cs_drop1(ts)) else if cs_hdtext(ts) == "_" and cs_hdtext(cs_drop1(ts)) != "=" and cs_hdtext(cs_drop1(ts)) != ":" then cs_let(cs_drop1(ts)) else let nm = cs_hdtext(ts) in let t1 = cs_drop1(ts) in let t2 = if cs_hdtext(t1) == ":" then (cs_ptype1(cs_drop1(t1))).rest else t1 in let v = cs_expr(cs_dropkw(t2, "=")) in let b = cs_expr(cs_dropin(v.rest)) in {node: LetIn(nm, v.node, b.node), rest: b.rest}
+fn cs_dropletty(ts) = if cs_hdtext(ts) == ":" then (cs_ptype1(cs_drop1(ts))).rest else ts
+fn cs_tupletids(ts) = if cs_hdtext(ts) == ")" then {items: Nil, rest: cs_drop1(ts)} else let nm = cs_hdtext(ts) in let t1 = cs_dropletty(cs_drop1(ts)) in if cs_hdtext(t1) == "," then let rr = cs_tupletids(cs_drop1(t1)) in {items: Cons(nm, rr.items), rest: rr.rest} else {items: Cons(nm, Nil), rest: cs_skiprp(t1)}
+fn cs_mktupletbinds(tnm, ids, idx, body) = match ids
+    Nil        => body
+    Cons(h, t) => if h == "_" then cs_mktupletbinds(tnm, t, idx + 1, body) else LetIn(h, Field(Var(tnm), "_" + str(idx)), cs_mktupletbinds(tnm, t, idx + 1, body))
+fn cs_lettuphd(xs) = match xs
+    Nil        => "0"
+    Cons(h, t) => if h == "_" then "0" else h
+fn cs_lettup(t) = let ids = cs_tupletids(t) in let v = cs_expr(cs_dropkw(cs_dropletty(ids.rest), "=")) in let b = cs_expr(cs_dropin(v.rest)) in let tnm = "_ltup_" + cs_lettuphd(ids.items) in {node: LetIn(tnm, v.node, cs_mktupletbinds(tnm, ids.items, 0, b.node)), rest: b.rest}
+fn cs_recletfields(ts) = if cs_hdtext(ts) == "}" then {items: Nil, rest: cs_drop1(ts)} else let fnm = cs_hdtext(ts) in let t1 = cs_drop1(ts) in let bnm = if cs_hdtext(t1) == ":" then cs_hdtext(cs_drop1(t1)) else fnm in let t2 = if cs_hdtext(t1) == ":" then cs_drop1(cs_drop1(t1)) else t1 in let t3 = cs_dropletty(t2) in if cs_hdtext(t3) == "," then let rr = cs_recletfields(cs_drop1(t3)) in {items: Cons({key: fnm, nm: bnm}, rr.items), rest: rr.rest} else {items: Cons({key: fnm, nm: bnm}, Nil), rest: cs_dropkw(t3, "}")}
+fn cs_mkrecletbinds(tnm, fs, body) = match fs
+    Nil        => body
+    Cons(h, t) => if h.nm == "_" then cs_mkrecletbinds(tnm, t, body) else LetIn(h.nm, Field(Var(tnm), h.key), cs_mkrecletbinds(tnm, t, body))
+fn cs_letrechd(xs) = match xs
+    Nil        => "0"
+    Cons(h, t) => if h.nm == "_" then "0" else h.nm
+fn cs_letrec(t) = let fs = cs_recletfields(t) in let v = cs_expr(cs_dropkw(cs_dropletty(fs.rest), "=")) in let b = cs_expr(cs_dropin(v.rest)) in let tnm = "_lrec_" + cs_letrechd(fs.items) in {node: LetIn(tnm, v.node, cs_mkrecletbinds(tnm, fs.items, b.node)), rest: b.rest}
+fn cs_letpat(t) = let p = cs_pat(t) in let v = cs_expr(cs_dropkw(cs_dropletty(p.rest), "=")) in let b = cs_expr(cs_dropin(v.rest)) in {node: Match(v.node, Cons({pat: p.pat, body: b.node}, Nil)), rest: b.rest}
+fn cs_let(ts) = if cs_hdtext(ts) == "mut" then cs_var(cs_drop1(ts)) else if cs_hdtext(ts) == "(" then cs_lettup(cs_drop1(ts)) else if cs_hdtext(ts) == "{" then cs_letrec(cs_drop1(ts)) else if cs_hdkind(ts) == "ID" and cs_isupper(at(cs_hdtext(ts), 0)) then cs_letpat(ts) else if cs_hdtext(ts) == "_" and cs_hdtext(cs_drop1(ts)) != "=" and cs_hdtext(cs_drop1(ts)) != ":" then cs_let(cs_drop1(ts)) else let nm = cs_hdtext(ts) in let t1 = cs_drop1(ts) in let t2 = cs_dropletty(t1) in let v = cs_expr(cs_dropkw(t2, "=")) in let b = cs_expr(cs_dropin(v.rest)) in {node: LetIn(nm, v.node, b.node), rest: b.rest}
 fn cs_var(ts) = let nm = cs_hdtext(ts) in let t1 = cs_drop1(ts) in let t2 = if cs_hdtext(t1) == ":" then (cs_ptype1(cs_drop1(t1))).rest else t1 in let v = cs_expr(cs_dropkw(t2, "=")) in let b = cs_expr(cs_dropin(v.rest)) in {node: VarIn(nm, v.node, b.node), rest: b.rest}
 fn cs_owne(ts) = let r = cs_prim(ts) in {node: OwnE(r.node), rest: r.rest}
 fn cs_mute(ts) = let r = cs_prim(ts) in {node: MutE(r.node), rest: r.rest}
@@ -141,7 +181,7 @@ fn cs_spawn(t) = if cs_hdtext(t) == "(" then let a = cs_arglist(cs_drop1(t)) in 
 fn cs_shard(t) = let iv = cs_hdtext(t) in let rlo = cs_add(cs_dropkw(cs_drop1(t), "in")) in let rhi = cs_add(cs_dropkw(rlo.rest, "..")) in let rb = cs_expr(cs_dropkw(rhi.rest, "=>")) in {node: ShardE(iv, rlo.node, rhi.node, rb.node), rest: rb.rest}
 
 fn cs_ispatstart(ts) = if cs_hdkind(ts) == "NM" or cs_hdkind(ts) == "ST" then 1 else if cs_hdtext(ts) == "-" and cs_hdkind(cs_drop1(ts)) == "NM" then 1 else if cs_hdkind(ts) == "ID" then cs_ispatid(cs_hdtext(ts)) else 0
-fn cs_ispatid(s) = if s == "fn" or s == "pub" or s == "total" or s == "llm" or s == "effect" or s == "law" or s == "resource" or s == "print" or s == "type" or s == "let" or s == "var" or s == "if" or s == "then" or s == "else" or s == "in" or s == "match" or s == "and" or s == "or" then 0 else 1
+fn cs_ispatid(s) = if s == "fn" or s == "pub" or s == "total" or s == "llm" or s == "effect" or s == "law" or s == "resource" or s == "print" or s == "type" or s == "let" or s == "var" or s == "const" or s == "if" or s == "then" or s == "else" or s == "in" or s == "match" or s == "and" or s == "or" then 0 else 1
 fn cs_pat(ts) = if cs_hdkind(ts) == "NM" then {pat: PInt(toint(cs_hdtext(ts))), rest: cs_drop1(ts)} else if cs_hdtext(ts) == "-" and cs_hdkind(cs_drop1(ts)) == "NM" then {pat: PInt(0 - toint(cs_hdtext(cs_drop1(ts)))), rest: cs_drop1(cs_drop1(ts))} else if cs_hdkind(ts) == "ST" then {pat: PStr(cs_hdtext(ts)), rest: cs_drop1(ts)} else if cs_hdtext(ts) == "_" then {pat: PWild, rest: cs_drop1(ts)} else cs_patid(cs_hdtext(ts), cs_drop1(ts))
 fn cs_patid(nm, ts) = if cs_isupper(at(nm, 0)) then cs_patctor(nm, ts) else {pat: PBind(nm), rest: ts}
 fn cs_patctor(nm, ts) = if cs_hdtext(ts) == "(" then cs_patargs(nm, cs_patlist(cs_drop1(ts))) else {pat: PCons(nm, Nil), rest: ts}
@@ -150,7 +190,7 @@ fn cs_patlist(ts) = if cs_hdtext(ts) == ")" then {items: Nil, rest: cs_drop1(ts)
 fn cs_patmore(nm, ts) = if cs_hdtext(ts) == "," then cs_patcons(nm, cs_patlist(cs_drop1(ts))) else {items: Cons(nm, Nil), rest: cs_skiprp(ts)}
 fn cs_patcons(nm, rr) = {items: Cons(nm, rr.items), rest: rr.rest}
 fn cs_dropamsep(ts) = if cs_hdtext(ts) == "|" or cs_hdtext(ts) == "," or cs_hdtext(ts) == ";" then cs_drop1(ts) else ts
-fn cs_hasarm(ts, mincol) = let t1 = cs_dropamsep(ts) in if cs_hdcol(t1) < mincol then 0 else if cs_ispatstart(t1) == 0 then 0 else cs_afterpat(cs_pat(t1))
+fn cs_hasarm(ts, mincol) = if cs_hdtext(ts) == "|>" then 0 else let t1 = cs_dropamsep(ts) in if cs_hdcol(t1) < mincol then 0 else if cs_ispatstart(t1) == 0 then 0 else cs_afterpat(cs_pat(t1))
 fn cs_afterpat(p) = cs_hdtext(p.rest) == "=>"
 fn cs_match(ts) = let sc = cs_expr(ts) in let hb = if cs_hdtext(sc.rest) == "{" then 1 else 0 in let t1 = cs_dropkw(sc.rest, "{") in let mincol = if hb == 1 then 0 else cs_hdcol(t1) in let a = cs_arms(t1, mincol) in {node: Match(sc.node, a.items), rest: if hb == 1 then cs_dropkw(a.rest, "}") else a.rest}
 fn cs_arms(ts, mincol) = let p = cs_pat(cs_dropamsep(ts)) in let b = cs_expr(cs_dropkw(p.rest, "=>")) in if cs_hasarm(b.rest, mincol) == 1 then cs_armcons(p.pat, b.node, cs_arms(b.rest, mincol)) else {items: Cons({pat: p.pat, body: b.node}, Nil), rest: b.rest}
@@ -237,15 +277,218 @@ fn cs_progfnwcet(wcet, fnm, r) = if wcet > 0 then Cons(WcetSig(fnm, wcet), cs_pp
 fn cs_parseattrs(ts, freef, wcet) = if cs_hdtext(ts) == "@" then let t1 = cs_drop1(ts) in let anm = cs_hdtext(t1) in let t2 = cs_drop1(t1) in if anm == "freestanding" then cs_parseattrs(cs_skipatparen(t2), freef + 1, wcet) else if anm == "interrupt" then cs_parseattrs(cs_skipatparen(t2), freef + 16, wcet) else if anm == "export" then cs_parseattrs(cs_skipatparen(t2), if freef / 32 % 2 == 0 then freef + 32 else freef, wcet) else if anm == "protect" then cs_parseattrs(cs_skipatparen(t2), freef + 64, wcet) else if anm == "bound" then cs_parseattrs(cs_skipatparen(t2), freef, cs_pboundval(t2)) else cs_parseattrs(cs_skipatparen(t2), freef, wcet) else if cs_hdtext(ts) == "pub" and cs_hdtext(cs_drop1(ts)) == "extern" then cs_progextern(cs_drop1(cs_drop1(ts)), 1) else if cs_hdtext(ts) == "extern" then cs_progextern(cs_drop1(ts), 0) else if cs_hdtext(ts) == "pub" and cs_hdtext(cs_drop1(ts)) == "fn" then let ft = cs_drop1(cs_drop1(ts)) in cs_progfnwcet(wcet, cs_hdtext(ft), cs_pfnp(ft, 1, freef)) else if cs_hdtext(ts) == "fn" then let ft = cs_drop1(ts) in cs_progfnwcet(wcet, cs_hdtext(ft), cs_pfnp(ft, if freef / 32 % 2 == 1 then 1 else 0, freef)) else cs_pprog(ts)
 fn cs_progat(t) = if cs_hdtext(t) == "gc" then cs_progtyped("gc", cs_ptype(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "soa" and cs_hdtext(cs_drop1(t)) == "type" then cs_progtyped("soa", cs_ptype(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "capability" or cs_hdtext(t) == "grant" then cs_pcapat(t) else if cs_hdtext(t) == "link" or cs_hdtext(t) == "need" then cs_pprog(cs_skipatparen(cs_drop1(t))) else cs_parseattrs(Cons({kind: "op", text: "@", line: 0, col: 0}, t), 0, 0)
 fn cs_progextern(t, pubf) = if cs_hdtext(t) == "llm" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), pubf, 4)) else if cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), pubf, 32)) else if cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), pubf, 32)) else cs_pprogfn(cs_pfnp(cs_drop1(t), pubf, 4))
-fn cs_progpub(t) = if cs_hdtext(t) == "total" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 2)) else if cs_hdtext(t) == "llm" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 4)) else if cs_hdtext(t) == "extern" then cs_progextern(cs_drop1(t), 1) else if cs_hdtext(t) == "kernel" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 8)) else if cs_hdtext(t) == "rule" then cs_progrule(cs_prule(cs_drop1(t))) else if cs_hdtext(t) == "effect" then let r = cs_peffect(cs_drop1(t)) in Cons(r.node, cs_pprog(r.rest)) else if cs_hdtext(t) == "temporal" and cs_hdtext(cs_drop1(t)) == "law" then cs_proglaw(cs_plaw(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "law" then cs_proglaw(cs_plaw(cs_drop1(t))) else cs_pprogfn(cs_pfnp(cs_drop1(t), 1, 0))
+fn cs_progpub(t) = if cs_hdtext(t) == "total" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 2)) else if cs_hdtext(t) == "llm" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 4)) else if cs_hdtext(t) == "extern" then cs_progextern(cs_drop1(t), 1) else if cs_hdtext(t) == "kernel" and cs_hdtext(cs_drop1(t)) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(cs_drop1(t)), 1, 8)) else if cs_hdtext(t) == "rule" then cs_progrule(cs_prule(cs_drop1(t))) else if cs_hdtext(t) == "effect" then let r = cs_peffect(cs_drop1(t)) in Cons(r.node, cs_pprog(r.rest)) else if cs_hdtext(t) == "temporal" and cs_hdtext(cs_drop1(t)) == "law" then cs_proglaw(cs_plaw(cs_drop1(cs_drop1(t)))) else if cs_hdtext(t) == "law" then cs_proglaw(cs_plaw(cs_drop1(t))) else if cs_hdtext(t) == "const" or cs_hdtext(t) == "let" then let r = cs_pconst(cs_drop1(t)) in Cons(r.node, cs_pprog(r.rest)) else cs_pprogfn(cs_pfnp(cs_drop1(t), 1, 0))
+fn cs_pconst(t) = let nm = cs_hdtext(t) in let rv = cs_expr(cs_dropkw(cs_dropletty(cs_drop1(t)), "=")) in {node: ConstDecl(nm, rv.node), rest: cs_dropkw(rv.rest, ";")}
+fn cs_ptoplet(ts, t) = if cs_hdtext(t) == "mut" or cs_hdtext(t) == "(" or cs_hdtext(t) == "{" or (cs_hdkind(t) == "ID" and cs_isupper(at(cs_hdtext(t), 0))) then let r = cs_expr(ts) in Cons(ExprS(r.node), cs_pprog(r.rest)) else let nm = cs_hdtext(t) in let rv = cs_expr(cs_dropkw(cs_dropletty(cs_drop1(t)), "=")) in if cs_hdtext(rv.rest) == "in" or cs_hdtext(rv.rest) == ";" then let r = cs_expr(ts) in Cons(ExprS(r.node), cs_pprog(r.rest)) else Cons(ConstDecl(nm, rv.node), cs_pprog(rv.rest))
 fn cs_pprog(ts) = match ts
     Nil        => Nil
-    Cons(h, t) => if h.text == "fn" then cs_pprogfn(cs_pfn(cs_drop1(ts))) else if h.text == "pub" and (cs_hdtext(t) == "fn" or cs_hdtext(t) == "total" or cs_hdtext(t) == "llm" or cs_hdtext(t) == "extern" or cs_hdtext(t) == "kernel" or cs_hdtext(t) == "rule" or cs_hdtext(t) == "effect" or cs_hdtext(t) == "temporal" or cs_hdtext(t) == "law") then cs_progpub(t) else if h.text == "total" and cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), 0, 2)) else if h.text == "llm" and cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), 0, 4)) else if h.text == "extern" then cs_progextern(t, 0) else if h.text == "kernel" and cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), 0, 8)) else if h.text == "rule" then cs_progrule(cs_prule(t)) else if h.text == "effect" then let r = cs_peffect(t) in Cons(r.node, cs_pprog(r.rest)) else if h.text == "temporal" and cs_hdtext(t) == "law" then cs_proglaw(cs_plaw(cs_drop1(t))) else if h.text == "law" then cs_proglaw(cs_plaw(t)) else if h.text == "@" then cs_progat(t) else if h.text == "resource" and cs_hdtext(t) == "type" then cs_progtyped("resource", cs_ptype(cs_drop1(t))) else if h.text == "model" and cs_hdtext(t) == "type" then cs_progtyped("model", cs_ptype(cs_drop1(t))) else if h.text == "type" then (if cs_hdtext(cs_dropkw(cs_drop1(t), "=")) == "model" then cs_progtyped("model", cs_ptype(t)) else cs_progtype(cs_ptype(cs_drop1(ts)))) else if h.text == "print" then let r = cs_expr(cs_drop1(ts)) in Cons(Print(r.node), cs_pprog(r.rest)) else let r = cs_expr(ts) in Cons(ExprS(r.node), cs_pprog(r.rest))
+    Cons(h, t) => if h.text == "fn" then cs_pprogfn(cs_pfn(cs_drop1(ts))) else if h.text == "pub" and (cs_hdtext(t) == "fn" or cs_hdtext(t) == "total" or cs_hdtext(t) == "llm" or cs_hdtext(t) == "extern" or cs_hdtext(t) == "kernel" or cs_hdtext(t) == "rule" or cs_hdtext(t) == "effect" or cs_hdtext(t) == "temporal" or cs_hdtext(t) == "law" or cs_hdtext(t) == "const" or cs_hdtext(t) == "let") then cs_progpub(t) else if h.text == "const" then let r = cs_pconst(t) in Cons(r.node, cs_pprog(r.rest)) else if h.text == "let" then cs_ptoplet(ts, t) else if h.text == "total" and cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), 0, 2)) else if h.text == "llm" and cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), 0, 4)) else if h.text == "extern" then cs_progextern(t, 0) else if h.text == "kernel" and cs_hdtext(t) == "fn" then cs_pprogfn(cs_pfnp(cs_drop1(t), 0, 8)) else if h.text == "rule" then cs_progrule(cs_prule(t)) else if h.text == "effect" then let r = cs_peffect(t) in Cons(r.node, cs_pprog(r.rest)) else if h.text == "temporal" and cs_hdtext(t) == "law" then cs_proglaw(cs_plaw(cs_drop1(t))) else if h.text == "law" then cs_proglaw(cs_plaw(t)) else if h.text == "@" then cs_progat(t) else if h.text == "resource" and cs_hdtext(t) == "type" then cs_progtyped("resource", cs_ptype(cs_drop1(t))) else if h.text == "model" and cs_hdtext(t) == "type" then cs_progtyped("model", cs_ptype(cs_drop1(t))) else if h.text == "type" then (if cs_hdtext(cs_dropkw(cs_drop1(t), "=")) == "model" then cs_progtyped("model", cs_ptype(t)) else cs_progtype(cs_ptype(cs_drop1(ts)))) else if h.text == "print" then let r = cs_expr(cs_drop1(ts)) in Cons(Print(r.node), cs_pprog(r.rest)) else let r = cs_expr(ts) in Cons(ExprS(r.node), cs_pprog(r.rest))
 fn cs_pprogfn(r) = cs_pprogfn2(r.vsg, cs_pprogfn2(r.ksg, cs_pprogfn2(r.osg, cs_pprogfn2(r.sg, cs_pprogfn2(r.node, cs_pprog(r.rest))))))
 fn cs_pprogfn2(sg, rest) = match sg
     Nil => rest
     _   => Cons(sg, rest)
-fn cs_parse_full(src) = let lr = cs_lexsp(src, 0, 1, 1, Nil) in {prog: cs_pprog(lr.tokens), diags: lr.diags}
+
+## --- ergonomic AST sugar expansion in lcaas (`const` / `let` and `{ s with field: val }`) ---
+fn cs_has_rec_with_e(e) = match e
+    Call(nm, args)         => if nm == "__lume_rec_with" then 1 else cs_has_rec_with_el(args)
+    Bin(op, a, b)          => if cs_has_rec_with_e(a) == 1 then 1 else cs_has_rec_with_e(b)
+    If(c, t, e2)           => if cs_has_rec_with_e(c) == 1 then 1 else if cs_has_rec_with_e(t) == 1 then 1 else cs_has_rec_with_e(e2)
+    LetIn(nm, v, b)        => if cs_has_rec_with_e(v) == 1 then 1 else cs_has_rec_with_e(b)
+    VarIn(nm, v, b)        => if cs_has_rec_with_e(v) == 1 then 1 else cs_has_rec_with_e(b)
+    Rec(items)             => cs_has_rec_with_recl(items)
+    RecT(tn, items)        => cs_has_rec_with_recl(items)
+    Field(o, nm)           => cs_has_rec_with_e(o)
+    Match(sc, arms)        => if cs_has_rec_with_e(sc) == 1 then 1 else cs_has_rec_with_arms(arms)
+    LambdaE(ps, ts, r, b)  => cs_has_rec_with_e(b)
+    ShardE(v, l, h, b)     => if cs_has_rec_with_e(l) == 1 then 1 else if cs_has_rec_with_e(h) == 1 then 1 else cs_has_rec_with_e(b)
+    OwnE(x)                => cs_has_rec_with_e(x)
+    MutE(x)                => cs_has_rec_with_e(x)
+    DeferE(c, b)           => if cs_has_rec_with_e(c) == 1 then 1 else cs_has_rec_with_e(b)
+    ErrDeferE(c, b)        => if cs_has_rec_with_e(c) == 1 then 1 else cs_has_rec_with_e(b)
+    WithAllocE(a, b)       => if cs_has_rec_with_e(a) == 1 then 1 else cs_has_rec_with_e(b)
+    WithHandlerE(e0, h, b) => cs_has_rec_with_e(b)
+    ScopeE(s, b)           => cs_has_rec_with_e(b)
+    SpawnE(x)              => cs_has_rec_with_e(x)
+    CT(x)                  => cs_has_rec_with_e(x)
+    _                      => 0
+fn cs_has_rec_with_el(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_has_rec_with_e(h) == 1 then 1 else cs_has_rec_with_el(t)
+fn cs_has_rec_with_recl(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_has_rec_with_e(h.val) == 1 then 1 else cs_has_rec_with_recl(t)
+fn cs_has_rec_with_arms(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_has_rec_with_e(h.body) == 1 then 1 else cs_has_rec_with_arms(t)
+fn cs_has_prog_sugar_s(s0) = match s0
+    ConstDecl(nm, v)          => 1
+    Fn(nm, ps, body)          => cs_has_rec_with_e(body)
+    VContractSig(nm, p, r, e) => if cs_has_rec_with_el(r) == 1 then 1 else cs_has_rec_with_el(e)
+    VLawDecl(nm, ps, b)       => cs_has_rec_with_e(b)
+    Print(v)                  => cs_has_rec_with_e(v)
+    ExprS(v)                  => cs_has_rec_with_e(v)
+    _                         => 0
+fn cs_has_prog_sugar(prog) = match prog
+    Nil        => 0
+    Cons(h, t) => if cs_has_prog_sugar_s(h) == 1 then 1 else cs_has_prog_sugar(t)
+fn cs_ps_has_str(nm, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else cs_ps_has_str(nm, t)
+fn cs_ps_const_lookup(nm, consts) = match consts
+    Nil        => Nil
+    Cons(h, t) => if h.k == nm then Cons(h.v, Nil) else cs_ps_const_lookup(nm, t)
+fn cs_ps_rec_fnames(fs) = match fs
+    Nil        => Nil
+    Cons(h, t) => Cons(h.fname, cs_ps_rec_fnames(t))
+fn cs_ps_item_keys(items) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons(h.key, cs_ps_item_keys(t))
+fn cs_ps_is_struct_rec(items) = match items
+    Nil        => 0
+    Cons(h, t) => if count(h.key) > 0 and at(h.key, 0) == "_" then 0 else 1
+fn cs_ps_collect_recs_e(e, rest) = match e
+    Rec(items)      => let r1 = cs_ps_collect_recs_recl(items, rest) in if cs_ps_is_struct_rec(items) == 1 then Cons({rname: "", fnames: cs_ps_item_keys(items)}, r1) else r1
+    RecT(tn, items) => cs_ps_collect_recs_recl(items, rest)
+    LetIn(nm, v, b) => cs_ps_collect_recs_e(v, cs_ps_collect_recs_e(b, rest))
+    VarIn(nm, v, b) => cs_ps_collect_recs_e(v, cs_ps_collect_recs_e(b, rest))
+    If(c, t, e2)    => cs_ps_collect_recs_e(c, cs_ps_collect_recs_e(t, cs_ps_collect_recs_e(e2, rest)))
+    Bin(op, a, b)   => cs_ps_collect_recs_e(a, cs_ps_collect_recs_e(b, rest))
+    Call(nm, args)  => if nm == "__lume_rec_with" then rest else cs_ps_collect_recs_el(args, rest)
+    Match(sc, arms) => cs_ps_collect_recs_e(sc, cs_ps_collect_recs_arms(arms, rest))
+    _               => rest
+fn cs_ps_collect_recs_el(xs, rest) = match xs
+    Nil        => rest
+    Cons(h, t) => cs_ps_collect_recs_e(h, cs_ps_collect_recs_el(t, rest))
+fn cs_ps_collect_recs_recl(xs, rest) = match xs
+    Nil        => rest
+    Cons(h, t) => cs_ps_collect_recs_e(h.val, cs_ps_collect_recs_recl(t, rest))
+fn cs_ps_collect_recs_arms(xs, rest) = match xs
+    Nil        => rest
+    Cons(h, t) => cs_ps_collect_recs_e(h.body, cs_ps_collect_recs_arms(t, rest))
+fn cs_ps_collect_recs1(s0, rest) = match s0
+    TypeS(nm, k, items) => if k == "record" then Cons({rname: nm, fnames: cs_ps_rec_fnames(items)}, rest) else rest
+    Fn(nm, ps, body)    => cs_ps_collect_recs_e(body, rest)
+    _                   => rest
+fn cs_ps_collect_recs(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => cs_ps_collect_recs1(h, cs_ps_collect_recs(t))
+fn cs_ps_collect_sigs1(s0, rest) = match s0
+    Sig(nm, ps, ts, rt) => Cons({fname: nm, ps: ps, ts: ts}, rest)
+    _                   => rest
+fn cs_ps_collect_sigs(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => cs_ps_collect_sigs1(h, cs_ps_collect_sigs(t))
+fn cs_ps_lookup_rec(rnm, recs) = match recs
+    Nil        => Nil
+    Cons(h, t) => if h.rname == rnm then h.fnames else cs_ps_lookup_rec(rnm, t)
+fn cs_ps_all_keys_in(upds, fnames) = match upds
+    Nil        => 1
+    Cons(h, t) => if cs_ps_has_str(h.key, fnames) == 1 then cs_ps_all_keys_in(t, fnames) else 0
+fn cs_ps_match_rec_by_keys(upds, recs) = match recs
+    Nil        => {rname: "", fnames: Nil}
+    Cons(h, t) => if cs_isnil(upds) == 0 and cs_ps_all_keys_in(upds, h.fnames) == 1 then h else cs_ps_match_rec_by_keys(upds, t)
+fn cs_ps_lrec_lookup(nm, lrecs) = match lrecs
+    Nil        => {rname: "", fnames: Nil}
+    Cons(h, t) => if h.nm == nm then {rname: h.rname, fnames: h.fnames} else cs_ps_lrec_lookup(nm, t)
+fn cs_ps_upd_lookup(fnm, upds) = match upds
+    Nil        => Nil
+    Cons(h, t) => if h.key == fnm then Cons(h.val, Nil) else cs_ps_upd_lookup(fnm, t)
+fn cs_ps_upd_val(bvar, fnm, m) = match m
+    Cons(v, r) => v
+    Nil        => Field(Var(bvar), fnm)
+fn cs_ps_build_merged(bvar, fnames, upds) = match fnames
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h, val: cs_ps_upd_val(bvar, h, cs_ps_upd_lookup(h, upds))}, cs_ps_build_merged(bvar, t, upds))
+fn cs_ps_var_name(e) = match e
+    Var(nm) => nm
+    _       => ""
+fn cs_ps_str_val(e) = match e
+    Str(s) => s
+    _      => ""
+fn cs_ps_rec_items(e) = match e
+    Rec(items)      => items
+    RecT(tn, items) => items
+    _               => Nil
+fn cs_ps_expr_rec_info(e, recs) = match e
+    RecT(tn, items) => {rname: tn, fnames: let fs = cs_ps_lookup_rec(tn, recs) in if cs_isnil(fs) == 0 then fs else cs_ps_item_keys(items)}
+    Rec(items)      => {rname: "", fnames: cs_ps_item_keys(items)}
+    _               => {rname: "", fnames: Nil}
+fn cs_ps_ty_rname(ty) = match ty
+    TyName(nm)       => nm
+    TyRefine(bty, p) => cs_ps_ty_rname(bty)
+    _                => ""
+fn cs_ps_sig_lrecs_zip(ps, ts, recs) = match ps
+    Nil         => Nil
+    Cons(p, pr) => cs_ps_sig_lrecs_zip2(p, pr, ts, recs)
+fn cs_ps_sig_lrecs_zip2(p, pr, ts, recs) = match ts
+    Nil         => Nil
+    Cons(t, tr) => let rnm = cs_ps_ty_rname(t) in let fns = if rnm != "" then cs_ps_lookup_rec(rnm, recs) else Nil in let rest = cs_ps_sig_lrecs_zip(pr, tr, recs) in if cs_isnil(fns) == 0 then Cons({nm: p, rname: rnm, fnames: fns}, rest) else rest
+fn cs_ps_fn_lrecs(fnm, sigs, recs) = match sigs
+    Nil        => Nil
+    Cons(h, t) => if h.fname == fnm then cs_ps_sig_lrecs_zip(h.ps, h.ts, recs) else cs_ps_fn_lrecs(fnm, t, recs)
+fn cs_ps_pat_binds(p) = match p
+    PBind(nm)      => Cons(nm, Nil)
+    PCons(tag, ps) => ps
+    _              => Nil
+fn cs_ps_expand_rec_with(args, ctx, shadow, lrecs) = match args
+    Cons(tn_e, Cons(base_e, Cons(upd_e, r))) => let tnm = cs_ps_str_val(tn_e) in let b2 = cs_ps_exp_e(base_e, ctx, shadow, lrecs) in let u2 = cs_ps_exp_recl(cs_ps_rec_items(upd_e), ctx, shadow, lrecs) in let bnm = cs_ps_var_name(b2) in let lr = if bnm != "" then cs_ps_lrec_lookup(bnm, lrecs) else {rname: "", fnames: Nil} in let rnm = if tnm != "" then tnm else lr.rname in let fns1 = if tnm != "" then cs_ps_lookup_rec(tnm, ctx.recs) else lr.fnames in let mr = if cs_isnil(fns1) == 1 then cs_ps_match_rec_by_keys(u2, ctx.recs) else {rname: rnm, fnames: fns1} in if cs_isnil(mr.fnames) == 1 then Rec(u2) else if bnm != "" then (let m = cs_ps_build_merged(bnm, mr.fnames, u2) in if mr.rname != "" then RecT(mr.rname, m) else Rec(m)) else (let m = cs_ps_build_merged("_ru", mr.fnames, u2) in LetIn("_ru", b2, if mr.rname != "" then RecT(mr.rname, m) else Rec(m)))
+    _                                        => Num(0)
+fn cs_ps_exp_var(nm, ctx, shadow) = if cs_ps_has_str(nm, shadow) == 1 then Var(nm) else cs_ps_exp_var2(nm, cs_ps_const_lookup(nm, ctx.consts))
+fn cs_ps_exp_var2(nm, m) = match m
+    Cons(v, r) => v
+    Nil        => Var(nm)
+fn cs_ps_exp_e(e, ctx, shadow, lrecs) = match e
+    Var(nm)                => cs_ps_exp_var(nm, ctx, shadow)
+    Bin(op, a, b)          => Bin(op, cs_ps_exp_e(a, ctx, shadow, lrecs), cs_ps_exp_e(b, ctx, shadow, lrecs))
+    If(c, t, e2)           => If(cs_ps_exp_e(c, ctx, shadow, lrecs), cs_ps_exp_e(t, ctx, shadow, lrecs), cs_ps_exp_e(e2, ctx, shadow, lrecs))
+    LetIn(nm, v, b)        => let v2 = cs_ps_exp_e(v, ctx, shadow, lrecs) in let ri = cs_ps_expr_rec_info(v2, ctx.recs) in let lr2 = if cs_isnil(ri.fnames) == 0 then Cons({nm: nm, rname: ri.rname, fnames: ri.fnames}, lrecs) else lrecs in LetIn(nm, v2, cs_ps_exp_e(b, ctx, Cons(nm, shadow), lr2))
+    VarIn(nm, v, b)        => let v2 = cs_ps_exp_e(v, ctx, shadow, lrecs) in let ri = cs_ps_expr_rec_info(v2, ctx.recs) in let lr2 = if cs_isnil(ri.fnames) == 0 then Cons({nm: nm, rname: ri.rname, fnames: ri.fnames}, lrecs) else lrecs in VarIn(nm, v2, cs_ps_exp_e(b, ctx, Cons(nm, shadow), lr2))
+    Call(nm, args)         => if nm == "__lume_rec_with" then cs_ps_expand_rec_with(args, ctx, shadow, lrecs) else Call(nm, cs_ps_exp_el(args, ctx, shadow, lrecs))
+    Rec(items)             => Rec(cs_ps_exp_recl(items, ctx, shadow, lrecs))
+    RecT(tn, items)        => RecT(tn, cs_ps_exp_recl(items, ctx, shadow, lrecs))
+    Field(o, nm)           => Field(cs_ps_exp_e(o, ctx, shadow, lrecs), nm)
+    Match(sc, arms)        => Match(cs_ps_exp_e(sc, ctx, shadow, lrecs), cs_ps_exp_arms(arms, ctx, shadow, lrecs))
+    LambdaE(ps, ts, rt, b) => LambdaE(ps, ts, rt, cs_ps_exp_e(b, ctx, cs_app(ps, shadow), lrecs))
+    ShardE(v, l, h, b)     => ShardE(v, cs_ps_exp_e(l, ctx, shadow, lrecs), cs_ps_exp_e(h, ctx, shadow, lrecs), cs_ps_exp_e(b, ctx, Cons(v, shadow), lrecs))
+    OwnE(x)                => OwnE(cs_ps_exp_e(x, ctx, shadow, lrecs))
+    MutE(x)                => MutE(cs_ps_exp_e(x, ctx, shadow, lrecs))
+    DeferE(c, b)           => DeferE(cs_ps_exp_e(c, ctx, shadow, lrecs), cs_ps_exp_e(b, ctx, shadow, lrecs))
+    ErrDeferE(c, b)        => ErrDeferE(cs_ps_exp_e(c, ctx, shadow, lrecs), cs_ps_exp_e(b, ctx, shadow, lrecs))
+    WithAllocE(a, b)       => WithAllocE(cs_ps_exp_e(a, ctx, shadow, lrecs), cs_ps_exp_e(b, ctx, shadow, lrecs))
+    WithHandlerE(e0, h, b) => WithHandlerE(e0, h, cs_ps_exp_e(b, ctx, shadow, lrecs))
+    ScopeE(s, b)           => ScopeE(s, cs_ps_exp_e(b, ctx, shadow, lrecs))
+    SpawnE(x)              => SpawnE(cs_ps_exp_e(x, ctx, shadow, lrecs))
+    CT(x)                  => CT(cs_ps_exp_e(x, ctx, shadow, lrecs))
+    _                      => e
+fn cs_ps_exp_el(xs, ctx, shadow, lrecs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_ps_exp_e(h, ctx, shadow, lrecs), cs_ps_exp_el(t, ctx, shadow, lrecs))
+fn cs_ps_exp_recl(xs, ctx, shadow, lrecs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.key, val: cs_ps_exp_e(h.val, ctx, shadow, lrecs)}, cs_ps_exp_recl(t, ctx, shadow, lrecs))
+fn cs_ps_exp_arms(xs, ctx, shadow, lrecs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons({pat: h.pat, body: cs_ps_exp_e(h.body, ctx, cs_app(cs_ps_pat_binds(h.pat), shadow), lrecs)}, cs_ps_exp_arms(t, ctx, shadow, lrecs))
+fn cs_ps_collect_consts1(s0, acc, recs, sigs) = match s0
+    ConstDecl(nm, v) => Cons({k: nm, v: cs_ps_exp_e(v, {consts: acc, recs: recs, sigs: sigs}, Nil, Nil)}, acc)
+    _                => acc
+fn cs_ps_collect_consts(prog, acc, recs, sigs) = match prog
+    Nil        => acc
+    Cons(h, t) => cs_ps_collect_consts(t, cs_ps_collect_consts1(h, acc, recs, sigs), recs, sigs)
+fn cs_ps_exp_stmt(s0, ctx) = match s0
+    ConstDecl(nm, v)          => Fn(nm, Nil, cs_ps_exp_e(v, ctx, Nil, Nil))
+    Fn(nm, ps, body)          => let lr = cs_ps_fn_lrecs(nm, ctx.sigs, ctx.recs) in Fn(nm, ps, cs_ps_exp_e(body, ctx, ps, lr))
+    VContractSig(nm, p, r, e) => let lr = cs_ps_fn_lrecs(nm, ctx.sigs, ctx.recs) in VContractSig(nm, p, cs_ps_exp_el(r, ctx, p, lr), cs_ps_exp_el(e, ctx, Cons("result", p), lr))
+    VLawDecl(nm, ps, b)       => VLawDecl(nm, ps, cs_ps_exp_e(b, ctx, ps, Nil))
+    VTypeInvariant(nm, fs, b) => VTypeInvariant(nm, fs, cs_ps_exp_e(b, ctx, Cons("self", cs_ps_rec_fnames(fs)), Nil))
+    Print(v)                  => Print(cs_ps_exp_e(v, ctx, Nil, Nil))
+    ExprS(v)                  => ExprS(cs_ps_exp_e(v, ctx, Nil, Nil))
+    _                         => s0
+fn cs_ps_exp_prog(prog, ctx) = match prog
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_ps_exp_stmt(h, ctx), cs_ps_exp_prog(t, ctx))
+fn cs_expand_prog_sugar(prog) = if cs_has_prog_sugar(prog) == 0 then prog else let recs = cs_ps_collect_recs(prog) in let sigs = cs_ps_collect_sigs(prog) in let consts = cs_ps_collect_consts(prog, Nil, recs, sigs) in cs_ps_exp_prog(prog, {consts: consts, recs: recs, sigs: sigs})
+fn cs_parse_full(src) = let lr = cs_lexsp(src, 0, 1, 1, Nil) in {prog: cs_expand_prog_sugar(cs_pprog(lr.tokens)), diags: lr.diags}
 fn cs_parse(src) = (cs_parse_full(src)).prog
 
 ## --- symbol table extraction ---
@@ -1469,12 +1712,17 @@ fn cs_vfm_pair1(v, p, cp, negs) = match negs
 fn cs_vfm_pairs(v, pos, negs) = match pos
     Nil        => Nil
     Cons(p, r) => let pairs1 = cs_vfm_pair1(v, p, cs_vlin_coeff(v, p.cs), negs) in if cs_len(pairs1) > 24 then pairs1 else cs_app(pairs1, cs_vfm_pairs(v, r, negs))
-fn cs_vfm_elim_var(v, hyps) = cs_app(cs_vfm_part_zer(v, hyps), cs_vfm_pairs(v, cs_vfm_part_pos(v, hyps), cs_vfm_part_neg(v, hyps)))
+fn cs_vfm_fdiv(c0, a) = if c0 >= 0 then c0 / a else (c0 - a + 1) / a
+fn cs_vfm_tighten_h(h) = if h.ok == 1 and cs_len(h.cs) == 1 then (let t = cs_phd_cs(h.cs) in let a = if t.c < 0 then 0 - t.c else t.c in if a > 1 then {ok: 1, c0: cs_vfm_fdiv(h.c0, a), cs: Cons({k: t.k, c: if t.c > 0 then 1 else 0 - 1}, Nil)} else h) else h
+fn cs_vfm_tighten_list(hyps) = match hyps
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_vfm_tighten_h(h), cs_vfm_tighten_list(t))
+fn cs_vfm_elim_var(v, hyps) = cs_vfm_tighten_list(cs_app(cs_vfm_part_zer(v, hyps), cs_vfm_pairs(v, cs_vfm_part_pos(v, hyps), cs_vfm_part_neg(v, hyps))))
 fn cs_vfm_unsat(hyps, vars) = if cs_vfm_any_contra(hyps) == 1 then 1 else cs_vfm_unsat1(hyps, vars)
 fn cs_vfm_unsat1(hyps, vars) = match vars
     Nil        => cs_vfm_any_contra(hyps)
     Cons(v, r) => let next = cs_vfm_elim_var(v, hyps) in if cs_vfm_any_contra(next) == 1 then 1 else if cs_len(next) > 48 then 0 else cs_vfm_unsat(next, r)
-fn cs_vfm_check_unsat(hyps) = cs_vfm_unsat(hyps, cs_vfm_vars(hyps, Nil))
+fn cs_vfm_check_unsat(hyps) = let thyps = cs_vfm_tighten_list(hyps) in cs_vfm_unsat(thyps, cs_vfm_vars(thyps, Nil))
 
 ## --- Multiplier M1 (#255): QF_NIA / QF_BV / QF_ALIA / Separation Logic in `lcaas` ---
 fn cs_vnia_var_lb(v, hyps) = match hyps
@@ -1493,7 +1741,7 @@ fn cs_vnia_vars_cs(cs, acc) = match cs
     Cons(h, t) => cs_vnia_vars_cs(t, cs_vnia_add_bvars(cs_vnia_split_star(h.k, 0, count(h.k)), acc))
 fn cs_vnia_base_vars(hyps, acc) = match hyps
     Nil        => acc
-    Cons(h, t) => cs_vnia_base_vars(t, if cs_len(h.cs) <= 3 then cs_vnia_vars_cs(h.cs, acc) else acc)
+    Cons(h, t) => cs_vnia_base_vars(t, if cs_len(h.cs) <= 6 then cs_vnia_vars_cs(h.cs, acc) else acc)
 fn cs_vnia_sq_hyps(vars) = match vars
     Nil        => Nil
     Cons(v, r) => Cons(cs_vlin_var(cs_vmono_key(v, v)), cs_vnia_sq_hyps(r))
@@ -1511,7 +1759,7 @@ fn cs_vnia_prod_hyps(vars, hyps) = match vars
     Cons(v1, r) => let lb1 = cs_vnia_var_lb(v1, hyps) in cs_app(if lb1 >= 0 then cs_vnia_prod_pair(v1, lb1, vars, hyps) else Nil, cs_vnia_prod_hyps(r, hyps))
 fn cs_vnia_mono_z(x, y, vars, hyps) = match vars
     Nil        => Nil
-    Cons(z, r) => let lbz = cs_vnia_var_lb(z, hyps) in let rest = cs_vnia_mono_z(x, y, r, hyps) in if lbz >= 0 then Cons(cs_vlin_sub(cs_vlin_var(cs_vmono_key(x, z)), cs_vlin_var(cs_vmono_key(y, z))), rest) else rest
+    Cons(z, r) => let lbz = cs_vnia_var_lb(z, hyps) in let rest0 = cs_vnia_mono_z(x, y, r, hyps) in let d_xy = cs_vlin_sub(cs_vlin_var(cs_vmono_key(x, z)), cs_vlin_var(cs_vmono_key(y, z))) in let rest = if lbz > 0 then Cons(cs_vlin_sub(d_xy, cs_vlin_scale(lbz, cs_vlin_sub(cs_vlin_var(x), cs_vlin_var(y)))), rest0) else rest0 in if lbz >= 0 then Cons(d_xy, rest) else rest
 fn cs_vnia_mono_h1(h, vars, hyps) = if h.c0 <= 0 and cs_len(h.cs) == 2 then let c1 = cs_phd_cs(h.cs) in let c2 = cs_phd_cs(cs_cvtl_cs(h.cs)) in if c1.c == 1 and c2.c == 0 - 1 then cs_vnia_mono_z(c1.k, c2.k, vars, hyps) else if c2.c == 1 and c1.c == 0 - 1 then cs_vnia_mono_z(c2.k, c1.k, vars, hyps) else Nil else Nil
 fn cs_cvtl_cs(cs) = match cs
     Nil        => Nil
@@ -1533,6 +1781,8 @@ fn cs_vlin_varmod_hyps(la, lb, m, hyps) = if cs_vfm_check_unsat(Cons(cs_vlin_sub
 fn cs_vis_struct_call(cnm) = if cnm == "array_new" or cnm == "array_const" or cnm == "array_store" or cnm == "heap_write" or cnm == "points_to" or cnm == "heap_new" or cnm == "sep_conj" then 1 else 0
 fn cs_vis_struct_expr(e) = match e
     Call(cnm, args) => cs_vis_struct_call(cnm)
+    Rec(items)      => 1
+    RecT(tn, items) => 1
     _               => 0
 fn cs_vsep_dom_ptr(e) = match e
     Call(cnm, args) => if (cnm == "points_to" or cnm == "heap_new") and cs_len(args) == 2 then Cons(cs_asthead(args), Nil) else if cnm == "sep_conj" and cs_len(args) == 2 then cs_app(cs_vsep_dom_ptr(cs_asthead(args)), cs_vsep_dom_ptr(cs_astsecond(args))) else if cnm == "heap_write" and cs_len(args) == 3 then cs_vsep_dom_ptr(cs_asthead(args)) else Nil
@@ -1583,10 +1833,19 @@ fn cs_vlin_bind_p1(p, r, vs) = match vs
     Nil         => Nil
     Cons(v, vr) => Cons({k: p, v: v}, cs_vlin_bind_ps(r, vr))
 fn cs_vlin_bin_op(op, l, r, hyps, lenv, ft, d) = let la = cs_vlin_expr(l, hyps, lenv, ft, d) in let lb = cs_vlin_expr(r, hyps, lenv, ft, d) in if op == "+" then cs_vlin_add(la, lb) else if op == "-" then cs_vlin_sub(la, lb) else if op == "*" then cs_vlin_mul(la, lb) else if op == "/" then (if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_isnil(lb.cs) == 1 and lb.c0 > 0 then (if cs_isnil(la.cs) == 1 then cs_vlin_const(la.c0 / lb.c0) else cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")")) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 1 then cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")") else cs_vlin_err()) else if op == "%" then (if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_isnil(lb.cs) == 1 and lb.c0 > 0 then (if cs_isnil(la.cs) == 1 then cs_vlin_const(la.c0 % lb.c0) else cs_vlin_sub(la, cs_vlin_scale(lb.c0, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")")))) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 1 then cs_vlin_var("mod(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")") else cs_vlin_err()) else cs_vlin_err()
+fn cs_cert_rec_lookup(fld, items, def) = match items
+    Nil        => def
+    Cons(h, t) => if h.key == fld then h.val else cs_cert_rec_lookup(fld, t, def)
+fn cs_vlin_field(o, fld, hyps, lenv, ft, d) = match o
+    Rec(items)      => cs_vlin_expr(cs_cert_rec_lookup(fld, items, Num(0)), hyps, lenv, ft, d)
+    RecT(tn, items) => cs_vlin_expr(cs_cert_rec_lookup(fld, items, Num(0)), hyps, lenv, ft, d)
+    Var(vnm)        => let lk = cs_vlin_lookup(vnm + "." + fld, lenv) in if lk.ok == 1 then lk else cs_vlin_var("field(" + vnm + "." + fld + ")")
+    _               => cs_vlin_err()
 fn cs_vlin_expr(e, hyps, lenv, ft, d) = if d > 6 then cs_vlin_err() else cs_vlin_expr1(e, hyps, lenv, ft, d)
 fn cs_vlin_expr1(e, hyps, lenv, ft, d) = match e
     Num(n)          => cs_vlin_const(n)
     Var(nm)         => cs_vlin_lookup(nm, lenv)
+    Field(o, fld)   => cs_vlin_field(o, fld, hyps, lenv, ft, d)
     OwnE(inner)     => cs_vlin_expr(inner, hyps, lenv, ft, d)
     MutE(inner)     => cs_vlin_expr(inner, hyps, lenv, ft, d)
     CT(inner)       => cs_vlin_expr(inner, hyps, lenv, ft, d)
@@ -1654,7 +1913,7 @@ fn cs_vprove_goal(g, hyps, lenv, ft, d) = match g
     DeferE(c, b)    => cs_vprove_goal(b, hyps, lenv, ft, d)
     ErrDeferE(c, b) => cs_vprove_goal(b, hyps, lenv, ft, d)
     If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_vprove_goal(cs_vnorm_if(c, t, e2), hyps, lenv, ft, d) else let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and cs_vprove_goal(t, cs_app(rp.hyps, hyps), lenv, ft, d) == 1 and (cs_vprove_goal(e2, hyps, lenv, ft, d) == 1 or rn.ok == 1 and cs_vprove_goal(e2, cs_app(rn.hyps, hyps), lenv, ft, d) == 1) then 1 else 0
-    Bin(op, a, b)   => if op == "and" then (if cs_vprove_goal(a, hyps, lenv, ft, d) == 1 and cs_vprove_goal(b, hyps, lenv, ft, d) == 1 then 1 else 0) else if op == "or" then (if cs_vprove_goal(a, hyps, lenv, ft, d) == 1 or cs_vprove_goal(b, hyps, lenv, ft, d) == 1 then 1 else let rna = cs_vcond_neg(a, hyps, lenv, ft, d) in if rna.ok == 1 and cs_vprove_goal(b, cs_app(rna.hyps, hyps), lenv, ft, d) == 1 then 1 else let rnb = cs_vcond_neg(b, hyps, lenv, ft, d) in if rnb.ok == 1 and cs_vprove_goal(a, cs_app(rnb.hyps, hyps), lenv, ft, d) == 1 then 1 else 0) else if op == "==" then (if cs_vprove_goal(Bin(">=", a, b), hyps, lenv, ft, d) == 1 and cs_vprove_goal(Bin("<=", a, b), hyps, lenv, ft, d) == 1 then 1 else 0) else if op == "!=" then (if cs_vprove_goal(Bin(">", a, b), hyps, lenv, ft, d) == 1 or cs_vprove_goal(Bin("<", a, b), hyps, lenv, ft, d) == 1 or cs_vprove_goal(Bin(">=", Bin("*", Bin("-", a, b), Bin("-", a, b)), Num(1)), hyps, lenv, ft, d) == 1 then 1 else 0) else let dhyps = cs_app(cs_vcollect_div_hyps_e(g, hyps, lenv, ft, d), hyps) in let rn = cs_vcond_neg(g, dhyps, lenv, ft, d) in if rn.ok == 1 then cs_vfm_check_unsat(cs_app(rn.hyps, cs_vnia_enrich_hyps(rn.hyps, dhyps))) else 0
+    Bin(op, a, b)   => if op == "and" then (if cs_vprove_goal(a, hyps, lenv, ft, d) == 1 and cs_vprove_goal(b, hyps, lenv, ft, d) == 1 then 1 else 0) else if op == "or" then (if cs_vprove_goal(a, hyps, lenv, ft, d) == 1 or cs_vprove_goal(b, hyps, lenv, ft, d) == 1 then 1 else let rna = cs_vcond_neg(a, hyps, lenv, ft, d) in if rna.ok == 1 and cs_vprove_goal(b, cs_app(rna.hyps, hyps), lenv, ft, d) == 1 then 1 else let rnb = cs_vcond_neg(b, hyps, lenv, ft, d) in if rnb.ok == 1 and cs_vprove_goal(a, cs_app(rnb.hyps, hyps), lenv, ft, d) == 1 then 1 else 0) else if op == "==" then (if cs_vprove_goal(Bin(">=", a, b), hyps, lenv, ft, d) == 1 and cs_vprove_goal(Bin("<=", a, b), hyps, lenv, ft, d) == 1 then 1 else 0) else if op == "!=" then (if cs_vprove_goal(Bin(">", a, b), hyps, lenv, ft, d) == 1 or cs_vprove_goal(Bin("<", a, b), hyps, lenv, ft, d) == 1 or cs_vprove_goal(Bin(">=", Bin("*", Bin("-", a, b), Bin("-", a, b)), Num(1)), hyps, lenv, ft, d) == 1 then 1 else 0) else let dhyps = cs_app(cs_vcollect_div_hyps_e(g, hyps, lenv, ft, d), hyps) in let rn = cs_vcond_neg(g, dhyps, lenv, ft, d) in if rn.ok == 1 then (if cs_vfm_check_unsat(cs_app(rn.hyps, dhyps)) == 1 then 1 else cs_vfm_check_unsat(cs_app(rn.hyps, cs_vnia_enrich_hyps(rn.hyps, dhyps)))) else 0
     Call(cnm, args) => if cnm == "dec_eq" and cs_len(args) == 2 then cs_vprove_goal(Bin("==", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_ge" and cs_len(args) == 2 then cs_vprove_goal(Bin(">=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_gt" and cs_len(args) == 2 then cs_vprove_goal(Bin(">", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_le" and cs_len(args) == 2 then cs_vprove_goal(Bin("<=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "dec_lt" and cs_len(args) == 2 then cs_vprove_goal(Bin("<", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "sep_disjoint" and cs_len(args) == 2 then cs_vprove_goal(Bin("!=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "sep_valid" and cs_len(args) == 1 then cs_vsep_valid(cs_asthead(args), hyps, lenv, ft, d) else if cnm == "sep_conj" and cs_len(args) == 2 then cs_vsep_valid(g, hyps, lenv, ft, d) else if cnm == "forall_range" and cs_len(args) == 4 then cs_vprove_forall_range(args, hyps, lenv, ft, d) else if cnm == "exists_range" and cs_len(args) == 4 then cs_vprove_exists_range(args, hyps, lenv, ft, d) else 0
     _               => 0
 fn cs_vprove_goals_all(enss, hyps, lenv, ft, d) = match enss
@@ -1670,7 +1929,7 @@ fn cs_vprove_body(body, hyps, lenv, enss, ft, d) = match body
     ErrDeferE(c, b) => cs_vprove_body(b, hyps, lenv, enss, ft, d)
     If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_vprove_body(cs_vnorm_if(c, t, e2), hyps, lenv, enss, ft, d) else let rp = cs_vcond_pos(c, hyps, lenv, ft, d) in let rn = cs_vcond_neg(c, hyps, lenv, ft, d) in if rp.ok == 1 and rn.ok == 1 and cs_vprove_body(t, cs_app(rp.hyps, hyps), lenv, enss, ft, d) == 1 and cs_vprove_body(e2, cs_app(rn.hyps, hyps), lenv, enss, ft, d) == 1 then 1 else 0
     _               => let dhyps = cs_app(cs_vcollect_div_hyps_e(body, hyps, lenv, ft, d), hyps) in let lb = cs_vlin_expr(body, dhyps, lenv, ft, d) in if lb.ok == 0 then 0 else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, lenv)) in cs_vprove_goals_all(enss, dhyps, penv, ft, d)
-fn cs_vqflia_prove_fn(ps, reqs, enss, body, ft) = if cs_isnil(enss) == 1 then 0 else let lenv = cs_vlin_init_env(ps) in let rh = cs_vprove_reqs_hyps(reqs, lenv, ft) in if rh.ok == 1 then cs_vprove_body(body, rh.hyps, lenv, enss, ft, 0) else cs_vprove_with_reqs(reqs, Nil, {body: body, lenv: lenv, enss: enss, ft: ft})
+fn cs_vqflia_prove_fn(ps, reqs, enss, body, ft) = if cs_isnil(enss) == 1 then 0 else let lenv = cs_vlin_init_env(ps) in let rh = cs_vprove_reqs_hyps(reqs, lenv, ft) in let r0 = (if rh.ok == 1 then cs_vprove_body(body, rh.hyps, lenv, enss, ft, 0) else cs_vprove_with_reqs(reqs, Nil, {body: body, lenv: lenv, enss: enss, ft: ft})) in if r0 == 1 then 1 else if rh.ok == 1 then cs_vprove_goal(cs_cert_embed_body(body, enss, ft), rh.hyps, lenv, ft, 0) else 0
 fn cs_vqflia_prove_law(ps, body, ft) = let lenv = cs_vlin_init_env(ps) in let cbody = cs_cert_clean_e(body, ft, 0) in if cs_vprove_goal(cbody, Nil, lenv, ft, 0) == 1 then 1 else if cs_len(ps) == 1 then let p0 = cs_vlin_var(cs_hd_str(ps, "")) in let hneg = Cons(cs_vlin_sub(cs_vlin_const(0 - 1), p0), Nil) in let hpos = Cons(p0, Nil) in if cs_vprove_goal(cbody, hneg, lenv, ft, 0) == 1 and cs_vprove_goal(cbody, hpos, lenv, ft, 0) == 1 then 1 else 0 else 0
 fn cs_vneg_goal_hyps(g, hyps, lenv, ft, d) = match g
     Bin(op, a, b) => if op == "and" then cs_app(cs_vneg_goal_hyps(a, hyps, lenv, ft, d), cs_vneg_goal_hyps(b, hyps, lenv, ft, d)) else if op == "==" then cs_app((cs_vcond_cmp_pos(">", cs_vlin_expr(a, hyps, lenv, ft, d), cs_vlin_expr(b, hyps, lenv, ft, d))).hyps, (cs_vcond_cmp_pos("<", cs_vlin_expr(a, hyps, lenv, ft, d), cs_vlin_expr(b, hyps, lenv, ft, d))).hyps) else (cs_vcond_neg(g, hyps, lenv, ft, d)).hyps
@@ -1699,8 +1958,14 @@ fn cs_vgen_envs_hyps(ps, idx, total, chyps) = match ps
     Nil        => Cons(Nil, Nil)
     Cons(p, r) => cs_vcross_p(p, cs_vpts_from_hyps(p, chyps, cs_vpts_for(idx, total)), cs_vgen_envs_hyps(r, idx + 1, total, chyps))
 
+fn cs_cert_subst_res_rec(items, leaf) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.key, val: cs_cert_subst_res(h.val, leaf)}, cs_cert_subst_res_rec(t, leaf))
 fn cs_cert_subst_res(e, leaf) = match e
     Var(nm)         => if nm == "result" or nm == "ret" then leaf else e
+    Field(o, fld)   => Field(cs_cert_subst_res(o, leaf), fld)
+    Rec(items)      => Rec(cs_cert_subst_res_rec(items, leaf))
+    RecT(tn, items) => RecT(tn, cs_cert_subst_res_rec(items, leaf))
     Bin(op, a, b)   => Bin(op, cs_cert_subst_res(a, leaf), cs_cert_subst_res(b, leaf))
     If(c, t, e2)    => If(cs_cert_subst_res(c, leaf), cs_cert_subst_res(t, leaf), cs_cert_subst_res(e2, leaf))
     LetIn(nm, v, b) => LetIn(nm, cs_cert_subst_res(v, leaf), if nm == "result" or nm == "ret" then b else cs_cert_subst_res(b, leaf))
@@ -1722,8 +1987,14 @@ fn cs_cert_bind_p1(p, r, args) = match args
 fn cs_cert_lookup_arg(nm, env) = match env
     Nil        => Var(nm)
     Cons(h, t) => if h.k == nm then h.v else cs_cert_lookup_arg(nm, t)
+fn cs_cert_subst_env_rec(items, env) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.key, val: cs_cert_subst_env(h.val, env)}, cs_cert_subst_env_rec(t, env))
 fn cs_cert_subst_env(e, env) = match e
     Var(nm)         => cs_cert_lookup_arg(nm, env)
+    Field(o, fld)   => Field(cs_cert_subst_env(o, env), fld)
+    Rec(items)      => Rec(cs_cert_subst_env_rec(items, env))
+    RecT(tn, items) => RecT(tn, cs_cert_subst_env_rec(items, env))
     Bin(op, a, b)   => Bin(op, cs_cert_subst_env(a, env), cs_cert_subst_env(b, env))
     If(c, t, e2)    => If(cs_cert_subst_env(c, env), cs_cert_subst_env(t, env), cs_cert_subst_env(e2, env))
     LetIn(nm, v, b) => LetIn(nm, cs_cert_subst_env(v, env), cs_cert_subst_env(b, Cons({k: nm, v: Var(nm)}, env)))
@@ -1742,6 +2013,18 @@ fn cs_cert_inline_ufn2(cnm, cargs, fn0, ft, d) = match fn0
 fn cs_cert_clean_args(xs, ft, d) = match xs
     Nil        => Nil
     Cons(h, t) => Cons(cs_cert_clean_e(h, ft, d), cs_cert_clean_args(t, ft, d))
+fn cs_cert_clean_rec(items, ft, d) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.key, val: cs_cert_clean_e(h.val, ft, d)}, cs_cert_clean_rec(t, ft, d))
+fn cs_cert_clean_field(co, fld) = match co
+    Rec(items)      => cs_cert_rec_lookup(fld, items, Field(co, fld))
+    RecT(tn, items) => cs_cert_rec_lookup(fld, items, Field(co, fld))
+    _               => Field(co, fld)
+fn cs_cert_clean_let(nm, cv, b, ft, d) = match cv
+    LetIn(nm1, v1, b1) => LetIn(nm1, v1, cs_cert_clean_let(nm, b1, b, ft, d))
+    Rec(items)         => cs_cert_clean_e(cs_temp_subst_var(b, nm, cv), ft, d)
+    RecT(tn, items)    => cs_cert_clean_e(cs_temp_subst_var(b, nm, cv), ft, d)
+    _                  => LetIn(nm, cv, cs_cert_clean_e(b, ft, d))
 fn cs_vis_m1_intrinsic(cnm) = if cs_vis_struct_call(cnm) == 1 or cnm == "array_select" or cnm == "heap_read" or cnm == "sep_valid" or cnm == "sep_disjoint" or cnm == "forall_range" or cnm == "exists_range" then 1 else 0
 fn cs_cert_lift_bin_r(op, ca, cb) = match cb
     If(c, t, e2) => If(c, cs_cert_mk_bin(op, ca, t), cs_cert_mk_bin(op, ca, e2))
@@ -1753,14 +2036,22 @@ fn cs_cert_mk_bin(op, ca, cb) = if op == "and" or op == "or" then Bin(op, ca, cb
 fn cs_cert_clean_e(e, ft, d) = if d > 4 then e else cs_cert_clean_e1(e, ft, d)
 fn cs_cert_clean_e1(e, ft, d) = match e
     Call(cnm, args) => let cargs = cs_cert_clean_args(args, ft, d) in if (cnm == "verify" or cnm == "old" or cnm == "law_check" or cnm == "evolve_approve" or cnm == "borrow" or cnm == "borrow_mut" or cnm == "move" or cnm == "clone") and cs_len(cargs) >= 1 then cs_asthead(cargs) else if cnm == "grad" and cs_len(cargs) >= 2 then cs_cert_inline_ufn("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), cs_cvtl(cargs), cs_fnlookup("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), ft), ft, d) else if cnm == "jit" and cs_len(cargs) >= 2 then cs_cert_inline_ufn(cs_n4_var_name(cs_asthead(args)), cs_cvtl(cargs), cs_fnlookup(cs_n4_var_name(cs_asthead(args)), ft), ft, d) else if cnm == "dec_add" and cs_len(cargs) == 2 then cs_cert_mk_bin("+", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_sub" and cs_len(cargs) == 2 then cs_cert_mk_bin("-", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_eq" and cs_len(cargs) == 2 then cs_cert_mk_bin("==", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_ge" and cs_len(cargs) == 2 then cs_cert_mk_bin(">=", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_gt" and cs_len(cargs) == 2 then cs_cert_mk_bin(">", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_le" and cs_len(cargs) == 2 then cs_cert_mk_bin("<=", cs_asthead(cargs), cs_astsecond(cargs)) else if cnm == "dec_lt" and cs_len(cargs) == 2 then cs_cert_mk_bin("<", cs_asthead(cargs), cs_astsecond(cargs)) else if cs_vis_m1_intrinsic(cnm) == 1 then Call(cnm, cargs) else cs_cert_inline_ufn(cnm, cargs, cs_fnlookup(cnm, ft), ft, d)
+    Field(o, fld)   => cs_cert_clean_field(cs_cert_clean_e(o, ft, d), fld)
+    Rec(items)      => Rec(cs_cert_clean_rec(items, ft, d))
+    RecT(tn, items) => RecT(tn, cs_cert_clean_rec(items, ft, d))
     Bin(op, a, b)   => cs_cert_mk_bin(op, cs_cert_clean_e(a, ft, d), cs_cert_clean_e(b, ft, d))
     If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_cert_clean_e(cs_vnorm_if(c, t, e2), ft, d) else If(cs_cert_clean_e(c, ft, d), cs_cert_clean_e(t, ft, d), cs_cert_clean_e(e2, ft, d))
-    LetIn(nm, v, b) => let gfn = cs_n4_is_grad_let(v) in if gfn != "" then cs_cert_clean_e(cs_n4_subst_call(b, nm, "__ad_grad_" + gfn), ft, d) else LetIn(nm, cs_cert_clean_e(v, ft, d), cs_cert_clean_e(b, ft, d))
-    VarIn(nm, v, b) => LetIn(nm, cs_cert_clean_e(v, ft, d), cs_cert_clean_e(b, ft, d))
+    LetIn(nm, v, b) => let gfn = cs_n4_is_grad_let(v) in if gfn != "" then cs_cert_clean_e(cs_n4_subst_call(b, nm, "__ad_grad_" + gfn), ft, d) else cs_cert_clean_let(nm, cs_cert_clean_e(v, ft, d), b, ft, d)
+    VarIn(nm, v, b) => cs_cert_clean_let(nm, cs_cert_clean_e(v, ft, d), b, ft, d)
     _               => e
+fn cs_cert_embed_let(nm, cv, b, enss, ft) = match cv
+    LetIn(nm1, v1, b1) => LetIn(nm1, v1, cs_cert_embed_let(nm, b1, b, enss, ft))
+    Rec(items)         => cs_cert_embed_body(cs_temp_subst_var(b, nm, cv), enss, ft)
+    RecT(tn, items)    => cs_cert_embed_body(cs_temp_subst_var(b, nm, cv), enss, ft)
+    _                  => LetIn(nm, cv, cs_cert_embed_body(b, enss, ft))
 fn cs_cert_embed_body(body, enss, ft) = match body
-    LetIn(nm, v, b) => let gfn = cs_n4_is_grad_let(v) in if gfn != "" then cs_cert_embed_body(cs_n4_subst_call(b, nm, "__ad_grad_" + gfn), enss, ft) else LetIn(nm, cs_cert_clean_e(v, ft, 0), cs_cert_embed_body(b, enss, ft))
-    VarIn(nm, v, b) => LetIn(nm, cs_cert_clean_e(v, ft, 0), cs_cert_embed_body(b, enss, ft))
+    LetIn(nm, v, b) => let gfn = cs_n4_is_grad_let(v) in if gfn != "" then cs_cert_embed_body(cs_n4_subst_call(b, nm, "__ad_grad_" + gfn), enss, ft) else cs_cert_embed_let(nm, cs_cert_clean_e(v, ft, 0), b, enss, ft)
+    VarIn(nm, v, b) => cs_cert_embed_let(nm, cs_cert_clean_e(v, ft, 0), b, enss, ft)
     DeferE(c, b)    => cs_cert_embed_body(b, enss, ft)
     ErrDeferE(c, b) => cs_cert_embed_body(b, enss, ft)
     If(c, t, e2)    => if cs_vnorm_if_changed(c) == 1 then cs_cert_embed_body(cs_vnorm_if(c, t, e2), enss, ft) else If(cs_cert_clean_e(c, ft, 0), cs_cert_embed_body(t, enss, ft), cs_cert_embed_body(e2, enss, ft))
@@ -1836,8 +2127,14 @@ fn cs_vwcet_call2(cnm, fn0, ft, d) = match fn0
 fn cs_vwcet_prove_fn(nm, body, wcets, ft) = let bound = cs_vwcet_lookup(nm, wcets) in if bound <= 0 then {proofs: Nil, diags: Nil} else let est = if cs_mentions_call(nm, body) == 1 then 100000 else cs_vwcet_e(body, ft, 4) in let ok = if est <= bound then 1 else 0 in let tm = "wcet_budget(" + str(est) + " <= " + str(bound) + ")" in let pf = Cons({name: nm, kind: "wcet", status: if ok == 1 then "budget_checked" else "refuted", obligation: "cycles(" + nm + ") <= " + str(bound), term: tm, counterexample: if ok == 1 then "" else "estimated_cycles = " + str(est) + " > " + str(bound)}, Nil) in let dg = if ok == 1 then Nil else Cons(cs_mkdiag("V0002", "wcet", "wcet budget error: function '" + nm + "' has structural cycle cost of " + str(est) + " cycles, exceeding '@bound(cycles: " + str(bound) + ")'", "remove recursion/loops on the critical path or increase '@bound(cycles: " + str(est) + ")'"), Nil) in {proofs: pf, diags: dg}
 
 ## --- Horizon H1 (#198): Real LTL Temporal Logic Prover (`always` □, `eventually` ◇, `until` U, `leads_to` ~>) in `lcaas` ---
+fn cs_temp_subst_rec(items, vnm, rep) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.key, val: cs_temp_subst_var(h.val, vnm, rep)}, cs_temp_subst_rec(t, vnm, rep))
 fn cs_temp_subst_var(e, vnm, rep) = match e
     Var(nm)         => if nm == vnm then rep else e
+    Field(o, fld)   => Field(cs_temp_subst_var(o, vnm, rep), fld)
+    Rec(items)      => Rec(cs_temp_subst_rec(items, vnm, rep))
+    RecT(tn, items) => RecT(tn, cs_temp_subst_rec(items, vnm, rep))
     Bin(op, a, b)   => Bin(op, cs_temp_subst_var(a, vnm, rep), cs_temp_subst_var(b, vnm, rep))
     If(c, t, e2)    => If(cs_temp_subst_var(c, vnm, rep), cs_temp_subst_var(t, vnm, rep), cs_temp_subst_var(e2, vnm, rep))
     LetIn(nm, v, b) => LetIn(nm, cs_temp_subst_var(v, vnm, rep), if nm == vnm then b else cs_temp_subst_var(b, vnm, rep))

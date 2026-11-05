@@ -16,6 +16,7 @@ fn cdmax() = 2000
 fn cv_int(n) = {kind: "int", i: n, s: "", items: Nil}
 fn cv_str(v) = {kind: "str", i: 0, s: v, items: Nil}
 fn cv_ctor(tag, xs) = {kind: "ctor", i: 0, s: tag, items: xs}
+fn cv_rec(tn, xs) = {kind: "rec", i: 0, s: tn, items: xs}
 fn cr(v, f) = {v: v, f: f}
 fn cvhd(xs) = match xs
     Nil        => cv_int(0)
@@ -36,9 +37,20 @@ fn cstep(e, env, ft, f, cd) = match e
     Quote(inner)    => cquasiquote(inner, Nil, env, ft, f, cd)
     Splice(inner)   => csplice(ceval(inner, env, ft, f, cd), env, ft, cd)
     Match(sc, arms) => cmatch(ceval(sc, env, ft, f, cd), arms, env, ft, cd)
-    Rec(items)      => ctfail("lume: comptime error: record literal is not foldable at compile time\n")
-    Field(o, nm)    => ctfail("lume: comptime error: field access is not foldable at compile time\n")
+    Rec(items)      => crec("", items, env, ft, f, cd)
+    RecT(tn, items) => crec(tn, items, env, ft, f, cd)
+    Field(o, nm)    => cfield(ceval(o, env, ft, f, cd), nm)
     _               => ctfail("lume: comptime error: expression is not foldable at compile time\n")
+fn crecflds(items, env, ft, f, cd) = match items
+    Nil        => {vals: Nil, f: f}
+    Cons(h, t) => crecflds2(h.key, ceval(h.val, env, ft, f, cd), t, env, ft, cd)
+fn crecflds2(k, rv, t, env, ft, cd) = crecflds3(k, rv, crecflds(t, env, ft, rv.f, cd))
+fn crecflds3(k, rv, rt) = {vals: Cons(cv_ctor(k, Cons(rv.v, Nil)), rt.vals), f: rt.f}
+fn crec(tn, items, env, ft, f, cd) = let r = crecflds(items, env, ft, f, cd) in cr(cv_rec(tn, r.vals), r.f)
+fn cfieldlookup(xs, nm) = match xs
+    Nil        => ctfail("lume: comptime error: record has no field '" + nm + "' at compile time\n")
+    Cons(h, t) => if h.s == nm then cvhd(h.items) else cfieldlookup(t, nm)
+fn cfield(ro, nm) = if ro.v.kind == "rec" then cr(cfieldlookup(ro.v.items, nm), ro.f) else ctfail("lume: comptime error: field access on non-record at compile time\n")
 fn cctor(nm, args, env, ft, f, cd) = cctor2(nm, cargs(args, env, ft, f, cd))
 fn cctor2(nm, ra) = cr(cv_ctor(nm, ra.vals), ra.f)
 fn cmatch(rsc, arms, env, ft, cd) = cmatcharms(rsc.v, arms, env, ft, rsc.f, cd)
@@ -78,7 +90,10 @@ fn cevalbin(op, a, b) = if op == "==" and a.kind == b.kind then cv_int(cveq(a, b
 fn cevalii(op, x, y) = if op == "+" then cv_int(x + y) else if op == "-" then cv_int(x - y) else if op == "*" then cv_int(x * y) else if op == "/" then cevaldiv(x, y) else if op == "%" then cevalmod(x, y) else if op == "==" then cv_int(x == y) else if op == "!=" then cv_int(x != y) else if op == "<" then cv_int(x < y) else if op == ">" then cv_int(x > y) else if op == "<=" then cv_int(x <= y) else if op == ">=" then cv_int(x >= y) else if op == "and" then cv_int(x != 0 and y != 0) else if op == "or" then cv_int(x != 0 or y != 0) else ctfail("lume: comptime error: unknown operator '" + op + "' at compile time\n")
 fn cevaldiv(x, y) = if y == 0 then ctfail("lume: comptime error: division by zero at compile time\n") else cv_int(x / y)
 fn cevalmod(x, y) = if y == 0 then ctfail("lume: comptime error: modulo by zero at compile time\n") else cv_int(x % y)
-fn ctnode(cv) = if cv.kind == "int" then Num(cv.i) else if cv.kind == "str" then Str(cv.s) else if isnil(cv.items) == 1 then Var(cv.s) else Call(cv.s, ctnodelist(cv.items))
+fn ctnoderec(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.s, val: ctnode(cvhd(h.items))}, ctnoderec(t))
+fn ctnode(cv) = if cv.kind == "int" then Num(cv.i) else if cv.kind == "str" then Str(cv.s) else if cv.kind == "rec" then (if cv.s == "" then Rec(ctnoderec(cv.items)) else RecT(cv.s, ctnoderec(cv.items))) else if isnil(cv.items) == 1 then Var(cv.s) else Call(cv.s, ctnodelist(cv.items))
 fn ctnodelist(xs) = match xs
     Nil        => Nil
     Cons(h, t) => Cons(ctnode(h), ctnodelist(t))

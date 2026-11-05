@@ -1327,7 +1327,15 @@ fn vfm_pairs(v, pos, negs) = match pos
     Nil        => Nil
     Cons(p, r) => let pairs1 = vfm_pair1(v, p, vlin_coeff(v, p.cs), negs) in if len(pairs1) > 24 then pairs1 else app(pairs1, vfm_pairs(v, r, negs))
 
-fn vfm_elim_var(v, hyps) = app(vfm_part_zer(v, hyps), vfm_pairs(v, vfm_part_pos(v, hyps), vfm_part_neg(v, hyps)))
+fn vfm_fdiv(c0, a) = if c0 >= 0 then c0 / a else (c0 - a + 1) / a
+
+fn vfm_tighten_h(h) = if h.ok == 1 and len(h.cs) == 1 then (let t = phd_cs(h.cs) in let a = if t.c < 0 then 0 - t.c else t.c in if a > 1 then {ok: 1, c0: vfm_fdiv(h.c0, a), cs: Cons({k: t.k, c: if t.c > 0 then 1 else 0 - 1}, Nil)} else h) else h
+
+fn vfm_tighten_list(hyps) = match hyps
+    Nil        => Nil
+    Cons(h, t) => Cons(vfm_tighten_h(h), vfm_tighten_list(t))
+
+fn vfm_elim_var(v, hyps) = vfm_tighten_list(app(vfm_part_zer(v, hyps), vfm_pairs(v, vfm_part_pos(v, hyps), vfm_part_neg(v, hyps))))
 
 fn vfm_unsat(hyps, vars) = if vfm_any_contra(hyps) == 1 then 1 else vfm_unsat1(hyps, vars)
 
@@ -1335,7 +1343,7 @@ fn vfm_unsat1(hyps, vars) = match vars
     Nil        => vfm_any_contra(hyps)
     Cons(v, r) => let next = vfm_elim_var(v, hyps) in if vfm_any_contra(next) == 1 then 1 else if len(next) > 48 then 0 else vfm_unsat(next, r)
 
-fn vfm_check_unsat(hyps) = vfm_unsat(hyps, vfm_vars(hyps, Nil))
+fn vfm_check_unsat(hyps) = let thyps = vfm_tighten_list(hyps) in vfm_unsat(thyps, vfm_vars(thyps, Nil))
 
 ## --- Multiplier M1 (#255): QF_NIA Positivstellensatz / Monotonicity / Div-Mod / QF_BV / QF_ALIA / Separation ---
 fn vnia_var_lb(v, hyps) = match hyps
@@ -1360,7 +1368,7 @@ fn vnia_vars_cs(cs, acc) = match cs
 
 fn vnia_base_vars(hyps, acc) = match hyps
     Nil        => acc
-    Cons(h, t) => vnia_base_vars(t, if len(h.cs) <= 3 then vnia_vars_cs(h.cs, acc) else acc)
+    Cons(h, t) => vnia_base_vars(t, if len(h.cs) <= 6 then vnia_vars_cs(h.cs, acc) else acc)
 
 fn vnia_sq_hyps(vars) = match vars
     Nil        => Nil
@@ -1384,7 +1392,7 @@ fn vnia_prod_hyps(vars, hyps) = match vars
 
 fn vnia_mono_z(x, y, vars, hyps) = match vars
     Nil        => Nil
-    Cons(z, r) => let lbz = vnia_var_lb(z, hyps) in let rest = vnia_mono_z(x, y, r, hyps) in if lbz >= 0 then Cons(vlin_sub(vlin_var(vmono_key(x, z)), vlin_var(vmono_key(y, z))), rest) else rest
+    Cons(z, r) => let lbz = vnia_var_lb(z, hyps) in let rest0 = vnia_mono_z(x, y, r, hyps) in let d_xy = vlin_sub(vlin_var(vmono_key(x, z)), vlin_var(vmono_key(y, z))) in let rest = if lbz > 0 then Cons(vlin_sub(d_xy, vlin_scale(lbz, vlin_sub(vlin_var(x), vlin_var(y)))), rest0) else rest0 in if lbz >= 0 then Cons(d_xy, rest) else rest
 
 fn vnia_mono_h1(h, vars, hyps) = if h.c0 <= 0 and len(h.cs) == 2 then (let c1 = phd_cs(h.cs) in let c2 = phd_cs(ptl(h.cs)) in if c1.c == 1 and c2.c == 0 - 1 then vnia_mono_z(c1.k, c2.k, vars, hyps) else if c2.c == 1 and c1.c == 0 - 1 then vnia_mono_z(c2.k, c1.k, vars, hyps) else Nil) else Nil
 
@@ -1409,6 +1417,8 @@ fn vis_struct_call(cnm) = if cnm == "array_new" or cnm == "array_const" or cnm =
 
 fn vis_struct_expr(e) = match e
     Call(cnm, args) => vis_struct_call(cnm)
+    Rec(items)      => 1
+    RecT(tn, items) => 1
     _               => 0
 
 fn vsep_dom_ptr(e) = match e
@@ -1477,11 +1487,22 @@ fn vlin_bind_p1(p, r, vs) = match vs
 
 fn vlin_bin_op(op, l, r, hyps, lenv, fns, d) = let la = vlin_expr(l, hyps, lenv, fns, d) in let lb = vlin_expr(r, hyps, lenv, fns, d) in if op == "+" then vlin_add(la, lb) else if op == "-" then vlin_sub(la, lb) else if op == "*" then vlin_mul(la, lb) else if op == "/" then (if la.ok == 0 or lb.ok == 0 then vlin_err() else if isnil(lb.cs) == 1 and lb.c0 > 0 then (if isnil(la.cs) == 1 then vlin_const(la.c0 / lb.c0) else vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")")) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0), lb), hyps)) == 1 then vlin_var("div(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")") else vlin_err()) else if op == "%" then (if la.ok == 0 or lb.ok == 0 then vlin_err() else if isnil(lb.cs) == 1 and lb.c0 > 0 then (if isnil(la.cs) == 1 then vlin_const(la.c0 % lb.c0) else vlin_sub(la, vlin_scale(lb.c0, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")")))) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0), lb), hyps)) == 1 then vlin_var("mod(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")") else vlin_err()) else vlin_err()
 
+fn vrec_lookup(fld, items, def) = match items
+    Nil        => def
+    Cons(h, t) => if h.key == fld then h.val else vrec_lookup(fld, t, def)
+
+fn vlin_field(o, fld, hyps, lenv, fns, d) = match o
+    Rec(items)      => vlin_expr(vrec_lookup(fld, items, Num(0)), hyps, lenv, fns, d)
+    RecT(tn, items) => vlin_expr(vrec_lookup(fld, items, Num(0)), hyps, lenv, fns, d)
+    Var(vnm)        => let lk = vlin_lookup(vnm + "." + fld, lenv) in if lk.ok == 1 then lk else vlin_var("field(" + vnm + "." + fld + ")")
+    _               => vlin_err()
+
 fn vlin_expr(e, hyps, lenv, fns, d) = if d > 6 then vlin_err() else vlin_expr1(e, hyps, lenv, fns, d)
 
 fn vlin_expr1(e, hyps, lenv, fns, d) = match e
     Num(n)          => vlin_const(n)
     Var(nm)         => vlin_lookup(nm, lenv)
+    Field(o, fld)   => vlin_field(o, fld, hyps, lenv, fns, d)
     OwnE(inner)     => vlin_expr(inner, hyps, lenv, fns, d)
     MutE(inner)     => vlin_expr(inner, hyps, lenv, fns, d)
     CT(inner)       => vlin_expr(inner, hyps, lenv, fns, d)
@@ -1554,7 +1575,7 @@ fn vprove_goal(g, hyps, lenv, fns, d) = match g
     DeferE(c, b)    => vprove_goal(b, hyps, lenv, fns, d)
     ErrDeferE(c, b) => vprove_goal(b, hyps, lenv, fns, d)
     If(c, t, e2)    => if vnorm_if_changed(c) == 1 then vprove_goal(vnorm_if(c, t, e2), hyps, lenv, fns, d) else let rp = vcond_pos(c, hyps, lenv, fns, d) in let rn = vcond_neg(c, hyps, lenv, fns, d) in if rp.ok == 1 and vprove_goal(t, app(rp.hyps, hyps), lenv, fns, d) == 1 and (vprove_goal(e2, hyps, lenv, fns, d) == 1 or (rn.ok == 1 and vprove_goal(e2, app(rn.hyps, hyps), lenv, fns, d) == 1)) then 1 else 0
-    Bin(op, a, b)   => if op == "and" then (if vprove_goal(a, hyps, lenv, fns, d) == 1 and vprove_goal(b, hyps, lenv, fns, d) == 1 then 1 else 0) else if op == "or" then (if vprove_goal(a, hyps, lenv, fns, d) == 1 or vprove_goal(b, hyps, lenv, fns, d) == 1 then 1 else let rna = vcond_neg(a, hyps, lenv, fns, d) in if rna.ok == 1 and vprove_goal(b, app(rna.hyps, hyps), lenv, fns, d) == 1 then 1 else let rnb = vcond_neg(b, hyps, lenv, fns, d) in if rnb.ok == 1 and vprove_goal(a, app(rnb.hyps, hyps), lenv, fns, d) == 1 then 1 else 0) else if op == "==" then (if vprove_goal(Bin(">=", a, b), hyps, lenv, fns, d) == 1 and vprove_goal(Bin("<=", a, b), hyps, lenv, fns, d) == 1 then 1 else 0) else if op == "!=" then (if vprove_goal(Bin(">", a, b), hyps, lenv, fns, d) == 1 or vprove_goal(Bin("<", a, b), hyps, lenv, fns, d) == 1 or vprove_goal(Bin(">=", Bin("*", Bin("-", a, b), Bin("-", a, b)), Num(1)), hyps, lenv, fns, d) == 1 then 1 else 0) else (let dhyps = app(vcollect_div_hyps_e(g, hyps, lenv, fns, d), hyps) in let rn = vcond_neg(g, dhyps, lenv, fns, d) in if rn.ok == 1 then vfm_check_unsat(app(rn.hyps, vnia_enrich_hyps(rn.hyps, dhyps))) else 0)
+    Bin(op, a, b)   => if op == "and" then (if vprove_goal(a, hyps, lenv, fns, d) == 1 and vprove_goal(b, hyps, lenv, fns, d) == 1 then 1 else 0) else if op == "or" then (if vprove_goal(a, hyps, lenv, fns, d) == 1 or vprove_goal(b, hyps, lenv, fns, d) == 1 then 1 else let rna = vcond_neg(a, hyps, lenv, fns, d) in if rna.ok == 1 and vprove_goal(b, app(rna.hyps, hyps), lenv, fns, d) == 1 then 1 else let rnb = vcond_neg(b, hyps, lenv, fns, d) in if rnb.ok == 1 and vprove_goal(a, app(rnb.hyps, hyps), lenv, fns, d) == 1 then 1 else 0) else if op == "==" then (if vprove_goal(Bin(">=", a, b), hyps, lenv, fns, d) == 1 and vprove_goal(Bin("<=", a, b), hyps, lenv, fns, d) == 1 then 1 else 0) else if op == "!=" then (if vprove_goal(Bin(">", a, b), hyps, lenv, fns, d) == 1 or vprove_goal(Bin("<", a, b), hyps, lenv, fns, d) == 1 or vprove_goal(Bin(">=", Bin("*", Bin("-", a, b), Bin("-", a, b)), Num(1)), hyps, lenv, fns, d) == 1 then 1 else 0) else (let dhyps = app(vcollect_div_hyps_e(g, hyps, lenv, fns, d), hyps) in let rn = vcond_neg(g, dhyps, lenv, fns, d) in if rn.ok == 1 then (if vfm_check_unsat(app(rn.hyps, dhyps)) == 1 then 1 else vfm_check_unsat(app(rn.hyps, vnia_enrich_hyps(rn.hyps, dhyps)))) else 0)
     Call(cnm, args) => if cnm == "dec_eq" and len(args) == 2 then vprove_goal(Bin("==", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "dec_ge" and len(args) == 2 then vprove_goal(Bin(">=", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "dec_gt" and len(args) == 2 then vprove_goal(Bin(">", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "dec_le" and len(args) == 2 then vprove_goal(Bin("<=", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "dec_lt" and len(args) == 2 then vprove_goal(Bin("<", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "sep_disjoint" and len(args) == 2 then vprove_goal(Bin("!=", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "sep_valid" and len(args) == 1 then vsep_valid(ohd_e(args), hyps, lenv, fns, d) else if cnm == "sep_conj" and len(args) == 2 then vsep_valid(g, hyps, lenv, fns, d) else if cnm == "forall_range" and len(args) == 4 then vprove_forall_range(args, hyps, lenv, fns, d) else if cnm == "exists_range" and len(args) == 4 then vprove_exists_range(args, hyps, lenv, fns, d) else 0
     _               => 0
 
@@ -1631,8 +1652,15 @@ fn vprove_law_envs(envs, body, fns) = match envs
     Cons(env, r) => let rb = veval(body, env, env, fns, 0) in if rb.ok == 1 and rb.i == 0 then {status: 0 - 1, cex: vfmt_env(env)} else vprove_law_envs(r, body, fns)
 
 ## --- Horizon H1 (#198): Real LTL Temporal Logic Prover (`always` □, `eventually` ◇, `until` U, `leads_to` ~>) ---
+fn vtemp_subst_rec(items, vnm, rep) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.key, val: vtemp_subst_var(h.val, vnm, rep)}, vtemp_subst_rec(t, vnm, rep))
+
 fn vtemp_subst_var(e, vnm, rep) = match e
     Var(nm)         => if nm == vnm then rep else e
+    Field(o, fld)   => Field(vtemp_subst_var(o, vnm, rep), fld)
+    Rec(items)      => Rec(vtemp_subst_rec(items, vnm, rep))
+    RecT(tn, items) => RecT(tn, vtemp_subst_rec(items, vnm, rep))
     Bin(op, a, b)   => Bin(op, vtemp_subst_var(a, vnm, rep), vtemp_subst_var(b, vnm, rep))
     If(c, t, e2)    => If(vtemp_subst_var(c, vnm, rep), vtemp_subst_var(t, vnm, rep), vtemp_subst_var(e2, vnm, rep))
     LetIn(nm, v, b) => LetIn(nm, vtemp_subst_var(v, vnm, rep), if nm == vnm then b else vtemp_subst_var(b, vnm, rep))

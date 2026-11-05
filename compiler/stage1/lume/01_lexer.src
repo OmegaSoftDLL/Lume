@@ -52,6 +52,7 @@ fn droponce(ts) = match ts
 fn skiprp(ts) = if headtext(ts) == ")" then droponce(ts) else ts
 fn skiprb(ts) = if headtext(ts) == "}" then droponce(ts) else ts
 fn isrecbody(ts) = headtext(ts) == "}" or headtext(droponce(ts)) == ":"
+fn isrecwith(ts) = headtext(ts) != "}" and headtext(droponce(ts)) == "with"
 fn dropin(ts) = if headtext(ts) == "in" or headtext(ts) == ";" then droponce(ts) else ts
 fn recentries(ts) = if headtext(ts) == "}" then {items: Nil, rest: droponce(ts)} else recmore(headtext(ts), expr(dropkw(droponce(ts), ":")))
 fn recmore(k, rv) = if headtext(rv.rest) == "," then let rr = recentries(droponce(rv.rest)) in {items: Cons({key: k, val: rv.node}, rr.items), rest: rr.rest} else {items: Cons({key: k, val: rv.node}, Nil), rest: skiprb(rv.rest)}
@@ -71,7 +72,24 @@ fn parseifelse(c, tb, rest) = if headtext(rest) == "elif" then parseifelif(c, tb
 fn parseifelif(c, tb, r) = {node: If(c, tb, r.node), rest: r.rest}
 fn parseifplain(c, tb, eb) = {node: If(c, tb, eb.node), rest: eb.rest}
 fn dropletty(ts) = if headtext(ts) == ":" then (parsetype1(droponce(ts))).rest else ts
-fn parselet(t) = if headtext(t) == "mut" then parsevar(droponce(t)) else if headtext(t) == "_" and headtext(droponce(t)) != "=" and headtext(droponce(t)) != ":" then parselet(droponce(t)) else let nm = headtext(t) in let rv = expr(dropkw(dropletty(droponce(t)), "=")) in let rb = expr(dropin(rv.rest)) in {node: LetIn(nm, rv.node, rb.node), rest: rb.rest}
+fn parsetupletids(ts) = if headtext(ts) == ")" then {items: Nil, rest: droponce(ts)} else let nm = headtext(ts) in let t1 = dropletty(droponce(ts)) in if headtext(t1) == "," then let rr = parsetupletids(droponce(t1)) in {items: Cons(nm, rr.items), rest: rr.rest} else {items: Cons(nm, Nil), rest: skiprp(t1)}
+fn mktupletbinds(tnm, ids, idx, body) = match ids
+    Nil        => body
+    Cons(h, t) => if h == "_" then mktupletbinds(tnm, t, idx + 1, body) else LetIn(h, Field(Var(tnm), "_" + str(idx)), mktupletbinds(tnm, t, idx + 1, body))
+fn lettuphd(xs) = match xs
+    Nil        => "0"
+    Cons(h, t) => if h == "_" then "0" else h
+fn parselettup(t) = let ids = parsetupletids(t) in let rv = expr(dropkw(dropletty(ids.rest), "=")) in let rb = expr(dropin(rv.rest)) in let tnm = "_ltup_" + lettuphd(ids.items) in {node: LetIn(tnm, rv.node, mktupletbinds(tnm, ids.items, 0, rb.node)), rest: rb.rest}
+fn parserecletfields(ts) = if headtext(ts) == "}" then {items: Nil, rest: droponce(ts)} else let fnm = headtext(ts) in let t1 = droponce(ts) in let bnm = if headtext(t1) == ":" then headtext(droponce(t1)) else fnm in let t2 = if headtext(t1) == ":" then droponce(droponce(t1)) else t1 in let t3 = dropletty(t2) in if headtext(t3) == "," then let rr = parserecletfields(droponce(t3)) in {items: Cons({key: fnm, nm: bnm}, rr.items), rest: rr.rest} else {items: Cons({key: fnm, nm: bnm}, Nil), rest: skiprb(t3)}
+fn mkrecletbinds(tnm, fs, body) = match fs
+    Nil        => body
+    Cons(h, t) => if h.nm == "_" then mkrecletbinds(tnm, t, body) else LetIn(h.nm, Field(Var(tnm), h.key), mkrecletbinds(tnm, t, body))
+fn letrechd(xs) = match xs
+    Nil        => "0"
+    Cons(h, t) => if h.nm == "_" then "0" else h.nm
+fn parseletrec(t) = let fs = parserecletfields(t) in let rv = expr(dropkw(dropletty(fs.rest), "=")) in let rb = expr(dropin(rv.rest)) in let tnm = "_lrec_" + letrechd(fs.items) in {node: LetIn(tnm, rv.node, mkrecletbinds(tnm, fs.items, rb.node)), rest: rb.rest}
+fn parseletpat(t) = let p = parsepat(t) in let rv = expr(dropkw(dropletty(p.rest), "=")) in let rb = expr(dropin(rv.rest)) in {node: Match(rv.node, Cons({pat: p.node, body: rb.node}, Nil)), rest: rb.rest}
+fn parselet(t) = if headtext(t) == "mut" then parsevar(droponce(t)) else if headtext(t) == "(" then parselettup(droponce(t)) else if headtext(t) == "{" then parseletrec(droponce(t)) else if isctor(headtext(t)) == 1 then parseletpat(t) else if headtext(t) == "_" and headtext(droponce(t)) != "=" and headtext(droponce(t)) != ":" then parselet(droponce(t)) else let nm = headtext(t) in let rv = expr(dropkw(dropletty(droponce(t)), "=")) in let rb = expr(dropin(rv.rest)) in {node: LetIn(nm, rv.node, rb.node), rest: rb.rest}
 fn parsevar(t) = let nm = headtext(t) in let rv = expr(dropkw(dropletty(droponce(t)), "=")) in let rb = expr(dropin(rv.rest)) in {node: VarIn(nm, rv.node, rb.node), rest: rb.rest}
 fn parseowne(t) = let r = post(t) in {node: OwnE(r.node), rest: r.rest}
 fn parsemute(t) = let r = post(t) in {node: MutE(r.node), rest: r.rest}
