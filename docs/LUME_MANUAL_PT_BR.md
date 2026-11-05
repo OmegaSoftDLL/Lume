@@ -283,6 +283,15 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
                        cache LRU de experts MoE em DRAM + escalonador `WAITW` com sobreposicao compute/PCIe-DMA,
                        Scoreboard e Roofline analitico de hardware (`YPCB`, `BCU1525`, `AWS F2`, `ASIC`) e
                        equivalencia `0 ULP` (Golden == ISA-Sim == SystemVerilog RTL) com `lume_ncm_engine`
+- `use lume_continuum_nexus_engine` Motor Lume Continuum Nexus v1.0 (7 Arquiteturas de Referencia):
+                       `ECC AgentShield` scanner red-team/blue-team e evolucao bayesiana de instintos
+                       (`0.30..0.99`), superposicao em arvore `Bend` (`bend/fold`) e leis de conservacao,
+                       `Billion-Context` Active Context Pruning (`ACP`) compressao hierarquica reversivel
+                       (`96%` cache hit, restauracao sem perda), `AI-Memory` retencao ponderada por acesso
+                       + handoff `claim-once` + Dreaming Wiki (`ai_memory_wiki.md`), Roteador Soberano
+                       Multi-Provedor LLM consciente de quota, `Open-Notebook` grounding de citacoes e
+                       podcast RIFF/WAVE PCM de 3 vozes (`open_notebook_podcast.wav`), e `Doory` CRDT
+                       `LWW-Element-Set` + slide vetorial (`doory_continuum_slide.svg`)
 
 # CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES
 
@@ -336,6 +345,7 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [alvo] Modelo Elefante-Peixe-Dourado (EGM SDD + Deriva Zero)
   lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [alvo] Modelagem de Proximo Conceito Paralela Coarse-to-Fine (NCM-Lume)
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [alvo] Acelerador Sistolico de IA e Compilador ISA OpenTPU-Lume
+  lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [alvo] Motor Lume Continuum Nexus v1.0 (7 Motores de Referencia)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -351,12 +361,12 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 12 Baterias Soberanas de Provas
+  nativamente dentro do proprio compilador todas as 13 Baterias Soberanas de Provas
   (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lsentience`, `lmanual`,
-  `KerneLume` Bare-Metal OS, guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`:
-  363 obrigacoes formais + 123 testes unitarios + 96 artefatos verificados).
+  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
+  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA
+  e `MANIFEST.sha256`: 387 obrigacoes formais + 128 testes unitarios + 97 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 

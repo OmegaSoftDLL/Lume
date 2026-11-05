@@ -298,6 +298,15 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        MoE LRU slot cache + `WAITW` compute/PCIe-DMA overlap scheduler, analytic hardware
                        Scoreboard & Byte-Roofline verifier (`YPCB`, `BCU1525`, `AWS F2`, `ASIC`), and
                        0-ULP Golden/ISA-Sim/RTL equivalence bridge with `lume_ncm_engine`
+- `use lume_continuum_nexus_engine` Lume Continuum Nexus Engine v1.0 (7 Reference Architectures):
+                       `ECC AgentShield` red-team/blue-team security scanner & Bayesian instinct evolution
+                       (`0.30..0.99`), `Bend` tree superposition (`bend/fold`) & state conservation laws,
+                       `Billion-Context` Active Context Pruning (`ACP`) reversible hierarchical compression
+                       (`96%` prefix-cache hit, lossless restore), `AI-Memory` access-weighted retention
+                       curve + `claim-once` handoff + Dreaming Wiki (`ai_memory_wiki.md`), Sovereign
+                       Quota-Aware Multi-Provider LLM Router, `Open-Notebook` grounded citation spans &
+                       3-speaker binary RIFF/WAVE PCM podcast (`open_notebook_podcast.wav`), and `Doory`
+                       conflict-free `LWW-Element-Set` CRDT scene-graph & vector slide (`doory_continuum_slide.svg`)
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
@@ -365,6 +374,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [target] EGM-Lume Spec-Driven Development & Drift Engine
   lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [target] NCM-Lume Next-Concept Modeling Coarse-to-Fine Parallel Engine
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine
+  lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -380,12 +390,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 12 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  all 13 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
   the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
-  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lsentience`, `lmanual`,
-  `KerneLume` Bare-Metal OS, `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`:
-  363 formal obligations + 123 unit tests + 96 verified toolchain artifacts).
+  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
+  `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS, `[K0005]`/`[K0006]`/`[C0009]`/SRA guards,
+  and `MANIFEST.sha256`: 387 formal obligations + 128 unit tests + 97 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
