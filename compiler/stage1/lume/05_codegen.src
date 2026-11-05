@@ -270,47 +270,34 @@ fn lsra_uniq_keys(items) = match items
 fn lsra_is_var(e, nm) = match e
     Var(x) => if x == nm then 1 else 0
     _      => 0
-fn lsra_no_escape_args(nm, items, xs) = match xs
+fn lsra_has_field(nm, e) = match e
+    Field(o, k)   => if lsra_is_var(o, nm) == 1 then 1 else lsra_has_field(nm, o)
+    Bin(op, l, r) => if lsra_has_field(nm, l) == 1 then 1 else lsra_has_field(nm, r)
+    If(c, t, e2)  => if lsra_has_field(nm, c) == 1 or lsra_has_field(nm, t) == 1 then 1 else lsra_has_field(nm, e2)
+    _             => 0
+fn lsra_simple_val(nm, e) = match e
+    Num(n)        => 1
+    Str(s)        => 1
+    Var(x)        => if x == nm then 0 else 1
+    Bin(op, l, r) => if lsra_simple_val(nm, l) == 1 then lsra_simple_val(nm, r) else 0
+    If(c, t, e2)  => if lsra_simple_val(nm, c) == 1 and lsra_simple_val(nm, t) == 1 then lsra_simple_val(nm, e2) else 0
+    _             => 0
+fn lsra_simple_items(nm, items) = match items
     Nil        => 1
-    Cons(h, t) => if lsra_no_escape(nm, items, h) == 1 then lsra_no_escape_args(nm, items, t) else 0
-fn lsra_no_escape_rec(nm, items, xs) = match xs
-    Nil        => 1
-    Cons(h, t) => if lsra_no_escape(nm, items, h.val) == 1 then lsra_no_escape_rec(nm, items, t) else 0
-fn lsra_no_escape_arms(nm, items, xs) = match xs
-    Nil        => 1
-    Cons(h, t) => if ldec_name(lpatbinds(h.pat), nm) == 1 then 0 else if lsra_no_escape(nm, items, h.body) == 1 then lsra_no_escape_arms(nm, items, t) else 0
+    Cons(h, t) => if lsra_simple_val(nm, h.val) == 1 then lsra_simple_items(nm, t) else 0
 fn lsra_no_escape(nm, items, e) = match e
-    Num(n)          => 1
-    Str(s)          => 1
-    Var(x)          => if x == nm then 0 else 1
-    Field(o, k)     => if lsra_is_var(o, nm) == 1 then ldec_key(items, k) else lsra_no_escape(nm, items, o)
-    Bin(op, l, r)   => if lsra_no_escape(nm, items, l) == 1 then lsra_no_escape(nm, items, r) else 0
-    If(c, t, e2)    => if lsra_no_escape(nm, items, c) == 1 and lsra_no_escape(nm, items, t) == 1 then lsra_no_escape(nm, items, e2) else 0
-    LetIn(n2, v, b) => if n2 == nm then 0 else if lsra_no_escape(nm, items, v) == 1 then lsra_no_escape(nm, items, b) else 0
-    Call(cnm, args) => if (cnm == "forall_range" or cnm == "exists_range") and len(args) == 4 then 0 else lsra_no_escape_args(nm, items, args)
-    Rec(its)        => lsra_no_escape_rec(nm, items, its)
-    RecT(tn, its)   => lsra_no_escape_rec(nm, items, its)
-    Match(sc, arms) => if lsra_no_escape(nm, items, sc) == 1 then lsra_no_escape_arms(nm, items, arms) else 0
-    _               => 0
-fn lsra_subst_args(nm, xs) = match xs
-    Nil        => Nil
-    Cons(h, t) => Cons(lsra_subst(nm, h), lsra_subst_args(nm, t))
-fn lsra_subst_rec(nm, xs) = match xs
-    Nil        => Nil
-    Cons(h, t) => Cons({key: h.key, val: lsra_subst(nm, h.val)}, lsra_subst_rec(nm, t))
-fn lsra_subst_arms(nm, xs) = match xs
-    Nil        => Nil
-    Cons(h, t) => Cons({pat: h.pat, body: lsra_subst(nm, h.body)}, lsra_subst_arms(nm, t))
+    Num(n)        => 1
+    Str(s)        => 1
+    Var(x)        => if x == nm then 0 else 1
+    Field(o, k)   => if lsra_is_var(o, nm) == 1 then ldec_key(items, k) else 0
+    Bin(op, l, r) => if lsra_no_escape(nm, items, l) == 1 then lsra_no_escape(nm, items, r) else 0
+    If(c, t, e2)  => if lsra_no_escape(nm, items, c) == 1 and lsra_no_escape(nm, items, t) == 1 then lsra_no_escape(nm, items, e2) else 0
+    _             => 0
 fn lsra_subst(nm, e) = match e
-    Field(o, k)     => if lsra_is_var(o, nm) == 1 then Var("_sra_" + nm + "_" + k) else Field(lsra_subst(nm, o), k)
-    Bin(op, l, r)   => Bin(op, lsra_subst(nm, l), lsra_subst(nm, r))
-    If(c, t, e2)    => If(lsra_subst(nm, c), lsra_subst(nm, t), lsra_subst(nm, e2))
-    LetIn(n2, v, b) => LetIn(n2, lsra_subst(nm, v), if n2 == nm then b else lsra_subst(nm, b))
-    Call(cnm, args) => Call(cnm, lsra_subst_args(nm, args))
-    Rec(its)        => Rec(lsra_subst_rec(nm, its))
-    RecT(tn, its)   => RecT(tn, lsra_subst_rec(nm, its))
-    Match(sc, arms) => Match(lsra_subst(nm, sc), lsra_subst_arms(nm, arms))
-    _               => e
+    Field(o, k)   => if lsra_is_var(o, nm) == 1 then Var("_sra_" + nm + "_" + k) else Field(lsra_subst(nm, o), k)
+    Bin(op, l, r) => Bin(op, lsra_subst(nm, l), lsra_subst(nm, r))
+    If(c, t, e2)  => If(lsra_subst(nm, c), lsra_subst(nm, t), lsra_subst(nm, e2))
+    _             => e
 fn lsra_bind_fields(nm, items, body) = match items
     Nil        => body
     Cons(h, t) => LetIn("_sra_" + nm + "_" + h.key, lsra_expr(h.val), lsra_bind_fields(nm, t, body))
@@ -324,7 +311,7 @@ fn lsra_expr_arms(xs) = match xs
     Nil        => Nil
     Cons(h, t) => Cons({pat: h.pat, body: lsra_expr(h.body)}, lsra_expr_arms(t))
 fn lsra_expr(e) = match e
-    LetIn(nm, v, b) => let items = lsra_rec_items(v) in if isnil(items) == 0 and lsra_uniq_keys(items) == 1 and lsra_no_escape(nm, items, b) == 1 then lsra_bind_fields(nm, items, lsra_expr(lsra_subst(nm, b))) else LetIn(nm, lsra_expr(v), lsra_expr(b))
+    LetIn(nm, v, b) => let items = lsra_rec_items(v) in if isnil(items) == 0 and lsra_uniq_keys(items) == 1 and lsra_simple_items(nm, items) == 1 and lsra_has_field(nm, b) == 1 and lsra_no_escape(nm, items, b) == 1 then lsra_bind_fields(nm, items, lsra_expr(lsra_subst(nm, b))) else LetIn(nm, lsra_expr(v), lsra_expr(b))
     Bin(op, l, r)   => Bin(op, lsra_expr(l), lsra_expr(r))
     If(c, t, e2)    => If(lsra_expr(c), lsra_expr(t), lsra_expr(e2))
     Call(cnm, args) => Call(cnm, lsra_expr_args(args))

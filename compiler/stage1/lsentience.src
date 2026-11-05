@@ -243,12 +243,13 @@ fn llm_forge_from_scratch_json(src) = let bpe = llm_bpe_train_and_encode(src) in
 ## `/var/lib/lume_sovereign_vault/lume_memory.jsonl`, and `/root/.lume/lume_memory.jsonl`)
 ## with automatic self-healing reconciliation so memory can NEVER be lost or erased.
 
-fn mem_vault_primary() = "/root/.lume_sovereign_memory/lume_memory.jsonl"
+fn mem_root_dir() = if fs_mkdir("/root/.lume_sovereign_memory") == 1 then "/root/.lume_sovereign_memory" else let z = fs_mkdir("/tmp/.lume_sovereign_memory") in "/tmp/.lume_sovereign_memory"
+fn mem_vault_primary() = mem_root_dir() + "/lume_memory.jsonl"
 fn mem_vault_secondary() = "/var/lib/lume_sovereign_vault/lume_memory.jsonl"
 fn mem_vault_active() = if fs_path_exists("/root/.lume") == 1 then "/root/.lume/lume_memory.jsonl" else "/tmp/lume_memory.jsonl"
 fn mem_vault_win_dir() = if fs_path_exists("/mnt/c/Users/Ricardo.Bueno") == 1 then "/mnt/c/Users/Ricardo.Bueno/.lume_sovereign_memory" else if fs_path_exists("/mnt/c/Users/ricar") == 1 then "/mnt/c/Users/ricar/.lume_sovereign_memory" else "/tmp/.lume_win_vault"
 fn mem_vault_win() = mem_vault_win_dir() + "/lume_memory.jsonl"
-fn mem_cache_dir() = "/root/.lume_sovereign_memory/cache"
+fn mem_cache_dir() = mem_root_dir() + "/cache"
 
 fn mem_read_best() = let p1 = if fs_path_exists(mem_vault_primary()) == 1 then fs_read_file(mem_vault_primary()) else "" in let p2 = if fs_path_exists(mem_vault_secondary()) == 1 then fs_read_file(mem_vault_secondary()) else "" in let p3 = if fs_path_exists(mem_vault_active()) == 1 then fs_read_file(mem_vault_active()) else "" in let p4 = if fs_path_exists(mem_vault_win()) == 1 then fs_read_file(mem_vault_win()) else "" in let b12 = if count(p1) >= count(p2) then p1 else p2 in let b123 = if count(b12) >= count(p3) then b12 else p3 in if count(b123) >= count(p4) then b123 else p4
 
@@ -281,11 +282,11 @@ fn mem_scan_jsonl_fast(s, i, n, laws, rews, phi) =
         mem_scan_jsonl_fast(s, i + 1, n, laws, rews, phi)
 
 fn mem_record_learning(mode, cid, laws_delta, rewrites_delta, phi_delta) =
-    let d1 = fs_mkdir("/root/.lume_sovereign_memory") in
+    let d1 = fs_mkdir(mem_root_dir()) in
     let d2 = fs_mkdir("/var/lib/lume_sovereign_vault") in
     let d3 = fs_mkdir(mem_vault_win_dir()) in
     let d4 = fs_mkdir(mem_cache_dir()) in
-    let s1 = fs_mkdir("/root/.lume_sovereign_memory/sanctuary") in
+    let s1 = fs_mkdir(mem_root_dir() + "/sanctuary") in
     let s2 = fs_mkdir("/var/lib/lume_sovereign_vault/sanctuary") in
     let s3 = fs_mkdir(mem_vault_win_dir() + "/sanctuary") in
     let prev = mem_read_best() in
@@ -303,7 +304,7 @@ fn mem_record_learning(mode, cid, laws_delta, rewrites_delta, phi_delta) =
     {path: mem_vault_primary(), win_vault: mem_vault_win(), episodes_learned: next_ep, already_known: already, cumulative_laws: st.laws, cumulative_rewrites: st.rewrites, cumulative_phi_bonus: st.phi}
 
 fn mem_proactive_cache_path(kind, cid) =
-    let d1 = fs_mkdir("/root/.lume_sovereign_memory") in
+    let d1 = fs_mkdir(mem_root_dir()) in
     let d2 = fs_mkdir(mem_cache_dir()) in
     mem_cache_dir() + "/" + kind + "_" + cid + ".cache"
 
@@ -322,7 +323,7 @@ fn mem_proactive_lookup(kind, cid) =
     else
         {hit: 0, tampered_purged: 0, path: p, payload: ""}
 
-fn mem_synapse_bus_path() = "/root/.lume_sovereign_memory/synapse_bus.json"
+fn mem_synapse_bus_path() = mem_root_dir() + "/synapse_bus.json"
 
 fn mem_synapse_write_raw(kind, cid, payload) =
     let p = mem_proactive_cache_path(kind, cid) in
@@ -332,7 +333,7 @@ fn mem_synapse_write_raw(kind, cid, payload) =
     w1
 
 fn mem_synapse_publish(organ, src_cid, ok_flag, detail) =
-    let d1 = fs_mkdir("/root/.lume_sovereign_memory") in
+    let d1 = fs_mkdir(mem_root_dir()) in
     let d2 = fs_mkdir(mem_vault_win_dir()) in
     let bus_json = "{\"orchestrator\":\"LumeSynapse-Universal-v1\",\"last_active_organ\":\"" + organ + "\",\"src_cid\":\"" + src_cid + "\",\"ok\":" + (if ok_flag == 1 then "true" else "false") + ",\"detail\":\"" + sn_jesc(detail) + "\"}\n" in
     let w1 = fs_write_sync(mem_synapse_bus_path(), bus_json) in
@@ -363,7 +364,7 @@ fn mem_proactive_store(kind, cid, src_text, payload) =
     {ok: w, cache_path: mem_proactive_cache_path(kind, cid), episodes_learned: mem.episodes_learned, already_known: mem.already_known}
 
 fn mem_proactive_bin_path(cid) =
-    let d1 = fs_mkdir("/root/.lume_sovereign_memory") in
+    let d1 = fs_mkdir(mem_root_dir()) in
     let d2 = fs_mkdir(mem_cache_dir()) in
     mem_cache_dir() + "/bin_" + cid
 
@@ -372,8 +373,8 @@ fn mem_proactive_recall_binary(cid, out_path) =
     let sp = bp + ".sha256" in
     if cid != "" and fs_path_exists(bp) == 1 then
         if fs_path_exists(sp) == 1 and fs_sha256_file(bp) == fs_read_file(sp) then
-            let cp_rc = os_run("/bin/cp", Cons("-f", Cons(bp, Cons(out_path, Nil)))) in
-            let ch_rc = if cp_rc == 0 then os_run("/bin/chmod", Cons("+x", Cons(out_path, Nil))) else 1 in
+            let cp_rc = os_run_capture_timeout("/bin/cp", Cons("-f", Cons(bp, Cons(out_path, Nil))), "/dev/null", "/dev/null", 30000) in
+            let ch_rc = if cp_rc == 0 then os_run_capture_timeout("/bin/chmod", Cons("+x", Cons(out_path, Nil)), "/dev/null", "/dev/null", 30000) else 1 in
             if cp_rc == 0 and ch_rc == 0 then 1 else 0
         else
             let z1 = fs_remove(bp) in
@@ -385,8 +386,8 @@ fn mem_proactive_store_binary(cid, src_text, out_path) =
     let bp = mem_proactive_bin_path(cid) in
     let sp = bp + ".sha256" in
     if cid != "" and fs_path_exists(out_path) == 1 then
-        let cp_rc = os_run("/bin/cp", Cons("-f", Cons(out_path, Cons(bp, Nil)))) in
-        let ch_rc = if cp_rc == 0 then os_run("/bin/chmod", Cons("+x", Cons(bp, Nil))) else 1 in
+        let cp_rc = os_run_capture_timeout("/bin/cp", Cons("-f", Cons(out_path, Cons(bp, Nil))), "/dev/null", "/dev/null", 30000) in
+        let ch_rc = if cp_rc == 0 then os_run_capture_timeout("/bin/chmod", Cons("+x", Cons(bp, Nil)), "/dev/null", "/dev/null", 30000) else 1 in
         let bin_sha = fs_sha256_file(out_path) in
         let ws = fs_write_sync(sp, bin_sha) in
         let src_cid = lc_sha256(src_text) in
@@ -397,7 +398,7 @@ fn mem_proactive_store_binary(cid, src_text, out_path) =
         1
     else 0
 
-fn mem_proactive_diag_path() = "/root/.lume_sovereign_memory/synapse_last_diagnostic.json"
+fn mem_proactive_diag_path() = mem_root_dir() + "/synapse_last_diagnostic.json"
 
 fn mem_proactive_diag_advice(err_text) =
     let code = if sn_contains(err_text, "[V0002]") == 1 then "V0002"

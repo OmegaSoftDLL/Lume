@@ -5,10 +5,14 @@ All notable changes to the **Lume** programming language and self-hosted toolcha
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-11-05
 
 ### Added
-- **Waves 1–10 Line-by-Line Engineering Audits, Fixes & Upgrades (`docs/WAVE_01_AUDIT.md` .. `docs/WAVE_10_AUDIT.md`):**
+- **Official `v1.0.0` Production Release (`Edition 2026 — 10/10`):**
+  - 6-platform official release tarballs (`linux-x86_64`, `linux-aarch64`, `linux-riscv64`, `macos-aarch64`, `macos-x86_64`, `windows-x86_64`) with native Apple Silicon Mach-O 64 (`aarch64-macos-macho`) and Intel macOS Mach-O 64 (`x86_64-macos-macho`) `lume-target-check` / `lume-target-trap` binaries.
+  - **27Universal Compilation Targets (`compiler/stage1/ltarget.src`, `16/16` tests):** Added `qasm3-quantum`, `qir-llvm`, `quil-rigetti`, `iqm-json`, `stim-qec`, and `dna-quaternary`, plus native `lume quantum-nexus` (`compiler/stage1/lume_quantum_nexus_engine.src`, `15/15` tests, `13/13` `QF_LIA` proofs) with stabilizer QEC, QAOA/VQE, Clifford+T ZX-calculus synthesis, and neutral-atom FPQA AOD routing.
+  - **Scalar Replacement of Aggregates (`SRA`) & Zero-Allocation Fast Paths (`compiler/stage1/lume/05_codegen.src`):** Stack-slot field promotion for non-escaping records (`mk_pair`), inlined 16-byte string equality (`s_eq`), `[-4096..4096]` static small-int table, and $O(1)$ dynamic string builder (`compiler/stage1/bytes.src`).
+  - **waves 1–10 Line-by-Line Engineering Audits, Fixes & Upgrades (`docs/WAVE_01_AUDIT.md` .. `docs/WAVE_10_AUDIT.md`):**
   - **Wave 1 (`docs/WAVE_01_AUDIT.md`, `543dac7`):** Full line-by-line audit and live execution proof across all 7 Wave 1 subsystems plus full non-mock implementation of `compiler/stage1/lume_crypto_blockchain_engine.src` (`9/9` tests passing, `8/8` `QF_LIA` obligations proven by `lcert`).
   - **Wave 2 (`docs/WAVE_02_AUDIT.md`, `8ae6618`):** Full line-by-line audit and live execution proof across `capsule.src` (`2/2`), `capsule_ok.src` (`5/5`), `arena_ok.src` (`8/8`), `lume build/run --memory`, `small_ints` cache, self-tail-call lowering (`100,000` depth in $O(1)$ stack), and `[E0200]` rejection of `__lume_arena_new` in `/ pure`.
   - **Wave 3 (`docs/WAVE_03_AUDIT.md`, `af4a532`):** Full line-by-line audit and fix in `compiler/stage1/lprotect.src` (`lp_scan_lsym` and `lp_collect_ufns` stopping at `alloc:` and `_start:` so runtime labels like `alloc_done:` are not obfuscated during `lume build --protect standard --lsym`), verified end-to-end with `lume symbolize` and `scripts/llm_gen_eval.src` (`124/250` tokens, `100%` proof coverage).
