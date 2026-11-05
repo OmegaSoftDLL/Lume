@@ -81,6 +81,7 @@ lume self-prove                  # Run all 14 embedded compiler proof batteries
 
 ### Manuals & Complete Status Reports
 - [**Repository & Overview (`README.md`)**](https://github.com/OmegaSoftDLL/lume) — Quickstart, 10/10 DX showcase, 27 targets, and sovereign engines.
+- [**Lume `v1.0.0` Technical Paper (`LUME_TECHNICAL_PAPER.md`)**](LUME_TECHNICAL_PAPER.md) — Engineering deep dive on the `stage2 == stage3` Zero-C bootstrap, `QF_LIA` verification, and native code generation.
 - [**English Programmer's Manual (10 Chapters)**](LUME_MANUAL_EN.md) · [**Manual do Programador em Português (`pt-BR`, 10 Capítulos)**](LUME_MANUAL_PT_BR.md)
 - [**Complete Phases (0–5), Stages (A–D) & Waves (1–10) Reference**](PHASES_AND_WAVES_COMPLETE.md)
 - [**Project Engineering State & Laws (`PROJECT_STATE.md`)**](PROJECT_STATE.md)

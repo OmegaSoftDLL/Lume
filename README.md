@@ -12,7 +12,11 @@
 [![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](docs/26-targets.md)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](#license)
 
-[**Installation**](#installation) · [**Quickstart**](#quickstart) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
+[**Installation**](#installation) · [**Quickstart**](#quickstart) · [**Technical Paper (`v1.0.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
+
+<br/>
+
+![Lume v1.0.0 Architecture & Formal Verification](docs/lume_linkedin_cover.png)
 
 </div>
 
