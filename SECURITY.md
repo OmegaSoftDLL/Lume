@@ -1,18 +1,14 @@
 # Security Policy
 
-Lume is pre-release software; do not use it in production or to process untrusted input in a
-security-sensitive environment.
-
 ## Supported versions
 
-Security fixes are applied to the latest release and the `main` branch. Older releases are not
-maintained. Before reporting a problem, reproduce it against the latest release or current `main`.
+Security updates are applied to the current `1.0.x` release series and the `main` branch. Before reporting an issue, please verify that it reproduces against `v1.0.0` or current `main`.
 
 | Version | Status |
 | --- | --- |
-| Latest release | Supported |
+| `1.0.x` (latest release) | Supported |
 | `main` | Supported |
-| Older releases | Unsupported |
+| `< 1.0.0` | Unsupported |
 
 ## Reporting a vulnerability
 
@@ -33,8 +29,5 @@ disclosure with the reporter. Do not disclose the issue publicly before a coordi
 
 ## Scope notes
 
-- The `lume0` seed interpreter and the `lume0 asm` ELF writer execute and emit native code.
-  Treat any `.lume`/`.src`/`.s` input you did not write as untrusted.
-- P33 software-protection profiles are implemented, but obfuscation and tamper resistance do
-  not prevent reverse engineering by a determined attacker. Do not treat them as a security
-  boundary or as a substitute for protecting credentials and other secrets.
+- Compilers and assemblers (`lumec`, `lasm`, and the frozen `lume0` bootstrap seed) emit and execute native machine code when invoked with `run` or `build`. When evaluating untrusted third-party code, use isolated execution modes (`@wasm-sandbox`, capability-restricted modules, or OS containerization).
+- P33 software-protection profiles (`--protect standard|hardened|max`) provide symbol stripping, string literal encryption, and control-flow/arithmetic obfuscation for intellectual-property defense, but are not a substitute for cryptographic key management.
