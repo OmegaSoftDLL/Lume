@@ -2728,9 +2728,12 @@ fn c9_chk_ct_e(e, svars, fnm) = match e
     Match(sc, arms) => if c9_mentions_secret(sc, svars) == 1 then ctfail("lume: constant-time error [C0009]: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information (fix-it: use constant-time bitwise masking instead of pattern matching on secrets)\n") else c9_chk_ct_arms(arms, svars, fnm)
     Bin(op, l, r)   => if (op == "/" or op == "%" or op == "and" or op == "or") and (c9_mentions_secret(l, svars) == 1 or c9_mentions_secret(r, svars) == 1) then ctfail("lume: constant-time error [C0009]: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value (fix-it: use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr)\n") else let z = c9_chk_ct_e(l, svars, fnm) in c9_chk_ct_e(r, svars, fnm)
     Call(cnm, args) => if c9_is_mem_idx_call(cnm, args, svars) == 1 then ctfail("lume: constant-time error [C0009]: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information (fix-it: avoid indexing memory or strings by secret offsets)\n") else c9_chk_ct_args(args, svars, fnm)
-    LetIn(nm, v, b) => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
-    VarIn(nm, v, b) => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
+    LetIn(nm, v, b) => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
+    VarIn(nm, v, b) => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
     _               => 0
+fn c9_taints_let(fnm, v, svars) = match v
+    Call(cnm, args) => if ostarts(fnm, "ct_") == 1 or ostarts(cnm, "bv_") == 1 then c9_mentions_secret(v, svars) else 0
+    _               => c9_mentions_secret(v, svars)
 fn c9_chk_fn(nm, ps, body) = let svars = c9_init_secrets(nm, ps) in if isnil(svars) == 1 then 0 else c9_chk_ct_e(body, svars, nm)
 fn k6_callee_calls_back(fnm, cnm, mf) = match mf
     Nil        => 0

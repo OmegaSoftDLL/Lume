@@ -2092,9 +2092,12 @@ fn cs_c9_chk_ct_e(e, svars, fnm) = match e
     Match(sc, arms) => let d0 = if cs_c9_mentions_secret(sc, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking instead of pattern matching on secrets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_arms(arms, svars, fnm))
     Bin(op, l, r)   => let d0 = if (op == "/" or op == "%" or op == "and" or op == "or") and (cs_c9_mentions_secret(l, svars) == 1 or cs_c9_mentions_secret(r, svars) == 1) then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value", "use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(l, svars, fnm), cs_c9_chk_ct_e(r, svars, fnm)))
     Call(cnm, args) => let d0 = if cs_c9_is_mem_idx_call(cnm, args, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information", "avoid indexing memory or strings by secret offsets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_args(args, svars, fnm))
-    LetIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
-    VarIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
+    LetIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
+    VarIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
     _               => Nil
+fn cs_c9_taints_let(fnm, v, svars) = match v
+    Call(cnm, args) => if cs_startswith(fnm, "ct_") == 1 or cs_startswith(cnm, "bv_") == 1 then cs_c9_mentions_secret(v, svars) else 0
+    _               => cs_c9_mentions_secret(v, svars)
 fn cs_c9_chk_fn(nm, ps, body) = let svars = cs_c9_init_secrets(nm, ps) in if cs_isnil(svars) == 1 then Nil else cs_c9_chk_ct_e(body, svars, nm)
 fn cs_k6_fn_calls(target, e) = match e
     Call(cnm, args) => if cnm == target then 1 else cs_k6_fn_calls_args(target, args)
