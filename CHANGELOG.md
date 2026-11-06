@@ -5,6 +5,27 @@ All notable changes to the **Lume** programming language and self-hosted toolcha
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Stricter `.src` parsing (may reject code that previously compiled):** `let` requires `=`; a `let` body on the same line requires `in` or `;` (a new line still works); duplicate binders are rejected in function and lambda parameters, tuple/record `let` and patterns; `match` arms require a pattern (`=> 1` is `[P0002]`); decimal patterns are `[P0002]` in every arm position and in Stage-0; stray top-level tokens are `[P0002]`.
+- **`[L0002]` for unsupported string escapes:** `\q`-style escapes no longer silently drop the backslash. `\0` is rejected natively because native strings are NUL-terminated. `\b` and `\f` now decode to the real control bytes (they previously became the letters `b` and `f`).
+- **`not` precedence:** `not` binds looser than comparison and tighter than `and`, so `not 1 == 2` is `1`, in both native and Stage-0.
+- **`\$` escape:** `"\${x}"` is a literal `$` in front of a hole. `${x}` itself stays an alias of the hole `{x}`.
+
+### Added
+- **List literals in `.src`:** `[]`, `[a]` and `[a, b, c]` lower to `Nil`/`Cons` chains; `count` measures a `Cons` chain.
+- **Stage-0 parity:** next-line function and branch bodies parse in `data_parser.lume` (they silently evaluated to `0` before); unknown atoms are errors rather than `0`; `data_asmgen.lume` lowers `forall_range`/`exists_range` and preserves lexical shadowing for `let`, `match` and quantifier binders.
+- **Gates:** `semantic_ergonomics_native_ok`, `tests/conformance/stage1/fail_closed/<code>_*.src` (each fixture must be rejected with `<code>`), and `docs/install.sh` in `scripts/check-version-coherence.sh`.
+
+### Fixed
+- **String braces:** interpolation now scans the raw token, so `\{` and `\}` can never open or close a hole (`"{\{x}"` is `{{x}`, `"{x\}"` is `{x}`), and `}}` is an escape only outside an open literal `{`, so `"{\"a\":{\"b\":1}}"` keeps both braces. This also repairs JSON constants in the toolchain that were losing a closing brace. The `[P0002]` hole diagnostic prints the `{{`/`}}` escape correctly.
+- **Structural equality** (`==` on constructors, records and lists) runs in constant native stack on any shape, in all three runtimes.
+- **`./lume` fresh-clone bootstrap** reports compiler errors and stops instead of exiting silently with an empty `lume_driver.s`.
+- **Stale binaries after a compiler change:** the `lume build` and `lume test` caches are keyed on the `lumec`, `lasm` and `ltest` binary hashes as well as the source, so an upgraded compiler can no longer return a binary built by the previous one.
+- **Protected builds are never served from the binary cache,** so `--profile=release` always emits its `.lsym` sidecar.
+- **`.gitattributes`:** restored the Linguist and binary rules alongside the repo-wide LF default. **`docs/install.sh`** defaults to `v1.1.0`.
+
 ## [1.1.0] - 2026-11-06
 
 ### Added

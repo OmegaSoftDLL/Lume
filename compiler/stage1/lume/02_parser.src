@@ -1,49 +1,68 @@
 ## --- parser: {node, rest}; AST constructors Num/Var/Bin/Call ---
-fn primid(name, t) = if name == "f" and headkind(t) == "str" then {node: strinterp(strval(headtext(t))), rest: droponce(t)} else if headtext(t) == "(" then let a = arglist(droponce(t)) in {node: Call(name, a.items), rest: a.rest} else if headtext(t) == "{" and isrecwith(droponce(t)) then let t1 = droponce(t) in let bnm = headtext(t1) in let a = recentries(droponce(droponce(t1))) in {node: Call("__lume_rec_with", Cons(Str(name), Cons(Var(bnm), Cons(Rec(a.items), Nil)))), rest: a.rest} else if headtext(t) == "{" and isrecbody(droponce(t)) then let a = recentries(droponce(t)) in {node: RecT(name, a.items), rest: a.rest} else if headtext(t) == "[" then let ta = expr(droponce(t)) in let t2 = skiprk(ta.rest) in (if headtext(t2) == "{" and isrecbody(droponce(t2)) then let a = recentries(droponce(t2)) in {node: RecT(name, a.items), rest: a.rest} else {node: Call("_tyapp_" + name, Cons(ta.node, Nil)), rest: t2}) else {node: Var(name), rest: t}
-## F4 (front-end unification): surface string interpolation `"a{e}b"` (with `{{`/`}}` escaping) desugars into a
+fn primid(name, t) = if name == "f" and headkind(t) == "str" then {node: strinterptok(headtext(t)), rest: droponce(t)} else if headtext(t) == "(" then let a = arglist(droponce(t)) in {node: Call(name, a.items), rest: a.rest} else if headtext(t) == "{" and isrecwith(droponce(t)) then let t1 = droponce(t) in let bnm = headtext(t1) in let a = recentries(droponce(droponce(t1))) in {node: Call("__lume_rec_with", Cons(Str(name), Cons(Var(bnm), Cons(Rec(a.items), Nil)))), rest: a.rest} else if headtext(t) == "{" and isrecbody(droponce(t)) then let a = recentries(droponce(t)) in {node: RecT(name, a.items), rest: a.rest} else if headtext(t) == "[" then let ta = expr(droponce(t)) in let t2 = skiprk(ta.rest) in (if headtext(t2) == "{" and isrecbody(droponce(t2)) then let a = recentries(droponce(t2)) in {node: RecT(name, a.items), rest: a.rest} else {node: Call("_tyapp_" + name, Cons(ta.node, Nil)), rest: t2}) else {node: Var(name), rest: t}
+## F4 (front-end unification): surface string interpolation `"a{e}b"` (with `{{`/`}}` and `\{`/`\}` escaping) desugars into a
 ## left-associative `+` chain of string pieces and `str(<expr>)`, producing the exact same AST as explicit
 ## concatenation `"a" + str(e) + "b"`. Only a valid expression hole `{<expr>}` (starting with an identifier,
 ## digit, or `(`, and containing no `:`, `"`, `\n`, `{`, `}`) interpolates, so record/JSON strings are untouched.
 ## The hole expression is scope-checked like any other expression: an identifier that is not bound at the use
 ## site is a compile error [R0200] from orscheck (#428), not silent garbage at runtime.
-fn isbadholech(c) = c == ":" or c == "\"" or c == "\n" or c == "{" or c == "}"
+fn isbadholech(c) = c == ":" or c == "\"" or c == "\n" or c == "{" or c == "}" or c == "\\"
 fn hasbadhole(s, i, n) = if i >= n then 0 else if isbadholech(at(s, i)) then 1 else hasbadhole(s, i + 1, n)
 fn isvalidhole(s) = let n = count(s) in if n == 0 then 0 else let c0 = at(s, 0) in if (isalpha(c0) or isdigit(c0) or c0 == "(") and hasbadhole(s, 0, n) == 0 then 1 else 0
 fn findcloseb(s, j) requires j >= 0 ensures result < 0 or result >= j = if j >= count(s) then 0 - 1 else if at(s, j) == "}" then j else findcloseb(s, j + 1)
-fn findclosebn(s, j, n) = if j >= n then 0 - 1 else if at(s, j) == "}" then j else findclosebn(s, j + 1, n)
-fn findinterp(s, i, n) = if i >= n then 0 - 1 else if at(s, i) == "{" then (if i + 1 < n and at(s, i + 1) == "{" then findinterp(s, i + 2, n) else let j = findclosebn(s, i + 1, n) in if j > i + 1 and isvalidhole(slicen(s, n, i + 1, j)) == 1 then i else findinterp(s, i + 1, n)) else findinterp(s, i + 1, n)
-fn hasescbrace(s, i, n) = if i + 1 >= n then 0 else if (at(s, i) == "{" and at(s, i + 1) == "{") or (at(s, i) == "}" and at(s, i + 1) == "}") then 1 else hasescbrace(s, i + 1, n)
-fn unescbracel(s, i, n) = if i >= n then Nil else if i + 1 < n and ((at(s, i) == "{" and at(s, i + 1) == "{") or (at(s, i) == "}" and at(s, i + 1) == "}")) then Cons(at(s, i), unescbracel(s, i + 2, n)) else Cons(at(s, i), unescbracel(s, i + 1, n))
-fn unescbraces(s) = let n = count(s) in if hasescbrace(s, 0, n) == 0 then s else joinall(own unescbracel(s, 0, n))
+fn findclosebn(s, j, n) = if j >= n then 0 - 1 else if at(s, j) == "\\" then findclosebn(s, j + 2, n) else if at(s, j) == "}" then j else findclosebn(s, j + 1, n)
 fn sjoin(acc, piece) = match acc
     Nil => piece
     _   => Bin("+", acc, piece)
-fn strinterp(s) = if findinterp(s, 0, count(s)) < 0 then Str(unescbraces(s)) else strinterploop(Nil, s)
-fn strinterploop(acc, s) = strinterploop2(acc, s, findinterp(s, 0, count(s)))
-fn strinterploop2(acc, s, i) = if i < 0 then (let tail = unescbraces(s) in if count(tail) == 0 then acc else sjoin(acc, Str(tail))) else let n = count(s) in let j = findclosebn(s, i + 1, n) in let pre_i = if i > 0 and at(s, i - 1) == "$" then i - 1 else i in let pre = unescbraces(slicen(s, n, 0, pre_i)) in let hole = Call("str", Cons((expr(lex(slicen(s, n, i + 1, j), 0))).node, Nil)) in let acc1 = if count(pre) == 0 then acc else sjoin(acc, Str(pre)) in strinterploop(sjoin(acc1, hole), slicen(s, n, j + 1, n))
+## The scanner below runs over the RAW token body, so an escaped brace (`\{`, `\}`) is decided on before
+## it is decoded and can never open or close a hole. `{{` is a literal `{`. `}}` is a literal `}` only outside
+## an open literal `{`: `depth` counts unmatched literal `{`, so `{"a":{"b":1}}` keeps both closing braces.
+fn strbody(t) = let tn = count(t) in slicen(t, tn, 1, tn - 1)
+fn strflush(acc, lit) = match lit
+    Nil => acc
+    _   => sjoin(acc, Str(joinall(own lex_rev(lit, Nil))))
+fn strfinish(a) = match a
+    Nil => Str("")
+    _   => a
+fn strscan(s, n, i, depth, lit, acc, holes) = if i >= n then strfinish(strflush(acc, lit)) else let c = at(s, i) in if c == "\\" and i + 1 < n then strscan(s, n, i + 2, depth, Cons(unesc1(at(s, i + 1)), lit), acc, holes) else if c == "\r" then strscan(s, n, i + 1, depth, lit, acc, holes) else if c == "{" then strscanopen(s, n, i, depth, lit, acc, holes) else if c == "}" then strscanclose(s, n, i, depth, lit, acc, holes) else strscan(s, n, i + 1, depth, Cons(c, lit), acc, holes)
+fn strscanclose(s, n, i, depth, lit, acc, holes) = if depth > 0 then strscan(s, n, i + 1, depth - 1, Cons("}", lit), acc, holes) else if i + 1 < n and at(s, i + 1) == "}" then strscan(s, n, i + 2, 0, Cons("}", lit), acc, holes) else strscan(s, n, i + 1, 0, Cons("}", lit), acc, holes)
+fn strscanopen(s, n, i, depth, lit, acc, holes) = if i + 1 < n and at(s, i + 1) == "{" then strscan(s, n, i + 2, depth, Cons("{", lit), acc, holes) else let j = findclosebn(s, i + 1, n) in if holes == 1 and j > i + 1 and isvalidhole(slicen(s, n, i + 1, j)) == 1 then strscan(s, n, j + 1, depth, Nil, sjoin(strflush(acc, strdropdollar(s, i, lit)), parsehole(slicen(s, n, i + 1, j))), holes) else strscan(s, n, i + 1, depth + 1, Cons("{", lit), acc, holes)
+## `${e}` is the same hole as `{e}`; write `\${e}` for a literal dollar in front of a hole.
+fn strdropdollar(s, i, lit) = if i > 0 and at(s, i - 1) == "$" and (i < 2 or at(s, i - 2) != "\\") then droponce(lit) else lit
+fn strinterptok(t) = let b = strbody(t) in strscan(b, count(b), 0, 0, Nil, Nil, 1)
+fn strlitof(e) = match e
+    Str(v) => v
+    _      => ""
+fn strlittok(t) = let b = strbody(t) in strlitof(strscan(b, count(b), 0, 0, Nil, Nil, 0))
+fn parsehole(hs) = let r = expr(lex(hs, 0)) in if isnil(r.rest) == 0 then ctfail("lume: parse error [P0002]: invalid expression in string interpolation hole '\{" + hs + "\}' (unexpected '" + headtext(r.rest) + "'; escape literal braces as '\{\{' and '\}\}')\n") else Call("str", Cons(r.node, Nil))
 fn drop_lambda_sep(ts) = if isarrow(ts) then droponce(droponce(ts)) else dropkw(ts, "=")
-fn parselambda(t) = let ps = parseparams(dropkw(t, "(")) in let rt = parseret(ps.rest) in let b = expr(drop_lambda_sep(rt.rest)) in {node: LambdaE(ps.items, ps.tys, rt.ty, b.node), rest: b.rest}
+fn parselambda(t) = let ps = checkparams(parseparams(dropkw(t, "("))) in let rt = parseret(ps.rest) in let b = expr(drop_lambda_sep(rt.rest)) in {node: LambdaE(ps.items, ps.tys, rt.ty, b.node), rest: b.rest}
 fn parseshard_body(ts) = let hb = if headtext(ts) == "{" then 1 else 0 in let sep = if hb == 1 then droponce(ts) else if isarrow(ts) then droponce(droponce(ts)) else dropin(ts) in let rb = expr(sep) in {node: rb.node, rest: if hb == 1 then skiprb(rb.rest) else rb.rest}
 fn parseshard(t) = let vnm = headtext(t) in let t1 = dropkw(droponce(t), "in") in let rlo = add(t1) in if headtext(rlo.rest) == "." and headtext(droponce(rlo.rest)) == "." then (let rhi = add(droponce(droponce(rlo.rest))) in let rb = parseshard_body(rhi.rest) in {node: ShardE(vnm, rlo.node, rhi.node, rb.node), rest: rb.rest}) else (let rb = parseshard_body(rlo.rest) in {node: ShardE(vnm, rlo.node, rlo.node, rb.node), rest: rb.rest})
 fn parsetupmore(idx, ts) = let r = expr(ts) in if headtext(r.rest) == "," then let rr = parsetupmore(idx + 1, droponce(r.rest)) in {items: Cons({key: "_" + str(idx), val: r.node}, rr.items), rest: rr.rest} else {items: Cons({key: "_" + str(idx), val: r.node}, Nil), rest: skiprp(r.rest)}
 fn parseparen(t) = let r = expr(t) in if headtext(r.rest) == "," then let rr = parsetupmore(1, droponce(r.rest)) in {node: Rec(Cons({key: "_0", val: r.node}, rr.items)), rest: rr.rest} else {node: r.node, rest: skiprp(r.rest)}
 fn prim(ts) = match ts
-    Nil        => {node: Num(0), rest: Nil}
-    Cons(h, t) => if h.kind == "int" then {node: Num(toint(h.text)), rest: t} else if h.text == "-" and decimalhead(t) then {node: decnode(headtext(t), 1), rest: droponce(t)} else if h.text == "-" then (let r = post(t) in {node: Bin("-", Num(0), r.node), rest: r.rest}) else if h.kind == "decimal" then {node: decnode(h.text, 0), rest: t} else if h.kind == "str" then {node: strinterp(strval(h.text)), rest: t} else if h.kind == "id" then (if h.text == "if" then parseif(t) else if h.text == "let" then parselet(t) else if h.text == "var" then parsevar(t) else if h.text == "fn" and headtext(t) == "(" then parselambda(t) else if h.text == "shard" and headtext(t) != "(" then parseshard(t) else if h.text == "own" then parseowne(t) else if h.text == "mut" then parsemute(t) else if h.text == "defer" then parsedefer(t) else if h.text == "errdefer" then parseerrdefer(t) else if h.text == "with" then parsewith(t) else if h.text == "scope" then parsescope(t) else if h.text == "spawn" then parsespawn(t) else if h.text == "match" then parsematch(t) else if h.text == "comptime" then parsect(t) else if h.text == "quote" then parsequote(t) else if h.text == "splice" then parsesplice(t) else if h.text == "do" then expr(t) else primid(h.text, t)) else if h.text == "{" then (if isrecwith(t) then let bnm = headtext(t) in let a = recentries(droponce(droponce(t))) in {node: Call("__lume_rec_with", Cons(Str(""), Cons(Var(bnm), Cons(Rec(a.items), Nil)))), rest: a.rest} else if isrecbody(t) then let a = recentries(t) in {node: Rec(a.items), rest: a.rest} else let r = expr(t) in {node: r.node, rest: skiprb(r.rest)}) else if h.text == "(" then parseparen(t) else if h.text == "[" then let r = expr(t) in {node: Call("_tylist_", Cons(r.node, Nil)), rest: skiprk(r.rest)} else {node: Num(0), rest: t}
+    Nil        => {node: Num(ctfail("lume: parse error [P0002]: unexpected end of input (expected an expression)\n")), rest: Nil}
+    Cons(h, t) => if h.kind == "int" then {node: Num(toint(h.text)), rest: t} else if h.text == "-" and decimalhead(t) then {node: decnode(headtext(t), 1), rest: droponce(t)} else if h.text == "-" then (let r = post(t) in {node: Bin("-", Num(0), r.node), rest: r.rest}) else if h.kind == "decimal" then {node: decnode(h.text, 0), rest: t} else if h.kind == "str" then {node: strinterptok(h.text), rest: t} else if h.kind == "id" then (if h.text == "if" then parseif(t) else if h.text == "let" then parselet(t) else if h.text == "var" then parsevar(t) else if h.text == "not" then (let r = post(t) in {node: Bin("==", r.node, Num(0)), rest: r.rest}) else if h.text == "fn" and headtext(t) == "(" then parselambda(t) else if h.text == "shard" and headtext(t) != "(" then parseshard(t) else if h.text == "own" then parseowne(t) else if h.text == "mut" then parsemute(t) else if h.text == "defer" then parsedefer(t) else if h.text == "errdefer" then parseerrdefer(t) else if h.text == "with" then parsewith(t) else if h.text == "scope" then parsescope(t) else if h.text == "spawn" then parsespawn(t) else if h.text == "match" then parsematch(t) else if h.text == "comptime" then parsect(t) else if h.text == "quote" then parsequote(t) else if h.text == "splice" then parsesplice(t) else if h.text == "do" then expr(t) else primid(h.text, t)) else if h.text == "{" then (if isrecwith(t) then let bnm = headtext(t) in let a = recentries(droponce(droponce(t))) in {node: Call("__lume_rec_with", Cons(Str(""), Cons(Var(bnm), Cons(Rec(a.items), Nil)))), rest: a.rest} else if isrecbody(t) then let a = recentries(t) in {node: Rec(a.items), rest: a.rest} else let r = expr(t) in {node: r.node, rest: skiprb(r.rest)}) else if h.text == "(" then parseparen(t) else if h.text == "[" then parselistlit(t) else {node: Num(ctfail("lume: parse error [P0002]: unexpected token '" + h.text + "' " + headpos(ts) + " (expected an expression)\n")), rest: t}
+fn parselistlit(t) = if headtext(t) == "]" then {node: Call("_tylist_", Nil), rest: droponce(t)} else let a = listmore(expr(t)) in {node: Call("_tylist_", a.items), rest: a.rest}
+fn listmore(r) = if headtext(r.rest) == "," then (if headtext(droponce(r.rest)) == "]" then {items: Cons(r.node, Nil), rest: droponce(droponce(r.rest))} else let rr = listmore(expr(droponce(r.rest))) in {items: Cons(r.node, rr.items), rest: rr.rest}) else {items: Cons(r.node, Nil), rest: skiprk(r.rest)}
 fn arglist(ts) = if headtext(ts) == ")" then {items: Nil, rest: droponce(ts)} else argmore(expr(ts))
 fn argmore(r) = if headtext(r.rest) == "," then let rr = arglist(droponce(r.rest)) in {items: Cons(r.node, rr.items), rest: rr.rest} else {items: Cons(r.node, Nil), rest: skiprp(r.rest)}
+fn isarrow(ts) = headtext(ts) == "=" and headtext(droponce(ts)) == ">"
+fn isnegpat(ts) = headtext(ts) == "-" and (headkind(droponce(ts)) == "int" or headkind(droponce(ts)) == "decimal") and isarrow(droponce(droponce(ts)))
 fn mulloop(r) = match r.rest
     Nil        => r
     Cons(h, t) => if h.text == "*" or h.text == "/" or h.text == "%" then let r2 = post(t) in mulloop({node: Bin(h.text, r.node, r2.node), rest: r2.rest}) else r
 fn mul(ts) = mulloop(post(ts))
 fn addloop(r) = match r.rest
     Nil        => r
-    Cons(h, t) => if h.text == "+" or h.text == "-" then let r2 = mul(t) in addloop({node: Bin(h.text, r.node, r2.node), rest: r2.rest}) else r
+    Cons(h, t) => if h.text == "+" or (h.text == "-" and isnegpat(r.rest) == 0) then let r2 = mul(t) in addloop({node: Bin(h.text, r.node, r2.node), rest: r2.rest}) else r
 fn add(ts) = addloop(mul(ts))
 fn cmploop(r) = match r.rest
     Nil        => r
     Cons(h, t) => if h.text == "==" or h.text == "!=" or h.text == "<" or h.text == ">" or h.text == "<=" or h.text == ">=" then let r2 = add(t) in cmploop({node: Bin(h.text, r.node, r2.node), rest: r2.rest}) else r
-fn cmp(ts) = cmploop(add(ts))
+fn cmp(ts) = if headtext(ts) == "not" then notcmp(cmp(droponce(ts))) else cmploop(add(ts))
+fn notcmp(r) = {node: Bin("==", r.node, Num(0)), rest: r.rest}
 fn andloop(r) = match r.rest
     Nil        => r
     Cons(h, t) => if h.text == "and" then let r2 = cmp(t) in andloop({node: Bin(h.text, r.node, r2.node), rest: r2.rest}) else r
@@ -61,27 +80,37 @@ fn expr(ts) = pipeloop(orloop(booland(ts)))
 fn parse(s) = (expr(lex(s, 0))).node
 
 ## --- parser: match ---
-## INVARIANT (relied on by the parser, the frame-slot computation and the codegen): `match` appears ONLY as the
-## ENTIRE body of a function (or of a let-in / print / expression-statement body), never nested inside a larger
-## expression. The lexer is layout-blind (no INDENT/DEDENT), so the arms of a match are delimited by LOOKAHEAD:
-## an arm continues if and only if the next tokens form `<pattern> =>`; otherwise the arms have ended and the
-## token stream is left exactly as it was (nothing consumed) for the following statement. This is what lets a
-## top-level expression statement follow a function whose body is a `match`; the old rule ("arms end at `fn`,
-## `print` or end of input") would have swallowed such an expression as a bogus extra arm. A match nested in an
-## arm body would still swallow the outer arms, so such code must be factored into a helper function.
-## The lexer has no `=>` token: it lexes as the two ops "=" then ">", so an arrow is two dropkw calls, and the
-## lookahead `isarrow` likewise checks for "=" then ">".
-fn isarrow(ts) = headtext(ts) == "=" and headtext(droponce(ts)) == ">"
-fn ispatkw(nm) = nm == "in" or nm == "else" or nm == "elif" or nm == "then" or nm == "fn" or nm == "pub" or nm == "type" or nm == "law" or nm == "rule" or nm == "effect" or nm == "trait" or nm == "impl" or nm == "const"
+## `match` arms are delimited by indentation (`mincol = headcol(first_arm)`) and `<pattern> =>` lookahead,
+## or by explicit `{ ... }` braces (`match x { pat => body, ... }`). Nested `match` inside `let ... in`, `if`,
+## binary expressions, calls, records, and arm bodies is supported at arbitrary depth: `parsearms` only
+## consumes `,` / `;` / `|` separators if the following tokens form a valid arm at `col >= mincol`, otherwise
+## leaving the separator intact in `rest` for the enclosing call or record literal.
+fn ispatkw(nm) = nm == "in" or nm == "else" or nm == "elif" or nm == "then" or nm == "fn" or nm == "pub" or nm == "type" or nm == "law" or nm == "rule" or nm == "effect" or nm == "trait" or nm == "impl" or nm == "const" or nm == ")" or nm == "}" or nm == "]"
 fn dropamsep(ts) = if (headtext(ts) == "|" and headtext(droponce(ts)) != ">") or headtext(ts) == "," or headtext(ts) == ";" then droponce(ts) else ts
-fn parsematch(t) = let sc = expr(t) in let hb = if headtext(sc.rest) == "{" then 1 else 0 in let t1 = dropkw(sc.rest, "{") in let mincol = if hb == 1 then 0 else headcol(t1) in let ar = parsearms(t1, mincol) in {node: Match(sc.node, ar.items), rest: if hb == 1 then skiprb(ar.rest) else ar.rest}
-fn parsearms(ts, mincol) = if headcol(ts) < mincol or ispipe(ts) then {items: Nil, rest: ts} else let t1 = dropkw(ts, "|") in if ispatkw(headtext(t1)) == 1 then {items: Nil, rest: ts} else armstart(ts, parsepat(t1), mincol)
+fn pat_has_str(nm, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else pat_has_str(nm, t)
+fn checkpat_acc(p, seen, pos) = match p
+    PBind(nm)        => if nm == "__dec_pat__" then ctfail("lume: parse error [P0002]: decimal literals are not supported in match patterns " + pos + "\n") else if nm == "__bad_pat_rp__" then ctfail("lume: parse error [P0002]: expected ')' in constructor pattern " + pos + "\n") else if pat_has_str(nm, seen) == 1 then ctfail("lume: parse error [P0002]: duplicate pattern variable '" + nm + "' in the same pattern " + pos + "\n") else Cons(nm, seen)
+    PCons(tag, subs) => checkpats_acc(subs, seen, pos)
+    _                => seen
+fn checkpats_acc(xs, seen, pos) = match xs
+    Nil        => seen
+    Cons(h, t) => checkpats_acc(t, checkpat_acc(h, seen, pos), pos)
+fn checknames(xs, seen, pos) = match xs
+    Nil        => 0
+    Cons(h, t) => if h != "_" and pat_has_str(h, seen) == 1 then ctfail("lume: parse error [P0002]: duplicate binder '" + h + "' " + pos + "\n") else checknames(t, Cons(h, seen), pos)
+fn checkparams(ps) = let z0 = checknames(ps.items, Nil, headpos(ps.rest)) in ps
+fn checkpat(p, pos) = let _ = checkpat_acc(p, Nil, pos) in p
+fn parsematch(t) = let sc = expr(t) in let hb = if headtext(sc.rest) == "{" then 1 else 0 in let t1 = dropkw(sc.rest, "{") in let mincol = if hb == 1 then 0 else headcol(t1) in let ar = parsearms(t1, mincol) in if isnil(ar.items) == 1 then {node: Num(ctfail("lume: parse error [P0002]: 'match' expression requires at least one pattern arm " + headpos(t1) + "\n")), rest: Nil} else {node: Match(sc.node, ar.items), rest: if hb == 1 then skiprb(ar.rest) else ar.rest}
+fn parsearms(ts, mincol) = let t0 = dropamsep(ts) in if headcol(t0) < mincol or ispipe(t0) then {items: Nil, rest: ts} else let t1 = dropkw(t0, "|") in if ispatkw(headtext(t1)) == 1 then {items: Nil, rest: ts} else if isarrow(t1) then ctfail("lume: parse error [P0002]: expected a pattern before '=>' " + headpos(t1) + "\n") else armstart(ts, parsepat(t1), mincol)
 fn armstart(ts, p, mincol) = if isarrow(p.rest) then armmore(p, mincol) else {items: Nil, rest: ts}
-fn armmore(p, mincol) = let b = expr(dropkw(dropkw(p.rest, "="), ">")) in let rr = parsearms(dropamsep(b.rest), mincol) in {items: Cons({pat: p.node, body: b.node}, rr.items), rest: rr.rest}
+fn armmore(p, mincol) = let pnode = checkpat(p.node, headpos(p.rest)) in let btok = dropkw(dropkw(p.rest, "="), ">") in if mincol > 0 and headtext(btok) == "match" and headline(btok) == headline(p.rest) and inlinearms(expr(droponce(btok)), headline(btok)) == 1 then ctfail("lume: parse error [P0002]: nested inline 'match' on the same line requires braces 'match x { ... }' or parentheses '(match x ...)' " + headpos(btok) + "\n") else let b = expr(btok) in let rr = parsearms(b.rest, mincol) in {items: Cons({pat: pnode, body: b.node}, rr.items), rest: rr.rest}
+fn inlinearms(sc, ln) = if headtext(sc.rest) == "{" or headtext(sc.rest) == "" then 0 else if headline(sc.rest) == ln then 1 else 0
 fn parsepat(ts) = match ts
     Nil        => {node: PWild, rest: Nil}
-    Cons(h, t) => if h.kind == "int" then {node: PInt(toint(h.text)), rest: t} else if h.text == "-" and headkind(t) == "int" then {node: PInt(0 - toint(headtext(t))), rest: droponce(t)} else if h.kind == "str" then {node: PStr(strval(h.text)), rest: t} else if h.text == "_" then {node: PWild, rest: t} else if isctor(h.text) then patcons(h.text, t) else {node: PBind(h.text), rest: t}
+    Cons(h, t) => if h.kind == "int" then {node: PInt(toint(h.text)), rest: t} else if h.text == "-" and headkind(t) == "int" then {node: PInt(0 - toint(headtext(t))), rest: droponce(t)} else if h.kind == "decimal" or (h.text == "-" and decimalhead(t)) then {node: PBind("__dec_pat__"), rest: if h.text == "-" then droponce(t) else t} else if h.kind == "str" then {node: PStr(strlittok(h.text)), rest: t} else if h.text == "true" then {node: PInt(1), rest: t} else if h.text == "false" then {node: PInt(0), rest: t} else if h.text == "_" then {node: PWild, rest: t} else if h.kind == "id" then (if isctor(h.text) then patcons(h.text, t) else {node: PBind(h.text), rest: t}) else {node: PWild, rest: ts}
 fn patcons(tag, t) = if headtext(t) == "(" then let a = patlist(droponce(t)) in {node: PCons(tag, a.items), rest: a.rest} else {node: PCons(tag, Nil), rest: t}
 fn patlist(ts) = if headtext(ts) == ")" then {items: Nil, rest: droponce(ts)} else patmore(parsepat(ts))
-fn patmore(r) = if headtext(r.rest) == "," then let rr = patlist(droponce(r.rest)) in {items: Cons(r.node, rr.items), rest: rr.rest} else {items: Cons(r.node, Nil), rest: skiprp(r.rest)}
+fn patmore(r) = if headtext(r.rest) == "," then let rr = patlist(droponce(r.rest)) in {items: Cons(r.node, rr.items), rest: rr.rest} else if headtext(r.rest) == ")" then {items: Cons(r.node, Nil), rest: droponce(r.rest)} else {items: Cons(PBind("__bad_pat_rp__"), Nil), rest: r.rest}
 

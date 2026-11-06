@@ -1,0 +1,112 @@
+## Litmus & Ergonomics Conformance Suite (Claude Opus 5.5 10/10 Verification)
+## 1. Lexical let-shadowing (alpha-renaming): `let x = 1 in (let x = 2 in x) + x` == 3
+## 2. Deep structural equality on constructors (`Some(1) == Some(2)` == 0, `Some(1) == Some(1)` == 1) and records (`{a: 0} == {b: 0}` == 0)
+## 3. Nested `match` inside function call argument list (`f(match x A => 1, 2)`) and inside record literals
+## 4. Negative integer pattern arm (`-1 => 99`) and boolean pattern arms (`true =>`, `false =>`)
+## 5. Bounds-checked `ord(at(s, i))` on out-of-bounds (`1000000`) and negative (`-1`) indices
+## 6. Functions with >6 parameters (8 params), left-to-right arg evaluation, and >6-param TCO with argument swapping
+## 7. Nested `match` with shadowed pattern bindings (`ICons(h, t)` inside `ICons(h, t)`), constructor arity safety, and `forall_range` shadowing
+
+fn add2(a, b) = a + b
+
+## Litmus 1: lexical let shadowing (including nested and sequential shadowings)
+fn test_shadow() =
+    let x = 1 in
+    let r1 = (let x = 2 in x) + x in
+    let r2 = (let x = x + 10 in x) + x in
+    r1 * 100 + r2
+
+## Litmus 2: deep structural equality on ADTs and records (including distinct keys with 0 values `{a: 0} == {b: 0}`)
+fn test_deep_eq() =
+    let eq_diff = if Some(1) == Some(2) then 1 else 0 in
+    let eq_same = if Some(7) == Some(7) then 1 else 0 in
+    let ne_diff = if Some(1) != Some(2) then 1 else 0 in
+    let rec_eq = if {a: 10, b: 20} == {b: 20, a: 10} then 1 else 0 in
+    let rec_ne = if {a: 10, b: 20} == {a: 10, b: 99} then 1 else 0 in
+    let rec_zero_key = if {a: 0} == {b: 0} then 1 else 0 in
+    let rec_nested = if {p: Some(1)} == {p: Some(1)} and {p: Some(1)} != {p: Some(2)} then 1 else 0 in
+    eq_diff * 100000 + eq_same * 10000 + ne_diff * 1000 + rec_eq * 100 + rec_ne * 10 + rec_zero_key + rec_nested
+
+## Litmus 3: match inside call argument list (preserving comma separator) and inside record literal
+fn test_match_in_call(x) =
+    let c = add2(match x A => 10 B => 20, 5) in
+    let r = {first: match x A => 3 B => 4, second: 7} in
+    c + r.first + r.second
+
+## Litmus 4: negative pattern arm after scrutinee and boolean pattern arms (`true` / `false`)
+fn classify_int(n) =
+    match n
+        -1 => 100
+        -2 => 200
+        0  => 300
+        1  => 400
+        _  => 500
+
+fn classify_bool(b) =
+    match b
+        true  => 10
+        false => 20
+        _     => 30
+
+## Litmus 5: bounds-checked ord(at(s, i))
+fn test_ord_at_bounds() =
+    let s = "AZ" in
+    let c0 = ord(at(s, 0)) in
+    let c1 = ord(at(s, 1)) in
+    let coob = ord(at(s, 1000000)) in
+    let cneg = ord(at(s, 0 - 5)) in
+    c0 + c1 + coob + cneg
+
+## Litmus 6 & A1: 8-parameter function + 8-parameter tail-recursive loop (TCO) with argument swapping
+fn weighted8(a, b, c, d, e, f, g, h) =
+    a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8
+
+fn tco8(n, a, b, c, d, e, f, acc) =
+    if n <= 0 then a + b + c + d + e + f + acc
+    else tco8(n - 1, b, a, d, c, f, e, acc + a)
+
+## A2: nested match with shadowed pattern variables (`h` and `t` bound in both outer and inner match) & ctor arity check
+fn nested_match_shadow(xs, ys) =
+    let base = 5 in
+    let arity_ok = match INil
+        ICons(a, b) => 999
+        INil        => 1
+    in
+    base + arity_ok + (match xs
+        INil => 0
+        ICons(h, t) =>
+            let inner = match ys
+                INil => 0
+                ICons(h, t) => h * 10
+            in h + inner)
+
+## Quantifier (`forall_range`) lexical shadowing of outer bound and parameter
+fn quant_shadow(i) =
+    let outer_ok = let n = 1 in let n = 5 in forall_range(k, 0, n, k < 3) in
+    let param_ok = if forall_range(i, 0, 2, i >= 0) then i else 0 in
+    outer_ok * 100 + param_ok
+
+## Unary `not`, escaped interpolation braces `"\{x}"`, and deep list structural equality
+fn mk_list(n, acc) =
+    if n <= 0 then acc else mk_list(n - 1, Cons(n, acc))
+
+fn test_unary_not_and_misc() =
+    let x = 99 in
+    let s = "\{x}" in
+    let esc = "\b\f\'" in
+    let esc_ok = if ord(at(esc, 0)) == 8 and ord(at(esc, 1)) == 12 and ord(at(esc, 2)) == 39 and count(esc) == 3 then 1 else 0 in
+    let l1 = mk_list(200, Nil) in
+    let l2 = mk_list(200, Nil) in
+    let l3 = mk_list(200, Cons(0, Nil)) in
+    if not 0 and not (1 == 2) and s == "{" + "x}" and count(s) == 3 and esc_ok == 1 and l1 == l2 and l1 != l3 then 1 else 0
+
+print(test_shadow())
+print(test_deep_eq())
+print(test_match_in_call(A))
+print(classify_int(0 - 1) + classify_int(0 - 2) + classify_int(1) + classify_bool(1 == 1) + classify_bool(1 == 2))
+print(test_ord_at_bounds())
+print(weighted8(1, 2, 3, 4, 5, 6, 7, 8))
+print(tco8(1000, 1, 2, 3, 4, 5, 6, 0))
+print(nested_match_shadow(ICons(3, INil), ICons(4, INil)))
+print(quant_shadow(9))
+print(test_unary_not_and_misc())

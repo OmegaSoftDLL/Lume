@@ -1,10 +1,10 @@
 #!/bin/sh
-# Lume Official Zero-C Multi-Platform Installer (v1.0.0 / Edition 2026)
+# Lume Official Zero-C Multi-Platform Installer (v1.1.0 / Edition 2026)
 # Usage: curl -fsSL https://omegasoftdll.github.io/lume/install.sh | sh
 set -eu
 
 REPO="${LUME_REPO:-OmegaSoftDLL/lume}"
-TAG="${LUME_VERSION:-v1.0.0}"
+TAG="${LUME_VERSION:-v1.1.0}"
 PREFIX="${LUME_PREFIX:-$HOME/.lume}"
 
 OS="$(uname -s)"

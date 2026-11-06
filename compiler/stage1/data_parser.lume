@@ -109,6 +109,13 @@ fn dpat(p: mut DP) -> Pat
     elif t.kind == Op and t.text == "-" and dcur(p).kind == Int
         let nt = deat(p)
         PInt(n: 0 - (nt.text.parse_int() ?? 0))
+    elif t.kind == Decimal or (t.kind == Op and t.text == "-" and dcur(p).kind == Decimal)
+        dunsupported(p, "decimal literal in match pattern", t.line)
+        PWild
+    elif t.text == "true"
+        PInt(n: 1)
+    elif t.text == "false"
+        PInt(n: 0)
     elif t.kind == Ident and t.text == "_"
         PWild
     elif t.kind == Ident and is_upper(t.text)
@@ -130,12 +137,49 @@ fn dpat(p: mut DP) -> Pat
     else
         PBind(name: t.text)
 
+## A binder may appear only once in a pattern (same rule as the native parser's checkpat).
+fn dpat_binders(q: Pat, seen: mut [str], dups: mut [str])
+    match q
+        PBind(nm) => do
+            if seen.contains(nm)
+                dups.push(nm)
+            seen.push(nm)
+        PCons(tag, subs) => do
+            for s in subs
+                dpat_binders(s, seen, dups)
+        _ => do
+            let _ = 0
+
+fn dpat_checked(p: mut DP) -> Pat
+    let line = dcur(p).line
+    let q = dpat(p)
+    var seen = []
+    var dups = []
+    dpat_binders(q, seen, dups)
+    if dups.len() > 0
+        dunsupported(p, "duplicate pattern variable '" + dups[0] + "'", line)
+    q
+
 fn datom(p: mut DP) -> DExpr
     if p.err != ""
         return DInt(n: 0)
     if dcur(p).text == "own"
         deat(p)
         return dprimary(p)
+    dnl(p)
+    if dcur(p).kind == Indent
+        let ind = deat(p)
+        dnl(p)
+        let inner = dexpr(p, 0)
+        dnl(p)
+        if dcur(p).kind == Dedent
+            deat(p)
+        elif dcur(p).kind != End
+            dunsupported(p, "multi-statement indented body", ind.line)
+        return inner
+    if dcur(p).text == "not"
+        deat(p)
+        return DBin(op: "==", l: dexpr(p, dlbp("==")), r: DInt(n: 0))
     if dcur(p).text == "fn" or dcur(p).text == "var" or dcur(p).text == "shard" or dcur(p).text == "scope" or dcur(p).text == "spawn" or dcur(p).text == "defer" or dcur(p).text == "errdefer" or dcur(p).text == "comptime" or dcur(p).text == "quote" or dcur(p).text == "splice"
         let ut = deat(p)
         dunsupported(p, ut.text, ut.line)
@@ -237,7 +281,7 @@ fn datom(p: mut DP) -> DExpr
             dnl(p)
             while dcur(p).kind != Dedent and dcur(p).kind != End and p.err == ""
                 let before = p.pos
-                let pat = dpat(p)
+                let pat = dpat_checked(p)
                 if not (dcur(p).kind == Op and dcur(p).text == "=>")
                     dunsupported(p, "malformed 'match' arm", dcur(p).line)
                     return DMatch(scrut: scrut, arms: arms)
@@ -257,7 +301,7 @@ fn datom(p: mut DP) -> DExpr
                     deat(p)
                     dnl(p)
                 let before = p.pos
-                let pat = dpat(p)
+                let pat = dpat_checked(p)
                 if not (dcur(p).kind == Op and dcur(p).text == "=>")
                     dunsupported(p, "malformed 'match' arm", dcur(p).line)
                     return DMatch(scrut: scrut, arms: arms)
@@ -278,7 +322,7 @@ fn datom(p: mut DP) -> DExpr
                     deat(p)
                     dnl(p)
                 let before = p.pos
-                let pat = dpat(p)
+                let pat = dpat_checked(p)
                 if not (dcur(p).kind == Op and dcur(p).text == "=>")
                     p.pos = before
                     if arms.len() == 0
@@ -380,7 +424,12 @@ fn datom(p: mut DP) -> DExpr
             DCall(name: t.text, args: cargs)
         else
             DVar(name: t.text)
+    elif t.text == "true"
+        DInt(n: 1)
+    elif t.text == "false"
+        DInt(n: 0)
     else
+        dunsupported(p, "unexpected token '" + t.text + "' in expression", t.line)
         DInt(n: 0)
 
 fn dprimary(p: mut DP) -> DExpr
@@ -464,7 +513,10 @@ fn dstmt(p: mut DP) -> DStmt
         while not (dcur(p).kind == Op and dcur(p).text == ")") and dcur(p).kind != End and p.err == ""
             if dcur(p).text == "own"
                 deat(p)
-            params.push(deat(p).text)
+            let pnm = deat(p).text
+            if pnm != "_" and params.contains(pnm)
+                dunsupported(p, "duplicate parameter '" + pnm + "'", t.line)
+            params.push(pnm)
             if dcur(p).kind == Op and dcur(p).text == ":"
                 deat(p)
                 while not (dcur(p).kind == Op and (dcur(p).text == "," or dcur(p).text == ")")) and dcur(p).kind != End and p.err == ""

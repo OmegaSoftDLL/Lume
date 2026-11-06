@@ -43,7 +43,7 @@ Notation: `code` for syntax; *italics* for metavariables; "MUST/SHOULD" as in RF
   written (never through binary floating point).
 - **Booleans**: `true`, `false`. **Absence**: `none`.
 - **Characters**: `'a'`, `'\n'`, `'\u{1F600}'` (type `char`, a Unicode scalar).
-- **Strings**: `"text"` with escapes `\n \t \\ \" \{ \u{…}` and **interpolation** `{expr}` and
+- **Strings**: `"text"` with escapes `\n \t \r \b \f \\ \" \' \$ \{ \}` and **interpolation** `{expr}` and
   `{expr:fmt}`; raw `r"…"` (no escapes, no interpolation); multi-line `"""…"""` (indentation of the
   closing quotes is stripped); bytes `b"…"` (type `[u8]`). Type `str` (owned, UTF-8).
 - **Regex**: `re"pattern"` — validated at compile time; named groups become record fields

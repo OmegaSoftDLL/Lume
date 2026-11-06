@@ -1767,6 +1767,23 @@ PY
     ti_bad_rc=0
     LUME_BIN_DIR="$ntmp" ../../lume intent build --json "$ntmp/bad.intent" >"$ntmp/ti_bad.json" 2>/dev/null || ti_bad_rc=$?
     if [ -x "$ntmp/ti_ok.elf" ] && "$ntmp/ti_ok.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/track_i_intent_ok_asm.expected - >/dev/null && [ -s "$ntmp/ti_fn1.s" ] && ! grep -q "call ctfail" "$ntmp/ti_fn1.s" && [ -s "$ntmp/ti_fn2.s" ] && ! grep -q "call ctfail" "$ntmp/ti_fn2.s" && [ -s "$ntmp/ti_fn3.s" ] && ! grep -q "call ctfail" "$ntmp/ti_fn3.s" && [ -s "$ntmp/ti_fn4.s" ] && ! grep -q "call ctfail" "$ntmp/ti_fn4.s" && [ -s "$ntmp/ti_fn5.s" ] && ! grep -q "call ctfail" "$ntmp/ti_fn5.s" && [ -x "$ntmp/spec.elf" ] && "$ntmp/spec.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/track_i_intent_ok_asm.expected - >/dev/null && [ -f "$ntmp/spec.intent.cache.src" ] && [ -f "$ntmp/spec.intent.cache.cert.json" ] && grep -q '"ok":true' "$ntmp/ti_b1.json" && grep -q '"cache_status":"regenerated_cache_missing"' "$ntmp/ti_b1.json" && grep -q '"re_synthesized":true' "$ntmp/ti_b1.json" && grep -q '"theory":"QF_NIA"' "$ntmp/ti_b1.json" && grep -q '"cache_hit":true' "$ntmp/ti_b2.json" && grep -q '"cache_status":"up_to_date"' "$ntmp/ti_b2.json" && grep -q '"cache_valid":true' "$ntmp/ti_v1.json" && [ "$ti_stale_rc" -ne 0 ] && grep -q '"cache_status":"regenerated_spec_changed"' "$ntmp/ti_vstale.json" && grep -q '"cache_status":"regenerated_spec_changed"' "$ntmp/ti_b3.json" && grep -q '"re_synthesized":true' "$ntmp/ti_b3.json" && [ "$ti_spec2_out" = "65,49,36,42,42," ] && [ "$ti_tamper_rc" -ne 0 ] && grep -q '"cache_tampered":true' "$ntmp/ti_vtamper.json" && grep -q '"code":"V0005"' "$ntmp/ti_vtamper.json" && [ "$ti_bad_rc" -eq 3 ] && grep -q '"cache_status":"rejected_unprovable_spec"' "$ntmp/ti_bad.json" && grep -q '"code":"V0001"' "$ntmp/ti_bad.json"; then ok "Track I (#259, docs/19 §1): intent-as-source (.intent synthesis via QF_LIA/QF_NIA, zero-guard ELF, SHA-256 proven cache hit, re-synthesis on spec change, V0005 tamper & V0001 unprovable rejection)"; else bad "Track I (#259, docs/19 §1): intent-as-source pipeline"; cat "$ntmp/ti_ok.err" "$ntmp/ti_b1.json" "$ntmp/ti_b2.json" "$ntmp/ti_v1.json" "$ntmp/ti_vstale.json" "$ntmp/ti_b3.json" "$ntmp/ti_vtamper.json" "$ntmp/ti_bad.json" 2>/dev/null; fi
+    "$ntmp/lc2" <../../tests/conformance/stage1/semantic_ergonomics_ok.src >"$ntmp/sem_erg.s" 2>/dev/null
+    "$ntmp/lasm" <"$ntmp/sem_erg.s" >"$ntmp/sem_erg.elf" 2>/dev/null && chmod +x "$ntmp/sem_erg.elf"
+    printf 'fn f(x) = if x == 1 then 10\nprint f(1)\n' >"$ntmp/sem_bad_if.src"
+    sem_bad_if_rc=0; "$ntmp/lc2" <"$ntmp/sem_bad_if.src" >/dev/null 2>"$ntmp/sem_bad_if.err" || sem_bad_if_rc=$?
+    printf 'fn f() = "unterminated' >"$ntmp/sem_bad_str.src"
+    sem_bad_str_rc=0; "$ntmp/lc2" <"$ntmp/sem_bad_str.src" >/dev/null 2>"$ntmp/sem_bad_str.err" || sem_bad_str_rc=$?
+    if [ -x "$ntmp/sem_erg.elf" ] && "$ntmp/sem_erg.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/semantic_ergonomics_ok.expected - >/dev/null && [ "$sem_bad_if_rc" -ne 0 ] && grep -q '\[P0002\]' "$ntmp/sem_bad_if.err" && [ "$sem_bad_str_rc" -ne 0 ] && grep -q '\[L0001\]' "$ntmp/sem_bad_str.err" && bash ../../scripts/check-version-coherence.sh >/dev/null 2>&1; then ok "Stage-1 10/10 ergonomics & reliability gate: lexical alpha-renaming, deep structural ADT/record/list ==, >6-param LTR + TCO, inline match delimiters, negative int patterns, safe ord_at, fail-closed parser/lexer & version coherence"; else bad "Stage-1 10/10 ergonomics & reliability gate"; fi
+    "$ntmp/lc2" <../../tests/conformance/stage1/semantic_ergonomics_native_ok.src >"$ntmp/sem_nat.s" 2>/dev/null
+    "$ntmp/lasm" <"$ntmp/sem_nat.s" >"$ntmp/sem_nat.elf" 2>/dev/null && chmod +x "$ntmp/sem_nat.elf"
+    if [ -x "$ntmp/sem_nat.elf" ] && "$ntmp/sem_nat.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/semantic_ergonomics_native_ok.expected - >/dev/null; then ok "Stage-1 native ergonomics: multi-line nested match, brace if, string braces, list literals, constant-stack structural ==, not precedence, control-byte escapes"; else bad "Stage-1 native ergonomics"; fi
+    fc_bad=""
+    for fc_src in ../../tests/conformance/stage1/fail_closed/*.src; do
+        fc_code=$(basename "$fc_src" | cut -d_ -f1)
+        fc_rc=0; "$ntmp/lc2" <"$fc_src" >/dev/null 2>"$ntmp/fc.err" || fc_rc=$?
+        if [ "$fc_rc" -eq 0 ] || ! grep -q "\[$fc_code\]" "$ntmp/fc.err"; then fc_bad="$fc_bad $(basename "$fc_src")"; fi
+    done
+    if [ -z "$fc_bad" ]; then ok "Stage-1 fail-closed fixtures: every tests/conformance/stage1/fail_closed/<code>_*.src is rejected with <code>"; else bad "Stage-1 fail-closed fixtures:$fc_bad"; fi
 else
     skip "no-toolchain ELF pipeline (not linux/x86_64, or under ASan)"
 fi

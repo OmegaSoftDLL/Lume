@@ -1,11 +1,11 @@
 ---
 name: lume
-description: Complete guide to programming in the Lume programming language (v1.0.0) — syntax, Hindley-Milner type system, ownership and Perceus memory management, formal QF_LIA verification (requires/ensures/law, lume prove, lume certify), financial decimals and persistent tables, shape-checked tensors and GPU kernels (PTX/SPIR-V), bare-metal Ring-0 kernels (@freestanding), C interop, and Sovereign Sentience CLI commands. Always use this skill whenever the user asks to write, read, debug, prove, compile, or evolve code in Lume (.src or .lume files) or use the lume CLI.
+description: Complete guide to programming in the Lume programming language (v1.1.0) — syntax, Hindley-Milner type system, ownership and Perceus memory management, formal QF_LIA verification (requires/ensures/law, lume prove, lume certify), financial decimals and persistent tables, shape-checked tensors and GPU kernels (PTX/SPIR-V), bare-metal Ring-0 kernels (@freestanding), C interop, and Sovereign Sentience CLI commands. Always use this skill whenever the user asks to write, read, debug, prove, compile, or evolve code in Lume (.src or .lume files) or use the lume CLI.
 license: Apache-2.0
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 ---
 
-# Programming in Lume (v1.0.0)
+# Programming in Lume (v1.1.0)
 
 Lume is a **self-hosted, formally verified, zero-GC systems, AI, and quantum programming language** designed to be written seamlessly by both humans and AI agents. Every Lume program compiles directly to native machine code (`x86_64`, `aarch64`, `riscv64`, `wasm32-wasi`, bare-metal `.kernel` MBR/Long-Mode images, CUDA `PTX`, and Vulkan `SPIR-V`) with built-in **`QF_LIA` theorem proving** (`lume prove` and `lume certify`) at compile time.
 
@@ -69,11 +69,11 @@ print f"Verified fee: {clamp_fee(250, 10, 100)}"
 ```
 
 > **Critical Rules When Writing Lume (`.src` / `.lume`):**
-> 1. **Comments:** Always use `#` for line comments (never `//`).
-> 2. **Logical Operators in Contracts:** Use `and`, `or`, `not` (or `&&`, `||`, `==>`) in `requires`, `ensures`, and `law`.
-> 3. **Conditional Expressions:** Every `if cond then a else b` is an expression and must have both `then` and `else` branches.
-> 4. **Compiler Internal `.src` Invariant:** When editing the self-hosted compiler (`compiler/stage1/*.src`), keep `match` at the top level of helper functions and never edit generated `compiler/stage1/lumec.src` directly (`make amalgamate`).
-> 5. **Pure LF (`\n`) Line Endings:** Always save `.src`, `.lume`, `.expected`, and `.sh` files with pure `LF (\n)`, never `CRLF (\r\n)`.
+> 1. **Comments:** Always use `#` or `##` for line comments (never `//`).
+> 2. **Logical Operators in Contracts:** Use `and`, `or`, `not` (`not` binds looser than `==`/`<`, so `not 1 == 2` is `not (1 == 2)`) in `requires`, `ensures`, and `law`.
+> 3. **Conditional & List Expressions:** Both `if cond then a else b` and braced `if cond { a } else { b }` are supported; list literals `[]` (`Nil`) and `[1, 2, 3]` (`Cons` chains, `count([1, 2, 3]) == 3`) work directly in `.src`.
+> 4. **Pattern Matching & String Interpolation:** `match` works at top level, nested in `let`/`if`, call arguments, record fields, and `match` arms (or braced `match x { Pat => body, ... }`). Raw JSON strings `"{\"a\":{\"b\":1}}"` are preserved; escape literal interpolation braces with `"\{x}"`, `"{{x}}"`, or `"cost: \${x}"`.
+> 5. **Pure LF (`\n`) Line Endings:** Always save `.src`, `.lume`, `.expected`, and `.sh` files with pure `LF (\n)`, never `CRLF (\r\n)`, and never edit generated `compiler/stage1/lumec.src` directly (`make amalgamate`).
 
 ### 2.1 Stage-1 `.src` Builtins, Implication Idiom & Parameter Invariants
 
@@ -82,7 +82,7 @@ print f"Verified fee: {clamp_fee(250, 10, 100)}"
   - Filesystem & OS Process Execution: `fs_read_file(path)`, `fs_write_file(path, data)`, `fs_write_sync(path, data)`, `fs_path_exists(path)`, `fs_read_byte(path, offset)`, `os_run(cmd, args)`, `os_getenv(name)`, `os_argc()`, `os_argv(i)`
 - **Implication Idiom in `law`:** Express logical implication $P \implies Q$ inside `law` declarations using `if P then Q else 1 == 1`, which reduces directly to decidable branches in both `lcaas.src` and the independent proof kernel `lcert.src` (which also verifies compound `terminates` obligations via `lk_prove_term_cond` and NIST FIPS 180-4 SHA-256 KAT).
 - **Decidable `QF_LIA` vs. `runtime_checked`:** Linear integer arithmetic (`a + b`, `a - b`, `c * x` with constant integer `c`) is proven statically at compile time by `lcaas` and verified by `lcert`. Non-linear variable multiplication (`x * y`) falls outside pure `QF_LIA` and is marked `runtime_checked` unless bounded within the degree-2 Positivstellensatz `QF_NIA` fragment (`x >= 0 and y >= 0`).
-- **Max 6 Parameters in Stage-1 `.src` Compiler Modules:** Native SysV AMD64 codegen (`05_codegen.src`) passes up to 6 arguments in registers (`%rdi, %rsi, %rdx, %rcx, %r8, %r9`); group additional parameters into a record `{...}` if a function requires more than 6 inputs.
+- **Arbitrary Function Arity & O(1)-Stack Structural Equality:** Functions support any number of parameters (`1..6` in SysV AMD64 registers `%rdi..%r9`, `7+` on the stack with swap-safe self-tail-call optimization `jmp`), and `==`/`!=` uses an explicit heap worklist (`O(1)` native stack) on arbitrarily deep lists, ADTs, and records.
 - **Unit Test Convention:** Any zero-argument function named `fn test_<name>() = <bool_expr>` is automatically discovered and executed by `lume test <file.src>`.
 
 ---
