@@ -134,6 +134,23 @@ fn wasm_dom_encode_patches(patches) = match patches
     Nil        => ""
     Cons(p, r) => (if p.op == "KEEP" then "" else p.op + "#" + str(p.id) + "=" + p.val + ";") + wasm_dom_encode_patches(r)
 
+## --- 7. COSMIC 1.11 Wayland `xdg-dialog-v1` Modal Dialog Anchoring & Input Blocking ---
+fn ui_modal_blocks_parent(has_active_modal: int, target_is_modal: int) -> int
+  requires (has_active_modal == 0 or has_active_modal == 1) and (target_is_modal == 0 or target_is_modal == 1)
+  ensures result == 0 or result == 1
+= if has_active_modal == 1 and target_is_modal == 0 then 1 else 0
+
+fn ui_modal_z_index(parent_z: int, is_modal_dialog: int) -> int
+  requires parent_z >= 0 and (is_modal_dialog == 0 or is_modal_dialog == 1)
+  ensures result >= parent_z
+= if is_modal_dialog == 1 then parent_z + 100 else parent_z
+
+law ui_modal_always_above_parent_law(parent_z: int) =
+  if parent_z >= 0 then ui_modal_z_index(parent_z, 1) > parent_z else 1 == 1
+
+law ui_modal_blocks_background_clicks_law() =
+  ui_modal_blocks_parent(1, 0) == 1 and ui_modal_blocks_parent(1, 1) == 0
+
 ## --- Unit tests (`lume test compiler/stage1/gui.src`) ---
 fn test_canvas_pixel_clipping_and_fill_rect() = let c0 = canvas_new(4, 4, 0) in let c1 = canvas_fill_rect(c0, 1, 1, 2, 2, 255) in let c2 = canvas_set_px(c1, 99, 99, 100) in let c3 = canvas_set_px(c2, 0 - 5, 2, 100) in canvas_get_px(c3, 0, 0) == 0 and canvas_get_px(c3, 1, 1) == 255 and canvas_get_px(c3, 2, 2) == 255 and canvas_get_px(c3, 3, 3) == 0 and canvas_get_px(c3, 99, 99) == (0 - 1)
 
@@ -146,3 +163,5 @@ fn test_event_dispatch_and_scene_rasterization() = let ws = Cons(ui_widget(10, 2
 fn test_ppm_and_svg_frame_serialization() = let c = canvas_fill_rect(canvas_new(2, 2, rgb_pack(10, 20, 30)), 0, 0, 1, 1, rgb_pack(255, 128, 64)) in let ppm = canvas_to_ppm(c) in let ws = ui_vbox_layout(Cons(ui_widget(7, 20, 10, 255, 1, "ok"), Nil), 4, 8, 0) in let svg = ui_to_svg(100, 50, ws) in gui_startswith(ppm, "P3\n2 2\n255\n255 128 64\n10 20 30\n") == 1 and svg == "<svg width=\"100\" height=\"50\"><rect id=\"7\" x=\"4\" y=\"8\" width=\"20\" height=\"10\"/></svg>" and canvas_checksum(c) > 0
 
 fn test_x11_native_window_session_and_wasm_dom_reconciler() = let ws = ui_vbox_layout(Cons(ui_widget(10, 4, 3, 111, 7, "inc"), Cons(ui_widget(20, 4, 3, 222, 15, "add"), Nil)), 0, 0, 1) in let x11 = x11_window_session_loopback(42993, 100, ws, 2, 5) in let v1 = Cons(wasm_dom_vnode("h1", 1, "Count: 0", 0), Cons(wasm_dom_vnode("button", 2, "Increment", 1), Nil)) in let v2 = Cons(wasm_dom_vnode("h1", 1, "Count: 1", 0), Cons(wasm_dom_vnode("button", 2, "Increment", 1), Cons(wasm_dom_vnode("span", 3, "saved", 1), Nil))) in let patches = wasm_dom_encode_patches(wasm_dom_diff_nodes(v1, v2)) in x11.ok == 1 and x11.wid == 1001 and x11.exposed == 1 and x11.hit_id == 20 and x11.next_state == 115 and x11.fb_checksum > 0 and patches == "SET_TEXT#1=Count: 1;INSERT_NODE#3=span:saved;"
+
+fn test_cosmic_wayland_modal_dialog_stacking() = ui_modal_blocks_parent(1, 0) == 1 and ui_modal_blocks_parent(1, 1) == 0 and ui_modal_blocks_parent(0, 0) == 0 and ui_modal_z_index(10, 1) == 110 and ui_modal_z_index(10, 0) == 10
