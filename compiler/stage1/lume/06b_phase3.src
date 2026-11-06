@@ -1248,6 +1248,18 @@ fn vlin_coeff(nm, cs) = match cs
     Nil        => 0
     Cons(h, t) => if h.k == nm then h.c else vlin_coeff(nm, t)
 
+fn vlin_add_ovf(x, y) = if x > 0 and y > 0 and x + y < 0 then 1 else if x < 0 and y < 0 and x + y >= 0 then 1 else 0
+
+fn vlin_mul_ovf(x, y) = if x == 0 or y == 0 then 0 else if (x < 0 and 0 - x < 0) or (y < 0 and 0 - y < 0) then 1 else if (x * y) / x != y then 1 else 0
+
+fn vlin_add_cs_ovf(cs1, cs2) = match cs1
+    Nil        => 0
+    Cons(h, t) => if vlin_add_ovf(h.c, vlin_coeff(h.k, cs2)) == 1 then 1 else vlin_add_cs_ovf(t, cs2)
+
+fn vlin_scale_cs_ovf(k, cs) = match cs
+    Nil        => 0
+    Cons(h, t) => if vlin_mul_ovf(k, h.c) == 1 then 1 else vlin_scale_cs_ovf(k, t)
+
 fn vlin_add_term(nm, c, cs) = if c == 0 then cs else vlin_add_t1(nm, c, cs)
 
 fn vlin_add_t1(nm, c, cs) = match cs
@@ -1264,8 +1276,8 @@ fn vlin_scale_cs1(k, cs) = match cs
     Nil        => Nil
     Cons(h, t) => Cons({k: h.k, c: k * h.c}, vlin_scale_cs1(k, t))
 
-fn vlin_add(a, b) = if a.ok == 0 or b.ok == 0 then vlin_err() else {ok: 1, c0: a.c0 + b.c0, cs: vlin_add_cs(a.cs, b.cs)}
-fn vlin_scale(k, a) = if a.ok == 0 then vlin_err() else {ok: 1, c0: k * a.c0, cs: vlin_scale_cs(k, a.cs)}
+fn vlin_add(a, b) = if a.ok == 0 or b.ok == 0 or vlin_add_ovf(a.c0, b.c0) == 1 or vlin_add_cs_ovf(a.cs, b.cs) == 1 then vlin_err() else {ok: 1, c0: a.c0 + b.c0, cs: vlin_add_cs(a.cs, b.cs)}
+fn vlin_scale(k, a) = if a.ok == 0 or vlin_mul_ovf(k, a.c0) == 1 or vlin_scale_cs_ovf(k, a.cs) == 1 then vlin_err() else {ok: 1, c0: k * a.c0, cs: vlin_scale_cs(k, a.cs)}
 fn vlin_sub(a, b) = vlin_add(a, vlin_scale(0 - 1, b))
 
 fn vmono_key(k1, k2) = if k1 <= k2 then k1 + "*" + k2 else k2 + "*" + k1
@@ -1494,7 +1506,7 @@ fn vrec_lookup(fld, items, def) = match items
 fn vlin_field(o, fld, hyps, lenv, fns, d) = match o
     Rec(items)      => vlin_expr(vrec_lookup(fld, items, Num(0)), hyps, lenv, fns, d)
     RecT(tn, items) => vlin_expr(vrec_lookup(fld, items, Num(0)), hyps, lenv, fns, d)
-    Var(vnm)        => let lk = vlin_lookup(vnm + "." + fld, lenv) in if lk.ok == 1 then lk else vlin_var("field(" + vnm + "." + fld + ")")
+    Var(vnm)        => let lk = vlin_lookup(vnm + "." + fld, lenv) in if lk.ok == 1 then lk else let lv = vlin_lookup(vnm, lenv) in if lv.ok == 1 then (if lv.c0 == 0 and len(lv.cs) == 1 and (phd_cs(lv.cs)).c == 1 then (let rnm = (phd_cs(lv.cs)).k in let lk2 = vlin_lookup(rnm + "." + fld, lenv) in if lk2.ok == 1 then lk2 else vlin_var("field(" + rnm + "." + fld + ")")) else vlin_err()) else vlin_var("field(" + vnm + "." + fld + ")")
     _               => vlin_err()
 
 fn vlin_expr(e, hyps, lenv, fns, d) = if d > 6 then vlin_err() else vlin_expr1(e, hyps, lenv, fns, d)
@@ -1570,6 +1582,7 @@ fn vprove_exists_range(args, hyps, lenv, fns, d) = let vnm = n4_var_name(ohd_e(a
 
 fn vprove_goal(g, hyps, lenv, fns, d) = match g
     Num(n)          => if n != 0 then 1 else 0
+    Var(nm)         => if nm == "true" then 1 else 0
     LetIn(nm, v, b) => let gfn = n4_is_grad_let(v) in if gfn != "" then vprove_goal(n4_subst_call(b, nm, "__ad_grad_" + gfn), hyps, lenv, fns, d) else vprove_let_val(nm, v, b, hyps, lenv, fns)
     VarIn(nm, v, b) => vprove_let_val(nm, v, b, hyps, lenv, fns)
     DeferE(c, b)    => vprove_goal(b, hyps, lenv, fns, d)
@@ -1704,7 +1717,7 @@ fn vtemp_is_bool_e(e) = match e
 
 fn vtemp_init_cond(sv, init_e) = if vtemp_is_bool_e(init_e) == 1 then init_e else Bin("==", Var(sv), init_e)
 
-fn vtemp_neg_op(op) = if op == "<=" then ">" else if op == "<" then ">=" else if op == ">=" then "<" else if op == ">" then "<=" else if op == "==" then ">" else "!="
+fn vtemp_neg_op(op) = if op == "<=" then ">" else if op == "<" then ">=" else if op == ">=" then "<" else if op == ">" then "<=" else if op == "==" then "!=" else "=="
 
 fn vtemp_neg_cond(goal_e, rank_e) = match goal_e
     Bin(op, a, b) => if op == "==" then Bin(">", rank_e, Num(0)) else Bin(vtemp_neg_op(op), a, b)

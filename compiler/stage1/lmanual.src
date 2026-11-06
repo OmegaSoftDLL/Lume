@@ -118,9 +118,12 @@ fn man_en_syntax() = "# CHAPTER 2: SYNTAX, GRAMMAR & COMPILER INVARIANTS\n\n" +
 "## 2.4 Essential Technical Rules for Humans & AI\n" +
 "1. Pure LF (`\\n`) Line Endings: Always save `.src` and `.lume` files with Unix LF (`\\n`),\n" +
 "   never Windows CRLF (`\\r\\n`).\n" +
-"2. Function Arity: Register calling convention uses `%rdi, %rsi, %rdx, %rcx, %r8, %r9`\n" +
-"   for the first 6 parameters and automatically spills parameters 7+ onto the stack.\n" +
-"3. Never edit `compiler/stage1/lumec.src` directly: edit `compiler/stage1/lume/NN_*.src`\n" +
+"2. 6-Parameter Register Invariant: Native SysV AMD64 codegen (`05_codegen.src`) passes\n" +
+"   the first 6 parameters in `%rdi, %rsi, %rdx, %rcx, %r8, %r9` (Stage-1 `.src` compiler\n" +
+"   modules keep `<= 6` parameters per function or group extra fields into a record).\n" +
+"3. Top-Level `match` Invariant in Stage-1 `.src`: Keep `match` at the top level of a\n" +
+"   helper function body (`fn f(x) = match x ...`) in Stage-1 `.src` compiler modules.\n" +
+"4. Never edit `compiler/stage1/lumec.src` directly: edit `compiler/stage1/lume/NN_*.src`\n" +
 "   and run `scripts/amalgamate.sh`.\n"
 
 fn man_en_types() = "# CHAPTER 3: TYPE SYSTEM, OWNERSHIP & DATA TYPES\n\n" +
@@ -167,10 +170,18 @@ fn man_en_contracts() = "# CHAPTER 4: CONTRACTS, LAWS & FORMAL VERIFICATION\n\n"
 "```\n" +
 "- If a contract can be violated, compilation fails with `[V0001]` and prints a concrete\n" +
 "  counterexample assignment!\n\n" +
-"## 4.2 Algebraic Laws (`law`)\n" +
+"## 4.2 Algebraic Laws (`law`) & Logical Implication Idiom\n" +
 "```lume\n" +
 "law add_commutative(a: int, b: int) = (a + b) == (b + a)\n" +
-"```\n\n" +
+"law clamp_implication(x: int, lo: int, hi: int) =\n" +
+"  if lo <= hi then clamp(x, lo, hi) >= lo else 1 == 1\n" +
+"```\n" +
+"- Implication Idiom (`if P then Q else 1 == 1`): Express logical implication $P \\implies Q$\n" +
+"  inside `law` declarations using `if P then Q else 1 == 1`, which reduces directly to\n" +
+"  decidable `QF_LIA` branches in both `lcaas.src` and the standalone proof kernel `lcert.src`.\n" +
+"- Compound Termination & Proof Kernel (`lcert.src`): Verifies compound `terminates`\n" +
+"  obligations (`lk_prove_term_cond` across `and`/`or` guards) and runs a built-in\n" +
+"  NIST FIPS 180-4 SHA-256 Known-Answer Test (`sha256(\"abc\")`).\n\n" +
 "## 4.3 Worst-Case Execution Time Bounds (`@bound(cycles: N)`)\n" +
 "For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budgets:\n" +
 "`@bound(cycles: 256) fn irq_timer() = ...` (violations emit `[V0002]`).\n\n" +
@@ -206,12 +217,12 @@ fn man_en_effects() = "# CHAPTER 5: ALGEBRAIC EFFECTS, DETERMINISTIC MEMORY, ARE
 
 fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULES\n\n" +
 "## 6.1 Core Builtin Functions (Always Available in `.src`)\n" +
-"- Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, start, len)`,\n" +
-"            `ord(ch)`, `chr(code)`, `str_from_byte(code)`, `str(n)`, `toint(s)`\n" +
+"- Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, n, start, end)`,\n" +
+"            `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`\n" +
 "- I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,\n" +
-"            `fs_path_exists(path)`, `fs_read_byte(path, offset)`, `fs_file_size(path)`\n" +
-"- Process:  `os_arg_count()`, `os_arg_at(i)`, `os_getpid()`, `os_exit(code)`,\n" +
-"            `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`\n" +
+"            `fs_path_exists(path)`, `fs_read_byte(path, offset)`\n" +
+"- Process:  `os_arg_count()`, `os_arg_at(i)`,\n" +
+"            `os_getpid()`, `os_exit(code)`, `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`\n" +
 "- Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):\n" +
 "  - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,\n" +
 "                            `port_out32(p, v)`, `port_in32(p)`\n" +
@@ -232,33 +243,55 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "    `krn_slot_read(idx)` (zero-allocation 1024-slot kernel state table)\n" +
 "- Failure:  `ctfail(msg)` (prints message to stderr and exits with non-zero code)\n\n" +
 "## 6.2 Standard Library Modules (`use <module>`)\n" +
-"- `use fs`             Safe file handles (`with_file` close-on-all-paths, `[O0001]` safety)\n" +
-"- `use bytes`          Bounds-checked byte buffers (`bytes_from_str`, `bytes_get`, `bytes_slice`)\n" +
-"- `use map`            256-way hash-bucketed dictionary (`map_empty`, `map_put`, `map_get`)\n" +
-"- `use arena`          Scoped O(1) memory arenas (`with_arena`, `arena_stats`)\n" +
+"- `use fs`             Safe file handles (`sfile_with` close-on-all-paths, `[O0001]` safety)\n" +
+"- `use bytes`          Bounds-checked byte buffers (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)\n" +
+"- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`)\n" +
+"- `use arena`          Scoped O(1) memory arenas (`arena_new`, `arena_alloc`, `arena_reset`, `heap_stats`)\n" +
 "- `use capsule`        Tamper-evident execution capsules (`capsule_seal`, `capsule_verify`)\n" +
-"- `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`)\n" +
+"- `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`, `fs_file_size(path, i)`)\n" +
 "- `use db`             Multi-way B+Tree + ACID WAL crash-recovery engine & SQL query executor\n" +
+"                       (`+/- 10^12` 64-bit scan bounds, nested `db_begin_tx` guard, and `BMInner`\n" +
+"                       separator subtree pruning, `6/6` `QF_LIA` proofs)\n" +
 "- `use net`            Full TCP/IP, Wireshark Multi-Layer Dissector (`wireshark_dissect_frame`,\n" +
 "                       `wireshark_filter_match`, `.pcap` reader/writer), L2/L3/P4 Switch Firmware\n" +
-"                       Engine (IEEE 802.1Q VLAN, 802.1w RSTP, CAM/MAC learning, MPLS, FIB LPM,\n" +
-"                       BGP-4, P4 pipeline), Industrial/Substation Telemetry Protocols from\n" +
+"                       Engine (IEEE 802.1Q VLAN admission fix, 802.1w RSTP, CAM/MAC learning, MPLS,\n" +
+"                       FIB LPM, BGP-4, P4 pipeline), Industrial/Substation Telemetry Protocols from\n" +
 "                       scratch: Modbus RTU/TCP (`CRC-16 0xA001`), DNP3 IEEE 1815 (`0x0564` +\n" +
 "                       `CRC-16/DNP` + SBO + SAv5), IEC 60870-5-104 (`TCP/2404` I/S/U-Format),\n" +
-"                       IEC 61850 (`MMS ISO 9506`, `GOOSE 0x88B8`, `Sampled Values 0x88BA`), and\n" +
-"                       Digital Substation Protection Relays (`sv_dft_4sample_phasor` 60 Hz DFT,\n" +
-"                       `ANSI 50`, `ANSI 51`, `ANSI 87`, `ANSI 21`, `ANSI 27/59`, `ANSI 81`, `ANSI 79`)\n" +
+"                       IEC 61850 (`MMS ISO 9506`, `GOOSE 0x88B8`, `Sampled Values 0x88BA` with exact\n" +
+"                       frame-length guards), and Digital Substation Protection Relays\n" +
+"                       (`sv_dft_4sample_phasor` 60 Hz DFT, `net_isqrt` up to `10^16`, direct\n" +
+"                       `ansi50`/`ansi27_59` contracts, `ANSI 51`, `ANSI 87`, `ANSI 21`, `ANSI 81`,\n" +
+"                       `ANSI 79`, `23/23` `QF_LIA` proofs)\n" +
 "- `use gfx`            2D/3D Graphics, Fixed-Point Math (`fx_sqrt`, `fx_sin_deg`, `fx_cos_deg`),\n" +
 "                       Porter-Duff RGBA Alpha Blending, Bresenham/Circle/Bezier 2D Rasterizer,\n" +
 "                       3D Pinhole Perspective Projection, Binary 54-Byte BMP, PPM & SCADA HMI SVG\n" +
-"- `use gui`            X11 wire-protocol client (`0x42` MSB handshake, `CreateWindow`) & Web DOM\n" +
-"- `use nn`             Neural layers, binary `.safetensors` & Protobuf `.onnx` model I/O\n" +
+"- `use gui`            X11 wire-protocol client (`0x42` MSB handshake, `CreateWindow`), Web DOM,\n" +
+"                       and System76 COSMIC 1.11 Wayland `xdg-dialog-v1` modal dialog z-index\n" +
+"                       stacking & background click blocking (`ui_modal_blocks_parent`,\n" +
+"                       `ui_modal_z_index`, `4/4` `QF_LIA` proofs)\n" +
+"- `use los`            Track O General-Purpose OS layer + System76 COSMIC 1.11 deterministic\n" +
+"                       hybrid GPU (`iGPU` vs `dGPU`) PCI selection policy (`os_select_hybrid_gpu`,\n" +
+"                       `11/11` `QF_LIA` proofs)\n" +
+"- `use nn`             Neural layers, binary `.safetensors` & Protobuf `.onnx` model I/O with\n" +
+"                       64-bit two's complement negative weights (`nn_le64_hex`), full-CSV\n" +
+"                       `model_content_hash`, and `tensor.src` `KIf` PTX/SPIR-V division-by-zero\n" +
+"                       clamping (`16/16` `QF_LIA` proofs)\n" +
 "- `use async_rt`       Work-stealing OS multi-process worker pool (`async_run_workers_os`)\n" +
 "- `use media`          2D raster canvas, font glyph renderer, and binary image codecs\n" +
 "- `use interop`        Fail-closed C ABI layout & header adapter (`[I0003]`)\n" +
-"- `use protect`        P33 control-flow flattening, string encryption & `[W0002]` secret scanner\n" +
+"- `use protect`        P33 control-flow flattening, string encryption, multi-step algebraic MBA\n" +
+"                       prologue (`addq`/`xorq`/`subq` in `lprotect.src`), & `[W0002]` secret scanner\n" +
 "- `use lgenesis`       Full-stack application & 8-target autonomous synthesizer\n" +
 "- `use lsentience`     Wave 9-10 Quantum, DNA, HDC, DEQ, LLM-Forge, Triad & Multimodal engine\n" +
+"- `use lume_llm_core`  Sovereign 1-Bit/Ternary LLM Core & 3-Tier Hybrid Router (`21/21` `QF_LIA` proofs):\n" +
+"                       PrismML `Bonsai` 1-bit (`" + man_br("-1, +1") + "`) & `BitNet b1.58` ternary (`" + man_br("-1, 0, +1") + "`)\n" +
+"                       zero-float integer MAC + 5-trit byte packing (`3^5 = 243 <= 255`), Liquid AI\n" +
+"                       `LFM3` $O(1)$ state-space recurrence + `LiquidCodec` 24 kHz audio frame math\n" +
+"                       (`12` tokens / `80 ms`), `DSpark` speculative decoding verifier, `Colibri` MoE\n" +
+"                       SSD admission guard (`llm_moe_admission_guard`), and 3-Tier Hybrid Router\n" +
+"                       (`Tier 0` Pure Lume Core -> `Tier 1` Local `Gemma4-E2B`/`Ministral-3B-Q4`/`Bonsai-1bit`\n" +
+"                       -> `Tier 2` Cloud API Key) with `QF_LIA` price/contract anti-hallucination oracle\n" +
 "- `use lume_crypto_blockchain_engine` SHA-256 PoW, Ed25519/Secp256k1, UTXO, AMM & Kelly Criterion\n" +
 "- `use lume_reversa_engine` Reversa-Lume SDD Engine v1.0: 7-phase hybrid binary (`ELF64`, `PE64`,\n" +
 "                       `UEFI`, `Mach-O`, `WASM`) + NSIS/7z installer payload unpacker + multi-language\n" +
@@ -303,11 +336,26 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "                       3-speaker binary RIFF/WAVE PCM podcast (`open_notebook_podcast.wav`), and `Doory`\n" +
 "                       conflict-free `LWW-Element-Set` CRDT scene-graph & vector slide (`doory_continuum_slide.svg`)\n" +
 "- `use lume_quantum_nexus_engine` Lume Sovereign Quantum Nexus Engine v1.0 (5 Quantum Innovations):\n" +
-"                       `Silq` Linear Qubit Type Checker (`No-Cloning`/`No-Measure-Reuse`) & Automatic $U^\\dagger$\n" +
-"                       Ancilla Uncomputation (`qfree_safe == 1`), `QuiZX/PyZX` Graphical ZX-Calculus Spider Fusion\n" +
-"                       & $T$-Count Optimizer (`7x` $T$-gate reduction), `Google Stim` Gottesman-Knill $O(n^2)$\n" +
-"                       Stabilizer Tableau Simulator (`GHZ_8`), Rotated Surface Code `[[9, 1, 3]]` Topological QEC\n" +
-"                       (`27/27` Pauli errors corrected), and `PennyLane/Catalyst` Exact Parameter-Shift VQE\n"
+"                       `Silq` Linear Qubit Type Checker (`No-Cloning`/`No-Measure-Reuse`), non-unitary `Meas`\n" +
+"                       dagger guard (`q_is_reversible_unitary`) & Automatic $U^\\dagger$ Ancilla Uncomputation\n" +
+"                       (`qfree_safe == 1`), `QuiZX/PyZX` Graphical ZX-Calculus Spider Fusion & $T$-Count\n" +
+"                       Optimizer (`7x` $T$-gate reduction + pre/post-ZX statevector equivalence `q_sv2_equiv_tol`),\n" +
+"                       `Google Stim` Gottesman-Knill $O(n^2)$ Stabilizer Tableau Simulator (`GHZ_8`), Rotated\n" +
+"                       Surface Code `[[9, 1, 3]]` Topological QEC (`27/27` Pauli errors corrected), and\n" +
+"                       `PennyLane/Catalyst` Exact Parameter-Shift VQE\n\n" +
+"## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)\n" +
+"- `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.\n" +
+"- `sentry_uav_guard` (`9/9` `QF_LIA` proofs): Autonomous UAV geofence, battery & attitude safety guard.\n" +
+"- `verified_accounting` (`7/7` `QF_LIA` proofs): Double-entry ledger conservation & audit trail.\n" +
+"- `dfe_pix_bacen` (`11/11` `QF_LIA` proofs): SEFAZ NF-e/NFC-e Modulo-11 DV, ICMS/DIFAL & BACEN Pix EMV CRC-16.\n" +
+"- `omniroute_guard` (`8/8` `QF_LIA` proofs): Quota-aware multi-provider LLM & payment failover router.\n" +
+"- `brasil_public_id` (`9/9` `QF_LIA` proofs): CPF, PIS/PASEP, Titulo Eleitoral & RFB/SERPRO July 2026 Alphanumeric CNPJ (`ord(ch) - 48`).\n" +
+"- `zero_breach_forensics` (`8/8` `QF_LIA` proofs): Pegasus/Predator/Candiru forensic scanner & STIX 2.1 IOC verifier.\n" +
+"- `sovereign_llm_router` (`20/20` `QF_LIA` proofs): 1-Bit/Ternary MAC, `LFM3` LiquidCodec 24 kHz audio, `Colibri` MoE SSD guard & 3-tier hybrid router.\n\n" +
+"## 6.4 IDE Integrations (`editors/`)\n" +
+"- `editors/vscode-lume/`: VS Code extension (`extension.js` + `lsp_bridge.src` with `7/7` `QF_LIA` proofs)\n" +
+"  providing real-time diagnostics, `QF_LIA` proof code lenses, and hover obligations.\n" +
+"- `editors/openidea-lume/plugin.toml`: OpenIDEA / JetBrains sovereign Lume language plugin manifest.\n"
 
 fn man_en_targets() = "# CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS\n\n" +
 "## 7.1 Native OS, Windows GUI, Mobile, Web, Bare-Metal & Exotic Targets (`lume build --target <t>`)\n" +
@@ -316,13 +364,17 @@ fn man_en_targets() = "# CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PA
 "- Windows Native GUI: `x86_64-windows-gui` and `x86_64-windows-gui-protected` (`PE32+` Win32 GUI\n" +
 "                  with `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll` IAT,\n" +
 "                  `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, `PYXH` MBA prologue, and `.lsym` vault)\n" +
-"- Mobile/Store:   `aarch64-android-apk`, `aarch64-ios-ipa`\n" +
-"- Bare-Metal/OS:  `x86_64-uefi-pe`, `x86_64-boot-iso`, `x86_64-baremetal-kernel`, `ihex`\n" +
+"- Mobile/Store:   `aarch64-android-elf`, `aarch64-ios-macho`\n" +
+"- Bare-Metal/OS:  `x86_64-uefi-pe`, `x86_64-none-raw`, `x86_64-none-mbr`, `x86_64-none-ihex`\n" +
 "- Web/Bytecode:   `wasm32-wasi` (with `@wasm-sandbox` `[I0275]`), `lumb`\n" +
-"- GPU/Accelerators: `nvptx64-nvidia-cuda` (PTX 8.0), `spirv64-vulkan-shader` (SPIR-V 1.6)\n" +
-"- Silicon/Hardware: `verilog-rtl-2005` (IEEE 1364), `vhdl-rtl-2008` (IEEE 1076)\n" +
+"- GPU/Accelerators: `nvptx64-nvidia-cuda` (PTX 8.0), `spirv64-vulkan-compute` (SPIR-V 1.6)\n" +
+"- Silicon/Hardware: `verilog-rtl` (IEEE 1364), `vhdl-rtl` (IEEE 1076)\n" +
 "- Quantum & Bio:  `qasm3-quantum` (OpenQASM 3.0), `dna-quaternary` (`A,C,G,T` codec)\n\n" +
-"## 7.2 Store/Boot Packagers, LumeMIR & Differentiable Silicon\n" +
+"## 7.2 Store/Boot Packagers, LumeMIR, Target Subset Classification & Tail-Recursive Codegen\n" +
+"- `lasm.src` & `ltarget.src` use 100% tail-recursive accumulators (`rev_append` / `lt_lines_acc`)\n" +
+"  for unbounded multi-megabyte sources without stack overflow, and `lume targets --json`\n" +
+"  reports explicit `subset` classifications (`\"full-core\"`, `\"pe64-gui-template\"`,\n" +
+"  `\"verified-core-subset\"`).\n" +
 "- `lume mir <target> <source.src>`                  Inspect target-independent SSA `LumeMIR`.\n" +
 "- `lume package apk|ipa|iso|uefi <src> -o <out>`    Build store/bootable images in one command.\n" +
 "- `lume neural-kernel [--json] <source.src>`        Synthesize PTX + SPIR-V + Verilog + VHDL\n" +
@@ -375,6 +427,8 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine\n" +
 "  lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)\n" +
 "  lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)\n" +
+"  lume run compiler/stage1/lume_llm_core.src         Sovereign 1-Bit/Ternary LLM Core, Liquid LFM3 Audio, Colibri MoE Guard & 3-Tier Router (`21/21` proofs)\n" +
+"  lume run examples/apps/sovereign_llm_router/main.src Sovereign Edge/Local/Cloud LLM Router & Anti-Hallucination Price Oracle (`20/20` proofs)\n" +
 "  lume os-control / bios-core / web-research / crypto-engine\n" +
 "  lume sensory-cortex / multimodal / file-indexer / interface / self-build\n" +
 "  lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850\n" +
@@ -423,20 +477,26 @@ fn man_en_examples() = "# CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & 
 "use fs_sha256_file\n" +
 "use map\n\n" +
 "fn run_demo() =\n" +
-"    let m0 = map_empty() in\n" +
+"    let m0 = map_new() in\n" +
 "    let m1 = map_put(m0, \"creator\", lc_sha256(\"Ricardo Bueno\")) in\n" +
-"    map_get(m1, \"creator\", \"missing\")\n\n" +
+"    map_get_or(m1, \"creator\", \"missing\")\n\n" +
 "print run_demo()\n" +
 "```\n\n" +
 "## Example 4: B+Tree ACID Database & SQL Query (`db_demo.src`)\n" +
 "```lume\n" +
-"use db\n" +
-"print str(db_btree_self_test())\n" +
+"use db\n\n" +
+"fn run_db() =\n" +
+"    let d0 = db_open(2) in\n" +
+"    let tx = db_put(db_begin_tx(d0), 1, 100, 1) in\n" +
+"    let d1 = db_commit_tx(tx) in\n" +
+"    db_read(d1, 1, 0)\n\n" +
+"print str(run_db())\n" +
 "```\n\n" +
 "## Example 5: Cryptographic Custody, PoW Mining & DeFi AMM (`crypto_demo.src`)\n" +
 "```lume\n" +
-"use lume_crypto_blockchain_engine\n" +
-"print crypto_blockchain_full_report()\n" +
+"use lume_crypto_blockchain_engine\n\n" +
+"fn crypto_sha256_rounds(msg: str) = crypto_hmac_sha256(\"lume-key\", msg)\n" +
+"print crypto_sha256_rounds(\"block-0\")\n" +
 "```\n\n" +
 "## Example 6: Freestanding Hardware / Kernel Entry (`kernel_demo.src`)\n" +
 "```lume\n" +
@@ -576,7 +636,15 @@ fn man_pt_syntax() = "# CAPITULO 2: SINTAXE, GRAMATICA E REGRAS DO COMPILADOR\n\
 "   ```lume\n" +
 "   fn tamanho_um(xs) = let r = match xs " + man_br(" Nil => 0, Cons(_, Nil) => 1, Cons(_, _) => 2 ") + " in r\n" +
 "   ```\n" +
-"REGRA DE OURO: Salve sempre seus arquivos com quebra de linha LF (`\\n`), nunca CRLF (`\\r\\n`).\n"
+"REGRA DE OURO:\n" +
+"1. Salve sempre seus arquivos com quebra de linha LF (`\\n`), nunca CRLF (`\\r\\n`).\n" +
+"2. Limite de 6 Parametros em Modulos `.src` do Compilador: A convencao SysV AMD64\n" +
+"   (`05_codegen.src`) passa ate 6 parametros em `%rdi, %rsi, %rdx, %rcx, %r8, %r9`\n" +
+"   (agrupe parametros extras em um registro).\n" +
+"3. `match` no Topo em Modulos `.src` do Compilador: Mantenha `match` no topo do corpo\n" +
+"   de funcoes auxiliares (`fn f(x) = match x ...`) ao editar `compiler/stage1/*.src`.\n" +
+"4. Nunca edite `compiler/stage1/lumec.src` diretamente: edite `compiler/stage1/lume/NN_*.src`\n" +
+"   e execute `scripts/amalgamate.sh`.\n"
 
 fn man_pt_types() = "# CAPITULO 3: SISTEMA DE TIPOS, OWNERSHIP, FINANCAS E TENSORES\n\n" +
 "## 3.1 Tipos Fundamentais\n" +
@@ -621,10 +689,18 @@ fn man_pt_contracts() = "# CAPITULO 4: CONTRATOS, LEIS MATEMATICAS E VERIFICACAO
 "```\n" +
 "Se houver qualquer possibilidade de `result < 0`, o compilador rejeita o codigo com\n" +
 "`[V0001]` e mostra o contraexemplo exato!\n\n" +
-"## 4.2 Leis Universais (`law`)\n" +
+"## 4.2 Leis Universais (`law`) e Idioma de Implicacao Logica\n" +
 "```lume\n" +
 "law simetria_soma(a: int, b: int) = (a + b) == (b + a)\n" +
-"```\n\n" +
+"law implicacao_clamp(x: int, lo: int, hi: int) =\n" +
+"  if lo <= hi then clamp(x, lo, hi) >= lo else 1 == 1\n" +
+"```\n" +
+"- Idioma de Implicacao (`if P then Q else 1 == 1`): Expresse implicacoes logicas $P \\implies Q$\n" +
+"  dentro de `law` usando `if P then Q else 1 == 1`, reduzindo diretamente para ramos\n" +
+"  decidiveis `QF_LIA` tanto no `lcaas.src` quanto no kernel independente `lcert.src`.\n" +
+"- Terminacao Composta e Kernel de Prova (`lcert.src`): Verifica obrigacoes compostas\n" +
+"  `terminates` (`lk_prove_term_cond` com `and`/`or`) e executa autoteste criptografico\n" +
+"  NIST FIPS 180-4 SHA-256 KAT (`sha256(\"abc\")`).\n\n" +
 "## 4.3 Limite de Ciclos de Tempo Real (`@bound(cycles: N)`)\n" +
 "Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).\n\n" +
 "## 4.4 Comandos de Prova e Autocura\n" +
@@ -653,12 +729,14 @@ fn man_pt_effects() = "# CAPITULO 5: EFEITOS ALGEBRICOS, MEMORIA DETERMINISTICA 
 
 fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\n\n" +
 "## 6.1 Funcoes Nativas (Sempre Disponiveis sem `use`)\n" +
-"- Texto (`str`): `count(s)`, `at(s, i)`, `slice(s, ini, fim)`, `slicen(s, ini, tam)`,\n" +
-"                 `ord(c)`, `str_from_byte(n)`, `str(n)`, `toint(s)`\n" +
-"- Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`, `fs_write_sync(caminho, texto)`,\n" +
-"                   `fs_path_exists(caminho)`, `fs_read_byte(caminho, offset)`, `fs_file_size(caminho)`\n" +
-"- Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`, `os_getpid()`, `os_exit(cod)`,\n" +
-"                  `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`\n" +
+"- Texto (`str`): `count(s)`, `at(s, i)`, `slice(s, ini, fim)`, `slicen(s, n, start, end)`,\n" +
+"                 `ord(c)`, `chr(cod)`, `str(n)`, `toint(s)`\n" +
+"- Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`,\n" +
+"                   `fs_write_sync(caminho, texto)`, `fs_path_exists(caminho)`,\n" +
+"                   `fs_read_byte(caminho, offset)`\n" +
+"- Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`,\n" +
+"                  `os_getpid()`, `os_exit(cod)`, `os_run(cmd, args)`,\n" +
+"                  `os_run_capture_timeout(cmd, args, out, err, ms)`\n" +
 "- Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):\n" +
 "  - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,\n" +
 "                               `port_out32(p, v)`, `port_in32(p)`\n" +
@@ -679,31 +757,51 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "    `krn_slot_read(idx)` (tabela de estado de kernel de 1024 slots com zero alocacoes de heap)\n" +
 "- Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)\n\n" +
 "## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)\n" +
-"- `use fs`             Arquivos seguros com `with_file` (fechamento garantido)\n" +
-"- `use bytes`          Buffers binarios verificados (`bytes_from_str`, `bytes_get`)\n" +
-"- `use map`            Dicionario hash de 256 buckets (`map_empty`, `map_put`, `map_get`)\n" +
-"- `use arena`          Arenas de memoria de alta velocidade (`with_arena`)\n" +
+"- `use fs`             Arquivos seguros com `sfile_with` (fechamento garantido)\n" +
+"- `use bytes`          Buffers binarios verificados (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)\n" +
+"- `use map`            Dicionario hash de 256 buckets (`map_new`, `map_put`, `map_get`, `map_get_or`)\n" +
+"- `use arena`          Arenas de memoria de alta velocidade (`arena_new`, `arena_alloc`, `arena_reset`)\n" +
 "- `use capsule`        Capsulas de auditoria e replay deterministico\n" +
-"- `use fs_sha256_file` Hash criptografico FIPS 180-4 (`lc_sha256(s)`, `fs_sha256_file(p)`)\n" +
+"- `use fs_sha256_file` Hash criptografico FIPS 180-4 (`lc_sha256(s)`, `fs_sha256_file(p)`, `fs_file_size(p, i)`)\n" +
 "- `use db`             Banco de dados B+Tree + WAL ACID com recuperacao de falhas e SQL\n" +
+"                       (limites de scan de 64 bits `+/- 10^12`, guarda de `db_begin_tx` aninhado e\n" +
+"                       poda de subarvore separadora `BMInner`, `6/6` provas `QF_LIA`)\n" +
 "- `use net`            Especialista em Redes TCP/IP, Dissecador Wireshark (`wireshark_dissect_frame`,\n" +
 "                       `wireshark_filter_match`, leitor/gravador `.pcap`), Firmware de Switch/Roteador\n" +
-"                       L2/L3/P4 (VLAN 802.1Q, RSTP 802.1w, tabela CAM/MAC, MPLS, FIB LPM, BGP-4,\n" +
-"                       pipeline P4), Protocolos Industriais e de Subestacao do zero: Modbus RTU/TCP\n" +
-"                       (`CRC-16 0xA001`), DNP3 IEEE 1815 (`0x0564` + `CRC-16/DNP` + SBO + SAv5),\n" +
-"                       IEC 60870-5-104 (`TCP/2404` I/S/U-Format), IEC 61850 (`MMS ISO 9506`,\n" +
-"                       `GOOSE 0x88B8` sub-4ms e `Sampled Values 0x88BA`) e Reles Digitais de Protecao\n" +
-"                       Eletrica (`sv_dft_4sample_phasor` DFT 60 Hz, `ANSI 50`, `ANSI 51`, `ANSI 87`,\n" +
-"                       `ANSI 21`, `ANSI 27/59`, `ANSI 81U/O` e religador `ANSI 79`)\n" +
+"                       L2/L3/P4 (admissao VLAN 802.1Q corrigida, RSTP 802.1w, tabela CAM/MAC, MPLS,\n" +
+"                       FIB LPM, BGP-4, pipeline P4), Protocolos Industriais e de Subestacao do zero:\n" +
+"                       Modbus RTU/TCP (`CRC-16 0xA001`), DNP3 IEEE 1815 (`0x0564` + `CRC-16/DNP` +\n" +
+"                       SBO + SAv5), IEC 60870-5-104 (`TCP/2404` I/S/U-Format), IEC 61850 (`MMS ISO 9506`,\n" +
+"                       `GOOSE 0x88B8` sub-4ms e `Sampled Values 0x88BA` com guardas exatos de tamanho) e\n" +
+"                       Reles Digitais de Protecao Eletrica (`sv_dft_4sample_phasor` DFT 60 Hz,\n" +
+"                       `net_isqrt` ate `10^16`, contratos diretos `ansi50`/`ansi27_59`, `ANSI 51`,\n" +
+"                       `ANSI 87`, `ANSI 21`, `ANSI 81U/O` e religador `ANSI 79`, `23/23` provas `QF_LIA`)\n" +
 "- `use gfx`            Motor Grafico 2D/3D, Matematica de Ponto Fixo (`fx_sqrt`, `fx_sin_deg`,\n" +
 "                       `fx_cos_deg`), Blending RGBA Porter-Duff, Rasterizador 2D Bresenham/Circulo/\n" +
 "                       Bezier, Projecao de Perspectiva 3D, BMP Binario (54B), PPM e Sinoptico SVG HMI\n" +
-"- `use gui`            Cliente grafico binario X11 (`0x42` MSB) e arvore reativa Web\n" +
-"- `use nn`             Redes neurais, serializador binario `.safetensors` e Protobuf `.onnx`\n" +
+"- `use gui`            Cliente grafico binario X11 (`0x42` MSB), arvore reativa Web e System76 COSMIC\n" +
+"                       1.11 Wayland `xdg-dialog-v1` com empilhamento modal z-index e bloqueio de clique\n" +
+"                       no pai (`ui_modal_blocks_parent`, `ui_modal_z_index`, `4/4` provas `QF_LIA`)\n" +
+"- `use los`            Camada de Sistema Operacional Track O + politica deterministica de selecao\n" +
+"                       PCI de GPU hibrida (`iGPU` vs `dGPU`) estilo System76 COSMIC 1.11\n" +
+"                       (`os_select_hybrid_gpu`, `11/11` provas `QF_LIA`)\n" +
+"- `use nn`             Redes neurais, serializador binario `.safetensors` e Protobuf `.onnx` com pesos\n" +
+"                       negativos em complemento de dois de 64 bits (`nn_le64_hex`), `model_content_hash`\n" +
+"                       sobre todo o CSV e guarda `KIf` PTX/SPIR-V contra divisao por zero em `tensor.src`\n" +
+"                       (`16/16` provas `QF_LIA`)\n" +
 "- `use async_rt`       Pool de processos paralelos do SO (`async_run_workers_os`)\n" +
-"- `use protect`        Protecao de software P33 (ofuscacao CFG, criptografia de strings, `[W0002]`)\n" +
+"- `use protect`        Protecao de software P33 (ofuscacao CFG, criptografia de strings, prologo MBA\n" +
+"                       algebrico multi-etapas `addq`/`xorq`/`subq` em `lprotect.src`, `[W0002]`)\n" +
 "- `use lgenesis`       Sintetizador autonomo full-stack para 8 alvos simultaneos\n" +
 "- `use lsentience`     Motor Transcendente (Computacao Quantica, DNA, HDC, DEQ, LLM-Forge, Triade)\n" +
+"- `use lume_llm_core`  Nucleo Soberano LLM 1-Bit/Ternario e Roteador Hibrido em 3 Camadas (`21/21` provas):\n" +
+"                       MAC inteiro zero-float PrismML `Bonsai` 1-bit (`" + man_br("-1, +1") + "`) e `BitNet b1.58`\n" +
+"                       ternario (`" + man_br("-1, 0, +1") + "`) + empacotamento de 5 trits por byte (`3^5 = 243 <= 255`),\n" +
+"                       recorrencia de espaco de estados $O(1)$ Liquid AI `LFM3` + codec de audio 24 kHz\n" +
+"                       `LiquidCodec` (`12` tokens / `80 ms`), verificador de decodificacao especulativa\n" +
+"                       `DSpark`, guarda de admissao SSD MoE `Colibri` (`llm_moe_admission_guard`) e\n" +
+"                       Roteador Hibrido 3-Tier (`Tier 0` Lume Puro -> `Tier 1` Local `Gemma4-E2B`/`Ministral-3B-Q4`/`Bonsai-1bit`\n" +
+"                       -> `Tier 2` API Cloud) com oraculo anti-alucinacao de precos/contratos `QF_LIA`\n" +
 "- `use lume_crypto_blockchain_engine` Criptomoedas, SHA-256 PoW, UTXO, DeFi AMM e Kelly Criterion\n" +
 "- `use lume_reversa_engine` Motor Reversa-Lume SDD v1.0: Engenharia reversa hibrida em 7 fases\n" +
 "                       para binarios (`ELF64`, `PE64`, `UEFI`, `Mach-O`, `WASM`), desempacotador de\n" +
@@ -752,12 +850,27 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "                       podcast RIFF/WAVE PCM de 3 vozes (`open_notebook_podcast.wav`), e `Doory` CRDT\n" +
 "                       `LWW-Element-Set` + slide vetorial (`doory_continuum_slide.svg`)\n" +
 "- `use lume_quantum_nexus_engine` Motor Quantico Soberano Lume Quantum Nexus v1.0 (5 Inovacoes Quanticas):\n" +
-"                       Verificador de Tipos Lineares `Qubit` estilo `Silq` (`No-Cloning`/`No-Measure-Reuse`) e\n" +
+"                       Verificador de Tipos Lineares `Qubit` estilo `Silq` (`No-Cloning`/`No-Measure-Reuse`),\n" +
+"                       guarda contra adjunto de medicao nao-unitaria (`q_is_reversible_unitary`) e\n" +
 "                       Descomputacao Automatica $U^\\dagger$ de Ancillas (`qfree_safe == 1`), Fusao de Aranhas\n" +
-"                       ZX-Calculus `QuiZX/PyZX` e Reducao de $T$-Count (`7x` menos portas $T$), Simulador\n" +
-"                       Estabilizador `Google Stim` Gottesman-Knill $O(n^2)$ (`GHZ_8`), Codigo Topologico\n" +
-"                       de Superficie `[[9, 1, 3]]` QEC (`27/27` erros de Pauli corrigidos) e VQE Diferenciavel\n" +
-"                       por Parameter-Shift Exato (`PennyLane/Catalyst`) + sintetizador de pulsos `.qbin`\n"
+"                       ZX-Calculus `QuiZX/PyZX` e Reducao de $T$-Count (`7x` menos portas $T$ + equivalencia\n" +
+"                       de vetor de estado pre/pos-ZX `q_sv2_equiv_tol`), Simulador Estabilizador `Google Stim`\n" +
+"                       Gottesman-Knill $O(n^2)$ (`GHZ_8`), Codigo Topologico de Superficie `[[9, 1, 3]]` QEC\n" +
+"                       (`27/27` erros de Pauli corrigidos) e VQE Diferenciavel por Parameter-Shift Exato\n" +
+"                       (`PennyLane/Catalyst`) + sintetizador de pulsos `.qbin`\n\n" +
+"## 6.3 Todos os 8 Capstones Soberanos e Brasileiros Verificados (`examples/apps/`)\n" +
+"- `pix_fraud_trace` (`9/9` provas `QF_LIA`): Rastreamento de fraude e taint em grafos Pix em tempo real.\n" +
+"- `sentry_uav_guard` (`9/9` provas `QF_LIA`): Guarda autonomo de geofence, bateria e atitude para VANT/UAV.\n" +
+"- `verified_accounting` (`7/7` provas `QF_LIA`): Razao contabil de partidas dobradas com conservacao provada.\n" +
+"- `dfe_pix_bacen` (`11/11` provas `QF_LIA`): NF-e/NFC-e SEFAZ Modulo-11, ICMS/DIFAL e Pix BACEN EMV CRC-16.\n" +
+"- `omniroute_guard` (`8/8` provas `QF_LIA`): Roteador multi-provedor LLM e gateway de pagamento com failover.\n" +
+"- `brasil_public_id` (`9/9` provas `QF_LIA`): CPF, PIS/PASEP, Titulo Eleitoral e CNPJ Alfanumerico RFB/SERPRO Julho 2026 (`ord(ch) - 48`).\n" +
+"- `zero_breach_forensics` (`8/8` provas `QF_LIA`): Scanner forense anti-spyware (Pegasus/Predator/Candiru) e IOC STIX 2.1.\n" +
+"- `sovereign_llm_router` (`20/20` provas `QF_LIA`): MAC 1-Bit/Ternario, audio `LFM3` LiquidCodec 24 kHz, guarda SSD `Colibri` MoE e roteador hibrido 3-tier.\n\n" +
+"## 6.4 Integracoes de IDE (`editors/`)\n" +
+"- `editors/vscode-lume/`: Extensao VS Code (`extension.js` + `lsp_bridge.src` com `7/7` provas `QF_LIA`)\n" +
+"  com diagnosticos em tempo real, CodeLens de provas `QF_LIA` e inspecao de obrigacoes.\n" +
+"- `editors/openidea-lume/plugin.toml`: Manifesto do plugin soberano Lume para OpenIDEA / JetBrains.\n"
 
 fn man_pt_targets() = "# CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTADORES\n\n" +
 "## 7.1 Compilacao Cruzada Direta (`lume build --target <alvo> <arq.src> -o <saida>`)\n" +
@@ -766,13 +879,17 @@ fn man_pt_targets() = "# CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTA
 "- Windows GUI Nativo: `x86_64-windows-gui` e `x86_64-windows-gui-protected` (`PE32+` Win32 GUI nativo\n" +
 "                    com IAT `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll`,\n" +
 "                    `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, prologo `PYXH` MBA e cofre `.lsym`)\n" +
-"- Mobile (Lojas):   `aarch64-android-apk`, `aarch64-ios-ipa`\n" +
-"- Bare-Metal / SO:  `x86_64-uefi-pe`, `x86_64-boot-iso`, `x86_64-baremetal-kernel`, `ihex`\n" +
+"- Mobile (Lojas):   `aarch64-android-elf`, `aarch64-ios-macho`\n" +
+"- Bare-Metal / SO:  `x86_64-uefi-pe`, `x86_64-none-raw`, `x86_64-none-mbr`, `x86_64-none-ihex`\n" +
 "- Web / Bytecode:   `wasm32-wasi` (com `@wasm-sandbox` `[I0275]`), `lumb`\n" +
-"- GPUs / IA:        `nvptx64-nvidia-cuda` (CUDA PTX 8.0), `spirv64-vulkan-shader` (SPIR-V 1.6)\n" +
-"- Silicio / FPGA:   `verilog-rtl-2005` (IEEE 1364), `vhdl-rtl-2008` (IEEE 1076)\n" +
+"- GPUs / IA:        `nvptx64-nvidia-cuda` (CUDA PTX 8.0), `spirv64-vulkan-compute` (SPIR-V 1.6)\n" +
+"- Silicio / FPGA:   `verilog-rtl` (IEEE 1364), `vhdl-rtl` (IEEE 1076)\n" +
 "- Quantico e Bio:   `qasm3-quantum` (OpenQASM 3.0), `dna-quaternary` (`A,C,G,T`)\n\n" +
-"## 7.2 Empacotadores de Loja/Boot, LumeMIR e Silicio Diferenciavel\n" +
+"## 7.2 Empacotadores de Loja/Boot, LumeMIR, Classificacao `subset` e Codegen Tail-Recursive\n" +
+"- `lasm.src` e `ltarget.src` usam acumuladores 100% tail-recursive (`rev_append` / `lt_lines_acc`)\n" +
+"  para fontes de multiplos megabytes sem estouro de pilha, e `lume targets --json` expoe\n" +
+"  a classificacao explicita `subset` (`\"full-core\"`, `\"pe64-gui-template\"`,\n" +
+"  `\"verified-core-subset\"`).\n" +
 "- `lume mir <alvo> <arq.src>`                     Inspeciona a IR SSA universal `LumeMIR`.\n" +
 "- `lume package apk|ipa|iso|uefi <src> -o <out>`  Gera pacotes prontos para Android/iOS/BIOS/UEFI.\n" +
 "- `lume neural-kernel [--json] <arq.src>`         Sintetiza PTX + SPIR-V + Verilog + VHDL com\n" +
@@ -812,6 +929,8 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "  lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [alvo] Acelerador Sistolico de IA e Compilador ISA OpenTPU-Lume\n" +
 "  lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [alvo] Motor Lume Continuum Nexus v1.0 (7 Motores de Referencia)\n" +
 "  lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [alvo] Motor Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)\n" +
+"  lume run compiler/stage1/lume_llm_core.src         Nucleo Soberano LLM 1-Bit/Ternario, Audio LFM3 LiquidCodec, Guarda MoE Colibri e Roteador 3-Tier (`21/21` provas)\n" +
+"  lume run examples/apps/sovereign_llm_router/main.src Roteador LLM Hibrido Edge/Local/Cloud e Oraculo Anti-Alucinacao de Precos (`20/20` provas)\n" +
 "  lume os-control / bios-core / web-research / crypto-engine\n" +
 "  lume sensory-cortex / multimodal / file-indexer / interface / self-build\n" +
 "  lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850\n" +
@@ -860,20 +979,26 @@ fn man_pt_examples() = "# CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E 
 "use fs_sha256_file\n" +
 "use map\n\n" +
 "fn executar() =\n" +
-"    let m0 = map_empty() in\n" +
-"    let m1 = map_put(m0, \"autor\", lc_sha256(\"Ricardo Bueno\")) in\n" +
-"    map_get(m1, \"autor\", \"nao_encontrado\")\n\n" +
+"    let m0 = map_new() in\n" +
+"    let m1 = map_put(m0, \"creator\", lc_sha256(\"Ricardo Bueno\")) in\n" +
+"    map_get_or(m1, \"creator\", \"missing\")\n\n" +
 "print executar()\n" +
 "```\n\n" +
 "## Exemplo 4: Banco de Dados B+Tree + WAL ACID (`banco_dados.src`)\n" +
 "```lume\n" +
-"use db\n" +
-"print str(db_btree_self_test())\n" +
+"use db\n\n" +
+"fn run_db() =\n" +
+"    let d0 = db_open(2) in\n" +
+"    let tx = db_put(db_begin_tx(d0), 1, 100, 1) in\n" +
+"    let d1 = db_commit_tx(tx) in\n" +
+"    db_read(d1, 1, 0)\n\n" +
+"print str(run_db())\n" +
 "```\n\n" +
 "## Exemplo 5: Motor Cripto, Mineracao PoW SHA-256 e DeFi AMM (`cripto.src`)\n" +
 "```lume\n" +
-"use lume_crypto_blockchain_engine\n" +
-"print crypto_blockchain_full_report()\n" +
+"use lume_crypto_blockchain_engine\n\n" +
+"fn crypto_sha256_rounds(msg: str) = crypto_hmac_sha256(\"lume-key\", msg)\n" +
+"print crypto_sha256_rounds(\"block-0\")\n" +
 "```\n\n" +
 "## Exemplo 6: Kernel Bare-Metal com Limite de Ciclos WCET (`rtc_kernel.src`)\n" +
 "```lume\n" +
@@ -921,11 +1046,15 @@ fn man_render_pt(topic) = let t = man_norm_topic(topic) in if t == "index" then 
 
 fn man_is_pt_word(raw) = if raw == "indice" or raw == "visao-geral" or raw == "inicio" or raw == "sintaxe" or raw == "gramatica" or raw == "regras" or raw == "tipos" or raw == "contratos" or raw == "provas" or raw == "efeitos" or raw == "memoria" or raw == "biblioteca" or raw == "modulos" or raw == "alvos" or raw == "comandos" or raw == "ondas" or raw == "exemplos" or raw == "receitas" or raw == "erros" or raw == "diagnosticos" or raw == "tudo" or raw == "completo" then 1 else 0
 
-fn man_render(lang, topic) = if lang == "pt" or lang == "pt-BR" or lang == "--pt" or man_is_pt_word(topic) == 1 then man_render_pt(topic) else man_render_en(topic)
+fn man_is_pt_lang(lang) = if lang == "pt" or lang == "--pt" or lang == "pt-BR" or lang == "pt-br" or lang == "--pt-br" or lang == "--pt-BR" or lang == "pt_BR" or lang == "pt_br" or lang == "--pt_br" or lang == "--pt_BR" then 1 else 0
 
-fn man_json_summary(lang, topic) = let norm = man_norm_topic(topic) in let text = man_render(lang, if norm == "unknown" then "index" else norm) in "{\"ok\":true,\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"0.3.0-rc.3\",\"language\":\"" + (if lang == "pt" or lang == "--pt" then "pt-BR" else "en") + "\",\"topic\":\"" + norm + "\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":" + str(count(text)) + "}"
+fn man_use_pt(lang, topic) = if man_is_pt_lang(lang) == 1 then 1 else if lang == "--en" then 0 else man_is_pt_word(topic)
 
-fn man_export_file(lang, topic, out_path) = let text = man_render(lang, if topic == "" or topic == "index" then "all" else topic) in let w = fs_write_sync(out_path, text) in if w != 1 then ctfail("lume manual --export: cannot write " + out_path + "\n") else "{\"ok\":true,\"mode\":\"lume-manual-export\",\"language\":\"" + (if lang == "pt" or lang == "--pt" then "pt-BR" else "en") + "\",\"output\":\"" + out_path + "\",\"bytes\":" + str(count(text)) + "}"
+fn man_render(lang, topic) = if man_use_pt(lang, topic) == 1 then man_render_pt(topic) else man_render_en(topic)
+
+fn man_json_summary(lang, topic) = let norm = man_norm_topic(topic) in let is_pt = man_use_pt(lang, topic) in let lang_tag = if is_pt == 1 then "pt-BR" else "en" in if norm == "unknown" then "{\"ok\":false,\"error\":\"unknown_manual_topic\",\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"0.3.0-rc.3\",\"language\":\"" + lang_tag + "\",\"topic\":\"unknown\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":0}" else let text = if is_pt == 1 then man_render_pt(norm) else man_render_en(norm) in "{\"ok\":true,\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"0.3.0-rc.3\",\"language\":\"" + lang_tag + "\",\"topic\":\"" + norm + "\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":" + str(count(text)) + "}"
+
+fn man_export_file(lang, topic, out_path) = let eff_topic = if topic == "" or topic == "index" or topic == "indice" then "all" else topic in let norm = man_norm_topic(eff_topic) in let is_pt = man_use_pt(lang, topic) in let lang_tag = if is_pt == 1 then "pt-BR" else "en" in if norm == "unknown" then "{\"ok\":false,\"error\":\"unknown_manual_topic\",\"mode\":\"lume-manual-export\",\"language\":\"" + lang_tag + "\",\"topic\":\"unknown\",\"output\":\"" + out_path + "\",\"bytes\":0}" else let text = if is_pt == 1 then man_render_pt(norm) else man_render_en(norm) in let w = fs_write_sync(out_path, text) in if w != 1 then ctfail("lume manual --export: cannot write " + out_path + "\n") else "{\"ok\":true,\"mode\":\"lume-manual-export\",\"language\":\"" + lang_tag + "\",\"output\":\"" + out_path + "\",\"bytes\":" + str(count(text)) + "}"
 
 ## ============================================================================
 ## SELF-HOSTED UNIT TESTS (`lume test compiler/stage1/lmanual.src`)
@@ -953,6 +1082,12 @@ fn test_manual_en_all_chapters() =
     man_contains_at(std, "lume_egm_engine", 0) == 1 and
     man_contains_at(std, "lume_ncm_engine", 0) == 1 and
     man_contains_at(std, "lume_quantum_nexus_engine", 0) == 1 and
+    man_contains_at(std, "lume_llm_core", 0) == 1 and
+    man_contains_at(std, "sovereign_llm_router", 0) == 1 and
+    man_contains_at(std, "zero_breach_forensics", 0) == 1 and
+    man_contains_at(std, "ui_modal_blocks_parent", 0) == 1 and
+    man_contains_at(std, "os_select_hybrid_gpu", 0) == 1 and
+    man_contains_at(std, "vscode-lume", 0) == 1 and
     man_contains_at(trg, "CHAPTER 7: 27 UNIVERSAL TARGETS", 0) == 1 and
     man_contains_at(cmd, "CHAPTER 8: COMPLETE CLI COMMAND REFERENCE", 0) == 1 and
     man_contains_at(cmd, "LumeSynapse", 0) == 1 and
@@ -991,6 +1126,12 @@ fn test_manual_pt_all_chapters() =
     man_contains_at(std, "lume_egm_engine", 0) == 1 and
     man_contains_at(std, "lume_ncm_engine", 0) == 1 and
     man_contains_at(std, "lume_quantum_nexus_engine", 0) == 1 and
+    man_contains_at(std, "lume_llm_core", 0) == 1 and
+    man_contains_at(std, "sovereign_llm_router", 0) == 1 and
+    man_contains_at(std, "zero_breach_forensics", 0) == 1 and
+    man_contains_at(std, "ui_modal_blocks_parent", 0) == 1 and
+    man_contains_at(std, "os_select_hybrid_gpu", 0) == 1 and
+    man_contains_at(std, "vscode-lume", 0) == 1 and
     man_contains_at(trg, "CAPITULO 7: 27 ALVOS UNIVERSAIS", 0) == 1 and
     man_contains_at(cmd, "CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS", 0) == 1 and
     man_contains_at(cmd, "LumeSynapse", 0) == 1 and
@@ -1008,10 +1149,13 @@ fn test_manual_pt_all_chapters() =
     man_contains_at(err, "[Q0001]", 0) == 1
 
 fn test_manual_json_and_full_bundle() =
-    let j = man_json_summary("pt", "all") in
-    let full_pt = man_render("pt", "tudo") in
+    let j = man_json_summary("pt-br", "all") in
+    let j_bad = man_json_summary("en", "bogus_topic") in
+    let full_pt = man_render("pt-BR", "tudo") in
     let full_en = man_render("en", "all") in
+    man_contains_at(j, "\"ok\":true", 0) == 1 and
     man_contains_at(j, "\"chapter_count\":10", 0) == 1 and
     man_contains_at(j, "\"language\":\"pt-BR\"", 0) == 1 and
+    man_contains_at(j_bad, "\"ok\":false", 0) == 1 and
     count(full_pt) > 12000 and
     count(full_en) > 12000

@@ -4,9 +4,10 @@
 #
 # Unifies the 2026 Frontier Edge/Cloud LLM Architecture into Lume Stage-1:
 #   1. PrismML Bonsai / BitNet 1-Bit ({-1, +1}) & 1.58-Bit Ternary ({-1, 0, +1})
-#      Integer Multiply-Accumulate (MAC), Base-3 5-Trit Byte Packing, and Q8 Clamp
+#      Signed Q8 Integer Multiply-Accumulate (MAC), 3-Unit Ternary Dot+ReLU,
+#      Base-3 5-Trit Byte Packing, and Q8 Absmax Clamping
 #   2. Liquid AI LFM3 Tri-Hybrid State-Space Recurrence (O(1) Memory per Token)
-#      & Liquid Codec 12.5 Hz (12 Tokens per 80 ms Frame) Audio Budgeter
+#      & Liquid Codec 12.5 Hz (12 Tokens per 80 ms Frame = 150 tokens/s @ 24 kHz)
 #   3. PrismML DSpark Speculative Decoding Token Acceptance Verifier
 #   4. Colibri MoE Hardware Admission Guard (Anti-0.19 tok/s SSD Thrashing Trap)
 #   5. Universal 3-Tier Sovereign Router (Tier 0 Lume Core / Tier 1 Local / Tier 2 Cloud)
@@ -14,8 +15,8 @@
 # ============================================================================
 
 const LLM_TIER_0_PURE_LUME: int = 0
-const LLM_TIER_1_SOVEREIGN_LOCAL: int = 1
-const LLM_TIER_2_CLOUD_FRONTIER: int = 2
+const LLM_TIER_1_LOCAL: int = 1
+const LLM_TIER_2_CLOUD: int = 2
 
 const LLM_Q8_MAX: int = 127
 const LLM_Q8_MIN: int = -127
@@ -25,21 +26,21 @@ const LLM_MOE_OS_HEADROOM_MB: int = 6000
 # 1. BONSAI / BITNET 1-BIT ({-1, +1}) & 1.58-BIT TERNARY ({-1, 0, +1}) MAC
 # ============================================================================
 
-# 1.1 1-Bit Binary Weight Multiply-Accumulate (Zero-Float Integer Add/Sub)
+# 1.1 1-Bit Binary Weight Multiply-Accumulate over Signed Q8 Activations [-127, 127]
 #   bit_sign == 1  -> acc + x
 #   bit_sign != 1  -> acc - x (represents -1 weight)
 fn llm_binary_1bit_mac(acc: int, x: int, bit_sign: int) -> int
-  requires x >= 0 and (bit_sign == 1 or bit_sign == -1)
-  ensures result >= acc - x and result <= acc + x
+  requires x >= LLM_Q8_MIN and x <= LLM_Q8_MAX and (bit_sign == 1 or bit_sign == -1)
+  ensures result >= acc - LLM_Q8_MAX and result <= acc + LLM_Q8_MAX
 = if bit_sign == 1 then acc + x else acc - x
 
-# 1.2 1.58-Bit Ternary Weight Multiply-Accumulate ({-1, 0, +1} Sparsity-Aware)
+# 1.2 1.58-Bit Ternary Weight Multiply-Accumulate ({-1, 0, +1} over Signed Q8 [-127, 127])
 #   trit == 1  -> acc + x
 #   trit == -1 -> acc - x
 #   trit == 0  -> acc (zero-skip: 0 energy, 0 multiplier hardware)
 fn llm_ternary_158bit_mac(acc: int, x: int, trit: int) -> int
-  requires x >= 0 and trit >= -1 and trit <= 1
-  ensures result >= acc - x and result <= acc + x
+  requires x >= LLM_Q8_MIN and x <= LLM_Q8_MAX and trit >= -1 and trit <= 1
+  ensures result >= acc - LLM_Q8_MAX and result <= acc + LLM_Q8_MAX
 = if trit == 1 then acc + x
   else if trit == -1 then acc - x
   else acc
@@ -55,14 +56,23 @@ fn llm_pack_5trits(t0: int, t1: int, t2: int, t3: int, t4: int) -> int
 fn llm_unpack_trit0(packed: int) -> int
   requires packed >= 0 and packed <= 242
   ensures result >= 0 and result <= 2
-= packed % 3
+= if packed < 3 then packed else packed % 3
 
-# 1.5 Absmax INT8 Activation Clamping into [-127, 127] (BitNet b1.58 / Bonsai Q8)
+# 1.5 Absmax INT8 Activation Clamping into [LLM_Q8_MIN, LLM_Q8_MAX] ([-127, 127])
 fn llm_absmax_q8_clamp(v: int) -> int
-  ensures result >= -127 and result <= 127
-= if v > 127 then 127
-  else if v < -127 then -127
+  ensures result >= LLM_Q8_MIN and result <= LLM_Q8_MAX
+= if v > LLM_Q8_MAX then LLM_Q8_MAX
+  else if v < LLM_Q8_MIN then LLM_Q8_MIN
   else v
+
+# 1.6 3-Input Ternary Layer Forward Pass (Chained 1.58-Bit MAC + ReLU)
+fn llm_ternary_dot3_relu(x0: int, x1: int, x2: int, w0: int, w1: int, w2: int) -> int
+  requires x0 >= LLM_Q8_MIN and x0 <= LLM_Q8_MAX and x1 >= LLM_Q8_MIN and x1 <= LLM_Q8_MAX and x2 >= LLM_Q8_MIN and x2 <= LLM_Q8_MAX and w0 >= -1 and w0 <= 1 and w1 >= -1 and w1 <= 1 and w2 >= -1 and w2 <= 1
+  ensures result >= 0
+= let acc1 = llm_ternary_158bit_mac(0, x0, w0) in
+  let acc2 = llm_ternary_158bit_mac(acc1, x1, w1) in
+  let acc3 = llm_ternary_158bit_mac(acc2, x2, w2) in
+  if acc3 > 0 then acc3 else 0
 
 # ============================================================================
 # 2. LIQUID AI LFM3 TRI-HYBRID STATE-SPACE RECURRENCE & AUDIO CODEC
@@ -77,10 +87,10 @@ fn llm_lfm3_liquid_step(h_prev: int, u_in: int, decay_permille: int) -> int
   if raw < 0 then 0 else raw
 
 # 2.2 Liquid Neural Audio Codec Frame Token Budget
-#   8 codebooks @ 12.5 Hz = 12 tokens per 80 ms frame (100 tokens/sec)
+#   12 tokens per 80 ms frame (150 tokens/s at 24 kHz)
 fn llm_liquid_codec_tokens_for_ms(duration_ms: int) -> int
   requires duration_ms >= 0
-  ensures result >= 0
+  ensures result == (duration_ms * 12) / 80 and result >= 0
 = (duration_ms * 12) / 80
 
 # ============================================================================
@@ -108,7 +118,7 @@ fn llm_moe_ssd_bytes_mb_per_token(active_experts: int, cached_experts: int, expe
 
 # 4.2 Fail-Closed Hardware Admission Guard for Local MoE Inference
 #   Rejects execution (returns 0) unless:
-#     - free_ram_mb >= fixed_core_mb + 6000 (6 GB OS/KV safety headroom)
+#     - free_ram_mb >= fixed_core_mb + LLM_MOE_OS_HEADROOM_MB (6 GB OS/KV safety headroom)
 #     - ssd_read_mb_per_tok <= max_ssd_mb_per_tok (prevents 5.4 GB/tok SSD bottleneck)
 fn llm_moe_admission_guard(
   free_ram_mb: int,
@@ -118,23 +128,23 @@ fn llm_moe_admission_guard(
 ) -> int
   requires free_ram_mb >= 0 and fixed_core_mb >= 0 and ssd_read_mb_per_tok >= 0 and max_ssd_mb_per_tok >= 0
   ensures result >= 0 and result <= 1
-= if free_ram_mb >= fixed_core_mb + 6000 and ssd_read_mb_per_tok <= max_ssd_mb_per_tok then 1 else 0
+= if free_ram_mb >= fixed_core_mb + LLM_MOE_OS_HEADROOM_MB and ssd_read_mb_per_tok <= max_ssd_mb_per_tok then 1 else 0
 
 # ============================================================================
 # 5. UNIVERSAL 3-TIER ROUTER & CEGIS QF_LIA ANTI-HALLUCINATION ORACLE
 # ============================================================================
 
 # 5.1 Sovereign 3-Tier LLM Router
-#   - Tier 0 (0): Pure Lume Symbolic/SMT Core (task_complexity_bps <= 3000)
-#   - Tier 1 (1): Sovereign Local Edge LLM — Gemma 4 E2B / Ministral 3 3B / Bonsai 8B
-#                 (offline mode OR task_complexity_bps <= 8000 OR no cloud API key)
-#   - Tier 2 (2): Cloud Frontier LLM (online AND task_complexity_bps > 8000 AND has_cloud_api_key == 1)
+#   - LLM_TIER_0_PURE_LUME (0): Pure Lume Symbolic/SMT Core (task_complexity_bps <= 3000)
+#   - LLM_TIER_1_LOCAL     (1): Sovereign Local Edge LLM — Gemma 4 E2B / Ministral 3 3B / Bonsai 8B
+#                               (offline mode OR task_complexity_bps <= 8000 OR no cloud API key)
+#   - LLM_TIER_2_CLOUD     (2): Cloud Frontier LLM (online AND task_complexity_bps > 8000 AND has_cloud_api_key == 1)
 fn llm_select_tier(is_offline: int, task_complexity_bps: int, has_cloud_api_key: int) -> int
   requires (is_offline == 0 or is_offline == 1) and task_complexity_bps >= 0 and task_complexity_bps <= 10000 and (has_cloud_api_key == 0 or has_cloud_api_key == 1)
-  ensures result >= 0 and result <= 2
-= if task_complexity_bps <= 3000 then 0
-  else if is_offline == 1 or has_cloud_api_key == 0 or task_complexity_bps <= 8000 then 1
-  else 2
+  ensures result >= LLM_TIER_0_PURE_LUME and result <= LLM_TIER_2_CLOUD
+= if task_complexity_bps <= 3000 then LLM_TIER_0_PURE_LUME
+  else if is_offline == 1 or has_cloud_api_key == 0 or task_complexity_bps <= 8000 then LLM_TIER_1_LOCAL
+  else LLM_TIER_2_CLOUD
 
 # 5.2 CEGIS QF_LIA E-Commerce Price Anti-Hallucination Oracle
 #   Rejects decimal/comma-shift hallucinations (e.g. DeepSeek V3.2 turning
@@ -147,32 +157,55 @@ fn llm_verify_price_cents_oracle(llm_price_cents: int, html_anchor_cents: int, m
   else if llm_price_cents >= html_anchor_cents - max_delta_cents and llm_price_cents <= html_anchor_cents + max_delta_cents then 1
   else 0
 
-# 5.3 Availability Flag Repair Oracle
-#   Fixes the systematic `available: false` extraction bug observed in Gemma 4 E2B
-#   and Ministral 3 3B whenever a positive verified price is present in the HTML anchor.
-fn llm_repair_availability_flag(llm_available: int, verified_price_cents: int) -> int
-  requires (llm_available == 0 or llm_available == 1) and verified_price_cents >= 0
-  ensures result >= 0 and result <= 1
-= if verified_price_cents > 0 then 1 else llm_available
+# 5.3 CEGIS Automatic Price Repair Synthesizer
+#   Returns llm_price_cents when it satisfies the HTML anchor oracle, otherwise
+#   synthesizes the verified html_anchor_cents fallback.
+fn llm_cegis_repair_price_cents(llm_price_cents: int, html_anchor_cents: int, max_delta_cents: int) -> int
+  requires llm_price_cents >= 0 and html_anchor_cents > 0 and max_delta_cents >= 0
+  ensures result >= html_anchor_cents - max_delta_cents and result <= html_anchor_cents + max_delta_cents
+= if llm_verify_price_cents_oracle(llm_price_cents, html_anchor_cents, max_delta_cents) == 1 then llm_price_cents
+  else html_anchor_cents
+
+# 5.4 Availability Flag Repair Oracle with Explicit Out-of-Stock Guard
+#   - If out_of_stock_marker == 1 ("Esgotado" / "Indisponivel"), ALWAYS returns 0.
+#   - Otherwise, if verified_price_cents > 0, repairs the systematic `available: false`
+#     bug observed in Gemma 4 E2B and Ministral 3 3B to 1.
+fn llm_repair_availability_flag(llm_available: int, verified_price_cents: int, out_of_stock_marker: int) -> int
+  requires (llm_available == 0 or llm_available == 1) and verified_price_cents >= 0 and (out_of_stock_marker == 0 or out_of_stock_marker == 1)
+  ensures result == 0 or result == 1
+= if out_of_stock_marker == 1 then 0
+  else if verified_price_cents > 0 then 1
+  else llm_available
 
 # ============================================================================
 # 6. UNIVERSAL ALGEBRAIC LAWS PROVEN BY QF_LIA & CHECKED BY LCERT
 # ============================================================================
 
 law llm_ternary_zero_sparsity_identity_law(acc: int, x: int) =
-  if x >= 0 then
+  if x >= LLM_Q8_MIN and x <= LLM_Q8_MAX then
     llm_ternary_158bit_mac(acc, x, 0) == acc
   else 1 == 1
 
 law llm_binary_vs_ternary_equivalence_law(acc: int, x: int) =
-  if x >= 0 then
+  if x >= LLM_Q8_MIN and x <= LLM_Q8_MAX then
     llm_binary_1bit_mac(acc, x, 1) == llm_ternary_158bit_mac(acc, x, 1) and
     llm_binary_1bit_mac(acc, x, -1) == llm_ternary_158bit_mac(acc, x, -1)
   else 1 == 1
 
 law llm_q8_clamp_idempotent_law(v: int) =
-  if v >= -127 and v <= 127 then
+  if v >= LLM_Q8_MIN and v <= LLM_Q8_MAX then
     llm_absmax_q8_clamp(v) == v
+  else 1 == 1
+
+law llm_pack_unpack_trit0_roundtrip_law(t0: int, t1: int, t2: int, t3: int, t4: int) =
+  if t0 >= 0 and t0 <= 2 and t1 == 0 and t2 == 0 and t3 == 0 and t4 == 0 then
+    llm_unpack_trit0(llm_pack_5trits(t0, t1, t2, t3, t4)) == t0
+  else 1 == 1
+
+law llm_pack_5trits_bounds_law(t0: int, t1: int, t2: int, t3: int, t4: int) =
+  if t0 >= 0 and t0 <= 2 and t1 >= 0 and t1 <= 2 and t2 >= 0 and t2 <= 2 and t3 >= 0 and t3 <= 2 and t4 >= 0 and t4 <= 2 then
+    let p = llm_pack_5trits(t0, t1, t2, t3, t4) in
+    p >= t0 and p <= 242
   else 1 == 1
 
 law llm_dspark_guaranteed_forward_progress_law(draft_k: int, matched_k: int) =
@@ -182,13 +215,13 @@ law llm_dspark_guaranteed_forward_progress_law(draft_k: int, matched_k: int) =
   else 1 == 1
 
 law llm_moe_guard_blocks_low_ram_law(free_ram_mb: int, fixed_core_mb: int, ssd_mb: int, max_ssd_mb: int) =
-  if free_ram_mb >= 0 and fixed_core_mb >= 0 and ssd_mb >= 0 and max_ssd_mb >= 0 and free_ram_mb < fixed_core_mb + 6000 then
+  if free_ram_mb >= 0 and fixed_core_mb >= 0 and ssd_mb >= 0 and max_ssd_mb >= 0 and free_ram_mb < fixed_core_mb + LLM_MOE_OS_HEADROOM_MB then
     llm_moe_admission_guard(free_ram_mb, fixed_core_mb, ssd_mb, max_ssd_mb) == 0
   else 1 == 1
 
 law llm_offline_sovereignty_never_cloud_law(task_complexity_bps: int, has_cloud_api_key: int) =
   if task_complexity_bps >= 0 and task_complexity_bps <= 10000 and (has_cloud_api_key == 0 or has_cloud_api_key == 1) then
-    llm_select_tier(1, task_complexity_bps, has_cloud_api_key) <= 1
+    llm_select_tier(1, task_complexity_bps, has_cloud_api_key) <= LLM_TIER_1_LOCAL
   else 1 == 1
 
 law llm_price_oracle_rejects_comma_shift_law(anchor_cents: int, max_delta_cents: int, hallucinated_cents: int) =
@@ -196,9 +229,19 @@ law llm_price_oracle_rejects_comma_shift_law(anchor_cents: int, max_delta_cents:
     llm_verify_price_cents_oracle(hallucinated_cents, anchor_cents, max_delta_cents) == 0
   else 1 == 1
 
+law llm_price_oracle_rejects_underflow_law(llm_p: int, anchor_p: int, max_d: int) =
+  if anchor_p > 0 and max_d >= 0 and llm_p >= 0 and llm_p < anchor_p - max_d then
+    llm_verify_price_cents_oracle(llm_p, anchor_p, max_d) == 0
+  else 1 == 1
+
 law llm_availability_repair_positive_price_law(llm_avail: int, verified_price_cents: int) =
   if (llm_avail == 0 or llm_avail == 1) and verified_price_cents > 0 then
-    llm_repair_availability_flag(llm_avail, verified_price_cents) == 1
+    llm_repair_availability_flag(llm_avail, verified_price_cents, 0) == 1
+  else 1 == 1
+
+law llm_out_of_stock_never_available_law(llm_available: int, price_cents: int) =
+  if (llm_available == 0 or llm_available == 1) and price_cents >= 0 then
+    llm_repair_availability_flag(llm_available, price_cents, 1) == 0
   else 1 == 1
 
 # ============================================================================
@@ -206,37 +249,41 @@ law llm_availability_repair_positive_price_law(llm_avail: int, verified_price_ce
 # ============================================================================
 
 fn test_lume_llm_core() =
-  # 1. Bonsai 1-bit & 1.58-bit Ternary MAC + 5-trit Base-3 packing + Q8 clamp
+  # 1. Bonsai 1-bit & 1.58-bit Ternary MAC (including negative Q8 activations) + Dot3 ReLU
   let mac1_pos = llm_binary_1bit_mac(100, 42, 1) in
   let mac1_neg = llm_binary_1bit_mac(100, 42, -1) in
-  let mact_zero = llm_ternary_158bit_mac(100, 42, 0) in
+  let mac1_signed_q8 = llm_binary_1bit_mac(100, llm_absmax_q8_clamp(-50), 1) in
+  let mact_zero = llm_ternary_158bit_mac(100, -42, 0) in
+  let dot3_out = llm_ternary_dot3_relu(60, -30, 25, 1, -1, 1) in
+  let dot3_relu_zero = llm_ternary_dot3_relu(-60, 30, -25, 1, -1, 1) in
   let packed = llm_pack_5trits(2, 1, 0, 2, 2) in
   let unpacked0 = llm_unpack_trit0(packed) in
   let clamp_hi = llm_absmax_q8_clamp(240) in
   let clamp_lo = llm_absmax_q8_clamp(-300) in
-  # 2. Liquid AI LFM3 state-space step & 80ms audio codec frame token budget
+  # 2. Liquid AI LFM3 state-space step & 80ms audio codec frame token budget (150 tok/s)
   let lfm_state = llm_lfm3_liquid_step(1000, 500, 800) in
   let audio_toks = llm_liquid_codec_tokens_for_ms(800) in
   # 3. DSpark speculative decoding step (draft_k = 8, matched_k = 6 -> 7 tokens)
   let spec_toks = llm_dspark_accepted_step(8, 6) in
   # 4. Colibri MoE SSD bandwidth & admission guard
-  #    Case A: 16 GB laptop (11000 MB free), 7200 MB core -> blocked (11000 < 13200)
-  #    Case B: 32 GB workstation (26000 MB free), 7200 MB core, 0 MB SSD spill -> admitted
   let ssd_spill_bad = llm_moe_ssd_bytes_mb_per_token(6, 0, 900) in
   let moe_16gb_blocked = llm_moe_admission_guard(11000, 7200, ssd_spill_bad, 500) in
   let moe_32gb_ok = llm_moe_admission_guard(26000, 7200, 0, 500) in
-  # 5. Universal 3-Tier Router & VKPromos E-Commerce Hallucination Oracle
+  # 5. Universal 3-Tier Router & VKPromos E-Commerce Hallucination + CEGIS Repair Oracle
   let tier_symbolic = llm_select_tier(0, 1500, 1) in
   let tier_local = llm_select_tier(1, 9500, 1) in
   let tier_cloud = llm_select_tier(0, 9500, 1) in
-  # 8BitDo Ultimate 2: real anchor R$ 509,74 (50974 cents) vs DeepSeek R$ 50.000,974 (5000097 cents)
   let ok_8bitdo = llm_verify_price_cents_oracle(50974, 50974, 0) in
   let bad_deepseek = llm_verify_price_cents_oracle(5000097, 50974, 0) in
-  # Repair Gemma 4 E2B / Ministral 3B `available: false` (0) when verified price is 50974 cents
-  let repaired_avail = llm_repair_availability_flag(0, 50974) in
+  let cegis_repaired_price = llm_cegis_repair_price_cents(5000097, 50974, 0) in
+  let repaired_avail = llm_repair_availability_flag(0, 50974, 0) in
+  let oos_blocked = llm_repair_availability_flag(1, 50974, 1) in
   mac1_pos == 142 and
   mac1_neg == 58 and
+  mac1_signed_q8 == 50 and
   mact_zero == 100 and
+  dot3_out == 115 and
+  dot3_relu_zero == 0 and
   packed == 221 and
   unpacked0 == 2 and
   clamp_hi == 127 and
@@ -247,11 +294,13 @@ fn test_lume_llm_core() =
   ssd_spill_bad == 5400 and
   moe_16gb_blocked == 0 and
   moe_32gb_ok == 1 and
-  tier_symbolic == 0 and
-  tier_local == 1 and
-  tier_cloud == 2 and
+  tier_symbolic == LLM_TIER_0_PURE_LUME and
+  tier_local == LLM_TIER_1_LOCAL and
+  tier_cloud == LLM_TIER_2_CLOUD and
   ok_8bitdo == 1 and
   bad_deepseek == 0 and
-  repaired_avail == 1
+  cegis_repaired_price == 50974 and
+  repaired_avail == 1 and
+  oos_blocked == 0
 
-print f"[LUME-LLM-CORE] Bonsai_1Bit_MAC={llm_binary_1bit_mac(100, 42, 1)} Ternary_ZeroSkip={llm_ternary_158bit_mac(100, 42, 0)} Packed_5Trits={llm_pack_5trits(2, 1, 0, 2, 2)} LFM3_State={llm_lfm3_liquid_step(1000, 500, 800)} Audio_800ms_Tokens={llm_liquid_codec_tokens_for_ms(800)} DSpark_Accepted={llm_dspark_accepted_step(8, 6)} MoE_16GB_Guard={llm_moe_admission_guard(11000, 7200, 5400, 500)} MoE_32GB_Guard={llm_moe_admission_guard(26000, 7200, 0, 500)} Price_8BitDo_OK={llm_verify_price_cents_oracle(50974, 50974, 0)} DeepSeek_CommaShift_Rejected={llm_verify_price_cents_oracle(5000097, 50974, 0)} Repaired_Available={llm_repair_availability_flag(0, 50974)}"
+print f"[LUME-LLM-CORE] Bonsai_1Bit_MAC={llm_binary_1bit_mac(100, 42, 1)} Ternary_Dot3_ReLU={llm_ternary_dot3_relu(60, -30, 25, 1, -1, 1)} Packed_5Trits={llm_pack_5trits(2, 1, 0, 2, 2)} LFM3_State={llm_lfm3_liquid_step(1000, 500, 800)} Audio_800ms_Tokens={llm_liquid_codec_tokens_for_ms(800)} DSpark_Accepted={llm_dspark_accepted_step(8, 6)} MoE_16GB_Guard={llm_moe_admission_guard(11000, 7200, 5400, 500)} MoE_32GB_Guard={llm_moe_admission_guard(26000, 7200, 0, 500)} Price_8BitDo_OK={llm_verify_price_cents_oracle(50974, 50974, 0)} DeepSeek_CEGIS_Repaired={llm_cegis_repair_price_cents(5000097, 50974, 0)} Repaired_Available={llm_repair_availability_flag(0, 50974, 0)} OOS_Guard={llm_repair_availability_flag(1, 50974, 1)}"

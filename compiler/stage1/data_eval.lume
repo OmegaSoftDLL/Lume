@@ -21,14 +21,55 @@ fn sha_ssig0_i(x: int) -> int = sha_xor32(sha_xor32(sha_rotr_i(x, 128, 33554432)
 fn sha_ssig1_i(x: int) -> int = sha_xor32(sha_xor32(sha_rotr_i(x, 131072, 32768), sha_rotr_i(x, 524288, 8192)), x / 1024)
 fn sha_ch_i(e: int, f: int, g: int) -> int = sha_xor32(sha_and32(e, f), sha_and32(4294967295 - e, g))
 fn sha_maj_i(a: int, b: int, c: int) -> int = sha_xor32(sha_xor32(sha_and32(a, b), sha_and32(a, c)), sha_and32(b, c))
+fn sha_utf8_bytes(s: str) -> [int]
+    var bs = []
+    for ch in s.chars()
+        let cp = ch as int
+        if cp < 0
+            bs.push(cp + 256)
+        else
+            if cp < 128
+                bs.push(cp)
+            else
+                if cp < 2048
+                    bs.push(192 + (cp / 64))
+                    bs.push(128 + (cp % 64))
+                else
+                    if cp < 65536
+                        bs.push(224 + (cp / 4096))
+                        bs.push(128 + ((cp / 64) % 64))
+                        bs.push(128 + (cp % 64))
+                    else
+                        bs.push(240 + (cp / 262144))
+                        bs.push(128 + ((cp / 4096) % 64))
+                        bs.push(128 + ((cp / 64) % 64))
+                        bs.push(128 + (cp % 64))
+    bs
+
+fn deval_chr_byte(b0: int) -> str
+    let b = ((b0 % 256) + 256) % 256
+    if b == 0
+        return "\0"
+    if b == 9
+        return "\t"
+    if b == 10
+        return "\n"
+    if b == 13
+        return "\r"
+    if b >= 32 and b <= 126
+        let tab = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{{|}}~"
+        return tab[b - 32..b - 31]
+    ""
+
 fn sha_pow256_i(k: int) -> int = if k <= 0 then 1 else if k == 1 then 256 else if k == 2 then 65536 else if k == 3 then 16777216 else if k == 4 then 4294967296 else if k == 5 then 1099511627776 else if k == 6 then 281474976710656 else 72057594037927936
-fn sha_byte_i(s: str, slen: int, total: int, idx: int) -> int = if idx < slen then (s[idx] as int) else if idx == slen then 128 else if idx >= total - 8 then ((slen * 8) / sha_pow256_i(total - 1 - idx)) % 256 else 0
-fn sha_word_i(s: str, slen: int, total: int, base: int) -> int = sha_byte_i(s, slen, total, base) * 16777216 + sha_byte_i(s, slen, total, base + 1) * 65536 + sha_byte_i(s, slen, total, base + 2) * 256 + sha_byte_i(s, slen, total, base + 3)
+fn sha_byte_i(bs: [int], slen: int, total: int, idx: int) -> int = if idx < slen then bs[idx] else if idx == slen then 128 else if idx >= total - 8 then ((slen * 8) / sha_pow256_i(total - 1 - idx)) % 256 else 0
+fn sha_word_i(bs: [int], slen: int, total: int, base: int) -> int = sha_byte_i(bs, slen, total, base) * 16777216 + sha_byte_i(bs, slen, total, base + 1) * 65536 + sha_byte_i(bs, slen, total, base + 2) * 256 + sha_byte_i(bs, slen, total, base + 3)
 fn sha_hex1_i(n: int) -> str = "0123456789abcdef"[n % 16..(n % 16) + 1]
 fn sha_hex32_i(w: int) -> str = sha_hex1_i(w / 268435456) + sha_hex1_i(w / 16777216) + sha_hex1_i(w / 1048576) + sha_hex1_i(w / 65536) + sha_hex1_i(w / 4096) + sha_hex1_i(w / 256) + sha_hex1_i(w / 16) + sha_hex1_i(w)
 
 fn sha256_hex_str(s: str) -> str
-    let slen = s.len()
+    let bs = sha_utf8_bytes(s)
+    let slen = bs.len()
     let total = ((slen + 9 + 63) / 64) * 64
     let ks = [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221, 3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580, 3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986, 2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895, 666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037, 2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344, 430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298]
     var h0 = 1779033703
@@ -44,7 +85,7 @@ fn sha256_hex_str(s: str) -> str
         var w = []
         var t = 0
         while t < 64
-            let wt = if t < 16 then sha_word_i(s, slen, total, blk + t * 4) else sha_u32_i(w[t - 16] + sha_ssig0_i(w[t - 15]) + w[t - 7] + sha_ssig1_i(w[t - 2]))
+            let wt = if t < 16 then sha_word_i(bs, slen, total, blk + t * 4) else sha_u32_i(w[t - 16] + sha_ssig0_i(w[t - 15]) + w[t - 7] + sha_ssig1_i(w[t - 2]))
             w.push(wt)
             t = t + 1
         var a = h0
@@ -280,6 +321,7 @@ fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
                     ## top-level lets are visible inside functions (the "$g" snapshot)
                     var env2 = {}
                     env2["$in"] = env.get("$in") ?? VStr(s: "/dev/stdin")
+                    env2["$fs"] = env.get("$fs") ?? VRec(fields: {})
                     match env.get("$g") ?? VInt(n: 0)
                         VRec(gm) => do
                             for e in gm.entries()
@@ -302,6 +344,16 @@ fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
                         result = VInt(n: s.len())
                     _ => do
                         result = VInt(n: 0)
+            if not found and name == "ord"
+                let osv = rv_str(deval(args[0], env, fns))
+                if osv.len() == 0
+                    result = VInt(n: 0)
+                else
+                    let obs = sha_utf8_bytes(osv[0..1])
+                    result = VInt(n: if obs.len() > 0 then obs[0] else 0)
+            if not found and name == "chr"
+                let ocode = rv_int(deval(args[0], env, fns))
+                result = VStr(s: deval_chr_byte(ocode))
             if not found and name == "at"
                 let asv = rv_str(deval(args[0], env, fns))
                 let aix = rv_int(deval(args[1], env, fns))
@@ -351,13 +403,50 @@ fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
                 let fpath = rv_str(deval(args[0], env, fns))
                 let fdata = rv_str(deval(args[1], env, fns))
                 let fok = io.write_file(fpath, fdata)
+                if fok
+                    match env.get("$fs") ?? VInt(n: 0)
+                        VRec(fsm) => do
+                            fsm[fpath] = VInt(n: 1)
+                        _ => do
+                            let _ = 0
                 result = VInt(n: if fok then 1 else 0)
             if not found and name == "fs_append_sync"
                 let fpath = rv_str(deval(args[0], env, fns))
                 let fdata = rv_str(deval(args[1], env, fns))
                 let fprev = io.read_file(fpath)
                 let fok = io.write_file(fpath, fprev + fdata)
+                if fok
+                    match env.get("$fs") ?? VInt(n: 0)
+                        VRec(fsm) => do
+                            fsm[fpath] = VInt(n: 1)
+                        _ => do
+                            let _ = 0
                 result = VInt(n: if fok then 1 else 0)
+            if not found and name == "fs_path_exists"
+                let fpath = rv_str(deval(args[0], env, fns))
+                let fdata = io.read_file(fpath)
+                var fexists = fdata.len() > 0
+                if not fexists
+                    match env.get("$fs") ?? VInt(n: 0)
+                        VRec(fsm) => do
+                            if rv_int(fsm.get(fpath) ?? VInt(n: 0)) != 0
+                                fexists = true
+                        _ => do
+                            let _ = 0
+                result = VInt(n: if fexists then 1 else 0)
+            if not found and name == "fs_read_byte"
+                let fpath = rv_str(deval(args[0], env, fns))
+                let foff = rv_int(deval(args[1], env, fns))
+                if foff < 0
+                    result = VInt(n: 0 - 1)
+                else
+                    let fdata = io.read_file(fpath)
+                    if fdata.len() == 0
+                        result = VInt(n: 0 - 1)
+                    else
+                        let fpart = if foff + 1 < fdata.len() then fdata[0..foff + 1] else fdata
+                        let fbs = sha_utf8_bytes(fpart)
+                        result = VInt(n: if foff < fbs.len() then fbs[foff] else 0 - 1)
             if not found and name == "fs_read_file"
                 let fpath = rv_str(deval(args[0], env, fns))
                 result = VStr(s: io.read_file(fpath))
@@ -473,6 +562,8 @@ fn run_data(prog: [DStmt])
             return
     var env = {}
     env["$in"] = VStr(s: inpath)
+    var fs_init = {}
+    env["$fs"] = VRec(fields: fs_init)
     for s in prog
         match s
             DLet(name, v) => do

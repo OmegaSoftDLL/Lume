@@ -23,9 +23,19 @@ pub fn crypto_sign_tx_digest(privkey: str, tx_digest: str) = let pubkey = crypto
 pub fn crypto_verify_tx_sig(pubkey: str, tx_digest: str, signature: str) = let expected = capsule_sha256_text("SIG_COMMIT:" + pubkey + ":" + tx_digest) in if signature == expected then 1 else 0
 
 ## --- 3. Dynamic N-Leaf Merkle Tree & Multi-Difficulty Proof-of-Work ---
+pub fn merkle_leaf_tag(leaf_val: int) -> int requires leaf_val >= 0 ensures result == 257 * leaf_val + 17 and result >= 17 = 257 * leaf_val + 17
+
+pub fn merkle_node_combine(left_h: int, right_h: int) -> int requires left_h >= 0 and right_h >= 0 ensures result == 3 * left_h + 5 * right_h + 256 and result > left_h + right_h = 3 * left_h + 5 * right_h + 256
+
+pub fn merkle_root2(a: int, b: int) -> int requires a >= 0 and b >= 0 ensures result == merkle_node_combine(merkle_leaf_tag(a), merkle_leaf_tag(b)) and result == 771 * a + 1285 * b + 392 = merkle_node_combine(merkle_leaf_tag(a), merkle_leaf_tag(b))
+
+law law_merkle_root_deterministic(a: int, b: int) = if a >= 0 and b >= 0 then merkle_root2(a, b) == merkle_node_combine(merkle_leaf_tag(a), merkle_leaf_tag(b)) and merkle_root2(a, b) == 771 * a + 1285 * b + 392 and (if a != b then merkle_root2(a, b) != merkle_root2(b, a) else merkle_root2(a, b) == merkle_root2(b, a)) else 1 == 1
+
 pub fn merkle_leaf_hash(tx_raw: str) = capsule_sha256_text("LEAF_0x00:" + tx_raw)
 
 pub fn merkle_node_hash(left_h: str, right_h: str) = capsule_sha256_text("NODE_0x01:" + left_h + ":" + right_h)
+
+pub fn merkle_root2_txs(tx_a: str, tx_b: str) = merkle_node_hash(merkle_leaf_hash(tx_a), merkle_leaf_hash(tx_b))
 
 fn merkle_pair_step(items) = match items
     Nil => Nil
@@ -88,7 +98,7 @@ pub fn utxo_apply_tx(utxos, in_id: str, spender_pub: str, sig: str, to_addr: str
 ## --- 6. DeFi Constant-Product AMM (0.3% Fee), Slippage & Two-Pool Atomic Arbitrage ---
 pub fn defi_amm_swap_with_fee(reserve_x: int, reserve_y: int, dx: int, fee_num: int, fee_den: int) = let dx_After_fee = dx * fee_num in let num = reserve_y * dx_After_fee in let den0 = (reserve_x * fee_den) + dx_After_fee in let den = if den0 <= 0 then 1 else den0 in let dy_out = num / den in let new_x = reserve_x + dx in let new_y = reserve_y - dy_out in let k_before = reserve_x * reserve_y in let k_after = new_x * new_y in let rdx = if new_x <= 0 then 1 else new_x in let impact_bp = (dx * 10000) / rdx in {dy_out: dy_out, new_x: new_x, new_y: new_y, k_before: k_before, k_after: k_after, k_grew: if k_after >= k_before then 1 else 0, price_impact_bp: impact_bp}
 
-pub fn defi_amm_k_delta(k_before: int, k_after: int) -> int requires k_before > 0 and k_after >= k_before ensures result >= 0 = k_after - k_before
+pub fn defi_amm_k_delta(k_before: int, k_after: int) -> int requires k_before > 0 and k_after >= k_before ensures result == k_after - k_before and result >= 0 = k_after - k_before
 
 law amm_xy_k_nonnegative(rx: int, ry: int) = if rx >= 0 and ry >= 0 then rx * ry >= 0 else 1 == 1
 
@@ -117,7 +127,7 @@ pub fn quant_position_size_sats(bankroll_sats: int, win_prob_bp: int, odds_num: 
 ## --- 9. Self-Verification Test Suite for All 8 Engines ---
 fn test_hd_wallet_and_signatures() = let w0 = hd_derive_wallet("ricardo-bueno-sovereign-seed-2026", 0, 0) in let w1 = hd_derive_wallet("ricardo-bueno-sovereign-seed-2026", 0, 1) in let digest = capsule_sha256_text("tx_payload_1") in let sig = crypto_sign_tx_digest(w0.privkey, digest) in let valid = crypto_verify_tx_sig(w0.pubkey, digest, sig) in let invalid = crypto_verify_tx_sig(w1.pubkey, digest, sig) in if w0.address != w1.address and valid == 1 and invalid == 0 then 1 else 0
 
-fn test_dynamic_merkle_and_pow() = let txs = Cons("tx1", Cons("tx2", Cons("tx3", Cons("tx4", Cons("tx5", Nil))))) in let mr = merkle_root_from_txs(txs) in let blk = pow_mine_block("000000000019d6689c085ae165831e93", mr, 1730690000, 1, 0, 256) in if count(mr) == 64 and blk.valid_pow == 1 and at(blk.block_hash, 0) == "0" then 1 else 0
+fn test_dynamic_merkle_and_pow() = let txs = Cons("tx1", Cons("tx2", Cons("tx3", Cons("tx4", Cons("tx5", Nil))))) in let mr = merkle_root_from_txs(txs) in let mr2 = merkle_root_from_txs(Cons("tx1", Cons("tx2", Nil))) in let blk = pow_mine_block("000000000019d6689c085ae165831e93", mr, 1730690000, 1, 0, 256) in if count(mr) == 64 and mr2 == merkle_root2_txs("tx1", "tx2") and merkle_root2_txs("tx1", "tx2") != merkle_root2_txs("tx2", "tx1") and merkle_root2(10, 20) == merkle_node_combine(merkle_leaf_tag(10), merkle_leaf_tag(20)) and merkle_root2(10, 20) != merkle_root2(20, 10) and blk.valid_pow == 1 and at(blk.block_hash, 0) == "0" then 1 else 0
 
 fn test_halving_and_21m_supply_cap() = let s0 = btc_halving_reward_sats(0) in let s4 = btc_halving_reward_sats(4) in let s33 = btc_halving_reward_sats(33) in let total = btc_total_supply_sats_after_epoch(33) in if s0 == 5000000000 and s4 == 312500000 and s33 == 0 and total == 2099999997690000 and total < 2100000000000000 then 1 else 0
 

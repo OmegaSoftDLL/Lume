@@ -116,9 +116,12 @@ Lume supports three `match` forms everywhere:
 ## 2.4 Essential Technical Rules for Humans & AI
 1. Pure LF (`\n`) Line Endings: Always save `.src` and `.lume` files with Unix LF (`\n`),
    never Windows CRLF (`\r\n`).
-2. Function Arity: Register calling convention uses `%rdi, %rsi, %rdx, %rcx, %r8, %r9`
-   for the first 6 parameters and automatically spills parameters 7+ onto the stack.
-3. Never edit `compiler/stage1/lumec.src` directly: edit `compiler/stage1/lume/NN_*.src`
+2. 6-Parameter Register Invariant: Native SysV AMD64 codegen (`05_codegen.src`) passes
+   the first 6 parameters in `%rdi, %rsi, %rdx, %rcx, %r8, %r9` (Stage-1 `.src` compiler
+   modules keep `<= 6` parameters per function or group extra fields into a record).
+3. Top-Level `match` Invariant in Stage-1 `.src`: Keep `match` at the top level of a
+   helper function body (`fn f(x) = match x ...`) in Stage-1 `.src` compiler modules.
+4. Never edit `compiler/stage1/lumec.src` directly: edit `compiler/stage1/lume/NN_*.src`
    and run `scripts/amalgamate.sh`.
 
 # CHAPTER 3: TYPE SYSTEM, OWNERSHIP & DATA TYPES
@@ -173,10 +176,18 @@ fn clamp_deposit(bal: int, delta: int) -> int
 - If a contract can be violated, compilation fails with `[V0001]` and prints a concrete
   counterexample assignment!
 
-## 4.2 Algebraic Laws (`law`)
+## 4.2 Algebraic Laws (`law`) & Logical Implication Idiom
 ```lume
 law add_commutative(a: int, b: int) = (a + b) == (b + a)
+law clamp_implication(x: int, lo: int, hi: int) =
+  if lo <= hi then clamp(x, lo, hi) >= lo else 1 == 1
 ```
+- Implication Idiom (`if P then Q else 1 == 1`): Express logical implication $P \implies Q$
+  inside `law` declarations using `if P then Q else 1 == 1`, which reduces directly to
+  decidable `QF_LIA` branches in both `lcaas.src` and the standalone proof kernel `lcert.src`.
+- Compound Termination & Proof Kernel (`lcert.src`): Verifies compound `terminates`
+  obligations (`lk_prove_term_cond` across `and`/`or` guards) and runs a built-in
+  NIST FIPS 180-4 SHA-256 Known-Answer Test (`sha256("abc")`).
 
 ## 4.3 Worst-Case Execution Time Bounds (`@bound(cycles: N)`)
 For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budgets:
@@ -218,12 +229,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 # CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULES
 
 ## 6.1 Core Builtin Functions (Always Available in `.src`)
-- Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, start, len)`,
-            `ord(ch)`, `chr(code)`, `str_from_byte(code)`, `str(n)`, `toint(s)`
+- Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, n, start, end)`,
+            `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`
 - I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,
-            `fs_path_exists(path)`, `fs_read_byte(path, offset)`, `fs_file_size(path)`
-- Process:  `os_arg_count()`, `os_arg_at(i)`, `os_getpid()`, `os_exit(code)`,
-            `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`
+            `fs_path_exists(path)`, `fs_read_byte(path, offset)`
+- Process:  `os_arg_count()`, `os_arg_at(i)`,
+            `os_getpid()`, `os_exit(code)`, `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):
   - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                             `port_out32(p, v)`, `port_in32(p)`
@@ -245,33 +256,55 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Failure:  `ctfail(msg)` (prints message to stderr and exits with non-zero code)
 
 ## 6.2 Standard Library Modules (`use <module>`)
-- `use fs`             Safe file handles (`with_file` close-on-all-paths, `[O0001]` safety)
-- `use bytes`          Bounds-checked byte buffers (`bytes_from_str`, `bytes_get`, `bytes_slice`)
-- `use map`            256-way hash-bucketed dictionary (`map_empty`, `map_put`, `map_get`)
-- `use arena`          Scoped O(1) memory arenas (`with_arena`, `arena_stats`)
+- `use fs`             Safe file handles (`sfile_with` close-on-all-paths, `[O0001]` safety)
+- `use bytes`          Bounds-checked byte buffers (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
+- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`)
+- `use arena`          Scoped O(1) memory arenas (`arena_new`, `arena_alloc`, `arena_reset`, `heap_stats`)
 - `use capsule`        Tamper-evident execution capsules (`capsule_seal`, `capsule_verify`)
-- `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`)
+- `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`, `fs_file_size(path, i)`)
 - `use db`             Multi-way B+Tree + ACID WAL crash-recovery engine & SQL query executor
+                       (`+/- 10^12` 64-bit scan bounds, nested `db_begin_tx` guard, and `BMInner`
+                       separator subtree pruning, `6/6` `QF_LIA` proofs)
 - `use net`            Full TCP/IP, Wireshark Multi-Layer Dissector (`wireshark_dissect_frame`,
                        `wireshark_filter_match`, `.pcap` reader/writer), L2/L3/P4 Switch Firmware
-                       Engine (IEEE 802.1Q VLAN, 802.1w RSTP, CAM/MAC learning, MPLS, FIB LPM,
-                       BGP-4, P4 pipeline), Industrial/Substation Telemetry Protocols from
+                       Engine (IEEE 802.1Q VLAN admission fix, 802.1w RSTP, CAM/MAC learning, MPLS,
+                       FIB LPM, BGP-4, P4 pipeline), Industrial/Substation Telemetry Protocols from
                        scratch: Modbus RTU/TCP (`CRC-16 0xA001`), DNP3 IEEE 1815 (`0x0564` +
                        `CRC-16/DNP` + SBO + SAv5), IEC 60870-5-104 (`TCP/2404` I/S/U-Format),
-                       IEC 61850 (`MMS ISO 9506`, `GOOSE 0x88B8`, `Sampled Values 0x88BA`), and
-                       Digital Substation Protection Relays (`sv_dft_4sample_phasor` 60 Hz DFT,
-                       `ANSI 50`, `ANSI 51`, `ANSI 87`, `ANSI 21`, `ANSI 27/59`, `ANSI 81`, `ANSI 79`)
+                       IEC 61850 (`MMS ISO 9506`, `GOOSE 0x88B8`, `Sampled Values 0x88BA` with exact
+                       frame-length guards), and Digital Substation Protection Relays
+                       (`sv_dft_4sample_phasor` 60 Hz DFT, `net_isqrt` up to `10^16`, direct
+                       `ansi50`/`ansi27_59` contracts, `ANSI 51`, `ANSI 87`, `ANSI 21`, `ANSI 81`,
+                       `ANSI 79`, `23/23` `QF_LIA` proofs)
 - `use gfx`            2D/3D Graphics, Fixed-Point Math (`fx_sqrt`, `fx_sin_deg`, `fx_cos_deg`),
                        Porter-Duff RGBA Alpha Blending, Bresenham/Circle/Bezier 2D Rasterizer,
                        3D Pinhole Perspective Projection, Binary 54-Byte BMP, PPM & SCADA HMI SVG
-- `use gui`            X11 wire-protocol client (`0x42` MSB handshake, `CreateWindow`) & Web DOM
-- `use nn`             Neural layers, binary `.safetensors` & Protobuf `.onnx` model I/O
+- `use gui`            X11 wire-protocol client (`0x42` MSB handshake, `CreateWindow`), Web DOM,
+                       and System76 COSMIC 1.11 Wayland `xdg-dialog-v1` modal dialog z-index
+                       stacking & background click blocking (`ui_modal_blocks_parent`,
+                       `ui_modal_z_index`, `4/4` `QF_LIA` proofs)
+- `use los`            Track O General-Purpose OS layer + System76 COSMIC 1.11 deterministic
+                       hybrid GPU (`iGPU` vs `dGPU`) PCI selection policy (`os_select_hybrid_gpu`,
+                       `11/11` `QF_LIA` proofs)
+- `use nn`             Neural layers, binary `.safetensors` & Protobuf `.onnx` model I/O with
+                       64-bit two's complement negative weights (`nn_le64_hex`), full-CSV
+                       `model_content_hash`, and `tensor.src` `KIf` PTX/SPIR-V division-by-zero
+                       clamping (`16/16` `QF_LIA` proofs)
 - `use async_rt`       Work-stealing OS multi-process worker pool (`async_run_workers_os`)
 - `use media`          2D raster canvas, font glyph renderer, and binary image codecs
 - `use interop`        Fail-closed C ABI layout & header adapter (`[I0003]`)
-- `use protect`        P33 control-flow flattening, string encryption & `[W0002]` secret scanner
+- `use protect`        P33 control-flow flattening, string encryption, multi-step algebraic MBA
+                       prologue (`addq`/`xorq`/`subq` in `lprotect.src`), & `[W0002]` secret scanner
 - `use lgenesis`       Full-stack application & 8-target autonomous synthesizer
 - `use lsentience`     Wave 9-10 Quantum, DNA, HDC, DEQ, LLM-Forge, Triad & Multimodal engine
+- `use lume_llm_core`  Sovereign 1-Bit/Ternary LLM Core & 3-Tier Hybrid Router (`21/21` `QF_LIA` proofs):
+                       PrismML `Bonsai` 1-bit (`{-1, +1}`) & `BitNet b1.58` ternary (`{-1, 0, +1}`)
+                       zero-float integer MAC + 5-trit byte packing (`3^5 = 243 <= 255`), Liquid AI
+                       `LFM3` $O(1)$ state-space recurrence + `LiquidCodec` 24 kHz audio frame math
+                       (`12` tokens / `80 ms`), `DSpark` speculative decoding verifier, `Colibri` MoE
+                       SSD admission guard (`llm_moe_admission_guard`), and 3-Tier Hybrid Router
+                       (`Tier 0` Pure Lume Core -> `Tier 1` Local `Gemma4-E2B`/`Ministral-3B-Q4`/`Bonsai-1bit`
+                       -> `Tier 2` Cloud API Key) with `QF_LIA` price/contract anti-hallucination oracle
 - `use lume_crypto_blockchain_engine` SHA-256 PoW, Ed25519/Secp256k1, UTXO, AMM & Kelly Criterion
 - `use lume_reversa_engine` Reversa-Lume SDD Engine v1.0: 7-phase hybrid binary (`ELF64`, `PE64`,
                        `UEFI`, `Mach-O`, `WASM`) + NSIS/7z installer payload unpacker + multi-language
@@ -316,11 +349,28 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        3-speaker binary RIFF/WAVE PCM podcast (`open_notebook_podcast.wav`), and `Doory`
                        conflict-free `LWW-Element-Set` CRDT scene-graph & vector slide (`doory_continuum_slide.svg`)
 - `use lume_quantum_nexus_engine` Lume Sovereign Quantum Nexus Engine v1.0 (5 Quantum Innovations):
-                       `Silq` Linear Qubit Type Checker (`No-Cloning`/`No-Measure-Reuse`) & Automatic $U^\dagger$
-                       Ancilla Uncomputation (`qfree_safe == 1`), `QuiZX/PyZX` Graphical ZX-Calculus Spider Fusion
-                       & $T$-Count Optimizer (`7x` $T$-gate reduction), `Google Stim` Gottesman-Knill $O(n^2)$
-                       Stabilizer Tableau Simulator (`GHZ_8`), Rotated Surface Code `[[9, 1, 3]]` Topological QEC
-                       (`27/27` Pauli errors corrected), and `PennyLane/Catalyst` Exact Parameter-Shift VQE
+                       `Silq` Linear Qubit Type Checker (`No-Cloning`/`No-Measure-Reuse`), non-unitary `Meas`
+                       dagger guard (`q_is_reversible_unitary`) & Automatic $U^\dagger$ Ancilla Uncomputation
+                       (`qfree_safe == 1`), `QuiZX/PyZX` Graphical ZX-Calculus Spider Fusion & $T$-Count
+                       Optimizer (`7x` $T$-gate reduction + pre/post-ZX statevector equivalence `q_sv2_equiv_tol`),
+                       `Google Stim` Gottesman-Knill $O(n^2)$ Stabilizer Tableau Simulator (`GHZ_8`), Rotated
+                       Surface Code `[[9, 1, 3]]` Topological QEC (`27/27` Pauli errors corrected), and
+                       `PennyLane/Catalyst` Exact Parameter-Shift VQE
+
+## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)
+- `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.
+- `sentry_uav_guard` (`9/9` `QF_LIA` proofs): Autonomous UAV geofence, battery & attitude safety guard.
+- `verified_accounting` (`7/7` `QF_LIA` proofs): Double-entry ledger conservation & audit trail.
+- `dfe_pix_bacen` (`11/11` `QF_LIA` proofs): SEFAZ NF-e/NFC-e Modulo-11 DV, ICMS/DIFAL & BACEN Pix EMV CRC-16.
+- `omniroute_guard` (`8/8` `QF_LIA` proofs): Quota-aware multi-provider LLM & payment failover router.
+- `brasil_public_id` (`9/9` `QF_LIA` proofs): CPF, PIS/PASEP, Titulo Eleitoral & RFB/SERPRO July 2026 Alphanumeric CNPJ (`ord(ch) - 48`).
+- `zero_breach_forensics` (`8/8` `QF_LIA` proofs): Pegasus/Predator/Candiru forensic scanner & STIX 2.1 IOC verifier.
+- `sovereign_llm_router` (`20/20` `QF_LIA` proofs): 1-Bit/Ternary MAC, `LFM3` LiquidCodec 24 kHz audio, `Colibri` MoE SSD guard & 3-tier hybrid router.
+
+## 6.4 IDE Integrations (`editors/`)
+- `editors/vscode-lume/`: VS Code extension (`extension.js` + `lsp_bridge.src` with `7/7` `QF_LIA` proofs)
+  providing real-time diagnostics, `QF_LIA` proof code lenses, and hover obligations.
+- `editors/openidea-lume/plugin.toml`: OpenIDEA / JetBrains sovereign Lume language plugin manifest.
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
@@ -330,14 +380,18 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Windows Native GUI: `x86_64-windows-gui` and `x86_64-windows-gui-protected` (`PE32+` Win32 GUI
                   with `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll` IAT,
                   `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, `PYXH` MBA prologue, and `.lsym` vault)
-- Mobile/Store:   `aarch64-android-apk`, `aarch64-ios-ipa`
-- Bare-Metal/OS:  `x86_64-uefi-pe`, `x86_64-boot-iso`, `x86_64-baremetal-kernel`, `ihex`
+- Mobile/Store:   `aarch64-android-elf`, `aarch64-ios-macho`
+- Bare-Metal/OS:  `x86_64-uefi-pe`, `x86_64-none-raw`, `x86_64-none-mbr`, `x86_64-none-ihex`
 - Web/Bytecode:   `wasm32-wasi` (with `@wasm-sandbox` `[I0275]`), `lumb`
-- GPU/Accelerators: `nvptx64-nvidia-cuda` (PTX 8.0), `spirv64-vulkan-shader` (SPIR-V 1.6)
-- Silicon/Hardware: `verilog-rtl-2005` (IEEE 1364), `vhdl-rtl-2008` (IEEE 1076)
+- GPU/Accelerators: `nvptx64-nvidia-cuda` (PTX 8.0), `spirv64-vulkan-compute` (SPIR-V 1.6)
+- Silicon/Hardware: `verilog-rtl` (IEEE 1364), `vhdl-rtl` (IEEE 1076)
 - Quantum & Bio:  `qasm3-quantum` (OpenQASM 3.0), `dna-quaternary` (`A,C,G,T` codec)
 
-## 7.2 Store/Boot Packagers, LumeMIR & Differentiable Silicon
+## 7.2 Store/Boot Packagers, LumeMIR, Target Subset Classification & Tail-Recursive Codegen
+- `lasm.src` & `ltarget.src` use 100% tail-recursive accumulators (`rev_append` / `lt_lines_acc`)
+  for unbounded multi-megabyte sources without stack overflow, and `lume targets --json`
+  reports explicit `subset` classifications (`"full-core"`, `"pe64-gui-template"`,
+  `"verified-core-subset"`).
 - `lume mir <target> <source.src>`                  Inspect target-independent SSA `LumeMIR`.
 - `lume package apk|ipa|iso|uefi <src> -o <out>`    Build store/bootable images in one command.
 - `lume neural-kernel [--json] <source.src>`        Synthesize PTX + SPIR-V + Verilog + VHDL
@@ -393,6 +447,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
+  lume run compiler/stage1/lume_llm_core.src         Sovereign 1-Bit/Ternary LLM Core, Liquid LFM3 Audio, Colibri MoE Guard & 3-Tier Router (`21/21` proofs)
+  lume run examples/apps/sovereign_llm_router/main.src Sovereign Edge/Local/Cloud LLM Router & Anti-Hallucination Price Oracle (`20/20` proofs)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
@@ -449,9 +505,9 @@ use fs_sha256_file
 use map
 
 fn run_demo() =
-    let m0 = map_empty() in
+    let m0 = map_new() in
     let m1 = map_put(m0, "creator", lc_sha256("Ricardo Bueno")) in
-    map_get(m1, "creator", "missing")
+    map_get_or(m1, "creator", "missing")
 
 print run_demo()
 ```
@@ -459,13 +515,22 @@ print run_demo()
 ## Example 4: B+Tree ACID Database & SQL Query (`db_demo.src`)
 ```lume
 use db
-print str(db_btree_self_test())
+
+fn run_db() =
+    let d0 = db_open(2) in
+    let tx = db_put(db_begin_tx(d0), 1, 100, 1) in
+    let d1 = db_commit_tx(tx) in
+    db_read(d1, 1, 0)
+
+print str(run_db())
 ```
 
 ## Example 5: Cryptographic Custody, PoW Mining & DeFi AMM (`crypto_demo.src`)
 ```lume
 use lume_crypto_blockchain_engine
-print crypto_blockchain_full_report()
+
+fn crypto_sha256_rounds(msg: str) = crypto_hmac_sha256("lume-key", msg)
+print crypto_sha256_rounds("block-0")
 ```
 
 ## Example 6: Freestanding Hardware / Kernel Entry (`kernel_demo.src`)

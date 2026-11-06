@@ -62,13 +62,13 @@ fn qg_meas(q) = { op: 11, q: q, t: 0, ph: 0 }
 @bound(cycles: 24)
 fn qlinear_wire_no_clone(ctrl_wire: int, target_wire: int) -> int
   requires ctrl_wire >= 0 and ctrl_wire <= 63 and target_wire >= 0 and target_wire <= 63
-  ensures result >= 0 and result <= 1
+  ensures (ctrl_wire == target_wire and result == 0) or (ctrl_wire != target_wire and result == 1)
 = if ctrl_wire == target_wire then 0 else 1
 
 @bound(cycles: 24)
 fn qlinear_ancilla_uncomputed_ok(residual_prob_one_milli: int, threshold_milli: int) -> int
   requires residual_prob_one_milli >= 0 and residual_prob_one_milli <= 1000 and threshold_milli >= 0 and threshold_milli <= 100
-  ensures result >= 0 and result <= 1
+  ensures (residual_prob_one_milli <= threshold_milli and result == 1) or (residual_prob_one_milli > threshold_milli and result == 0)
 = if residual_prob_one_milli <= threshold_milli then 1 else 0
 
 law qlinear_self_clone_rejected_law(w: int) =
@@ -87,29 +87,23 @@ fn q_bit_set(mask, q) =
     if q_bit_is_set(mask, q) == 1 then mask
     else mask + q_pow2(q)
 
-## Demonstrates Nested Indented `match` directly in Stage-1 `.src`!
-fn qlinear_check_gate(g, meas_mask) =
-    match g.op
-      9 =>
-        match qlinear_wire_no_clone(g.q, g.t)
-          0 => { ok: 0, meas: meas_mask, reason: "no_cloning_violation_same_wire_CNOT" }
-          _ =>
-            if q_bit_is_set(meas_mask, g.q) == 1 or q_bit_is_set(meas_mask, g.t) == 1 then
-              { ok: 0, meas: meas_mask, reason: "use_after_measurement_CNOT" }
-            else { ok: 1, meas: meas_mask, reason: "ok" }
-      10 =>
-        match qlinear_wire_no_clone(g.q, g.t)
-          0 => { ok: 0, meas: meas_mask, reason: "no_cloning_violation_same_wire_CZ" }
-          _ =>
-            if q_bit_is_set(meas_mask, g.q) == 1 or q_bit_is_set(meas_mask, g.t) == 1 then
-              { ok: 0, meas: meas_mask, reason: "use_after_measurement_CZ" }
-            else { ok: 1, meas: meas_mask, reason: "ok" }
-      11 =>
-        { ok: 1, meas: q_bit_set(meas_mask, g.q), reason: "measured" }
-      _ =>
-        match q_bit_is_set(meas_mask, g.q)
-          0 => { ok: 1, meas: meas_mask, reason: "ok" }
-          _ => { ok: 0, meas: meas_mask, reason: "use_after_measurement_single_qubit" }
+fn qlinear_check_cnot(g, meas_mask) = match qlinear_wire_no_clone(g.q, g.t)
+    0 => { ok: 0, meas: meas_mask, reason: "no_cloning_violation_same_wire_CNOT" }
+    _ => if q_bit_is_set(meas_mask, g.q) == 1 or q_bit_is_set(meas_mask, g.t) == 1 then { ok: 0, meas: meas_mask, reason: "use_after_measurement_CNOT" } else { ok: 1, meas: meas_mask, reason: "ok" }
+
+fn qlinear_check_cz(g, meas_mask) = match qlinear_wire_no_clone(g.q, g.t)
+    0 => { ok: 0, meas: meas_mask, reason: "no_cloning_violation_same_wire_CZ" }
+    _ => if q_bit_is_set(meas_mask, g.q) == 1 or q_bit_is_set(meas_mask, g.t) == 1 then { ok: 0, meas: meas_mask, reason: "use_after_measurement_CZ" } else { ok: 1, meas: meas_mask, reason: "ok" }
+
+fn qlinear_check_single(g, meas_mask) = match q_bit_is_set(meas_mask, g.q)
+    0 => { ok: 1, meas: meas_mask, reason: "ok" }
+    _ => { ok: 0, meas: meas_mask, reason: "use_after_measurement_single_qubit" }
+
+fn qlinear_check_gate(g, meas_mask) = match g.op
+    9  => qlinear_check_cnot(g, meas_mask)
+    10 => qlinear_check_cz(g, meas_mask)
+    11 => { ok: 1, meas: q_bit_set(meas_mask, g.q), reason: "measured" }
+    _  => qlinear_check_single(g, meas_mask)
 
 fn qlinear_verify_circuit_loop(gs, meas_mask, checked) =
     match gs
@@ -347,60 +341,65 @@ fn q_zx_t_count(nodes) =
 ##   - Rule R2b (Hadamard Involution): H(q) ; H(q) -> empty
 ##   - Rule R4 (Hopf / CNOT Involution): CNOT(c, t) ; CNOT(c, t) -> empty
 ##   - Rule R3 (Identity Spider Removal): Z(q, 0) -> empty, X(q, 0) -> empty
-fn q_zx_rewrite_pass(nodes) =
-    match nodes
-      Nil => Nil
-      Cons(n1, rest) =>
-        match n1.kind
-          1 =>
-            let p8 = q_nia_phase_mod8(n1.ph, 8) in
-            if p8 == 0 then q_zx_rewrite_pass(rest)
-            else
-              match rest
-                Cons(n2, tail2) =>
-                  if n2.kind == 1 and n1.q == n2.q then
-                    q_zx_rewrite_pass(Cons(zx_z(n1.q, q_nia_phase_mod8(p8 + n2.ph, 8)), tail2))
-                  else if n2.kind <= 3 and n1.q > n2.q then
-                    Cons(n2, q_zx_rewrite_pass(Cons(zx_z(n1.q, p8), tail2)))
-                  else Cons(zx_z(n1.q, p8), q_zx_rewrite_pass(rest))
-                _ => Cons(zx_z(n1.q, p8), q_zx_rewrite_pass(rest))
-          2 =>
-            let p8 = q_nia_phase_mod8(n1.ph, 8) in
-            if p8 == 0 then q_zx_rewrite_pass(rest)
-            else
-              match rest
-                Cons(n2, tail2) =>
-                  if n2.kind == 2 and n1.q == n2.q then
-                    q_zx_rewrite_pass(Cons(zx_x(n1.q, q_nia_phase_mod8(p8 + n2.ph, 8)), tail2))
-                  else if n2.kind <= 3 and n1.q > n2.q then
-                    Cons(n2, q_zx_rewrite_pass(Cons(zx_x(n1.q, p8), tail2)))
-                  else Cons(zx_x(n1.q, p8), q_zx_rewrite_pass(rest))
-                _ => Cons(zx_x(n1.q, p8), q_zx_rewrite_pass(rest))
-          3 =>
-            match rest
-              Cons(n2, tail2) =>
-                if n2.kind == 3 and n1.q == n2.q then q_zx_rewrite_pass(tail2)
-                else
-                  match tail2
-                    Cons(n3, tail3) =>
-                      if n3.kind == 3 and n1.q == n2.q and n1.q == n3.q and n2.kind == 1 then
-                        q_zx_rewrite_pass(Cons(zx_x(n1.q, n2.ph), tail3))
-                      else if n3.kind == 3 and n1.q == n2.q and n1.q == n3.q and n2.kind == 2 then
-                        q_zx_rewrite_pass(Cons(zx_z(n1.q, n2.ph), tail3))
-                      else if n2.kind <= 3 and n1.q > n2.q then
-                        Cons(n2, q_zx_rewrite_pass(Cons(n1, tail2)))
-                      else Cons(n1, q_zx_rewrite_pass(rest))
-                    _ =>
-                      if n2.kind <= 3 and n1.q > n2.q then
-                        Cons(n2, q_zx_rewrite_pass(Cons(n1, tail2)))
-                      else Cons(n1, q_zx_rewrite_pass(rest))
-              _ => Cons(n1, q_zx_rewrite_pass(rest))
-          _ =>
-            match rest
-              Cons(n2, tail2) =>
-                if n2.kind == 4 and n1.q == n2.q and n1.t == n2.t then q_zx_rewrite_pass(tail2)
-                else Cons(n1, q_zx_rewrite_pass(rest))
-              _ => Cons(n1, q_zx_rewrite_pass(rest))
+fn q_zx_rewrite_z_rest(q, p8, rest) = match rest
+    Cons(n2, tail2) =>
+        if n2.kind == 1 and q == n2.q then
+            q_zx_rewrite_pass(Cons(zx_z(q, q_nia_phase_mod8(p8 + n2.ph, 8)), tail2))
+        else if n2.kind <= 3 and q > n2.q then
+            Cons(n2, q_zx_rewrite_pass(Cons(zx_z(q, p8), tail2)))
+        else Cons(zx_z(q, p8), q_zx_rewrite_pass(rest))
+    _ => Cons(zx_z(q, p8), q_zx_rewrite_pass(rest))
+
+fn q_zx_rewrite_x_rest(q, p8, rest) = match rest
+    Cons(n2, tail2) =>
+        if n2.kind == 2 and q == n2.q then
+            q_zx_rewrite_pass(Cons(zx_x(q, q_nia_phase_mod8(p8 + n2.ph, 8)), tail2))
+        else if n2.kind <= 3 and q > n2.q then
+            Cons(n2, q_zx_rewrite_pass(Cons(zx_x(q, p8), tail2)))
+        else Cons(zx_x(q, p8), q_zx_rewrite_pass(rest))
+    _ => Cons(zx_x(q, p8), q_zx_rewrite_pass(rest))
+
+fn q_zx_rewrite_h_tail2(n1, n2, rest, tail2) = match tail2
+    Cons(n3, tail3) =>
+        if n3.kind == 3 and n1.q == n2.q and n1.q == n3.q and n2.kind == 1 then
+            q_zx_rewrite_pass(Cons(zx_x(n1.q, n2.ph), tail3))
+        else if n3.kind == 3 and n1.q == n2.q and n1.q == n3.q and n2.kind == 2 then
+            q_zx_rewrite_pass(Cons(zx_z(n1.q, n2.ph), tail3))
+        else if n2.kind <= 3 and n1.q > n2.q then
+            Cons(n2, q_zx_rewrite_pass(Cons(n1, tail2)))
+        else Cons(n1, q_zx_rewrite_pass(rest))
+    _ =>
+        if n2.kind <= 3 and n1.q > n2.q then
+            Cons(n2, q_zx_rewrite_pass(Cons(n1, tail2)))
+        else Cons(n1, q_zx_rewrite_pass(rest))
+
+fn q_zx_rewrite_h_rest(n1, rest) = match rest
+    Cons(n2, tail2) =>
+        if n2.kind == 3 and n1.q == n2.q then q_zx_rewrite_pass(tail2)
+        else q_zx_rewrite_h_tail2(n1, n2, rest, tail2)
+    _ => Cons(n1, q_zx_rewrite_pass(rest))
+
+fn q_zx_rewrite_cnot_rest(n1, rest) = match rest
+    Cons(n2, tail2) =>
+        if n2.kind == 4 and n1.q == n2.q and n1.t == n2.t then q_zx_rewrite_pass(tail2)
+        else Cons(n1, q_zx_rewrite_pass(rest))
+    _ => Cons(n1, q_zx_rewrite_pass(rest))
+
+fn q_zx_rewrite_node(n1, rest) = match n1.kind
+    1 =>
+        let p8 = q_nia_phase_mod8(n1.ph, 8) in
+        if p8 == 0 then q_zx_rewrite_pass(rest)
+        else q_zx_rewrite_z_rest(n1.q, p8, rest)
+    2 =>
+        let p8 = q_nia_phase_mod8(n1.ph, 8) in
+        if p8 == 0 then q_zx_rewrite_pass(rest)
+        else q_zx_rewrite_x_rest(n1.q, p8, rest)
+    3 => q_zx_rewrite_h_rest(n1, rest)
+    _ => q_zx_rewrite_cnot_rest(n1, rest)
+
+fn q_zx_rewrite_pass(nodes) = match nodes
+    Nil => Nil
+    Cons(n1, rest) => q_zx_rewrite_node(n1, rest)
 
 fn q_zx_saturate(nodes, fuel) =
     if fuel <= 0 then nodes
@@ -539,12 +538,8 @@ fn q_stab_ghz_cnot_ladder(rows, i, n) =
     if i + 1 >= n then rows
     else q_stab_ghz_cnot_ladder(q_stab_tableau_apply_cnot(rows, i, i + 1), i + 1, n)
 
-fn q_stab_simulate_ghz8() =
-    let t0 = q_stab_tableau_init_loop(0, 8) in
-    let t1 = q_stab_tableau_apply_h(t0, 0) in
-    let t_ghz = q_stab_ghz_cnot_ladder(t1, 0, 8) in
-    match t_ghz
-      Cons(g0, Cons(g1, _)) =>
+fn q_stab_extract_ghz8(t_ghz) = match t_ghz
+    Cons(g0, Cons(g1, _)) =>
         {
             qubits: 8,
             gen0_x_mask: g0.x_mask,
@@ -552,61 +547,155 @@ fn q_stab_simulate_ghz8() =
             gen1_z_mask: g1.z_mask,
             ghz8_verified: if g0.x_mask == 255 and g0.z_mask == 0 and g1.z_mask == 3 then 1 else 0
         }
-      _ => { qubits: 8, gen0_x_mask: 0, gen0_z_mask: 0, gen1_z_mask: 0, ghz8_verified: 0 }
+    _ => { qubits: 8, gen0_x_mask: 0, gen0_z_mask: 0, gen1_z_mask: 0, ghz8_verified: 0 }
+
+fn q_stab_simulate_ghz8() =
+    let t0 = q_stab_tableau_init_loop(0, 8) in
+    let t1 = q_stab_tableau_apply_h(t0, 0) in
+    let t_ghz = q_stab_ghz_cnot_ladder(t1, 0, 8) in
+    q_stab_extract_ghz8(t_ghz)
 
 ## ============================================================================
 ## 4. ROTATED SURFACE CODE [[9, 1, 3]] TOPOLOGICAL QEC & MWPM SYNDROME DECODER
 ## ============================================================================
+## 3x3 Data Qubit Lattice:
+##   0  1  2
+##   3  4  5
+##   6  7  8
+## Checkerboard X-stabilizers (2 bulk weight-4 + 2 boundary weight-2):
+##   X0 = {0, 1, 3, 4} (mask 27)
+##   X1 = {4, 5, 7, 8} (mask 432)
+##   X2 = {1, 2}       (mask 6, top boundary)
+##   X3 = {6, 7}       (mask 192, bottom boundary)
+## Checkerboard Z-stabilizers (2 bulk weight-4 + 2 boundary weight-2):
+##   Z0 = {1, 2, 4, 5} (mask 54)
+##   Z1 = {3, 4, 6, 7} (mask 216)
+##   Z2 = {0, 3}       (mask 9, left boundary)
+##   Z3 = {5, 8}       (mask 288, right boundary)
+## Logical Pauli operators:
+##   X_L = {0, 3, 6}   (mask 73, left column)
+##   Z_L = {0, 1, 2}   (mask 7, top row)
 
 @bound(cycles: 24)
 fn q_surface_code_distance_capacity(code_distance: int) -> int
   requires code_distance >= 3 and code_distance <= 31
-  ensures result >= 1 and result <= 15
+  ensures result >= 1 and result <= 15 and 2 * result <= code_distance - 1 and 2 * result >= code_distance - 2
 = (code_distance - 1) / 2
 
+@bound(cycles: 24)
+fn q_symplectic_parity_commutes(overlap_count: int) -> int
+  requires overlap_count >= 0 and overlap_count <= 4
+  ensures (overlap_count == 0 and result == 1) or (overlap_count == 2 and result == 1) or (overlap_count == 4 and result == 1) or (overlap_count != 0 and overlap_count != 2 and overlap_count != 4 and result == 0)
+= if overlap_count == 0 then 1 else if overlap_count == 2 then 1 else if overlap_count == 4 then 1 else 0
+
+law q_surface_even_overlap_commutes_law(ov: int) =
+  if ov == 0 then q_symplectic_parity_commutes(ov) == 1
+  else if ov == 2 then q_symplectic_parity_commutes(ov) == 1
+  else if ov == 4 then q_symplectic_parity_commutes(ov) == 1
+  else 1 == 1
+
+fn q_sc_x_stab_0() = 27
+fn q_sc_x_stab_1() = 432
+fn q_sc_x_stab_2() = 6
+fn q_sc_x_stab_3() = 192
+
+fn q_sc_z_stab_0() = 54
+fn q_sc_z_stab_1() = 216
+fn q_sc_z_stab_2() = 9
+fn q_sc_z_stab_3() = 288
+
+fn q_sc_logical_x() = 73
+fn q_sc_logical_z() = 7
+
+fn q_sc_x_stab(i) =
+    if i == 0 then q_sc_x_stab_0()
+    else if i == 1 then q_sc_x_stab_1()
+    else if i == 2 then q_sc_x_stab_2()
+    else q_sc_x_stab_3()
+
+fn q_sc_z_stab(j) =
+    if j == 0 then q_sc_z_stab_0()
+    else if j == 1 then q_sc_z_stab_1()
+    else if j == 2 then q_sc_z_stab_2()
+    else q_sc_z_stab_3()
+
+fn q_symplectic_overlap_loop(mask_a, mask_b, q) =
+    if q >= 9 then 0
+    else (q_bit_is_set(mask_a, q) * q_bit_is_set(mask_b, q)) + q_symplectic_overlap_loop(mask_a, mask_b, q + 1)
+
+fn q_symplectic_commutes(x_mask, z_mask) =
+    let ov = q_symplectic_overlap_loop(x_mask, z_mask, 0) in
+    if (ov % 2) == 0 then 1 else 0
+
+fn q_sc_verify_comm_row(x_mask, j) =
+    if j >= 4 then 1
+    else if q_symplectic_commutes(x_mask, q_sc_z_stab(j)) == 1 then q_sc_verify_comm_row(x_mask, j + 1)
+    else 0
+
+fn q_sc_verify_comm_grid(i) =
+    if i >= 4 then 1
+    else if q_sc_verify_comm_row(q_sc_x_stab(i), 0) == 1 then q_sc_verify_comm_grid(i + 1)
+    else 0
+
+fn q_sc_verify_stabilizer_group() =
+    let all_xz = q_sc_verify_comm_grid(0) in
+    let lx_z = q_sc_verify_comm_row(q_sc_logical_x(), 0) in
+    let lz_x0 = q_symplectic_commutes(q_sc_x_stab_0(), q_sc_logical_z()) in
+    let lz_x1 = q_symplectic_commutes(q_sc_x_stab_1(), q_sc_logical_z()) in
+    let lz_x2 = q_symplectic_commutes(q_sc_x_stab_2(), q_sc_logical_z()) in
+    let lz_x3 = q_symplectic_commutes(q_sc_x_stab_3(), q_sc_logical_z()) in
+    let l_anti = if q_symplectic_commutes(q_sc_logical_x(), q_sc_logical_z()) == 0 then 1 else 0 in
+    if all_xz == 1 and lx_z == 1 and lz_x0 == 1 and lz_x1 == 1 and lz_x2 == 1 and lz_x3 == 1 and l_anti == 1 then 1 else 0
+
 fn q_surface_z_syndrome_for_mask(x_err_mask) =
-    let d0 = q_bit_is_set(x_err_mask, 0) in
-    let d1 = q_bit_is_set(x_err_mask, 1) in
-    let d2 = q_bit_is_set(x_err_mask, 2) in
-    let d3 = q_bit_is_set(x_err_mask, 3) in
-    let d4 = q_bit_is_set(x_err_mask, 4) in
-    let d5 = q_bit_is_set(x_err_mask, 5) in
-    let d6 = q_bit_is_set(x_err_mask, 6) in
-    let d7 = q_bit_is_set(x_err_mask, 7) in
-    let d8 = q_bit_is_set(x_err_mask, 8) in
-    let s0 = (d0 + d1 + d3 + d4) % 2 in
-    let s1 = (d1 + d2 + d4 + d5) % 2 in
-    let s2 = (d3 + d4 + d5 + d6 + d7) % 2 in
-    let s3 = (d4 + d7 + d8) % 2 in
+    let s0 = (q_symplectic_overlap_loop(x_err_mask, q_sc_z_stab_0(), 0)) % 2 in
+    let s1 = (q_symplectic_overlap_loop(x_err_mask, q_sc_z_stab_1(), 0)) % 2 in
+    let s2 = (q_symplectic_overlap_loop(x_err_mask, q_sc_z_stab_2(), 0)) % 2 in
+    let s3 = (q_symplectic_overlap_loop(x_err_mask, q_sc_z_stab_3(), 0)) % 2 in
     s0 + (2 * s1) + (4 * s2) + (8 * s3)
 
 fn q_surface_x_syndrome_for_mask(z_err_mask) =
-    q_surface_z_syndrome_for_mask(z_err_mask)
+    let s0 = (q_symplectic_overlap_loop(q_sc_x_stab_0(), z_err_mask, 0)) % 2 in
+    let s1 = (q_symplectic_overlap_loop(q_sc_x_stab_1(), z_err_mask, 0)) % 2 in
+    let s2 = (q_symplectic_overlap_loop(q_sc_x_stab_2(), z_err_mask, 0)) % 2 in
+    let s3 = (q_symplectic_overlap_loop(q_sc_x_stab_3(), z_err_mask, 0)) % 2 in
+    s0 + (2 * s1) + (4 * s2) + (8 * s3)
 
-fn q_surface_decode_syndrome(syn) =
-    match syn
-      0 => -1
-      1 => 0
-      3 => 1
-      2 => 2
-      5 => 3
-      15 => 4
-      6 => 5
-      4 => 6
-      12 => 7
-      8 => 8
-      _ => -1
+fn q_surface_decode_z_syndrome(syn_z) = match syn_z
+    0 => -1
+    4 => 0
+    1 => 1
+    6 => 3
+    3 => 4
+    9 => 5
+    2 => 6
+    8 => 8
+    _ => -1
+
+fn q_surface_decode_x_syndrome(syn_x) = match syn_x
+    0  => -1
+    1  => 0
+    5  => 1
+    4  => 2
+    3  => 4
+    2  => 8
+    8  => 6
+    10 => 7
+    _  => -1
 
 fn q_surface_test_single_error(q, err_kind) =
     let x_mask = if err_kind == 1 or err_kind == 3 then q_pow2(q) else 0 in
     let z_mask = if err_kind == 2 or err_kind == 3 then q_pow2(q) else 0 in
     let syn_z = q_surface_z_syndrome_for_mask(x_mask) in
     let syn_x = q_surface_x_syndrome_for_mask(z_mask) in
-    let dec_x_q = q_surface_decode_syndrome(syn_z) in
-    let dec_z_q = q_surface_decode_syndrome(syn_x) in
-    let corr_x = if dec_x_q >= 0 then q_bit_flip_at(x_mask, dec_x_q, 0) else x_mask in
-    let corr_z = if dec_z_q >= 0 then q_bit_flip_at(z_mask, dec_z_q, 0) else z_mask in
-    if corr_x == 0 and corr_z == 0 then 1 else 0
+    let dec_x_q = q_surface_decode_z_syndrome(syn_z) in
+    let dec_z_q = q_surface_decode_x_syndrome(syn_x) in
+    let corr_x = if dec_x_q >= 0 then q_bit_flip_at(x_mask, dec_x_q, q_xor_bit(q_bit_is_set(x_mask, dec_x_q), 1)) else x_mask in
+    let corr_z = if dec_z_q >= 0 then q_bit_flip_at(z_mask, dec_z_q, q_xor_bit(q_bit_is_set(z_mask, dec_z_q), 1)) else z_mask in
+    if q_surface_z_syndrome_for_mask(corr_x) == 0 and
+       q_surface_x_syndrome_for_mask(corr_z) == 0 and
+       q_symplectic_commutes(corr_x, q_sc_logical_z()) == 1 and
+       q_symplectic_commutes(q_sc_logical_x(), corr_z) == 1 then 1 else 0
 
 fn q_surface_verify_all_27_pauli_errors(q, acc) =
     if q >= 9 then acc
@@ -618,7 +707,8 @@ fn q_surface_verify_all_27_pauli_errors(q, acc) =
 
 fn q_surface_code_run_qec() =
     let cap = q_surface_code_distance_capacity(3) in
-    let corrected_count = q_surface_verify_all_27_pauli_errors(0, 0) in
+    let stab_comm_ok = q_sc_verify_stabilizer_group() in
+    let corrected_count = if stab_comm_ok == 1 then q_surface_verify_all_27_pauli_errors(0, 0) else 0 in
     let c_clamped = if corrected_count < 0 then 0 else if corrected_count > 27 then 27 else corrected_count in
     let fidelity_pct = q_nia_fidelity_ratio_pct(c_clamped, 27) in
     {
@@ -626,6 +716,7 @@ fn q_surface_code_run_qec() =
         code_k: 1,
         code_d: 3,
         correctable_weight: cap,
+        stabilizers_commute: stab_comm_ok,
         single_pauli_errors_tested: 27,
         single_pauli_errors_corrected: corrected_count,
         logical_fidelity_pct: fidelity_pct
@@ -743,7 +834,7 @@ fn test_stim_stabilizer_tableau_ghz8() =
 
 fn test_surface_code_9_1_3_qec() =
     let qec = q_surface_code_run_qec() in
-    qec.correctable_weight == 1 and qec.single_pauli_errors_tested == 27 and qec.single_pauli_errors_corrected == 27 and qec.logical_fidelity_pct == 100
+    qec.correctable_weight == 1 and qec.stabilizers_commute == 1 and qec.single_pauli_errors_tested == 27 and qec.single_pauli_errors_corrected == 27 and qec.logical_fidelity_pct == 100
 
 fn test_catalyst_parameter_shift_vqe() =
     let v = q_vqe_run_optimization() in
