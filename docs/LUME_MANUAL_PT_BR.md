@@ -355,10 +355,11 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
   lume equiv <spec.src> <fast.src>       Prova equivalencia algoritmica e superotimiza
   lume morph <arquivo_legado>            Transmuta SQL, Python, C ou OpenAPI para Lume
   lume neural-kernel <src.src>           Sintetiza kernels GPU/FPGA diferenciaveis
+  lume evolve list|goals|budgets|propose|verify|apply|grow|approve [id|pasta|bundle] Auto-evolucao governada por assinatura Ed25519
 
 ## 8.3 Comandos Transcendentes e Soberanos (Ondas 9 e 10)
   lume morph-ast / awaken / quantum / bio-dna / cosmic-tmr / hologram / chronos
-  lume omega-net / llm-forge / consult / laws / memory / replicate / hive
+  lume omega-net / llm-forge / consult / laws / memory / replicate / hive / daemon-triad / hot-evolve / live-cockpit
   lume reversa / reverse-engineer / reveng / decompile <alvo> Engenharia reversa unificada binaria + SDD
   lume pingora / proxy / cdn / load-balancer [alvo] Proxy de borda e CDN Pingora-Lume (TinyUFO, Ketama+P2C, TLS 1.3, ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [alvo] Modelo Elefante-Peixe-Dourado (EGM SDD + Deriva Zero)

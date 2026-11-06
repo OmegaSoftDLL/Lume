@@ -371,7 +371,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume equiv <spec.src> <fast.src>       Formal algorithmic equivalence prover
   lume morph <legacy_file>               Transmute SQL/Python/C/OpenAPI to proven Lume
   lume neural-kernel <src.src>           GPU/NPU/FPGA RTL differentiable synthesizer
-  lume evolve propose|apply|verify|...   Cryptographically governed self-evolution
+  lume evolve list|goals|budgets|propose|verify|apply|grow|approve [id|dir|bundle] Cryptographically governed self-evolution
 
 ## 8.3 Wave 9 & Wave 10 Sovereign Commands
   lume morph-ast <src>     AST E-Graph equality saturation
@@ -385,7 +385,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume llm-forge <src>     Sovereign LLM builder (BPE, RoPE, GQA, SwiGLU, AdamW, DPO)
   lume consult [src]       Living self-consultation & evolutionary agenda
   lume laws / memory       8 Constitutional Laws + 4-vault indestructible episodic memory
-  lume replicate / hive    Triad swarm self-replication & Byzantine Krum mesh sync
+  lume replicate / hive / daemon-triad / hot-evolve / live-cockpit Triad swarm self-replication & zero-downtime hot-swap
   lume reversa / reverse-engineer / reveng / decompile <target> Unified binary & 7-phase SDD reverse engineering
   lume pingora / proxy / cdn / load-balancer [target] Pingora-Lume Edge Proxy (TinyUFO, Ketama+P2C, TLS 1.3, 7-phase ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [target] EGM-Lume Spec-Driven Development & Drift Engine
