@@ -33,13 +33,22 @@
 
 ---
 
-## Installation
+## Installation & Terminal Setup (`lume` Command)
 
-### 1. One-Line Installer (Linux & macOS)
+### 1. Linux, macOS & WSL (Bash / Zsh)
+
+Run the one-line installer and register `~/.lume/bin` permanently in your shell profile so typing `lume` works directly in every terminal window:
 
 ```sh
 curl -fsSL https://github.com/OmegaSoftDLL/lume/releases/latest/download/install.sh | sh
+
+# Enable `lume` immediately in current terminal + permanently in ~/.bashrc and ~/.zshrc
 export PATH="$HOME/.lume/bin:$PATH"
+grep -qxF 'export PATH="$HOME/.lume/bin:$PATH"' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.lume/bin:$PATH"' >> ~/.bashrc
+[ -f ~/.zshrc ] && (grep -qxF 'export PATH="$HOME/.lume/bin:$PATH"' ~/.zshrc || echo 'export PATH="$HOME/.lume/bin:$PATH"' >> ~/.zshrc)
+
+# Verify installation
+lume --version
 lume self verify
 lume self-prove
 ```
@@ -51,14 +60,28 @@ brew install OmegaSoftDLL/lume/lume
 lume --version
 ```
 
-### 3. Windows x64 (PowerShell)
+### 3. Windows x64 (PowerShell — Direct `lume` Command)
+
+Download the release archive and add `$HOME\.lume\bin` to your **persistent Windows User `PATH`** so you can type `lume` directly in any PowerShell or Command Prompt window:
 
 ```powershell
+# 1. Download and extract Lume v1.0.0 to $HOME\.lume
 Invoke-WebRequest -Uri "https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz" -OutFile "lume-win64.tar.gz"
 mkdir "$HOME\.lume" -Force | Out-Null
 tar -xzf lume-win64.tar.gz --strip-components=1 -C "$HOME\.lume"
-$env:PATH = "$HOME\.lume\bin;$env:PATH"
+
+# 2. Add $HOME\.lume\bin to current session AND permanently to your Windows User PATH
+$lumeBin = "$HOME\.lume\bin"
+$env:PATH = "$lumeBin;$env:PATH"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$lumeBin*") {
+    [Environment]::SetEnvironmentVariable("Path", "$lumeBin;$userPath", "User")
+}
+
+# 3. Run `lume` directly from PowerShell!
 lume --version
+lume self verify
+lume evolve list
 ```
 
 ### 4. Official Prebuilt Archives (`v1.0.0`)
@@ -72,6 +95,31 @@ lume --version
 | **macOS Intel (`x86_64`)** | [`lume-v1.0.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-x86_64.tar.gz) |
 | **Windows x64 (`PE32+`)** | [`lume-v1.0.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz) |
 | **SHA-256 Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/SHA256SUMS) |
+
+### 5. Teach Your AI Assistant to Program in Lume (`skills/lume`)
+
+Lume ships with an official, self-contained **AI Agent Skill ([`skills/lume/`](skills/lume/SKILL.md))** compatible with **Antigravity (AGY)**, **Claude Code**, **Cursor**, **Codex**, **Windsurf**, and **`skills.sh`**. Once installed, your AI coding agent immediately knows how to write, prove (`lume prove`), certify (`lume certify`), compile (`lume build`), and evolve (`lume consult`, `lume evolve`, `lume reveng`, `lume neural-kernel`) programs in Lume:
+
+#### Install via `skills.sh` CLI (Cross-Platform)
+```sh
+npx skills add OmegaSoftDLL/lume@lume -g -y
+```
+
+#### Install Directly on Linux / macOS / WSL
+```sh
+mkdir -p ~/.agents/skills ~/.gemini/config/skills ~/.claude/skills
+cp -r skills/lume ~/.agents/skills/lume
+cp -r skills/lume ~/.gemini/config/skills/lume
+cp -r skills/lume ~/.claude/skills/lume
+```
+
+#### Install Directly on Windows (PowerShell)
+```powershell
+New-Item -ItemType Directory -Path "$HOME\.agents\skills", "$HOME\.gemini\config\skills", "$HOME\.claude\skills" -Force | Out-Null
+Copy-Item -Path ".\skills\lume" -Destination "$HOME\.agents\skills\lume" -Recurse -Force
+Copy-Item -Path ".\skills\lume" -Destination "$HOME\.gemini\config\skills\lume" -Recurse -Force
+Copy-Item -Path ".\skills\lume" -Destination "$HOME\.claude\skills\lume" -Recurse -Force
+```
 
 ---
 
