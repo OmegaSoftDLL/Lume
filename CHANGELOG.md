@@ -5,6 +5,25 @@ All notable changes to the **Lume** programming language and self-hosted toolcha
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-06
+
+### Added
+- **Sovereign Local LLM Hybrid Router & Liquid Audio Voice Engine (`compiler/stage1/lume_llm_core.src`, `7/7` tests, `QF_LIA` proven):**
+  - Native 1.58-bit Ternary (`{-1, 0, +1}`) matrix-vector inference (`llm_ternary_matvec_dot`, `llm_bonsai_1bit_profile`), zero-copy MoE SSD page-cache expert streaming (`llm_moe_ssd_bandwidth_audit`, flagging `12.6 GB/tok` bandwidth traps on 8 GB edge nodes), deterministic `QF_LIA` Financial Scraping Guard (`llm_verify_scraped_offer`, rejecting `Q3` comma-shift price corruption and unavailable items), and Liquid AI `LFM3-Audio-2B` (`LiquidCodec` 12 tokens/80 ms @ 24 kHz, 50 ms TTFT, `pt-BR` ASR/TTS prompt locking, `<|mixed_start|>` spoken `<tool_call>` dispatch).
+- **COSMIC 1.11 Wayland Compositor & Reactive Desktop (`compiler/stage1/gui.src`, `compiler/stage1/los.src`, `9/9` + `11/11` tests):**
+  - Native Wayland binary wire protocol (`wl_display`, `wl_registry`, `xdg_wm_base`, `xdg_surface`, `xdg_toplevel`), `COSMIC 1.11` Iced-inspired Elm `Model -> Message -> update -> view` reactive compositor (`cosmic_desktop_session_loopback`), multi-monitor auto-tiling layout solver (`cosmic_tile_windows`), and `lume-os` desktop session orchestration.
+- **Sovereign Forensics, OmniRoute & OpenIDEA Engines (`compiler/stage1/lume_forensics_engine.src`, `compiler/stage1/lume_omniroute_engine.src`, `compiler/stage1/lume_openidea_engine.src`):**
+  - Zero-Breach spyware forensics (`Pegasus`/`Predator`/`Candiru` iOS Shutdown.log, DataUsage.sqlite, and Android APK package/certificate hunting with `QF_LIA` risk proofs), resilience-scored LLM API gateway routing (`OmniRoute` circuit-breaker + token-bucket + fallback routing), and multi-agent literature-grounded scientific hypothesis synthesis (`OpenIDEA`).
+- **Official GitHub Packages OCI Container Distribution (`ghcr.io/omegasoftdll/lume`) & Cross-Platform Installers (`install.sh`, `install.ps1`):**
+  - Published verified OCI packages (`ghcr.io/omegasoftdll/lume:1.1.0`, `ghcr.io/omegasoftdll/lume:1.0.0`, `ghcr.io/omegasoftdll/lume:latest`) linked to `OmegaSoftDLL/lume` alongside all 6 platform `.tar.gz` archives (`linux-x86_64`, `linux-aarch64`, `linux-riscv64`, `macos-aarch64`, `macos-x86_64`, `windows-x86_64`), raw bootstrap binaries (`lumec-linux-x86_64`, `lasm-linux-x86_64`, `lume0-linux-x86_64`, `lume0-windows-x86_64.exe`), `install.sh`, `install.ps1`, and `SHA256SUMS`.
+
+### Fixed
+- **4-Axis Claude Opus 5.5 (`claude-fable-5-1`) Bit-by-Bit Security, Soundness & Verification Audit (`docs/CLAUDE_OPUS_AUDIT.md`, `9a846d3`..`abcc4fe`):**
+  - **Axis 1 (Stage-0 C11 Seed `bootstrap/lume0/`):** Replaced dynamic `alloca()` stack allocations with checked heap allocations in `main.c`, added bounds checks to `asmgen.c`, `elf.c`, `interp.c`, `lexer.c`, `parser.c`, and `resolve.c`, and hardened `lbe.c` cryptographic helpers.
+  - **Axis 2 (Stage-1 Self-Hosted Compiler `compiler/stage1/lume/01..07` & `lasm.src`):** Enforced `mmap` return check (`jb alloc_oom` -> `exit(137)`) in `05_codegen.src` and `data_asmgen.lume`, eliminated command injection in `07_driver.src` (`lumec_quote_sh`), bounded lexer/parser recursion depth (`[P0099]`), enforced strict `QF_LIA` division-by-constant semantics in `06b_phase3.src`, and hardened `lasm.src` against negative alignment arguments.
+  - **Axis 3 (Proof Kernel `lcert.src`, `lcaas.src`, `levolve.src`, `lprotect.src`, `formal/lean/LumeCore.lean`):** Eliminated vacuous certificate acceptance (`cert_has_obligations`, `ev_proofs_ok` requiring `"obligations_total":0` only when no obligations exist), enforced mandatory Ed25519 signature checks (`lc_ed25519_verify`), replaced constant seeds in `lprotect.src` with entropy-mixed `lp_prng_seed`, and proved `eval_binop_add_comm`, `progress_pure_expr`, and `preservation_val` in `formal/lean/LumeCore.lean` with zero `sorry`/`admit`.
+  - **Axis 4 (Standard Library & Domain Engines):** Hardened path traversal checks in `fs.src` (`fs_is_safe_relpath`), `EAGAIN`/`EINTR` socket loops and TLS 1.3 constant-time tag comparison (`tls13_ct_eq`) in `net.src`, overflow-checked tensor element counts (`tensor_safe_numel`) in `tensor.src` and `nn.src`, SQL identifier sanitization in `db.src`, and 128-bit intermediate multiplication (`dec_CheckedMul`) in `decimal.src`.
+
 ## [1.0.0] - 2026-11-05
 
 ### Added

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release version tag (e.g. v0.2.0)'
+        description: 'Release version tag (e.g. v1.1.0)'
         required: false
-        default: 'v0.2.0'
+        default: 'v1.1.0'
       publish_release:
         description: 'Publish/update the GitHub Release with verified multi-platform assets'
         required: false
@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   package-linux:
@@ -45,7 +46,7 @@ jobs:
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME}"
           else
-            VER="${{ inputs.tag || 'v0.2.0' }}"
+            VER="${{ inputs.tag || 'v1.1.0' }}"
           fi
           mkdir -p dist stage build/x86_64-bin build/aarch64-bin build/riscv64-bin
 
@@ -184,7 +185,7 @@ jobs:
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME}"
           else
-            VER="${{ inputs.tag || 'v0.2.0' }}"
+            VER="${{ inputs.tag || 'v1.1.0' }}"
           fi
           mkdir -p dist stage build/macos-aarch64-bin build/macos-x86_64-bin bootstrap/lume0
 
@@ -304,7 +305,7 @@ jobs:
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME}"
           else
-            VER="${{ inputs.tag || 'v0.2.0' }}"
+            VER="${{ inputs.tag || 'v1.1.0' }}"
           fi
           mkdir -p dist stage build/win64-bin bootstrap/lume0
 
@@ -337,9 +338,10 @@ jobs:
           cp README.md CHANGELOG.md "stage/${PKG_WIN}/" 2>/dev/null || true
           tar -C stage -czf "dist/${PKG_WIN}.tar.gz" "${PKG_WIN}"
 
+          cp bootstrap/lume0/lume0.exe dist/lume0-windows-x86_64.exe
           (
             cd dist
-            sha256sum "${PKG_WIN}.tar.gz" > SHA256SUMS
+            sha256sum "${PKG_WIN}.tar.gz" lume0-windows-x86_64.exe > SHA256SUMS
             sha256sum -c SHA256SUMS
           )
 
@@ -378,6 +380,7 @@ jobs:
           name: release-windows
           path: |
             dist/*.tar.gz
+            dist/lume0-windows-x86_64.exe
 
   publish:
     name: Assemble SHA256SUMS & Publish Multi-Platform Release
@@ -397,13 +400,64 @@ jobs:
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             VER="${GITHUB_REF_NAME}"
           else
-            VER="${{ inputs.tag || 'v0.2.0' }}"
+            VER="${{ inputs.tag || 'v1.1.0' }}"
           fi
           mkdir -p dist
           find artifacts -type f \( -name '*.tar.gz' -o -name 'lumec-*' -o -name 'lasm-*' -o -name 'lume0-*' \) -exec cp {} dist/ \;
           for plat in linux-x86_64 linux-aarch64 linux-riscv64 macos-aarch64 macos-x86_64 windows-x86_64; do
             [ -f "dist/lume-${VER}-${plat}.tar.gz" ] || { echo "Missing verified archive for ${plat}" >&2; exit 1; }
           done
+          cat > dist/install.sh <<'EOF_SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          TAG="${LUME_VERSION:-v1.1.0}"
+          PREFIX="${LUME_PREFIX:-$HOME/.lume}"
+          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          ARCH="$(uname -m)"
+          case "$OS" in
+            linux*)  PLAT_OS="linux" ;;
+            darwin*) PLAT_OS="macos" ;;
+            *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
+          esac
+          case "$ARCH" in
+            x86_64|amd64) PLAT_ARCH="x86_64" ;;
+            aarch64|arm64) PLAT_ARCH="aarch64" ;;
+            riscv64) PLAT_ARCH="riscv64" ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+          PKG="lume-${TAG}-${PLAT_OS}-${PLAT_ARCH}.tar.gz"
+          BASE="https://github.com/OmegaSoftDLL/lume/releases/download/${TAG}"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          curl -fsSL "${BASE}/${PKG}" -o "${TMP}/${PKG}"
+          curl -fsSL "${BASE}/SHA256SUMS" -o "${TMP}/SHA256SUMS"
+          (cd "$TMP" && grep "  ${PKG}\$" SHA256SUMS | sha256sum -c - 2>/dev/null || grep "  ${PKG}\$" SHA256SUMS | shasum -a 256 -c -)
+          mkdir -p "$PREFIX"
+          tar -xzf "${TMP}/${PKG}" -C "$PREFIX" --strip-components=1
+          echo "Lume ${TAG} installed to ${PREFIX} (add ${PREFIX}/bin to PATH)"
+          EOF_SH
+          chmod +x dist/install.sh
+          cat > dist/install.ps1 <<'EOF_PS1'
+          $ErrorActionPreference = "Stop"
+          $Tag = if ($env:LUME_VERSION) { $env:LUME_VERSION } else { "v1.1.0" }
+          $Prefix = if ($env:LUME_PREFIX) { $env:LUME_PREFIX } else { Join-Path $HOME ".lume" }
+          $Pkg = "lume-$Tag-windows-x86_64.tar.gz"
+          $Base = "https://github.com/OmegaSoftDLL/lume/releases/download/$Tag"
+          $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("lume-install-" + [System.Guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
+          try {
+            Invoke-WebRequest -Uri "$Base/$Pkg" -OutFile (Join-Path $Tmp $Pkg)
+            Invoke-WebRequest -Uri "$Base/SHA256SUMS" -OutFile (Join-Path $Tmp "SHA256SUMS")
+            $Expected = (Select-String -Path (Join-Path $Tmp "SHA256SUMS") -Pattern "  $([regex]::Escape($Pkg))$").Line.Split(" ")[0].ToLower()
+            $Actual = (Get-FileHash -Algorithm SHA256 (Join-Path $Tmp $Pkg)).Hash.ToLower()
+            if ($Expected -ne $Actual) { throw "SHA-256 mismatch for $Pkg" }
+            New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
+            tar -xzf (Join-Path $Tmp $Pkg) -C $Prefix --strip-components=1
+            Write-Host "Lume $Tag installed to $Prefix"
+          } finally {
+            Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+          }
+          EOF_PS1
           (
             cd dist
             sha256sum \
@@ -413,7 +467,8 @@ jobs:
               "lume-${VER}-macos-aarch64.tar.gz" \
               "lume-${VER}-macos-x86_64.tar.gz" \
               "lume-${VER}-windows-x86_64.tar.gz" \
-              lumec-linux-x86_64 lasm-linux-x86_64 lume0-linux-x86_64 > SHA256SUMS
+              lumec-linux-x86_64 lasm-linux-x86_64 lume0-linux-x86_64 lume0-windows-x86_64.exe \
+              install.sh install.ps1 > SHA256SUMS
             sha256sum -c SHA256SUMS
           )
           cat dist/SHA256SUMS
@@ -427,6 +482,9 @@ jobs:
             dist/lumec-linux-x86_64
             dist/lasm-linux-x86_64
             dist/lume0-linux-x86_64
+            dist/lume0-windows-x86_64.exe
+            dist/install.sh
+            dist/install.ps1
             dist/SHA256SUMS
 
       - name: Publish or Update GitHub Release
@@ -438,7 +496,7 @@ jobs:
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
           else
-            TAG="${{ inputs.tag || 'v0.2.0' }}"
+            TAG="${{ inputs.tag || 'v1.1.0' }}"
           fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" \
@@ -446,6 +504,9 @@ jobs:
               dist/lumec-linux-x86_64 \
               dist/lasm-linux-x86_64 \
               dist/lume0-linux-x86_64 \
+              dist/lume0-windows-x86_64.exe \
+              dist/install.sh \
+              dist/install.ps1 \
               dist/SHA256SUMS \
               --clobber
           else
@@ -454,7 +515,45 @@ jobs:
               dist/lumec-linux-x86_64 \
               dist/lasm-linux-x86_64 \
               dist/lume0-linux-x86_64 \
+              dist/lume0-windows-x86_64.exe \
+              dist/install.sh \
+              dist/install.ps1 \
               dist/SHA256SUMS \
-              --title "Lume ${TAG}" \
+              --title "Lume ${TAG} — Sovereign Toolchain & Verified Runtime (Edition 2026)" \
               --generate-notes
           fi
+
+      - name: Publish Official OCI Package to GitHub Packages (ghcr.io/omegasoftdll/lume)
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_release == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${{ inputs.tag || 'v1.1.0' }}"
+          fi
+          VER_CLEAN="${TAG#v}"
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          mkdir -p oci-ctx
+          cp "dist/lume-${TAG}-linux-x86_64.tar.gz" oci-ctx/lume.tar.gz
+          cat > oci-ctx/Dockerfile <<EOF_DOCKER
+          FROM ubuntu:24.04
+          LABEL org.opencontainers.image.title="Lume Sovereign Programming Language & Prover"
+          LABEL org.opencontainers.image.description="Self-hosted native compiler (lumec), assembler (lasm), QF_LIA theorem prover (lcert), and 27-target sovereign runtime"
+          LABEL org.opencontainers.image.source="https://github.com/OmegaSoftDLL/lume"
+          LABEL org.opencontainers.image.version="${VER_CLEAN}"
+          LABEL org.opencontainers.image.licenses="Apache-2.0"
+          RUN apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+          WORKDIR /opt/lume
+          COPY lume.tar.gz /tmp/lume.tar.gz
+          RUN tar -xzf /tmp/lume.tar.gz -C /opt/lume --strip-components=1 && rm -f /tmp/lume.tar.gz && ln -sf /opt/lume/bin/lume /usr/local/bin/lume && ln -sf /opt/lume/bin/lumec /usr/local/bin/lumec && ln -sf /opt/lume/bin/lasm /usr/local/bin/lasm
+          ENV PATH="/opt/lume/bin:\${PATH}"
+          ENTRYPOINT ["/opt/lume/bin/lume"]
+          CMD ["--version"]
+          EOF_DOCKER
+          docker build -t "ghcr.io/omegasoftdll/lume:${VER_CLEAN}" -t "ghcr.io/omegasoftdll/lume:${TAG}" -t "ghcr.io/omegasoftdll/lume:latest" oci-ctx
+          docker push "ghcr.io/omegasoftdll/lume:${VER_CLEAN}"
+          docker push "ghcr.io/omegasoftdll/lume:${TAG}"
+          docker push "ghcr.io/omegasoftdll/lume:latest"
