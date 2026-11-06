@@ -1,0 +1,44 @@
+# ============================================================================
+# Lume v1.0.0 Capstone — Verified Double-Entry Accounting & Fiscal Split Engine
+# Inspired by @sandeco/contabilidade (Agentic Accounting, IFRS & Tax Compliance)
+# Guarantees Zero-Cent Drift, Balanced Partidas Dobradas & Exact Tax Retention
+# ============================================================================
+
+# 1. Partidas Dobradas (Double-Entry Posting): Debit must equal Credit
+fn post_double_entry_ledger(asset_debit_cents: int, liability_credit_cents: int, equity_credit_cents: int) -> int
+  requires asset_debit_cents >= 0 and liability_credit_cents >= 0 and equity_credit_cents >= 0 and asset_debit_cents == liability_credit_cents + equity_credit_cents
+  ensures result == 0
+= asset_debit_cents - (liability_credit_cents + equity_credit_cents)
+
+# 2. Exact Fiscal Tax Retention (IBS/CBS/ICMS in basis points 0..10000)
+fn compute_tax_retention_cents(gross_cents: int, aliq_bps: int) -> int
+  requires gross_cents >= 0 and aliq_bps >= 0 and aliq_bps <= 10000
+  ensures result >= 0
+= (gross_cents * aliq_bps) / 10000
+
+# 3. Net Liquid Settlement (Guarantees Net + Tax == Gross with Zero Cent Drift)
+fn compute_net_liquid_cents(gross_cents: int, tax_cents: int) -> int
+  requires gross_cents >= 0 and tax_cents >= 0 and tax_cents <= gross_cents
+  ensures result >= 0 and result + tax_cents == gross_cents
+= gross_cents - tax_cents
+
+# 4. Fundamental Accounting Laws Proven by QF_LIA & Checked by lcert
+law double_entry_zero_imbalance_law(liab: int, eq: int) =
+  if liab >= 0 and eq >= 0 then
+    post_double_entry_ledger(liab + eq, liab, eq) == 0
+  else 1 == 1
+
+law fiscal_split_conservation_law(gross: int, tax: int) =
+  if gross >= 0 and tax >= 0 and tax <= gross then
+    compute_net_liquid_cents(gross, tax) + tax == gross
+  else 1 == 1
+
+fn test_verified_accounting() =
+  # Invoice of R$ 10,000.00 (1,000,000 cents) with 18.00% (1800 bps) tax retention
+  let gross = 1000000 in
+  let tax = compute_tax_retention_cents(gross, 1800) in
+  let net = compute_net_liquid_cents(gross, tax) in
+  let imbalance = post_double_entry_ledger(gross, tax, net) in
+  tax == 180000 and net == 820000 and imbalance == 0
+
+print f"[CONTABILIDADE] Gross_Cents={1000000} Tax_Cents={compute_tax_retention_cents(1000000, 1800)} Net_Cents={compute_net_liquid_cents(1000000, 180000)} Imbalance={post_double_entry_ledger(1000000, 180000, 820000)}"

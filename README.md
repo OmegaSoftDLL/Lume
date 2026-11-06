@@ -238,6 +238,12 @@ Lume includes self-hosted, formally verified domain engines in `compiler/stage1/
    - 20-instruction `openTPU ISA v1` assembler and weight-stationary MXU systolic simulator, two-level `QACT` + `FP4` quantization, *K-Smoothing* outlier migration, and RTL equivalence checking.
 8. **Context & Distributed State Engine (`compiler/stage1/lume_continuum_nexus_engine.src` — `4/4` tests, `27/27` proofs, `Lume Verified ✓`):**
    - Tree superposition (`bend`/`fold`), Active Context Pruning (`ACP`), quota-aware multi-provider routing, and `LWW-Element-Set` CRDT state convergence.
+9. **Pix Fraud Graph Tracer & BACEN MED Recovery Engine (`examples/apps/pix_fraud_trace/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
+   - Zero-float basis-point temporal graph expansion (`JANELA=86400s`, `PROF_MAX=5`), weighted suspicion scoring (`40% * repasse + 50% * rapidez + 10% * pequeno`), automatic classification of Money Mule (`Laranja`, `>= 6000 bps`) and Cash-Out (`Saque`) accounts, and formally proven Central Bank MED precautionary block conservation (`pix_med_conservation_law`, `pix_med_cap_law`).
+10. **SENTRY UAV Trajectory Forecaster & Ring-0 Geofence Guard (`examples/apps/sentry_uav_guard/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
+    - Deterministic linear trajectory forecaster (`SIGNAL`), monotonically calibrated 95% bivariate confidence radius (`PROBE`), and mathematically proven airspace altitude envelope enforcement (`uav_geofence_ceiling_law`, `uav_geofence_floor_law`).
+11. **Formally Verified Double-Entry Accounting & Fiscal Split Engine (`examples/apps/verified_accounting/main.src` — `1/1` test, `5/5` proofs, `Lume Verified ✓`):**
+    - Compile-time proof of the Fundamental Double-Entry Accounting Identity (`Ativo == Passivo + Patrimonio_Liquido`, zero cent imbalance `double_entry_zero_imbalance_law`) and exact basis-point tax retention (`fiscal_split_conservation_law`).
 
 ---
 
@@ -292,10 +298,12 @@ lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE3
 │   ├── lgenesis.src                    # Full-stack multi-target application synthesizer
 │   ├── lprotect.src / protect.src      # P33 software protection, MBA obfuscation, secret scanner & symbolize
 │   └── std & domain modules            # fs, bytes, map, arena, capsule, db, net, gfx, gui, nn, tensor, quantum...
+├── skills/lume/                        # Official AI Agent Skill (SKILL.md, references/, verified_showcase.src)
 ├── examples/
 │   ├── 01_hello.lume .. 09_*.lume      # Surface Lume tour
 │   └── apps/                           # Capstones: inventory, job_server, mnist, agent, p0_tenant_ledger,
-│                                       #            p0_rtc_kernel, supply_chain_demo, lume_os
+│                                       #            p0_rtc_kernel, supply_chain_demo, lume_os,
+│                                       #            pix_fraud_trace, sentry_uav_guard, verified_accounting
 ├── acceptance/matrix.json              # Track A/L Acceptance Matrix (24/24 PASS, 0 UNKNOWN, 0 FAIL)
 ├── formal/lean/LumeCore.lean           # Mechanized Lean 4 formalization of Lume-Core soundness
 ├── grammar/lume.ebnf                   # Complete formal grammar
