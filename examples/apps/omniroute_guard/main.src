@@ -44,6 +44,19 @@ fn omniroute_retry_delay_ms(base_delay_ms: int, attempt: int, max_attempts: int)
   ensures result >= 300 and result <= base_delay_ms + 1000
 = base_delay_ms + attempt * 200
 
+# 4. Concurrent In-Flight Worst-Case Reservation Gate (inspired by #9 Experiential)
+#   Pre-reserves worst-case token cost across concurrent in-flight requests so parallel streams
+#   never race past the tenant's hard ceiling.
+fn omniroute_reserve_inflight_budget(
+  budget_cap_micros: int,
+  spent_micros: int,
+  inflight_reserved_micros: int,
+  worst_case_req_micros: int
+) -> int
+  requires budget_cap_micros >= 0 and spent_micros >= 0 and inflight_reserved_micros >= 0 and worst_case_req_micros >= 0 and spent_micros + inflight_reserved_micros + worst_case_req_micros <= budget_cap_micros
+  ensures result >= 0 and result + spent_micros + inflight_reserved_micros + worst_case_req_micros == budget_cap_micros
+= budget_cap_micros - spent_micros - inflight_reserved_micros - worst_case_req_micros
+
 # --- Universal Algebraic Laws Proven by QF_LIA & Checked by lcert ---
 
 law omniroute_confidential_sovereignty_law(
@@ -75,13 +88,19 @@ law omniroute_budget_conservation_law(budget_cap: int, spent: int, req_cost: int
     rem >= 0 and rem + spent + req_cost == budget_cap
   else 1 == 1
 
+law omniroute_concurrent_inflight_safety_law(cap: int, spent: int, inflight: int, req: int) =
+  if cap >= 0 and spent >= 0 and inflight >= 0 and req >= 0 and spent + inflight + req <= cap then
+    omniroute_reserve_inflight_budget(cap, spent, inflight, req) <= cap - spent
+  else 1 == 1
+
 # End-to-End Verification Suite
-fn test_omniroute_failover_and_sovereignty() =
+fn test_omniroute_guard() =
   let p1 = omniroute_select_provider(0, 0, 0, 180, 500) in
   let p2 = omniroute_select_provider(0, 4, 0, 180, 500) in
   let p3 = omniroute_select_provider(2, 0, 0, 120, 500) in
   let rem = omniroute_remaining_budget(100000, 45000, 15000) in
+  let inflight_rem = omniroute_reserve_inflight_budget(100000, 45000, 25000, 15000) in
   let delay = omniroute_retry_delay_ms(200, 3, 5) in
-  p1 == 1 and p2 == 2 and p3 == 3 and rem == 40000 and delay == 800
+  p1 == 1 and p2 == 2 and p3 == 3 and rem == 40000 and inflight_rem == 15000 and delay == 800
 
-print f"[OMNIROUTE] Healthy_Tier={omniroute_select_provider(0, 0, 0, 180, 500)} Failover_Tier={omniroute_select_provider(0, 4, 0, 180, 500)} Confidential_Sovereign_Tier={omniroute_select_provider(2, 0, 0, 120, 500)} Remaining_Budget_Micros={omniroute_remaining_budget(100000, 45000, 15000)}"
+print f"[OMNIROUTE] Healthy_Tier={omniroute_select_provider(0, 0, 0, 180, 500)} Failover_Tier={omniroute_select_provider(0, 4, 0, 180, 500)} Confidential_Sovereign_Tier={omniroute_select_provider(2, 0, 0, 120, 500)} Remaining_Budget_Micros={omniroute_remaining_budget(100000, 45000, 15000)} Inflight_Reserved_Free_Micros={omniroute_reserve_inflight_budget(100000, 45000, 25000, 15000)}"

@@ -242,14 +242,16 @@ Lume includes self-hosted, formally verified domain engines in `compiler/stage1/
    - Zero-float basis-point temporal graph expansion (`JANELA=86400s`, `PROF_MAX=5`), weighted suspicion scoring (`40% * repasse + 50% * rapidez + 10% * pequeno`), automatic classification of Money Mule (`Laranja`, `>= 6000 bps`) and Cash-Out (`Saque`) accounts, and formally proven Central Bank MED precautionary block conservation (`pix_med_conservation_law`, `pix_med_cap_law`).
 10. **SENTRY UAV Trajectory Forecaster & Ring-0 Geofence Guard (`examples/apps/sentry_uav_guard/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
     - Deterministic linear trajectory forecaster (`SIGNAL`), monotonically calibrated 95% bivariate confidence radius (`PROBE`), and mathematically proven airspace altitude envelope enforcement (`uav_geofence_ceiling_law`, `uav_geofence_floor_law`).
-11. **Formally Verified Double-Entry Accounting & Fiscal Split Engine (`examples/apps/verified_accounting/main.src` — `1/1` test, `5/5` proofs, `Lume Verified ✓`):**
-    - Compile-time proof of the Fundamental Double-Entry Accounting Identity (`Ativo == Passivo + Patrimonio_Liquido`, zero cent imbalance `double_entry_zero_imbalance_law`) and exact basis-point tax retention (`fiscal_split_conservation_law`).
+11. **Formally Verified Double-Entry Accounting & Fiscal Split Engine (`examples/apps/verified_accounting/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
+    - Compile-time proof of the Fundamental Double-Entry Accounting Identity (`Ativo == Passivo + Patrimonio_Liquido`, zero cent imbalance `double_entry_zero_imbalance_law`), bounded retention guard (`clamped_retention_bounds_law`), and exact basis-point tax retention (`fiscal_split_conservation_law`).
 12. **SEFAZ DFe (NF-e/NFC-e) & BACEN Pix API (`CobV` & `Devolucao`) Engine (`examples/apps/dfe_pix_bacen/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
     - Formally proven SEFAZ Layout 4.00 invoice valuation (`vNF = (vProd - vDesc) + vST + vFrete + vIPI`), EC 87/2015 interstate DIFAL split, and Central Bank `bacen/pix-api` `CobV` settlement (`pix_cobv_positive_settlement_law`) and anti-over-refund conservation (`pix_devolucao_conservation_law`).
-13. **OmniRoute Multi-LLM Circuit Breaker & Sovereignty Guard (`examples/apps/omniroute_guard/main.src` — `1/1` test, `6/6` proofs, `Lume Verified ✓`):**
-    - Resilient multi-provider AI gateway routing (`Primary Cloud -> Secondary Fallback -> Sovereign Local LLM`) with mathematically proven confidentiality isolation (`omniroute_confidential_sovereignty_law`) and hard micro-credit budget caps (`omniroute_budget_conservation_law`).
+13. **OmniRoute Multi-LLM Circuit Breaker & Sovereignty Guard (`examples/apps/omniroute_guard/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
+    - Resilient multi-provider AI gateway routing (`Primary Cloud -> Secondary Fallback -> Sovereign Local LLM`) with mathematically proven confidentiality isolation (`omniroute_confidential_sovereignty_law`), hard micro-credit budget caps (`omniroute_budget_conservation_law`), and concurrent pre-attempt in-flight token reservation (`omniroute_concurrent_inflight_safety_law`).
 14. **Brazilian Public Registry & Modulo-11 Verifier (`examples/apps/brasil_public_id/main.src` — `1/1` test, `6/6` proofs, `Lume Verified ✓`):**
     - Formally verified Receita Federal / SEFAZ Modulo-11 check digit arithmetic (`0 <= dv <= 9`), 44-digit NF-e Access Key structural verification, and QSA corporate equity conservation (`qsa_equity_conservation_law`).
+15. **Zero-Breach Forensic Anti-Spyware Triage Oracle (`examples/apps/zero_breach_forensics/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
+    - Formally verified mobile/endpoint spyware triage oracle (`Pegasus`, `Predator`, `Candiru`, `Graphite` IOCs) enforcing zero-network isolation (`zbt_netguard_isolated`), fail-closed `PARTIAL_UNKNOWN` verdicts on incomplete checks (`zbt_fail_closed_never_clean_law`), strict non-escalation of heuristic leads (`zbt_heuristics_alone_never_compromised_law`), and STIX 2.1 indicator revocation safety (`zbt_withdrawn_stix_never_active_law`).
 
 ---
 

@@ -75,6 +75,16 @@ print f"Verified fee: {clamp_fee(250, 10, 100)}"
 > 4. **Compiler Internal `.src` Invariant:** When editing the self-hosted compiler (`compiler/stage1/*.src`), keep `match` at the top level of helper functions and never edit generated `compiler/stage1/lumec.src` directly (`make amalgamate`).
 > 5. **Pure LF (`\n`) Line Endings:** Always save `.src`, `.lume`, `.expected`, and `.sh` files with pure `LF (\n)`, never `CRLF (\r\n)`.
 
+### 2.1 Stage-1 `.src` Builtins, Implication Idiom & Parameter Invariants
+
+- **Core Builtins:**
+  - Strings & Collections: `count(s_or_list)`, `at(s, i)`, `slice(s, start, end)`, `ord(ch)`, `chr(code)`, `toint(s)`, `str(v)`
+  - Filesystem & OS Process Execution: `fs_path_exists(path)`, `fs_read_byte(path, offset)`, `os_run(cmd)`
+- **Implication Idiom in `law`:** Express logical implication $P \implies Q$ inside `law` declarations using `if P then Q else 1 == 1`, which reduces directly to decidable branches in both `lcaas.src` and the independent proof kernel `lcert.src`.
+- **Decidable `QF_LIA` vs. `runtime_checked`:** Linear integer arithmetic (`a + b`, `a - b`, `c * x` with constant integer `c`) is proven statically at compile time by `lcaas` and verified by `lcert`. Non-linear variable multiplication (`x * y`) falls outside pure `QF_LIA` and is marked `runtime_checked` unless bounded within the degree-2 Positivstellensatz `QF_NIA` fragment (`x >= 0 and y >= 0`).
+- **Max 6 Parameters in Stage-1 `.src` Compiler Modules:** Native SysV AMD64 codegen (`05_codegen.src`) passes up to 6 arguments in registers (`%rdi, %rsi, %rdx, %rcx, %r8, %r9`); group additional parameters into a record `{...}` if a function requires more than 6 inputs.
+- **Unit Test Convention:** Any zero-argument function named `fn test_<name>() = <bool_expr>` is automatically discovered and executed by `lume test <file.src>`.
+
 ---
 
 ## 3. Core Capabilities & Reference Guides

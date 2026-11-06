@@ -1,0 +1,87 @@
+# ============================================================================
+# Lume v1.0.0 Capstone — Zero-Breach Mercenary Spyware Forensic Triage Engine
+# Inspired by interplains/Zero-Breach-Toolkit (Pegasus, Predator, Candiru, Graphite)
+# Formally Proven Fail-Closed Triage, STIX 2.1 Indicator Lifecycle,
+# Offline NetGuard Isolation, and Monotonic Evidence Scoring
+# ============================================================================
+
+const VERDICT_CLEAN: int = 0
+const VERDICT_REVIEW_LEADS: int = 1
+const VERDICT_COMPROMISED: int = 2
+const VERDICT_PARTIAL_UNKNOWN: int = 3
+
+# 1. Offline Forensic NetGuard Isolation Check
+#   Ensures 0 outbound packets emitted during offline forensic acquisition.
+fn zbt_netguard_isolated(packets_emitted: int) -> int
+  requires packets_emitted >= 0
+  ensures result == 0 or result == 1
+= if packets_emitted == 0 then 1 else 0
+
+# 2. Fail-Closed Forensic Triage Verdict State Machine
+#   - primary_iocs > 0 -> 2 (VERDICT_COMPROMISED)
+#   - checks_failed > 0 -> 3 (VERDICT_PARTIAL_UNKNOWN: fail-closed, never clean)
+#   - heuristic_leads > 0 -> 1 (VERDICT_REVIEW_LEADS: requires analyst review)
+#   - otherwise -> 0 (VERDICT_CLEAN)
+fn zbt_triage_verdict(primary_iocs: int, checks_failed: int, heuristic_leads: int) -> int
+  requires primary_iocs >= 0 and checks_failed >= 0 and heuristic_leads >= 0
+  ensures result >= 0 and result <= 3
+= if primary_iocs > 0 then 2 else if checks_failed > 0 then 3 else if heuristic_leads > 0 then 1 else 0
+
+# 3. STIX 2.1 Indicator Temporal & Revocation Window Check
+fn zbt_stix_indicator_active(event_epoch: int, valid_from: int, valid_until: int, is_withdrawn: int) -> int
+  requires valid_from <= valid_until and (is_withdrawn == 0 or is_withdrawn == 1)
+  ensures result == 0 or result == 1
+= if is_withdrawn == 1 then 0 else if event_epoch >= valid_from and event_epoch <= valid_until then 1 else 0
+
+# 4. Multi-Surface Forensic Evidence Weight Scoring
+fn zbt_evidence_weight_score(on_disk_hash: int, com_hijack: int, c2_contact: int, sms_link: int) -> int
+  requires on_disk_hash >= 0 and com_hijack >= 0 and c2_contact >= 0 and sms_link >= 0
+  ensures result >= on_disk_hash * 100
+= on_disk_hash * 100 + com_hijack * 80 + c2_contact * 60 + sms_link * 25
+
+# --- Universal Algebraic Laws Proven by QF_LIA & Checked by lcert ---
+
+law zbt_fail_closed_never_clean_law(primary_iocs: int, checks_failed: int, heuristic_leads: int) =
+  if primary_iocs >= 0 and checks_failed >= 1 and heuristic_leads >= 0 then
+    zbt_triage_verdict(primary_iocs, checks_failed, heuristic_leads) != 0
+  else 1 == 1
+
+law zbt_heuristics_alone_never_compromised_law(checks_failed: int, heuristic_leads: int) =
+  if checks_failed >= 0 and heuristic_leads >= 0 then
+    zbt_triage_verdict(0, checks_failed, heuristic_leads) != 2
+  else 1 == 1
+
+law zbt_withdrawn_stix_never_active_law(ev: int, vf: int, vu: int) =
+  if vf <= vu then
+    zbt_stix_indicator_active(ev, vf, vu, 1) == 0
+  else 1 == 1
+
+law zbt_evidence_monotonic_law(d1: int, d2: int, ch: int, c2: int, sm: int) =
+  if d1 >= 0 and d2 >= d1 and ch >= 0 and c2 >= 0 and sm >= 0 then
+    zbt_evidence_weight_score(d2, ch, c2, sm) >= zbt_evidence_weight_score(d1, ch, c2, sm)
+  else 1 == 1
+
+# End-to-End Verification Suite
+fn test_zero_breach_forensics() =
+  let v_clean = zbt_triage_verdict(0, 0, 0) in
+  let v_leads = zbt_triage_verdict(0, 0, 2) in
+  let v_comp = zbt_triage_verdict(1, 0, 3) in
+  let v_partial = zbt_triage_verdict(0, 1, 0) in
+  let stix_ok = zbt_stix_indicator_active(1700000500, 1700000000, 1700001000, 0) in
+  let stix_exp = zbt_stix_indicator_active(1700002000, 1700000000, 1700001000, 0) in
+  let stix_rev = zbt_stix_indicator_active(1700000500, 1700000000, 1700001000, 1) in
+  let iso_ok = zbt_netguard_isolated(0) in
+  let iso_leak = zbt_netguard_isolated(4) in
+  let score = zbt_evidence_weight_score(2, 1, 1, 2) in
+  v_clean == VERDICT_CLEAN and
+  v_leads == VERDICT_REVIEW_LEADS and
+  v_comp == VERDICT_COMPROMISED and
+  v_partial == VERDICT_PARTIAL_UNKNOWN and
+  stix_ok == 1 and
+  stix_exp == 0 and
+  stix_rev == 0 and
+  iso_ok == 1 and
+  iso_leak == 0 and
+  score == 390
+
+print f"[ZERO-BREACH-FORENSICS] Clean={zbt_triage_verdict(0, 0, 0)} Leads={zbt_triage_verdict(0, 0, 2)} Compromised={zbt_triage_verdict(1, 0, 3)} FailClosed_Partial={zbt_triage_verdict(0, 1, 0)} NetGuard_Isolated={zbt_netguard_isolated(0)} STIX_Active={zbt_stix_indicator_active(1700000500, 1700000000, 1700001000, 0)} Evidence_Score={zbt_evidence_weight_score(2, 1, 1, 2)}"

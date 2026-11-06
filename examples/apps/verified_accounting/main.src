@@ -16,16 +16,22 @@ fn compute_tax_retention_cents(gross_cents: int, aliq_bps: int) -> int
   ensures result >= 0
 = (gross_cents * aliq_bps) / 10000
 
-# 3. Net Liquid Settlement (Guarantees Net + Tax == Gross with Zero Cent Drift)
+# 3. Bounded Retention Guard (Clamps arbitrary retention into [0, gross_cents])
+fn clamp_retention_cents(raw_tax_cents: int, gross_cents: int) -> int
+  requires gross_cents >= 0
+  ensures result >= 0 and result <= gross_cents
+= if raw_tax_cents < 0 then 0 else if raw_tax_cents > gross_cents then gross_cents else raw_tax_cents
+
+# 4. Net Liquid Settlement (Guarantees Net + Tax == Gross with Zero Cent Drift)
 fn compute_net_liquid_cents(gross_cents: int, tax_cents: int) -> int
   requires gross_cents >= 0 and tax_cents >= 0 and tax_cents <= gross_cents
-  ensures result >= 0 and result + tax_cents == gross_cents
+  ensures result >= 0 and result <= gross_cents and result + tax_cents == gross_cents
 = gross_cents - tax_cents
 
-# 4. Fundamental Accounting Laws Proven by QF_LIA & Checked by lcert
+# 5. Fundamental Accounting Laws Proven by QF_LIA & Checked by lcert
 law double_entry_zero_imbalance_law(liab: int, eq: int) =
   if liab >= 0 and eq >= 0 then
-    post_double_entry_ledger(liab + eq, liab, eq) == 0
+    post_double_entry_ledger(liab + eq, liab, eq) == 0 and compute_net_liquid_cents(liab + eq, liab) == eq
   else 1 == 1
 
 law fiscal_split_conservation_law(gross: int, tax: int) =
@@ -33,12 +39,26 @@ law fiscal_split_conservation_law(gross: int, tax: int) =
     compute_net_liquid_cents(gross, tax) + tax == gross
   else 1 == 1
 
+law clamped_retention_bounds_law(raw_tax: int, gross: int) =
+  if gross >= 0 then
+    clamp_retention_cents(raw_tax, gross) >= 0 and clamp_retention_cents(raw_tax, gross) <= gross
+  else 1 == 1
+
 fn test_verified_accounting() =
-  # Invoice of R$ 10,000.00 (1,000,000 cents) with 18.00% (1800 bps) tax retention
+  # Standard case: R$ 10,000.00 (1,000,000 cents) with 18.00% (1800 bps) tax retention
   let gross = 1000000 in
-  let tax = compute_tax_retention_cents(gross, 1800) in
+  let tax = clamp_retention_cents(compute_tax_retention_cents(gross, 1800), gross) in
   let net = compute_net_liquid_cents(gross, tax) in
   let imbalance = post_double_entry_ledger(gross, tax, net) in
-  tax == 180000 and net == 820000 and imbalance == 0
+  # Boundary case 1: Zero invoice (0 cents, 0 bps)
+  let zero_tax = clamp_retention_cents(compute_tax_retention_cents(0, 0), 0) in
+  let zero_net = compute_net_liquid_cents(0, zero_tax) in
+  let zero_imb = post_double_entry_ledger(0, zero_tax, zero_net) in
+  # Boundary case 2: 100% retention (10000 bps) and over-retention clamp guard
+  let full_tax = clamp_retention_cents(compute_tax_retention_cents(50000, 10000), 50000) in
+  let full_net = compute_net_liquid_cents(50000, full_tax) in
+  let clamped_hi = clamp_retention_cents(99999, 50000) in
+  let clamped_lo = clamp_retention_cents(0 - 500, 50000) in
+  tax == 180000 and net == 820000 and imbalance == 0 and zero_tax == 0 and zero_net == 0 and zero_imb == 0 and full_tax == 50000 and full_net == 0 and clamped_hi == 50000 and clamped_lo == 0
 
 print f"[CONTABILIDADE] Gross_Cents={1000000} Tax_Cents={compute_tax_retention_cents(1000000, 1800)} Net_Cents={compute_net_liquid_cents(1000000, 180000)} Imbalance={post_double_entry_ledger(1000000, 180000, 820000)}"
