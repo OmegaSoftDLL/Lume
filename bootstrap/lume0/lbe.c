@@ -14,7 +14,7 @@ static void put_uv(FILE *f, unsigned long long v) {
 }
 static unsigned long long get_uv(const unsigned char *buf, size_t n, size_t *pos) {
     unsigned long long v = 0; int shift = 0;
-    while (*pos < n) { unsigned char b = buf[(*pos)++]; v |= (unsigned long long)(b & 0x7F) << shift; if (!(b & 0x80)) break; shift += 7; }
+    while (*pos < n) { unsigned char b = buf[(*pos)++]; if (shift < 64) v |= (unsigned long long)(b & 0x7F) << shift; if (!(b & 0x80)) break; shift += 7; }
     return v;
 }
 
@@ -37,6 +37,7 @@ void lbe_write(const Node *root, FILE *f) {
 }
 
 static Node *read_node(const unsigned char *buf, size_t n, size_t *pos, Arena *a) {
+    if (*pos >= n) return NULL;
     int kind = (int)get_uv(buf, n, pos);
     int flags = (int)get_uv(buf, n, pos);
     int line = (int)get_uv(buf, n, pos);
@@ -45,14 +46,22 @@ static Node *read_node(const unsigned char *buf, size_t n, size_t *pos, Arena *a
     Node *node = node_new(a, (NodeKind)kind, line, col);
     node->flags = flags;
     if (tl > 0) {
-        int len = (int)(tl - 1);
+        unsigned long long raw_len = tl - 1;
+        if (raw_len > (unsigned long long)(n - *pos) || raw_len > 0x7fffffffULL) return NULL;
+        int len = (int)raw_len;
         char *s = arena_alloc(a, (size_t)len + 1);
-        if (len > 0 && *pos + (size_t)len <= n) memcpy(s, buf + *pos, (size_t)len);
+        if (len > 0) memcpy(s, buf + *pos, (size_t)len);
         s[len] = 0; *pos += (size_t)len;
         node_set_text(node, s, len);
     }
-    int nk = (int)get_uv(buf, n, pos);
-    for (int i = 0; i < nk; i++) node_add(a, node, read_node(buf, n, pos, a));
+    unsigned long long raw_nk = get_uv(buf, n, pos);
+    if (raw_nk > 65536ULL) return NULL;
+    int nk = (int)raw_nk;
+    for (int i = 0; i < nk; i++) {
+        Node *child = read_node(buf, n, pos, a);
+        if (!child) return NULL;
+        node_add(a, node, child);
+    }
     return node;
 }
 

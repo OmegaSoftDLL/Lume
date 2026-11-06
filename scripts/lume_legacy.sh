@@ -610,7 +610,7 @@ for _sn in lcli.src lasm.src lcaas.src lcert.src lmod.src ltarget.src lregistry.
     fi
 done
 MSHA=$(sha256_of "$MANIFEST")
-printf '{"ok":true,"installer":"lume-install-v1","prefix":"%s","version":"0.2.0","edition":"2026","zero_c_steady_state":true,"manifest_sha256":"sha256:%s"}\n' "$PREFIX" "$MSHA"
+printf '{"ok":true,"installer":"lume-install-v1","prefix":"%s","version":"1.1.0","edition":"2026","zero_c_steady_state":true,"manifest_sha256":"sha256:%s"}\n' "$PREFIX" "$MSHA"
 EOF_NI
                 chmod +x "$_out"
                 rm -f "$_bundled"
@@ -2240,18 +2240,18 @@ cmd_self() {
                     _v_cnt=$((_v_cnt + 1))
                 done < "$_sprefix/MANIFEST.sha256"
                 if [ "$_v_ok" -eq 1 ] && [ "$_v_cnt" -gt 0 ]; then
-                    printf '{"ok":true,"command":"self-%s","version":"0.2.0","edition":"2026","prefix":"%s","zero_c_required":true,"manifest_verified":true,"verified_files":%d}\n' "$_sact" "$_sprefix" "$_v_cnt"
+                    printf '{"ok":true,"command":"self-%s","version":"1.1.0","edition":"2026","prefix":"%s","zero_c_required":true,"manifest_verified":true,"verified_files":%d}\n' "$_sact" "$_sprefix" "$_v_cnt"
                     return 0
                 else
-                    printf '{"ok":false,"command":"self-%s","version":"0.2.0","prefix":"%s","manifest_verified":false,"error":"manifest verification failed: %s"}\n' "$_sact" "$_sprefix" "$_v_bad"
+                    printf '{"ok":false,"command":"self-%s","version":"1.1.0","prefix":"%s","manifest_verified":false,"error":"manifest verification failed: %s"}\n' "$_sact" "$_sprefix" "$_v_bad"
                     return 1
                 fi
             else
                 if [ "$_sact" = "verify" ]; then
-                    printf '{"ok":false,"command":"self-verify","version":"0.2.0","prefix":"%s","manifest_verified":false,"mode":"in-tree","error":"MANIFEST.sha256 not found"}\n' "$_sprefix"
+                    printf '{"ok":false,"command":"self-verify","version":"1.1.0","prefix":"%s","manifest_verified":false,"mode":"in-tree","error":"MANIFEST.sha256 not found"}\n' "$_sprefix"
                     return 1
                 fi
-                printf '{"ok":true,"command":"self-status","version":"0.2.0","edition":"2026","prefix":"%s","zero_c_required":true,"manifest_verified":false,"mode":"in-tree"}\n' "$_sprefix"
+                printf '{"ok":true,"command":"self-status","version":"1.1.0","edition":"2026","prefix":"%s","zero_c_required":true,"manifest_verified":false,"mode":"in-tree"}\n' "$_sprefix"
                 return 0
             fi
             ;;
@@ -2261,7 +2261,7 @@ cmd_self() {
             printf '@prefix %s\n@from-local %s\n@from-dir %s\n' "$_sprefix" "$ROOT" "$_sfrom" | "$BIN_DIR/native_installer" >/dev/null
             if [ -f "$_sprefix/MANIFEST.sha256" ]; then
                 _msha=$(sha256_file "$_sprefix/MANIFEST.sha256")
-                printf '{"ok":true,"command":"self-update","version":"0.2.0","edition":"2026","prefix":"%s","from":"%s","manifest_sha256":"%s","manifest_verified":true}\n' "$_sprefix" "$_sfrom" "$_msha"
+                printf '{"ok":true,"command":"self-update","version":"1.1.0","edition":"2026","prefix":"%s","from":"%s","manifest_sha256":"%s","manifest_verified":true}\n' "$_sprefix" "$_sfrom" "$_msha"
                 return 0
             fi
             printf '{"ok":false,"command":"self-update","prefix":"%s","error":"update did not produce MANIFEST.sha256"}\n' "$_sprefix"

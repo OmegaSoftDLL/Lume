@@ -210,7 +210,7 @@ static Val *dec_binop(Interp *ip, char op, Val *a, Val *b) {
         return v_dec(ip, op == '+' ? x + y : x - y, s);
     }
     if (op == '*') return v_dec(ip, au * bu, sa + sb);
-    if (op == '/') { int s = sa - sb; if (s < 0) s = 0; return v_dec(ip, bu ? au / bu : 0, s); }
+    if (op == '/') { int s = sa - sb; if (s < 0) s = 0; long long q = (bu == 0) ? 0 : (au == (-9223372036854775807LL - 1LL) && bu == -1) ? au : (au / bu); return v_dec(ip, q, s); }
     return v_int(ip, 0);
 }
 
@@ -249,8 +249,8 @@ static Val *arith(Interp *ip, const char *op, int oplen, Val *a, Val *b, const N
         switch (o) {
         case '+': return v_int(ip, x + y); case '-': return v_int(ip, x - y);
         case '*': return v_int(ip, x * y);
-        case '/': if (y == 0) { rerror(ip, site, "integer division by zero"); return v_unit(ip); } return v_int(ip, x / y);
-        case '%': if (y == 0) { rerror(ip, site, "integer modulo by zero"); return v_unit(ip); } return v_int(ip, x % y);
+        case '/': if (y == 0) { rerror(ip, site, "integer division by zero"); return v_unit(ip); } if (x == (-9223372036854775807LL - 1LL) && y == -1) return v_int(ip, x); return v_int(ip, x / y);
+        case '%': if (y == 0) { rerror(ip, site, "integer modulo by zero"); return v_unit(ip); } if (x == (-9223372036854775807LL - 1LL) && y == -1) return v_int(ip, 0); return v_int(ip, x % y);
         }
     }
     rerror(ip, site, "unsupported operands for this operator");

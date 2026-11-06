@@ -259,6 +259,7 @@ static void gen_function(Asm *a, const Node *fn) {
     Names locals = {0};
     const Node *body = fn_body_of(fn, &locals);   /* params first */
     int nparams = locals.n;
+    if (nparams > 6) { a->ok = 0; names_free(&locals); return; }
     collect_locals(body, &locals);                /* then var/let slots */
     const char *name = NULL; int namelen = 0;
     for (int i = 0; i < fn->nkid; i++) if (fn->kids[i]->kind == N_IDENT) { name = fn->kids[i]->text; namelen = fn->kids[i]->text_len; break; }

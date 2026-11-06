@@ -1946,7 +1946,7 @@ EOF
         riscv64)       _ni_plat_arch="riscv64" ;;
         *)             _ni_plat_arch="x86_64" ;;
     esac
-    _ni_pkg="lume-v0.2.0-${_ni_plat_os}-${_ni_plat_arch}"
+    _ni_pkg="lume-v1.1.0-${_ni_plat_os}-${_ni_plat_arch}"
     mkdir -p "$_ni_d/stage" "$_ni_d/dist" "$_ni_d/tampered"
     LUME_BIN_DIR="${ntmp:-}" ../../lume build ../../scripts/install.src -o "$_ni_d/native_installer" >/dev/null 2>&1
     printf '@prefix %s\n@from-local %s\n@from-dir %s\n' "$_ni_d/stage/$_ni_pkg" "$(CDPATH= cd -- ../.. && pwd)" "${ntmp:-$(CDPATH= cd -- ../../bootstrap/lume0 && pwd)}" | "$_ni_d/native_installer" >/dev/null 2>&1
@@ -1957,13 +1957,13 @@ EOF
         (cd "$_ni_d/dist" && shasum -a 256 "${_ni_pkg}.tar.gz" > SHA256SUMS)
     fi
     LUME_BIN_DIR="${ntmp:-}" ../../lume build ../../docs/install.src -o "$_ni_d/release_installer" >/dev/null 2>&1
-    _ni_pos_log=$(printf '@prefix %s\n@platform %s\n@tag v0.2.0\n@base file://%s\n' "$_ni_d/clean" "$_ni_plat_os-$_ni_plat_arch" "$_ni_d/dist" | "$_ni_d/release_installer" 2>&1 || true)
+    _ni_pos_log=$(printf '@prefix %s\n@platform %s\n@tag v1.1.0\n@base file://%s\n' "$_ni_d/clean" "$_ni_plat_os-$_ni_plat_arch" "$_ni_d/dist" | "$_ni_d/release_installer" 2>&1 || true)
     _ni_ver=$("$_ni_d/clean/bin/lume" --version 2>/dev/null || true)
     _ni_sv=$("$_ni_d/clean/bin/lume" self verify 2>/dev/null || true)
     cp "$_ni_d/dist/${_ni_pkg}.tar.gz" "$_ni_d/tampered/"
     printf '0000000000000000000000000000000000000000000000000000000000000000  %s.tar.gz\n' "$_ni_pkg" > "$_ni_d/tampered/SHA256SUMS"
     _ni_bad_rc=0
-    _ni_bad_log=$(printf '@prefix %s\n@platform %s\n@tag v0.2.0\n@base file://%s\n' "$_ni_d/bad" "$_ni_plat_os-$_ni_plat_arch" "$_ni_d/tampered" | "$_ni_d/release_installer" 2>&1) || _ni_bad_rc=$?
+    _ni_bad_log=$(printf '@prefix %s\n@platform %s\n@tag v1.1.0\n@base file://%s\n' "$_ni_d/bad" "$_ni_plat_os-$_ni_plat_arch" "$_ni_d/tampered" | "$_ni_d/release_installer" 2>&1) || _ni_bad_rc=$?
     mkdir -p "$_ni_d/unverified" "$_ni_d/no-sha" "$_ni_d/no-tools"
     _ni_missing_rc=0
     _ni_missing_out=$(LUME_HOME="$_ni_d/unverified" ../../lume self verify 2>/dev/null) || _ni_missing_rc=$?
@@ -1973,7 +1973,7 @@ EOF
     _ni_nosha_rc=0
     LUME_HOME="$_ni_d/no-tools" PATH="$_ni_d/no-sha" ../../lume self verify >/dev/null 2>&1 || _ni_nosha_rc=$?
     rm -rf "$_ni_d"
-    if printf '%s' "$_ni_pos_log" | grep -q "SHA-256 verified" && printf '%s' "$_ni_ver" | grep -q "lume 0.2.0" && printf '%s' "$_ni_sv" | grep -q '"manifest_verified":true' && [ "$_ni_bad_rc" -ne 0 ] && printf '%s' "$_ni_bad_log" | grep -q "SHA-256 mismatch — refusing to install" && [ "$_ni_missing_rc" -ne 0 ] && printf '%s' "$_ni_missing_out" | grep -q '"manifest_verified":false' && [ "$_ni_nosha_rc" -ne 0 ]; then ok "multi-platform release installer (#262, #263, #316): clean install, tamper/missing-manifest rejection and fail-closed SHA-256"; else bad "multi-platform release installer (#262, #263, #316)"; printf '%s\n' "$_ni_pos_log" "$_ni_ver" "$_ni_sv" "$_ni_missing_out" "bad_rc=$_ni_bad_rc missing_rc=$_ni_missing_rc nosha_rc=$_ni_nosha_rc" "$_ni_bad_log"; fi
+    if printf '%s' "$_ni_pos_log" | grep -q "SHA-256 verified" && printf '%s' "$_ni_ver" | grep -q "lume 1.1.0" && printf '%s' "$_ni_sv" | grep -q '"manifest_verified":true' && [ "$_ni_bad_rc" -ne 0 ] && printf '%s' "$_ni_bad_log" | grep -q "SHA-256 mismatch — refusing to install" && [ "$_ni_missing_rc" -ne 0 ] && printf '%s' "$_ni_missing_out" | grep -q '"manifest_verified":false' && [ "$_ni_nosha_rc" -ne 0 ]; then ok "multi-platform release installer (#262, #263, #316): clean install, tamper/missing-manifest rejection and fail-closed SHA-256"; else bad "multi-platform release installer (#262, #263, #316)"; printf '%s\n' "$_ni_pos_log" "$_ni_ver" "$_ni_sv" "$_ni_missing_out" "bad_rc=$_ni_bad_rc missing_rc=$_ni_missing_rc nosha_rc=$_ni_nosha_rc" "$_ni_bad_log"; fi
 else
     skip "cross-platform lcaas/lcert suite (under ASan; covered in Step 4)"
 fi
