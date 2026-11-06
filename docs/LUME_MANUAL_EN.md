@@ -274,10 +274,10 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - `use lsentience`     Wave 9-10 Quantum, DNA, HDC, DEQ, LLM-Forge, Triad & Multimodal engine
 - `use lume_crypto_blockchain_engine` SHA-256 PoW, Ed25519/Secp256k1, UTXO, AMM & Kelly Criterion
 - `use lume_reversa_engine` Reversa-Lume SDD Engine v1.0: 7-phase hybrid binary (`ELF64`, `PE64`,
-                       `UEFI`, `Mach-O`, `WASM`) + multi-language reverse engineering, SHA-256
-                       immutability guard, epistemic `CONFIRMED`/`INFERRED`/`GAP` confidence score,
-                       `reversa_soul.md`, Mermaid `stateDiagram-v2` & C4 `flowchart TD`, 3D
-                       `reversa_code_city_3d.svg` via `std.gfx`, and Lume-Core decompilation
+                       `UEFI`, `Mach-O`, `WASM`) + NSIS/7z installer payload unpacker + multi-language
+                       reverse engineering, SHA-256 immutability guard, epistemic `CONFIRMED`/`INFERRED`/`GAP`
+                       confidence score, `reversa_soul.md`, Mermaid `stateDiagram-v2` & C4 `flowchart TD`,
+                       3D `reversa_code_city_3d.svg` via `std.gfx`, and modular `.src` Lume-Core reconstruction
 - `use lume_pingora_proxy_engine` Pingora-Lume Edge Proxy Engine v1.0: `TinyUFO` S3-FIFO + 4-hash
                        Count-Min Sketch cache, `Ketama` 64-bit consistent hash ring + `P2C` load
                        balancer, dual-window sliding rate limiter (`429`), cache stampede lock,
@@ -324,9 +324,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 
 # CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PACKAGERS
 
-## 7.1 Native OS, Mobile, Web, Bare-Metal & Exotic Targets (`lume build --target <t>`)
+## 7.1 Native OS, Windows GUI, Mobile, Web, Bare-Metal & Exotic Targets (`lume build --target <t>`)
 - Desktop/Server: `x86_64-linux-elf`, `aarch64-linux-elf`, `riscv64-linux-elf`,
                   `x86_64-windows-pe` (native `kernel32.dll` IAT), `aarch64-macos-macho`
+- Windows Native GUI: `x86_64-windows-gui` and `x86_64-windows-gui-protected` (`PE32+` Win32 GUI
+                  with `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll` IAT,
+                  `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, `PYXH` MBA prologue, and `.lsym` vault)
 - Mobile/Store:   `aarch64-android-apk`, `aarch64-ios-ipa`
 - Bare-Metal/OS:  `x86_64-uefi-pe`, `x86_64-boot-iso`, `x86_64-baremetal-kernel`, `ihex`
 - Web/Bytecode:   `wasm32-wasi` (with `@wasm-sandbox` `[I0275]`), `lumb`

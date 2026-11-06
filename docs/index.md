@@ -34,12 +34,12 @@ All 6 official prebuilt Zero-C release archives are available at [**GitHub Relea
 
 | Platform / Architecture | Official Archive (`v1.0.0`) | SHA-256 Digest |
 | :--- | :--- | :--- |
-| **Linux x86_64 (ELF64)** | [`lume-v1.0.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-x86_64.tar.gz) | `03b6c910b78024a0776b519a1cc4aa2062b796a90c50dff561dd75df922c161f` |
-| **Linux ARM64 (`aarch64` ELF64)** | [`lume-v1.0.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-aarch64.tar.gz) | `cef3671b60dd674f7601b3206dfb986a321f1780a33257bfc32d39ff53fdba1e` |
-| **Linux RISC-V (`riscv64` ELF64)** | [`lume-v1.0.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-riscv64.tar.gz) | `d18f9c31b52baaab32316b19a6da0f1d5108fcacde63e1f57a1f7080c7df104b` |
-| **macOS Apple Silicon (`aarch64` Mach-O 64)** | [`lume-v1.0.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-aarch64.tar.gz) | `f1bcc77c60f628f747867c6ee170ba6de79edc60601550a34b9cb51c52c8bb07` |
-| **macOS Intel (`x86_64` Mach-O 64)** | [`lume-v1.0.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-x86_64.tar.gz) | `e44e832d9e87e4326e6f1705f85035542b249b11d167667e3f362af64dcbdebe` |
-| **Windows x86_64 (`PE32+`)** | [`lume-v1.0.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz) | `2f705bfd8f2850f9e5abdb7a6bae83ea94046bddccdf6ed73dae46a74d02290e` |
+| **Linux x86_64 (ELF64)** | [`lume-v1.0.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-x86_64.tar.gz) | `a03411c81ba672c30ec294e6060358a1be79ef125a65c0ffa66171c9216b2579` |
+| **Linux ARM64 (`aarch64` ELF64)** | [`lume-v1.0.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-aarch64.tar.gz) | `aa6aea08d2f7df97dfc83a1c5e5006c04b037a02fe9b52fecb4eae112cefb97f` |
+| **Linux RISC-V (`riscv64` ELF64)** | [`lume-v1.0.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-riscv64.tar.gz) | `ae48bf3f3b496da57c8b4c82df3f1379822a60ba9f34be37ba803f14d9335e3e` |
+| **macOS Apple Silicon (`aarch64` Mach-O 64)** | [`lume-v1.0.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-aarch64.tar.gz) | `db34ab2178919b7bee5e01822e1af3f84a67b666c34b732aa404b9b00831c3cb` |
+| **macOS Intel (`x86_64` Mach-O 64)** | [`lume-v1.0.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-x86_64.tar.gz) | `833b12b2347557195f408e63f5c71ad79fd7e6b24eb01b0ccd51953f5d15264f` |
+| **Windows x86_64 (`PE32+`)** | [`lume-v1.0.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz) | `9aaad27a50ea8c3bc0b83134849269b3f2a4abb5303e814c9617518bd5a3bce2` |
 | **Unified Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/SHA256SUMS) | Verifies all archives & standalone binaries |
 
 #### Manual Install on Linux or macOS

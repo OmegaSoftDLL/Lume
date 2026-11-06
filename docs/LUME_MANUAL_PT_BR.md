@@ -256,11 +256,11 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
 - `use lsentience`     Motor Transcendente (Computacao Quantica, DNA, HDC, DEQ, LLM-Forge, Triade)
 - `use lume_crypto_blockchain_engine` Criptomoedas, SHA-256 PoW, UTXO, DeFi AMM e Kelly Criterion
 - `use lume_reversa_engine` Motor Reversa-Lume SDD v1.0: Engenharia reversa hibrida em 7 fases
-                       para binarios (`ELF64`, `PE64`, `UEFI`, `Mach-O`, `WASM`) e multiplas
-                       linguagens, guarda de imutabilidade SHA-256, taxonomia epistemica
-                       (`CONFIRMED`/`INFERRED`/`GAP`), `reversa_soul.md`, Mermaid `stateDiagram-v2`
-                       e C4 `flowchart TD`, `reversa_code_city_3d.svg` via `std.gfx` e descompilacao
-                       formal para Lume-Core
+                       para binarios (`ELF64`, `PE64`, `UEFI`, `Mach-O`, `WASM`), desempacotador de
+                       instaladores NSIS/7z e multiplas linguagens, guarda de imutabilidade SHA-256,
+                       taxonomia epistemica (`CONFIRMED`/`INFERRED`/`GAP`), `reversa_soul.md`, Mermaid
+                       `stateDiagram-v2` e C4 `flowchart TD`, `reversa_code_city_3d.svg` via `std.gfx`
+                       e reconstrucao modular completa em `.src` Lume-Core
 - `use lume_pingora_proxy_engine` Motor Pingora-Lume Edge Proxy v1.0: Cache de borda `TinyUFO`
                        (`S3-FIFO` + `Count-Min Sketch` de 4 hashes), anel de hash consistente
                        `Ketama` 64 bits + balanceamento `P2C`, rate limiter de janela deslizante
@@ -314,6 +314,9 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
 ## 7.1 Compilacao Cruzada Direta (`lume build --target <alvo> <arq.src> -o <saida>`)
 - Desktop/Servidor: `x86_64-linux-elf`, `aarch64-linux-elf`, `riscv64-linux-elf`,
                     `x86_64-windows-pe` (PE64 nativo com IAT `kernel32.dll`), `aarch64-macos-macho`
+- Windows GUI Nativo: `x86_64-windows-gui` e `x86_64-windows-gui-protected` (`PE32+` Win32 GUI nativo
+                    com IAT `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll`,
+                    `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, prologo `PYXH` MBA e cofre `.lsym`)
 - Mobile (Lojas):   `aarch64-android-apk`, `aarch64-ios-ipa`
 - Bare-Metal / SO:  `x86_64-uefi-pe`, `x86_64-boot-iso`, `x86_64-baremetal-kernel`, `ihex`
 - Web / Bytecode:   `wasm32-wasi` (com `@wasm-sandbox` `[I0275]`), `lumb`
