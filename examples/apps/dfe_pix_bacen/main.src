@@ -1,0 +1,66 @@
+# ============================================================================
+# Lume v1.0.0 Capstone — SEFAZ DFe (NF-e/NFC-e) & BACEN Pix API (CobV) Engine
+# Inspired by ZeusAutomacao/DFe.NET & bacen/pix-api
+# Zero-Float Cents/Basis-Point Arithmetic + QF_LIA Proof (Lume Verified ✓)
+# ============================================================================
+
+# 1. SEFAZ NF-e Total Invoice Value (vNF) Calculation (in cents)
+# vNF = (vProd - vDesc) + vST + vFrete + vIPI
+fn dfe_calc_vnf(v_prod: int, v_desc: int, v_st: int, v_frete: int, v_ipi: int) -> int
+  requires v_prod >= 0 and v_desc >= 0 and v_desc <= v_prod and v_st >= 0 and v_frete >= 0 and v_ipi >= 0
+  ensures result >= 0 and result >= v_prod - v_desc
+= (v_prod - v_desc) + v_st + v_frete + v_ipi
+
+# 2. SEFAZ Interstate DIFAL Split (EC 87/2015: Destination State + FCP)
+fn dfe_difal_total(v_bc_uf_dest: int, aliq_interna_bp: int, aliq_inter_bp: int) -> int
+  requires v_bc_uf_dest >= 0 and aliq_interna_bp >= aliq_inter_bp and aliq_inter_bp >= 0
+  ensures result >= 0
+= (v_bc_uf_dest * (aliq_interna_bp - aliq_inter_bp)) / 10000
+
+# 3. BACEN Pix API (CobV): Due-Date Pix Charge with Interest, Fine & Abatement
+# Per bacen/pix-api CobV specification:
+# valor_final = valor_original + multa + juros_mora - abatimento - desconto
+fn pix_cobv_valor_final(valor_original: int, multa: int, juros_mora: int, abatimento: int, desconto: int) -> int
+  requires valor_original > 0 and multa >= 0 and juros_mora >= 0 and abatimento >= 0 and desconto >= 0 and abatimento + desconto < valor_original
+  ensures result > 0 and result == valor_original + multa + juros_mora - abatimento - desconto
+= valor_original + multa + juros_mora - abatimento - desconto
+
+# 4. BACEN Pix API (Devolucao / Return): Strict Over-Refund Prevention
+# Per bacen/pix-api /pix/{e2eid}/devolucao/{id}:
+# Sum of previous refunds + new refund must never exceed settled Pix amount
+fn pix_devolucao_saldo_restante(valor_liquidado: int, ja_devolvido: int, nova_devolucao: int) -> int
+  requires valor_liquidado > 0 and ja_devolvido >= 0 and nova_devolucao > 0 and ja_devolvido + nova_devolucao <= valor_liquidado
+  ensures result >= 0 and result + ja_devolvido + nova_devolucao == valor_liquidado
+= valor_liquidado - ja_devolvido - nova_devolucao
+
+# --- Universal Algebraic Laws Proven by QF_LIA & Checked by lcert ---
+
+law dfe_vnf_non_negative_law(v_prod: int, v_desc: int, v_st: int, v_frete: int, v_ipi: int) =
+  if v_prod >= 0 and v_desc >= 0 and v_desc <= v_prod and v_st >= 0 and v_frete >= 0 and v_ipi >= 0 then
+    dfe_calc_vnf(v_prod, v_desc, v_st, v_frete, v_ipi) >= v_prod - v_desc
+  else 1 == 1
+
+law pix_cobv_positive_settlement_law(valor_original: int, multa: int, juros: int, abatimento: int, desconto: int) =
+  if valor_original > 0 and multa >= 0 and juros >= 0 and abatimento >= 0 and desconto >= 0 and abatimento + desconto < valor_original then
+    pix_cobv_valor_final(valor_original, multa, juros, abatimento, desconto) > 0
+  else 1 == 1
+
+law pix_devolucao_conservation_law(valor_liquidado: int, ja_devolvido: int, nova_devolucao: int) =
+  if valor_liquidado > 0 and ja_devolvido >= 0 and nova_devolucao > 0 and ja_devolvido + nova_devolucao <= valor_liquidado then
+    let saldo = pix_devolucao_saldo_restante(valor_liquidado, ja_devolvido, nova_devolucao) in
+    saldo + ja_devolvido + nova_devolucao == valor_liquidado
+  else 1 == 1
+
+# End-to-End Verification Suite
+fn test_dfe_sefaz_and_bacen_pix_cobv() =
+  # NF-e: R$ 1.000,00 prod - R$ 50,00 desc + R$ 120,00 ST + R$ 45,00 frete + R$ 80,00 IPI = R$ 1.195,00 (119500 cents)
+  let vnf = dfe_calc_vnf(100000, 5000, 12000, 4500, 8000) in
+  # DIFAL: Base R$ 1.000,00 (100000 cents), internal 18% (1800 bps), interstate 12% (1200 bps) -> R$ 60,00 (6000 cents)
+  let difal = dfe_difal_total(100000, 1800, 1200) in
+  # Pix CobV: R$ 500,00 (50000) + R$ 10,00 multa (1000) + R$ 5,00 juros (500) - R$ 20,00 abat (2000) - R$ 15,00 desc (1500) = 48000
+  let cobv = pix_cobv_valor_final(50000, 1000, 500, 2000, 1500) in
+  # Pix Devolucao: Settled 48000, already refunded 10000, new refund 15000 -> remaining 23000
+  let saldo_pix = pix_devolucao_saldo_restante(48000, 10000, 15000) in
+  vnf == 119500 and difal == 6000 and cobv == 48000 and saldo_pix == 23000
+
+print f"[DFE-PIX-BACEN] NFe_vNF_cents={dfe_calc_vnf(100000, 5000, 12000, 4500, 8000)} DIFAL_cents={dfe_difal_total(100000, 1800, 1200)} Pix_CobV_cents={pix_cobv_valor_final(50000, 1000, 500, 2000, 1500)} Pix_Devolucao_Saldo_cents={pix_devolucao_saldo_restante(48000, 10000, 15000)}"

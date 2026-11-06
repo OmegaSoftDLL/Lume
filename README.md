@@ -244,6 +244,12 @@ Lume includes self-hosted, formally verified domain engines in `compiler/stage1/
     - Deterministic linear trajectory forecaster (`SIGNAL`), monotonically calibrated 95% bivariate confidence radius (`PROBE`), and mathematically proven airspace altitude envelope enforcement (`uav_geofence_ceiling_law`, `uav_geofence_floor_law`).
 11. **Formally Verified Double-Entry Accounting & Fiscal Split Engine (`examples/apps/verified_accounting/main.src` — `1/1` test, `5/5` proofs, `Lume Verified ✓`):**
     - Compile-time proof of the Fundamental Double-Entry Accounting Identity (`Ativo == Passivo + Patrimonio_Liquido`, zero cent imbalance `double_entry_zero_imbalance_law`) and exact basis-point tax retention (`fiscal_split_conservation_law`).
+12. **SEFAZ DFe (NF-e/NFC-e) & BACEN Pix API (`CobV` & `Devolucao`) Engine (`examples/apps/dfe_pix_bacen/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
+    - Formally proven SEFAZ Layout 4.00 invoice valuation (`vNF = (vProd - vDesc) + vST + vFrete + vIPI`), EC 87/2015 interstate DIFAL split, and Central Bank `bacen/pix-api` `CobV` settlement (`pix_cobv_positive_settlement_law`) and anti-over-refund conservation (`pix_devolucao_conservation_law`).
+13. **OmniRoute Multi-LLM Circuit Breaker & Sovereignty Guard (`examples/apps/omniroute_guard/main.src` — `1/1` test, `6/6` proofs, `Lume Verified ✓`):**
+    - Resilient multi-provider AI gateway routing (`Primary Cloud -> Secondary Fallback -> Sovereign Local LLM`) with mathematically proven confidentiality isolation (`omniroute_confidential_sovereignty_law`) and hard micro-credit budget caps (`omniroute_budget_conservation_law`).
+14. **Brazilian Public Registry & Modulo-11 Verifier (`examples/apps/brasil_public_id/main.src` — `1/1` test, `6/6` proofs, `Lume Verified ✓`):**
+    - Formally verified Receita Federal / SEFAZ Modulo-11 check digit arithmetic (`0 <= dv <= 9`), 44-digit NF-e Access Key structural verification, and QSA corporate equity conservation (`qsa_equity_conservation_law`).
 
 ---
 
@@ -299,11 +305,13 @@ lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE3
 │   ├── lprotect.src / protect.src      # P33 software protection, MBA obfuscation, secret scanner & symbolize
 │   └── std & domain modules            # fs, bytes, map, arena, capsule, db, net, gfx, gui, nn, tensor, quantum...
 ├── skills/lume/                        # Official AI Agent Skill (SKILL.md, references/, verified_showcase.src)
+├── editors/vscode-lume/                # Official VS Code / Cursor / Antigravity grammar & Dracula Lume theme
 ├── examples/
 │   ├── 01_hello.lume .. 09_*.lume      # Surface Lume tour
 │   └── apps/                           # Capstones: inventory, job_server, mnist, agent, p0_tenant_ledger,
 │                                       #            p0_rtc_kernel, supply_chain_demo, lume_os,
-│                                       #            pix_fraud_trace, sentry_uav_guard, verified_accounting
+│                                       #            pix_fraud_trace, sentry_uav_guard, verified_accounting,
+│                                       #            dfe_pix_bacen, omniroute_guard, brasil_public_id
 ├── acceptance/matrix.json              # Track A/L Acceptance Matrix (24/24 PASS, 0 UNKNOWN, 0 FAIL)
 ├── formal/lean/LumeCore.lean           # Mechanized Lean 4 formalization of Lume-Core soundness
 ├── grammar/lume.ebnf                   # Complete formal grammar
