@@ -225,13 +225,13 @@ fn keff_join(xs) = match xs
 
 fn kprim_eff(cnm) = if cnm == "io_write" or cnm == "io_read" or cnm == "println" or cnm == "read" or cnm == "readall" or cnm == "io_read_byte" or cnm == "emit" or cnm == "flush" or cnm == "os_exec" or cnm == "os_kill" or cnm == "os_waitpid_status" then "io" else if cnm == "fs_read" or cnm == "fs_write" or cnm == "fs_open" then "fs" else if cnm == "net_send" or cnm == "net_recv" or cnm == "net_connect" or cnm == "db_exec" then "net" else if cnm == "rc_new" or cnm == "arc_new" or cnm == "alloc_heap" or cnm == "table_new" or cnm == "box_new" or cnm == "arena_new" or cnm == "arena_alloc" or cnm == "__lume_arena_new" or cnm == "__lume_arena_alloc" or cnm == "__lume_rc_new" or cnm == "__lume_arc_new" then "alloc" else if cnm == "rand_int" or cnm == "prob_sample" or cnm == "llm_complete" then "rand" else if cnm == "sample_dist" or cnm == "observe_lik" then "prob" else if cnm == "llm_prompt" then "llm" else if cnm == "wasm_module_new" or cnm == "wasm_call_add" or cnm == "wasm_store32" or cnm == "wasm_load32" or cnm == "wasm_call_host_fs" then "wasm" else if cnm == "ffi_call" then "ffi" else if cnm == "time_now" or cnm == "clock_now" or cnm == "sleep_ms" then "time" else if cnm == "fail_err" or cnm == "raise_err" then "fail" else if cnm == "panic_msg" then "panic" else if cnm == "async_await" or cnm == "spawn_task" then "async" else ""
 
-fn kinfer_call_effs(cnm, ksigs, edecls, fns, d) = let pe = kprim_eff(cnm) in let ue = kop_effect(cnm, edecls) in let host_e = if cnm == "wasm_call_host_fs" then "fs" else if cnm == "wasm_call_host_net" then "net" else "" in let base = keff_add(host_e, keff_add(pe, keff_add(ue, Nil))) in let mks = keffsig_lookup(cnm, ksigs) in match mks
-    Cons(ks, r) => keff_union(base, keff_diff(ks.effs, Cons("pure", Nil)))
-    Nil         => if d <= 0 then base else keff_union(base, kinfer_fn_lookup(cnm, fns, ksigs, edecls, d - 1))
+fn kinfer_call_effs(cnm, ksigs, edecls, fns, d) = match keffsig_lookup(cnm, ksigs)
+    Cons(ks, r) => keff_diff(ks.effs, Cons("pure", Nil))
+    Nil         => let pe = kprim_eff(cnm) in let ue = kop_effect(cnm, edecls) in let host_e = if cnm == "wasm_call_host_fs" then "fs" else if cnm == "wasm_call_host_net" then "net" else "" in let base = keff_add(host_e, keff_add(pe, keff_add(ue, Nil))) in if isnil(base) == 0 or d <= 0 then base else kinfer_fn_lookup(cnm, fns, ksigs, edecls, d - 1)
 
 fn kinfer_fn_lookup(cnm, fns, ksigs, edecls, d) = match fns
     Nil        => Nil
-    Cons(f, r) => if f.nm == cnm then kinfer_effs_e(f.body, ksigs, edecls, fns, d) else kinfer_fn_lookup(cnm, r, ksigs, edecls, d)
+    Cons(f, r) => if f.nm == cnm then kinfer_effs_e(f.body, Cons({nm: cnm, effs: Cons("pure", Nil)}, ksigs), edecls, fns, d) else kinfer_fn_lookup(cnm, r, ksigs, edecls, d)
 
 fn kinfer_effs_e(e, ksigs, edecls, fns, d) = match e
     Bin(op, l, r)           => keff_union(kinfer_effs_e(l, ksigs, edecls, fns, d), kinfer_effs_e(r, ksigs, edecls, fns, d))
@@ -2169,7 +2169,7 @@ fn ksubst_arms(xs, renv, pfx) = match xs
 fn kuses_hop(e, hops, fns, d) = if d > 1 then 0 else kuses_hop1(e, hops, fns, d)
 
 fn kuses_hop1(e, hops, fns, d) = match e
-    Call(cnm, args)         => if isnil(khop_lookup(cnm, hops)) == 0 then 1 else if kuses_hop_args(args, hops, fns, d) == 1 then 1 else kuses_hop_fn(vfnlookup(cnm, fns), hops, fns, d)
+    Call(cnm, args)         => if isnil(khop_lookup(cnm, hops)) == 0 then 1 else if kuses_hop_args(args, hops, fns, d) == 1 then 1 else if d >= 1 then 0 else kuses_hop_fn(vfnlookup(cnm, fns), hops, fns, d)
     Bin(op, l, r)           => if kuses_hop(l, hops, fns, d) == 1 then 1 else kuses_hop(r, hops, fns, d)
     If(c, t, e2)            => if kuses_hop(c, hops, fns, d) == 1 then 1 else if kuses_hop(t, hops, fns, d) == 1 then 1 else kuses_hop(e2, hops, fns, d)
     LetIn(nm, v, b)         => if kuses_hop(v, hops, fns, d) == 1 then 1 else kuses_hop(b, hops, fns, d)
