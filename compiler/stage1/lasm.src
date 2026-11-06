@@ -7,13 +7,15 @@
 ## Slice 1 scope: the instruction/directive set that lumec emits for the whole Lume-Core subset
 ## (everything in nfib.s, runtime included). See docs for what is out of scope.
 
-## --- list helpers ---
-fn app(xs, ys) = match xs
-    Nil        => ys
-    Cons(h, t) => Cons(h, app(t, ys))
-fn len(xs) = match xs
-    Nil        => 0
-    Cons(h, t) => 1 + len(t)
+## --- list helpers (tail-recursive rev_append/app avoids O(bytes) stack growth) ---
+fn rev_append(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rev_append(t, Cons(h, acc))
+fn app(xs, ys) = rev_append(rev_append(xs, Nil), ys)
+fn len_acc(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => len_acc(t, acc + 1)
+fn len(xs) = len_acc(xs, 0)
 fn isnil(xs) = match xs
     Nil        => 1
     Cons(h, t) => 0
@@ -241,9 +243,10 @@ fn layoutins(r, t, co, roff, boff) = let eb = enc(r, 0, Nil) in let ln = len(eb)
 ## --- pass 2: emit code bytes with the full symbol table. Verbatim bytes for the
 ## address-independent instructions; re-encode only the reloc ones (jumps/calls/jcc/%rip) now
 ## that symaddr can resolve. No second length computation -- pass 1 recorded off and ln. ---
-fn emitcode2b(encs, syms, tbase) = match encs
-    Nil        => Nil
-    Cons(e, t) => app(if e.reloc == 1 then enc(e.ins, tbase + e.off + e.ln, syms) else e.bytes, emitcode2b(t, syms, tbase))
+fn emitcode2b_acc(encs, syms, tbase, acc) = match encs
+    Nil        => rev_append(acc, Nil)
+    Cons(e, t) => let eb = if e.reloc == 1 then enc(e.ins, tbase + e.off + e.ln, syms) else e.bytes in emitcode2b_acc(t, syms, tbase, rev_append(eb, acc))
+fn emitcode2b(encs, syms, tbase) = emitcode2b_acc(encs, syms, tbase, Nil)
 fn emitcode2(encs, syms) = emitcode2b(encs, syms, 4194424)
 
 ## --- strict mode (#428): fail closed on unresolved symbols instead of silently encoding
@@ -278,7 +281,8 @@ fn collect_exts(items) = match items
 fn collect_ext1(h, rest) = match h
     EX(s) => if has_str(rest, s) == 1 then rest else Cons(s, rest)
     _     => rest
-fn zeros(n) = if n <= 0 then Nil else Cons(0, zeros(n - 1))
+fn zeros_acc(n, acc) = if n <= 0 then acc else zeros_acc(n - 1, Cons(0, acc))
+fn zeros(n) = zeros_acc(n, Nil)
 fn str_nul_bytes(s, i, n) = if i >= n then Cons(0, Nil) else Cons(ord(at(s, i)), str_nul_bytes(s, i + 1, n))
 fn dynstr_pack(xs, off) = match xs
     Nil        => {bytes: Nil, offs: Nil, end: off}

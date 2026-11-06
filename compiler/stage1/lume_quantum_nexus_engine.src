@@ -120,6 +120,9 @@ fn qlinear_verify_circuit_loop(gs, meas_mask, checked) =
           { linear_ok: 0, gates_checked: checked + 1, measured_mask: meas_mask, violation: st.reason }
         else qlinear_verify_circuit_loop(rest, st.meas, checked + 1)
 
+fn q_is_reversible_unitary(g) =
+    if g.op >= 1 and g.op <= 10 then 1 else 0
+
 fn q_gate_dagger(g) =
     match g.op
       4 => qg_sdg(g.q)
@@ -127,12 +130,16 @@ fn q_gate_dagger(g) =
       6 => qg_tdg(g.q)
       7 => qg_t(g.q)
       8 => qg_rz(g.q, q_nia_phase_mod8(800 - g.ph, 8))
+      11 => { op: 0, q: g.q, t: 0, ph: 0 }
       _ => g
 
 fn q_uncompute_dagger_acc(gs, acc) =
     match gs
       Nil => acc
-      Cons(g, rest) => q_uncompute_dagger_acc(rest, Cons(q_gate_dagger(g), acc))
+      Cons(g, rest) =>
+        if q_is_reversible_unitary(g) == 1 then
+          q_uncompute_dagger_acc(rest, Cons(q_gate_dagger(g), acc))
+        else q_uncompute_dagger_acc(rest, acc)
 
 fn q_uncompute_synthesize_adjoint(gs) =
     q_uncompute_dagger_acc(gs, Nil)
@@ -399,6 +406,35 @@ fn q_zx_saturate(nodes, fuel) =
     if fuel <= 0 then nodes
     else q_zx_saturate(q_zx_rewrite_pass(nodes), fuel - 1)
 
+fn q_zx_node_to_gates(n) =
+    match n.kind
+      1 => Cons(qg_rz(n.q, n.ph), Nil)
+      2 =>
+        if q_nia_phase_mod8(n.ph, 8) == 4 then Cons(qg_x(n.q), Nil)
+        else Cons(qg_h(n.q), Cons(qg_rz(n.q, n.ph), Cons(qg_h(n.q), Nil)))
+      3 => Cons(qg_h(n.q), Nil)
+      4 => Cons(qg_cnot(n.q, n.t), Nil)
+      _ => Nil
+
+fn q_zx_to_gates(nodes) =
+    match nodes
+      Nil => Nil
+      Cons(n, rest) => q_list_append(q_zx_node_to_gates(n), q_zx_to_gates(rest))
+
+fn q_abs_diff(a, b) =
+    let d = a - b in if d < 0 then 0 - d else d
+
+fn q_sv2_equiv_tol(sv1, sv2, tol) =
+    if q_abs_diff(sv1.r00, sv2.r00) <= tol and
+       q_abs_diff(sv1.i00, sv2.i00) <= tol and
+       q_abs_diff(sv1.r01, sv2.r01) <= tol and
+       q_abs_diff(sv1.i01, sv2.i01) <= tol and
+       q_abs_diff(sv1.r10, sv2.r10) <= tol and
+       q_abs_diff(sv1.i10, sv2.i10) <= tol and
+       q_abs_diff(sv1.r11, sv2.r11) <= tol and
+       q_abs_diff(sv1.i11, sv2.i11) <= tol then 1
+    else 0
+
 fn q_zx_run_optimization() =
     let raw_zx =
         Cons(zx_z(0, 1),
@@ -420,6 +456,10 @@ fn q_zx_run_optimization() =
     let opt_zx = q_zx_saturate(raw_zx, 8) in
     let after_gates = q_list_len(opt_zx) in
     let after_t = q_zx_t_count(opt_zx) in
+    let sv_init = q_sv2_run(q_sv2_zero(), Cons(qg_h(0), Cons(qg_h(1), Nil))) in
+    let sv_raw = q_sv2_run(sv_init, q_zx_to_gates(raw_zx)) in
+    let sv_opt = q_sv2_run(sv_init, q_zx_to_gates(opt_zx)) in
+    let sv_equiv = q_sv2_equiv_tol(sv_raw, sv_opt, 15) in
     let t_factor = if after_t >= 1 and before_t >= 3 * after_t and before_t <= 7 * after_t then
         q_nia_t_gate_compression_factor(before_t, after_t)
     else before_t in
@@ -429,7 +469,7 @@ fn q_zx_run_optimization() =
         before_t_count: before_t,
         after_t_count: after_t,
         t_compression_factor: t_factor,
-        zx_verified: if after_gates == 2 and after_t == 1 then 1 else 0
+        zx_verified: if after_gates == 2 and after_t == 1 and sv_equiv == 1 then 1 else 0
     }
 
 ## ============================================================================
@@ -690,7 +730,8 @@ fn lume_quantum_nexus_status_json(target_arg) =
 
 fn test_silq_linear_and_uncompute() =
     let s = q_silq_run_verification() in
-    s.valid_circuit_linear_ok == 1 and s.clone_violation_rejected == 1 and s.measure_reuse_rejected == 1 and s.mid_ancilla_prob_milli >= 450 and s.residual_ancilla_prob_milli == 0 and s.qfree_safe == 1
+    let meas_dag = q_gate_dagger(qg_meas(0)) in
+    s.valid_circuit_linear_ok == 1 and s.clone_violation_rejected == 1 and s.measure_reuse_rejected == 1 and s.mid_ancilla_prob_milli >= 450 and s.residual_ancilla_prob_milli == 0 and s.qfree_safe == 1 and q_is_reversible_unitary(qg_meas(0)) == 0 and meas_dag.op == 0
 
 fn test_quizx_spider_fusion_and_t_count() =
     let z = q_zx_run_optimization() in

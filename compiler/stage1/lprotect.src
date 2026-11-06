@@ -19,6 +19,10 @@
 ##   - Brick W3 & W5 (`hardened` / `max`):
 ##     - Injects Mixed Boolean-Arithmetic (MBA) instruction sequences into function prologues in `max` mode
 ##       and embeds a deterministic FIPS 180-4 SHA-256 tamper seal (`LUME_SEAL:<hex>`) in `.rodata`.
+##   - Threat Model (F6):
+##     - Bricks W1–W5 provide "obfuscation-grade protection against casual static inspection / strings / symbol scraping"
+##       (symbol stripping, XOR literal masking, MBA algebraic identities, and startup seal checks), distinct from
+##       the cryptographic FIPS 180-4 SHA-256 integrity digests used for build/sidecar tamper evidence.
 
 fn lp_isws(c) = c == " " or c == "\t" or c == "\r"
 fn lp_isdigit(c) = c >= "0" and c <= "9"
@@ -158,7 +162,7 @@ fn lp_scan_secrets(lines) = let ds = lp_scan_secrets_lines(lines, 1) in "{\"ok\"
 ## Prepends `mkstr_enc:` before `mkstr:` in `.text` when `level == "hardened"` or `level == "max"`:
 fn lp_mkstr_enc_stub(k) = "mkstr_enc:\n    pushq %rcx\n    pushq %rdx\n    pushq %r12\n    pushq %r13\n    pushq %r14\n    movq %rdi, %r12\n    call strlen\n    movq %rax, %r13\n    leaq 1(%r13), %rdi\n    call alloc\n    movq %rax, %r14\n    xorq %rcx, %rcx\n.Lmkd0:\n    cmpq %r13, %rcx\n    jge .Lmkd1\n    movb (%r12,%rcx), %dl\n    cmpb $" + str(k) + ", %dl\n    je .Lmkd_s\n    xorb $" + str(k) + ", %dl\n.Lmkd_s:\n    movb %dl, (%r14,%rcx)\n    incq %rcx\n    jmp .Lmkd0\n.Lmkd1:\n    movb $0, (%r14,%r13)\n    movq %r14, %rdi\n    popq %r14\n    popq %r13\n    popq %r12\n    popq %rdx\n    popq %rcx\nmkstr:"
 
-fn lp_mba_prologue(fn_idx) = let mask = (fn_idx * 73 + 19) % 120 + 1 in "    xorq $" + str(mask) + ", %rax\n    xorq $" + str(mask) + ", %rax"
+fn lp_mba_prologue(fn_idx) = let mask = (fn_idx * 73 + 19) % 120 + 1 in "    addq $" + str(mask) + ", %rax\n    xorq $0, %rax\n    subq $" + str(mask) + ", %rax"
 
 fn lp_seal_start_guard() = "_start:\n    leaq .Lprotect_seal(%rip), %rdi\n    xorq %rcx, %rcx\n    movb (%rdi,%rcx), %dl\n    cmpb $76, %dl\n    je .Lseal_ok\n    movq $60, %rax\n    movq $99, %rdi\n    syscall\n.Lseal_ok:"
 
@@ -198,6 +202,6 @@ fn lp_run(lines) = match lines
 
 fn test_scan_secrets_w0002() = let bad = lp_run(Cons("@scan-secrets", Cons("fn key() = \"sk-live-secret123\"", Nil))) in let ok = lp_run(Cons("@scan-secrets", Cons("fn key() = secret_new(\"sk-live-secret123\")", Nil))) in if lp_find_sub(bad, "W0002", 0) >= 0 and lp_find_sub(ok, "\"ok\":true", 0) >= 0 then 1 else 0
 
-fn test_rea_symbol_and_mba_and_seal_protection() = let asm_in = Cons("@asm max", Cons("    .section .text", Cons("secret_pricing_algo:", Cons("    pushq %rbp", Cons("    movq %rsp, %rbp", Cons(".Ltail_secret_pricing_algo:", Cons("    movq $42, %rdi", Cons("    call mkint", Cons("    ret", Cons("_start:", Cons("    call secret_pricing_algo", Nil))))))))))) in let out = lp_run(asm_in) in if lp_find_sub(out, "secret_pricing_algo", 0) < 0 and lp_find_sub(out, "_L_F1:", 0) >= 0 and lp_find_sub(out, "call _L_F1", 0) >= 0 and lp_find_sub(out, ".Ltail__L_F1:", 0) >= 0 and lp_find_sub(out, "movq $42, %rdi", 0) < 0 and lp_find_sub(out, "subq $", 0) >= 0 and lp_find_sub(out, ".Lseal_ok:", 0) >= 0 and lp_find_sub(out, "LUME_SEAL:", 0) >= 0 then 1 else 0
+fn test_rea_symbol_and_mba_and_seal_protection() = let asm_in = Cons("@asm max", Cons("    .section .text", Cons("secret_pricing_algo:", Cons("    pushq %rbp", Cons("    movq %rsp, %rbp", Cons(".Ltail_secret_pricing_algo:", Cons("    movq $42, %rdi", Cons("    call mkint", Cons("    ret", Cons("_start:", Cons("    call secret_pricing_algo", Nil))))))))))) in let out = lp_run(asm_in) in if lp_find_sub(out, "secret_pricing_algo", 0) < 0 and lp_find_sub(out, "_L_F1:", 0) >= 0 and lp_find_sub(out, "call _L_F1", 0) >= 0 and lp_find_sub(out, ".Ltail__L_F1:", 0) >= 0 and lp_find_sub(out, "movq $42, %rdi", 0) < 0 and lp_find_sub(out, "addq $", 0) >= 0 and lp_find_sub(out, "xorq $0, %rax", 0) >= 0 and lp_find_sub(out, "subq $", 0) >= 0 and lp_find_sub(out, ".Lseal_ok:", 0) >= 0 and lp_find_sub(out, "LUME_SEAL:", 0) >= 0 then 1 else 0
 
 print lp_run(lp_splitlines(readall()))

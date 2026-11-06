@@ -1,7 +1,8 @@
 # ============================================================================
 # Lume v1.0.0 Capstone — Brazilian Public Registry & Modulo-11 Verifier
 # Inspired by turicas/brasil.io (Receita Federal CNPJ/CPF & SEFAZ 44-Digit Key)
-# Formally Proven Modulo-11 Check-Digit Bounds & QSA Equity Conservation
+# Formally Proven Modulo-11 Check-Digit Bounds, Alphanumeric CNPJ (July 2026),
+# 44-Digit NF-e Access Key Validation & QSA Equity Conservation
 # ============================================================================
 
 # 1. Official Receita Federal / SEFAZ Modulo-11 Check Digit Rule
@@ -13,7 +14,14 @@ fn mod11_check_digit(rem: int) -> int
   ensures result >= 0 and result <= 9
 = if rem < 2 then 0 else 11 - rem
 
-# 2. SEFAZ 44-Digit NF-e Access Key Structural Length Verifier
+# 2. Receita Federal / SERPRO Alphanumeric CNPJ Valuation Rule (IN RFB 2229 / July 2026)
+# Maps ASCII code in [48..90] to ascii_code - 48 ('0'..'9' -> 0..9, 'A'..'Z' -> 17..42)
+fn cnpj_alnum_char_value(ascii_code: int) -> int
+  requires ascii_code >= 48 and ascii_code <= 90
+  ensures result >= 0 and result <= 42 and result == ascii_code - 48
+= ascii_code - 48
+
+# 3. SEFAZ 44-Digit NF-e Access Key Structural Length Verifier
 # cUF(2) + AAMM(4) + CNPJ(14) + mod_serie_nnf(14) + tp_cnf_dv(10) == 44 digits
 fn nfe_key_segment_length(
   len_cuf: int,
@@ -22,11 +30,22 @@ fn nfe_key_segment_length(
   len_mod_serie_nnf: int,
   len_tp_cnf_dv: int
 ) -> int
-  requires len_cuf == 2 and len_aamm == 4 and len_cnpj == 14 and len_mod_serie_nnf == 14 and len_tp_cnf_dv == 10
-  ensures result == 44
+  requires len_cuf >= 0 and len_aamm >= 0 and len_cnpj >= 0 and len_mod_serie_nnf >= 0 and len_tp_cnf_dv >= 0
+  ensures result == len_cuf + len_aamm + len_cnpj + len_mod_serie_nnf + len_tp_cnf_dv
 = len_cuf + len_aamm + len_cnpj + len_mod_serie_nnf + len_tp_cnf_dv
 
-# 3. Receita Federal QSA Capital Social Conservation (in cents)
+fn nfe_access_key_length_valid(
+  len_cuf: int,
+  len_aamm: int,
+  len_cnpj: int,
+  len_mod_serie_nnf: int,
+  len_tp_cnf_dv: int
+) -> int
+  requires len_cuf >= 0 and len_aamm >= 0 and len_cnpj >= 0 and len_mod_serie_nnf >= 0 and len_tp_cnf_dv >= 0
+  ensures result >= 0 and result <= 1
+= if len_cuf == 2 and len_aamm == 4 and len_cnpj == 14 and len_mod_serie_nnf == 14 and len_tp_cnf_dv == 10 and nfe_key_segment_length(len_cuf, len_aamm, len_cnpj, len_mod_serie_nnf, len_tp_cnf_dv) == 44 then 1 else 0
+
+# 4. Receita Federal QSA Capital Social Conservation (in cents)
 # Sum of partner equity shares must never exceed total registered company capital
 fn qsa_remaining_equity(capital_social_cents: int, allocated_partner_cents: int, new_partner_cents: int) -> int
   requires capital_social_cents > 0 and allocated_partner_cents >= 0 and new_partner_cents > 0 and allocated_partner_cents + new_partner_cents <= capital_social_cents
@@ -41,9 +60,14 @@ law mod11_single_decimal_digit_law(rem: int) =
     dv >= 0 and dv <= 9
   else 1 == 1
 
+law cnpj_alnum_monotonic_law(c1: int, c2: int) =
+  if c1 >= 48 and c1 <= c2 and c2 <= 90 then
+    cnpj_alnum_char_value(c1) <= cnpj_alnum_char_value(c2) and cnpj_alnum_char_value(c1) >= 0 and cnpj_alnum_char_value(c2) <= 42
+  else 1 == 1
+
 law nfe_access_key_exact_44_digits_law(cuf: int, aamm: int, cnpj: int, msn: int, tcd: int) =
   if cuf == 2 and aamm == 4 and cnpj == 14 and msn == 14 and tcd == 10 then
-    nfe_key_segment_length(cuf, aamm, cnpj, msn, tcd) == 44
+    nfe_access_key_length_valid(2, 4, 14, 14, 10) == 1 and nfe_key_segment_length(cuf, aamm, cnpj, msn, tcd) == 44
   else 1 == 1
 
 law qsa_equity_conservation_law(capital: int, allocated: int, partner: int) =
@@ -58,8 +82,14 @@ fn test_brasil_public_id_and_qsa() =
   let dv1 = mod11_check_digit(1) in
   let dv2 = mod11_check_digit(2) in
   let dv10 = mod11_check_digit(10) in
+  let alnum_0 = cnpj_alnum_char_value(48) in
+  let alnum_9 = cnpj_alnum_char_value(57) in
+  let alnum_a = cnpj_alnum_char_value(65) in
+  let alnum_z = cnpj_alnum_char_value(90) in
   let key_len = nfe_key_segment_length(2, 4, 14, 14, 10) in
+  let key_ok = nfe_access_key_length_valid(2, 4, 14, 14, 10) in
+  let key_bad = nfe_access_key_length_valid(2, 4, 13, 14, 10) in
   let rem_eq = qsa_remaining_equity(10000000, 6000000, 4000000) in
-  dv0 == 0 and dv1 == 0 and dv2 == 9 and dv10 == 1 and key_len == 44 and rem_eq == 0
+  dv0 == 0 and dv1 == 0 and dv2 == 9 and dv10 == 1 and alnum_0 == 0 and alnum_9 == 9 and alnum_a == 17 and alnum_z == 42 and key_len == 44 and key_ok == 1 and key_bad == 0 and rem_eq == 0
 
-print f"[BRASIL-IO] Mod11_DV(2)={mod11_check_digit(2)} Mod11_DV(10)={mod11_check_digit(10)} NFe_Key_Digits={nfe_key_segment_length(2, 4, 14, 14, 10)} QSA_Unallocated_Cents={qsa_remaining_equity(10000000, 6000000, 4000000)}"
+print f"[BRASIL-IO] Mod11_DV(2)={mod11_check_digit(2)} Mod11_DV(10)={mod11_check_digit(10)} CNPJ_Alnum(A)={cnpj_alnum_char_value(65)} CNPJ_Alnum(Z)={cnpj_alnum_char_value(90)} NFe_Key_Valid={nfe_access_key_length_valid(2, 4, 14, 14, 10)} QSA_Unallocated_Cents={qsa_remaining_equity(10000000, 6000000, 4000000)}"

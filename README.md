@@ -10,7 +10,7 @@
 [![Zero-C Steady State](https://img.shields.io/badge/steady--state-100%25%20Lume%20%28Zero--C%29-success)](docs/PROJECT_STATE.md)
 [![Acceptance Matrix](https://img.shields.io/badge/acceptance%20matrix-24%2F24%20PASS-brightgreen)](docs/acceptance-matrix.md)
 [![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](docs/26-targets.md)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green.svg)](#license)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
 [**Installation**](#installation) · [**Quickstart**](#quickstart) · [**Technical Paper (`v1.0.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
 
@@ -238,18 +238,18 @@ Lume includes self-hosted, formally verified domain engines in `compiler/stage1/
    - 20-instruction `openTPU ISA v1` assembler and weight-stationary MXU systolic simulator, two-level `QACT` + `FP4` quantization, *K-Smoothing* outlier migration, and RTL equivalence checking.
 8. **Context & Distributed State Engine (`compiler/stage1/lume_continuum_nexus_engine.src` — `4/4` tests, `27/27` proofs, `Lume Verified ✓`):**
    - Tree superposition (`bend`/`fold`), Active Context Pruning (`ACP`), quota-aware multi-provider routing, and `LWW-Element-Set` CRDT state convergence.
-9. **Pix Fraud Graph Tracer & BACEN MED Recovery Engine (`examples/apps/pix_fraud_trace/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
-   - Zero-float basis-point temporal graph expansion (`JANELA=86400s`, `PROF_MAX=5`), weighted suspicion scoring (`40% * repasse + 50% * rapidez + 10% * pequeno`), automatic classification of Money Mule (`Laranja`, `>= 6000 bps`) and Cash-Out (`Saque`) accounts, and formally proven Central Bank MED precautionary block conservation (`pix_med_conservation_law`, `pix_med_cap_law`).
-10. **SENTRY UAV Trajectory Forecaster & Ring-0 Geofence Guard (`examples/apps/sentry_uav_guard/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
-    - Deterministic linear trajectory forecaster (`SIGNAL`), monotonically calibrated 95% bivariate confidence radius (`PROBE`), and mathematically proven airspace altitude envelope enforcement (`uav_geofence_ceiling_law`, `uav_geofence_floor_law`).
+9. **Pix Fraud Graph Tracer & BACEN MED Recovery Engine (`examples/apps/pix_fraud_trace/main.src` — `1/1` test, `9/9` proofs, `Lume Verified ✓`):**
+   - Zero-float basis-point temporal graph expansion (`JANELA_RASTREIO_SEG=86400s`, `PROFUNDIDADE_MAX_SALTOS=5`), weighted suspicion scoring (`40% * repasse + 50% * rapidez + 10% * pequeno`), composite hop risk evaluation (`pix_trace_hop_risk_bps`), automatic classification of Money Mule (`Laranja` / `Conta de Passagem`) and Cash-Out (`Saque`) accounts, and formally proven Central Bank MED precautionary block conservation (`pix_med_conservation_law`, `pix_med_cap_law`).
+10. **SENTRY UAV Trajectory Forecaster & Ring-0 Geofence Guard (`examples/apps/sentry_uav_guard/main.src` — `1/1` test, `9/9` proofs, `Lume Verified ✓`):**
+    - Deterministic linear trajectory forecaster (`SIGNAL`), monotonically calibrated 95% bivariate confidence radius (`PROBE`, `uav_radius_monotonic_law`), worst-case floor guard (`uav_safe_altitude_guard_mm`), and mathematically proven airspace altitude envelope enforcement (`uav_geofence_ceiling_law`, `uav_geofence_floor_law`, `uav_safe_altitude_envelope_law`).
 11. **Formally Verified Double-Entry Accounting & Fiscal Split Engine (`examples/apps/verified_accounting/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
     - Compile-time proof of the Fundamental Double-Entry Accounting Identity (`Ativo == Passivo + Patrimonio_Liquido`, zero cent imbalance `double_entry_zero_imbalance_law`), bounded retention guard (`clamped_retention_bounds_law`), and exact basis-point tax retention (`fiscal_split_conservation_law`).
-12. **SEFAZ DFe (NF-e/NFC-e) & BACEN Pix API (`CobV` & `Devolucao`) Engine (`examples/apps/dfe_pix_bacen/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
-    - Formally proven SEFAZ Layout 4.00 invoice valuation (`vNF = (vProd - vDesc) + vST + vFrete + vIPI`), EC 87/2015 interstate DIFAL split, and Central Bank `bacen/pix-api` `CobV` settlement (`pix_cobv_positive_settlement_law`) and anti-over-refund conservation (`pix_devolucao_conservation_law`).
+12. **SEFAZ DFe (NF-e/NFC-e) & BACEN Pix API (`CobV` & `Devolucao`) Engine (`examples/apps/dfe_pix_bacen/main.src` — `1/1` test, `11/11` proofs, `Lume Verified ✓`):**
+    - Formally proven SEFAZ Layout 4.00 invoice valuation (`vNF = (vProd - vDesc) + vST + vFrete + vIPI`), EC 87/2015 interstate DIFAL + FCP split (`dfe_difal_total`, `dfe_fcp_total`, `dfe_difal_with_fcp_total`), and Central Bank `bacen/pix-api` `CobV` settlement (`pix_cobv_positive_settlement_law`) and clamped anti-over-refund conservation (`pix_devolucao_safe_refund_cap_law`, `pix_devolucao_conservation_law`).
 13. **OmniRoute Multi-LLM Circuit Breaker & Sovereignty Guard (`examples/apps/omniroute_guard/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
     - Resilient multi-provider AI gateway routing (`Primary Cloud -> Secondary Fallback -> Sovereign Local LLM`) with mathematically proven confidentiality isolation (`omniroute_confidential_sovereignty_law`), hard micro-credit budget caps (`omniroute_budget_conservation_law`), and concurrent pre-attempt in-flight token reservation (`omniroute_concurrent_inflight_safety_law`).
-14. **Brazilian Public Registry & Modulo-11 Verifier (`examples/apps/brasil_public_id/main.src` — `1/1` test, `6/6` proofs, `Lume Verified ✓`):**
-    - Formally verified Receita Federal / SEFAZ Modulo-11 check digit arithmetic (`0 <= dv <= 9`), 44-digit NF-e Access Key structural verification, and QSA corporate equity conservation (`qsa_equity_conservation_law`).
+14. **Brazilian Public Registry & Modulo-11 Verifier (`examples/apps/brasil_public_id/main.src` — `1/1` test, `9/9` proofs, `Lume Verified ✓`):**
+    - Formally verified Receita Federal / SEFAZ Modulo-11 check digit arithmetic (`0 <= dv <= 9`), Receita Federal / SERPRO July 2026 Alphanumeric CNPJ character valuation (`cnpj_alnum_char_value`, `cnpj_alnum_monotonic_law`), 44-digit NF-e Access Key structural verification (`nfe_access_key_exact_44_digits_law`), and QSA corporate equity conservation (`qsa_equity_conservation_law`).
 15. **Zero-Breach Forensic Anti-Spyware Triage Oracle (`examples/apps/zero_breach_forensics/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
     - Formally verified mobile/endpoint spyware triage oracle (`Pegasus`, `Predator`, `Candiru`, `Graphite` IOCs) enforcing zero-network isolation (`zbt_netguard_isolated`), fail-closed `PARTIAL_UNKNOWN` verdicts on incomplete checks (`zbt_fail_closed_never_clean_law`), strict non-escalation of heuristic leads (`zbt_heuristics_alone_never_compromised_law`), and STIX 2.1 indicator revocation safety (`zbt_withdrawn_stix_never_active_law`).
 
@@ -339,17 +339,19 @@ make -C bootstrap/lume0 asan                              # Stage-0 under Addres
 
 ---
 
-## Contributors
+## Contributors & AI-Assisted Engineering Co-Pilots
 
 | Contributor | Role & Focus |
 | :--- | :--- |
 | **[Ricardo Bueno (`@OmegaSoftDLL`)](https://github.com/OmegaSoftDLL)** | Creator, Language Architect & Principal Systems Engineer |
-| **[Claude (`@claude`)](https://github.com/claude)** | Self-Hosted Compiler, Formal Verification (`QF_LIA` / `QF_NIA` / Separation Logic) & Runtime Engineering |
-| **[Kimi (`@kimi-ai` / `@MoonshotAI`)](https://github.com/kimi-ai)** | Phase 0 Consolidation, Incremental Module Cache, Memory Arenas & Conformance Engineering |
-| **[AGY — Google Antigravity (`@antigravity-bot` / `@google-deepmind`)](https://github.com/antigravity-bot)** | Compiler Performance Optimization, Multi-Platform Release Packaging & Autonomous Verification |
+| **Claude (AI-Assisted Engineering & Formal Verification Co-Pilot)** | Self-Hosted Compiler, Formal Verification (`QF_LIA` / `QF_NIA` / Separation Logic) & Runtime Engineering |
+| **Kimi (AI-Assisted Engineering & Conformance Co-Pilot)** | Phase 0 Consolidation, Incremental Module Cache, Memory Arenas & Conformance Engineering |
+| **AGY — Antigravity (AI-Assisted Engineering & Autonomous Verification Co-Pilot)** | Compiler Performance Optimization, Multi-Platform Release Packaging & Autonomous Verification |
+
+> *Note: AI coding assistants listed under "AI-Assisted Engineering & Formal Verification Co-Pilots" were used as pair-programming tools under human architectural direction and do not imply organizational endorsement by their respective vendors.*
 
 ---
 
 ## License
 
-Distributed under the terms of both the [MIT License](LICENSE-MIT) and the [Apache License (Version 2.0)](LICENSE-APACHE), at your option. See [COPYRIGHT](COPYRIGHT) for details.
+Licensed under the [Apache License, Version 2.0 (`Apache-2.0`)](LICENSE-APACHE). See [COPYRIGHT](COPYRIGHT) for details.

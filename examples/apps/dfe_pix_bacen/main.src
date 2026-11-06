@@ -11,11 +11,24 @@ fn dfe_calc_vnf(v_prod: int, v_desc: int, v_st: int, v_frete: int, v_ipi: int) -
   ensures result >= 0 and result >= v_prod - v_desc
 = (v_prod - v_desc) + v_st + v_frete + v_ipi
 
-# 2. SEFAZ Interstate DIFAL Split (EC 87/2015: Destination State + FCP)
+# 2. SEFAZ Interstate DIFAL Split (EC 87/2015: Destination State Differential vICMSUFDest)
 fn dfe_difal_total(v_bc_uf_dest: int, aliq_interna_bp: int, aliq_inter_bp: int) -> int
   requires v_bc_uf_dest >= 0 and aliq_interna_bp >= aliq_inter_bp and aliq_inter_bp >= 0
   ensures result >= 0
 = (v_bc_uf_dest * (aliq_interna_bp - aliq_inter_bp)) / 10000
+
+# 2b. SEFAZ Destination FCP (Fundo de Combate a Pobreza, vFCPUFDest)
+fn dfe_fcp_total(v_bc_uf_dest: int, aliq_fcp_bp: int) -> int
+  requires v_bc_uf_dest >= 0 and aliq_fcp_bp >= 0
+  ensures result >= 0
+= (v_bc_uf_dest * aliq_fcp_bp) / 10000
+
+# 2c. SEFAZ Interstate DIFAL + FCP Combined Total (vICMSUFDest + vFCPUFDest, FCP up to 400 bps = 4%)
+fn dfe_difal_with_fcp_total(bc_cents: int, aliq_inter_bps: int, aliq_intra_bps: int, fcp_bps: int) -> int
+  requires bc_cents >= 0 and aliq_inter_bps >= 0 and aliq_intra_bps >= aliq_inter_bps and fcp_bps >= 0 and fcp_bps <= 400
+  ensures result >= 0
+= let raw = (bc_cents * ((aliq_intra_bps - aliq_inter_bps) + fcp_bps)) / 10000 in
+  if raw < 0 then 0 else raw
 
 # 3. BACEN Pix API (CobV): Due-Date Pix Charge with Interest, Fine & Abatement
 # Per bacen/pix-api CobV specification:
@@ -25,13 +38,21 @@ fn pix_cobv_valor_final(valor_original: int, multa: int, juros_mora: int, abatim
   ensures result > 0 and result == valor_original + multa + juros_mora - abatimento - desconto
 = valor_original + multa + juros_mora - abatimento - desconto
 
-# 4. BACEN Pix API (Devolucao / Return): Strict Over-Refund Prevention
-# Per bacen/pix-api /pix/{e2eid}/devolucao/{id}:
-# Sum of previous refunds + new refund must never exceed settled Pix amount
+# 4. BACEN Pix API (Devolucao / Return): Total Clamped Safe Refund Calculator
+# Clamps any requested refund to the remaining refundable balance without requiring pre-validation
+fn pix_devolucao_safe_refund_cents(original_cents: int, already_refunded_cents: int, requested_cents: int) -> int
+  requires original_cents >= 0 and already_refunded_cents >= 0 and already_refunded_cents <= original_cents and requested_cents >= 0
+  ensures result >= 0 and result <= requested_cents and already_refunded_cents + result <= original_cents
+= let available = original_cents - already_refunded_cents in
+  if requested_cents > available then available else requested_cents
+
+# 5. BACEN Pix API (Devolucao / Return): Strict Remaining Settled Balance
+# Uses pix_devolucao_safe_refund_cents so remaining balance is always conserved and non-negative
 fn pix_devolucao_saldo_restante(valor_liquidado: int, ja_devolvido: int, nova_devolucao: int) -> int
-  requires valor_liquidado > 0 and ja_devolvido >= 0 and nova_devolucao > 0 and ja_devolvido + nova_devolucao <= valor_liquidado
-  ensures result >= 0 and result + ja_devolvido + nova_devolucao == valor_liquidado
-= valor_liquidado - ja_devolvido - nova_devolucao
+  requires valor_liquidado >= 0 and ja_devolvido >= 0 and ja_devolvido <= valor_liquidado and nova_devolucao >= 0
+  ensures result >= 0 and result + ja_devolvido + pix_devolucao_safe_refund_cents(valor_liquidado, ja_devolvido, nova_devolucao) == valor_liquidado
+= let effective_refund = pix_devolucao_safe_refund_cents(valor_liquidado, ja_devolvido, nova_devolucao) in
+  valor_liquidado - ja_devolvido - effective_refund
 
 # --- Universal Algebraic Laws Proven by QF_LIA & Checked by lcert ---
 
@@ -45,10 +66,17 @@ law pix_cobv_positive_settlement_law(valor_original: int, multa: int, juros: int
     pix_cobv_valor_final(valor_original, multa, juros, abatimento, desconto) > 0
   else 1 == 1
 
+law pix_devolucao_safe_refund_cap_law(orig: int, refunded: int, req: int) =
+  if orig >= 0 and refunded >= 0 and refunded <= orig and req >= 0 then
+    let safe_ref = pix_devolucao_safe_refund_cents(orig, refunded, req) in
+    safe_ref >= 0 and safe_ref <= req and refunded + safe_ref <= orig
+  else 1 == 1
+
 law pix_devolucao_conservation_law(valor_liquidado: int, ja_devolvido: int, nova_devolucao: int) =
-  if valor_liquidado > 0 and ja_devolvido >= 0 and nova_devolucao > 0 and ja_devolvido + nova_devolucao <= valor_liquidado then
+  if valor_liquidado >= 0 and ja_devolvido >= 0 and ja_devolvido <= valor_liquidado and nova_devolucao >= 0 then
+    let eff = pix_devolucao_safe_refund_cents(valor_liquidado, ja_devolvido, nova_devolucao) in
     let saldo = pix_devolucao_saldo_restante(valor_liquidado, ja_devolvido, nova_devolucao) in
-    saldo + ja_devolvido + nova_devolucao == valor_liquidado
+    saldo + ja_devolvido + eff == valor_liquidado
   else 1 == 1
 
 # End-to-End Verification Suite
@@ -57,10 +85,18 @@ fn test_dfe_sefaz_and_bacen_pix_cobv() =
   let vnf = dfe_calc_vnf(100000, 5000, 12000, 4500, 8000) in
   # DIFAL: Base R$ 1.000,00 (100000 cents), internal 18% (1800 bps), interstate 12% (1200 bps) -> R$ 60,00 (6000 cents)
   let difal = dfe_difal_total(100000, 1800, 1200) in
+  # DIFAL + FCP (2% = 200 bps): Base R$ 1.000,00 -> 6000 + 2000 = R$ 80,00 (8000 cents)
+  let fcp_sep = dfe_fcp_total(100000, 200) in
+  let difal_fcp = dfe_difal_with_fcp_total(100000, 1200, 1800, 200) in
+  let fcp_only = dfe_difal_with_fcp_total(100000, 1800, 1800, 200) in
   # Pix CobV: R$ 500,00 (50000) + R$ 10,00 multa (1000) + R$ 5,00 juros (500) - R$ 20,00 abat (2000) - R$ 15,00 desc (1500) = 48000
   let cobv = pix_cobv_valor_final(50000, 1000, 500, 2000, 1500) in
   # Pix Devolucao: Settled 48000, already refunded 10000, new refund 15000 -> remaining 23000
   let saldo_pix = pix_devolucao_saldo_restante(48000, 10000, 15000) in
-  vnf == 119500 and difal == 6000 and cobv == 48000 and saldo_pix == 23000
+  # Boundary tests: zero refund, exact full refund, and over-refund request clamped to remaining balance
+  let b_zero_ref = pix_devolucao_safe_refund_cents(48000, 10000, 0) in
+  let b_over_ref = pix_devolucao_safe_refund_cents(48000, 40000, 25000) in
+  let b_over_saldo = pix_devolucao_saldo_restante(48000, 40000, 25000) in
+  vnf == 119500 and difal == 6000 and fcp_sep == 2000 and difal_fcp == 8000 and difal + fcp_sep == difal_fcp and fcp_only == 2000 and cobv == 48000 and saldo_pix == 23000 and b_zero_ref == 0 and b_over_ref == 8000 and b_over_saldo == 0
 
-print f"[DFE-PIX-BACEN] NFe_vNF_cents={dfe_calc_vnf(100000, 5000, 12000, 4500, 8000)} DIFAL_cents={dfe_difal_total(100000, 1800, 1200)} Pix_CobV_cents={pix_cobv_valor_final(50000, 1000, 500, 2000, 1500)} Pix_Devolucao_Saldo_cents={pix_devolucao_saldo_restante(48000, 10000, 15000)}"
+print f"[DFE-PIX-BACEN] NFe_vNF_cents={dfe_calc_vnf(100000, 5000, 12000, 4500, 8000)} DIFAL_FCP_cents={dfe_difal_with_fcp_total(100000, 1200, 1800, 200)} Pix_CobV_cents={pix_cobv_valor_final(50000, 1000, 500, 2000, 1500)} Pix_Devolucao_Saldo_cents={pix_devolucao_saldo_restante(48000, 10000, 15000)}"

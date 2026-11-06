@@ -5,25 +5,26 @@
 # Zero-Float Basis-Point Arithmetic + QF_LIA Formal Proof (Lume Verified ✓)
 # ============================================================================
 
-const JANELA_SEGUNDOS: int = 86400
-const PROF_MAX: int = 5
+const JANELA_RASTREIO_SEG: int = 86400
+const PROFUNDIDADE_MAX_SALTOS: int = 5
 const VALOR_MIN_CENTAVOS: int = 200000
+const LIMIAR_CONTA_PASSAGEM_BPS: int = 8000
 const LIMIAR_LARANJA_BPS: int = 6000
-const LIMIAR_REPASSE_SAQUE_BPS: int = 3000
+const LIMIAR_SAQUE_BPS: int = 3000
 
 fn clamp_bps(val: int, lo: int, hi: int) -> int
   requires lo <= hi
   ensures result >= lo and result <= hi
 = if val < lo then lo else if val > hi then hi else val
 
-# Step A: Temporal Window & Minimum Value Filter (ts in [cv, cv + 86400])
+# Step A: Temporal Window & Minimum Value Filter (ts in [cv, cv + JANELA_RASTREIO_SEG])
 fn pix_edge_in_window(ts: int, cv: int, valor_cents: int, prof: int) -> int
   requires cv >= 0 and prof >= 0
   ensures result >= 0 and result <= 1
-= if prof >= 5 then 0
+= if prof > PROFUNDIDADE_MAX_SALTOS then 0
   else if ts < cv then 0
-  else if ts > cv + 86400 then 0
-  else if valor_cents < 200000 then 0
+  else if ts > cv + JANELA_RASTREIO_SEG then 0
+  else if valor_cents < VALOR_MIN_CENTAVOS then 0
   else 1
 
 # Step B: Exact Basis-Point Suspicion Score (0..10000 bps == 0.0000..1.0000)
@@ -32,7 +33,7 @@ fn pix_suspicion_bps(repasse_bps: int, rapidez_bps: int, in_deg: int) -> int
   requires repasse_bps >= 0 and repasse_bps <= 10000 and rapidez_bps >= 0 and rapidez_bps <= 10000 and in_deg >= 0
   ensures result >= 0 and result <= 10000
 = let pequeno_bps = if in_deg < 50 then 10000 else 0 in
-  (4 * repasse_bps + 5 * rapidez_bps + pequeno_bps) / 10
+  clamp_bps((4 * repasse_bps + 5 * rapidez_bps + pequeno_bps) / 10, 0, 10000)
 
 # Step B Helper: Rapidez score in basis points from delta_t = primeiro_out - cv
 fn pix_rapidez_bps(delta_seconds: int) -> int
@@ -41,13 +42,29 @@ fn pix_rapidez_bps(delta_seconds: int) -> int
 = if delta_seconds >= 3600 then 0
   else ((3600 - delta_seconds) * 10000) / 3600
 
+# Step C: Composite Hop Evaluation (Window Filter + Clamped Basis-Point Score)
+fn pix_trace_hop_risk_bps(
+  tx_epoch: int,
+  fraud_epoch: int,
+  hop_depth: int,
+  repasse_bps: int,
+  rapidez_bps: int,
+  pequeno_bps: int
+) -> int
+  requires fraud_epoch >= 0 and hop_depth >= 0 and repasse_bps >= 0 and repasse_bps <= 10000 and rapidez_bps >= 0 and rapidez_bps <= 10000 and pequeno_bps >= 0 and pequeno_bps <= 10000
+  ensures result >= 0 and result <= 10000
+= let in_win = pix_edge_in_window(tx_epoch, fraud_epoch, VALOR_MIN_CENTAVOS, hop_depth) in
+  if in_win == 0 then 0
+  else clamp_bps((4 * repasse_bps + 5 * rapidez_bps + pequeno_bps) / 10, 0, 10000)
+
 # Step D: Account Role Classification
-# Returns: 2 = Laranja (Money Mule), 1 = Conta de Saque (Cash-out), 0 = Normal
+# Returns: 2 = Laranja / Conta de Passagem (Money Mule), 1 = Conta de Saque (Cash-out), 0 = Normal
 fn pix_classify_node(suspeita_bps: int, repasse_bps: int, de_laranja_count: int) -> int
   requires suspeita_bps >= 0 and suspeita_bps <= 10000 and repasse_bps >= 0 and repasse_bps <= 10000 and de_laranja_count >= 0
   ensures result >= 0 and result <= 2
-= if suspeita_bps >= 6000 then 2
-  else if de_laranja_count >= 3 and repasse_bps < 3000 then 1
+= if suspeita_bps >= LIMIAR_LARANJA_BPS then 2
+  else if repasse_bps >= LIMIAR_CONTA_PASSAGEM_BPS then 2
+  else if de_laranja_count >= 3 and repasse_bps < LIMIAR_SAQUE_BPS then 1
   else 0
 
 # BACEN MED (Mecanismo Especial de Devolucao) Precautionary Freeze
@@ -58,19 +75,18 @@ fn pix_med_freeze_cents(remaining_loss_cents: int, mule_balance_cents: int) -> i
 = if mule_balance_cents < remaining_loss_cents then mule_balance_cents else remaining_loss_cents
 
 # Universal Algebraic Laws Proven by QF_LIA & Checked by lcert
-law pix_med_conservation_law(loss: int, bal: int) =
-  if loss >= 0 and bal >= 0 then
-    let frozen = pix_med_freeze_cents(loss, bal) in
-    frozen + (loss - frozen) == loss
+law pix_med_conservation_law(loss: int, balance: int) =
+  if loss >= 0 and balance >= 0 then
+    pix_med_freeze_cents(loss, balance) + (loss - pix_med_freeze_cents(loss, balance)) == loss and pix_med_freeze_cents(loss, balance) <= balance
   else 1 == 1
 
-law pix_med_cap_law(loss: int, bal: int) =
-  if loss >= 0 and bal >= 0 then
-    pix_med_freeze_cents(loss, bal) <= loss
+law pix_med_cap_law(loss: int, balance: int) =
+  if loss >= 0 and balance >= 0 then
+    pix_med_freeze_cents(loss, balance) <= loss
   else 1 == 1
 
-# Real Multi-Hop Fraud Ring Simulation & Verification
-fn test_pix_fraud_ring_trace() =
+# Real Multi-Hop Fraud Ring Simulation & Boundary Verification
+fn test_pix_fraud_trace() =
   # Hop 1: Laranja_A receives R$ 50,000.00 (5,000,000 cents) and forwards 95% in 180s (in_deg = 12)
   let rap_a = pix_rapidez_bps(180) in
   let susp_a = pix_suspicion_bps(9500, rap_a, 12) in
@@ -85,6 +101,15 @@ fn test_pix_fraud_ring_trace() =
   let susp_saque = pix_suspicion_bps(1000, 0, 60) in
   let role_saque = pix_classify_node(susp_saque, 1000, 3) in
 
+  # Boundary checks: 5999 vs 6000 bps, delta == 86400 vs 86401, hop_depth == 5 vs 6
+  let b_role_below = pix_classify_node(5999, 5000, 1) in
+  let b_role_at = pix_classify_node(6000, 5000, 1) in
+  let b_passagem = pix_classify_node(4500, 8000, 1) in
+  let b_win_exact = pix_edge_in_window(1000 + 86400, 1000, 200000, 5) in
+  let b_win_expired = pix_edge_in_window(1000 + 86401, 1000, 200000, 5) in
+  let b_hop_ok = pix_trace_hop_risk_bps(1000 + 86400, 1000, 5, 9000, 8000, 10000) in
+  let b_hop_too_deep = pix_trace_hop_risk_bps(1000 + 86400, 1000, 6, 9000, 8000, 10000) in
+
   # Execute BACEN MED Precautionary Block across the traced ring for R$ 50,000.00 victim claim
   let victim_claim = 5000000 in
   let freeze_a = pix_med_freeze_cents(victim_claim, 1200000) in
@@ -94,6 +119,6 @@ fn test_pix_fraud_ring_trace() =
   let freeze_saque = pix_med_freeze_cents(rem_after_b, 3500000) in
   let total_recovered = freeze_a + freeze_b + freeze_saque in
 
-  role_a == 2 and role_b == 2 and role_saque == 1 and total_recovered == 5000000
+  role_a == 2 and role_b == 2 and role_saque == 1 and b_role_below == 0 and b_role_at == 2 and b_passagem == 2 and b_win_exact == 1 and b_win_expired == 0 and b_hop_ok == 8600 and b_hop_too_deep == 0 and total_recovered == 5000000
 
-print f"[PIX-TRACE] Laranja_A_bps={pix_suspicion_bps(9500, pix_rapidez_bps(180), 12)} Laranja_B_bps={pix_suspicion_bps(9000, pix_rapidez_bps(360), 8)} Saque_role={pix_classify_node(pix_suspicion_bps(1000, 0, 60), 1000, 3)} MED_Recovered_Cents={pix_med_freeze_cents(5000000, 1200000) + pix_med_freeze_cents(3800000, 1800000) + pix_med_freeze_cents(2000000, 3500000)}"
+print f"[PIX-TRACE] Laranja_A_bps={pix_suspicion_bps(9500, pix_rapidez_bps(180), 12)} Laranja_B_bps={pix_suspicion_bps(9000, pix_rapidez_bps(360), 8)} Hop5_Risk_bps={pix_trace_hop_risk_bps(87400, 1000, 5, 9000, 8000, 10000)} Saque_role={pix_classify_node(pix_suspicion_bps(1000, 0, 60), 1000, 3)} MED_Recovered_Cents={pix_med_freeze_cents(5000000, 1200000) + pix_med_freeze_cents(3800000, 1800000) + pix_med_freeze_cents(2000000, 3500000)}"

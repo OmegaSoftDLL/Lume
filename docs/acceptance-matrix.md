@@ -13,7 +13,7 @@ Track L claims only. A PASS applies to the exact scoped behavior and cited comma
 - **UNKNOWN**: evidence is missing, insufficient, not independently checked where required, or not established for the current revision.
 - Implementation state (`shipped`, `partial`, `model`, or `planned`) is separate from evidence result.
 
-Current declared results: **24 PASS**, **0 FAIL**, **0 UNKNOWN**. These counts are not a maturity score.
+Current declared results: **27 PASS**, **0 FAIL**, **0 UNKNOWN**. These counts are not a maturity score.
 
 | Claim ID | Implementation | Result | Scoped claim | Evidence | Tracking |
 |---|---|---|---|---|---|
@@ -41,6 +41,9 @@ Current declared results: **24 PASS**, **0 FAIL**, **0 UNKNOWN**. These counts a
 | `L.NET.TLS13_INTEROP` | partial | **PASS** | TLS 1.3 clients and servers interoperate with an independent implementation using standard cryptography, certificate handling, and adversarial protocol tests. | `track-l-net-tls13-wire-loopback` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.UDP_CHECKSUM` | partial | **PASS** | The tested UDP packet helper computes an RFC 1071-style checksum and rejects modified payloads and lengths. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 | `L.NET.UDP_LOOPBACK` | partial | **PASS** | Native Linux UDP loopback sends and receives the pinned datagram. | `track-l-net-native` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `V.KERNEL.SOUNDNESS` | shipped | **PASS** | The standalone proof-certificate kernel independently re-derives QF_LIA/QF_NIA, termination, separation-logic disjointness, and inductive temporal proof terms and rejects refuted or malformed obligations. | `stream2-kernel-soundness` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `V.SHA256.KAT` | shipped | **PASS** | The proof-certificate kernel SHA-256 implementation matches the official NIST FIPS 180-4 Known-Answer Test vectors for empty and 'abc' inputs. | `stream2-sha256-nist-kat` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
+| `V.EVIDENCE.RENEW` | shipped | **PASS** | Portable evidence bundles enforce transitive dependency invalidation upon digest drift, renew deterministically from matching digests, and classify runtime_checked obligations as UNKNOWN. | `stream2-evidence-renew` | [#257](https://github.com/OmegaSoftDLL/lume/issues/257); [#318](https://github.com/OmegaSoftDLL/lume/pull/318) |
 
 ## Sources, evidence, and boundaries
 
@@ -427,6 +430,54 @@ Expected: The native output contains the pinned UDP loopback payload.
 Artifacts: `bootstrap/lume0/tests/run.sh`, `compiler/stage1/track_l_domains_ok.src`, `tests/conformance/stage1/track_l_domains_ok_asm.expected`.
 
 Boundary: PASS is limited to the tested Linux loopback exchange.
+
+### `V.KERNEL.SOUNDNESS`
+
+Source: `compiler/stage1/lcert.src`.
+
+Evidence `stream2-kernel-soundness`:
+
+```sh
+./lume test compiler/stage1/lcert.src
+```
+
+Expected: test_lcert_terminates_and_soundness verifies valid termination, QF_LIA/QF_NIA, and sep_disjoint proof terms and rejects refuted or malformed step obligations.
+
+Artifacts: `compiler/stage1/lcert.src`.
+
+Boundary: PASS covers standalone S-expression parsing and Fourier-Motzkin QF_LIA/QF_NIA proof-term re-derivation in compiler/stage1/lcert.src.
+
+### `V.SHA256.KAT`
+
+Source: `compiler/stage1/lcert.src`, `compiler/stage1/certificate_hash_verifier_ok.src`.
+
+Evidence `stream2-sha256-nist-kat`:
+
+```sh
+./lume test compiler/stage1/lcert.src
+```
+
+Expected: test_lcert_sha256_nist_kat verifies the NIST FIPS 180-4 SHA-256 digests for "" (e3b0c442...) and "abc" (ba7816bf...).
+
+Artifacts: `compiler/stage1/lcert.src`, `compiler/stage1/certificate_hash_verifier_ok.src`.
+
+Boundary: PASS covers official NIST FIPS 180-4 KAT verification on empty and 'abc' byte strings.
+
+### `V.EVIDENCE.RENEW`
+
+Source: `compiler/stage1/levidence.src`.
+
+Evidence `stream2-evidence-renew`:
+
+```sh
+./lume test compiler/stage1/levidence.src
+```
+
+Expected: The levidence.src unit tests verify transitive dependency invalidation, deterministic evidence renewal, and the runtime_checked -> UNKNOWN trust boundary.
+
+Artifacts: `compiler/stage1/levidence.src`.
+
+Boundary: PASS covers compiler/stage1/levidence.src transitive invalidation and runtime_checked -> UNKNOWN boundary enforcement.
 
 ## Consumer commands
 

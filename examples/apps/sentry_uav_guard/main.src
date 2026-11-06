@@ -7,22 +7,28 @@
 
 const MIN_SAFE_ALT_MM: int = 5000
 const MAX_SAFE_ALT_MM: int = 120000
+const PROBE_GROWTH_MM_S: int = 150
 
-# 1. SIGNAL: Deterministic Linear Trajectory Forecaster (position in mm)
-fn signal_predict_pos_mm(pos_mm: int, vel_mm_s: int, horizon_s: int) -> int
+# 1. SIGNAL: Deterministic Linear Altitude Trajectory Forecaster (position in mm)
+fn uav_predict_alt_mm(alt_mm: int, vel_z_mm_s: int, horizon_s: int) -> int
   requires horizon_s >= 0
-  ensures result == pos_mm + (vel_mm_s * horizon_s)
-= pos_mm + (vel_mm_s * horizon_s)
+  ensures result == alt_mm + (vel_z_mm_s * horizon_s)
+= alt_mm + (vel_z_mm_s * horizon_s)
 
 # 2. PROBE: Calibrated 95% Bivariate Confidence Radius (mm)
-# Grows monotonically with forecast horizon_s and wind turbulence factor
-fn probe_radius_95_mm(base_sigma_mm: int, growth_mm_s: int, horizon_s: int) -> int
-  requires base_sigma_mm >= 0 and growth_mm_s >= 0 and horizon_s >= 0
-  ensures result >= base_sigma_mm
-= base_sigma_mm + (growth_mm_s * horizon_s)
+# Grows monotonically with forecast horizon_s at PROBE_GROWTH_MM_S (150 mm/s)
+fn uav_confidence_radius_mm(base_r_mm: int, horizon_s: int) -> int
+  requires base_r_mm >= 0 and horizon_s >= 0
+  ensures result >= base_r_mm and result == base_r_mm + (PROBE_GROWTH_MM_S * horizon_s)
+= base_r_mm + (PROBE_GROWTH_MM_S * horizon_s)
 
-# 3. Ring-0 Airspace Geofence Enforcer
-# Clamps predicted altitude taking the worst-case PROBE 95% uncertainty margin into account
+# 3. Worst-Case Lower Altitude Bound (Predicted Altitude minus 95% PROBE Uncertainty)
+fn uav_worst_case_floor_mm(alt_mm: int, radius_95_mm: int) -> int
+  requires radius_95_mm >= 0
+  ensures result <= alt_mm
+= alt_mm - radius_95_mm
+
+# 4. Ring-0 Airspace Geofence Clamp
 fn uav_geofence_guard_alt_mm(pred_alt_mm: int, min_alt_mm: int, max_alt_mm: int) -> int
   requires min_alt_mm <= max_alt_mm
   ensures result >= min_alt_mm and result <= max_alt_mm
@@ -30,11 +36,19 @@ fn uav_geofence_guard_alt_mm(pred_alt_mm: int, min_alt_mm: int, max_alt_mm: int)
   else if pred_alt_mm > max_alt_mm then max_alt_mm
   else pred_alt_mm
 
-# 4. Worst-Case Lower Altitude Bound (Predicted Altitude minus 95% PROBE Uncertainty)
-fn uav_worst_case_floor_mm(alt_mm: int, radius_95_mm: int) -> int
-  requires alt_mm >= 0 and radius_95_mm >= 0
-  ensures result <= alt_mm
-= alt_mm - radius_95_mm
+# 5. End-to-End Safe Altitude Guard (SIGNAL + PROBE Worst-Case Floor + Geofence Clamp)
+fn uav_safe_altitude_guard_mm(
+  alt_mm: int,
+  vel_z_mm_s: int,
+  horizon_s: int,
+  base_r_mm: int,
+  floor_mm: int,
+  ceiling_mm: int
+) -> int
+  requires horizon_s >= 0 and base_r_mm >= 0 and floor_mm <= ceiling_mm
+  ensures result >= floor_mm and result <= ceiling_mm
+= let worst_floor = uav_worst_case_floor_mm(uav_predict_alt_mm(alt_mm, vel_z_mm_s, horizon_s), uav_confidence_radius_mm(base_r_mm, horizon_s)) in
+  uav_geofence_guard_alt_mm(worst_floor, floor_mm, ceiling_mm)
 
 # Universal Safety Laws (QF_LIA + lcert)
 law uav_geofence_ceiling_law(alt: int, lo: int, hi: int) =
@@ -43,19 +57,33 @@ law uav_geofence_ceiling_law(alt: int, lo: int, hi: int) =
 law uav_geofence_floor_law(alt: int, lo: int, hi: int) =
   if lo <= hi then uav_geofence_guard_alt_mm(alt, lo, hi) >= lo else 1 == 1
 
-law probe_uncertainty_monotonic_law(sigma: int, growth: int) =
-  if sigma >= 0 and growth >= 0 then
-    probe_radius_95_mm(sigma, growth, 5) >= sigma
+law uav_radius_monotonic_law(base_r: int, h1: int, h2: int) =
+  if base_r >= 0 and h1 >= 0 and h1 <= h2 then
+    uav_confidence_radius_mm(base_r, h1) <= uav_confidence_radius_mm(base_r, h2)
   else 1 == 1
 
-fn test_sentry_uav_pipeline() =
-  # UAV at 45,000 mm (45m) climbing at +4,000 mm/s (4 m/s) over a 10s horizon -> 85,000 mm (85m)
-  let pred_alt = signal_predict_pos_mm(45000, 4000, 10) in
-  # PROBE 95% confidence radius: 500 mm base + 150 mm/s * 10s = 2,000 mm (2m)
-  let r95 = probe_radius_95_mm(500, 150, 10) in
-  let safe_alt = uav_geofence_guard_alt_mm(pred_alt, 5000, 120000) in
-  # Test ceiling breach: climbing to 145,000 mm is clamped to 120,000 mm (120m ceiling)
-  let clamped_ceiling = uav_geofence_guard_alt_mm(145000, 5000, 120000) in
-  pred_alt == 85000 and r95 == 2000 and safe_alt == 85000 and clamped_ceiling == 120000
+law uav_safe_altitude_envelope_law(alt: int, vel_z: int, h: int, base_r: int, lo: int, hi: int) =
+  if h >= 0 and base_r >= 0 and lo <= hi then
+    let guarded = uav_safe_altitude_guard_mm(alt, vel_z, h, base_r, lo, hi) in
+    guarded >= lo and guarded <= hi
+  else 1 == 1
 
-print f"[SENTRY-UAV] SIGNAL_Alt_mm={signal_predict_pos_mm(45000, 4000, 10)} PROBE_R95_mm={probe_radius_95_mm(500, 150, 10)} Geofence_Ceiling_mm={uav_geofence_guard_alt_mm(145000, 5000, 120000)}"
+fn test_sentry_uav_guard() =
+  # UAV at 45,000 mm (45m) climbing at +4,000 mm/s (4 m/s) over a 10s horizon -> 85,000 mm (85m)
+  let pred_alt = uav_predict_alt_mm(45000, 4000, 10) in
+  # PROBE 95% confidence radius: 500 mm base + 150 mm/s * 10s = 2,000 mm (2m)
+  let r95 = uav_confidence_radius_mm(500, 10) in
+  # Worst-case altitude floor: 85,000 - 2,000 = 83,000 mm
+  let safe_alt = uav_safe_altitude_guard_mm(45000, 4000, 10, 500, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM) in
+
+  # Boundary tests: floor (4999 -> 5000, 5000 -> 5000), ceiling (120000 -> 120000, 120001 -> 120000), horizon 0
+  let b_floor_below = uav_geofence_guard_alt_mm(MIN_SAFE_ALT_MM - 1, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM) in
+  let b_floor_exact = uav_geofence_guard_alt_mm(MIN_SAFE_ALT_MM, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM) in
+  let b_ceil_exact = uav_geofence_guard_alt_mm(MAX_SAFE_ALT_MM, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM) in
+  let b_ceil_above = uav_geofence_guard_alt_mm(MAX_SAFE_ALT_MM + 1, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM) in
+  let b_steep_descent = uav_safe_altitude_guard_mm(8000, -500, 10, 500, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM) in
+  let b_zero_horizon = uav_confidence_radius_mm(500, 0) in
+
+  pred_alt == 85000 and r95 == 2000 and safe_alt == 83000 and b_floor_below == 5000 and b_floor_exact == 5000 and b_ceil_exact == 120000 and b_ceil_above == 120000 and b_steep_descent == 5000 and b_zero_horizon == 500
+
+print f"[SENTRY-UAV] SIGNAL_Alt_mm={uav_predict_alt_mm(45000, 4000, 10)} PROBE_R95_mm={uav_confidence_radius_mm(500, 10)} Safe_Guard_Alt_mm={uav_safe_altitude_guard_mm(45000, 4000, 10, 500, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM)} Geofence_Ceiling_mm={uav_geofence_guard_alt_mm(145000, MIN_SAFE_ALT_MM, MAX_SAFE_ALT_MM)}"
