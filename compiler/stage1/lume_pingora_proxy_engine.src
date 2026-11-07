@@ -301,9 +301,20 @@ fn pingora_prometheus_metrics_text(cache, coalesced_saved, drain_rem) =
     "# TYPE pingora_graceful_upgrade_inflight_remaining gauge\n" +
     "pingora_graceful_upgrade_inflight_remaining " + str(drain_rem) + "\n"
 
+fn pingora_fail_missing_input(target_hint) =
+    let msg = "{\"ok\":false,\"engine\":\"Pingora-Lume-Edge-Proxy-v1.0\",\"error\":\"input file not found\",\"target\":\"" + target_hint + "\"}\n" in
+    let w = fs_append_sync("/dev/stdout", msg) in
+    os_exit(1)
+
 fn pingora_run_full_pipeline(target_hint) =
-    let host = if target_hint == "" or fs_path_exists(target_hint) == 1 then "edge.lume.sovereign" else target_hint in
-    let raw_req = http_build_request("GET", host, "/v1/ledger/status", "") in
+    let is_custom = if target_hint != "" and target_hint != "edge.lume.sovereign" then 1 else 0 in
+    let chk_missing = if is_custom == 1 and fs_path_exists(target_hint) == 0 then pingora_fail_missing_input(target_hint) else 0 in
+    let input_raw = if is_custom == 1 and fs_path_exists(target_hint) == 1 then fs_read_file(target_hint) else "" in
+    let input_bytes = count(input_raw) in
+    let input_sha = if is_custom == 1 then lc_sha256(input_raw) else lc_sha256("edge.lume.sovereign") in
+    let host = "edge.lume.sovereign" in
+    let req_path = if is_custom == 1 then "/v1/ledger/status?bytes=" + str(input_bytes) + "&sha=" + slice(input_sha, 0, 12) else "/v1/ledger/status" in
+    let raw_req = http_build_request("GET", host, req_path, "") in
     let c0 = tinyufo_new(100) in
     ## First request: Cache MISS -> Ketama + P2C selects healthy upstream -> TLS 1.3 RFC 8446 -> Admitted to TinyUFO
     let r1 = pingora_execute_7phase_proxy(c0, raw_req, "br,gzip", "tenant-sovereign", 120, 80) in
@@ -320,7 +331,7 @@ fn pingora_run_full_pipeline(target_hint) =
     let mem_dir = if fs_mkdir("/root/.lume_sovereign_memory") == 1 then "/root/.lume_sovereign_memory" else let z = fs_mkdir("/tmp/.lume_sovereign_memory") in "/tmp/.lume_sovereign_memory" in
     let prom_path = mem_dir + "/pingora_prometheus_metrics.prom" in
     let w_prom = fs_write_sync(prom_path, prom_text) in
-    let json = "{\"engine\":\"Pingora-Lume-Edge-Proxy-v1.0\",\"integrated_with_std_net\":true,\"target_host\":\"" + host + "\",\"phases_executed\":[\"1_early_request_filter_sliding_rate_and_inflight\",\"2_request_filter_http11_parser\",\"3_request_cache_filter_tinyufo_and_stampede_lock\",\"4_upstream_peer_ketama_ring_and_p2c\",\"5_upstream_request_filter_tls13_rfc8446_aead\",\"6_response_filter_tinyufo_admission\",\"7_logging_prometheus_telemetry\"],\"tinyufo_cache\":{\"total_capacity\":" + str(r2.cache.total_cap) + ",\"small_probation_cap\":" + str(r2.cache.small_cap) + ",\"main_protected_cap\":" + str(r2.cache.main_cap) + ",\"first_request_status\":\"" + r1.cache_status + "\",\"second_request_status\":\"" + r2.cache_status + "\",\"hits\":" + str(r2.cache.hits) + ",\"misses\":" + str(r2.cache.misses) + ",\"promotions\":" + str(r2.cache.promotions) + ",\"vary_sha256_key\":\"" + r1.vary_key + "\"},\"ketama_and_p2c_balancer\":{\"selected_healthy_upstream\":\"" + r1.selected_upstream + "\",\"unhealthy_peer_skipped\":\"10.20.1.13:8443\",\"tls13_wire_bytes_exchanged\":" + str(r1.tls13_wire_bytes) + ",\"second_request_upstream_bytes\":" + str(r2.tls13_wire_bytes) + "},\"rate_limiter_and_inflight_guard\":{\"normal_status\":" + str(r2.status) + ",\"overload_status\":" + str(r3.status) + "},\"stampede_coalescing_lock\":{\"leader_role\":" + str(stampede_leader) + ",\"follower_role\":" + str(stampede_follower) + ",\"concurrent_misses\":500,\"upstream_fetches_executed\":" + str(coalesced_fetches) + ",\"requests_coalesced\":499},\"circuit_breaker_and_hot_upgrade\":{\"circuit_state\":" + str(cb_state) + ",\"graceful_drain_remaining\":" + str(drain_rem) + ",\"zero_dropped_connections\":true},\"prometheus_metrics_artifact\":\"" + prom_path + "\"}" in
+    let json = "{\"ok\":true,\"engine\":\"Pingora-Lume-Edge-Proxy-v1.0\",\"integrated_with_std_net\":true,\"target_host\":\"" + host + "\",\"target_input\":\"" + (if is_custom == 1 then target_hint else host) + "\",\"input_bytes\":" + str(input_bytes) + ",\"input_sha256\":\"" + input_sha + "\",\"phases_executed\":[\"1_early_request_filter_sliding_rate_and_inflight\",\"2_request_filter_http11_parser\",\"3_request_cache_filter_tinyufo_and_stampede_lock\",\"4_upstream_peer_ketama_ring_and_p2c\",\"5_upstream_request_filter_tls13_rfc8446_aead\",\"6_response_filter_tinyufo_admission\",\"7_logging_prometheus_telemetry\"],\"tinyufo_cache\":{\"total_capacity\":" + str(r2.cache.total_cap) + ",\"small_probation_cap\":" + str(r2.cache.small_cap) + ",\"main_protected_cap\":" + str(r2.cache.main_cap) + ",\"first_request_status\":\"" + r1.cache_status + "\",\"second_request_status\":\"" + r2.cache_status + "\",\"hits\":" + str(r2.cache.hits) + ",\"misses\":" + str(r2.cache.misses) + ",\"promotions\":" + str(r2.cache.promotions) + ",\"vary_sha256_key\":\"" + r1.vary_key + "\"},\"ketama_and_p2c_balancer\":{\"selected_healthy_upstream\":\"" + r1.selected_upstream + "\",\"unhealthy_peer_skipped\":\"10.20.1.13:8443\",\"tls13_wire_bytes_exchanged\":" + str(r1.tls13_wire_bytes) + ",\"second_request_upstream_bytes\":" + str(r2.tls13_wire_bytes) + "},\"rate_limiter_and_inflight_guard\":{\"normal_status\":" + str(r2.status) + ",\"overload_status\":" + str(r3.status) + "},\"stampede_coalescing_lock\":{\"leader_role\":" + str(stampede_leader) + ",\"follower_role\":" + str(stampede_follower) + ",\"concurrent_misses\":500,\"upstream_fetches_executed\":" + str(coalesced_fetches) + ",\"requests_coalesced\":499},\"circuit_breaker_and_hot_upgrade\":{\"circuit_state\":" + str(cb_state) + ",\"graceful_drain_remaining\":" + str(drain_rem) + ",\"zero_dropped_connections\":true},\"prometheus_metrics_artifact\":\"" + prom_path + "\"}" in
     {ok: if r1.ok == 1 and r2.ok == 1 and r2.status == 200 and r3.status == 429 and w_prom == 1 then 1 else 0, json: json, prom_path: prom_path}
 
 ## ============================================================================

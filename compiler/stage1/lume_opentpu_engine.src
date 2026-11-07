@@ -408,8 +408,14 @@ fn otpu_synthesize_isa_program(target_path, m_rows, mcols, da_s, misses) =
     + "  WAITW  R4, R3,   dma_slots=" + str(misses) + "      ; word=" + str(w_waitw) + " (MoE PCIe DMA overlap barrier)\n"
     + "  BAR    R0, R0,   sync=0           ; word=" + str(w_bar) + "\n"
 
+fn otpu_fail_missing_input(target_path) =
+    let msg = "{\"ok\":false,\"engine\":\"OpenTPU-Lume-Systolic-ISA-Engine-v1.0\",\"error\":\"input file not found\",\"target\":\"" + target_path + "\"}\n" in
+    let w = fs_append_sync("/dev/stdout", msg) in
+    os_exit(1)
+
 fn otpu_run_full_pipeline(target_path, out_dir) =
-    let actual_path = if fs_path_exists(target_path) == 1 then target_path else "compiler/stage1/lume_ncm_engine.src" in
+    let chk_missing = if target_path != "" and fs_path_exists(target_path) == 0 then otpu_fail_missing_input(target_path) else 0 in
+    let actual_path = if target_path != "" then target_path else "compiler/stage1/lume_ncm_engine.src" in
     let raw = if fs_path_exists(actual_path) == 1 then fs_read_file(actual_path) else "fn fallback(x: int) -> int requires x >= 0 ensures result >= 0 = x\n" in
     let rev_m = egm_scan_source_metrics(raw) in
     let _ ncm_json = ncm_run_full_pipeline(actual_path, out_dir) in
@@ -442,10 +448,13 @@ fn otpu_run_full_pipeline(target_path, out_dir) =
     let w1_io = if out_dir != "" then fs_write_sync(isa_file, isa_txt) else 1 in
     let report_json =
         "{"
+        + "\"ok\":true,"
         + "\"engine\":\"OpenTPU-Lume-Systolic-ISA-Engine-v1.0\","
         + "\"reference_architecture\":\"https://github.com/OmegaSoftDLL/openTPU\","
         + "\"integrated_with_neural_kernel_llm_forge_ncm\":true,"
         + "\"target_path\":\"" + actual_path + "\","
+        + "\"input_bytes\":" + str(count(raw)) + ","
+        + "\"input_sha256\":\"" + lc_sha256(raw) + "\","
         + "\"isa_v1_systolic_mxu\":{"
             + "\"mcols\":8,"
             + "\"vector_lanes_d\":128,"

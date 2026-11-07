@@ -76,7 +76,7 @@ run_l0() {
 }
 
 is_linux_x86_64() {
-    [ -z "${LUME0_RUNNER:-}" ] && [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ]
+    [ -z "${LUME0_RUNNER:-}" ] && [ -z "${LUME_FORCE_SEED:-}" ] && [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ]
 }
 
 # Locate or build the native self-hosted compiler (lumec) and assembler (lasm).
@@ -189,41 +189,74 @@ sha256_file() {
     fi
 }
 
+has_implicit_decimal() {
+    awk '
+        /^[ \t]*fn[ \t]+decimal_add[ \t(]/ { has_def = 1 }
+        {
+            line = $0
+            gsub(/"([^"\\]|\\.)*"/, "", line)
+            sub(/#.*/, "", line)
+            if (line ~ /(^|[^a-zA-Z0-9_.])[0-9]+\.[0-9]+([^a-zA-Z0-9_.]|$)/) has_dec = 1
+        }
+        END { exit !(has_dec && !has_def) }
+    ' "$1"
+}
+
+resolve_mod_candidate() {
+    _rmdir=$1
+    _ru=$2
+    _ucand=""
+    if [ -f "$_rmdir/$_ru.src" ] && [ "$_rmdir/$_ru.src" != "${_ENTRY_SRC:-}" ] && ! [ "$_rmdir/$_ru.src" -ef "${_ENTRY_SRC:-}" ]; then
+        _ucand="$_rmdir/$_ru.src"
+    elif [ -f "$_rmdir/src/$_ru.src" ] && [ "$_rmdir/src/$_ru.src" != "${_ENTRY_SRC:-}" ] && ! [ "$_rmdir/src/$_ru.src" -ef "${_ENTRY_SRC:-}" ]; then
+        _ucand="$_rmdir/src/$_ru.src"
+    elif [ -f "$_rmdir/deps/$_ru.src" ]; then
+        _ucand="$_rmdir/deps/$_ru.src"
+    elif [ -f "$ROOT/stdlib/$_ru.src" ]; then
+        _ucand="$ROOT/stdlib/$_ru.src"
+    elif [ -f "$SRC_DIR/$_ru.src" ]; then
+        _ucand="$SRC_DIR/$_ru.src"
+    elif [ -f "$_rmdir/$_ru.src" ]; then
+        _ucand="$_rmdir/$_ru.src"
+    elif [ "$_ru" = "lumec" ] && [ -f "$ROOT/scripts/amalgamate.src" ]; then
+        ensure_seed
+        _am_in=$(mktemp)
+        printf '@root %s\n' "$ROOT" > "$_am_in"
+        run_l0 run "$SRC_DIR/compiler_in_core.lume" "$ROOT/scripts/amalgamate.src" "$_am_in" >/dev/null
+        rm -f "$_am_in"
+        if [ -f "$SRC_DIR/lumec.src" ]; then
+            _ucand="$SRC_DIR/lumec.src"
+        fi
+    fi
+    printf '%s' "$_ucand"
+}
+
 # Recursively collect reachable `use <mod>` .src modules in $_mdir into $_modin.
 collect_reachable_mods() {
     _mdir=$1
     _mfile=$2
     _modin=$3
-    _uses=$(awk '/^[ \t]*use[ \t]+/{sub(/^[ \t]*use[ \t]+/,""); sub(/[ \t\r]+$/,""); sub(/^std\./,""); print $1}' "$_mfile")
+    _extra=${4:-}
+    _uses=$(awk '/^[ \t]*use[ \t]+/{sub(/^[ \t]*use[ \t]+/,""); sub(/[ \t\r]+$/,""); sub(/^std\./,""); if ($1 == "query") print "decimal\ntable\nquery"; else if ($1 == "table") print "decimal\ntable"; else print $1}' "$_mfile")
+    if [ -n "$_extra" ]; then
+        _uses="$_extra $_uses"
+    fi
     for _u in $_uses; do
         case " $_MOD_SEEN " in
             *" $_u "*) continue ;;
         esac
         _MOD_SEEN="$_MOD_SEEN $_u"
-        _ucand=""
-        if [ -f "$_mdir/$_u.src" ]; then
-            _ucand="$_mdir/$_u.src"
-        elif [ -f "$_mdir/src/$_u.src" ]; then
-            _ucand="$_mdir/src/$_u.src"
-        elif [ -f "$_mdir/deps/$_u.src" ]; then
-            _ucand="$_mdir/deps/$_u.src"
-        elif [ -f "$SRC_DIR/$_u.src" ]; then
-            _ucand="$SRC_DIR/$_u.src"
-        elif [ "$_u" = "lumec" ] && [ -f "$ROOT/scripts/amalgamate.src" ]; then
-            ensure_seed
-            _am_in=$(mktemp)
-            printf '@root %s\n' "$ROOT" > "$_am_in"
-            run_l0 run "$SRC_DIR/compiler_in_core.lume" "$ROOT/scripts/amalgamate.src" "$_am_in" >/dev/null
-            rm -f "$_am_in"
-            if [ -f "$SRC_DIR/lumec.src" ]; then
-                _ucand="$SRC_DIR/lumec.src"
-            fi
-        fi
+        _ucand=$(resolve_mod_candidate "$_mdir" "$_u")
         if [ -n "$_ucand" ]; then
             printf '@module %s\n' "$_u" >> "$_modin"
+            if [ "$_u" = "query" ]; then
+                printf 'use decimal\nuse table\n' >> "$_modin"
+            elif [ "$_u" = "table" ]; then
+                printf 'use decimal\n' >> "$_modin"
+            fi
             cat "$_ucand" >> "$_modin"
             printf '\n@end\n' >> "$_modin"
-            collect_reachable_mods "$_mdir" "$_ucand" "$_modin"
+            collect_reachable_mods "$_mdir" "$_ucand" "$_modin" ""
         fi
     done
 }
@@ -232,7 +265,11 @@ collect_reachable_mods() {
 bundle_src_if_needed() {
     _bsrc=$1
     _bout=$2
-    if ! grep -Eq '^[ \t]*use[ \t]+' "$_bsrc"; then
+    _implicit_dec=""
+    if has_implicit_decimal "$_bsrc"; then
+        _implicit_dec="decimal"
+    fi
+    if [ -z "$_implicit_dec" ] && ! grep -Eq '^[ \t]*use[ \t]+' "$_bsrc"; then
         cp "$_bsrc" "$_bout"
         return 0
     fi
@@ -260,9 +297,20 @@ bundle_src_if_needed() {
     fi
     printf '@grant %s\n' "$_grant" > "$_modin"
     _ebase=$(basename -- "$_bsrc" .src)
-    _MOD_SEEN="$_ebase"
-    collect_reachable_mods "$_bdir" "$_bsrc" "$_modin"
-    printf '@entry %s\n' "$_ebase" >> "$_modin"
+    _ENTRY_SRC="$_bsrc"
+    _ecand=$(resolve_mod_candidate "$_bdir" "$_ebase")
+    if [ -n "$_ecand" ] && [ "$_ecand" != "$_bsrc" ] && ! [ "$_ecand" -ef "$_bsrc" ]; then
+        _ename="${_ebase}__entry"
+        _MOD_SEEN=""
+    else
+        _ename="$_ebase"
+        _MOD_SEEN="$_ebase"
+    fi
+    collect_reachable_mods "$_bdir" "$_bsrc" "$_modin" "$_implicit_dec"
+    printf '@entry %s\n' "$_ename" >> "$_modin"
+    if [ -n "$_implicit_dec" ]; then
+        printf 'use decimal\n' >> "$_modin"
+    fi
     cat "$_bsrc" >> "$_modin"
     printf '\n@end\n' >> "$_modin"
     if ! run_core_tool lmod "$_modin" > "$_bout"; then

@@ -77,38 +77,42 @@ fn parseeffop(ts) = let opnm = headtext(droponce(ts)) in let ps = parseparams(dr
 fn parseeffops(ts) = if headtext(ts) == "fn" then let r = parseeffop(ts) in let rr = parseeffops(r.rest) in {items: Cons(r.op, rr.items), rest: rr.rest} else {items: Nil, rest: ts}
 fn parseeffect(t) = let enm = headtext(t) in let ops = parseeffops(dropkw(droponce(t), "{")) in {node: KEffectDecl(enm, ops.items), rest: skiprb(ops.rest)}
 fn parsetrait(t) = let tnm = headtext(t) in let ops = parseeffops(dropkw(droponce(t), "{")) in {node: TraitDecl(tnm, ops.items), rest: skiprb(ops.rest)}
-fn parseimplfn1(tty, ts) = let opnm = headtext(ts) in let mnm = "__impl_" + tty + "_" + opnm in let ps = parseparams(dropkw(droponce(ts), "(")) in let rt = parseret(ps.rest) in let b = expr(dropkw(rt.rest, "=")) in let fn_r = parsefn4(mnm, 0, 0, ps, rt, b) in {op: {op: opnm, ar: len(ps.items), mangled: mnm}, stmts: progsig(fn_r.vsg, progsig(fn_r.ksg, progsig(fn_r.osg, progsig(fn_r.sg, Cons(fn_r.node, Nil))))), rest: dropkw(b.rest, ";")}
+fn parseimplfn1(tty, ts) = let opnm = headtext(ts) in let mnm = "__impl_" + tty + "_" + opnm in let ps = parseparams(dropkw(droponce(ts), "(")) in let rt = parseret(ps.rest) in let b = expr(dropkw(rt.rest, "=")) in let fn_r = parsefn4(mnm, 0, 0, ps, rt, b) in {op: {op: opnm, ar: len(ps.items), mangled: mnm, pt: ps.tys, rt: rt.ty}, stmts: progsig(fn_r.vsg, progsig(fn_r.ksg, progsig(fn_r.osg, progsig(fn_r.sg, Cons(fn_r.node, Nil))))), rest: dropkw(b.rest, ";")}
 fn parseimplfns(tty, ts) = if headtext(ts) == "fn" then (let r1 = parseimplfn1(tty, droponce(ts)) in let rr = parseimplfns(tty, r1.rest) in {ops: Cons(r1.op, rr.ops), stmts: app(r1.stmts, rr.stmts), rest: rr.rest}) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "fn" then (let r1 = parseimplfn1(tty, droponce(droponce(ts))) in let rr = parseimplfns(tty, r1.rest) in {ops: Cons(r1.op, rr.ops), stmts: app(r1.stmts, rr.stmts), rest: rr.rest}) else {ops: Nil, stmts: Nil, rest: ts}
 fn parseimpl(t) = let tnm = headtext(t) in let t1 = dropkw(droponce(t), "for") in let tty = headtext(t1) in let t2 = dropkw(droponce(t1), "{") in let ms = parseimplfns(tty, t2) in Cons(ImplDecl(tnm, tty, ms.ops), app(ms.stmts, parseprog(skiprb(ms.rest))))
-fn parsecaplist(ts) = if isnil(ts) == 1 then {items: Nil, rest: Nil} else if headtext(ts) == ")" then {items: Nil, rest: droponce(ts)} else let tok = headtext(ts) in let clean = if count(tok) >= 2 and at(tok, 0) == "\"" then strval(tok) else tok in let rr = parsecaplist(droponce(ts)) in if clean == "allow" or clean == ":" or clean == "[" or clean == "]" or clean == "," then rr else {items: Cons(clean, rr.items), rest: rr.rest}
+fn is_attr_stop(tok) = tok == "fn" or tok == "pub" or tok == "type" or tok == "const" or tok == "let" or tok == "print" or tok == "trait" or tok == "impl" or tok == "effect" or tok == "law"
+fn parsecaplist(ts) = if isnil(ts) == 1 then ctfail("lume: parse error [P0002]: unclosed attribute '(' at end of input\n") else if headtext(ts) == ")" then {items: Nil, rest: droponce(ts)} else if is_attr_stop(headtext(ts)) == 1 then ctfail("lume: parse error [P0002]: unclosed attribute '(' before '" + headtext(ts) + "' " + headpos(ts) + "\n") else let tok = headtext(ts) in let clean = if count(tok) >= 2 and at(tok, 0) == "\"" then strval(tok) else tok in let rr = parsecaplist(droponce(ts)) in if clean == "allow" or clean == ":" or clean == "[" or clean == "]" or clean == "," then rr else {items: Cons(clean, rr.items), rest: rr.rest}
 fn parsecapat(t) = let t1 = droponce(t) in let er = if headtext(t1) == "{" then parseeffitems(droponce(t1)) else if headtext(t1) == "(" then parsecaplist(droponce(t1)) else {items: Cons(headtext(t1), Nil), rest: droponce(t1)} in Cons(KCapGrant(er.items), parseprog(er.rest))
 fn parselinkat(t) = let t1 = droponce(t) in let er = if headtext(t1) == "{" then parseeffitems(droponce(t1)) else if headtext(t1) == "(" then parsecaplist(droponce(t1)) else {items: Cons(headtext(t1), Nil), rest: droponce(t1)} in Cons(FFILink(er.items), parseprog(er.rest))
 fn parserule(t) = let nm = headtext(t) in let ps = parseparams(dropkw(droponce(t), "(")) in let rt = parseret(ps.rest) in let b = if headtext(rt.rest) == "when" then expr(droponce(rt.rest)) else if headtext(rt.rest) == ":" and headtext(droponce(rt.rest)) == "-" then expr(droponce(droponce(rt.rest))) else expr(dropkw(rt.rest, "=")) in {sg: mksig(nm, ps, TyName("int")), fnnode: Fn(nm, ps.items, b.node), rest: b.rest}
 fn progrule(r) = progsig(r.sg, Cons(r.fnnode, parseprog(r.rest)))
-fn skipatparen1(ts, d) = if d <= 0 then ts else if isnil(ts) == 1 then Nil else if headtext(ts) == "(" then skipatparen1(droponce(ts), d + 1) else if headtext(ts) == ")" then skipatparen1(droponce(ts), d - 1) else skipatparen1(droponce(ts), d)
+fn skipatparen1(ts, d) = if d <= 0 then ts else if isnil(ts) == 1 then ctfail("lume: parse error [P0002]: unclosed attribute '(' at end of input\n") else if headtext(ts) == "(" then skipatparen1(droponce(ts), d + 1) else if headtext(ts) == ")" then skipatparen1(droponce(ts), d - 1) else if is_attr_stop(headtext(ts)) == 1 then ctfail("lume: parse error [P0002]: unclosed attribute '(' before '" + headtext(ts) + "' " + headpos(ts) + "\n") else skipatparen1(droponce(ts), d)
 fn skipatparen(ts) = if headtext(ts) == "(" then skipatparen1(droponce(ts), 1) else ts
 fn parseboundval(ts) = if headtext(ts) != "(" then 0 else let t1 = droponce(ts) in if headtext(droponce(t1)) == ":" then toint(headtext(droponce(droponce(t1)))) else toint(headtext(t1))
 fn progfnwcet(wcet, fnm, r) = if wcet > 0 then Cons(WcetSig(fnm, wcet), progfn(r)) else progfn(r)
-fn parseattrs(ts, freef, wcet) = if headtext(ts) == "@" then (let t1 = droponce(ts) in let anm = headtext(t1) in let t2 = droponce(t1) in if anm == "freestanding" then parseattrs(skipatparen(t2), freef + 1, wcet) else if anm == "interrupt" then parseattrs(skipatparen(t2), freef + 16, wcet) else if anm == "export" then parseattrs(skipatparen(t2), if (freef / 32) % 2 == 0 then freef + 32 else freef, wcet) else if anm == "protect" then parseattrs(skipatparen(t2), freef + 64, wcet) else if anm == "secret" then parseattrs(skipatparen(t2), freef + 128, wcet) else if anm == "bound" then parseattrs(skipatparen(t2), freef, parseboundval(t2)) else if anm == "overflow" then ctfail("lume: parse error [P0002]: '@overflow' is not supported; write the wrapping operators '+%', '-%' or '*%' where wrapping is meant\n") else parseattrs(skipatparen(t2), freef, wcet)) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "extern" then progextern(droponce(droponce(ts)), 1) else if headtext(ts) == "extern" then progextern(droponce(ts), 0) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "fn" then let ft = droponce(droponce(ts)) in progfnwcet(wcet, headtext(ft), parsefnp(ft, 1, freef)) else if headtext(ts) == "fn" then let ft = droponce(ts) in progfnwcet(wcet, headtext(ft), parsefnp(ft, if (freef / 32) % 2 == 1 then 1 else 0, freef)) else parseprog(ts)
+fn parseattrs(ts, freef, wcet) = if headtext(ts) == "@" then (let t1 = droponce(ts) in let anm = headtext(t1) in if anm == "" or is_attr_stop(anm) == 1 then ctfail("lume: parse error [P0002]: expected attribute name after '@' " + headpos(t1) + "\n") else let t2 = droponce(t1) in if anm == "freestanding" then parseattrs(skipatparen(t2), freef + 1, wcet) else if anm == "interrupt" then parseattrs(skipatparen(t2), freef + 16, wcet) else if anm == "export" then parseattrs(skipatparen(t2), if (freef / 32) % 2 == 0 then freef + 32 else freef, wcet) else if anm == "protect" then parseattrs(skipatparen(t2), freef + 64, wcet) else if anm == "secret" then parseattrs(skipatparen(t2), freef + 128, wcet) else if anm == "bound" then parseattrs(skipatparen(t2), freef, parseboundval(t2)) else if anm == "overflow" then ctfail("lume: parse error [P0002]: '@overflow' is not supported; write the wrapping operators '+%', '-%' or '*%' where wrapping is meant\n") else parseattrs(skipatparen(t2), freef, wcet)) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "fn" then let ft = droponce(droponce(ts)) in progfnwcet(wcet, headtext(ft), parsefnp(ft, 1, freef)) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "extern" then progextern(droponce(droponce(ts)), 1) else if headtext(ts) == "extern" then progextern(droponce(ts), 0) else if headtext(ts) == "fn" then let ft = droponce(ts) in progfnwcet(wcet, headtext(ft), parsefnp(ft, if (freef / 32) % 2 == 1 then 1 else 0, freef)) else parseprog(ts)
 fn progfree(ts) = if headtext(ts) == "pub" then progfn(parsefnp(droponce(droponce(ts)), 1, 1)) else progfn(parsefnp(droponce(ts), 0, 1))
 fn progat(t) = if headtext(t) == "gc" then progtyped("gc", parsetype(droponce(droponce(t)))) else if headtext(t) == "soa" and headtext(droponce(t)) == "type" then progtyped("soa", parsetype(droponce(droponce(t)))) else if headtext(t) == "capability" or headtext(t) == "grant" then parsecapat(t) else if headtext(t) == "link" or headtext(t) == "need" then parselinkat(t) else parseattrs(Cons({kind: "op", text: "@", col: 0, line: 1}, t), 0, 0)
 fn progextern(t, pubf) = if headtext(t) == "llm" and headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), pubf, 4)) else if headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), pubf, 32)) else if headtext(t) == "fn" then progfn(parsefnp(droponce(t), pubf, 32)) else progfn(parsefnp(droponce(t), pubf, 4))
 fn progpub(t) = if headtext(t) == "total" and headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), 1, 2)) else if headtext(t) == "llm" and headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), 1, 4)) else if headtext(t) == "async" and headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), 1, 128)) else if headtext(t) == "extern" then progextern(droponce(t), 1) else if headtext(t) == "kernel" and headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), 1, 8)) else if headtext(t) == "effect" then progmore(parseeffect(droponce(t))) else if headtext(t) == "trait" then progmore(parsetrait(droponce(t))) else if headtext(t) == "temporal" and headtext(droponce(t)) == "law" then proglaw(parselaw(droponce(droponce(t)))) else if headtext(t) == "law" then proglaw(parselaw(droponce(t))) else if headtext(t) == "rule" then progrule(parserule(droponce(t))) else if headtext(t) == "const" or headtext(t) == "let" then progmore(parseconst(droponce(t))) else progfn(parsefnp(droponce(t), 1, 0))
-fn parseconst(t) = let nm = headtext(t) in let rv = expr(expecteq(dropletty(droponce(t)))) in {node: ConstDecl(nm, rv.node), rest: dropkw(rv.rest, ";")}
-fn parsetoplet(ts, t) = if headtext(t) == "mut" or headtext(t) == "(" or headtext(t) == "{" or isctor(headtext(t)) == 1 then progmore(lexprstmt(expr(ts))) else let nm = headtext(t) in let rv = expr(expecteq(dropletty(droponce(t)))) in if headtext(rv.rest) == "in" or headtext(rv.rest) == ";" then progmore(lexprstmt(expr(ts))) else if headline(rv.rest) == headline(t) then ctfail("lume: parse error [P0002]: expected 'in' or a new line after 'let' value " + headpos(rv.rest) + "\n") else Cons(ConstDecl(nm, rv.node), parseprog(rv.rest))
+fn parseconst(t) = let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in {node: ConstDecl(nm, wrap_tyann(rv.node, lty.node)), rest: dropkw(rv.rest, ";")}
+fn parsetoplet(ts, t) = if headtext(t) == "mut" or headtext(t) == "(" or headtext(t) == "{" or isctor(headtext(t)) == 1 then progmore(lexprstmt(expr(ts))) else let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in if headtext(rv.rest) == "in" or headtext(rv.rest) == ";" then progmore(lexprstmt(expr(ts))) else if headline(rv.rest) == headline(t) then ctfail("lume: parse error [P0002]: expected 'in' or a new line after 'let' value " + headpos(rv.rest) + "\n") else Cons(ConstDecl(nm, wrap_tyann(rv.node, lty.node)), parseprog(rv.rest))
 fn lexprstmt(e) = {node: ExprS(e.node), rest: e.rest}
 fn parseprog(ts) = match ts
     Nil        => Nil
     Cons(h, t) => if h.text == "fn" then progfn(parsefn(droponce(ts))) else if h.text == "pub" and (headtext(t) == "fn" or headtext(t) == "total" or headtext(t) == "llm" or headtext(t) == "async" or headtext(t) == "extern" or headtext(t) == "kernel" or headtext(t) == "effect" or headtext(t) == "trait" or headtext(t) == "temporal" or headtext(t) == "law" or headtext(t) == "rule" or headtext(t) == "const" or headtext(t) == "let") then progpub(t) else if h.text == "const" then progmore(parseconst(t)) else if h.text == "let" then parsetoplet(ts, t) else if h.text == "total" and headtext(t) == "fn" then progfn(parsefnp(droponce(t), 0, 2)) else if h.text == "llm" and headtext(t) == "fn" then progfn(parsefnp(droponce(t), 0, 4)) else if h.text == "async" and headtext(t) == "fn" then progfn(parsefnp(droponce(t), 0, 128)) else if h.text == "extern" then progextern(t, 0) else if h.text == "kernel" and headtext(t) == "fn" then progfn(parsefnp(droponce(t), 0, 8)) else if h.text == "effect" then progmore(parseeffect(t)) else if h.text == "trait" then progmore(parsetrait(t)) else if h.text == "impl" then parseimpl(t) else if h.text == "temporal" and headtext(t) == "law" then proglaw(parselaw(droponce(t))) else if h.text == "law" then proglaw(parselaw(t)) else if h.text == "rule" then progrule(parserule(t)) else if h.text == "@" then progat(t) else if h.text == "resource" and headtext(t) == "type" then progtyped("resource", parsetype(droponce(t))) else if h.text == "type" then (if headtext(dropkw(droponce(t), "=")) == "model" then progtyped("model", parsetype(droponce(ts))) else progtype(parsetype(droponce(ts)))) else if h.text == "print" then progmore(parseprint(droponce(ts))) else progmore(lexprstmt(expr(ts)))
 
 ## --- ergonomic AST sugar expansion: top-level `const` / `let` and `{ s with field: val }` ---
+fn is_dec_rec_items(items) = match items
+    Cons(a, Cons(b, Cons(c, Nil))) => if a.key == "coefficient" and b.key == "scale" and c.key == "precision" then 1 else 0
+    _                              => 0
 fn has_rec_with_e(e) = match e
-    Call(nm, args)         => if nm == "__lume_rec_with" or nf_tyapp(nm) then 1 else has_rec_with_el(args)
+    Call(nm, args)         => if nm == "__lume_rec_with" or nm == "__lume_fmt" or nf_tyapp(nm) then 1 else has_rec_with_el(args)
     Bin(op, a, b)          => if has_rec_with_e(a) == 1 then 1 else has_rec_with_e(b)
     If(c, t, e2)           => if has_rec_with_e(c) == 1 then 1 else if has_rec_with_e(t) == 1 then 1 else has_rec_with_e(e2)
     LetIn(nm, v, b)        => if has_rec_with_e(v) == 1 then 1 else has_rec_with_e(b)
     VarIn(nm, v, b)        => if has_rec_with_e(v) == 1 then 1 else has_rec_with_e(b)
-    Rec(items)             => has_rec_with_recl(items)
+    Rec(items)             => if is_dec_rec_items(items) == 1 then 1 else has_rec_with_recl(items)
     RecT(tn, items)        => has_rec_with_recl(items)
     Field(o, nm)           => has_rec_with_e(o)
     Match(sc, arms)        => if has_rec_with_e(sc) == 1 then 1 else has_rec_with_arms(arms)
@@ -139,13 +143,14 @@ fn has_rec_with_arms(xs) = match xs
     Cons(h, t) => if has_rec_with_e(h.body) == 1 then 1 else has_rec_with_arms(t)
 fn has_prog_sugar_s(s0) = match s0
     ConstDecl(nm, v)          => 1
+    TypeS(nm, k, items)       => 1
+    TraitDecl(nm, ops)        => 1
+    ImplDecl(tnm, tty, mths)  => 1
     Fn(nm, ps, body)          => has_rec_with_e(body)
     VContractSig(nm, p, r, e) => if has_rec_with_el(r) == 1 then 1 else has_rec_with_el(e)
     Print(v)                  => has_rec_with_e(v)
     ExprS(v)                  => has_rec_with_e(v)
     VLawDecl(nm, ps, b)       => has_rec_with_e(b)
-    Print(v)                  => has_rec_with_e(v)
-    ExprS(v)                  => has_rec_with_e(v)
     _                         => 0
 fn has_prog_sugar(prog) = match prog
     Nil        => 0
@@ -156,6 +161,9 @@ fn ps_has_str(nm, xs) = match xs
 fn ps_const_lookup(nm, consts) = match consts
     Nil        => Nil
     Cons(h, t) => if h.k == nm then Cons(h.v, Nil) else ps_const_lookup(nm, t)
+fn ps_const_ev_lookup(nm, consts) = match consts
+    Nil        => Num(0)
+    Cons(h, t) => if h.k == nm then h.ev else ps_const_ev_lookup(nm, t)
 fn ps_rec_fnames(fs) = match fs
     Nil        => Nil
     Cons(h, t) => Cons(h.fname, ps_rec_fnames(t))
@@ -249,6 +257,26 @@ fn ps_pat_binds(p) = match p
 fn ps_pat_bind_list(ps) = match ps
     Nil        => Nil
     Cons(h, t) => app(ps_pat_binds(h), ps_pat_bind_list(t))
+fn ps_unwrap_tyann(e) = match e
+    If(c, t, e2) => if ps_is_tyann_marker(e2) == 1 then ps_unwrap_tyann(t) else e
+    _            => e
+fn ps_is_tyann_marker(e) = match e
+    Call(nm, args) => if nm == "_tyann_" then 1 else 0
+    _              => 0
+fn ps_const_to_pat(v, fallback) = match v
+    Num(n)       => PInt(n)
+    Str(s)       => PStr(s)
+    If(c, t, e2) => if ps_is_tyann_marker(e2) == 1 then ps_const_to_pat(t, fallback) else fallback
+    _            => fallback
+fn ps_exp_pat_list(ps, consts) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons(ps_exp_pat(h, consts), ps_exp_pat_list(t, consts))
+fn ps_exp_pat_lookup(tag, m, ps, consts) = match m
+    Cons(v, r) => if isnil(ps) == 1 then ps_const_to_pat(v, PCons(tag, Nil)) else PCons(tag, ps_exp_pat_list(ps, consts))
+    Nil        => PCons(tag, ps_exp_pat_list(ps, consts))
+fn ps_exp_pat(p, consts) = match p
+    PCons(tag, ps) => ps_exp_pat_lookup(tag, ps_const_lookup(tag, consts), ps, consts)
+    _              => p
 fn ps_expand_rec_with(args, ctx, shadow, lrecs) = match args
     Cons(tn_e, Cons(base_e, Cons(upd_e, r))) => let tnm = ps_str_val(tn_e) in let b2 = ps_exp_e(base_e, ctx, shadow, lrecs) in let u2 = ps_exp_recl(ps_rec_items(upd_e), ctx, shadow, lrecs) in let bnm = ps_var_name(b2) in let lr = if bnm != "" then ps_lrec_lookup(bnm, lrecs) else {rname: "", fnames: Nil} in let rnm = if tnm != "" then tnm else lr.rname in let fns1 = if tnm != "" then ps_lookup_rec(tnm, ctx.recs) else lr.fnames in let mr = {rname: rnm, fnames: fns1} in if isnil(mr.fnames) == 1 then Call("__lume_rec_update", Cons(b2, Cons(Rec(u2), Nil))) else if bnm != "" then (let m = ps_build_merged(bnm, mr.fnames, u2) in if mr.rname != "" then RecT(mr.rname, m) else Rec(m)) else (let m = ps_build_merged("_ru", mr.fnames, u2) in LetIn("_ru", b2, if mr.rname != "" then RecT(mr.rname, m) else Rec(m)))
     _                                        => Num(0)
@@ -265,13 +293,16 @@ fn ps_const_known(m) = match m
     Nil        => 0
 fn ps_is_index(nm, ctx, shadow) = if nf_tyapp(nm) == 0 then 0 else let b = ps_index_base(nm) in if nf_isctor(b) == 1 then 0 else if ps_has_str(b, shadow) == 1 then 1 else ps_const_known(ps_const_lookup(b, ctx.consts))
 fn ps_is_const_call(nm, ctx, shadow) = if ps_has_str(nm, shadow) == 1 then 0 else ps_const_known(ps_const_lookup(nm, ctx.consts))
+fn ps_idx_call(base_e, rargs) = match rargs
+    Cons(Str(fld), Nil) => Field(base_e, fld)
+    _                   => Call("lidx", Cons(base_e, rargs))
 fn ps_exp_e(e, ctx, shadow, lrecs) = match e
     Var(nm)                => ps_exp_var(nm, ctx, shadow)
     Bin(op, a, b)          => Bin(op, ps_exp_e(a, ctx, shadow, lrecs), ps_exp_e(b, ctx, shadow, lrecs))
     If(c, t, e2)           => If(ps_exp_e(c, ctx, shadow, lrecs), ps_exp_e(t, ctx, shadow, lrecs), ps_exp_e(e2, ctx, shadow, lrecs))
     LetIn(nm, v, b)        => let v2 = ps_exp_e(v, ctx, shadow, lrecs) in let ri = ps_expr_rec_info(v2, ctx.recs) in let lr2 = if isnil(ri.fnames) == 0 then Cons({nm: nm, rname: ri.rname, fnames: ri.fnames}, lrecs) else lrecs in LetIn(nm, v2, ps_exp_e(b, ctx, Cons(nm, shadow), lr2))
     VarIn(nm, v, b)        => let v2 = ps_exp_e(v, ctx, shadow, lrecs) in let ri = ps_expr_rec_info(v2, ctx.recs) in let lr2 = if isnil(ri.fnames) == 0 then Cons({nm: nm, rname: ri.rname, fnames: ri.fnames}, lrecs) else lrecs in VarIn(nm, v2, ps_exp_e(b, ctx, Cons(nm, shadow), lr2))
-    Call(nm, args)         => if nm == "__lume_rec_with" then ps_expand_rec_with(args, ctx, shadow, lrecs) else if ps_is_index(nm, ctx, shadow) == 1 then Call("lidx", Cons(ps_exp_var(ps_index_base(nm), ctx, shadow), ps_exp_el(args, ctx, shadow, lrecs))) else if ps_is_const_call(nm, ctx, shadow) == 1 then Call("_call", Cons(ps_exp_var(nm, ctx, shadow), ps_exp_el(args, ctx, shadow, lrecs))) else Call(nm, ps_exp_el(args, ctx, shadow, lrecs))
+    Call(nm, args)         => if nm == "__lume_rec_with" then ps_expand_rec_with(args, ctx, shadow, lrecs) else if ps_is_index(nm, ctx, shadow) == 1 then ps_idx_call(ps_exp_var(ps_index_base(nm), ctx, shadow), ps_exp_el(args, ctx, shadow, lrecs)) else if ps_is_const_call(nm, ctx, shadow) == 1 then Call("_call", Cons(ps_exp_var(nm, ctx, shadow), ps_exp_el(args, ctx, shadow, lrecs))) else Call(nm, ps_exp_el(args, ctx, shadow, lrecs))
     Rec(items)             => Rec(ps_exp_recl(items, ctx, shadow, lrecs))
     RecT(tn, items)        => RecT(tn, ps_exp_recl(items, ctx, shadow, lrecs))
     Field(o, nm)           => Field(ps_exp_e(o, ctx, shadow, lrecs), nm)
@@ -300,7 +331,7 @@ fn ps_exp_recl(xs, ctx, shadow, lrecs) = match xs
     Cons(h, t) => Cons({key: h.key, val: ps_exp_e(h.val, ctx, shadow, lrecs)}, ps_exp_recl(t, ctx, shadow, lrecs))
 fn ps_exp_arms(xs, ctx, shadow, lrecs) = match xs
     Nil        => Nil
-    Cons(h, t) => Cons({pat: h.pat, body: ps_exp_e(h.body, ctx, app(ps_pat_binds(h.pat), shadow), lrecs)}, ps_exp_arms(t, ctx, shadow, lrecs))
+    Cons(h, t) => let p2 = ps_exp_pat(h.pat, ctx.consts) in Cons({pat: p2, body: ps_exp_e(h.body, ctx, app(ps_pat_binds(p2), shadow), lrecs)}, ps_exp_arms(t, ctx, shadow, lrecs))
 ## A top-level `let` made of literals and constructors is a constant and is inlined. Anything else runs once, at
 ## its statement: its value goes in a global slot, so a side effect never repeats per use. A kernel has no slot
 ## table, and keeps the inlining.
@@ -314,6 +345,7 @@ fn ps_pure_const(e) = match e
     Num(n)          => 1
     Str(v)          => 1
     Var(x)          => 1
+    If(c, t, e2)    => if ps_is_tyann_marker(e2) == 1 then ps_pure_const(t) else 0
     Bin(op, l, r)   => if ps_pure_const(l) == 1 then ps_pure_const(r) else 0
     Rec(items)      => ps_pure_items(items)
     RecT(tn, items) => ps_pure_items(items)
@@ -321,22 +353,56 @@ fn ps_pure_const(e) = match e
     _               => 0
 fn ps_is_freestanding(prog) = match prog
     Nil        => 0
-    Cons(h, t) => (match h
-        OSig(nm, pubf, freef, pl, rty, fromp) => if freef % 2 == 1 then 1 else ps_is_freestanding(t)
-        _                                     => ps_is_freestanding(t))
+    Cons(h, t) => ps_is_freestanding1(h, t)
+fn ps_is_freestanding1(h, t) = match h
+    OSig(nm, pubf, freef, pl, rty, fromp) => if freef % 2 == 1 then 1 else ps_is_freestanding(t)
+    _                                     => ps_is_freestanding(t)
+fn ps_all_cnames1(s0, rest) = match s0
+    ConstDecl(nm, v) => Cons(nm, rest)
+    _                => rest
+fn ps_all_cnames(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => ps_all_cnames1(h, ps_all_cnames(t))
+fn ps_check_const_ref_el(xs, cnm, defined, allc, sh) = match xs
+    Nil        => 0
+    Cons(h, t) => let u = ps_check_const_ref_e(h, cnm, defined, allc, sh) in ps_check_const_ref_el(t, cnm, defined, allc, sh)
+fn ps_check_const_ref_recl(xs, cnm, defined, allc, sh) = match xs
+    Nil        => 0
+    Cons(h, t) => let u = ps_check_const_ref_e(h.val, cnm, defined, allc, sh) in ps_check_const_ref_recl(t, cnm, defined, allc, sh)
+fn ps_check_const_ref_arms(xs, cnm, defined, allc, sh) = match xs
+    Nil        => 0
+    Cons(h, t) => let u = ps_check_const_ref_e(h.body, cnm, defined, allc, app(ps_pat_binds(h.pat), sh)) in ps_check_const_ref_arms(t, cnm, defined, allc, sh)
+fn ps_check_const_var(x, cnm, defined, allc, sh) = if ps_has_str(x, sh) == 1 then 0 else if x == cnm or (ps_has_str(x, allc) == 1 and ps_const_known(ps_const_lookup(x, defined)) == 0) then ctfail("lume: name error [R0200]: top-level binding '" + cnm + "' cannot reference '" + x + "' before initialization\n") else 0
+fn ps_check_const_ref_e(e, cnm, defined, allc, sh) = match e
+    Var(x)                 => ps_check_const_var(x, cnm, defined, allc, sh)
+    Bin(op, a, b)          => let u = ps_check_const_ref_e(a, cnm, defined, allc, sh) in ps_check_const_ref_e(b, cnm, defined, allc, sh)
+    If(c, t, e2)           => let u1 = ps_check_const_ref_e(c, cnm, defined, allc, sh) in let u2 = ps_check_const_ref_e(t, cnm, defined, allc, sh) in ps_check_const_ref_e(e2, cnm, defined, allc, sh)
+    LetIn(nm, v, b)        => let u = ps_check_const_ref_e(v, cnm, defined, allc, sh) in ps_check_const_ref_e(b, cnm, defined, allc, Cons(nm, sh))
+    VarIn(nm, v, b)        => let u = ps_check_const_ref_e(v, cnm, defined, allc, sh) in ps_check_const_ref_e(b, cnm, defined, allc, Cons(nm, sh))
+    Call(nm, args)         => let u = if ps_is_index(nm, {consts: defined, recs: Nil, sigs: Nil}, sh) == 0 and nf_tyapp(nm) == 1 then ps_check_const_var(ps_index_base(nm), cnm, defined, allc, sh) else ps_check_const_var(nm, cnm, defined, allc, sh) in ps_check_const_ref_el(args, cnm, defined, allc, sh)
+    Rec(items)             => ps_check_const_ref_recl(items, cnm, defined, allc, sh)
+    RecT(tn, items)        => ps_check_const_ref_recl(items, cnm, defined, allc, sh)
+    Field(o, nm)           => ps_check_const_ref_e(o, cnm, defined, allc, sh)
+    Match(sc, arms)        => let u = ps_check_const_ref_e(sc, cnm, defined, allc, sh) in ps_check_const_ref_arms(arms, cnm, defined, allc, sh)
+    LambdaE(ps, ts, rt, b) => ps_check_const_ref_e(b, cnm, defined, allc, app(ps, sh))
+    OwnE(x)                => ps_check_const_ref_e(x, cnm, defined, allc, sh)
+    MutE(x)                => ps_check_const_ref_e(x, cnm, defined, allc, sh)
+    DeferE(c, b)           => let u = ps_check_const_ref_e(c, cnm, defined, allc, sh) in ps_check_const_ref_e(b, cnm, defined, allc, sh)
+    ErrDeferE(c, b)        => let u = ps_check_const_ref_e(c, cnm, defined, allc, sh) in ps_check_const_ref_e(b, cnm, defined, allc, sh)
+    _                      => 0
 fn ps_global_slot(e, idx) = Call("__lume_global_get", Cons(Num(idx), Nil))
-fn ps_collect_consts1(s0, acc, recs, sigs, krn) = match s0
-    ConstDecl(nm, v) => let ev = ps_exp_e(v, {consts: acc, recs: recs, sigs: sigs}, Nil, Nil) in let keep = if krn == 1 or ps_pure_const(ev) == 1 then 1 else 0 in Cons({k: nm, v: if keep == 1 then ev else ps_global_slot(ev, len(acc)), slot: if keep == 1 then 0 - 1 else len(acc)}, acc)
+fn ps_collect_consts1(s0, acc, recs, sigs, krn, allc) = match s0
+    ConstDecl(nm, v) => if ps_const_known(ps_const_lookup(nm, acc)) == 1 then ctfail("lume: name error [D0002]: name '" + nm + "' is defined more than once\n") else let u = ps_check_const_ref_e(v, nm, acc, allc, Nil) in let ev = ps_exp_e(v, {consts: acc, recs: recs, sigs: sigs}, Nil, Nil) in let uv = ps_unwrap_tyann(ev) in let keep = if krn == 1 or ps_pure_const(ev) == 1 then 1 else 0 in Cons({k: nm, v: if keep == 1 then uv else ps_global_slot(uv, len(acc)), ev: ev, slot: if keep == 1 then 0 - 1 else len(acc)}, acc)
     _                => acc
-fn ps_collect_consts(prog, acc, recs, sigs, krn) = match prog
+fn ps_collect_consts(prog, acc, recs, sigs, krn, allc) = match prog
     Nil        => acc
-    Cons(h, t) => ps_collect_consts(t, ps_collect_consts1(h, acc, recs, sigs, krn), recs, sigs, krn)
+    Cons(h, t) => ps_collect_consts(t, ps_collect_consts1(h, acc, recs, sigs, krn, allc), recs, sigs, krn, allc)
 fn ps_const_slot(nm, consts) = match consts
     Nil        => 0 - 1
     Cons(h, t) => if h.k == nm then h.slot else ps_const_slot(nm, t)
 fn ps_exp_const(nm, v, slot) = if slot < 0 then Fn(nm, Nil, v) else ExprS(Call("__lume_global_set", Cons(Num(slot), Cons(v, Nil))))
 fn ps_exp_stmt(s0, ctx) = match s0
-    ConstDecl(nm, v)          => ps_exp_const(nm, ps_exp_e(v, ctx, Nil, Nil), ps_const_slot(nm, ctx.consts))
+    ConstDecl(nm, v)          => ps_exp_const(nm, ps_const_ev_lookup(nm, ctx.consts), ps_const_slot(nm, ctx.consts))
     Fn(nm, ps, body)          => let lr = ps_fn_lrecs(nm, ctx.sigs, ctx.recs) in Fn(nm, ps, ps_exp_e(body, ctx, ps, lr))
     VContractSig(nm, p, r, e) => let lr = ps_fn_lrecs(nm, ctx.sigs, ctx.recs) in VContractSig(nm, p, ps_exp_el(r, ctx, p, lr), ps_exp_el(e, ctx, Cons("result", p), lr))
     VLawDecl(nm, ps, b)       => VLawDecl(nm, ps, ps_exp_e(b, ctx, ps, Nil))
@@ -347,7 +413,196 @@ fn ps_exp_stmt(s0, ctx) = match s0
 fn ps_exp_prog(prog, ctx) = match prog
     Nil        => Nil
     Cons(h, t) => Cons(ps_exp_stmt(h, ctx), ps_exp_prog(t, ctx))
-fn expand_prog_sugar(prog) = if has_prog_sugar(prog) == 0 then prog else let recs = ps_collect_recs(prog) in let sigs = ps_collect_sigs(prog) in let consts = ps_collect_consts(prog, Nil, recs, sigs, ps_is_freestanding(prog)) in ps_exp_prog(prog, {consts: consts, recs: recs, sigs: sigs})
+fn ps_known_builtin_ty(nm) = nm == "int" or nm == "str" or nm == "bool" or nm == "unit" or nm == "never" or nm == "float" or nm == "f32" or nm == "f64" or nm == "i8" or nm == "i16" or nm == "i32" or nm == "i64" or nm == "u8" or nm == "u16" or nm == "u32" or nm == "u64" or nm == "usize" or nm == "isize" or nm == "any" or nm == "type" or nm == "Int" or nm == "String" or nm == "Bool" or nm == "Float" or nm == "Unit" or nm == "Option" or nm == "Result" or nm == "List" or nm == "Map" or (count(nm) == 1 and isctor(nm) == 1)
+fn ps_collect_tnames1(s0, rest) = match s0
+    TypeS(nm, k, items)    => Cons(nm, rest)
+    TypeRefineS(nm, b, p)  => Cons(nm, rest)
+    TraitDecl(nm, ops)     => Cons(nm, rest)
+    KEffectDecl(nm, ops)   => Cons(nm, rest)
+    _                      => rest
+fn ps_collect_tnames(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => ps_collect_tnames1(h, ps_collect_tnames(t))
+fn ps_check_fty(ty, tnames) = match ty
+    TyName(nm)      => if nm != "" and ps_known_builtin_ty(nm) == 0 and ps_has_str(nm, tnames) == 0 then ctfail("lume: type error [T0001]: unknown type '" + nm + "'\n") else 0
+    TyList(e)       => ps_check_fty(e, tnames)
+    TyApply(k, e)   => ps_check_fty(e, tnames)
+    TyRefine(b, p)  => ps_check_fty(b, tnames)
+    _               => 0
+fn ps_check_rec_fields(fs, tnames) = match fs
+    Nil        => 0
+    Cons(h, t) => let u = ps_check_fty(h.fty, tnames) in ps_check_rec_fields(t, tnames)
+fn ps_collect_traits1(s0, rest) = match s0
+    TraitDecl(nm, ops) => Cons({tnm: nm, ops: ops}, rest)
+    _                  => rest
+fn ps_collect_traits(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => ps_collect_traits1(h, ps_collect_traits(t))
+fn ps_find_trait(tnm, traits) = match traits
+    Nil        => Nil
+    Cons(h, t) => if h.tnm == tnm then Cons(h.ops, Nil) else ps_find_trait(tnm, t)
+fn ps_find_top(opnm, tops) = match tops
+    Nil        => Nil
+    Cons(h, t) => if h.op == opnm then Cons(h, Nil) else ps_find_top(opnm, t)
+fn ps_ty_eq(a, b, self_ty) = match a
+    TyAny            => 1
+    TyName(na)       => ps_ty_eq_name( if na == "Self" then self_ty else na, b, self_ty)
+    TyList(ea)       => ps_ty_eq_list(ea, b, self_ty)
+    TyApply(ka, ea)  => ps_ty_eq_app(ka, ea, b, self_ty)
+    TyDecimal(p, s)  => ps_ty_eq_dec(p, s, b)
+    TyRefine(ba, pa) => ps_ty_eq(ba, b, self_ty)
+    _                => 1
+fn ps_ty_eq_name(na, b, self_ty) = match b
+    TyAny            => 1
+    TyName(nb)       => na == (if nb == "Self" then self_ty else nb)
+    TyRefine(bb, pb) => ps_ty_eq_name(na, bb, self_ty)
+    _                => 0
+fn ps_ty_eq_list(ea, b, self_ty) = match b
+    TyAny            => 1
+    TyList(eb)       => ps_ty_eq(ea, eb, self_ty)
+    TyRefine(bb, pb) => ps_ty_eq_list(ea, bb, self_ty)
+    _                => 0
+fn ps_ty_eq_app(ka, ea, b, self_ty) = match b
+    TyAny            => 1
+    TyApply(kb, eb)  => if ka == kb then ps_ty_eq(ea, eb, self_ty) else 0
+    TyRefine(bb, pb) => ps_ty_eq_app(ka, ea, bb, self_ty)
+    _                => 0
+fn ps_ty_eq_dec(p, s, b) = match b
+    TyAny             => 1
+    TyDecimal(p2, s2) => p == p2 and s == s2
+    _                 => 0
+fn ps_check_ptys(tps, mps, tty, tnm, opnm) = match tps
+    Nil         => 0
+    Cons(a, ar) => ps_check_ptys2(a, ar, mps, tty, tnm, opnm)
+fn ps_check_ptys2(a, ar, mps, tty, tnm, opnm) = match mps
+    Nil         => 0
+    Cons(b, br) => if ps_ty_eq(a, b, tty) == 0 then ctfail("lume: trait error [T0403]: method '" + opnm + "' in 'impl " + tnm + " for " + tty + "' has incompatible parameter type with trait '" + tnm + "'\n") else ps_check_ptys(ar, br, tty, tnm, opnm)
+fn ps_check_impl_op1(m, top, tnm, tty) = match top
+    Nil         => ctfail("lume: trait error [T0402]: method '" + m.op + "' is not a member of trait '" + tnm + "'\n")
+    Cons(tp, r) => if ps_ty_eq(tp.rt, m.rt, tty) == 0 then ctfail("lume: trait error [T0403]: method '" + m.op + "' in 'impl " + tnm + " for " + tty + "' has incompatible return type with trait '" + tnm + "'\n") else ps_check_ptys(tp.pt, m.pt, tty, tnm, m.op)
+fn ps_check_impl_ops(mths, tops, tnm, tty) = match mths
+    Nil        => 0
+    Cons(m, t) => let u = ps_check_impl_op1(m, ps_find_top(m.op, tops), tnm, tty) in ps_check_impl_ops(t, tops, tnm, tty)
+fn ps_check_impl_trait(tnm, tty, mths, found) = match found
+    Nil          => 0
+    Cons(tops, r) => ps_check_impl_ops(mths, tops, tnm, tty)
+fn ps_has_mth(opnm, mths) = match mths
+    Nil        => 0
+    Cons(m, t) => if m.op == opnm then 1 else ps_has_mth(opnm, t)
+fn ps_covers_tops(tops, mths) = match tops
+    Nil        => 1
+    Cons(h, t) => if isnil(tops) == 0 and ps_has_mth(h.op, mths) == 1 then ps_covers_tops(t, mths) else 0
+fn ps_companion_impls(tnm, tty, mths, traits) = match traits
+    Nil        => Nil
+    Cons(h, t) => let rest = ps_companion_impls(tnm, tty, mths, t) in if h.tnm != tnm and isnil(h.ops) == 0 and ps_covers_tops(h.ops, mths) == 1 then Cons(ImplDecl(h.tnm, tty, mths), rest) else rest
+fn ps_validate_decls(prog, tnames, traits) = match prog
+    Nil        => Nil
+    Cons(h, t) => ps_validate_decl1(h, ps_validate_decls(t, tnames, traits), tnames, traits)
+fn ps_validate_decl1(s0, rest, tnames, traits) = match s0
+    TypeS(nm, k, items)      => let u = if k == "record" then ps_check_rec_fields(items, tnames) else 0 in Cons(s0, rest)
+    ImplDecl(tnm, tty, mths) => let u1 = if tty != "" and ps_known_builtin_ty(tty) == 0 and ps_has_str(tty, tnames) == 0 then ctfail("lume: type error [T0001]: unknown type '" + tty + "' in 'impl " + tnm + " for " + tty + "'\n") else 0 in let u2 = ps_check_impl_trait(tnm, tty, mths, ps_find_trait(tnm, traits)) in Cons(s0, app(ps_companion_impls(tnm, tty, mths, traits), rest))
+    _                        => Cons(s0, rest)
+fn ps_uses_call_e(e, target) = match e
+    Call(nm, args)         => if nm == target then 1 else ps_uses_call_el(args, target)
+    Bin(op, a, b)          => if ps_uses_call_e(a, target) == 1 then 1 else ps_uses_call_e(b, target)
+    If(c, t, e2)           => if ps_uses_call_e(c, target) == 1 then 1 else if ps_uses_call_e(t, target) == 1 then 1 else ps_uses_call_e(e2, target)
+    LetIn(nm, v, b)        => if ps_uses_call_e(v, target) == 1 then 1 else ps_uses_call_e(b, target)
+    VarIn(nm, v, b)        => if ps_uses_call_e(v, target) == 1 then 1 else ps_uses_call_e(b, target)
+    Rec(items)             => ps_uses_call_recl(items, target)
+    RecT(tn, items)        => ps_uses_call_recl(items, target)
+    Field(o, nm)           => ps_uses_call_e(o, target)
+    Match(sc, arms)        => if ps_uses_call_e(sc, target) == 1 then 1 else ps_uses_call_arms(arms, target)
+    LambdaE(ps, ts, rt, b) => ps_uses_call_e(b, target)
+    _                      => 0
+fn ps_uses_call_el(xs, target) = match xs
+    Nil        => 0
+    Cons(h, t) => if ps_uses_call_e(h, target) == 1 then 1 else ps_uses_call_el(t, target)
+fn ps_uses_call_recl(xs, target) = match xs
+    Nil        => 0
+    Cons(h, t) => if ps_uses_call_e(h.val, target) == 1 then 1 else ps_uses_call_recl(t, target)
+fn ps_uses_call_arms(xs, target) = match xs
+    Nil        => 0
+    Cons(h, t) => if ps_uses_call_e(h.body, target) == 1 then 1 else ps_uses_call_arms(t, target)
+fn ps_uses_call_s(s0, target) = match s0
+    Fn(nm, ps, b) => ps_uses_call_e(b, target)
+    Print(v)      => ps_uses_call_e(v, target)
+    ExprS(v)      => ps_uses_call_e(v, target)
+    _             => 0
+fn ps_uses_call_prog(prog, target) = match prog
+    Nil        => 0
+    Cons(h, t) => if ps_uses_call_s(h, target) == 1 then 1 else ps_uses_call_prog(t, target)
+fn ps_has_fn_prog(prog, fnm) = match prog
+    Nil        => 0
+    Cons(h, t) => ps_has_fn_s(h, fnm, t)
+fn ps_has_fn_s(s0, fnm, t) = match s0
+    Fn(nm, ps, b) => if nm == fnm then 1 else ps_has_fn_prog(t, fnm)
+    _             => ps_has_fn_prog(t, fnm)
+fn ps_has_dec_lit_e(e) = match e
+    Rec(items)      => if is_dec_rec_items(items) == 1 then 1 else ps_has_dec_lit_recl(items)
+    RecT(tn, items) => ps_has_dec_lit_recl(items)
+    Bin(op, a, b)   => if ps_has_dec_lit_e(a) == 1 then 1 else ps_has_dec_lit_e(b)
+    If(c, t, e2)    => if ps_has_dec_lit_e(c) == 1 then 1 else if ps_has_dec_lit_e(t) == 1 then 1 else ps_has_dec_lit_e(e2)
+    LetIn(nm, v, b) => if ps_has_dec_lit_e(v) == 1 then 1 else ps_has_dec_lit_e(b)
+    VarIn(nm, v, b) => if ps_has_dec_lit_e(v) == 1 then 1 else ps_has_dec_lit_e(b)
+    Call(nm, args)  => ps_has_dec_lit_el(args)
+    Match(sc, arms) => if ps_has_dec_lit_e(sc) == 1 then 1 else ps_has_dec_lit_arms(arms)
+    _               => 0
+fn ps_has_dec_lit_el(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if ps_has_dec_lit_e(h) == 1 then 1 else ps_has_dec_lit_el(t)
+fn ps_has_dec_lit_recl(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if ps_has_dec_lit_e(h.val) == 1 then 1 else ps_has_dec_lit_recl(t)
+fn ps_has_dec_lit_arms(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if ps_has_dec_lit_e(h.body) == 1 then 1 else ps_has_dec_lit_arms(t)
+fn ps_has_dec_lit_s(s0) = match s0
+    Fn(nm, ps, b) => ps_has_dec_lit_e(b)
+    Print(v)      => ps_has_dec_lit_e(v)
+    ExprS(v)      => ps_has_dec_lit_e(v)
+    _             => 0
+fn ps_has_dec_lit_prog(prog) = match prog
+    Nil        => 0
+    Cons(h, t) => if ps_has_dec_lit_s(h) == 1 then 1 else ps_has_dec_lit_prog(t)
+fn ps_is_tydec(ty) = match ty
+    TyDecimal(p, s) => 1
+    TyRefine(b, p)  => ps_is_tydec(b)
+    _               => 0
+fn ps_has_tydec_list(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if ps_is_tydec(h) == 1 then 1 else ps_has_tydec_list(t)
+fn ps_has_tydec_s(s0) = match s0
+    Sig(nm, ps, ts, rt) => if ps_is_tydec(rt) == 1 then 1 else ps_has_tydec_list(ts)
+    _                   => 0
+fn ps_has_tydec_prog(prog) = match prog
+    Nil        => 0
+    Cons(h, t) => if ps_has_tydec_s(h) == 1 then 1 else ps_has_tydec_prog(t)
+fn ps_fmt_stdlib() =
+    let f_padl = Fn("__lume_pad_l", Cons("s", Cons("w", Cons("ch", Nil))), If(Bin(">=", Call("count", Cons(Var("s"), Nil)), Var("w")), Var("s"), Call("__lume_pad_l", Cons(Bin("+", Var("ch"), Var("s")), Cons(Var("w"), Cons(Var("ch"), Nil)))))) in
+    let f_padr = Fn("__lume_pad_r", Cons("s", Cons("w", Cons("ch", Nil))), If(Bin(">=", Call("count", Cons(Var("s"), Nil)), Var("w")), Var("s"), Call("__lume_pad_r", Cons(Bin("+", Var("s"), Var("ch")), Cons(Var("w"), Cons(Var("ch"), Nil)))))) in
+    let f_rad1 = Fn("__lume_radix1", Cons("n", Cons("b", Cons("dg", Nil))), If(Bin("==", Var("n"), Num(0)), Str(""), Bin("+", Call("__lume_radix1", Cons(Bin("/", Var("n"), Var("b")), Cons(Var("b"), Cons(Var("dg"), Nil)))), Call("at", Cons(Var("dg"), Cons(Bin("%", Var("n"), Var("b")), Nil)))))) in
+    let f_rad  = Fn("__lume_radix", Cons("n", Cons("b", Cons("dg", Nil))), If(Bin("==", Var("n"), Num(0)), Str("0"), If(Bin("<", Var("n"), Num(0)), Bin("+", Str("-"), Call("__lume_radix1", Cons(Bin("-", Num(0), Var("n")), Cons(Var("b"), Cons(Var("dg"), Nil))))), Call("__lume_radix1", Cons(Var("n"), Cons(Var("b"), Cons(Var("dg"), Nil))))))) in
+    let w_sub  = Call("toint", Cons(Call("slice", Cons(Var("spec"), Cons(Num(1), Cons(Call("count", Cons(Var("spec"), Nil)), Nil)))), Nil)) in
+    let w_all  = Call("toint", Cons(Var("spec"), Nil)) in
+    let c0_e   = Call("at", Cons(Var("spec"), Cons(Num(0), Nil))) in
+    let cl_e   = Call("at", Cons(Var("spec"), Cons(Bin("-", Call("count", Cons(Var("spec"), Nil)), Num(1)), Nil))) in
+    let rem_e  = Call("slice", Cons(Var("spec"), Cons(Num(0), Cons(Bin("-", Call("count", Cons(Var("spec"), Nil)), Num(1)), Nil)))) in
+    let pad_e  = LetIn("c0", c0_e, If(Bin("==", Var("c0"), Str(">")), Call("__lume_pad_l", Cons(Var("s"), Cons(w_sub, Cons(Str(" "), Nil)))), If(Bin("==", Var("c0"), Str("<")), Call("__lume_pad_r", Cons(Var("s"), Cons(w_sub, Cons(Str(" "), Nil)))), If(Bin("==", Var("c0"), Str("^")), LetIn("w", w_sub, LetIn("n", Call("count", Cons(Var("s"), Nil)), If(Bin(">=", Var("n"), Var("w")), Var("s"), LetIn("l", Bin("/", Bin("-", Var("w"), Var("n")), Num(2)), Call("__lume_pad_r", Cons(Call("__lume_pad_l", Cons(Var("s"), Cons(Bin("+", Var("n"), Var("l")), Cons(Str(" "), Nil)))), Cons(Var("w"), Cons(Str(" "), Nil)))))))), If(Bin("==", Var("c0"), Str("0")), Call("__lume_pad_l", Cons(Var("s"), Cons(w_sub, Cons(Str("0"), Nil)))), If(Bin("==", Var("c0"), Str(".")), LetIn("w", w_sub, If(Bin("<=", Call("count", Cons(Var("s"), Nil)), Var("w")), Var("s"), Call("slice", Cons(Var("s"), Cons(Num(0), Cons(Var("w"), Nil)))))), If(Bin("and", Bin(">=", Var("c0"), Str("1")), Bin("<=", Var("c0"), Str("9"))), Call("__lume_pad_l", Cons(Var("s"), Cons(w_all, Cons(Str(" "), Nil)))), Var("s")))))))) in
+    let f_fmt  = Fn("__lume_fmt", Cons("s", Cons("spec", Nil)), If(Bin("==", Var("spec"), Str("")), Var("s"), LetIn("cl", cl_e, LetIn("rem", rem_e, If(Bin("==", Var("cl"), Str("x")), Call("__lume_fmt", Cons(Call("__lume_radix", Cons(Call("toint", Cons(Var("s"), Nil)), Cons(Num(16), Cons(Str("0123456789abcdef"), Nil)))), Cons(Var("rem"), Nil))), If(Bin("==", Var("cl"), Str("X")), Call("__lume_fmt", Cons(Call("__lume_radix", Cons(Call("toint", Cons(Var("s"), Nil)), Cons(Num(16), Cons(Str("0123456789ABCDEF"), Nil)))), Cons(Var("rem"), Nil))), If(Bin("==", Var("cl"), Str("b")), Call("__lume_fmt", Cons(Call("__lume_radix", Cons(Call("toint", Cons(Var("s"), Nil)), Cons(Num(2), Cons(Str("01"), Nil)))), Cons(Var("rem"), Nil))), If(Bin("==", Var("cl"), Str("o")), Call("__lume_fmt", Cons(Call("__lume_radix", Cons(Call("toint", Cons(Var("s"), Nil)), Cons(Num(8), Cons(Str("01234567"), Nil)))), Cons(Var("rem"), Nil))), pad_e)))))))) in
+    Cons(f_padl, Cons(f_padr, Cons(f_rad1, Cons(f_rad, Cons(f_fmt, Nil)))))
+fn ps_mk_dec_rec(coeff_e, sc_e) = Rec(Cons({key: "coefficient", val: coeff_e}, Cons({key: "scale", val: sc_e}, Cons({key: "precision", val: Num(0)}, Nil))))
+fn ps_dec_stdlib() =
+    let f_pow = Fn("__lume_dpow10", Cons("n", Nil), If(Bin("<=", Var("n"), Num(0)), Num(1), Bin("*", Num(10), Call("__lume_dpow10", Cons(Bin("-", Var("n"), Num(1)), Nil))))) in
+    let f_max = Fn("__lume_dmax", Cons("a", Cons("b", Nil)), If(Bin(">", Var("a"), Var("b")), Var("a"), Var("b"))) in
+    let f_al  = Fn("__lume_dalign", Cons("x", Cons("t", Nil)), Bin("*", Field(Var("x"), "coefficient"), Call("__lume_dpow10", Cons(Bin("-", Var("t"), Field(Var("x"), "scale")), Nil)))) in
+    let s_ab  = Call("__lume_dmax", Cons(Field(Var("a"), "scale"), Cons(Field(Var("b"), "scale"), Nil))) in
+    let f_add = Fn("decimal_add", Cons("a", Cons("b", Nil)), LetIn("s", s_ab, ps_mk_dec_rec(Bin("+", Call("__lume_dalign", Cons(Var("a"), Cons(Var("s"), Nil))), Call("__lume_dalign", Cons(Var("b"), Cons(Var("s"), Nil)))), Var("s")))) in
+    let f_sub = Fn("decimal_sub", Cons("a", Cons("b", Nil)), LetIn("s", s_ab, ps_mk_dec_rec(Bin("-", Call("__lume_dalign", Cons(Var("a"), Cons(Var("s"), Nil))), Call("__lume_dalign", Cons(Var("b"), Cons(Var("s"), Nil)))), Var("s")))) in
+    let f_mul = Fn("decimal_mul", Cons("a", Cons("b", Nil)), ps_mk_dec_rec(Bin("*", Field(Var("a"), "coefficient"), Field(Var("b"), "coefficient")), Bin("+", Field(Var("a"), "scale"), Field(Var("b"), "scale")))) in
+    let f_div = Fn("decimal_div", Cons("a", Cons("b", Nil)), If(Bin("==", Field(Var("b"), "coefficient"), Num(0)), Call("ctfail", Cons(Str("lume: decimal division by zero\n"), Nil)), LetIn("s", s_ab, ps_mk_dec_rec(Bin("/", Bin("*", Call("__lume_dalign", Cons(Var("a"), Cons(Var("s"), Nil))), Call("__lume_dpow10", Cons(Var("s"), Nil))), Call("__lume_dalign", Cons(Var("b"), Cons(Var("s"), Nil)))), Var("s"))))) in
+    let f_cmp = Fn("decimal_compare", Cons("a", Cons("b", Nil)), LetIn("s", s_ab, LetIn("ra", Call("__lume_dalign", Cons(Var("a"), Cons(Var("s"), Nil))), LetIn("rb", Call("__lume_dalign", Cons(Var("b"), Cons(Var("s"), Nil))), If(Bin("<", Var("ra"), Var("rb")), Bin("-", Num(0), Num(1)), If(Bin(">", Var("ra"), Var("rb")), Num(1), Num(0))))))) in
+    Cons(f_pow, Cons(f_max, Cons(f_al, Cons(f_add, Cons(f_sub, Cons(f_mul, Cons(f_div, Cons(f_cmp, Nil))))))))
+fn expand_prog_sugar(prog) = if has_prog_sugar(prog) == 0 then prog else let tnames = ps_collect_tnames(prog) in let traits = ps_collect_traits(prog) in let prog1 = ps_validate_decls(prog, tnames, traits) in let recs = ps_collect_recs(prog1) in let sigs = ps_collect_sigs(prog1) in let allc = ps_all_cnames(prog1) in let consts = ps_collect_consts(prog1, Nil, recs, sigs, ps_is_freestanding(prog1), allc) in let prog2 = ps_exp_prog(prog1, {consts: consts, recs: recs, sigs: sigs}) in let prog3 = if ps_uses_call_prog(prog2, "__lume_fmt") == 1 and ps_has_fn_prog(prog2, "__lume_fmt") == 0 then app(ps_fmt_stdlib(), prog2) else prog2 in if ps_has_dec_lit_prog(prog3) == 1 and ps_has_tydec_prog(prog3) == 0 and ps_has_fn_prog(prog3, "decimal_add") == 0 then app(ps_dec_stdlib(), prog3) else prog3
 fn parseprogram(s) = expand_prog_sugar(parseprog(lex(s, 0)))
 
 ## --- parser: named type declarations (F1) -----------------------------------------------------------------
@@ -369,10 +624,16 @@ fn parserefinety(nm, t) = let bty = TyName(headtext(t)) in let pr = expr(droponc
 fn parserefinebrace(nm, t) = let t1 = droponce(t) in let bty = TyName(headtext(droponce(droponce(t1)))) in let pr = expr(dropkw(droponce(droponce(droponce(t1))), "|")) in {node: TypeRefineS(nm, bty, pr.node), inv: Nil, rest: skiprb(pr.rest)}
 fn parsetypebody(nm, t) = if headtext(t) == "record" or headtext(t) == "model" then parserecordty(nm, droponce(t)) else if headtext(t) == "{" and headtext(droponce(droponce(droponce(droponce(t))))) == "|" then parserefinebrace(nm, t) else if headtext(t) == "{" and headtext(droponce(droponce(t))) == ":" then parserecordty(nm, t) else if headtext(droponce(t)) == "where" then parserefinety(nm, t) else if isbasealias(t) == 1 then {node: TypeRefineS(nm, TyName(headtext(t)), Num(1)), inv: Nil, rest: droponce(t)} else parseenumty(nm, dropkw(t, "enum"))
 fn isbasealias(t) = if (headtext(t) == "int" or headtext(t) == "str" or headtext(t) == "bool") and headtext(droponce(t)) != "|" and headtext(droponce(t)) != "(" then 1 else 0
+fn check_dup_variants(vs, seen) = match vs
+    Nil        => 0
+    Cons(h, t) => if ps_has_str(h.tag, seen) == 1 then ctfail("lume: declaration error [D0002]: duplicate enum variant '" + h.tag + "'\n") else check_dup_variants(t, Cons(h.tag, seen))
+fn check_dup_fields(fs, seen) = match fs
+    Nil        => 0
+    Cons(h, t) => if ps_has_str(h.fname, seen) == 1 then ctfail("lume: declaration error [D0002]: duplicate record field '" + h.fname + "'\n") else check_dup_fields(t, Cons(h.fname, seen))
 fn parseenumty(nm, t) = let hb = if headtext(t) == "{" then 1 else 0 in parseenumty2(nm, hb, parsevariants(dropkw(dropkw(t, "{"), "|")))
-fn parseenumty2(nm, hb, vs) = {node: TypeS(nm, "enum", vs.items), inv: Nil, rest: if hb == 1 then skiprb(vs.rest) else vs.rest}
+fn parseenumty2(nm, hb, vs) = let u = check_dup_variants(vs.items, Nil) in {node: TypeS(nm, "enum", vs.items), inv: Nil, rest: if hb == 1 then skiprb(vs.rest) else vs.rest}
 fn parsevariants(ts) = parsevariant(headtext(ts), droponce(ts))
-fn parsevariant(tag, ts) = if headtext(ts) == "(" then parsevariantp(tag, parsevpayload(droponce(ts))) else parsevariantend(tag, 0, TyAny, ts)
+fn parsevariant(tag, ts) = if headtext(ts) == "(" then parsevariantp(tag, parsevpayload(droponce(ts))) else parsevariantend(tag, 0, TyAny, Nil, ts)
 ## F4 (front-end unification, slice 1): an enum variant payload accepts BOTH the Lume-Core positional form
 ## `Cons(int, Node)` and the surface form with NAMED fields `Cons(value: int, next: Node)`. A leading `name :`
 ## is consumed and discarded, so both forms lower to the SAME `{tag, ar}` AST (arity = field count) and emit
@@ -385,11 +646,11 @@ fn parsevpcons(n, rr) = {items: Cons(n, rr.items), rest: rr.rest}
 fn vphd(xs) = match xs
     Nil        => TyAny
     Cons(h, t) => h
-fn parsevariantp(tag, a) = parsevariantend(tag, len(a.items), if len(a.items) == 1 then vphd(a.items) else TyAny, a.rest)
-fn parsevariantend(tag, ar, pty, ts) requires ar >= 0 ensures isnil(result.items) == 0 = if headtext(ts) == "|" then parsevariantcons(tag, ar, pty, parsevariants(droponce(ts))) else {items: Cons({tag: tag, ar: ar, pty: pty}, Nil), rest: ts}
-fn parsevariantcons(tag, ar, pty, rr) = {items: Cons({tag: tag, ar: ar, pty: pty}, rr.items), rest: rr.rest}
+fn parsevariantp(tag, a) = parsevariantend(tag, len(a.items), if len(a.items) == 1 then vphd(a.items) else TyAny, a.items, a.rest)
+fn parsevariantend(tag, ar, pty, ptys, ts) requires ar >= 0 ensures isnil(result.items) == 0 = if headtext(ts) == "|" then parsevariantcons(tag, ar, pty, ptys, parsevariants(droponce(ts))) else {items: Cons({tag: tag, ar: ar, pty: pty, ptys: ptys}, Nil), rest: ts}
+fn parsevariantcons(tag, ar, pty, ptys, rr) = {items: Cons({tag: tag, ar: ar, pty: pty, ptys: ptys}, rr.items), rest: rr.rest}
 fn parserecordty(nm, t) = let hb = if headtext(t) == "{" then 1 else 0 in parserecordty2(nm, hb, parsefields(dropkw(t, "{")))
-fn parserecordty2(nm, hb, fs) = let rest1 = if hb == 1 then skiprb(fs.rest) else fs.rest in if headtext(rest1) == "invariant" then let inv = expr(droponce(rest1)) in {node: TypeS(nm, "record", fs.items), inv: VTypeInvariant(nm, fs.items, inv.node), rest: inv.rest} else {node: TypeS(nm, "record", fs.items), inv: Nil, rest: rest1}
+fn parserecordty2(nm, hb, fs) = let u = check_dup_fields(fs.items, Nil) in if hb == 1 and headtext(fs.rest) == "invariant" then (let inv = expr(droponce(fs.rest)) in {node: TypeS(nm, "record", fs.items), inv: VTypeInvariant(nm, fs.items, inv.node), rest: skiprb(inv.rest)}) else let rest1 = if hb == 1 then skiprb(fs.rest) else fs.rest in if headtext(rest1) == "invariant" then (let inv = expr(droponce(rest1)) in {node: TypeS(nm, "record", fs.items), inv: VTypeInvariant(nm, fs.items, inv.node), rest: inv.rest}) else {node: TypeS(nm, "record", fs.items), inv: Nil, rest: rest1}
 fn parsefields(ts) = parsefield(headtext(ts), dropkw(droponce(ts), ":"))
 fn parsefield(fname, ts) = parsefieldt(fname, parsetype1(ts))
 fn isfieldsep(ts) = headtext(ts) == "," or headtext(ts) == ";"
@@ -402,7 +663,8 @@ fn parsetypecons(n, rr) = {items: Cons(n, rr.items), rest: rr.rest}
 fn istyapp1(nm) = nm == "table" or nm == "rc" or nm == "arc" or nm == "weak" or nm == "promise" or nm == "signal" or nm == "cell" or nm == "chan" or nm == "Ref" or nm == "View" or nm == "unverified" or nm == "cap"
 fn parsedims(ts) = if headtext(ts) == "]" then {items: Nil, rest: droponce(ts)} else let d = headtext(ts) in let t1 = droponce(ts) in if headtext(t1) == "," then let rr = parsedims(droponce(t1)) in {items: Cons(d, rr.items), rest: rr.rest} else {items: Cons(d, Nil), rest: skiprk(t1)}
 fn parsetypetensor(ts) = let et = parsetype1(ts) in if headtext(et.rest) == "," then let ds = parsedims(droponce(et.rest)) in {node: TyTensor(et.node, ds.items), rest: ds.rest} else {node: TyTensor(et.node, Nil), rest: skiprk(et.rest)}
-fn parsetype1(ts) = if headtext(ts) == "[" then parsetypelistof(parsetype1(droponce(ts))) else if headtext(ts) == "decimal" and headtext(droponce(ts)) == "(" then parsetypedecimal(droponce(droponce(ts))) else if headtext(ts) == "tensor" and headtext(droponce(ts)) == "[" then parsetypetensor(droponce(droponce(ts))) else if headtext(ts) != "" and headtext(droponce(ts)) == "[" then parsetypeapp(headtext(ts), droponce(droponce(ts))) else {node: TyName(headtext(ts)), rest: droponce(ts)}
+fn parsetyperec(ts) = if headtext(ts) == "}" then {node: TyRec(Nil), rest: droponce(ts)} else let fs = parsefields(ts) in {node: TyRec(fs.items), rest: skiprb(fs.rest)}
+fn parsetype1(ts) = if headtext(ts) == "[" then parsetypelistof(parsetype1(droponce(ts))) else if headtext(ts) == "{" then parsetyperec(droponce(ts)) else if headtext(ts) == "decimal" and headtext(droponce(ts)) == "(" then parsetypedecimal(droponce(droponce(ts))) else if headtext(ts) == "tensor" and headtext(droponce(ts)) == "[" then parsetypetensor(droponce(droponce(ts))) else if headtext(ts) != "" and headtext(droponce(ts)) == "[" then parsetypeapp(headtext(ts), droponce(droponce(ts))) else {node: TyName(headtext(ts)), rest: droponce(ts)}
 fn parsetypelistof(r) = {node: TyList(r.node), rest: skiprk(r.rest)}
 fn parsetypeapp(kind, ts) = parsetypeapp2(kind, parsetype1(ts))
 fn parsetypeapp2(kind, r) = {node: TyApply(kind, r.node), rest: skiprk(r.rest)}

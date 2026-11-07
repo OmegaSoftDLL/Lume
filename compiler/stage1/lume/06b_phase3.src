@@ -217,7 +217,24 @@ fn keff_join(xs) = match xs
     Nil        => ""
     Cons(h, t) => if isnil(t) == 1 then h else h + ", " + keff_join(t)
 
-fn kprim_eff(cnm) = if cnm == "io_write" or cnm == "io_read" or cnm == "println" or cnm == "read" or cnm == "readall" or cnm == "io_read_byte" or cnm == "emit" or cnm == "flush" or cnm == "os_exec" or cnm == "os_kill" or cnm == "os_waitpid_status" then "io" else if cnm == "fs_read" or cnm == "fs_write" or cnm == "fs_open" then "fs" else if cnm == "net_send" or cnm == "net_recv" or cnm == "net_connect" or cnm == "db_exec" then "net" else if cnm == "rc_new" or cnm == "arc_new" or cnm == "alloc_heap" or cnm == "table_new" or cnm == "box_new" or cnm == "arena_new" or cnm == "arena_alloc" or cnm == "__lume_mem_pack" or cnm == "__lume_mem_unpack" or cnm == "__lume_arena_freeze" or cnm == "__lume_arena_thaw" or cnm == "__lume_arena_secret" or cnm == "__lume_arena_frozen" or cnm == "__lume_arena_new" or cnm == "__lume_arena_alloc" or cnm == "__lume_rc_new" or cnm == "__lume_arc_new" then "alloc" else if cnm == "rand_int" or cnm == "prob_sample" or cnm == "llm_complete" then "rand" else if cnm == "sample_dist" or cnm == "observe_lik" then "prob" else if cnm == "llm_prompt" then "llm" else if cnm == "wasm_module_new" or cnm == "wasm_call_add" or cnm == "wasm_store32" or cnm == "wasm_load32" or cnm == "wasm_call_host_fs" then "wasm" else if cnm == "ffi_call" then "ffi" else if cnm == "time_now" or cnm == "clock_now" or cnm == "sleep_ms" then "time" else if cnm == "fail_err" or cnm == "raise_err" then "fail" else if cnm == "panic_msg" then "panic" else if cnm == "async_await" or cnm == "spawn_task" then "async" else ""
+fn kprim_eff(cnm) = if cnm == "io_write" or cnm == "io_read" or cnm == "println" or cnm == "print" or cnm == "read" or cnm == "readall" or cnm == "io_read_byte" or cnm == "emit" or cnm == "flush" or cnm == "os_exec" or cnm == "os_kill" or cnm == "os_waitpid_status" or cnm == "os_run" or cnm == "os_run_capture" or cnm == "os_run_input_capture" or cnm == "os_run_input_capture_timeout" or cnm == "os_getpid" or cnm == "os_getenv" then "io" else if cnm == "fs_read" or cnm == "fs_write" or cnm == "fs_open" or cnm == "fs_write_file" or cnm == "fs_write_sync" or cnm == "fs_read_file" or cnm == "fs_read_byte" or cnm == "fs_path_exists" or cnm == "fs_mkdir_p" or cnm == "fs_remove" or cnm == "fs_list_dir" or cnm == "fs_append_sync" or cnm == "fs_rename" or cnm == "fs_stat_mtime" then "fs" else if cnm == "net_send" or cnm == "net_recv" or cnm == "net_connect" or cnm == "net_listen" or cnm == "net_accept" or cnm == "net_send_str" or cnm == "net_recv_str" or cnm == "net_close" or cnm == "db_exec" then "net" else if cnm == "rc_new" or cnm == "arc_new" or cnm == "alloc_heap" or cnm == "table_new" or cnm == "box_new" or cnm == "arena_new" or cnm == "arena_alloc" or cnm == "arena_freeze" or cnm == "arena_reset" or cnm == "arena_destroy" or cnm == "gc_collect" or cnm == "mem_pack" or cnm == "mem_unpack" or cnm == "__lume_mem_pack" or cnm == "__lume_mem_unpack" or cnm == "__lume_arena_freeze" or cnm == "__lume_arena_thaw" or cnm == "__lume_arena_secret" or cnm == "__lume_arena_frozen" or cnm == "__lume_arena_new" or cnm == "__lume_arena_alloc" or cnm == "__lume_rc_new" or cnm == "__lume_arc_new" or cnm == "__lume_global_get" or cnm == "__lume_global_set" then "alloc" else if cnm == "rand_int" or cnm == "prob_sample" or cnm == "llm_complete" then "rand" else if cnm == "sample_dist" or cnm == "observe_lik" then "prob" else if cnm == "llm_prompt" then "llm" else if cnm == "wasm_module_new" or cnm == "wasm_call_add" or cnm == "wasm_store32" or cnm == "wasm_load32" or cnm == "wasm_call_host_fs" then "wasm" else if cnm == "ffi_call" then "ffi" else if cnm == "time_now" or cnm == "clock_now" or cnm == "sleep_ms" then "time" else if cnm == "fail_err" or cnm == "raise_err" then "fail" else if cnm == "panic_msg" or cnm == "os_exit" then "panic" else if cnm == "async_await" or cnm == "spawn_task" then "async" else ""
+
+fn kinfer_closure_var(vnm, ksigs) = match keffsig_lookup(vnm, ksigs)
+    Cons(ks, r) => keff_diff(ks.effs, Cons("pure", Nil))
+    Nil         => Cons("io", Nil)
+
+fn kinfer_closure_target(fe, ksigs, edecls, fns, d) = match fe
+    Var(vnm)                   => kinfer_closure_var(vnm, ksigs)
+    Rec(items)                 => kinfer_rec_fn(items, ksigs, edecls, fns, d)
+    LambdaE(ps, tys, rt, body) => kinfer_effs_e(body, ksigs, edecls, fns, d)
+    _                          => Cons("io", Nil)
+
+fn kinfer_is_fnval(e) = match e
+    Rec(items)                 => if afn_rec_fnid(items) >= 0 then 1 else 0
+    LambdaE(ps, tys, rt, body) => 1
+    _                          => 0
+
+fn kinfer_rec_fn(items, ksigs, edecls, fns, d) = let base = kinfer_rec(items, ksigs, edecls, fns, d) in let fid = afn_rec_fnid(items) in if fid < 0 or d <= 0 then base else keff_union(base, keff_union(kinfer_fn_lookup("__lambda_" + str(fid), fns, ksigs, edecls, d - 1), kinfer_fn_lookup("__fnval_" + str(fid), fns, ksigs, edecls, d - 1)))
 
 fn kinfer_call_effs(cnm, ksigs, edecls, fns, d) = match keffsig_lookup(cnm, ksigs)
     Cons(ks, r) => keff_diff(ks.effs, Cons("pure", Nil))
@@ -227,25 +244,48 @@ fn kinfer_fn_lookup(cnm, fns, ksigs, edecls, d) = match fns
     Nil        => Nil
     Cons(f, r) => if f.nm == cnm then kinfer_effs_e(f.body, Cons({nm: cnm, effs: Cons("pure", Nil)}, ksigs), edecls, fns, d) else kinfer_fn_lookup(cnm, r, ksigs, edecls, d)
 
+fn kinfer_effs_list(xs, ksigs, edecls, fns, d) = match xs
+    Nil        => Nil
+    Cons(h, t) => keff_union(kinfer_effs_e(h, ksigs, edecls, fns, d), kinfer_effs_list(t, ksigs, edecls, fns, d))
+
+fn kinfer_contract_effs(mvs, ksigs, edecls, fns) = match mvs
+    Nil          => Nil
+    Cons(vsg, r) => keff_union(kinfer_effs_list(vsg.reqs, ksigs, edecls, fns, 24), kinfer_effs_list(vsg.enss, ksigs, edecls, fns, 24))
+
 fn kinfer_effs_e(e, ksigs, edecls, fns, d) = match e
-    Bin(op, l, r)           => keff_union(kinfer_effs_e(l, ksigs, edecls, fns, d), kinfer_effs_e(r, ksigs, edecls, fns, d))
-    If(c, t, e2)            => keff_union(kinfer_effs_e(c, ksigs, edecls, fns, d), keff_union(kinfer_effs_e(t, ksigs, edecls, fns, d), kinfer_effs_e(e2, ksigs, edecls, fns, d)))
-    LetIn(nm, v, b)         => keff_union(kinfer_effs_e(v, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d))
-    VarIn(nm, v, b)         => keff_union(kinfer_effs_e(v, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d))
-    OwnE(inner)             => kinfer_effs_e(inner, ksigs, edecls, fns, d)
-    MutE(inner)             => kinfer_effs_e(inner, ksigs, edecls, fns, d)
-    DeferE(c, b)            => keff_union(kinfer_effs_e(c, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d))
-    ErrDeferE(c, b)         => keff_union(kinfer_effs_e(c, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d))
-    WithAllocE(a, b)        => keff_union(kinfer_effs_e(a, ksigs, edecls, fns, d), orem("alloc", kinfer_effs_e(b, ksigs, edecls, fns, d)))
-    WithHandlerE(en, hs, b) => keff_union(kinfer_hops(hs, ksigs, edecls, fns, d), orem(en, kinfer_effs_e(b, ksigs, edecls, fns, d)))
-    AwaitE(inner)           => keff_add("async", kinfer_effs_e(inner, ksigs, edecls, fns, d))
-    ShardE(vnm, lo, hi, b)  => keff_union(kinfer_effs_e(lo, ksigs, edecls, fns, d), keff_union(kinfer_effs_e(hi, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d)))
-    Call(cnm, args)         => if cnm == "block_on" then orem("async", kinfer_args(args, ksigs, edecls, fns, d)) else keff_union(kinfer_call_effs(cnm, ksigs, edecls, fns, d), kinfer_args(args, ksigs, edecls, fns, d))
-    Match(sc, arms)         => keff_union(kinfer_effs_e(sc, ksigs, edecls, fns, d), kinfer_arms(arms, ksigs, edecls, fns, d))
-    Field(o, fld)           => kinfer_effs_e(o, ksigs, edecls, fns, d)
-    Rec(items)              => kinfer_rec(items, ksigs, edecls, fns, d)
-    RecT(tn, items)         => kinfer_rec(items, ksigs, edecls, fns, d)
-    _                       => Nil
+    Bin(op, l, r)              => keff_union(kinfer_effs_e(l, ksigs, edecls, fns, d), kinfer_effs_e(r, ksigs, edecls, fns, d))
+    If(c, t, e2)               => keff_union(kinfer_effs_e(c, ksigs, edecls, fns, d), keff_union(kinfer_effs_e(t, ksigs, edecls, fns, d), kinfer_effs_e(e2, ksigs, edecls, fns, d)))
+    LetIn(nm, v, b)            => let ev = kinfer_effs_e(v, ksigs, edecls, fns, d) in let ksigs2 = if kinfer_is_fnval(v) == 1 then Cons({nm: nm, effs: if isnil(ev) == 1 then Cons("pure", Nil) else ev}, ksigs) else ksigs in keff_union(ev, kinfer_effs_e(b, ksigs2, edecls, fns, d))
+    VarIn(nm, v, b)            => let ev = kinfer_effs_e(v, ksigs, edecls, fns, d) in let ksigs2 = if kinfer_is_fnval(v) == 1 then Cons({nm: nm, effs: if isnil(ev) == 1 then Cons("pure", Nil) else ev}, ksigs) else ksigs in keff_union(ev, kinfer_effs_e(b, ksigs2, edecls, fns, d))
+    OwnE(inner)                => kinfer_effs_e(inner, ksigs, edecls, fns, d)
+    MutE(inner)                => kinfer_effs_e(inner, ksigs, edecls, fns, d)
+    DeferE(c, b)               => keff_union(kinfer_effs_e(c, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d))
+    ErrDeferE(c, b)            => keff_union(kinfer_effs_e(c, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d))
+    WithAllocE(a, b)           => keff_union(kinfer_effs_e(a, ksigs, edecls, fns, d), orem("alloc", kinfer_effs_e(b, ksigs, edecls, fns, d)))
+    WithHandlerE(en, hs, b)    => keff_union(kinfer_hops(hs, ksigs, edecls, fns, d), khandled_effs(en, hs, edecls, kinfer_effs_e(b, ksigs, edecls, fns, d)))
+    AwaitE(inner)              => keff_add("async", kinfer_effs_e(inner, ksigs, edecls, fns, d))
+    ShardE(vnm, lo, hi, b)     => keff_union(kinfer_effs_e(lo, ksigs, edecls, fns, d), keff_union(kinfer_effs_e(hi, ksigs, edecls, fns, d), kinfer_effs_e(b, ksigs, edecls, fns, d)))
+    LambdaE(ps, tys, rt, body) => kinfer_effs_e(body, ksigs, edecls, fns, d)
+    Call(cnm, args)            => if cnm == "block_on" then orem("async", kinfer_args(args, ksigs, edecls, fns, d)) else if (cnm == "_call" or ostarts(cnm, "__closure_call_") == 1) and isnil(args) == 0 then keff_union(kinfer_closure_target(ohd_e(args), ksigs, edecls, fns, d), kinfer_args(ptl(args), ksigs, edecls, fns, d)) else keff_union(kinfer_call_effs(cnm, ksigs, edecls, fns, d), kinfer_args(args, ksigs, edecls, fns, d))
+    Match(sc, arms)            => keff_union(kinfer_effs_e(sc, ksigs, edecls, fns, d), kinfer_arms(arms, ksigs, edecls, fns, d))
+    Field(o, fld)              => kinfer_effs_e(o, ksigs, edecls, fns, d)
+    Rec(items)                 => kinfer_rec_fn(items, ksigs, edecls, fns, d)
+    RecT(tn, items)            => kinfer_rec(items, ksigs, edecls, fns, d)
+    _                          => Nil
+
+fn khops_has_op(opnm, hs) = match hs
+    Nil        => 0
+    Cons(h, t) => if h.op == opnm then 1 else khops_has_op(opnm, t)
+
+fn kops_all_handled(ops, hs) = match ops
+    Nil        => 1
+    Cons(o, r) => if khops_has_op(o.op, hs) == 1 then kops_all_handled(r, hs) else 0
+
+fn khandled_edecls(hs, edecls, effs) = match edecls
+    Nil        => effs
+    Cons(d, r) => let effs2 = if isnil(d.ops) == 0 and kops_all_handled(d.ops, hs) == 1 then orem(d.enm, effs) else effs in khandled_edecls(hs, r, effs2)
+
+fn khandled_effs(en, hs, edecls, effs) = let effs0 = if kop_is_edecl(en, edecls) == 0 and isnil(hs) == 0 then orem(en, effs) else effs in khandled_edecls(hs, edecls, effs0)
 
 fn kinfer_hops(hs, ksigs, edecls, fns, d) = match hs
     Nil        => Nil
@@ -273,7 +313,21 @@ fn kuses_ffi_e(e, osigs) = match e
     If(c, t, e2)    => if kuses_ffi_e(c, osigs) == 1 then 1 else if kuses_ffi_e(t, osigs) == 1 then 1 else kuses_ffi_e(e2, osigs)
     LetIn(nm, v, b) => if kuses_ffi_e(v, osigs) == 1 then 1 else kuses_ffi_e(b, osigs)
     VarIn(nm, v, b) => if kuses_ffi_e(v, osigs) == 1 then 1 else kuses_ffi_e(b, osigs)
+    Match(sc, arms) => if kuses_ffi_e(sc, osigs) == 1 then 1 else kuses_ffi_arms(arms, osigs)
+    Rec(items)      => kuses_ffi_rec(items, osigs)
+    RecT(tn, items) => kuses_ffi_rec(items, osigs)
+    Field(o, fld)   => kuses_ffi_e(o, osigs)
+    DeferE(c, b)    => if kuses_ffi_e(c, osigs) == 1 then 1 else kuses_ffi_e(b, osigs)
+    ErrDeferE(c, b) => if kuses_ffi_e(c, osigs) == 1 then 1 else kuses_ffi_e(b, osigs)
     _               => 0
+
+fn kuses_ffi_arms(xs, osigs) = match xs
+    Nil        => 0
+    Cons(h, t) => if kuses_ffi_e(h.body, osigs) == 1 then 1 else kuses_ffi_arms(t, osigs)
+
+fn kuses_ffi_rec(xs, osigs) = match xs
+    Nil        => 0
+    Cons(h, t) => if kuses_ffi_e(h.val, osigs) == 1 then 1 else kuses_ffi_rec(t, osigs)
 
 fn kuses_ffi_args(xs, osigs) = match xs
     Nil        => 0
@@ -286,30 +340,74 @@ fn khas_await_e(e) = match e
     LetIn(nm, v, b) => if khas_await_e(v) == 1 then 1 else khas_await_e(b)
     VarIn(nm, v, b) => if khas_await_e(v) == 1 then 1 else khas_await_e(b)
     Call(cnm, args) => if cnm == "block_on" then 0 else khas_await_args(args)
+    Match(sc, arms) => if khas_await_e(sc) == 1 then 1 else khas_await_arms(arms)
+    Rec(items)      => khas_await_rec(items)
+    RecT(tn, items) => khas_await_rec(items)
+    Field(o, fld)   => khas_await_e(o)
+    DeferE(c, b)    => if khas_await_e(c) == 1 then 1 else khas_await_e(b)
+    ErrDeferE(c, b) => if khas_await_e(c) == 1 then 1 else khas_await_e(b)
     _               => 0
+
+fn khas_await_arms(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if khas_await_e(h.body) == 1 then 1 else khas_await_arms(t)
+
+fn khas_await_rec(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if khas_await_e(h.val) == 1 then 1 else khas_await_rec(t)
 
 fn khas_await_args(xs) = match xs
     Nil        => 0
     Cons(h, t) => if khas_await_e(h) == 1 then 1 else khas_await_args(t)
 
 fn kchk_shard_e(e, fnm, ot) = match e
-    ShardE(vnm, lo, hi, b) => let inf = kinfer_effs_e(b, ot.ksigs, ot.edecls, ot.fns, 4) in if isnil(inf) == 0 then ctfail("lume: effect error [E0200]: data-parallel 'shard' in '" + fnm + "' cannot perform effect '{" + keff_join(inf) + "}' (fix-it: keep 'shard' body pure)\n") else kchk_shard_e(lo, fnm, ot) + kchk_shard_e(hi, fnm, ot)
+    ShardE(vnm, lo, hi, b) => let inf = kinfer_effs_e(b, ot.ksigs, ot.edecls, ot.fns, 24) in if isnil(inf) == 0 then ctfail("lume: effect error [E0200]: data-parallel 'shard' in '" + fnm + "' cannot perform effect '{" + keff_join(inf) + "}' (fix-it: keep 'shard' body pure)\n") else kchk_shard_e(lo, fnm, ot) + kchk_shard_e(hi, fnm, ot)
     Call(cnm, args)        => let z = kchk_shard_args(args, fnm, ot) in if cnm == "shard" and isnil(args) == 0 then kchk_shard_target(ohd_e(args), fnm, ot) else z
     Bin(op, l, r)          => kchk_shard_e(l, fnm, ot) + kchk_shard_e(r, fnm, ot)
     If(c, t, e2)           => kchk_shard_e(c, fnm, ot) + kchk_shard_e(t, fnm, ot) + kchk_shard_e(e2, fnm, ot)
     LetIn(nm, v, b)        => kchk_shard_e(v, fnm, ot) + kchk_shard_e(b, fnm, ot)
     VarIn(nm, v, b)        => kchk_shard_e(v, fnm, ot) + kchk_shard_e(b, fnm, ot)
+    Match(sc, arms)        => kchk_shard_e(sc, fnm, ot) + kchk_shard_arms(arms, fnm, ot)
+    Rec(items)             => kchk_shard_rec(items, fnm, ot)
+    RecT(tn, items)        => kchk_shard_rec(items, fnm, ot)
+    Field(o, fld)          => kchk_shard_e(o, fnm, ot)
+    DeferE(c, b)           => kchk_shard_e(c, fnm, ot) + kchk_shard_e(b, fnm, ot)
+    ErrDeferE(c, b)        => kchk_shard_e(c, fnm, ot) + kchk_shard_e(b, fnm, ot)
     _                      => 0
+
+fn kchk_shard_arms(xs, fnm, ot) = match xs
+    Nil        => 0
+    Cons(h, t) => kchk_shard_e(h.body, fnm, ot) + kchk_shard_arms(t, fnm, ot)
+
+fn kchk_shard_rec(xs, fnm, ot) = match xs
+    Nil        => 0
+    Cons(h, t) => kchk_shard_e(h.val, fnm, ot) + kchk_shard_rec(t, fnm, ot)
 
 fn kchk_shard_args(xs, fnm, ot) = match xs
     Nil        => 0
     Cons(h, t) => kchk_shard_e(h, fnm, ot) + kchk_shard_args(t, fnm, ot)
 
 fn kchk_shard_target(fe, fnm, ot) = match fe
-    Var(tnm) => let inf = kinfer_call_effs(tnm, ot.ksigs, ot.edecls, ot.fns, 4) in if isnil(inf) == 0 then ctfail("lume: effect error [E0200]: data-parallel 'shard' function '" + tnm + "' in '" + fnm + "' cannot perform effect '{" + keff_join(inf) + "}' (fix-it: pass a pure function to 'shard')\n") else 0
-    _        => 0
+    Var(tnm)                   => let inf = kinfer_call_effs(tnm, ot.ksigs, ot.edecls, ot.fns, 24) in if isnil(inf) == 0 then ctfail("lume: effect error [E0200]: data-parallel 'shard' function '" + tnm + "' in '" + fnm + "' cannot perform effect '{" + keff_join(inf) + "}' (fix-it: pass a pure function to 'shard')\n") else 0
+    Rec(items)                 => let fid = afn_rec_fnid(items) in if fid >= 0 then let inf = keff_union(kinfer_call_effs("__lambda_" + str(fid), ot.ksigs, ot.edecls, ot.fns, 24), kinfer_call_effs("__fnval_" + str(fid), ot.ksigs, ot.edecls, ot.fns, 24)) in (if isnil(inf) == 0 then ctfail("lume: effect error [E0200]: data-parallel 'shard' function in '" + fnm + "' cannot perform effect '{" + keff_join(inf) + "}' (fix-it: pass a pure function to 'shard')\n") else 0) else 0
+    LambdaE(ps, tys, rt, body) => let inf = kinfer_effs_e(body, ot.ksigs, ot.edecls, ot.fns, 24) in if isnil(inf) == 0 then ctfail("lume: effect error [E0200]: data-parallel 'shard' function in '" + fnm + "' cannot perform effect '{" + keff_join(inf) + "}' (fix-it: pass a pure function to 'shard')\n") else 0
+    _                          => 0
 
-fn kchk_fn_effs(nm, pubf, body, ot) = let zsh = kchk_shard_e(body, nm, ot) in let mks = keffsig_lookup(nm, ot.ksigs) in let dec = kget_dec_effs(mks) in if khas_await_e(body) == 1 and omem("async", dec) == 0 then ctfail("lume: effect error [E0200]: '.await' in synchronous function '" + nm + "' requires 'async fn' or effect '/ {{async}}' (fix-it: mark 'async fn " + nm + "' or wrap the future in 'block_on(...)')\n") else if pubf == 0 and isnil(mks) == 1 and isnil(ot.caps) == 1 then 1 else let inf0 = kinfer_effs_e(body, ot.ksigs, ot.edecls, ot.fns, 4) in let inf = if kuses_ffi_e(body, ot.osigs) == 1 then keff_add("ffi", inf0) else inf0 in let missing_pub = if pubf == 1 and isnil(mks) == 1 then inf else keff_diff(inf, dec) in if (pubf == 1 or isnil(mks) == 0) and isnil(missing_pub) == 0 then ctfail("lume: effect error [E0200]: function '" + nm + "' performs undeclared effect '{" + keff_join(missing_pub) + "}' (fix-it: add '/ {" + keff_join(keff_union(dec, inf)) + "}' to the signature of '" + nm + "' or handle it with 'with handler')\n") else if isnil(ot.caps) == 0 and isnil(keff_diff(inf, ot.caps)) == 0 then let uncap = keff_diff(inf, ot.caps) in ctfail("lume: capability error [E0200]: function '" + nm + "' requires capability '{" + keff_join(uncap) + "}' not granted to this module (fix-it: add '@capability " + ohd_s(uncap, "io") + "' or declare it in lume.toml)\n") else 1
+fn kis_builtin_eff(e) = if e == "pure" or e == "io" or e == "fs" or e == "net" or e == "alloc" or e == "rand" or e == "prob" or e == "llm" or e == "wasm" or e == "ffi" or e == "time" or e == "fail" or e == "panic" or e == "async" or e == "gpu" or e == "simd" or e == "interrupt" or e == "realtime" or e == "unsafe" or e == "clock" or e == "log" or e == "db" or e == "os" or e == "sys" or e == "mem" or e == "crypto" or e == "quantum" then 1 else 0
+
+fn kop_is_edecl(enm, edecls) = match edecls
+    Nil        => 0
+    Cons(d, r) => if d.enm == enm then 1 else kop_is_edecl(enm, r)
+
+fn kunknown_eff(dec, edecls, caps) = match dec
+    Nil        => ""
+    Cons(h, t) => if kis_builtin_eff(h) == 1 or kop_is_edecl(h, edecls) == 1 or omem(h, caps) == 1 then kunknown_eff(t, edecls, caps) else h
+
+fn kfilter_edecls(effs, edecls) = match effs
+    Nil        => Nil
+    Cons(h, t) => if kop_is_edecl(h, edecls) == 1 then Cons(h, kfilter_edecls(t, edecls)) else kfilter_edecls(t, edecls)
+
+fn kchk_fn_effs(nm, pubf, body, ot) = let zsh = kchk_shard_e(body, nm, ot) in let mks = keffsig_lookup(nm, ot.ksigs) in let dec = kget_dec_effs(mks) in let unk = kunknown_eff(dec, ot.edecls, ot.caps) in if unk != "" then ctfail("lume: effect error [E0200]: unknown effect '" + unk + "' in signature of '" + nm + "'\n") else if khas_await_e(body) == 1 and omem("async", dec) == 0 then ctfail("lume: effect error [E0200]: '.await' in synchronous function '" + nm + "' requires 'async fn' or effect '/ {{async}}' (fix-it: mark 'async fn " + nm + "' or wrap the future in 'block_on(...)')\n") else if pubf == 0 and isnil(mks) == 1 and isnil(ot.caps) == 1 and isnil(ot.edecls) == 1 then 1 else let inf0 = keff_union(kinfer_effs_e(body, ot.ksigs, ot.edecls, ot.fns, 24), kinfer_contract_effs(vsiglookup(nm, ot.vsigs), ot.ksigs, ot.edecls, ot.fns)) in let inf = if kuses_ffi_e(body, ot.osigs) == 1 then keff_add("ffi", inf0) else inf0 in let ueffs = kfilter_edecls(inf, ot.edecls) in let missing_ueffs = if nm == "main" or nm == "<main>" then ueffs else keff_diff(ueffs, dec) in if isnil(missing_ueffs) == 0 then ctfail("lume: effect error [E0200]: function '" + nm + "' performs unhandled effect '{" + keff_join(missing_ueffs) + "}' (fix-it: handle it with 'with handler' or add '/ {" + keff_join(keff_union(dec, missing_ueffs)) + "}' to '" + nm + "')\n") else let missing_pub = if pubf == 1 and isnil(mks) == 1 then inf else keff_diff(inf, dec) in if (pubf == 1 or isnil(mks) == 0) and isnil(missing_pub) == 0 then ctfail("lume: effect error [E0200]: function '" + nm + "' performs undeclared effect '{" + keff_join(missing_pub) + "}' (fix-it: add '/ {" + keff_join(keff_union(dec, inf)) + "}' to the signature of '" + nm + "' or handle it with 'with handler')\n") else if isnil(ot.caps) == 0 and isnil(keff_diff(inf, ot.caps)) == 0 then let uncap = keff_diff(inf, ot.caps) in ctfail("lume: capability error [E0200]: function '" + nm + "' requires capability '{" + keff_join(uncap) + "}' not granted to this module (fix-it: add '@capability " + ohd_s(uncap, "io") + "' or declare it in lume.toml)\n") else 1
 
 fn kget_dec_effs(mks) = match mks
     Nil         => Nil
@@ -354,6 +452,8 @@ fn obind_origin(x, v, orgs) = Cons({k: x, v: v}, orgs)
 ## Intra-module quick origin inference for private helper functions (`borrow(p)` -> `p`)
 fn oquick_origin(e, orgs) = match e
     Var(x)           => olookup_origin(x, orgs)
+    OwnE(inner)      => oquick_origin(inner, orgs)
+    MutE(inner)      => "borrow:" + oquick_origin(inner, orgs)
     Field(o, fld)    => oquick_origin(o, orgs)
     LetIn(nm, v, b)  => let vo = oquick_origin(v, orgs) in oquick_origin(b, obind_origin(nm, if vo != "" then vo else "local:" + nm, orgs))
     VarIn(nm, v, b)  => let vo = oquick_origin(v, orgs) in oquick_origin(b, obind_origin(nm, if vo != "" then vo else "local:" + nm, orgs))
@@ -374,13 +474,58 @@ fn ohd_s(xs, def) = match xs
 
 fn ostrip_borrow(org) = if ostarts(org, "borrow:") == 1 then ostrip_borrow(slice(org, 7, count(org))) else org
 
-fn oinfer_priv_osigs(fns, osigs) = match fns
-    Nil        => osigs
-    Cons(f, r) => oinfer_priv_one(f, oinfer_priv_osigs(r, osigs))
+fn ois_res_rty(rty, otypes) = match rty
+    TyName(n) => if otypelookup(n, otypes) == "resource" then n else ""
+    _         => ""
 
-fn oinfer_priv_one(f, osigs) = if oanye(f.body) == 0 then osigs else let m = osiglookup(f.nm, osigs) in match m
-    Cons(sg, r) => osigs
-    Nil         => let bo = oquick_origin(f.body, oinit_origins(f.ps)) in if ostarts(bo, "borrow:param:") == 1 then Cons({nm: f.nm, pubf: 0, freef: 0, pl: Nil, rty: TyAny, fromp: slice(ostrip_borrow(bo), 6, count(ostrip_borrow(bo)))}, osigs) else osigs
+fn oinfer_res_call(cnm, osigs, otypes) = match osiglookup(cnm, osigs)
+    Cons(sg, r) => ois_res_rty(sg.rty, otypes)
+    Nil         => ""
+
+fn oinfer_res_args(args, osigs, otypes) = match args
+    Nil        => ""
+    Cons(h, t) => let r = oinfer_res_body(h, osigs, otypes) in if r != "" then r else oinfer_res_args(t, osigs, otypes)
+
+fn oinfer_res_items(items, osigs, otypes) = match items
+    Nil        => ""
+    Cons(h, t) => let r = oinfer_res_body(h.val, osigs, otypes) in if r != "" then r else oinfer_res_items(t, osigs, otypes)
+
+fn oinfer_res_arms(arms, osigs, otypes) = match arms
+    Nil        => ""
+    Cons(h, t) => let r = oinfer_res_body(h.body, osigs, otypes) in if r != "" then r else oinfer_res_arms(t, osigs, otypes)
+
+fn oinfer_res_body(e, osigs, otypes) = match e
+    RecT(tn, items)  => if otypelookup(tn, otypes) == "resource" then tn else oinfer_res_items(items, osigs, otypes)
+    Rec(items)       => oinfer_res_items(items, osigs, otypes)
+    Call(cnm, args)  => if isctor(cnm) or cnm == "_tylist_" then oinfer_res_args(args, osigs, otypes) else oinfer_res_call(cnm, osigs, otypes)
+    LetIn(nm, v, b)  => let rb = oinfer_res_body(b, osigs, otypes) in if rb != "" then rb else if of_is_var(b, nm) == 1 then oinfer_res_body(v, osigs, otypes) else ""
+    VarIn(nm, v, b)  => let rb = oinfer_res_body(b, osigs, otypes) in if rb != "" then rb else if of_is_var(b, nm) == 1 then oinfer_res_body(v, osigs, otypes) else ""
+    If(c, t, e2)     => let rt = oinfer_res_body(t, osigs, otypes) in if rt != "" then rt else oinfer_res_body(e2, osigs, otypes)
+    Match(sc, arms)  => oinfer_res_arms(arms, osigs, otypes)
+    DeferE(c, b)     => oinfer_res_body(b, osigs, otypes)
+    ErrDeferE(c, b)  => oinfer_res_body(b, osigs, otypes)
+    WithAllocE(a, b) => oinfer_res_body(b, osigs, otypes)
+    _                => ""
+
+fn opl_plain(ps) = match ps
+    Nil        => Nil
+    Cons(p, r) => Cons({cf: 0, pn: p, pt: TyAny}, opl_plain(r))
+
+fn oinfer_fromp(f) = let bo = oquick_origin(f.body, oinit_origins(f.ps)) in if ostarts(bo, "borrow:param:") == 1 then slice(ostrip_borrow(bo), 6, count(ostrip_borrow(bo))) else ""
+
+fn oinfer_upd_sig(osigs, f, rtn, fp) = match osigs
+    Nil         => Nil
+    Cons(sg, r) => if sg.nm == f.nm then Cons({nm: sg.nm, pubf: sg.pubf, freef: sg.freef, pl: if isnil(sg.pl) == 1 then opl_plain(f.ps) else sg.pl, rty: if rtn != "" and ois_res_rty(sg.rty, Cons({nm: rtn, kind: "resource"}, Nil)) == "" then TyName(rtn) else sg.rty, fromp: if sg.fromp != "" then sg.fromp else fp}, r) else Cons(sg, oinfer_upd_sig(r, f, rtn, fp))
+
+fn oinfer_priv_osigs(fns, osigs, otypes) = match fns
+    Nil        => osigs
+    Cons(f, r) => oinfer_priv_one(f, oinfer_priv_osigs(r, osigs, otypes), otypes)
+
+fn oinfer_priv_one(f, osigs, otypes) = let rtn = if isnil(otypes) == 1 then "" else oinfer_res_body(f.body, osigs, otypes) in let fp = oinfer_fromp(f) in oinfer_priv_one_m(osiglookup(f.nm, osigs), f, osigs, rtn, fp)
+
+fn oinfer_priv_one_m(m, f, osigs, rtn, fp) = match m
+    Cons(sg, r) => if rtn != "" or (sg.fromp == "" and fp != "") then oinfer_upd_sig(osigs, f, rtn, fp) else osigs
+    Nil         => if rtn != "" or fp != "" then Cons({nm: f.nm, pubf: 0, freef: 0, pl: opl_plain(f.ps), rty: if rtn != "" then TyName(rtn) else TyAny, fromp: fp}, osigs) else osigs
 
 ## --- call-site conflict & mode helpers ---
 fn ois_own_expr(e) = match e
@@ -451,7 +596,41 @@ fn oarg_for_param2(fromp, args, p, r) = match args
     Nil         => Num(0)
     Cons(a, ar) => if p.pn == fromp then a else oarg_for_param(fromp, ar, r)
 
-fn ois_heap_alloc(nm) = if nm == "rc" or nm == "arc" or nm == "rc_new" or nm == "arc_new" or nm == "promise" or nm == "signal" or nm == "promise_new" or nm == "signal_new" or nm == "alloc_heap" or nm == "table_new" or nm == "box_new" then 1 else 0
+fn ois_heap_alloc(nm) = if nm == "rc" or nm == "arc" or nm == "rc_new" or nm == "arc_new" or nm == "promise" or nm == "signal" or nm == "promise_new" or nm == "signal_new" or nm == "alloc_heap" or nm == "table_new" or nm == "box_new" or nm == "Cons" then 1 else 0
+
+fn oe_uses_heap_args(xs, fns, d) = match xs
+    Nil        => 0
+    Cons(h, t) => if oe_uses_heap(h, fns, d) == 1 then 1 else oe_uses_heap_args(t, fns, d)
+
+fn oe_uses_heap(e, fns, d) = match e
+    Call(cnm, args)  => if ois_heap_alloc(cnm) == 1 or ofn_uses_heap(cnm, fns, d) == 1 then 1 else oe_uses_heap_args(args, fns, d)
+    Bin(op, l, r)    => if oe_uses_heap(l, fns, d) == 1 then 1 else oe_uses_heap(r, fns, d)
+    If(c, t, e2)     => if oe_uses_heap(c, fns, d) == 1 then 1 else if oe_uses_heap(t, fns, d) == 1 then 1 else oe_uses_heap(e2, fns, d)
+    LetIn(nm, v, b)  => if oe_uses_heap(v, fns, d) == 1 then 1 else oe_uses_heap(b, fns, d)
+    VarIn(nm, v, b)  => if oe_uses_heap(v, fns, d) == 1 then 1 else oe_uses_heap(b, fns, d)
+    WithAllocE(a, b) => oe_uses_heap(a, fns, d)
+    _                => 0
+
+fn ofn_uses_heap_m(mf, fns, d) = match mf
+    Nil        => 0
+    Cons(f, r) => oe_uses_heap(f.body, fns, d - 1)
+
+fn ofn_uses_heap(fnm, fns, d) = if d <= 0 then 0 else ofn_uses_heap_m(vfnlookup(fnm, fns), fns, d)
+
+fn ochk_free_args(xs, fnm, halloc, fns) = match xs
+    Nil        => 0
+    Cons(h, t) => ochk_free_e(h, fnm, halloc, fns) + ochk_free_args(t, fnm, halloc, fns)
+
+fn ochk_free_e(e, fnm, halloc, fns) = match e
+    WithAllocE(a, b) => ochk_free_e(a, fnm, halloc, fns) + ochk_free_e(b, fnm, 1, fns)
+    Call(cnm, args)  => if halloc == 0 and (ois_heap_alloc(cnm) == 1 or ofn_uses_heap(cnm, fns, 6) == 1) then ctfail("lume: ownership error [O0030]: ambient heap allocation '" + cnm + "' in '@freestanding' function '" + fnm + "' (help: pass an explicit allocator via 'with alloc = <arena> in ...')\n") else ochk_free_args(args, fnm, halloc, fns)
+    Bin(op, l, r)    => ochk_free_e(l, fnm, halloc, fns) + ochk_free_e(r, fnm, halloc, fns)
+    If(c, t, e2)     => ochk_free_e(c, fnm, halloc, fns) + ochk_free_e(t, fnm, halloc, fns) + ochk_free_e(e2, fnm, halloc, fns)
+    LetIn(nm, v, b)  => ochk_free_e(v, fnm, halloc, fns) + ochk_free_e(b, fnm, halloc, fns)
+    VarIn(nm, v, b)  => ochk_free_e(v, fnm, halloc, fns) + ochk_free_e(b, fnm, halloc, fns)
+    DeferE(c, b)     => ochk_free_e(c, fnm, halloc, fns) + ochk_free_e(b, fnm, halloc, fns)
+    ErrDeferE(c, b)  => ochk_free_e(c, fnm, halloc, fns) + ochk_free_e(b, fnm, halloc, fns)
+    _                => 0
 
 ## --- core expression ownership/borrow/region check: returns {moved, origin} ---
 fn ochk_own_path(p, inner, ctx, moved) = if p.root != "" then omove_var(p.root, p.path, "value '" + p.root + p.path + "'", ctx, moved) else let r = ochke(inner, ctx, moved) in {moved: app(oa_kill_all(oa_flow_all(oa_flow(inner, ctx.oa)), ctx.oa), r.moved), origin: ""}
@@ -459,11 +638,11 @@ fn ochk_own_path(p, inner, ctx, moved) = if p.root != "" then omove_var(p.root, 
 fn ochk_own_target(inner, ctx, moved) = ochk_own_path(oa_path(inner), inner, ctx, moved)
 
 fn ochk_mut_field(o, fld, ctx, moved) = match o
-    Var(x) => if omem(oa_rid(x, ctx.oa), moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow field of immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
+    Var(x) => if oa_moved(oa_rid(x, ctx.oa) + "." + fld, moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow field of immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
     _      => let r = ochke(o, ctx, moved) in {moved: r.moved, origin: ""}
 
 fn ochk_mut_target(inner, ctx, moved) = match inner
-    Var(x)        => if omem(oa_rid(x, ctx.oa), moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
+    Var(x)        => if oa_moved(oa_rid(x, ctx.oa), moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
     Field(o, fld) => ochk_mut_field(o, fld, ctx, moved)
     _             => let r = ochke(inner, ctx, moved) in {moved: r.moved, origin: ""}
 
@@ -490,6 +669,16 @@ fn octx_binds(ctx, ps) = match ps
     Nil        => ctx
     Cons(h, t) => octx_binds(octx_oa(octx_bind(ctx, h, 0, ""), oa_bind(ctx.oa, h, oa_flow_nil())), t)
 
+fn ochk_match_res(sc, arms, ctx) = if of_nil(ctx.otypes) == 1 or of_res_value(sc, ctx.oa) == 0 then 0 else ochk_match_res_sc(sc, arms, ctx)
+
+fn ochk_match_res_sc(sc, arms, ctx) = match sc
+    Var(x) => 0
+    _      => if ochk_match_res_arms(arms) == 1 then 0 else ctfail("lume: ownership error [O0004]: temporary resource in '" + ctx.fnm + "' is dropped without being consumed (help: bind it with 'let' and consume it with 'own' or 'defer')\n")
+
+fn ochk_match_res_arms(arms) = match arms
+    Nil        => 1
+    Cons(h, t) => if omust_any(oa_pat_names(h.pat), h.body) == 1 then ochk_match_res_arms(t) else 0
+
 fn ochke(e, ctx, moved) = match e
     Var(x) => if oa_moved(oa_rid(x, ctx.oa), moved) == 1 then omoved_err(x) else {moved: moved, origin: olookup_origin(x, ctx.origins)}
     Field(o, fld) => ochk_field(oa_path(e), o, ctx, moved)
@@ -504,10 +693,10 @@ fn ochke(e, ctx, moved) = match e
     ScopeE(snm, b) => ochke(b, ctx, moved)
     SpawnE(inner) => ochke(inner, ctx, moved)
     Bin(op, l, r) => let rl = ochke(l, ctx, moved) in let rr = ochke(r, ctx, rl.moved) in {moved: rr.moved, origin: ""}
-    If(c, t, e2) => let rc = ochke(c, ctx, moved) in let rt = ochke(t, ctx, rc.moved) in let re = ochke(e2, ctx, rc.moved) in {moved: app(rt.moved, re.moved), origin: if rt.origin != "" then rt.origin else re.origin}
+    If(c, t, e2) => let rc = ochke(c, ctx, moved) in let rt = ochke(t, ctx, rc.moved) in let re = ochke(e2, ctx, rc.moved) in {moved: app(rt.moved, re.moved), origin: oborrow_org(rt.origin, re.origin)}
     Rec(items) => let z = oerr_if("borrow error [O0013]", oa_same_call(oa_item_vals(items), ctx.oa)) in ochkrec(items, ctx, moved)
     RecT(tn, items) => let z = oerr_if("borrow error [O0013]", oa_same_call(oa_item_vals(items), ctx.oa)) in ochkrec(items, ctx, moved)
-    Match(sc, arms) => let rsc = ochke(sc, ctx, moved) in ochkarms(arms, ctx, rsc.moved, if ctx.oa.track == 0 then Nil else oa_flow_all(oa_flow(sc, ctx.oa)))
+    Match(sc, arms) => let zmr = ochk_match_res(sc, arms, ctx) in let rsc = ochke(sc, ctx, moved) in ochkarms(arms, ctx, rsc.moved, if ctx.oa.track == 0 then Nil else oa_flow_all(oa_flow(sc, ctx.oa)))
     CT(inner) => ochke(inner, ctx, moved)
     AwaitE(inner) => ochke(inner, ctx, moved)
     ShardE(vnm, lo, hi, body) => let rlo = ochke(lo, ctx, moved) in let rhi = ochke(hi, ctx, rlo.moved) in let c2 = octx_bind(ctx, vnm, 0, "") in let rb = ochke(body, c2, orem(vnm, rhi.moved)) in let rb2 = ochke(body, c2, orem(vnm, rb.moved)) in {moved: rb.moved, origin: ""}
@@ -520,7 +709,7 @@ fn ochkhops(hs, ctx, moved) = match hs
     Cons(h, t) => let r = ochke(h.body, ctx, moved) in ochkhops(t, ctx, r.moved)
 
 ## reading `r.a` needs only that path to be intact: `r.b` may have been moved already
-fn ochk_field(p, o, ctx, moved) = if p.root == "" then ochke(o, ctx, moved) else if oa_moved(oa_rid(p.root, ctx.oa) + p.path, moved) == 1 then omoved_err(p.root + p.path) else {moved: moved, origin: olookup_origin(p.root, ctx.origins)}
+fn ochk_field(p, o, ctx, moved) = if p.root == "" then (if of_nil(ctx.otypes) == 0 and of_res_value(o, ctx.oa) == 1 then ctfail("lume: ownership error [O0004]: temporary resource in '" + ctx.fnm + "' is dropped without being consumed (help: bind it with 'let' and consume it with 'own' or 'defer')\n") else ochke(o, ctx, moved)) else if oa_moved(oa_rid(p.root, ctx.oa) + p.path, moved) == 1 then omoved_err(p.root + p.path) else {moved: moved, origin: olookup_origin(p.root, ctx.origins)}
 
 fn ochk_let(nm, ismut, v, b, ctx, moved) = let rv = ochke(v, ctx, moved) in let z = oerr_if("borrow error [O0013]", oa_loan_chk(nm, v, rv.origin, b, ctx.oa)) in let zr = oerr_if("ownership error [O0004]", oa_res_chk(nm, v, b, ctx.oa, ctx.fnm)) in let oa2 = oa_alias(ctx.oa, nm, v) in ochke(b, octx_oa(octx_bind(ctx, nm, ismut, rv.origin), oa2), if ctx.oa.track == 0 then orem(nm, rv.moved) else if oa_is_fresh(nm, ctx.oa, oa2) then orem(oa_rid(nm, oa2), rv.moved) else rv.moved)
 
@@ -534,7 +723,7 @@ fn ochkrec(items, ctx, moved) = match items
 
 fn ochkarms(arms, ctx, moved, scf) = match arms
     Nil        => {moved: moved, origin: ""}
-    Cons(h, t) => let c2 = octx_pat(ctx, h.pat, scf) in let r = ochke(h.body, c2, oa_rem_all(oa_rids(oa_pat_names(h.pat), c2.oa), moved)) in let rr = ochkarms(t, ctx, moved, scf) in {moved: app(r.moved, rr.moved), origin: if r.origin != "" then r.origin else rr.origin}
+    Cons(h, t) => let c2 = octx_pat(ctx, h.pat, scf) in let r = ochke(h.body, c2, oa_rem_all(oa_rids(oa_pat_names(h.pat), c2.oa), moved)) in let rr = ochkarms(t, ctx, moved, scf) in {moved: app(r.moved, rr.moved), origin: oborrow_org(r.origin, rr.origin)}
 
 fn ochkargs(args, ctx, moved) = match args
     Nil        => moved
@@ -544,15 +733,15 @@ fn ochkargs_org(args, ctx, moved) = match args
     Nil        => {moved: moved, origin: ""}
     Cons(h, t) => let r = ochke(h, ctx, moved) in let rr = ochkargs_org(t, ctx, r.moved) in {moved: rr.moved, origin: oborrow_org(r.origin, rr.origin)}
 
-fn ochkargs_o(fnm, args, ctx, moved) = if isctor(fnm) then ochkargs_org(args, ctx, moved) else {moved: ochkargs(args, ctx, moved), origin: ""}
+fn ochkargs_o(fnm, args, ctx, moved) = if isctor(fnm) or fnm == "_tylist_" or fnm == "__lume_rec_update" or fnm == "__lume_rec_with" then ochkargs_org(args, ctx, moved) else {moved: ochkargs(args, ctx, moved), origin: ""}
 
-fn ochkcall(fnm, args, ctx, moved) = if ois_free(ctx.freef) == 1 and ctx.halloc == 0 and ois_heap_alloc(fnm) == 1 then ctfail("lume: ownership error [O0030]: ambient heap allocation '" + fnm + "' in '@freestanding' function '" + ctx.fnm + "' (help: pass an explicit allocator via 'with alloc = <arena> in ...')\n") else if (fnm == "move" or fnm == "drop" or fnm == "rc_drop" or fnm == "arc_drop") and len(args) == 1 then ochk_own_target(ohd_e(args), ctx, moved) else if fnm == "cap_page_map" and len(args) >= 1 then let r0 = ochk_own_target(ohd_e(args), ctx, moved) in {moved: ochkargs(ptl(args), ctx, r0.moved), origin: ""} else if fnm == "borrow" and len(args) == 1 then let ra = ochke(ohd_e(args), ctx, moved) in {moved: ra.moved, origin: "borrow:" + ra.origin} else if fnm == "borrow_mut" and len(args) == 1 then ochk_mut_target(ohd_e(args), ctx, moved) else ochkcall_sig(fnm, args, osiglookup(fnm, ctx.osigs), ctx, moved)
+fn ochkcall(fnm, args, ctx, moved) = if ois_free(ctx.freef) == 1 and ctx.halloc == 0 and ois_heap_alloc(fnm) == 1 then ctfail("lume: ownership error [O0030]: ambient heap allocation '" + fnm + "' in '@freestanding' function '" + ctx.fnm + "' (help: pass an explicit allocator via 'with alloc = <arena> in ...')\n") else if fnm == "__lume_global_get" and len(args) == 1 then (let gnm = "__global_" + oa_num_str(ohd_e(args)) in if oa_moved(oa_rid(gnm, ctx.oa), moved) == 1 then omoved_err(gnm) else {moved: moved, origin: ""}) else if fnm == "__lume_global_set" and len(args) == 2 then (let gnm = "__global_" + oa_num_str(ohd_e(args)) in let rv = ochke(ohd_e(ptl(args)), ctx, moved) in {moved: orem(oa_rid(gnm, ctx.oa), rv.moved), origin: ""}) else if (fnm == "move" or fnm == "drop" or fnm == "rc_drop" or fnm == "arc_drop") and len(args) == 1 then ochk_own_target(ohd_e(args), ctx, moved) else if fnm == "cap_page_map" and len(args) >= 1 then let r0 = ochk_own_target(ohd_e(args), ctx, moved) in {moved: ochkargs(ptl(args), ctx, r0.moved), origin: ""} else if fnm == "borrow" and len(args) == 1 then let ra = ochke(ohd_e(args), ctx, moved) in {moved: ra.moved, origin: "borrow:" + ra.origin} else if fnm == "borrow_mut" and len(args) == 1 then ochk_mut_target(ohd_e(args), ctx, moved) else ochkcall_sig(fnm, args, osiglookup(fnm, ctx.osigs), ctx, moved)
 
 fn ochkcall_sig(fnm, args, msig, ctx, moved) = let zs = oerr_if("borrow error [O0013]", oa_same_call(args, ctx.oa)) in ochkcall_sig2(fnm, args, msig, ctx, moved)
 
 fn ochkcall_sig2(fnm, args, msig, ctx, moved) = match msig
     Nil          => let z = ochk_conflicts(fnm, ocollect_mut_args(args, Nil), args, ctx) in ochkargs_o(fnm, args, ctx, moved)
-    Cons(sg, sr) => let z1 = ochk_call_modes(fnm, args, sg.pl, ctx) in let z2 = ochk_conflicts(fnm, ocollect_mut_args(args, sg.pl), args, ctx) in let mv2 = ochkargs(args, ctx, moved) in if sg.fromp != "" then let fa = oarg_for_param(sg.fromp, args, sg.pl) in let rfa = ochke(fa, ctx, moved) in {moved: mv2, origin: "borrow:" + rfa.origin} else {moved: mv2, origin: ""}
+    Cons(sg, sr) => let z1 = ochk_call_modes(fnm, args, sg.pl, ctx) in let z2 = ochk_conflicts(fnm, ocollect_mut_args(args, sg.pl), args, ctx) in let mv2 = ochkargs(args, ctx, moved) in if sg.fromp != "" then (let is_al = ostarts(sg.fromp, "alias:") in let fp = oa_strip_alias(sg.fromp) in let fa = oarg_for_param(fp, args, sg.pl) in let rfa = ochke(fa, ctx, moved) in {moved: mv2, origin: if is_al == 1 then rfa.origin else "borrow:" + rfa.origin}) else {moved: mv2, origin: ""}
 
 ## --- check function return region rules O0020 & O0021 ---
 fn ochk_ret_origin(nm, pubf, fromp, rty, pnames, org) = let core_org = ostrip_borrow(org) in if ostarts(org, "borrow:") == 1 and ostarts(core_org, "local:") == 1 then let lx = slice(core_org, 6, count(core_org)) in ctfail("lume: region error [O0020]: borrowed value '" + lx + "' does not live long enough (escapes local scope of '" + nm + "')\n") else if ostarts(org, "borrow:") == 1 and ostarts(core_org, "param:") == 1 then let px = slice(core_org, 6, count(core_org)) in (if pubf == 1 and fromp == "" then ctfail("lume: region error [O0021]: public function '" + nm + "' returns a borrow from parameter '" + px + "' without an origin clause (help: add 'from " + px + "' to the return type)\n") else if fromp != "" and fromp != px then ctfail("lume: region error [O0021]: function '" + nm + "' declares 'from " + fromp + "' but returns a borrow from parameter '" + px + "' (help: change origin clause to 'from " + px + "')\n") else 1) else if pubf == 1 and oisreftype(rty) == 1 and fromp == "" then ctfail("lume: region error [O0021]: public function '" + nm + "' returns a borrowed view without a 'from <param>' origin clause\n") else 1
@@ -783,7 +972,9 @@ fn ais_guarded_var(e, ps, guarded) = match e
     Var(p) => if omem(p, ps) == 1 and omem(p, guarded) == 1 then 1 else 0
     _      => 0
 
-fn ais_dec_bin(op, l, r, ps, guarded) = if op == "%" and (ais_guarded_var(r, ps, guarded) == 1 or ais_pos_num(r, 2) == 1) then 1 else match l
+fn ais_dec_bin(op, l, r, ps, guarded) = if op == "%" and (ais_guarded_var(r, ps, guarded) == 1 or ais_pos_num(r, 2) == 1) then 1 else ais_dec_bin_l(op, l, r, ps, guarded)
+
+fn ais_dec_bin_l(op, l, r, ps, guarded) = match l
     Var(p) => if omem(p, ps) == 1 and omem(p, guarded) == 1 then (if op == "-" and ais_pos_num(r, 1) == 1 then 1 else if op == "/" and ais_pos_num(r, 2) == 1 then 1 else 0) else 0
     _      => 0
 
@@ -835,7 +1026,19 @@ fn afn_calls_self(nm, e) = match e
     LetIn(x, v, b)  => if afn_calls_self(nm, v) == 1 then 1 else afn_calls_self(nm, b)
     VarIn(x, v, b)  => if afn_calls_self(nm, v) == 1 then 1 else afn_calls_self(nm, b)
     Match(sc, arms) => if afn_calls_self(nm, sc) == 1 then 1 else afn_calls_arms(nm, arms)
+    Rec(items)      => afn_calls_rec(nm, items)
+    RecT(tn, items) => afn_calls_rec(nm, items)
+    Field(o, fld)   => afn_calls_self(nm, o)
+    OwnE(inner)     => afn_calls_self(nm, inner)
+    MutE(inner)     => afn_calls_self(nm, inner)
+    DeferE(c, b)    => if afn_calls_self(nm, c) == 1 then 1 else afn_calls_self(nm, b)
+    ErrDeferE(c, b) => if afn_calls_self(nm, c) == 1 then 1 else afn_calls_self(nm, b)
+    WithAllocE(a, b) => if afn_calls_self(nm, a) == 1 then 1 else afn_calls_self(nm, b)
     _               => 0
+
+fn afn_calls_rec(nm, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if afn_calls_self(nm, h.val) == 1 then 1 else afn_calls_rec(nm, t)
 
 fn afn_calls_args(nm, xs) = match xs
     Nil        => 0
@@ -844,6 +1047,64 @@ fn afn_calls_args(nm, xs) = match xs
 fn afn_calls_arms(nm, xs) = match xs
     Nil        => 0
     Cons(h, t) => if afn_calls_self(nm, h.body) == 1 then 1 else afn_calls_arms(nm, t)
+
+fn ahas_base_arms(arms, fnm) = match arms
+    Nil        => 0
+    Cons(h, t) => if ahas_base_path(h.body, fnm) == 1 then 1 else ahas_base_arms(t, fnm)
+
+fn ais_const_cond(c) = match c
+    Num(k) => if k == 0 then 0 else 1
+    _      => 0 - 1
+
+fn ahas_base_path(e, fnm) = match e
+    If(c, t, e2)     => if afn_calls_self(fnm, c) == 1 then 0 else let cc = ais_const_cond(c) in if cc == 1 then ahas_base_path(t, fnm) else if cc == 0 then ahas_base_path(e2, fnm) else if ahas_base_path(t, fnm) == 1 then 1 else ahas_base_path(e2, fnm)
+    Match(sc, arms)  => if afn_calls_self(fnm, sc) == 1 then 0 else ahas_base_arms(arms, fnm)
+    LetIn(nm, v, b)  => if afn_calls_self(fnm, v) == 1 then 0 else ahas_base_path(b, fnm)
+    VarIn(nm, v, b)  => if afn_calls_self(fnm, v) == 1 then 0 else ahas_base_path(b, fnm)
+    DeferE(c, b)     => if afn_calls_self(fnm, c) == 1 then 0 else ahas_base_path(b, fnm)
+    ErrDeferE(c, b)  => if afn_calls_self(fnm, c) == 1 then 0 else ahas_base_path(b, fnm)
+    WithAllocE(a, b) => if afn_calls_self(fnm, a) == 1 then 0 else ahas_base_path(b, fnm)
+    _                => if afn_calls_self(fnm, e) == 0 then 1 else 0
+
+fn afn_reaches_args(xs, tgt, fns, d) = match xs
+    Nil        => 0
+    Cons(h, t) => if afn_reaches_e(h, tgt, fns, d) == 1 then 1 else afn_reaches_args(t, tgt, fns, d)
+
+fn afn_reaches_arms(xs, tgt, fns, d) = match xs
+    Nil        => 0
+    Cons(h, t) => if afn_reaches_e(h.body, tgt, fns, d) == 1 then 1 else afn_reaches_arms(t, tgt, fns, d)
+
+fn afn_reaches_rec(xs, tgt, fns, d) = match xs
+    Nil        => 0
+    Cons(h, t) => if afn_reaches_e(h.val, tgt, fns, d) == 1 then 1 else afn_reaches_rec(t, tgt, fns, d)
+
+fn afn_reaches_e(e, tgt, fns, d) = match e
+    Call(cnm, args) => if cnm == tgt then 1 else if afn_reaches(cnm, tgt, fns, d - 1) == 1 then 1 else afn_reaches_args(args, tgt, fns, d)
+    Bin(op, l, r)   => if afn_reaches_e(l, tgt, fns, d) == 1 then 1 else afn_reaches_e(r, tgt, fns, d)
+    If(c, t, e2)    => if afn_reaches_e(c, tgt, fns, d) == 1 then 1 else if afn_reaches_e(t, tgt, fns, d) == 1 then 1 else afn_reaches_e(e2, tgt, fns, d)
+    LetIn(nm, v, b) => if afn_reaches_e(v, tgt, fns, d) == 1 then 1 else afn_reaches_e(b, tgt, fns, d)
+    VarIn(nm, v, b) => if afn_reaches_e(v, tgt, fns, d) == 1 then 1 else afn_reaches_e(b, tgt, fns, d)
+    Match(sc, arms) => if afn_reaches_e(sc, tgt, fns, d) == 1 then 1 else afn_reaches_arms(arms, tgt, fns, d)
+    Rec(items)      => afn_reaches_rec(items, tgt, fns, d)
+    RecT(tn, items) => afn_reaches_rec(items, tgt, fns, d)
+    Field(o, fld)   => afn_reaches_e(o, tgt, fns, d)
+    OwnE(inner)     => afn_reaches_e(inner, tgt, fns, d)
+    MutE(inner)     => afn_reaches_e(inner, tgt, fns, d)
+    _               => 0
+
+fn afn_reaches_m(mf, tgt, fns, d) = match mf
+    Nil        => 0
+    Cons(f, r) => afn_reaches_e(f.body, tgt, fns, d)
+
+fn afn_reaches(cnm, tgt, fns, d) = if d <= 0 then 0 else afn_reaches_m(vfnlookup(cnm, fns), tgt, fns, d)
+
+fn afn_num_or_neg1(e) = match e
+    Num(n) => n
+    _      => 0 - 1
+
+fn afn_rec_fnid(items) = match items
+    Nil        => 0 - 1
+    Cons(h, t) => if h.key == "__fn_id" then afn_num_or_neg1(h.val) else afn_rec_fnid(t)
 
 fn ais_fn_marked_total(nm, osigs) = match osiglookup(nm, osigs)
     Nil        => 0
@@ -859,8 +1120,11 @@ fn amatch_is_param(sc, ps, subvars) = match sc
     Var(x) => if omem(x, ps) == 1 or omem(x, subvars) == 1 then 1 else 0
     _      => 0
 
+fn achk_total_fn(body, tctx) = if afn_calls_self(tctx.fnm, body) == 1 and ahas_base_path(body, tctx.fnm) == 0 then ctfail("lume: totality error [A0002]: cannot prove termination of 'total fn " + tctx.fnm + "': no non-recursive base case on any path\n") else achk_total_e(body, tctx, Nil, Nil)
+
 fn achk_total_e(e, tctx, subvars, guarded) = match e
-    Call(cnm, args) => let z = achk_total_args(args, tctx, subvars, guarded) in if cnm == tctx.fnm then (if ahas_dec_arg(args, tctx.ps, subvars, guarded) == 1 then 1 else ctfail("lume: totality error [A0002]: cannot prove termination of 'total fn " + tctx.fnm + "': recursive call '" + cnm + "(...)' does not decrease any parameter (fix-it: recurse on a structural pattern subterm or a guarded 'n - 1' measure)\n")) else if ais_nontotal_rec(cnm, tctx.fns, tctx.osigs) == 1 then ctfail("lume: totality error [A0002]: 'total fn " + tctx.fnm + "' cannot call non-total recursive function '" + cnm + "' (fix-it: mark 'total fn " + cnm + "' and prove its termination)\n") else 1
+    Var(nm)         => if nm == tctx.fnm then ctfail("lume: totality error [A0002]: 'total fn " + tctx.fnm + "' cannot reference itself as a first-class function value\n") else 0
+    Call(cnm, args) => let z = achk_total_args(args, tctx, subvars, guarded) in if cnm == "_call" or ostarts(cnm, "__closure_call_") == 1 or omem(cnm, tctx.ps) == 1 then ctfail("lume: totality error [A0002]: cannot prove termination of 'total fn " + tctx.fnm + "': indirect or higher-order call '" + cnm + "(...)' is not provably total\n") else if cnm == tctx.fnm then (if ahas_dec_arg(args, tctx.ps, subvars, guarded) == 1 then 1 else ctfail("lume: totality error [A0002]: cannot prove termination of 'total fn " + tctx.fnm + "': recursive call '" + cnm + "(...)' does not decrease any parameter (fix-it: recurse on a structural pattern subterm or a guarded 'n - 1' measure)\n")) else if afn_reaches(cnm, tctx.fnm, tctx.fns, 6) == 1 then ctfail("lume: totality error [A0002]: cannot prove termination of mutually recursive 'total fn " + tctx.fnm + "' and '" + cnm + "'\n") else if ais_nontotal_rec(cnm, tctx.fns, tctx.osigs) == 1 then ctfail("lume: totality error [A0002]: 'total fn " + tctx.fnm + "' cannot call non-total recursive function '" + cnm + "' (fix-it: mark 'total fn " + cnm + "' and prove its termination)\n") else 1
     If(c, t, e2)    => let g2 = aguard_params(tctx.ps, c, guarded) in achk_total_e(c, tctx, subvars, guarded) + achk_total_e(t, tctx, subvars, g2) + achk_total_e(e2, tctx, subvars, g2)
     Bin(op, l, r)   => achk_total_e(l, tctx, subvars, guarded) + achk_total_e(r, tctx, subvars, guarded)
     LetIn(nm, v, b) => achk_total_e(v, tctx, subvars, guarded) + achk_total_e(b, tctx, subvars, guarded)
@@ -868,8 +1132,18 @@ fn achk_total_e(e, tctx, subvars, guarded) = match e
     DeferE(c, b)    => achk_total_e(c, tctx, subvars, guarded) + achk_total_e(b, tctx, subvars, guarded)
     ErrDeferE(c, b) => achk_total_e(c, tctx, subvars, guarded) + achk_total_e(b, tctx, subvars, guarded)
     WithAllocE(a, b) => achk_total_e(a, tctx, subvars, guarded) + achk_total_e(b, tctx, subvars, guarded)
+    LambdaE(ps, tys, rt, body) => achk_total_e(body, tctx, subvars, guarded)
+    Rec(items)      => let fid = afn_rec_fnid(items) in if fid >= 0 and (afn_reaches("__fnval_" + str(fid), tctx.fnm, tctx.fns, 6) == 1 or afn_reaches("__lambda_" + str(fid), tctx.fnm, tctx.fns, 6) == 1) then ctfail("lume: totality error [A0002]: 'total fn " + tctx.fnm + "' cannot reference itself as a first-class function value\n") else achk_total_rec(items, tctx, subvars, guarded)
+    RecT(tn, items) => achk_total_rec(items, tctx, subvars, guarded)
+    Field(o, fld)   => achk_total_e(o, tctx, subvars, guarded)
+    OwnE(inner)     => achk_total_e(inner, tctx, subvars, guarded)
+    MutE(inner)     => achk_total_e(inner, tctx, subvars, guarded)
     Match(sc, arms) => achk_total_e(sc, tctx, subvars, guarded) + achk_total_arms(arms, amatch_is_param(sc, tctx.ps, subvars), tctx, subvars, guarded)
     _               => 0
+
+fn achk_total_rec(items, tctx, subvars, guarded) = match items
+    Nil        => 0
+    Cons(h, t) => achk_total_e(h.val, tctx, subvars, guarded) + achk_total_rec(t, tctx, subvars, guarded)
 
 fn achk_total_args(args, tctx, subvars, guarded) = match args
     Nil        => 0
@@ -997,12 +1271,17 @@ fn schk_spawn_body(e, fnm, nsvars, mvars) = match e
     LetIn(nm, v, b)         => schk_spawn_body(v, fnm, nsvars, mvars) + schk_spawn_body(b, fnm, orem(nm, nsvars), orem(nm, mvars))
     VarIn(nm, v, b)         => schk_spawn_body(v, fnm, nsvars, mvars) + schk_spawn_body(b, fnm, orem(nm, nsvars), orem(nm, mvars))
     Call(cnm, args)         => if cnm == "borrow_mut" then ctfail("lume: concurrency error [S0001]: cannot capture mutable borrow 'borrow_mut' across 'spawn' in '" + fnm + "' (fix-it: transfer ownership with 'own' or synchronize via 'chan[T]')\n") else schk_spawn_args(args, fnm, nsvars, mvars)
+    Match(sc, arms)         => schk_spawn_body(sc, fnm, nsvars, mvars) + schk_spawn_arms(arms, fnm, nsvars, mvars)
     Rec(items)              => schk_spawn_rec(items, fnm, nsvars, mvars)
     RecT(tn, items)         => schk_spawn_rec(items, fnm, nsvars, mvars)
     ScopeE(snm, b)          => schk_spawn_body(b, fnm, nsvars, mvars)
     SpawnE(inner)           => schk_spawn_body(inner, fnm, nsvars, mvars)
     ShardE(vnm, lo, hi, b)  => schk_spawn_body(lo, fnm, nsvars, mvars) + schk_spawn_body(hi, fnm, nsvars, mvars) + schk_spawn_body(b, fnm, orem(vnm, nsvars), orem(vnm, mvars))
     _                       => 0
+
+fn schk_spawn_arms(arms, fnm, nsvars, mvars) = match arms
+    Nil        => 0
+    Cons(h, t) => schk_spawn_body(h.body, fnm, nsvars, mvars) + schk_spawn_arms(t, fnm, nsvars, mvars)
 
 fn schk_spawn_rec(items, fnm, nsvars, mvars) = match items
     Nil        => 0
@@ -1030,7 +1309,14 @@ fn schk_conc_e(e, fnm, in_scope, nsvars, mvars) = match e
     WithHandlerE(en, hs, b) => schk_conc_e(b, fnm, in_scope, nsvars, mvars)
     Call(cnm, args)         => if cnm == "spawn_task" and in_scope == 0 then ctfail("lume: concurrency error [S0001]: unstructured 'spawn_task' in '" + fnm + "' is forbidden outside a lexical 'scope' block (fix-it: wrap the task in 'scope s in ...')\n") else if cnm == "spawn_task" or cnm == "shard" then schk_spawn_args(args, fnm, nsvars, mvars) else schk_conc_args(args, fnm, in_scope, nsvars, mvars)
     Match(sc, arms)         => schk_conc_e(sc, fnm, in_scope, nsvars, mvars) + schk_conc_arms(arms, fnm, in_scope, nsvars, mvars)
+    Rec(items)              => schk_conc_rec(items, fnm, in_scope, nsvars, mvars)
+    RecT(tn, items)         => schk_conc_rec(items, fnm, in_scope, nsvars, mvars)
+    Field(o, fld)           => schk_conc_e(o, fnm, in_scope, nsvars, mvars)
     _                       => 0
+
+fn schk_conc_rec(items, fnm, in_scope, nsvars, mvars) = match items
+    Nil        => 0
+    Cons(h, t) => schk_conc_e(h.val, fnm, in_scope, nsvars, mvars) + schk_conc_rec(t, fnm, in_scope, nsvars, mvars)
 
 fn schk_conc_args(args, fnm, in_scope, nsvars, mvars) = match args
     Nil        => 0
@@ -1068,22 +1354,43 @@ fn vsubst_self_args(xs, vnm) = match xs
     Nil        => Nil
     Cons(h, t) => Cons(vsubst_self(h, vnm), vsubst_self_args(t, vnm))
 
-fn vrefine_preds(ty, vnm, rtypes) = match ty
-    TyRefine(bty, pr) => app(vrefine_preds(bty, vnm, rtypes), Cons(vsubst_self(pr, vnm), Nil))
-    TyName(tn)        => vrefine_preds_nm(tn, vnm, vrtype_lookup(tn, rtypes), rtypes)
+fn vhas_fname(nm, fs) = match fs
+    Nil        => 0
+    Cons(h, t) => if h.fname == nm then 1 else vhas_fname(nm, t)
+
+fn vsubst_inv_fields(e, fs, vnm) = match e
+    Var(nm)         => if nm == "self" then Var(vnm) else if vhas_fname(nm, fs) == 1 then Field(Var(vnm), nm) else e
+    Bin(op, l, r)   => Bin(op, vsubst_inv_fields(l, fs, vnm), vsubst_inv_fields(r, fs, vnm))
+    If(c, t, e2)    => If(vsubst_inv_fields(c, fs, vnm), vsubst_inv_fields(t, fs, vnm), vsubst_inv_fields(e2, fs, vnm))
+    LetIn(nm, v, b) => LetIn(nm, vsubst_inv_fields(v, fs, vnm), if nm == "self" or vhas_fname(nm, fs) == 1 then b else vsubst_inv_fields(b, fs, vnm))
+    Call(cnm, args) => Call(cnm, vsubst_inv_args(args, fs, vnm))
+    Field(o, fld)   => Field(vsubst_inv_fields(o, fs, vnm), fld)
+    _               => e
+
+fn vsubst_inv_args(xs, fs, vnm) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(vsubst_inv_fields(h, fs, vnm), vsubst_inv_args(t, fs, vnm))
+
+fn vinv_preds_nm(m, vnm) = match m
+    Nil         => Nil
+    Cons(iv, r) => Cons(vsubst_inv_fields(iv.inv, iv.fs, vnm), Nil)
+
+fn vrefine_preds(ty, vnm, rtypes, invs) = match ty
+    TyRefine(bty, pr) => app(vrefine_preds(bty, vnm, rtypes, invs), Cons(vsubst_self(pr, vnm), Nil))
+    TyName(tn)        => app(vrefine_preds_nm(tn, vnm, vrtype_lookup(tn, rtypes), rtypes, invs), vinv_preds_nm(vinvlookup(tn, invs), vnm))
     _                 => Nil
 
-fn vrefine_preds_nm(tn, vnm, m, rtypes) = match m
+fn vrefine_preds_nm(tn, vnm, m, rtypes, invs) = match m
     Nil         => Nil
-    Cons(rt, r) => app(vrefine_preds(rt.bty, vnm, rtypes), Cons(vsubst_self(rt.pr, vnm), Nil))
+    Cons(rt, r) => app(vrefine_preds(rt.bty, vnm, rtypes, invs), Cons(vsubst_self(rt.pr, vnm), Nil))
 
-fn vrefine_param_reqs(ps, ts, rtypes) = match ps
+fn vrefine_param_reqs(ps, ts, rtypes, invs) = match ps
     Nil        => Nil
-    Cons(p, r) => vrefine_param_reqs2(p, r, ts, rtypes)
+    Cons(p, r) => vrefine_param_reqs2(p, r, ts, rtypes, invs)
 
-fn vrefine_param_reqs2(p, r, ts, rtypes) = match ts
+fn vrefine_param_reqs2(p, r, ts, rtypes, invs) = match ts
     Nil         => Nil
-    Cons(ty, tr) => app(vrefine_preds(ty, p, rtypes), vrefine_param_reqs(r, tr, rtypes))
+    Cons(ty, tr) => app(vrefine_preds(ty, p, rtypes, invs), vrefine_param_reqs(r, tr, rtypes, invs))
 
 fn vmerge_vsig(nm, ps, reqs, enss, vsigs) = if isnil(reqs) == 1 and isnil(enss) == 1 then vsigs else vmerge_vsig2(nm, ps, reqs, enss, vsigs)
 
@@ -1091,7 +1398,7 @@ fn vmerge_vsig2(nm, ps, reqs, enss, vsigs) = match vsigs
     Nil         => Cons({nm: nm, ps: ps, reqs: reqs, enss: enss}, Nil)
     Cons(v, vr) => if v.nm == nm then Cons({nm: nm, ps: v.ps, reqs: app(reqs, v.reqs), enss: app(enss, v.enss)}, vr) else Cons(v, vmerge_vsig2(nm, ps, reqs, enss, vr))
 
-fn vcollect_vsigs(prog) = vcollect_vsigs_r(prog, vcollect_rtypes(prog), vcollect_vsigs_raw(prog))
+fn vcollect_vsigs(prog) = vcollect_vsigs_r(prog, vcollect_rtypes(prog), vcollect_invs(prog), vcollect_vsigs_raw(prog))
 
 fn vcollect_vsigs_raw(prog) = match prog
     Nil        => Nil
@@ -1101,12 +1408,12 @@ fn vcollect_vsig1(st, rest) = match st
     VContractSig(nm, ps, reqs, enss) => Cons({nm: nm, ps: ps, reqs: reqs, enss: enss}, rest)
     _                                => rest
 
-fn vcollect_vsigs_r(prog, rtypes, acc) = match prog
+fn vcollect_vsigs_r(prog, rtypes, invs, acc) = match prog
     Nil        => acc
-    Cons(h, t) => vcollect_vsigs_r(t, rtypes, vcollect_vsig_sig(h, rtypes, acc))
+    Cons(h, t) => vcollect_vsigs_r(t, rtypes, invs, vcollect_vsig_sig(h, rtypes, invs, acc))
 
-fn vcollect_vsig_sig(st, rtypes, acc) = match st
-    Sig(nm, ps, ts, rt) => vmerge_vsig(nm, ps, vrefine_param_reqs(ps, ts, rtypes), vrefine_preds(rt, "result", rtypes), acc)
+fn vcollect_vsig_sig(st, rtypes, invs, acc) = match st
+    Sig(nm, ps, ts, rt) => vmerge_vsig(nm, ps, vrefine_param_reqs(ps, ts, rtypes, invs), vrefine_preds(rt, "result", rtypes, invs), acc)
     _                   => acc
 
 fn vcollect_invs(prog) = match prog
@@ -1137,9 +1444,10 @@ fn vfnlookup(nm, fns) = match fns
     Nil        => Nil
     Cons(h, t) => if h.nm == nm then Cons(h, Nil) else vfnlookup(nm, t)
 
-fn vv_int(n) = {ok: 1, i: n, fields: Nil}
-fn vv_rec(fs) = {ok: 1, i: 0, fields: fs}
-fn vv_err() = {ok: 0, i: 0, fields: Nil}
+fn vv_int(n) = {ok: 1, i: n, is_str: 0, s: "", fields: Nil}
+fn vv_str(s) = {ok: 1, i: 0, is_str: 1, s: s, fields: Nil}
+fn vv_rec(fs) = {ok: 1, i: 0, is_str: 0, s: "", fields: fs}
+fn vv_err() = {ok: 0, i: 0, is_str: 0, s: "", fields: Nil}
 
 fn vlookup(nm, env) = match env
     Nil        => vv_err()
@@ -1161,7 +1469,15 @@ fn vfields_env(fs) = match fs
     Nil        => Nil
     Cons(h, t) => Cons({k: h.key, v: h.val}, vfields_env(t))
 
-fn veval_bin(op, rl, rr) = if rl.ok == 0 or rr.ok == 0 then vv_err() else let x = rl.i in let y = rr.i in if op == "+" then vv_int(x + y) else if op == "-" then vv_int(x - y) else if op == "*" then vv_int(x * y) else if op == "/" then (if y == 0 then vv_err() else vv_int(x / y)) else if op == "%" then (if y == 0 then vv_err() else vv_int(x % y)) else if op == "==" then vv_int(if x == y then 1 else 0) else if op == "!=" then vv_int(if x != y then 1 else 0) else if op == "<" then vv_int(if x < y then 1 else 0) else if op == ">" then vv_int(if x > y then 1 else 0) else if op == "<=" then vv_int(if x <= y then 1 else 0) else if op == ">=" then vv_int(if x >= y then 1 else 0) else if op == "and" then vv_int(if x != 0 and y != 0 then 1 else 0) else if op == "or" then vv_int(if x != 0 or y != 0 then 1 else 0) else vv_err()
+fn vlin_min_int() = (0 - 9223372036854775807) -% 1
+
+fn vlin_add_ovf(x, y) = if x > 0 and y > 0 and (x +% y) < 0 then 1 else if x < 0 and y < 0 and (x +% y) >= 0 then 1 else 0
+
+fn vlin_mul_ovf(x, y) = if x == 0 or y == 0 then 0 else if x == vlin_min_int() or y == vlin_min_int() then 1 else if (x *% y) / x != y then 1 else 0
+
+fn veval_bin_str(op, rl, rr) = if rl.is_str == 0 or rr.is_str == 0 then vv_err() else if op == "+" then vv_str(rl.s + rr.s) else if op == "==" then vv_int(if rl.s == rr.s then 1 else 0) else if op == "!=" then vv_int(if rl.s != rr.s then 1 else 0) else vv_err()
+
+fn veval_bin(op, rl, rr) = if rl.ok == 0 or rr.ok == 0 then vv_err() else if rl.is_str == 1 or rr.is_str == 1 then veval_bin_str(op, rl, rr) else let x = rl.i in let y = rr.i in if op == "+" then (if vlin_add_ovf(x, y) == 1 then vv_err() else vv_int(x +% y)) else if op == "+%" then vv_int(x +% y) else if op == "-" then (if y == vlin_min_int() or vlin_add_ovf(x, 0 -% y) == 1 then vv_err() else vv_int(x -% y)) else if op == "-%" then vv_int(x -% y) else if op == "*" then (if vlin_mul_ovf(x, y) == 1 then vv_err() else vv_int(x *% y)) else if op == "*%" then vv_int(x *% y) else if op == "/" then (if y == 0 or (x == vlin_min_int() and y == 0 - 1) then vv_err() else vv_int(x / y)) else if op == "%" then (if y == 0 or (x == vlin_min_int() and y == 0 - 1) then vv_err() else vv_int(x % y)) else if op == "==" then vv_int(if x == y then 1 else 0) else if op == "!=" then vv_int(if x != y then 1 else 0) else if op == "<" then vv_int(if x < y then 1 else 0) else if op == ">" then vv_int(if x > y then 1 else 0) else if op == "<=" then vv_int(if x <= y then 1 else 0) else if op == ">=" then vv_int(if x >= y then 1 else 0) else if op == "and" then vv_int(if x != 0 and y != 0 then 1 else 0) else if op == "or" then vv_int(if x != 0 or y != 0 then 1 else 0) else vv_err()
 
 fn vadd_hops_fns(hs, fns) = match hs
     Nil        => fns
@@ -1171,7 +1487,7 @@ fn veval(e, env, old_env, fns, d) = if d > 20 then vv_err() else veval1(e, env, 
 
 fn veval1(e, env, old_env, fns, d) = match e
     Num(n)                  => vv_int(n)
-    Str(s)                  => vv_int(0)
+    Str(s)                  => vv_str(s)
     Var(nm)                 => vlookup(nm, env)
     OwnE(inner)             => veval(inner, env, old_env, fns, d)
     MutE(inner)             => veval(inner, env, old_env, fns, d)
@@ -1181,7 +1497,7 @@ fn veval1(e, env, old_env, fns, d) = match e
     SpawnE(inner)           => veval(inner, env, old_env, fns, d)
     AwaitE(inner)           => veval(inner, env, old_env, fns, d)
     Bin(op, l, r)           => veval_bin(op, veval(l, env, old_env, fns, d), veval(r, env, old_env, fns, d))
-    If(c, t, e2)            => let rc = veval(c, env, old_env, fns, d) in if rc.ok == 0 then vv_err() else if rc.i != 0 then veval(t, env, old_env, fns, d) else veval(e2, env, old_env, fns, d)
+    If(c, t, e2)            => let rc = veval(c, env, old_env, fns, d) in if rc.ok == 0 or rc.is_str == 1 then vv_err() else if rc.i != 0 then veval(t, env, old_env, fns, d) else veval(e2, env, old_env, fns, d)
     LetIn(nm, v, b)         => let rv = veval(v, env, old_env, fns, d) in if rv.ok == 0 then vv_err() else veval(b, Cons({k: nm, v: rv}, env), old_env, fns, d)
     VarIn(nm, v, b)         => let rv = veval(v, env, old_env, fns, d) in if rv.ok == 0 then vv_err() else veval(b, Cons({k: nm, v: rv}, env), old_env, fns, d)
     Rec(items)              => veval_rec(items, env, old_env, fns, d)
@@ -1198,11 +1514,11 @@ fn veval_args(args, env, old_env, fns, d) = match args
     Nil        => {ok: 1, vals: Nil}
     Cons(h, t) => let rh = veval(h, env, old_env, fns, d) in if rh.ok == 0 then {ok: 0, vals: Nil} else let rt = veval_args(t, env, old_env, fns, d) in if rt.ok == 0 then {ok: 0, vals: Nil} else {ok: 1, vals: Cons(rh, rt.vals)}
 
-fn vbv_pow2(k) = if k <= 0 then 1 else if k >= 16 then 65536 * vbv_pow2(k - 16) else if k >= 8 then 256 * vbv_pow2(k - 8) else if k >= 4 then 16 * vbv_pow2(k - 4) else 2 * vbv_pow2(k - 1)
-fn vbv_mod(x, m) = let r = x % m in if r < 0 then r + m else r
-fn vbv_and(x, y, b) = if b <= 0 or x <= 0 or y <= 0 then 0 else ((x % 2) * (y % 2)) + 2 * vbv_and(x / 2, y / 2, b - 1)
-fn vbv_or(x, y, b) = if b <= 0 or (x <= 0 and y <= 0) then 0 else (if (x % 2) + (y % 2) >= 1 then 1 else 0) + 2 * vbv_or(x / 2, y / 2, b - 1)
-fn vbv_xor(x, y, b) = if b <= 0 or (x <= 0 and y <= 0) then 0 else (((x % 2) + (y % 2)) % 2) + 2 * vbv_xor(x / 2, y / 2, b - 1)
+fn vbv_pow2(k) = if k <= 0 then 1 else if k >= 62 then 4611686018427387904 else bit_shl(1, k)
+fn vbv_mod(x, m) = if m <= 0 or x == vlin_min_int() then 0 else let r = x % m in if r < 0 then r + m else r
+fn vbv_and(x, y, b) = bit_and(x, y)
+fn vbv_or(x, y, b) = bit_or(x, y)
+fn vbv_xor(x, y, b) = bit_xor(x, y)
 
 fn veval_arr_lookup(k, ar) = let r = vflookup(k, ar.fields) in if r.ok == 1 then r else let d = vflookup("__def", ar.fields) in if d.ok == 1 then d else vv_int(ar.i)
 
@@ -1210,18 +1526,24 @@ fn veval_forall_loop(vnm, k, hi, pred, env, fns) = if k > hi then vv_int(1) else
 
 fn veval_exists_loop(vnm, k, hi, pred, env, fns) = if k > hi then vv_int(0) else let r = veval(pred, Cons({k: vnm, v: vv_int(k)}, env), env, fns, 0) in if r.ok == 0 then vv_err() else if r.i != 0 then vv_int(1) else veval_exists_loop(vnm, k + 1, hi, pred, env, fns)
 
-fn veval_m1_call(cnm, args, env, old_env, fns, d) = if (cnm == "bv_and" or cnm == "bit_and") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 then vv_err() else vv_int(vbv_and(vbv_mod(a.i, 65536), vbv_mod(b.i, 65536), 16))) else if (cnm == "bv_or" or cnm == "bit_or") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 then vv_err() else vv_int(vbv_or(vbv_mod(a.i, 65536), vbv_mod(b.i, 65536), 16))) else if (cnm == "bv_xor" or cnm == "bit_xor") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 then vv_err() else vv_int(vbv_xor(vbv_mod(a.i, 65536), vbv_mod(b.i, 65536), 16))) else if (cnm == "bv_shl" or cnm == "bit_shl") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or b.i < 0 then vv_err() else vv_int(a.i * vbv_pow2(b.i))) else if (cnm == "bv_shr" or cnm == "bit_shr") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or b.i < 0 then vv_err() else vv_int(a.i / vbv_pow2(b.i))) else if cnm == "bv_u8" and len(args) == 1 then (let a = veval(ohd_e(args), env, old_env, fns, d) in if a.ok == 0 then vv_err() else vv_int(vbv_mod(a.i, 256))) else if cnm == "bv_not_u8" and len(args) == 1 then (let a = veval(ohd_e(args), env, old_env, fns, d) in if a.ok == 0 then vv_err() else vv_int(255 - vbv_mod(a.i, 256))) else if cnm == "bv_add_u8" and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 then vv_err() else vv_int(vbv_mod(a.i + b.i, 256))) else if cnm == "bv_sub_u8" and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 then vv_err() else vv_int(vbv_mod(a.i - b.i, 256))) else if cnm == "bv_mul_u8" and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 then vv_err() else vv_int(vbv_mod(a.i * b.i, 256))) else if (cnm == "array_new" or cnm == "array_const") and len(args) == 1 then (let dv = veval(ohd_e(args), env, old_env, fns, d) in if dv.ok == 0 then vv_err() else vv_rec(Cons({key: "__def", val: dv}, Nil))) else if (cnm == "array_store" or cnm == "heap_write") and len(args) == 3 then (let ar = veval(ohd_e(args), env, old_env, fns, d) in let ix = veval(ohd_e(ptl(args)), env, old_env, fns, d) in let vl = veval(ohd_e(ptl(ptl(args))), env, old_env, fns, d) in if ar.ok == 0 or ix.ok == 0 or vl.ok == 0 then vv_err() else let d0 = vflookup("__def", ar.fields) in let fs0 = if d0.ok == 1 then ar.fields else Cons({key: "__def", val: vv_int(ar.i)}, ar.fields) in vv_rec(Cons({key: str(ix.i), val: vl}, fs0))) else if (cnm == "array_select" or cnm == "heap_read") and len(args) == 2 then (let ar = veval(ohd_e(args), env, old_env, fns, d) in let ix = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if ar.ok == 0 or ix.ok == 0 then vv_err() else veval_arr_lookup(str(ix.i), ar)) else if (cnm == "points_to" or cnm == "heap_new") and len(args) == 2 then (let pt = veval(ohd_e(args), env, old_env, fns, d) in let vl = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if pt.ok == 0 or vl.ok == 0 then vv_err() else vv_rec(Cons({key: str(pt.i), val: vl}, Cons({key: "__dom", val: vv_int(pt.i)}, Cons({key: "__valid", val: vv_int(1)}, Nil))))) else if cnm == "sep_disjoint" and len(args) == 2 then (let p1 = veval(ohd_e(args), env, old_env, fns, d) in let p2 = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if p1.ok == 0 or p2.ok == 0 then vv_err() else vv_int(if p1.i != p2.i then 1 else 0)) else if cnm == "sep_conj" and len(args) == 2 then (let h1 = veval(ohd_e(args), env, old_env, fns, d) in let h2 = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if h1.ok == 0 or h2.ok == 0 then vv_err() else let d1 = vflookup("__dom", h1.fields) in let d2 = vflookup("__dom", h2.fields) in let v1 = vflookup("__valid", h1.fields) in let v2 = vflookup("__valid", h2.fields) in let ok_sep = if d1.ok == 1 and d2.ok == 1 and d1.i != d2.i and (v1.ok == 0 or v1.i != 0) and (v2.ok == 0 or v2.i != 0) then 1 else 0 in {ok: 1, i: ok_sep, fields: Cons({key: "__valid", val: vv_int(ok_sep)}, app(h1.fields, h2.fields))}) else if cnm == "sep_valid" and len(args) == 1 then (let h = veval(ohd_e(args), env, old_env, fns, d) in if h.ok == 0 then vv_err() else let v = vflookup("__valid", h.fields) in if v.ok == 1 then v else vv_int(h.i)) else if cnm == "forall_range" and len(args) == 4 then (let vnm = n4_var_name(ohd_e(args)) in let lo = veval(ohd_e(ptl(args)), env, old_env, fns, d) in let hi = veval(ohd_e(ptl(ptl(args))), env, old_env, fns, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or hi.i - lo.i > 32 then vv_err() else veval_forall_loop(vnm, lo.i, hi.i, ohd_e(ptl(ptl(ptl(args)))), env, fns)) else if cnm == "exists_range" and len(args) == 4 then (let vnm = n4_var_name(ohd_e(args)) in let lo = veval(ohd_e(ptl(args)), env, old_env, fns, d) in let hi = veval(ohd_e(ptl(ptl(args))), env, old_env, fns, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or hi.i - lo.i > 32 then vv_err() else veval_exists_loop(vnm, lo.i, hi.i, ohd_e(ptl(ptl(ptl(args)))), env, fns)) else veval_ufn(vfnlookup(cnm, fns), veval_args(args, env, old_env, fns, d), fns, d)
+fn veval_m1_call(cnm, args, env, old_env, fns, d) = if (cnm == "bv_and" or cnm == "bit_and") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 then vv_err() else vv_int(bit_and(a.i, b.i))) else if (cnm == "bv_or" or cnm == "bit_or") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 then vv_err() else vv_int(bit_or(a.i, b.i))) else if (cnm == "bv_xor" or cnm == "bit_xor") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 then vv_err() else vv_int(bit_xor(a.i, b.i))) else if (cnm == "bv_shl" or cnm == "bit_shl") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 or b.i < 0 or b.i >= 64 then vv_err() else vv_int(bit_shl(a.i, b.i))) else if (cnm == "bv_shr" or cnm == "bit_shr") and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 or b.i < 0 or b.i >= 64 then vv_err() else vv_int(bit_shr(a.i, b.i))) else if cnm == "bv_u8" and len(args) == 1 then (let a = veval(ohd_e(args), env, old_env, fns, d) in if a.ok == 0 or a.is_str == 1 then vv_err() else vv_int(vbv_mod(a.i, 256))) else if cnm == "bv_not_u8" and len(args) == 1 then (let a = veval(ohd_e(args), env, old_env, fns, d) in if a.ok == 0 or a.is_str == 1 then vv_err() else vv_int(255 - vbv_mod(a.i, 256))) else if cnm == "bv_add_u8" and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 then vv_err() else vv_int(vbv_mod(a.i +% b.i, 256))) else if cnm == "bv_sub_u8" and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 then vv_err() else vv_int(vbv_mod(a.i -% b.i, 256))) else if cnm == "bv_mul_u8" and len(args) == 2 then (let a = veval(ohd_e(args), env, old_env, fns, d) in let b = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if a.ok == 0 or b.ok == 0 or a.is_str == 1 or b.is_str == 1 then vv_err() else vv_int(vbv_mod(a.i *% b.i, 256))) else if (cnm == "array_new" or cnm == "array_const") and len(args) == 1 then (let dv = veval(ohd_e(args), env, old_env, fns, d) in if dv.ok == 0 then vv_err() else vv_rec(Cons({key: "__def", val: dv}, Nil))) else if (cnm == "array_store" or cnm == "heap_write") and len(args) == 3 then (let ar = veval(ohd_e(args), env, old_env, fns, d) in let ix = veval(ohd_e(ptl(args)), env, old_env, fns, d) in let vl = veval(ohd_e(ptl(ptl(args))), env, old_env, fns, d) in if ar.ok == 0 or ix.ok == 0 or vl.ok == 0 then vv_err() else let d0 = vflookup("__def", ar.fields) in let fs0 = if d0.ok == 1 then ar.fields else Cons({key: "__def", val: vv_int(ar.i)}, ar.fields) in vv_rec(Cons({key: str(ix.i), val: vl}, fs0))) else if (cnm == "array_select" or cnm == "heap_read") and len(args) == 2 then (let ar = veval(ohd_e(args), env, old_env, fns, d) in let ix = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if ar.ok == 0 or ix.ok == 0 then vv_err() else veval_arr_lookup(str(ix.i), ar)) else if (cnm == "points_to" or cnm == "heap_new") and len(args) == 2 then (let pt = veval(ohd_e(args), env, old_env, fns, d) in let vl = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if pt.ok == 0 or vl.ok == 0 then vv_err() else vv_rec(Cons({key: str(pt.i), val: vl}, Cons({key: "__dom", val: vv_int(pt.i)}, Cons({key: "__valid", val: vv_int(1)}, Nil))))) else if cnm == "sep_disjoint" and len(args) == 2 then (let p1 = veval(ohd_e(args), env, old_env, fns, d) in let p2 = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if p1.ok == 0 or p2.ok == 0 then vv_err() else vv_int(if p1.i != p2.i then 1 else 0)) else if cnm == "sep_conj" and len(args) == 2 then (let h1 = veval(ohd_e(args), env, old_env, fns, d) in let h2 = veval(ohd_e(ptl(args)), env, old_env, fns, d) in if h1.ok == 0 or h2.ok == 0 then vv_err() else let d1 = vflookup("__dom", h1.fields) in let d2 = vflookup("__dom", h2.fields) in let v1 = vflookup("__valid", h1.fields) in let v2 = vflookup("__valid", h2.fields) in let ok_sep = if d1.ok == 1 and d2.ok == 1 and d1.i != d2.i and (v1.ok == 0 or v1.i != 0) and (v2.ok == 0 or v2.i != 0) then 1 else 0 in {ok: 1, i: ok_sep, is_str: 0, s: "", fields: Cons({key: "__valid", val: vv_int(ok_sep)}, app(h1.fields, h2.fields))}) else if cnm == "sep_valid" and len(args) == 1 then (let h = veval(ohd_e(args), env, old_env, fns, d) in if h.ok == 0 then vv_err() else let v = vflookup("__valid", h.fields) in if v.ok == 1 then v else vv_int(h.i)) else if cnm == "forall_range" and len(args) == 4 then (let vnm = n4_var_name(ohd_e(args)) in let lo = veval(ohd_e(ptl(args)), env, old_env, fns, d) in let hi = veval(ohd_e(ptl(ptl(args))), env, old_env, fns, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or lo.i < 0 - 1000000 or hi.i > 1000000 or hi.i - lo.i > 32 then vv_err() else veval_forall_loop(vnm, lo.i, hi.i, ohd_e(ptl(ptl(ptl(args)))), env, fns)) else if cnm == "exists_range" and len(args) == 4 then (let vnm = n4_var_name(ohd_e(args)) in let lo = veval(ohd_e(ptl(args)), env, old_env, fns, d) in let hi = veval(ohd_e(ptl(ptl(args))), env, old_env, fns, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or lo.i < 0 - 1000000 or hi.i > 1000000 or hi.i - lo.i > 32 then vv_err() else veval_exists_loop(vnm, lo.i, hi.i, ohd_e(ptl(ptl(ptl(args)))), env, fns)) else if cnm == "count" and len(args) == 1 then (let a = veval(ohd_e(args), env, old_env, fns, d) in if a.ok == 1 and a.is_str == 1 then vv_int(count(a.s)) else vv_err()) else veval_ufn(vfnlookup(cnm, fns), veval_args(args, env, old_env, fns, d), fns, d)
 
-fn veval_call(cnm, args, env, old_env, fns, d) = if cnm == "old" and len(args) == 1 then veval(ohd_e(args), old_env, old_env, fns, d) else if (cnm == "verify" or cnm == "law_check" or cnm == "evolve_approve" or cnm == "borrow" or cnm == "borrow_mut" or cnm == "move" or cnm == "clone" or cnm == "block_on" or cnm == "rc" or cnm == "arc" or cnm == "rc_new" or cnm == "arc_new" or cnm == "rc_clone" or cnm == "arc_clone" or cnm == "rc_get" or cnm == "arc_get" or cnm == "get" or cnm == "promise" or cnm == "promise_new" or cnm == "promise_await" or cnm == "signal" or cnm == "signal_new" or cnm == "signal_get") and len(args) >= 1 then veval(ohd_e(args), env, old_env, fns, d) else if cnm == "grad" and len(args) >= 2 then veval_call("__ad_grad_" + n4_var_name(ohd_e(args)), ptl(args), env, old_env, fns, d) else if cnm == "jit" and len(args) >= 2 then veval_call(n4_var_name(ohd_e(args)), ptl(args), env, old_env, fns, d) else if cnm == "dec_add" and len(args) == 2 then veval_bin("+", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_sub" and len(args) == 2 then veval_bin("-", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_eq" and len(args) == 2 then veval_bin("==", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_lt" and len(args) == 2 then veval_bin("<", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_le" and len(args) == 2 then veval_bin("<=", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_gt" and len(args) == 2 then veval_bin(">", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_ge" and len(args) == 2 then veval_bin(">=", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else veval_m1_call(cnm, args, env, old_env, fns, d)
+fn veval_call(cnm, args, env, old_env, fns, d) = if (vlookup(cnm, env)).ok == 1 or cnm == "_call" or ostarts(cnm, "__closure_call_") == 1 then vv_err() else if cnm != "old" and isnil(vfnlookup(cnm, fns)) == 0 then veval_ufn(vfnlookup(cnm, fns), veval_args(args, env, old_env, fns, d), fns, d) else if cnm == "old" and len(args) == 1 then veval(ohd_e(args), old_env, old_env, fns, d) else if (cnm == "verify" or cnm == "law_check" or cnm == "evolve_approve" or cnm == "borrow" or cnm == "borrow_mut" or cnm == "move" or cnm == "clone" or cnm == "block_on" or cnm == "rc" or cnm == "arc" or cnm == "rc_new" or cnm == "arc_new" or cnm == "rc_clone" or cnm == "arc_clone" or cnm == "rc_get" or cnm == "arc_get" or cnm == "get" or cnm == "promise" or cnm == "promise_new" or cnm == "promise_await" or cnm == "signal" or cnm == "signal_new" or cnm == "signal_get") and len(args) >= 1 then veval(ohd_e(args), env, old_env, fns, d) else if cnm == "grad" and len(args) >= 2 then veval_call("__ad_grad_" + n4_var_name(ohd_e(args)), ptl(args), env, old_env, fns, d) else if cnm == "jit" and len(args) >= 2 then veval_call(n4_var_name(ohd_e(args)), ptl(args), env, old_env, fns, d) else if cnm == "dec_add" and len(args) == 2 then veval_bin("+", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_sub" and len(args) == 2 then veval_bin("-", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_eq" and len(args) == 2 then veval_bin("==", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_lt" and len(args) == 2 then veval_bin("<", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_le" and len(args) == 2 then veval_bin("<=", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_gt" and len(args) == 2 then veval_bin(">", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else if cnm == "dec_ge" and len(args) == 2 then veval_bin(">=", veval(ohd_e(args), env, old_env, fns, d), veval(ohd_e(ptl(args)), env, old_env, fns, d)) else veval_m1_call(cnm, args, env, old_env, fns, d)
 
 fn veval_ufn(mf, ra, fns, d) = match mf
     Nil        => vv_err()
     Cons(f, r) => if ra.ok == 0 then vv_err() else let fenv = vbind_ps(f.ps, ra.vals) in veval(f.body, fenv, fenv, fns, d + 1)
 
-fn vpts_a() = Cons(0, Cons(1, Cons(0 - 1, Nil)))
+fn vpts_a() = Cons(0, Cons(1, Cons(0 - 1, Cons(9223372036854775807, Cons(vlin_min_int(), Nil)))))
 fn vpts_b() = Cons(0, Cons(1, Nil))
 fn vpts_c() = Cons(0, Cons(1, Nil))
 fn vpts_for(idx, total) = if total <= 1 then vpts_a() else if total == 2 then vpts_b() else if idx < 3 then vpts_c() else Cons(0, Nil)
+
+fn vstr_pts() = Cons(vv_str("a"), Cons(vv_str("b"), Cons(vv_str(""), Nil)))
+
+fn vcross_v(p, vs, envs) = match vs
+    Nil         => Nil
+    Cons(v, vr) => app(vbind_all(p, v, envs), vcross_v(p, vr, envs))
 
 fn vgen_envs(ps, idx, total) = match ps
     Nil        => Cons(Nil, Nil)
@@ -1235,17 +1557,19 @@ fn vbind_all(p, v, envs) = match envs
     Nil         => Nil
     Cons(e, er) => Cons(Cons({k: p, v: v}, e), vbind_all(p, v, er))
 
+fn vfmt_val(v) = if v.is_str == 1 then "\"" + v.s + "\"" else str(v.i)
+
 fn vfmt_env(env) = match env
     Nil        => ""
-    Cons(h, t) => let s = h.k + " = " + str((h.v).i) in if isnil(t) == 1 then s else s + ", " + vfmt_env(t)
+    Cons(h, t) => let s = h.k + " = " + vfmt_val(h.v) in if isnil(t) == 1 then s else s + ", " + vfmt_env(t)
 
 fn veval_all_true(es, env, old_env, fns) = match es
     Nil        => {ok: 1, hold: 1}
-    Cons(h, t) => let rh = veval(h, env, old_env, fns, 0) in if rh.ok == 0 then {ok: 0, hold: 0} else if rh.i == 0 then {ok: 1, hold: 0} else veval_all_true(t, env, old_env, fns)
+    Cons(h, t) => let rh = veval(h, env, old_env, fns, 0) in if rh.ok == 0 or rh.is_str == 1 then {ok: 0, hold: 0} else if rh.i == 0 then {ok: 1, hold: 0} else veval_all_true(t, env, old_env, fns)
 
 fn vprove_envs(envs, reqs, enss, body, fns, undec) = match envs
     Nil          => {status: 0, cex: ""}
-    Cons(env, r) => let rq = veval_all_true(reqs, env, env, fns) in if rq.ok == 0 then vprove_envs(r, reqs, enss, body, fns, 1) else if rq.hold == 0 then vprove_envs(r, reqs, enss, body, fns, undec) else if isnil(enss) == 1 then vprove_envs(r, reqs, enss, body, fns, undec) else let rb = veval(body, env, env, fns, 0) in if rb.ok == 0 then vprove_envs(r, reqs, enss, body, fns, 1) else let penv = Cons({k: "result", v: rb}, Cons({k: "ret", v: rb}, env)) in let eq = veval_all_true(enss, penv, env, fns) in if eq.ok == 0 then vprove_envs(r, reqs, enss, body, fns, 1) else if eq.hold == 0 then {status: 0 - 1, cex: vfmt_env(env) + " (result = " + str(rb.i) + ")"} else vprove_envs(r, reqs, enss, body, fns, undec)
+    Cons(env, r) => let rq = veval_all_true(reqs, env, env, fns) in if rq.ok == 0 then vprove_envs(r, reqs, enss, body, fns, 1) else if rq.hold == 0 then vprove_envs(r, reqs, enss, body, fns, undec) else if isnil(enss) == 1 then vprove_envs(r, reqs, enss, body, fns, undec) else let rb = veval(body, env, env, fns, 0) in if rb.ok == 0 then vprove_envs(r, reqs, enss, body, fns, 1) else let penv = Cons({k: "result", v: rb}, Cons({k: "ret", v: rb}, env)) in let eq = veval_all_true(enss, penv, env, fns) in if eq.ok == 0 then vprove_envs(r, reqs, enss, body, fns, 1) else if eq.hold == 0 then {status: 0 - 1, cex: vfmt_env(env) + " (result = " + vfmt_val(rb) + ")"} else vprove_envs(r, reqs, enss, body, fns, undec)
 
 ## --- Stage B: Sound QF_LIA (Quantifier-Free Linear Integer Arithmetic) Decision Procedure (Fourier-Motzkin) ---
 fn vlin_const(n) = {ok: 1, c0: n, cs: Nil}
@@ -1255,10 +1579,6 @@ fn vlin_err() = {ok: 0, c0: 0, cs: Nil}
 fn vlin_coeff(nm, cs) = match cs
     Nil        => 0
     Cons(h, t) => if h.k == nm then h.c else vlin_coeff(nm, t)
-
-fn vlin_add_ovf(x, y) = if x > 0 and y > 0 and x + y < 0 then 1 else if x < 0 and y < 0 and x + y >= 0 then 1 else 0
-
-fn vlin_mul_ovf(x, y) = if x == 0 or y == 0 then 0 else if (x < 0 and 0 - x < 0) or (y < 0 and 0 - y < 0) then 1 else if (x * y) / x != y then 1 else 0
 
 fn vlin_add_cs_ovf(cs1, cs2) = match cs1
     Nil        => 0
@@ -1290,6 +1610,14 @@ fn vlin_sub(a, b) = vlin_add(a, vlin_scale(0 - 1, b))
 
 fn vmono_key(k1, k2) = if k1 <= k2 then k1 + "*" + k2 else k2 + "*" + k1
 
+fn vlin_mul_t1_ovf(c1, cs2) = match cs2
+    Nil        => 0
+    Cons(h, t) => if vlin_mul_ovf(c1, h.c) == 1 then 1 else vlin_mul_t1_ovf(c1, t)
+
+fn vlin_mul_cs_ovf(cs1, cs2) = match cs1
+    Nil        => 0
+    Cons(h, t) => if vlin_mul_t1_ovf(h.c, cs2) == 1 or vlin_mul_cs_ovf(t, cs2) == 1 then 1 else vlin_add_cs_ovf(vlin_mul_term_cs(h.k, h.c, cs2), vlin_mul_cs(t, cs2))
+
 fn vlin_mul_term_cs(k1, c1, cs2) = match cs2
     Nil        => Nil
     Cons(h, t) => vlin_add_term(vmono_key(k1, h.k), c1 * h.c, vlin_mul_term_cs(k1, c1, t))
@@ -1298,7 +1626,7 @@ fn vlin_mul_cs(cs1, cs2) = match cs1
     Nil        => Nil
     Cons(h, t) => vlin_add_cs(vlin_mul_term_cs(h.k, h.c, cs2), vlin_mul_cs(t, cs2))
 
-fn vlin_mul(a, b) = if a.ok == 0 or b.ok == 0 then vlin_err() else if isnil(a.cs) == 1 then vlin_scale(a.c0, b) else if isnil(b.cs) == 1 then vlin_scale(b.c0, a) else let t0 = vlin_add(vlin_scale(a.c0, b), vlin_scale(b.c0, {ok: 1, c0: 0, cs: a.cs})) in {ok: 1, c0: t0.c0, cs: vlin_add_cs(t0.cs, vlin_mul_cs(a.cs, b.cs))}
+fn vlin_mul(a, b) = if a.ok == 0 or b.ok == 0 then vlin_err() else if isnil(a.cs) == 1 then vlin_scale(a.c0, b) else if isnil(b.cs) == 1 then vlin_scale(b.c0, a) else let t0 = vlin_add(vlin_scale(a.c0, b), vlin_scale(b.c0, {ok: 1, c0: 0, cs: a.cs})) in if t0.ok == 0 or vlin_mul_cs_ovf(a.cs, b.cs) == 1 then vlin_err() else let mcs = vlin_mul_cs(a.cs, b.cs) in if vlin_add_cs_ovf(t0.cs, mcs) == 1 then vlin_err() else {ok: 1, c0: t0.c0, cs: vlin_add_cs(t0.cs, mcs)}
 
 fn vlin_is_zero(l) = if l.ok == 1 and l.c0 == 0 and isnil(l.cs) == 1 then 1 else 0
 fn vlin_eq(a, b) = vlin_is_zero(vlin_sub(a, b))
@@ -1404,7 +1732,7 @@ fn vnia_all_diff_sq(vars) = match vars
 
 fn vnia_prod_pair(v1, lb1, vars, hyps) = match vars
     Nil        => Nil
-    Cons(v2, r) => let lb2 = vnia_var_lb(v2, hyps) in let ub1 = vnia_var_ub(v1, hyps) in let ub2 = vnia_var_ub(v2, hyps) in let rest0 = vnia_prod_pair(v1, lb1, r, hyps) in let rest = (if lb1 >= 0 and lb2 >= 0 and ub1 < 999999 and ub2 < 999999 then Cons({ok: 1, c0: ub1 * ub2, cs: Cons({k: vmono_key(v1, v2), c: 0 - 1}, Nil)}, rest0) else rest0) in if lb1 >= 0 and lb2 >= 0 then Cons({ok: 1, c0: 0 - (lb1 * lb2), cs: Cons({k: vmono_key(v1, v2), c: 1}, Nil)}, Cons(vlin_mul(vlin_sub(vlin_var(v1), vlin_const(lb1)), vlin_sub(vlin_var(v2), vlin_const(lb2))), rest)) else rest
+    Cons(v2, r) => let lb2 = vnia_var_lb(v2, hyps) in let ub1 = vnia_var_ub(v1, hyps) in let ub2 = vnia_var_ub(v2, hyps) in let rest0 = vnia_prod_pair(v1, lb1, r, hyps) in let rest = (if lb1 >= 0 and lb2 >= 0 and ub1 < 999999 and ub2 < 999999 then Cons({ok: 1, c0: ub1 * ub2, cs: Cons({k: vmono_key(v1, v2), c: 0 - 1}, Nil)}, rest0) else rest0) in if lb1 >= 0 and lb2 >= 0 and lb1 < 999999 and lb2 < 999999 then Cons({ok: 1, c0: 0 - (lb1 * lb2), cs: Cons({k: vmono_key(v1, v2), c: 1}, Nil)}, Cons(vlin_mul(vlin_sub(vlin_var(v1), vlin_const(lb1)), vlin_sub(vlin_var(v2), vlin_const(lb2))), rest)) else rest
 
 fn vnia_prod_hyps(vars, hyps) = match vars
     Nil        => Nil
@@ -1442,7 +1770,7 @@ fn vis_struct_expr(e) = match e
     _               => 0
 
 fn vsep_dom_ptr(e) = match e
-    Call(cnm, args) => if (cnm == "points_to" or cnm == "heap_new") and len(args) == 2 then Cons(ohd_e(args), Nil) else if cnm == "sep_conj" and len(args) == 2 then app(vsep_dom_ptr(ohd_e(args)), vsep_dom_ptr(ohd_e(ptl(args)))) else if cnm == "heap_write" and len(args) == 3 then vsep_dom_ptr(ohd_e(args)) else Nil
+    Call(cnm, args) => if (cnm == "points_to" or cnm == "heap_new") and len(args) == 2 then Cons(ohd_e(args), Nil) else if cnm == "sep_conj" and len(args) == 2 then app(vsep_dom_ptr(ohd_e(args)), vsep_dom_ptr(ohd_e(ptl(args)))) else if cnm == "heap_write" and len(args) == 3 then Cons(ohd_e(ptl(args)), vsep_dom_ptr(ohd_e(args))) else Nil
     _               => Nil
 
 fn vsep_disjoint_one(p, ps, hyps, lenv, fns, d) = match ps
@@ -1470,16 +1798,16 @@ fn vlin_and_idem(a, lb, hyps, lenv, fns, d) = match a
     Call(cnm, args) => if (cnm == "bv_and" or cnm == "bit_and") and len(args) == 2 then (let lk = vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d) in if lk.ok == 1 and vlin_eq(lk, lb) == 1 then vlin_expr(a, hyps, lenv, fns, d) else vlin_err()) else vlin_err()
     _               => vlin_err()
 
-fn vlin_bv_xor(a, b, hyps, lenv, fns, d) = let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 0 or lb.ok == 0 then vlin_err() else if vlin_eq(la, lb) == 1 then vlin_const(0) else if vlin_is_zero(la) == 1 then lb else if vlin_is_zero(lb) == 1 then la else if isnil(la.cs) == 1 and isnil(lb.cs) == 1 then vlin_const(vbv_xor(vbv_mod(la.c0, 65536), vbv_mod(lb.c0, 65536), 16)) else let cx = vlin_xor_cancel(a, lb, hyps, lenv, fns, d) in if cx.ok == 1 then cx else let cy = vlin_xor_cancel(b, la, hyps, lenv, fns, d) in if cy.ok == 1 then cy else vlin_var("bv_xor(" + vmono_key(vlin_key_str(la), vlin_key_str(lb)) + ")")
+fn vlin_bv_xor(a, b, hyps, lenv, fns, d) = let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 0 or lb.ok == 0 then vlin_err() else if vlin_eq(la, lb) == 1 then vlin_const(0) else if vlin_is_zero(la) == 1 then lb else if vlin_is_zero(lb) == 1 then la else if isnil(la.cs) == 1 and isnil(lb.cs) == 1 then (if la.c0 >= 0 and la.c0 < 65536 and lb.c0 >= 0 and lb.c0 < 65536 then vlin_const(vbv_xor(la.c0, lb.c0, 16)) else vlin_err()) else let cx = vlin_xor_cancel(a, lb, hyps, lenv, fns, d) in if cx.ok == 1 then cx else let cy = vlin_xor_cancel(b, la, hyps, lenv, fns, d) in if cy.ok == 1 then cy else vlin_var("bv_xor(" + vmono_key(vlin_key_str(la), vlin_key_str(lb)) + ")")
 
-fn vlin_bv_and(a, b, hyps, lenv, fns, d) = let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 0 or lb.ok == 0 then vlin_err() else if vlin_is_zero(la) == 1 or vlin_is_zero(lb) == 1 then vlin_const(0) else if vlin_eq(la, lb) == 1 then la else if isnil(la.cs) == 1 and isnil(lb.cs) == 1 then vlin_const(vbv_and(vbv_mod(la.c0, 65536), vbv_mod(lb.c0, 65536), 16)) else let ci = vlin_and_idem(a, lb, hyps, lenv, fns, d) in if ci.ok == 1 then ci else if isnil(lb.cs) == 1 and (lb.c0 == 1 or lb.c0 == 3 or lb.c0 == 7 or lb.c0 == 15 or lb.c0 == 31 or lb.c0 == 63 or lb.c0 == 127 or lb.c0 == 255) then (if vfm_check_unsat(Cons(vlin_sub(vlin_const(0 - 1), la), hyps)) == 1 and vfm_check_unsat(Cons(vlin_sub(la, vlin_const(lb.c0 + 1)), hyps)) == 1 then la else vlin_sub(la, vlin_scale(lb.c0 + 1, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0 + 1) + ")")))) else vlin_var("bv_and(" + vmono_key(vlin_key_str(la), vlin_key_str(lb)) + ")")
+fn vlin_bv_and(a, b, hyps, lenv, fns, d) = let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 0 or lb.ok == 0 then vlin_err() else if vlin_is_zero(la) == 1 or vlin_is_zero(lb) == 1 then vlin_const(0) else if vlin_eq(la, lb) == 1 then la else if isnil(la.cs) == 1 and isnil(lb.cs) == 1 then (if la.c0 >= 0 and la.c0 < 65536 and lb.c0 >= 0 and lb.c0 < 65536 then vlin_const(vbv_and(la.c0, lb.c0, 16)) else vlin_err()) else let ci = vlin_and_idem(a, lb, hyps, lenv, fns, d) in if ci.ok == 1 then ci else if isnil(lb.cs) == 1 and (lb.c0 == 1 or lb.c0 == 3 or lb.c0 == 7 or lb.c0 == 15 or lb.c0 == 31 or lb.c0 == 63 or lb.c0 == 127 or lb.c0 == 255) then (if vfm_check_unsat(Cons(vlin_sub(vlin_const(0 - 1), la), hyps)) == 1 and vfm_check_unsat(Cons(vlin_sub(la, vlin_const(lb.c0 + 1)), hyps)) == 1 then la else vlin_sub(la, vlin_scale(lb.c0 + 1, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0 + 1) + ")")))) else vlin_var("bv_and(" + vmono_key(vlin_key_str(la), vlin_key_str(lb)) + ")")
 
-fn vlin_bv_or(a, b, hyps, lenv, fns, d) = let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 0 or lb.ok == 0 then vlin_err() else if vlin_is_zero(la) == 1 then lb else if vlin_is_zero(lb) == 1 then la else if vlin_eq(la, lb) == 1 then la else if isnil(la.cs) == 1 and isnil(lb.cs) == 1 then vlin_const(vbv_or(vbv_mod(la.c0, 65536), vbv_mod(lb.c0, 65536), 16)) else vlin_var("bv_or(" + vmono_key(vlin_key_str(la), vlin_key_str(lb)) + ")")
+fn vlin_bv_or(a, b, hyps, lenv, fns, d) = let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 0 or lb.ok == 0 then vlin_err() else if vlin_is_zero(la) == 1 then lb else if vlin_is_zero(lb) == 1 then la else if vlin_eq(la, lb) == 1 then la else if isnil(la.cs) == 1 and isnil(lb.cs) == 1 then (if la.c0 >= 0 and la.c0 < 65536 and lb.c0 >= 0 and lb.c0 < 65536 then vlin_const(vbv_or(la.c0, lb.c0, 16)) else vlin_err()) else vlin_var("bv_or(" + vmono_key(vlin_key_str(la), vlin_key_str(lb)) + ")")
 
 fn vlin_bv_u8(a, hyps, lenv, fns, d) = let la = vlin_expr(a, hyps, lenv, fns, d) in if la.ok == 0 then vlin_err() else if isnil(la.cs) == 1 then vlin_const(vbv_mod(la.c0, 256)) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0 - 1), la), hyps)) == 1 and vfm_check_unsat(Cons(vlin_sub(la, vlin_const(256)), hyps)) == 1 then la else if vfm_check_unsat(Cons(vlin_sub(vlin_const(255), la), hyps)) == 1 and vfm_check_unsat(Cons(vlin_sub(la, vlin_const(512)), hyps)) == 1 then vlin_sub(la, vlin_const(256)) else vlin_sub(la, vlin_scale(256, vlin_var("div(" + vlin_key_str(la) + ",256)")))
 
 fn vcollect_div_hyps_e(e, hyps, lenv, fns, d) = match e
-    Bin(op, a, b)   => let h1 = app(vcollect_div_hyps_e(a, hyps, lenv, fns, d), vcollect_div_hyps_e(b, hyps, lenv, fns, d)) in if (op == "/" or op == "%") then (let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 1 and lb.ok == 1 and isnil(lb.cs) == 1 and lb.c0 > 0 then app(vlin_div_hyps(la, lb.c0, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")")), h1) else if la.ok == 1 and lb.ok == 1 and op == "/" then app(vlin_vardiv_hyps(la, lb, vlin_var("div(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")"), hyps), h1) else if la.ok == 1 and lb.ok == 1 and op == "%" then app(vlin_varmod_hyps(la, lb, vlin_var("mod(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")"), hyps), h1) else h1) else h1
+    Bin(op, a, b)   => let h1 = app(vcollect_div_hyps_e(a, hyps, lenv, fns, d), vcollect_div_hyps_e(b, hyps, lenv, fns, d)) in if (op == "/" or op == "%") then (let la = vlin_expr(a, hyps, lenv, fns, d) in let lb = vlin_expr(b, hyps, lenv, fns, d) in if la.ok == 1 and lb.ok == 1 and isnil(lb.cs) == 1 and lb.c0 > 0 and vfm_check_unsat(Cons(vlin_sub(vlin_const(0 - 1), la), hyps)) == 1 then app(vlin_div_hyps(la, lb.c0, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")")), h1) else if la.ok == 1 and lb.ok == 1 and op == "/" then app(vlin_vardiv_hyps(la, lb, vlin_var("div(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")"), hyps), h1) else if la.ok == 1 and lb.ok == 1 and op == "%" then app(vlin_varmod_hyps(la, lb, vlin_var("mod(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")"), hyps), h1) else h1) else h1
     Call(cnm, args) => let h1 = vcollect_div_hyps_args(args, hyps, lenv, fns, d) in if (cnm == "bv_and" or cnm == "bit_and") and len(args) == 2 then (let la = vlin_expr(ohd_e(args), hyps, lenv, fns, d) in let lb = vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d) in if la.ok == 1 and lb.ok == 1 and isnil(lb.cs) == 1 and (lb.c0 == 1 or lb.c0 == 3 or lb.c0 == 7 or lb.c0 == 15 or lb.c0 == 31 or lb.c0 == 63 or lb.c0 == 127 or lb.c0 == 255) then app(vlin_div_hyps(la, lb.c0 + 1, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0 + 1) + ")")), h1) else h1) else if (cnm == "bv_u8" or cnm == "bv_not_u8") and len(args) == 1 then (let la = vlin_expr(ohd_e(args), hyps, lenv, fns, d) in if la.ok == 1 then app(vlin_div_hyps(la, 256, vlin_var("div(" + vlin_key_str(la) + ",256)")), h1) else h1) else if cnm == "bv_add_u8" and len(args) == 2 then (let la = vlin_expr(Bin("+", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) in if la.ok == 1 then app(vlin_div_hyps(la, 256, vlin_var("div(" + vlin_key_str(la) + ",256)")), h1) else h1) else h1
     If(c, t, e2)    => app(vcollect_div_hyps_e(c, hyps, lenv, fns, d), app(vcollect_div_hyps_e(t, hyps, lenv, fns, d), vcollect_div_hyps_e(e2, hyps, lenv, fns, d)))
     LetIn(nm, v, b) => app(vcollect_div_hyps_e(v, hyps, lenv, fns, d), vcollect_div_hyps_e(b, hyps, lenv, fns, d))
@@ -1505,7 +1833,7 @@ fn vlin_bind_p1(p, r, vs) = match vs
     Nil         => Nil
     Cons(v, vr) => Cons({k: p, v: v}, vlin_bind_ps(r, vr))
 
-fn vlin_bin_op(op, l, r, hyps, lenv, fns, d) = let la = vlin_expr(l, hyps, lenv, fns, d) in let lb = vlin_expr(r, hyps, lenv, fns, d) in if op == "+" then vlin_add(la, lb) else if op == "-" then vlin_sub(la, lb) else if op == "*" then vlin_mul(la, lb) else if op == "/" then (if la.ok == 0 or lb.ok == 0 then vlin_err() else if isnil(lb.cs) == 1 and lb.c0 > 0 then (if isnil(la.cs) == 1 then vlin_const(la.c0 / lb.c0) else vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")")) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0), lb), hyps)) == 1 then vlin_var("div(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")") else vlin_err()) else if op == "%" then (if la.ok == 0 or lb.ok == 0 then vlin_err() else if isnil(lb.cs) == 1 and lb.c0 > 0 then (if isnil(la.cs) == 1 then vlin_const(la.c0 % lb.c0) else vlin_sub(la, vlin_scale(lb.c0, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")")))) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0), lb), hyps)) == 1 then vlin_var("mod(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")") else vlin_err()) else vlin_err()
+fn vlin_bin_op(op, l, r, hyps, lenv, fns, d) = let la = vlin_expr(l, hyps, lenv, fns, d) in let lb = vlin_expr(r, hyps, lenv, fns, d) in if op == "+" then vlin_add(la, lb) else if op == "-" then vlin_sub(la, lb) else if op == "*" then vlin_mul(la, lb) else if op == "/" then (if la.ok == 0 or lb.ok == 0 then vlin_err() else if isnil(lb.cs) == 1 and lb.c0 > 0 then (if isnil(la.cs) == 1 then vlin_const(la.c0 / lb.c0) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0 - 1), la), hyps)) == 1 then vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")") else vlin_err()) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0), lb), hyps)) == 1 then vlin_var("div(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")") else vlin_err()) else if op == "%" then (if la.ok == 0 or lb.ok == 0 then vlin_err() else if isnil(lb.cs) == 1 and lb.c0 > 0 then (if isnil(la.cs) == 1 then vlin_const(la.c0 % lb.c0) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0 - 1), la), hyps)) == 1 then vlin_sub(la, vlin_scale(lb.c0, vlin_var("div(" + vlin_key_str(la) + "," + str(lb.c0) + ")"))) else vlin_err()) else if vfm_check_unsat(Cons(vlin_sub(vlin_const(0), lb), hyps)) == 1 then vlin_var("mod(" + vlin_key_str(la) + "," + vlin_key_str(lb) + ")") else vlin_err()) else vlin_err()
 
 fn vrec_lookup(fld, items, def) = match items
     Nil        => def
@@ -1548,7 +1876,7 @@ fn vlin_args(args, hyps, lenv, fns, d) = match args
     Nil        => {ok: 1, vals: Nil}
     Cons(h, t) => let rh = vlin_expr(h, hyps, lenv, fns, d) in if rh.ok == 0 then {ok: 0, vals: Nil} else let rt = vlin_args(t, hyps, lenv, fns, d) in if rt.ok == 0 then {ok: 0, vals: Nil} else {ok: 1, vals: Cons(rh, rt.vals)}
 
-fn vlin_m1_call(cnm, args, hyps, lenv, fns, d) = if (cnm == "bv_xor" or cnm == "bit_xor") and len(args) == 2 then vlin_bv_xor(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if (cnm == "bv_and" or cnm == "bit_and") and len(args) == 2 then vlin_bv_and(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if (cnm == "bv_or" or cnm == "bit_or") and len(args) == 2 then vlin_bv_or(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if (cnm == "bv_shl" or cnm == "bit_shl") and len(args) == 2 then (let lk = vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d) in if lk.ok == 1 and isnil(lk.cs) == 1 and lk.c0 >= 0 then vlin_scale(vbv_pow2(lk.c0), vlin_expr(ohd_e(args), hyps, lenv, fns, d)) else vlin_err()) else if (cnm == "bv_shr" or cnm == "bit_shr") and len(args) == 2 then (let lk = vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d) in if lk.ok == 1 and isnil(lk.cs) == 1 and lk.c0 >= 0 then vlin_bin_op("/", ohd_e(args), Num(vbv_pow2(lk.c0)), hyps, lenv, fns, d) else vlin_err()) else if cnm == "bv_u8" and len(args) == 1 then vlin_bv_u8(ohd_e(args), hyps, lenv, fns, d) else if cnm == "bv_not_u8" and len(args) == 1 then vlin_sub(vlin_const(255), vlin_bv_u8(ohd_e(args), hyps, lenv, fns, d)) else if cnm == "bv_add_u8" and len(args) == 2 then vlin_bv_u8(Bin("+", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "bv_sub_u8" and len(args) == 2 then vlin_bv_u8(Bin("-", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if (cnm == "array_select" or cnm == "heap_read") and len(args) == 2 then varr_select(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if cnm == "sep_valid" and len(args) == 1 then (if vsep_valid(ohd_e(args), hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else if cnm == "sep_disjoint" and len(args) == 2 then (if vprove_goal(Bin("!=", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else if cnm == "forall_range" and len(args) == 4 then (if vprove_forall_range(args, hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else if cnm == "exists_range" and len(args) == 4 then (if vprove_exists_range(args, hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else vlin_ufn(vfnlookup(cnm, fns), vlin_args(args, hyps, lenv, fns, d), hyps, fns, d)
+fn vlin_m1_call(cnm, args, hyps, lenv, fns, d) = if (cnm == "bv_xor" or cnm == "bit_xor") and len(args) == 2 then vlin_bv_xor(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if (cnm == "bv_and" or cnm == "bit_and") and len(args) == 2 then vlin_bv_and(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if (cnm == "bv_or" or cnm == "bit_or") and len(args) == 2 then vlin_bv_or(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if (cnm == "bv_shl" or cnm == "bit_shl") and len(args) == 2 then (let la = vlin_expr(ohd_e(args), hyps, lenv, fns, d) in let lk = vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d) in if la.ok == 1 and lk.ok == 1 and isnil(lk.cs) == 1 and lk.c0 >= 0 and lk.c0 <= 16 and (isnil(la.cs) == 0 or vlin_mul_ovf(la.c0, vbv_pow2(lk.c0)) == 0) then vlin_scale(vbv_pow2(lk.c0), la) else vlin_err()) else if (cnm == "bv_shr" or cnm == "bit_shr") and len(args) == 2 then (let lk = vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d) in if lk.ok == 1 and isnil(lk.cs) == 1 and lk.c0 >= 0 then vlin_bin_op("/", ohd_e(args), Num(vbv_pow2(lk.c0)), hyps, lenv, fns, d) else vlin_err()) else if cnm == "bv_u8" and len(args) == 1 then vlin_bv_u8(ohd_e(args), hyps, lenv, fns, d) else if cnm == "bv_not_u8" and len(args) == 1 then vlin_sub(vlin_const(255), vlin_bv_u8(ohd_e(args), hyps, lenv, fns, d)) else if cnm == "bv_add_u8" and len(args) == 2 then vlin_bv_u8(Bin("+", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if cnm == "bv_sub_u8" and len(args) == 2 then vlin_bv_u8(Bin("-", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) else if (cnm == "array_select" or cnm == "heap_read") and len(args) == 2 then varr_select(ohd_e(args), ohd_e(ptl(args)), hyps, lenv, fns, d) else if cnm == "sep_valid" and len(args) == 1 then (if vsep_valid(ohd_e(args), hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else if cnm == "sep_disjoint" and len(args) == 2 then (if vprove_goal(Bin("!=", ohd_e(args), ohd_e(ptl(args))), hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else if cnm == "forall_range" and len(args) == 4 then (if vprove_forall_range(args, hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else if cnm == "exists_range" and len(args) == 4 then (if vprove_exists_range(args, hyps, lenv, fns, d) == 1 then vlin_const(1) else vlin_err()) else vlin_ufn(vfnlookup(cnm, fns), vlin_args(args, hyps, lenv, fns, d), hyps, fns, d)
 
 fn vlin_call(cnm, args, hyps, lenv, fns, d) = if cnm == "old" and len(args) == 1 then vlin_expr(ohd_e(args), hyps, lenv, fns, d) else if (cnm == "verify" or cnm == "law_check" or cnm == "evolve_approve" or cnm == "borrow" or cnm == "borrow_mut" or cnm == "move" or cnm == "clone" or cnm == "block_on") and len(args) >= 1 then vlin_expr(ohd_e(args), hyps, lenv, fns, d) else if cnm == "grad" and len(args) >= 2 then vlin_call("__ad_grad_" + n4_var_name(ohd_e(args)), ptl(args), hyps, lenv, fns, d) else if cnm == "jvp" and len(args) == 3 then vlin_mul(vlin_call("__ad_grad_" + n4_var_name(ohd_e(args)), Cons(ohd_e(ptl(args)), Nil), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(ptl(args))), hyps, lenv, fns, d)) else if cnm == "vjp" and len(args) == 3 then vlin_mul(vlin_expr(ohd_e(ptl(ptl(args))), hyps, lenv, fns, d), vlin_call("__ad_grad_" + n4_var_name(ohd_e(args)), Cons(ohd_e(ptl(args)), Nil), hyps, lenv, fns, d)) else if cnm == "jit" and len(args) >= 2 then vlin_call(n4_var_name(ohd_e(args)), ptl(args), hyps, lenv, fns, d) else if cnm == "dec_add" and len(args) == 2 then vlin_add(vlin_expr(ohd_e(args), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d)) else if cnm == "dec_sub" and len(args) == 2 then vlin_sub(vlin_expr(ohd_e(args), hyps, lenv, fns, d), vlin_expr(ohd_e(ptl(args)), hyps, lenv, fns, d)) else vlin_m1_call(cnm, args, hyps, lenv, fns, d)
 
@@ -1578,7 +1906,7 @@ fn vprove_let_val(nm, v, b, hyps, lenv, fns) = match v
     If(c, t, e2) => if vnorm_if_changed(c) == 1 then vprove_let_val(nm, vnorm_if(c, t, e2), b, hyps, lenv, fns) else let rp = vcond_pos(c, hyps, lenv, fns, 0) in let rn = vcond_neg(c, hyps, lenv, fns, 0) in if rp.ok == 1 and rn.ok == 1 and vprove_let_val(nm, t, b, app(rp.hyps, hyps), lenv, fns) == 1 and vprove_let_val(nm, e2, b, app(rn.hyps, hyps), lenv, fns) == 1 then 1 else 0
     _            => if vis_struct_expr(v) == 1 then vprove_goal(vtemp_subst_var(b, nm, v), hyps, lenv, fns, 0) else let lv = vlin_expr(v, hyps, lenv, fns, 0) in if lv.ok == 0 then 0 else vprove_goal(b, app(vcollect_div_hyps_e(v, hyps, lenv, fns, 0), hyps), Cons({k: nm, v: lv}, lenv), fns, 0)
 
-fn vprove_forall_range(args, hyps, lenv, fns, d) = let vnm = n4_var_name(ohd_e(args)) in let lo_e = ohd_e(ptl(args)) in let hi_e = ohd_e(ptl(ptl(args))) in let pred_e = ohd_e(ptl(ptl(ptl(args)))) in let llo = vlin_expr(lo_e, hyps, lenv, fns, d) in let lhi = vlin_expr(hi_e, hyps, lenv, fns, d) in if vnm == "" or llo.ok == 0 or lhi.ok == 0 then 0 else let lv = vlin_var("_q_" + vnm) in let hyps2 = Cons(vlin_sub(lv, llo), Cons(vlin_sub(lhi, lv), hyps)) in vprove_goal(pred_e, hyps2, Cons({k: vnm, v: lv}, lenv), fns, d + 1)
+fn vprove_forall_range(args, hyps, lenv, fns, d) = let vnm = n4_var_name(ohd_e(args)) in let lo_e = ohd_e(ptl(args)) in let hi_e = ohd_e(ptl(ptl(args))) in let pred_e = ohd_e(ptl(ptl(ptl(args)))) in let llo = vlin_expr(lo_e, hyps, lenv, fns, d) in let lhi = vlin_expr(hi_e, hyps, lenv, fns, d) in if vnm == "" or llo.ok == 0 or lhi.ok == 0 then 0 else let lv = vlin_var("_q" + str(d) + "_" + vnm) in let hyps2 = Cons(vlin_sub(lv, llo), Cons(vlin_sub(lhi, lv), hyps)) in vprove_goal(pred_e, hyps2, Cons({k: vnm, v: lv}, lenv), fns, d + 1)
 
 fn vprove_exists_w(vnm, w, lo_e, hi_e, pred_e, ctx) = if vprove_goal(Bin(">=", w, lo_e), ctx.hyps, ctx.lenv, ctx.fns, ctx.d) == 1 and vprove_goal(Bin("<=", w, hi_e), ctx.hyps, ctx.lenv, ctx.fns, ctx.d) == 1 and vprove_goal(vtemp_subst_var(pred_e, vnm, w), ctx.hyps, ctx.lenv, ctx.fns, ctx.d) == 1 then 1 else 0
 
@@ -1648,11 +1976,11 @@ fn vmem_int(x, xs) = match xs
     Nil        => 0
     Cons(h, t) => if h == x then 1 else vmem_int(x, t)
 
-fn vadd_int_uniq(x, xs) = if vmem_int(x, xs) == 1 or len(xs) >= 6 then xs else app(xs, Cons(x, Nil))
+fn vadd_int_uniq(x, xs) = if vmem_int(x, xs) == 1 or len(xs) >= 12 then xs else app(xs, Cons(x, Nil))
 
 fn vpts_from_hyps(p, hyps, acc) = match hyps
     Nil        => acc
-    Cons(h, t) => let c = vlin_coeff(p, h.cs) in if c == 0 then vpts_from_hyps(p, t, acc) else let b = (0 - h.c0) / c in vpts_from_hyps(p, t, vadd_int_uniq(b + 1, vadd_int_uniq(b, acc)))
+    Cons(h, t) => let c = vlin_coeff(p, h.cs) in if c == 0 or vlin_mul_ovf(0 - 1, h.c0) == 1 or (c == 0 - 1 and h.c0 == vlin_min_int()) then vpts_from_hyps(p, t, acc) else let b = (0 - h.c0) / c in vpts_from_hyps(p, t, vadd_int_uniq(b -% 1, vadd_int_uniq(b +% 1, vadd_int_uniq(b, acc))))
 
 fn vfm_trace_hyps(hyps, vars) = match vars
     Nil        => hyps
@@ -1684,8 +2012,8 @@ fn vtemp_subst_var(e, vnm, rep) = match e
     RecT(tn, items) => RecT(tn, vtemp_subst_rec(items, vnm, rep))
     Bin(op, a, b)   => Bin(op, vtemp_subst_var(a, vnm, rep), vtemp_subst_var(b, vnm, rep))
     If(c, t, e2)    => If(vtemp_subst_var(c, vnm, rep), vtemp_subst_var(t, vnm, rep), vtemp_subst_var(e2, vnm, rep))
-    LetIn(nm, v, b) => LetIn(nm, vtemp_subst_var(v, vnm, rep), if nm == vnm then b else vtemp_subst_var(b, vnm, rep))
-    VarIn(nm, v, b) => VarIn(nm, vtemp_subst_var(v, vnm, rep), if nm == vnm then b else vtemp_subst_var(b, vnm, rep))
+    LetIn(nm, v, b) => if nm == vnm then LetIn(nm, vtemp_subst_var(v, vnm, rep), b) else if c9_mentions_secret(rep, Cons(nm, Nil)) == 1 then (let fnm2 = "_av_" + nm in LetIn(fnm2, vtemp_subst_var(v, vnm, rep), vtemp_subst_var(vtemp_subst_var(b, nm, Var(fnm2)), vnm, rep))) else LetIn(nm, vtemp_subst_var(v, vnm, rep), vtemp_subst_var(b, vnm, rep))
+    VarIn(nm, v, b) => if nm == vnm then VarIn(nm, vtemp_subst_var(v, vnm, rep), b) else if c9_mentions_secret(rep, Cons(nm, Nil)) == 1 then (let fnm2 = "_av_" + nm in VarIn(fnm2, vtemp_subst_var(v, vnm, rep), vtemp_subst_var(vtemp_subst_var(b, nm, Var(fnm2)), vnm, rep))) else VarIn(nm, vtemp_subst_var(v, vnm, rep), vtemp_subst_var(b, vnm, rep))
     Call(cnm, args) => Call(cnm, vtemp_subst_args(args, vnm, rep))
     _               => e
 
@@ -1794,6 +2122,12 @@ fn vchk_rect_inv(tn, items, fnm, miv, fns) = match miv
     Nil         => 0
     Cons(iv, r) => let rr = veval_rec(items, Nil, Nil, fns, 0) in if rr.ok == 0 then 0 else let env = vfields_env(rr.fields) in let ri = veval(iv.inv, env, env, fns, 0) in if ri.ok == 1 and ri.i == 0 then ctfail("lume: contract verification error [V0001]: record construction of '" + tn + "' in '" + fnm + "' violates type 'invariant' with counterexample: " + vfmt_env(env) + " (fix-it: satisfy the 'invariant' of '" + tn + "' before constructing the record)\n") else 0
 
+fn vis_const_let_val(v) = match v
+    Num(n)        => 1
+    Str(s)        => 1
+    Bin(op, a, b) => if vis_const_let_val(a) == 1 then vis_const_let_val(b) else 0
+    _             => 0
+
 fn vchk_expr_e(e, fnm, ot) = match e
     Call(cnm, args)         => vchk_call_req(cnm, args, fnm, vsiglookup(cnm, ot.vsigs), ot.fns) + vchk_args_e(args, fnm, ot)
     RecT(tn, items)         => vchk_rect_inv(tn, items, fnm, vinvlookup(tn, ot.invs), ot.fns) + vchk_rec_e(items, fnm, ot)
@@ -1801,8 +2135,8 @@ fn vchk_expr_e(e, fnm, ot) = match e
     Field(o, fld)           => vchk_expr_e(o, fnm, ot)
     Bin(op, l, r)           => vchk_expr_e(l, fnm, ot) + vchk_expr_e(r, fnm, ot)
     If(c, t, e2)            => vchk_expr_e(c, fnm, ot) + vchk_expr_e(t, fnm, ot) + vchk_expr_e(e2, fnm, ot)
-    LetIn(nm, v, b)         => vchk_expr_e(v, fnm, ot) + vchk_expr_e(b, fnm, ot)
-    VarIn(nm, v, b)         => vchk_expr_e(v, fnm, ot) + vchk_expr_e(b, fnm, ot)
+    LetIn(nm, v, b)         => vchk_expr_e(v, fnm, ot) + vchk_expr_e(if vis_const_let_val(v) == 1 then vtemp_subst_var(b, nm, v) else b, fnm, ot)
+    VarIn(nm, v, b)         => vchk_expr_e(v, fnm, ot) + vchk_expr_e(if vis_const_let_val(v) == 1 then vtemp_subst_var(b, nm, v) else b, fnm, ot)
     DeferE(c, b)            => vchk_expr_e(c, fnm, ot) + vchk_expr_e(b, fnm, ot)
     ErrDeferE(c, b)         => vchk_expr_e(c, fnm, ot) + vchk_expr_e(b, fnm, ot)
     WithAllocE(a, b)        => vchk_expr_e(a, fnm, ot) + vchk_expr_e(b, fnm, ot)
@@ -2101,7 +2435,7 @@ fn ochkfn(nm, ps, body, ot) = ochkfn2(nm, ps, body, osiglookup(nm, ot.osigs), ts
 
 fn ochkfn2(nm, ps, body, mosig, msig, ot) = match mosig
     Nil          => let zwc = vwcet_chk_fn(nm, body, ot.wcets, ot.fns) in let ztn = n4_chk_fn_tensors(nm, body, msig, ot) in let zv = vprove_fn_status(nm, ps, body, ot.vsigs, ot.fns) + (if isnil(ot.vsigs) == 1 and isnil(ot.invs) == 1 then 0 else vchk_expr_e(body, nm, ot)) in let zk = kchk_fn_effs(nm, 0, body, ot) in if oanye(body) == 0 and isnil(ot.osigs) == 1 and isnil(ot.otypes) == 1 and isnil(auinit_from_sig(msig)) == 1 then 1 else let rty = aget_sig_rty(msig) in let lenv = aget_fn_lenv(msig) in let zs = schk_conc_e(body, nm, 0, sinit_nonsend_sig(msig), Nil) in let zh = achk_holes_e(body, rty, lenv, {fnm: nm, pubf: 0, ps: ps, body: body, sigs: ot.sigs, vsigs: ot.vsigs, laws: ot.laws, fns: ot.fns}) in let zp = achk_prov_e(body, nm, auinit_from_sig(msig), ot) in let ctx = {fnm: nm, pubf: 0, freef: 0, halloc: 0, bparams: ps, mvars: Nil, pnames: ps, locals: Nil, origins: oinit_origins(ps), osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, body)} in let rb = ochke(body, ctx, Nil) in let zrr = oerr_if("ownership error [O0002]", oa_res_ret(nm, body, ps, ctx.oa)) in ochk_ret_origin(nm, 0, "", rty, ps, rb.origin)
-    Cons(sg, sr) => if sg.pubf == 1 and oisgctype(sg.rty, ot.otypes) == 1 then ctfail("lume: ownership error [O0030]: public function '" + nm + "' cannot expose '@gc' region type across a public module boundary\n") else let zsec = (if sg.pubf == 1 or ois_protect(sg.freef) == 1 then w33_chk_sec_e(body, nm) else 0) in let zwc = vwcet_chk_fn(nm, body, ot.wcets, ot.fns) in let ztn = n4_chk_fn_tensors(nm, body, msig, ot) in let zkn = n4_chk_kernel_fn(nm, sg.freef, body, ot) in let rty = aget_fn_rty(msig, mosig) in let lenv = aget_fn_lenv(msig) in let mvars = omvars_pl(sg.pl) in let zv = vprove_fn_status(nm, ps, body, ot.vsigs, ot.fns) + vchk_expr_e(body, nm, ot) in let zk = kchk_fn_effs(nm, sg.pubf, body, ot) in let zs = schk_conc_e(body, nm, 0, sinit_nonsend_sig(msig), mvars) in let zh = achk_holes_e(body, rty, lenv, {fnm: nm, pubf: sg.pubf, ps: ps, body: body, sigs: ot.sigs, vsigs: ot.vsigs, laws: ot.laws, fns: ot.fns}) in let zt = (if ois_total(sg.freef) == 1 then achk_total_e(body, {fnm: nm, ps: ps, fns: ot.fns, osigs: ot.osigs}, Nil, Nil) else 0) in let tret = achk_prov_e(body, nm, auinit_from_sig(msig), ot) in if sg.pubf == 1 and ois_llm(sg.freef) == 0 and ois_unverified_ty(rty) == 0 and tret == 1 then ctfail("lume: provenance error [A0003]: unverified AI/probabilistic value cannot be returned from trusted 'pub fn " + nm + "' without verification (fix-it: wrap the return value in 'verify(val, <contract>)' or validate with a contract guard before returning)\n") else let bparams = if isnil(sg.pl) == 1 then ps else obparams_pl(sg.pl) in let ctx = {fnm: nm, pubf: sg.pubf, freef: sg.freef, halloc: 0, bparams: bparams, mvars: mvars, pnames: ps, locals: Nil, origins: oinit_origins(ps), osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, body)} in let rb = ochke(body, ctx, Nil) in let zrr = oerr_if("ownership error [O0002]", oa_res_ret(nm, body, bparams, ctx.oa)) in ochk_ret_origin(nm, sg.pubf, sg.fromp, rty, ps, rb.origin)
+    Cons(sg, sr) => if sg.pubf == 1 and oisgctype(sg.rty, ot.otypes) == 1 then ctfail("lume: ownership error [O0030]: public function '" + nm + "' cannot expose '@gc' region type across a public module boundary\n") else let zsec = (if sg.pubf == 1 or ois_protect(sg.freef) == 1 then w33_chk_sec_e(body, nm) else 0) in let zwc = vwcet_chk_fn(nm, body, ot.wcets, ot.fns) in let ztn = n4_chk_fn_tensors(nm, body, msig, ot) in let zkn = n4_chk_kernel_fn(nm, sg.freef, body, ot) in let rty = aget_fn_rty(msig, mosig) in let lenv = aget_fn_lenv(msig) in let mvars = omvars_pl(sg.pl) in let zv = vprove_fn_status(nm, ps, body, ot.vsigs, ot.fns) + vchk_expr_e(body, nm, ot) in let zk = kchk_fn_effs(nm, sg.pubf, body, ot) in let zs = schk_conc_e(body, nm, 0, sinit_nonsend_sig(msig), mvars) in let zh = achk_holes_e(body, rty, lenv, {fnm: nm, pubf: sg.pubf, ps: ps, body: body, sigs: ot.sigs, vsigs: ot.vsigs, laws: ot.laws, fns: ot.fns}) in let zt = (if ois_total(sg.freef) == 1 then achk_total_fn(body, {fnm: nm, ps: ps, fns: ot.fns, osigs: ot.osigs}) else 0) in let tret = achk_prov_e(body, nm, auinit_from_sig(msig), ot) in if sg.pubf == 1 and ois_llm(sg.freef) == 0 and ois_unverified_ty(rty) == 0 and tret == 1 then ctfail("lume: provenance error [A0003]: unverified AI/probabilistic value cannot be returned from trusted 'pub fn " + nm + "' without verification (fix-it: wrap the return value in 'verify(val, <contract>)' or validate with a contract guard before returning)\n") else let zfr = (if ois_free(sg.freef) == 1 then ochk_free_e(body, nm, 0, ot.fns) else 0) in let bparams = if isnil(sg.pl) == 1 then ps else obparams_pl(sg.pl) in let ctx = {fnm: nm, pubf: sg.pubf, freef: sg.freef, halloc: 0, bparams: bparams, mvars: mvars, pnames: ps, locals: Nil, origins: oinit_origins(ps), osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, body)} in let rb = ochke(body, ctx, Nil) in let zrr = oerr_if("ownership error [O0002]", oa_res_ret(nm, body, bparams, ctx.oa)) in ochk_ret_origin(nm, sg.pubf, sg.fromp, rty, ps, rb.origin)
 
 fn ochkstmts(prog, ot, moved) = match prog
     Nil        => 1
@@ -2110,8 +2444,8 @@ fn ochkstmts(prog, ot, moved) = match prog
 fn ochkstmt1(st, rest, ot, moved) = match st
     VLawDecl(nm, ps, body) => let zl = vchk_law(nm, ps, body, ot.fns) in ochkstmts(rest, ot, moved)
     Fn(nm, ps, body)       => let z = if ostarts(nm, "__fnval_") == 1 then 0 else ochkfn(nm, ps, body, ot) in ochkstmts(rest, ot, moved)
-    Print(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, v)} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
-    ExprS(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, v)} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
+    Print(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zk = kchk_fn_effs("<main>", 0, v, ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, v)} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
+    ExprS(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zk = kchk_fn_effs("<main>", 0, v, ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, v)} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
     _                      => ochkstmts(rest, ot, moved)
 
 ## --- lower Track O, Track A, Track K, Track S & Track V surface AST nodes into canonical Lume-Core (`LetIn`/`If`) ---
@@ -2254,11 +2588,12 @@ fn pu_scalar_body(e) = match e
 fn pu_scalar_arms(arms) = match arms
     Nil        => 1
     Cons(h, t) => if pu_scalar_body(h.body) == 1 then pu_scalar_arms(t) else 0
-fn pu_scalar_fn(nm, st) = if nm == "count" or nm == "ord" or nm == "at" or nm == "toint" or nm == "slice" or nm == "slicen" then 1 else match pu_find(nm, st.fns)
+fn pu_scalar_fn_m(mf) = match mf
     Nil        => 0
     Cons(f, r) => pu_scalar_body(f.body)
+fn pu_scalar_fn(nm, st) = if nm == "count" or nm == "ord" or nm == "at" or nm == "toint" or nm == "slice" or nm == "slicen" then 1 else pu_scalar_fn_m(pu_find(nm, st.fns))
 fn pu_scalar_sig(nm, st) = match osiglookup(nm, st.osigs)
-    Cons(sg, sr) => if pu_scalar_ty(sg.rty) == 1 then 1 else pu_scalar_fn(nm, st)
+    Cons(sg, sr) => if pu_scalar_ty(sg.rty) == 1 then pu_scalar_fn(nm, st) else 0
     Nil          => pu_scalar_fn(nm, st)
 fn pu_max(a, b) = if a > b then a else b
 fn pu_uses_args(x, args) = match args
@@ -2368,16 +2703,17 @@ fn pu_find(nm, fns) = match fns
     Cons(f, r) => if f.nm == nm then Cons(f, Nil) else pu_find(nm, r)
 ## a function returns a fresh value when its body's result is unique under what it may assume about its own
 ## parameters. A recursive call is assumed fresh: the induction closes at the non-recursive arms.
-fn pu_fresh(nm, st, seen) = if omem(nm, seen) == 1 then 1 else if len(seen) > 8 then 0 else if pu_scalar_sig(nm, st) == 1 then 1 else match pu_find(nm, st.fns)
+fn pu_fresh_m(nm, mf, st, seen) = match mf
     Nil        => 0
     Cons(f, r) => pu_expr(f.body, pu_env0(f, st), st, Cons(nm, seen))
+fn pu_fresh(nm, st, seen) = if omem(nm, st.hops) == 1 then 0 else if omem(nm, seen) == 1 then 1 else if len(seen) > 8 then 0 else if pu_scalar_sig(nm, st) == 1 then 1 else pu_fresh_m(nm, pu_find(nm, st.fns), st, seen)
 fn pu_env0(f, st) = pu_env_ps(f.nm, f.body, ofn_pl(f.nm, st.osigs), st)
 fn ofn_pl(nm, osigs) = match osiglookup(nm, osigs)
     Nil          => Nil
     Cons(sg, sr) => sg.pl
 fn pu_env_ps(fnm, body, pl, st) = match pl
     Nil        => Nil
-    Cons(p, r) => let rest = pu_env_ps(fnm, body, r, st) in if pu_scalar_ty(p.pt) == 1 then Cons(p.pn, rest) else if p.cf == 2 and omem(pu_key(fnm, p.pn), st.u) == 1 and pu_uses(p.pn, body) <= 1 then Cons(p.pn, rest) else rest
+    Cons(p, r) => let rest = pu_env_ps(fnm, body, r, st) in if p.cf == 2 and omem(pu_key(fnm, p.pn), st.u) == 1 and pu_uses(p.pn, body) <= 1 then Cons(p.pn, rest) else rest
 
 ## drop from `u` every own parameter with a call site that is not provably unique
 fn pu_drop_fn(nm, pl, u) = match pl
@@ -2385,9 +2721,7 @@ fn pu_drop_fn(nm, pl, u) = match pl
     Cons(p, r) => pu_drop_fn(nm, r, orem(pu_key(nm, p.pn), u))
 fn pu_site(nm, args, pl, env, st, u) = match pl
     Nil        => u
-    Cons(p, r) => if p.cf == 1 then pu_site(nm, args, r, env, st, u) else match args
-        Nil        => u
-        Cons(a, t) => pu_site(nm, t, r, env, st, if p.cf == 2 and pu_expr(a, env, st, Nil) == 0 then orem(pu_key(nm, p.pn), u) else u)
+    Cons(p, r) => if p.cf == 1 then pu_site(nm, args, r, env, st, u) else if isnil(args) == 1 then u else pu_site(nm, ptl(args), r, env, st, if p.cf == 2 and pu_expr(ohd_e(args), env, st, Nil) == 0 then orem(pu_key(nm, p.pn), u) else u)
 fn pu_walk_args(xs, env, st, u) = match xs
     Nil        => u
     Cons(h, t) => pu_walk_args(t, env, st, pu_walk(h, env, st, u))
@@ -2400,10 +2734,14 @@ fn pu_walk_arms(xs, sc, env, st, u) = match xs
 fn pu_walk_hops(xs, st, u) = match xs
     Nil        => u
     Cons(h, t) => pu_walk_hops(t, st, pu_walk(h.body, Nil, st, u))
+fn pu_walk_var(x, m, u) = match m
+    Nil          => u
+    Cons(sg, sr) => pu_drop_fn(x, sg.pl, u)
+fn pu_walk_call(nm, args, m, env, st, u1) = match m
+    Nil          => u1
+    Cons(sg, sr) => pu_site(nm, args, sg.pl, env, st, u1)
 fn pu_walk(e, env, st, u) = match e
-    Var(x)           => if omem(x, env) == 1 then u else match osiglookup(x, st.ofs)
-        Nil          => u
-        Cons(sg, sr) => pu_drop_fn(x, sg.pl, u)
+    Var(x)           => if omem(x, env) == 1 then u else pu_walk_var(x, osiglookup(x, st.ofs), u)
     OwnE(i)          => pu_walk(i, env, st, u)
     MutE(i)          => pu_walk(i, env, st, u)
     Field(o, fld)    => pu_walk(o, env, st, u)
@@ -2411,9 +2749,7 @@ fn pu_walk(e, env, st, u) = match e
     If(c, t, e2)     => pu_walk(e2, env, st, pu_walk(t, env, st, pu_walk(c, env, st, u)))
     LetIn(nm, v, b)  => pu_walk(b, pu_let(nm, v, b, env, st, Nil), st, pu_walk(v, env, st, u))
     VarIn(nm, v, b)  => pu_walk(b, pu_let(nm, v, b, env, st, Nil), st, pu_walk(v, env, st, u))
-    Call(nm, args)   => let u1 = pu_walk_args(args, env, st, u) in (match osiglookup(nm, st.ofs)
-        Nil          => u1
-        Cons(sg, sr) => pu_site(nm, args, sg.pl, env, st, u1))
+    Call(nm, args)   => let u1 = pu_walk_args(args, env, st, u) in pu_walk_call(nm, args, osiglookup(nm, st.ofs), env, st, u1)
     Rec(items)       => pu_walk_items(items, env, st, u)
     RecT(tn, items)  => pu_walk_items(items, env, st, u)
     Match(sc, arms)  => pu_walk_arms(arms, sc, env, st, pu_walk(sc, env, st, u))
@@ -2421,7 +2757,7 @@ fn pu_walk(e, env, st, u) = match e
     DeferE(c, b)     => pu_walk(b, env, st, pu_walk(c, env, st, u))
     ErrDeferE(c, b)  => pu_walk(b, env, st, pu_walk(c, env, st, u))
     WithAllocE(a, b) => pu_walk(b, env, st, pu_walk(a, env, st, u))
-    WithHandlerE(en, hs, b) => pu_walk(b, env, st, pu_walk_hops(hs, st, u))
+    WithHandlerE(en, hs, b) => pu_walk(b, Nil, st, pu_walk_hops(hs, st, u))
     ScopeE(snm, b)   => pu_walk(b, env, st, u)
     SpawnE(i)        => pu_walk(i, Nil, st, u)
     AwaitE(i)        => pu_walk(i, env, st, u)
@@ -2432,13 +2768,14 @@ fn pu_walk(e, env, st, u) = match e
 fn pu_drop_retained(nm, pl, body, st, u) = match pl
     Nil        => u
     Cons(p, r) => pu_drop_retained(nm, r, body, st, if p.cf == 2 and pu_uses(p.pn, body) > 1 then orem(pu_key(nm, p.pn), u) else u)
+fn pu_walk_stmt(h, st, u) = match h
+    Fn(nm, ps, body) => pu_walk(body, pu_env0({nm: nm, body: body}, st), st, pu_drop_retained(nm, ofn_pl(nm, st.osigs), body, st, u))
+    Print(v)         => pu_walk(v, Nil, st, u)
+    ExprS(v)         => pu_walk(v, Nil, st, u)
+    _                => u
 fn pu_walk_prog(prog, st, u) = match prog
     Nil        => u
-    Cons(h, t) => pu_walk_prog(t, st, match h
-        Fn(nm, ps, body) => pu_walk(body, pu_env0({nm: nm, body: body}, st), st, pu_drop_retained(nm, ofn_pl(nm, st.osigs), body, st, u))
-        Print(v)         => pu_walk(v, Nil, st, u)
-        ExprS(v)         => pu_walk(v, Nil, st, u)
-        _                => u)
+    Cons(h, t) => pu_walk_prog(t, st, pu_walk_stmt(h, st, u))
 fn pu_seed(osigs) = match osigs
     Nil        => Nil
     Cons(sg, r) => if ois_ffi(sg.freef) == 1 then pu_seed(r) else pu_seed_ps(sg.nm, sg.pl, pu_seed(r))
@@ -2448,8 +2785,55 @@ fn pu_seed_ps(nm, pl, rest) = match pl
 fn pu_ownsigs(osigs) = match osigs
     Nil         => Nil
     Cons(sg, r) => if isnil(pu_seed_ps(sg.nm, sg.pl, Nil)) == 1 then pu_ownsigs(r) else Cons(sg, pu_ownsigs(r))
-fn pu_fix(prog, fns, osigs, ofs, u) = let u2 = pu_walk_prog(prog, {osigs: osigs, ofs: ofs, fns: fns, u: u}, u) in if len(u2) == len(u) then u else pu_fix(prog, fns, osigs, ofs, u2)
-fn pu_unique(prog, osigs) = let s = pu_seed(osigs) in if isnil(s) == 1 then Nil else pu_fix(prog, ocollectf(prog), osigs, pu_ownsigs(osigs), s)
+fn pu_add_u(x, xs) = if omem(x, xs) == 1 then xs else Cons(x, xs)
+fn pu_hops_list(hs, acc) = match hs
+    Nil        => acc
+    Cons(h, t) => pu_hops_list(t, pu_add_u(h.op, pu_hops_e(h.body, acc)))
+fn pu_hops_args(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => pu_hops_args(t, pu_hops_e(h, acc))
+fn pu_hops_items(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => pu_hops_items(t, pu_hops_e(h.val, acc))
+fn pu_hops_arms(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => pu_hops_arms(t, pu_hops_e(h.body, acc))
+fn pu_hops_e(e, acc) = match e
+    WithHandlerE(en, hs, b) => pu_hops_e(b, pu_hops_list(hs, acc))
+    LetIn(nm, v, b)         => pu_hops_e(b, pu_hops_e(v, acc))
+    VarIn(nm, v, b)         => pu_hops_e(b, pu_hops_e(v, acc))
+    If(c, t, e2)            => pu_hops_e(e2, pu_hops_e(t, pu_hops_e(c, acc)))
+    Bin(op, l, r)           => pu_hops_e(r, pu_hops_e(l, acc))
+    Call(nm, args)          => pu_hops_args(args, acc)
+    Rec(items)              => pu_hops_items(items, acc)
+    RecT(tn, items)         => pu_hops_items(items, acc)
+    Match(sc, arms)         => pu_hops_arms(arms, pu_hops_e(sc, acc))
+    DeferE(c, b)            => pu_hops_e(b, pu_hops_e(c, acc))
+    ErrDeferE(c, b)         => pu_hops_e(b, pu_hops_e(c, acc))
+    WithAllocE(a, b)        => pu_hops_e(b, pu_hops_e(a, acc))
+    ScopeE(snm, b)          => pu_hops_e(b, acc)
+    SpawnE(i)               => pu_hops_e(i, acc)
+    AwaitE(i)               => pu_hops_e(i, acc)
+    ShardE(vnm, lo, hi, b)  => pu_hops_e(b, pu_hops_e(hi, pu_hops_e(lo, acc)))
+    OwnE(i)                 => pu_hops_e(i, acc)
+    MutE(i)                 => pu_hops_e(i, acc)
+    Field(o, fld)           => pu_hops_e(o, acc)
+    CT(i)                   => pu_hops_e(i, acc)
+    _                       => acc
+fn pu_hops_ops(ops, acc) = match ops
+    Nil         => acc
+    Cons(op, r) => pu_hops_ops(r, pu_add_u(op.op, acc))
+fn pu_hops_stmt(st, acc) = match st
+    Fn(nm, ps, body)      => pu_hops_e(body, acc)
+    Print(v)              => pu_hops_e(v, acc)
+    ExprS(v)              => pu_hops_e(v, acc)
+    KEffectDecl(enm, ops) => pu_hops_ops(ops, acc)
+    _                     => acc
+fn pu_hops_prog(prog, acc) = match prog
+    Nil        => acc
+    Cons(h, t) => pu_hops_prog(t, pu_hops_stmt(h, acc))
+fn pu_fix(prog, fns, osigs, ofs, hops, u) = let u2 = pu_walk_prog(prog, {osigs: osigs, ofs: ofs, fns: fns, hops: hops, u: u}, u) in if len(u2) == len(u) then u else pu_fix(prog, fns, osigs, ofs, hops, u2)
+fn pu_unique(prog, osigs) = let s = pu_seed(osigs) in if isnil(s) == 1 then Nil else pu_fix(prog, ocollectf(prog), osigs, pu_ownsigs(osigs), pu_hops_prog(prog, Nil), s)
 fn pu_filter(nm, ps, u) = match ps
     Nil        => Nil
     Cons(h, t) => if omem(pu_key(nm, h), u) == 1 then Cons(h, pu_filter(nm, t, u)) else pu_filter(nm, t, u)
@@ -2574,11 +2958,11 @@ fn vwrap_fn_contract(nm, ps, raw_body, low_body, lctx, vctx) = vwrap_fn_c1(nm, p
 
 fn vwrap_fn_c1(nm, ps, raw_body, low_body, lctx, mvs) = match mvs
     Nil          => low_body
-    Cons(vsg, r) => if vqflia_prove_fn(ps, vsg.reqs, vsg.enss, raw_body, lctx.fns) == 1 then low_body else let post = if isnil(vsg.enss) == 1 then low_body else LetIn("result", low_body, LetIn("ret", Var("result"), LetIn("_vens_ok", If(vconj_conds(vsg.enss, lctx, 100), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (ensures) in '" + nm + "'\n"), Nil))), Var("result")))) in if isnil(vsg.reqs) == 1 then post else LetIn("_vreq_ok", If(vconj_conds(vsg.reqs, lctx, 200), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (requires) in '" + nm + "'\n"), Nil))), post)
+    Cons(vsg, r) => let post = if vqflia_prove_fn(ps, vsg.reqs, vsg.enss, raw_body, lctx.fns) == 1 or isnil(vsg.enss) == 1 then low_body else LetIn("result", low_body, LetIn("ret", Var("result"), LetIn("_vens_ok", If(vconj_conds(vsg.enss, lctx, 100), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (ensures) in '" + nm + "'\n"), Nil))), Var("result")))) in if isnil(vsg.reqs) == 1 then post else LetIn("_vreq_ok", If(vconj_conds(vsg.reqs, lctx, 200), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (requires) in '" + nm + "'\n"), Nil))), post)
 
 fn klower_eff_ops(ops, ufns, rest) = match ops
     Nil         => rest
-    Cons(op, r) => if omem(op.op, ufns) == 1 then klower_eff_ops(r, ufns, rest) else Cons(Fn(op.op, op.ps, Num(0)), klower_eff_ops(r, Cons(op.op, ufns), rest))
+    Cons(op, r) => if omem(op.op, ufns) == 1 then klower_eff_ops(r, ufns, rest) else Cons(Fn(op.op, op.ps, Call("ctfail", Cons(Str("lume: runtime error [E0200]: unhandled effect operation '" + op.op + "'\n"), Nil))), klower_eff_ops(r, Cons(op.op, ufns), rest))
 
 fn ois_async_fn(nm, osigs) = match osiglookup(nm, osigs)
     Nil          => 0
@@ -3023,6 +3407,9 @@ fn c9_init_secrets(nm, ps) = let sp = c9_secret_params(ps) in if ostarts(nm, "ct
 fn c9_mentions_secret_args(xs, svars) = match xs
     Nil        => 0
     Cons(h, t) => if c9_mentions_secret(h, svars) == 1 then 1 else c9_mentions_secret_args(t, svars)
+fn c9_mentions_secret_rec(xs, svars) = match xs
+    Nil        => 0
+    Cons(h, t) => if c9_mentions_secret(h.val, svars) == 1 then 1 else c9_mentions_secret_rec(t, svars)
 fn c9_mentions_secret(e, svars) = match e
     Var(x)          => omem(x, svars)
     Bin(op, l, r)   => if c9_mentions_secret(l, svars) == 1 then 1 else c9_mentions_secret(r, svars)
@@ -3031,25 +3418,52 @@ fn c9_mentions_secret(e, svars) = match e
     VarIn(nm, v, b) => let sv2 = if c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else svars in if c9_mentions_secret(v, svars) == 1 then 1 else c9_mentions_secret(b, sv2)
     Call(cnm, args) => c9_mentions_secret_args(args, svars)
     Field(o, k)     => c9_mentions_secret(o, svars)
+    Rec(items)      => c9_mentions_secret_rec(items, svars)
+    RecT(tn, items) => c9_mentions_secret_rec(items, svars)
+    OwnE(inner)     => c9_mentions_secret(inner, svars)
+    MutE(inner)     => c9_mentions_secret(inner, svars)
+    CT(inner)       => c9_mentions_secret(inner, svars)
+    AwaitE(inner)   => c9_mentions_secret(inner, svars)
+    SpawnE(inner)   => c9_mentions_secret(inner, svars)
+    ScopeE(snm, b)  => c9_mentions_secret(b, svars)
     _               => 0
 fn c9_is_mem_idx_call(cnm, args, svars) = if (cnm == "at" or cnm == "slice" or cnm == "slicen") and len(args) >= 2 then c9_mentions_secret(ohd_e(ptl(args)), svars) else if (cnm == "mmio_volatile_read8" or cnm == "mmio_volatile_read16" or cnm == "mmio_volatile_read32" or cnm == "mmio_volatile_read64" or k5_is_phys_write_fn(cnm) == 1) and isnil(args) == 0 then c9_mentions_secret(ohd_e(args), svars) else 0
 fn c9_chk_ct_args(xs, svars, fnm) = match xs
     Nil        => 0
     Cons(h, t) => let z = c9_chk_ct_e(h, svars, fnm) in c9_chk_ct_args(t, svars, fnm)
+fn c9_chk_ct_rec(xs, svars, fnm) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = c9_chk_ct_e(h.val, svars, fnm) in c9_chk_ct_rec(t, svars, fnm)
 fn c9_chk_ct_arms(xs, svars, fnm) = match xs
     Nil        => 0
     Cons(h, t) => let z = c9_chk_ct_e(h.body, svars, fnm) in c9_chk_ct_arms(t, svars, fnm)
+fn c9_chk_ct_hops(xs, svars, fnm) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = c9_chk_ct_e(h.body, svars, fnm) in c9_chk_ct_hops(t, svars, fnm)
 fn c9_chk_ct_e(e, svars, fnm) = match e
-    If(c, t, e2)    => if c9_mentions_secret(c, svars) == 1 then ctfail("lume: constant-time error [C0009]: branch condition in '" + fnm + "' depends on a secret value, leaking timing side-channel information (fix-it: use constant-time bitwise masking bv_xor/bv_and/bv_or/bv_shr instead of branching on secrets)\n") else let z1 = c9_chk_ct_e(t, svars, fnm) in c9_chk_ct_e(e2, svars, fnm)
-    Match(sc, arms) => if c9_mentions_secret(sc, svars) == 1 then ctfail("lume: constant-time error [C0009]: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information (fix-it: use constant-time bitwise masking instead of pattern matching on secrets)\n") else c9_chk_ct_arms(arms, svars, fnm)
-    Bin(op, l, r)   => if (op == "/" or op == "%" or op == "and" or op == "or") and (c9_mentions_secret(l, svars) == 1 or c9_mentions_secret(r, svars) == 1) then ctfail("lume: constant-time error [C0009]: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value (fix-it: use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr)\n") else let z = c9_chk_ct_e(l, svars, fnm) in c9_chk_ct_e(r, svars, fnm)
-    Call(cnm, args) => if c9_is_mem_idx_call(cnm, args, svars) == 1 then ctfail("lume: constant-time error [C0009]: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information (fix-it: avoid indexing memory or strings by secret offsets)\n") else c9_chk_ct_args(args, svars, fnm)
-    LetIn(nm, v, b) => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
-    VarIn(nm, v, b) => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
-    _               => 0
-fn c9_taints_let(fnm, v, svars) = match v
-    Call(cnm, args) => if ostarts(fnm, "ct_") == 1 or ostarts(cnm, "bv_") == 1 then c9_mentions_secret(v, svars) else 0
-    _               => c9_mentions_secret(v, svars)
+    If(c, t, e2)               => if c9_mentions_secret(c, svars) == 1 then ctfail("lume: constant-time error [C0009]: branch condition in '" + fnm + "' depends on a secret value, leaking timing side-channel information (fix-it: use constant-time bitwise masking bv_xor/bv_and/bv_or/bv_shr instead of branching on secrets)\n") else let z1 = c9_chk_ct_e(t, svars, fnm) in c9_chk_ct_e(e2, svars, fnm)
+    Match(sc, arms)            => if c9_mentions_secret(sc, svars) == 1 then ctfail("lume: constant-time error [C0009]: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information (fix-it: use constant-time bitwise masking instead of pattern matching on secrets)\n") else c9_chk_ct_arms(arms, svars, fnm)
+    Bin(op, l, r)              => if (op == "/" or op == "%" or op == "and" or op == "or") and (c9_mentions_secret(l, svars) == 1 or c9_mentions_secret(r, svars) == 1) then ctfail("lume: constant-time error [C0009]: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value (fix-it: use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr)\n") else let z = c9_chk_ct_e(l, svars, fnm) in c9_chk_ct_e(r, svars, fnm)
+    Call(cnm, args)            => if c9_is_mem_idx_call(cnm, args, svars) == 1 then ctfail("lume: constant-time error [C0009]: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information (fix-it: avoid indexing memory or strings by secret offsets)\n") else c9_chk_ct_args(args, svars, fnm)
+    LetIn(nm, v, b)            => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
+    VarIn(nm, v, b)            => let z = c9_chk_ct_e(v, svars, fnm) in let sv2 = if c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else orem(nm, svars) in c9_chk_ct_e(b, sv2, fnm)
+    Rec(items)                 => c9_chk_ct_rec(items, svars, fnm)
+    RecT(tn, items)            => c9_chk_ct_rec(items, svars, fnm)
+    Field(o, fld)              => c9_chk_ct_e(o, svars, fnm)
+    OwnE(inner)                => c9_chk_ct_e(inner, svars, fnm)
+    MutE(inner)                => c9_chk_ct_e(inner, svars, fnm)
+    CT(inner)                  => c9_chk_ct_e(inner, svars, fnm)
+    AwaitE(inner)              => c9_chk_ct_e(inner, svars, fnm)
+    DeferE(c, b)               => let z = c9_chk_ct_e(c, svars, fnm) in c9_chk_ct_e(b, svars, fnm)
+    ErrDeferE(c, b)            => let z = c9_chk_ct_e(c, svars, fnm) in c9_chk_ct_e(b, svars, fnm)
+    WithAllocE(a, b)           => let z = c9_chk_ct_e(a, svars, fnm) in c9_chk_ct_e(b, svars, fnm)
+    WithHandlerE(en, hs, b)    => let z = c9_chk_ct_hops(hs, svars, fnm) in c9_chk_ct_e(b, svars, fnm)
+    ScopeE(snm, b)             => c9_chk_ct_e(b, svars, fnm)
+    SpawnE(inner)              => c9_chk_ct_e(inner, svars, fnm)
+    ShardE(vnm, lo, hi, b)     => let z1 = c9_chk_ct_e(lo, svars, fnm) in let z2 = c9_chk_ct_e(hi, svars, fnm) in c9_chk_ct_e(b, svars, fnm)
+    LambdaE(ps, tys, rt, body) => c9_chk_ct_e(body, svars, fnm)
+    _                          => 0
+fn c9_taints_let(fnm, v, svars) = c9_mentions_secret(v, svars)
 fn c9_chk_fn(nm, ps, body) = let svars = c9_init_secrets(nm, ps) in if isnil(svars) == 1 then 0 else c9_chk_ct_e(body, svars, nm)
 ## compression and secrets: decompression time depends on the bytes (Decomp+Time), so no secret reaches the compactor.
 ## `@secret fn` makes every parameter and the result secret; `secret_new`, `secret_*` parameters and `ct_*` functions are secret too.
@@ -3128,4 +3542,4 @@ fn orscheck(prog) = match nf_errors(nf_check(prog))
     Nil        => let fns = ocollectfnms(prog) in let fn_defs = if omem("kernel_boot_entry", fns) == 1 then ocollectf(prog) else Nil in let z = orsk5(prog, fn_defs) in prog
 
 fn ocheck(prog) = let zcz = cz_prog(prog) in if oany(prog) == 0 and nf_has_fnval(nf_check(prog)) == 0 then orscheck(prog) else ocheckforce(prog)
-fn ocheckforce(prog0) = let z0 = orscheck(prog0) in let traits = t4_collect_traits(prog0) in let impls = t4_collect_impls(prog0) in let ztr = t4_chk_impls(impls, traits) in let prog_tr = if isnil(traits) == 1 then prog0 else t4_resolve_prog(prog0, traits, impls, tcollects(prog0), tcollectc(prog0)) in let zhm = if cl_has_lambda_prog(prog_tr) == 1 then (let p_hm = tcheck(prog_tr) in 1) else 0 in let prog = cl_convert_prog(prog_tr) in let raw_osigs = ocollects(prog) in let raw_fns0 = ocollectf(prog) in let grad_fns = n4_synth_grad_fns(n4_collect_grads_prog(prog, Nil), raw_fns0) in let prog1 = app(grad_fns, prog) in let raw_fns = ocollectf(prog1) in let osigs = oinfer_priv_osigs(raw_fns, raw_osigs) in let otypes = ocollectt(prog1) in let recs = tcollectr(prog1) in let sigs = tcollects(prog1) in let ksigs = kcollect_effsigs(prog1) in let edecls = kcollect_effdecls(prog1) in let caps = kcollect_caps(prog1) in let vsigs = vcollect_vsigs(prog1) in let invs = vcollect_invs(prog1) in let laws = vcollect_laws(prog1) in let wcets = vcollect_wcets(prog1) in let prog2 = afill_prog_holes(prog1, sigs, osigs, vsigs, laws, raw_fns) in let fns = ocollectf(prog2) in let ufns = ocollectfnms(prog2) in let z = ochkstmts(prog2, {osigs: osigs, otypes: otypes, recs: recs, sigs: sigs, fns: fns, ksigs: ksigs, edecls: edecls, caps: caps, vsigs: vsigs, invs: invs, laws: laws, wcets: wcets}, Nil) in olowerprog(prog2, ufns, osigs, {vsigs: vsigs, fns: fns, uniq: pu_unique(prog2, osigs)})
+fn ocheckforce(prog0) = let z0 = orscheck(prog0) in let traits = t4_collect_traits(prog0) in let impls = t4_collect_impls(prog0) in let ztr = t4_chk_impls(impls, traits) in let prog_tr = if isnil(traits) == 1 then prog0 else t4_resolve_prog(prog0, traits, impls, tcollects(prog0), tcollectc(prog0)) in let zhm = if cl_has_lambda_prog(prog_tr) == 1 then (let p_hm = tcheck(prog_tr) in 1) else 0 in let prog = cl_convert_prog(prog_tr) in let raw_osigs = ocollects(prog) in let raw_fns0 = ocollectf(prog) in let grad_fns = n4_synth_grad_fns(n4_collect_grads_prog(prog, Nil), raw_fns0) in let prog1 = app(grad_fns, prog) in let raw_fns = ocollectf(prog1) in let otypes = ocollectt(prog1) in let osigs = oinfer_priv_osigs(raw_fns, raw_osigs, otypes) in let recs = tcollectr(prog1) in let sigs = tcollects(prog1) in let ksigs = kcollect_effsigs(prog1) in let edecls = kcollect_effdecls(prog1) in let caps = kcollect_caps(prog1) in let vsigs = vcollect_vsigs(prog1) in let invs = vcollect_invs(prog1) in let laws = vcollect_laws(prog1) in let wcets = vcollect_wcets(prog1) in let prog2 = afill_prog_holes(prog1, sigs, osigs, vsigs, laws, raw_fns) in let fns = ocollectf(prog2) in let ufns = ocollectfnms(prog2) in let z = ochkstmts(prog2, {osigs: osigs, otypes: otypes, recs: recs, sigs: sigs, fns: fns, ksigs: ksigs, edecls: edecls, caps: caps, vsigs: vsigs, invs: invs, laws: laws, wcets: wcets}, Nil) in olowerprog(prog2, ufns, osigs, {vsigs: vsigs, fns: fns, uniq: pu_unique(prog2, osigs)})

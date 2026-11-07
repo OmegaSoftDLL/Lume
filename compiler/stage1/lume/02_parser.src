@@ -7,8 +7,12 @@ fn primid(name, t) = if name == "f" and headkind(t) == "str" then {node: strinte
 ## The hole expression is scope-checked like any other expression: an identifier that is not bound at the use
 ## site is a compile error [R0200] from orscheck (#428), not silent garbage at runtime.
 fn isbadholech(c) = c == ":" or c == "\"" or c == "\n" or c == "{" or c == "}" or c == "\\"
+fn findcolon(s, i, n) = if i >= n then 0 - 1 else if at(s, i) == ":" then i else findcolon(s, i + 1, n)
+fn isfmttail(s, i, n) = if i >= n then 1 else let c = at(s, i) in if isdigit(c) or c == "." or c == "x" or c == "X" or c == "b" or c == "o" or c == "d" or c == "f" or c == "s" then isfmttail(s, i + 1, n) else 0
+fn isfmtend(c) = c == "x" or c == "X" or c == "b" or c == "o" or c == "d" or c == "f" or c == "s"
+fn isfmtspec(sp) = let n = count(sp) in if n == 0 then 0 else let c0 = at(sp, 0) in if (c0 == ">" or c0 == "<" or c0 == "^" or c0 == "." or c0 == "0") and n >= 2 and isfmttail(sp, 1, n) == 1 then 1 else if isfmtend(at(sp, n - 1)) and isfmttail(sp, 0, n) == 1 then 1 else 0
 fn hasbadhole(s, i, n) = if i >= n then 0 else if isbadholech(at(s, i)) then 1 else hasbadhole(s, i + 1, n)
-fn isvalidhole(s) = let n = count(s) in if n == 0 then 0 else let c0 = at(s, 0) in if (isalpha(c0) or isdigit(c0) or c0 == "(") and hasbadhole(s, 0, n) == 0 then 1 else 0
+fn isvalidhole(s) = let n = count(s) in if n == 0 then 0 else let c0 = at(s, 0) in if (isalpha(c0) or isdigit(c0) or c0 == "(") == 0 then 0 else let k = findcolon(s, 0, n) in if k < 0 then (if hasbadhole(s, 0, n) == 0 then 1 else 0) else if k > 0 and hasbadhole(s, 0, k) == 0 and isfmtspec(slicen(s, n, k + 1, n)) == 1 then 1 else 0
 fn findcloseb(s, j) requires j >= 0 ensures result < 0 or result >= j = if j >= count(s) then 0 - 1 else if at(s, j) == "}" then j else findcloseb(s, j + 1)
 fn findclosebn(s, j, n) = if j >= n then 0 - 1 else if at(s, j) == "\\" then findclosebn(s, j + 2, n) else if at(s, j) == "}" then j else findclosebn(s, j + 1, n)
 fn sjoin(acc, piece) = match acc
@@ -17,7 +21,7 @@ fn sjoin(acc, piece) = match acc
 ## The scanner below runs over the RAW token body, so an escaped brace (`\{`, `\}`) is decided on before
 ## it is decoded and can never open or close a hole. `{{` is a literal `{`. `}}` is a literal `}` only outside
 ## an open literal `{`: `depth` counts unmatched literal `{`, so `{"a":{"b":1}}` keeps both closing braces.
-fn strbody(t) = let tn = count(t) in slicen(t, tn, 1, tn - 1)
+fn strbody(t) = let tn = count(t) in if tn >= 6 and slicen(t, tn, 0, 3) == "\"\"\"" and slicen(t, tn, tn - 3, tn) == "\"\"\"" then slicen(t, tn, 3, tn - 3) else slicen(t, tn, 1, tn - 1)
 fn strflush(acc, lit) = match lit
     Nil => acc
     _   => sjoin(acc, Str(joinall(own lex_rev(lit, Nil))))
@@ -25,8 +29,8 @@ fn strfinish(a) = match a
     Nil => Str("")
     _   => a
 fn strscan(s, n, i, depth, lit, acc, holes) = if i >= n then strfinish(strflush(acc, lit)) else let c = at(s, i) in if c == "\\" and i + 1 < n then strscan(s, n, i + 2, depth, Cons(unesc1(at(s, i + 1)), lit), acc, holes) else if c == "\r" then strscan(s, n, i + 1, depth, lit, acc, holes) else if c == "{" then strscanopen(s, n, i, depth, lit, acc, holes) else if c == "}" then strscanclose(s, n, i, depth, lit, acc, holes) else strscan(s, n, i + 1, depth, Cons(c, lit), acc, holes)
-fn strscanclose(s, n, i, depth, lit, acc, holes) = if depth > 0 then strscan(s, n, i + 1, depth - 1, Cons("}", lit), acc, holes) else if i + 1 < n and at(s, i + 1) == "}" then strscan(s, n, i + 2, 0, Cons("}", lit), acc, holes) else strscan(s, n, i + 1, 0, Cons("}", lit), acc, holes)
-fn strscanopen(s, n, i, depth, lit, acc, holes) = if i + 1 < n and at(s, i + 1) == "{" then strscan(s, n, i + 2, depth, Cons("{", lit), acc, holes) else let j = findclosebn(s, i + 1, n) in if holes == 1 and j > i + 1 and isvalidhole(slicen(s, n, i + 1, j)) == 1 then strscan(s, n, j + 1, depth, Nil, sjoin(strflush(acc, strdropdollar(s, i, lit)), parsehole(slicen(s, n, i + 1, j))), holes) else strscan(s, n, i + 1, depth + 1, Cons("{", lit), acc, holes)
+fn strscanclose(s, n, i, depth, lit, acc, holes) = if depth >= 1000 and i + 1 < n and at(s, i + 1) == "}" then strscan(s, n, i + 2, depth - 1000, Cons("}", lit), acc, holes) else if depth % 1000 > 0 then strscan(s, n, i + 1, depth - 1, Cons("}", lit), acc, holes) else if i + 1 < n and at(s, i + 1) == "}" then strscan(s, n, i + 2, depth, Cons("}", lit), acc, holes) else strscan(s, n, i + 1, depth, Cons("}", lit), acc, holes)
+fn strscanopen(s, n, i, depth, lit, acc, holes) = if i + 1 < n and at(s, i + 1) == "{" then strscan(s, n, i + 2, depth + 1000, Cons("{", lit), acc, holes) else let j = findclosebn(s, i + 1, n) in if holes == 1 and j > i + 1 and isvalidhole(slicen(s, n, i + 1, j)) == 1 then strscan(s, n, j + 1, depth, Nil, sjoin(strflush(acc, strdropdollar(s, i, lit)), parsehole(slicen(s, n, i + 1, j))), holes) else strscan(s, n, i + 1, depth + 1, Cons("{", lit), acc, holes)
 ## `${e}` is the same hole as `{e}`; write `\${e}` for a literal dollar in front of a hole.
 fn strdropdollar(s, i, lit) = if i > 0 and at(s, i - 1) == "$" and (i < 2 or at(s, i - 2) != "\\") then droponce(lit) else lit
 fn strinterptok(t) = let b = strbody(t) in strscan(b, count(b), 0, 0, Nil, Nil, 1)
@@ -34,7 +38,7 @@ fn strlitof(e) = match e
     Str(v) => v
     _      => ""
 fn strlittok(t) = let b = strbody(t) in strlitof(strscan(b, count(b), 0, 0, Nil, Nil, 0))
-fn parsehole(hs) = let r = expr(lex(hs, 0)) in if isnil(r.rest) == 0 then ctfail("lume: parse error [P0002]: invalid expression in string interpolation hole '\{" + hs + "\}' (unexpected '" + headtext(r.rest) + "'; escape literal braces as '\{\{' and '\}\}')\n") else Call("str", Cons(r.node, Nil))
+fn parsehole(hs) = let n = count(hs) in let k = findcolon(hs, 0, n) in let eh = if k < 0 then hs else slicen(hs, n, 0, k) in let r = expr(lex(eh, 0)) in if isnil(r.rest) == 0 then ctfail("lume: parse error [P0002]: invalid expression in string interpolation hole '\{" + hs + "\}' (unexpected '" + headtext(r.rest) + "'; escape literal braces as '\{\{' and '\}\}')\n") else if k < 0 then Call("str", Cons(r.node, Nil)) else Call("__lume_fmt", Cons(Call("str", Cons(r.node, Nil)), Cons(Str(slicen(hs, n, k + 1, n)), Nil)))
 fn drop_lambda_sep(ts) = if isarrow(ts) then droponce(droponce(ts)) else dropkw(ts, "=")
 fn parselambda(t) = let ps = checkparams(parseparams(dropkw(t, "("))) in let rt = parseret(ps.rest) in let b = expr(drop_lambda_sep(rt.rest)) in {node: LambdaE(ps.items, ps.tys, rt.ty, b.node), rest: b.rest}
 fn parseshard_body(ts) = let hb = if headtext(ts) == "{" then 1 else 0 in let sep = if hb == 1 then droponce(ts) else if isarrow(ts) then droponce(droponce(ts)) else dropin(ts) in let rb = expr(sep) in {node: rb.node, rest: if hb == 1 then skiprb(rb.rest) else rb.rest}

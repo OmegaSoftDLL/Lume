@@ -1,4 +1,4 @@
-## compiler/stage1/lgenesis.src -- Autonomous Full-Stack & Universal System Synthesizer
+## compiler/stage1/lgenesis.src -- Autonomous Full-Stack & Universal System Synthesize
 ## Import with `use lgenesis` (or `use std.genesis`).
 ##
 ## Given a single high-level specification (`genesis_synthesize(app_name, domain)`),
@@ -26,11 +26,17 @@ fn genesis_gui_tree(app_name, domain) = "VBox(Header(\"" + app_name + " Console\
 
 fn genesis_targets_json() = "[\"x86_64-linux-elf\",\"x86_64-windows-pe\",\"aarch64-macos-macho\",\"aarch64-android-elf(.apk)\",\"aarch64-ios-macho(.ipa)\",\"wasm32-web-dom(.wasm)\",\"x86_64-uefi-pe(BOOTX64.EFI)\",\"verilog-rtl(.v)\"]"
 
-fn genesis_synthesize(app_name, domain) = let clean_app = if app_name == "" then "lume_app" else app_name in let clean_dom = if domain == "" then "fintech-ledger" else domain in let src = genesis_domain_source(clean_app, clean_dom) in let sql = genesis_sql_schema(clean_app, clean_dom) in let api = genesis_openapi_spec(clean_app, clean_dom) in let gui = genesis_gui_tree(clean_app, clean_dom) in let cap = capsule_bundle_create2(clean_app, "pure", src, api, "1248\n", 1) in let lcaps = capsule_bundle_encode(cap) in {ok: 1, app: clean_app, domain: clean_dom, source: src, sql_schema: sql, openapi: api, gui_tree: gui, capsule_cid: cap.cid, proof_digest: cap.proof_digest, manifest_digest: cap.manifest_digest, lcaps_bundle: lcaps}
+fn genesis_last_slash(s, i, n, last) = if i >= n then last else if at(s, i) == "/" or at(s, i) == "\\" then genesis_last_slash(s, i + 1, n, i) else genesis_last_slash(s, i + 1, n, last)
 
-fn genesis_synthesize_json(app_name, domain) = let g = genesis_synthesize(app_name, domain) in "{\"ok\":true,\"mode\":\"genesis\",\"app\":\"" + gen_jesc(g.app) + "\",\"domain\":\"" + gen_jesc(g.domain) + "\",\"targets_ready\":8,\"proof_status\":\"proven\",\"capsule_cid\":\"" + g.capsule_cid + "\",\"proof_digest\":\"" + g.proof_digest + "\",\"manifest_digest\":\"" + g.manifest_digest + "\",\"targets\":" + genesis_targets_json() + ",\"sql_schema\":\"" + gen_jesc(g.sql_schema) + "\",\"gui_tree\":\"" + gen_jesc(g.gui_tree) + "\",\"synthesized_source\":\"" + gen_jesc(g.source) + "\"}"
+fn genesis_base_ident(s) = let sl = genesis_last_slash(s, 0, count(s), 0 - 1) in let base = if sl >= 0 then slice(s, sl + 1, count(s)) else s in let stem = if count(base) > 4 and slice(base, count(base) - 4, count(base)) == ".src" then slice(base, 0, count(base) - 4) else base in if stem == "" then "lume_app" else stem
 
-fn test_genesis_autonomous_fullstack_synthesis() = let g = genesis_synthesize("omega_vault", "autonomous-treasury") in let j = genesis_synthesize_json("omega_vault", "autonomous-treasury") in if g.ok == 1 and slice(g.capsule_cid, 0, 13) == "lcaps:sha256:" and slice(g.proof_digest, 0, 13) == "lcert:sha256:" and count(g.source) > 120 and count(j) > 300 then 1 else 0
+fn genesis_out_file(clean_app) = if count(clean_app) > 4 and slice(clean_app, count(clean_app) - 4, count(clean_app)) == ".src" then clean_app else clean_app + ".src"
+
+fn genesis_synthesize(app_name, domain) = let clean_app = if app_name == "" then "lume_app" else app_name in let ident = genesis_base_ident(clean_app) in let clean_dom = if domain == "" then "fintech-ledger" else domain in let src = genesis_domain_source(ident, clean_dom) in let out_file = genesis_out_file(clean_app) in let sql = genesis_sql_schema(ident, clean_dom) in let api = genesis_openapi_spec(ident, clean_dom) in let gui = genesis_gui_tree(ident, clean_dom) in let cap = capsule_bundle_create2(ident, "pure", src, api, "1248\n", 1) in let lcaps = capsule_bundle_encode(cap) in {ok: 1, app: ident, domain: clean_dom, generated_file: out_file, source: src, sql_schema: sql, openapi: api, gui_tree: gui, capsule_cid: cap.cid, proof_digest: cap.proof_digest, manifest_digest: cap.manifest_digest, lcaps_bundle: lcaps}
+
+fn genesis_synthesize_json(app_name, domain) = let g = genesis_synthesize(app_name, domain) in let wrote = fs_write_sync(g.generated_file, g.source) in "{\"ok\":true,\"mode\":\"genesis\",\"app\":\"" + gen_jesc(g.app) + "\",\"domain\":\"" + gen_jesc(g.domain) + "\",\"generated_file\":\"" + gen_jesc(g.generated_file) + "\",\"targets_ready\":8,\"proof_status\":\"proven\",\"capsule_cid\":\"" + g.capsule_cid + "\",\"proof_digest\":\"" + g.proof_digest + "\",\"manifest_digest\":\"" + g.manifest_digest + "\",\"targets\":" + genesis_targets_json() + ",\"sql_schema\":\"" + gen_jesc(g.sql_schema) + "\",\"gui_tree\":\"" + gen_jesc(g.gui_tree) + "\",\"synthesized_source\":\"" + gen_jesc(g.source) + "\"}"
+
+fn test_genesis_autonomous_fullstack_synthesis() = let g = genesis_synthesize("/tmp/omega_vault", "autonomous-treasury") in let j = genesis_synthesize_json("/tmp/omega_vault", "autonomous-treasury") in if g.ok == 1 and fs_path_exists("/tmp/omega_vault.src") == 1 and slice(g.capsule_cid, 0, 13) == "lcaps:sha256:" and slice(g.proof_digest, 0, 13) == "lcert:sha256:" and count(g.source) > 120 and count(j) > 300 then 1 else 0
 
 fn test_genesis_domain_customization_and_capsule_v2() = let g1 = genesis_synthesize("med_ledger", "healthcare-hipaa") in let g2 = genesis_synthesize("fin_core", "fintech-ledger") in let dec = capsule_bundle_decode(g1.lcaps_bundle) in let vr = capsule_bundle_replay(dec, "1248\n", 1) in if g1.capsule_cid != g2.capsule_cid and vr.ok == 1 and dec.name == "med_ledger" then 1 else 0
 

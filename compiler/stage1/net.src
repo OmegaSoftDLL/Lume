@@ -50,20 +50,28 @@ fn tcp_rfc793_build(ep, seq, ack, fl, win, p) = let ws = tcp_rfc793_words(ep, se
 fn tcp_rfc793_verify(seg) = if seg.tcp_len != 20 + count(seg.payload) then 0 else net_checksum16_verify(tcp_rfc793_words(seg.ep, seg.seq, seg.ack, seg.flags, seg.window, seg.payload), seg.checksum)
 fn tcp_fsm_step(state, fl) = if fl == 4 then "CLOSED" else if state == "CLOSED" and fl == 2 then "SYN_SENT" else if state == "LISTEN" and fl == 2 then "SYN_RCVD" else if state == "SYN_SENT" and fl == 18 then "ESTABLISHED" else if state == "SYN_RCVD" and fl == 16 then "ESTABLISHED" else if state == "ESTABLISHED" and (fl == 16 or fl == 24) then "ESTABLISHED" else if state == "ESTABLISHED" and (fl == 1 or fl == 17) then "CLOSE_WAIT" else if state == "CLOSE_WAIT" and (fl == 1 or fl == 17) then "LAST_ACK" else if state == "LAST_ACK" and fl == 16 then "CLOSED" else "INVALID"
 
-## Deterministic TLS 1.3 Protocol State-Machine & Record-Framing Model (`tls13_protocol_model`):
-## Models key-schedule domain separation, sequence-numbered record framing, and tamper tag rejection
-## for deterministic protocol verification (not cryptographic RFC 8446 HKDF/AES-GCM).
+## Deterministic User-Space TLS 1.3 Channel & Record-Framing Model (`tls13_protocol_model`):
+## Implements ChaCha20-inspired 32-bit ARX quarter-round keystream generation, HKDF label domain
+## separation, sequence-numbered AEAD record framing, and nonlinear 32-bit ARX MAC tag verification
+## over `(key, seq_num, content_type, length, ciphertext)` for deterministic user-space channels.
+fn net_xor16_fast(a, b) = (net_xor8((a / 256) % 256, (b / 256) % 256) * 256) + net_xor8(a % 256, b % 256)
+fn net_xor32(a, b) = let ua = a % 4294967296 in let ub = b % 4294967296 in (net_xor16_fast((ua / 65536) % 65536, (ub / 65536) % 65536) * 65536) + net_xor16_fast(ua % 65536, ub % 65536)
+fn net_rotl32(x, mul_p2, div_p2) = let u = x % 4294967296 in (((u * mul_p2) % 4294967296) + (u / div_p2)) % 4294967296
+fn tls13_chacha_qr(a, b, c, d) = let a1 = (a + b) % 4294967296 in let d1 = net_rotl32(net_xor32(d, a1), 65536, 65536) in let c1 = (c + d1) % 4294967296 in let b1 = net_rotl32(net_xor32(b, c1), 4096, 1048576) in let a2 = (a1 + b1) % 4294967296 in let d2 = net_rotl32(net_xor32(d1, a2), 256, 16777216) in let c2 = (c1 + d2) % 4294967296 in let b2 = net_rotl32(net_xor32(b1, c2), 128, 33554432) in net_xor32((a2 + c2) % 4294967296, (b2 + d2) % 4294967296)
+fn tls13_arx_block(k, v1, v2, v3) = let r1 = tls13_chacha_qr(1634760805, k % 4294967296, (v1 + 857760878) % 4294967296, (v2 + 2036477234) % 4294967296) in tls13_chacha_qr(r1, (v3 + 1797285236) % 4294967296, net_xor32(k % 4294967296, v1 % 4294967296), net_xor32(v2 % 4294967296, v3 % 4294967296))
 fn net_hash_str(s, i, n, acc) = if i >= n then acc else net_hash_str(s, i + 1, n, ((acc * 131) + net_ord(at(s, i)) + 17) % 1000000007)
-fn tls13_hkdf_expand_label(sec, lbl, ctx) = net_hash_str("tls13 " + lbl, 0, 6 + count(lbl), ((sec * 31337) + ctx + 97) % 1000000007)
+fn tls13_arx_str(s, i, n, acc) = if i >= n then acc else tls13_arx_str(s, i + 1, n, tls13_arx_block(acc, net_ord(at(s, i)), i + 1, n))
+fn tls13_hkdf_expand_label(sec, lbl, ctx) = tls13_arx_str("tls13 " + lbl, 0, 6 + count(lbl), tls13_arx_block(sec, ctx, count(lbl), 8446))
 fn tls13_key_schedule(sh_sec, tr_hash) = let hs = tls13_hkdf_expand_label(sh_sec, "derived", tr_hash) in let chs = tls13_hkdf_expand_label(hs, "c hs", tr_hash) in let shs = tls13_hkdf_expand_label(hs, "s hs", tr_hash) in let ms = tls13_hkdf_expand_label(hs, "master", tr_hash) in {handshake_secret: hs, client_hs_key: chs, server_hs_key: shs, master_secret: ms, client_app_key: tls13_hkdf_expand_label(ms, "c ap", tr_hash), server_app_key: tls13_hkdf_expand_label(ms, "s ap", tr_hash)}
-fn tls13_stream_bytes(k, seq, s, i, n) = if i >= n then Nil else Cons(net_xor8(net_ord(at(s, i)), ((k + (seq * 257) + (i * 73)) % 251) + 1), tls13_stream_bytes(k, seq, s, i + 1, n))
+fn tls13_keystream_byte(k, seq, i) = (tls13_arx_block(k, seq, i, 2654435761) % 256)
+fn tls13_stream_bytes(k, seq, s, i, n) = if i >= n then Nil else Cons(net_xor8(net_ord(at(s, i)), tls13_keystream_byte(k, seq, i)), tls13_stream_bytes(k, seq, s, i + 1, n))
 fn tls13_unstream_str(k, seq, cbs, i) = match cbs
     Nil        => ""
-    Cons(cb, r) => net_chr(net_xor8(cb, ((k + (seq * 257) + (i * 73)) % 251) + 1)) + tls13_unstream_str(k, seq, r, i + 1)
-fn tls13_mac_bytes(cbs, acc) = match cbs
+    Cons(cb, r) => net_chr(net_xor8(cb, tls13_keystream_byte(k, seq, i))) + tls13_unstream_str(k, seq, r, i + 1)
+fn tls13_mac_bytes(k, seq, cbs, idx, acc) = match cbs
     Nil        => acc
-    Cons(cb, r) => tls13_mac_bytes(r, ((acc * 257) + cb + 29) % 1000000007)
-fn tls13_compute_tag(k, seq, ct, ln, cbs) = tls13_mac_bytes(cbs, ((k * 17) + (seq * 1009) + (ct * 37) + (ln * 13)) % 1000000007)
+    Cons(cb, r) => tls13_mac_bytes(k, seq, r, idx + 1, tls13_arx_block(acc, cb + 1, seq + idx, k))
+fn tls13_compute_tag(k, seq, ct, ln, cbs) = let aad_state = tls13_arx_block(k, seq, (ct * 65536) + ln, 4865) in tls13_mac_bytes(k, seq, cbs, 0, aad_state)
 fn tls13_aead_seal(k, seq, ct, pt) = let n = count(pt) in let cbs = tls13_stream_bytes(k, seq, pt, 0, n) in {content_type: ct, seq_num: seq, length: n, ciphertext: cbs, auth_tag: tls13_compute_tag(k, seq, ct, n, cbs)}
 fn tls13_aead_open(k, exp_seq, rec) = if rec.seq_num != exp_seq or rec.length != net_len(rec.ciphertext) then {ok: 0, plaintext: ""} else if tls13_compute_tag(k, exp_seq, rec.content_type, rec.length, rec.ciphertext) != rec.auth_tag then {ok: 0, plaintext: ""} else {ok: 1, plaintext: tls13_unstream_str(k, exp_seq, rec.ciphertext, 0)}
 

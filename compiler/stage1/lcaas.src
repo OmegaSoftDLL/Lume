@@ -65,7 +65,7 @@ fn cs_strend(s, i, n, start) = let j = cs_strplain(s, i, n) in if j >= n then {t
 fn cs_unescl(s, i, n, acc) = if i >= n then cs_rev(acc) else if at(s, i) == "\\" and i + 1 < n then cs_unescl(s, i + 2, n, Cons(cs_escchar(at(s, i + 1)), acc)) else if at(s, i) == "\r" then cs_unescl(s, i + 1, n, acc) else cs_unescl(s, i + 1, n, Cons(at(s, i), acc))
 fn cs_strlit(s) = cs_joinall(cs_unescl(s, 0, count(s), Nil))
 fn cs_istwo(s, i, n) = if i + 1 >= n then 0 else cs_istwopair(slice(s, i, i + 2))
-fn cs_istwopair(p) = p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "=>" or p == ".." or p == "|>"
+fn cs_istwopair(p) = p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "=>" or p == ".." or p == "|>" or p == "+%" or p == "-%" or p == "*%"
 ## Lexer with source positions: every token carries its 1-based (line, col), and genuinely
 ## malformed input (an unterminated string literal) is collected as an L0001 diagnostic with
 ## the exact span of the string start instead of being silently swallowed.
@@ -88,7 +88,7 @@ fn cs_dropkw(ts, kw) = if cs_hdtext(ts) == kw then cs_drop1(ts) else ts
 fn cs_skiprp(ts) = cs_dropkw(ts, ")")
 fn cs_skiprk(ts) = cs_dropkw(ts, "]")
 
-fn cs_isbadholech(c) = c == ":" or c == "\"" or c == "\n" or c == "{" or c == "}" or c == "\\"
+fn cs_isbadholech(c) = c == "\"" or c == "\n" or c == "{" or c == "}" or c == "\\"
 fn cs_hasbadhole(s, i, n) = if i >= n then 0 else if cs_isbadholech(at(s, i)) then 1 else cs_hasbadhole(s, i + 1, n)
 fn cs_isvalidhole(s) = let n = count(s) in if n == 0 then 0 else let c0 = at(s, 0) in if (cs_isalpha(c0) or cs_isdigit(c0) or c0 == "(") and cs_hasbadhole(s, 0, n) == 0 then 1 else 0
 fn cs_findclosebn(s, j, n) = if j >= n then 0 - 1 else if at(s, j) == "\\" then cs_findclosebn(s, j + 2, n) else if at(s, j) == "}" then j else cs_findclosebn(s, j + 1, n)
@@ -145,9 +145,9 @@ fn cs_quote(ts) = let r = cs_prim(ts) in {node: Quote(r.node), rest: r.rest}
 fn cs_splice(ts) = let r = cs_prim(ts) in {node: Splice(r.node), rest: r.rest}
 
 fn cs_mul(ts) = cs_mulloop(cs_prim(ts))
-fn cs_mulloop(l) = let op = cs_hdtext(l.rest) in if op == "*" or op == "/" or op == "%" then cs_mulloop(cs_mkbin(op, l.node, cs_prim(cs_drop1(l.rest)))) else l
+fn cs_mulloop(l) = let op = cs_hdtext(l.rest) in if op == "*" or op == "/" or op == "%" or op == "*%" then cs_mulloop(cs_mkbin(op, l.node, cs_prim(cs_drop1(l.rest)))) else l
 fn cs_add(ts) = cs_addloop(cs_mul(ts))
-fn cs_addloop(l) = let op = cs_hdtext(l.rest) in if op == "+" or op == "-" then cs_addloop(cs_mkbin(op, l.node, cs_mul(cs_drop1(l.rest)))) else l
+fn cs_addloop(l) = let op = cs_hdtext(l.rest) in if op == "+" or op == "-" or op == "+%" or op == "-%" then cs_addloop(cs_mkbin(op, l.node, cs_mul(cs_drop1(l.rest)))) else l
 fn cs_notcmp(r) = {node: Bin("==", r.node, Num(0)), rest: r.rest}
 fn cs_cmp(ts) = if cs_hdtext(ts) == "not" then cs_notcmp(cs_cmp(cs_drop1(ts))) else cs_cmploop(cs_add(ts))
 fn cs_cmploop(l) = let op = cs_hdtext(l.rest) in if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" then cs_cmploop(cs_mkbin(op, l.node, cs_add(cs_drop1(l.rest)))) else l
@@ -659,11 +659,42 @@ fn cs_exprty_money(xs) = match xs
     Cons(Str(ccy), rest) => if ccy != "" then "money[" + ccy + "]" else ""
     _                    => ""
 fn cs_exprty_tier(nm, args, tt) = if (nm == "rc" or nm == "rc_new") and cs_len(args) == 1 then let sub = cs_exprty(cs_asthead(args), tt) in if sub != "" then "rc[" + sub + "]" else "" else if (nm == "arc" or nm == "arc_new") and cs_len(args) == 1 then let sub = cs_exprty(cs_asthead(args), tt) in if sub != "" then "arc[" + sub + "]" else "" else if (nm == "clone" or nm == "rc_clone" or nm == "arc_clone") and cs_len(args) == 1 then cs_exprty(cs_asthead(args), tt) else if (nm == "downgrade" or nm == "weak_downgrade") and cs_len(args) == 1 then let sub = cs_tier_inner(cs_exprty(cs_asthead(args), tt)) in if sub != "" then "weak[" + sub + "]" else "" else if (nm == "promise" or nm == "promise_new") and cs_len(args) == 1 then let sub = cs_exprty(cs_asthead(args), tt) in if sub != "" then "promise[" + sub + "]" else "" else if (nm == "signal" or nm == "signal_new") and cs_len(args) == 1 then let sub = cs_exprty(cs_asthead(args), tt) in if sub != "" then "signal[" + sub + "]" else "" else if (nm == "get" or nm == "rc_get" or nm == "arc_get" or nm == "signal_get" or nm == "await" or nm == "promise_await") and cs_len(args) == 1 then cs_tier_inner(cs_exprty(cs_asthead(args), tt)) else if (nm == "upgrade" or nm == "weak_upgrade") and cs_len(args) == 2 then cs_tier_inner(cs_exprty(cs_asthead(args), tt)) else if (nm == "strong_count" or nm == "rc_strong_count" or nm == "arc_strong_count" or nm == "version" or nm == "signal_version" or nm == "bv_u8" or nm == "bv_not_u8") and cs_len(args) == 1 then "int" else if (nm == "bv_xor" or nm == "bit_xor" or nm == "bv_and" or nm == "bit_and" or nm == "bv_or" or nm == "bit_or" or nm == "bv_shl" or nm == "bit_shl" or nm == "bv_shr" or nm == "bit_shr" or nm == "bv_add_u8" or nm == "bv_sub_u8" or nm == "bv_mul_u8") and cs_len(args) == 2 then "int" else if (nm == "forall_range" or nm == "exists_range") and cs_len(args) == 4 then "int" else ""
+fn cs_sig_rty_empty(msig) = match msig
+    Nil         => ""
+    Cons(sg, r) => let s = cs_tystr(sg.rt) in if s == "?" then "" else s
+fn cs_field_ty_list(nm, fs) = match fs
+    Nil        => ""
+    Cons(h, t) => if h.fname == nm then cs_tystr(h.fty) else cs_field_ty_list(nm, t)
+fn cs_field_ty_rec(nm, m) = match m
+    Nil        => ""
+    Cons(d, r) => cs_field_ty_list(nm, d.fields)
+fn cs_tshadow_lenv(names, lenv) = match names
+    Nil        => lenv
+    Cons(h, t) => Cons({k: h, v: ""}, cs_tshadow_lenv(t, lenv))
+fn cs_tt_shadow(tt, names) = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: cs_tshadow_lenv(names, tt.lenv)}
+fn cs_exprty_arms(arms, tt) = match arms
+    Nil        => ""
+    Cons(h, t) => let th = cs_exprty(h.body, cs_tt_shadow(tt, oa_pat_names(h.pat))) in if cs_isnil(t) == 1 then th else let tr = cs_exprty_arms(t, tt) in if th != "" and th == tr then th else if th != "" and tr == "" then th else if tr != "" and th == "" then tr else ""
 fn cs_exprty(e, tt) = match e
     Num(n)          => "int"
     Str(v)          => "str"
     RecT(tn, items) => tn
-    Call(nm, args)  => let tr = cs_exprty_tier(nm, args, tt) in if tr != "" then tr else if nm == "money_parse" or nm == "money_make" then cs_exprty_money(args) else if cs_isupper(at(nm, 0)) then cs_ctorty(cs_clookup(nm, tt.ctors)) else ""
+    OwnE(inner)     => cs_exprty(inner, tt)
+    MutE(inner)     => cs_exprty(inner, tt)
+    CT(inner)       => cs_exprty(inner, tt)
+    AwaitE(inner)   => cs_tier_inner(cs_exprty(inner, tt))
+    DeferE(c, b)    => cs_exprty(b, tt)
+    ErrDeferE(c, b) => cs_exprty(b, tt)
+    WithAllocE(a, b) => cs_exprty(b, tt)
+    WithHandlerE(en, hs, b) => cs_exprty(b, tt)
+    ScopeE(snm, b)  => cs_exprty(b, tt)
+    Field(o, nm)    => let oty = cs_exprty(o, tt) in if oty != "" then cs_field_ty_rec(nm, cs_rlookup(oty, tt.recs)) else ""
+    Bin(op, a, b)   => let ta = cs_exprty(a, tt) in let tb = cs_exprty(b, tt) in if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or" then "int" else if op == "+" and (ta == "str" or tb == "str") then "str" else if ta == "int" and tb == "int" then "int" else ""
+    If(c, t, e2)    => let tt1 = cs_exprty(t, tt) in let te = cs_exprty(e2, tt) in if tt1 != "" and tt1 == te then tt1 else if tt1 != "" and te == "" then tt1 else if te != "" and tt1 == "" then te else ""
+    LetIn(nm, v, b) => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_exprty(b, tt2)
+    VarIn(nm, v, b) => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_exprty(b, tt2)
+    Match(sc, arms) => cs_exprty_arms(arms, tt)
+    Call(nm, args)  => let tr = cs_exprty_tier(nm, args, tt) in if tr != "" then tr else if nm == "money_parse" or nm == "money_make" then cs_exprty_money(args) else if cs_isupper(at(nm, 0)) then cs_ctorty(cs_clookup(nm, tt.ctors)) else cs_sig_rty_empty(cs_siglookup(nm, tt.sigs))
     Var(nm)         => if cs_isupper(at(nm, 0)) then cs_ctorty(cs_clookup(nm, tt.ctors)) else cs_glookup_empty(nm, tt.lenv)
     _               => ""
 fn cs_ctorty(m) = match m
@@ -784,17 +815,23 @@ fn cs_asthead(xs) = match xs
     Nil        => Num(0)
     Cons(h, t) => h
 
+fn cs_chk_bin_op(op, a, b, tt) = let ta = cs_exprty(a, tt) in let tb = cs_exprty(b, tt) in if (op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%") and ((ta != "" and ta != "int") or (tb != "" and tb != "int")) then Cons(cs_mkdiag("T2001", "typecheck", "type error: arithmetic operator '" + op + "' cannot be applied to " + (if ta != "" then ta else "int") + " and " + (if tb != "" then tb else "int"), "use int operands with '" + op + "'"), Nil) else if (op == "+" or op == "<" or op == ">" or op == "<=" or op == ">=") and ta != "" and tb != "" and ta != tb then Cons(cs_mkdiag("T2001", "typecheck", "type error: operator '" + op + "' cannot be applied to " + ta + " and " + tb, "convert both operands of '" + op + "' to the same type"), Nil) else Nil
+fn cs_chk_field_rec(oty, nm, m) = match m
+    Nil        => Nil
+    Cons(d, r) => if cs_hasfield(nm, d.fields) == 1 then Nil else let cand = cs_best_cand(nm, cs_field_names(d.fields), "", 0 - 999) in Cons(cs_mkdiag("T1003", "typecheck", "type error: record '" + oty + "' has no field '" + nm + "'", if cand == "" then "check field name '" + nm + "' on '" + oty + "'" else "replace unknown field '" + nm + "' on '" + oty + "' with '" + cand + "'"), Nil)
+fn cs_chk_field_e(o, nm, tt) = let oty = cs_exprty(o, tt) in if oty == "" then Nil else cs_chk_field_rec(oty, nm, cs_rlookup(oty, tt.recs))
 fn cs_chk_expr(e, tt) = match e
     Var(nm)               => if cs_isupper(at(nm, 0)) then cs_chk_ctor(nm, 0, tt) else Nil
-    Bin(op, a, b)         => cs_app(cs_chk_expr(a, tt), cs_chk_expr(b, tt))
+    Bin(op, a, b)         => cs_app(cs_chk_bin_op(op, a, b, tt), cs_app(cs_chk_expr(a, tt), cs_chk_expr(b, tt)))
     If(c, t, e2)          => cs_app(cs_chk_expr(c, tt), cs_app(cs_chk_expr(t, tt), cs_chk_expr(e2, tt)))
-    LetIn(nm, v, b)       => let vty = cs_exprty(v, tt) in let tt2 = if vty != "" then {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} else tt in cs_app(cs_chk_expr(v, tt), cs_chk_expr(b, tt2))
-    VarIn(nm, v, b)       => let vty = cs_exprty(v, tt) in let tt2 = if vty != "" then {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} else tt in cs_app(cs_chk_expr(v, tt), cs_chk_expr(b, tt2))
-    ShardE(iv, lo, hi, b) => cs_app(cs_chk_expr(lo, tt), cs_app(cs_chk_expr(hi, tt), cs_chk_expr(b, tt)))
+    LetIn(nm, v, b)       => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_app(cs_chk_expr(v, tt), cs_chk_expr(b, tt2))
+    VarIn(nm, v, b)       => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_app(cs_chk_expr(v, tt), cs_chk_expr(b, tt2))
+    ShardE(iv, lo, hi, b) => cs_app(cs_chk_expr(lo, tt), cs_app(cs_chk_expr(hi, tt), cs_chk_expr(b, {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: iv, v: "int"}, tt.lenv)})))
+    LambdaE(ps, tys, rt, b) => cs_chk_expr(b, cs_tt_shadow(tt, ps))
     Call(nm, args)        => if nm == "unquote" and cs_isnil(cs_fnlookup("unquote", tt.ft)) == 1 then Cons(cs_mkdiag("C1001", "comptime", "comptime error: 'unquote' may only appear inside 'quote(...)'", "wrap the expression in 'quote(...)' or remove 'unquote'"), cs_chk_elist(args, tt)) else cs_app(if cs_isupper(at(nm, 0)) then cs_chk_ctor(nm, cs_len(args), tt) else cs_chk_callsig(nm, args, tt), cs_chk_elist(args, tt))
     Rec(items)            => cs_chk_reclist(items, tt)
     RecT(tn, items)       => cs_chk_rect(tn, items, tt)
-    Field(o, nm)          => cs_chk_expr(o, tt)
+    Field(o, nm)          => cs_app(cs_chk_field_e(o, nm, tt), cs_chk_expr(o, tt))
     Match(sc, arms)       => cs_app(cs_chk_expr(sc, tt), cs_chk_arms(arms, tt))
     CT(inner)             => cs_app(cs_chk_expr(inner, tt), cs_chk_ct(inner, tt))
     Quote(inner)          => cs_chk_quote(inner, tt)
@@ -808,7 +845,7 @@ fn cs_chk_reclist(xs, tt) = match xs
     Cons(h, t) => cs_app(cs_chk_expr(h.val, tt), cs_chk_reclist(t, tt))
 fn cs_chk_arms(xs, tt) = match xs
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_chk_pat(h.pat, tt), cs_app(cs_chk_expr(h.body, tt), cs_chk_arms(t, tt)))
+    Cons(h, t) => cs_app(cs_chk_pat(h.pat, tt), cs_app(cs_chk_expr(h.body, cs_tt_shadow(tt, oa_pat_names(h.pat))), cs_chk_arms(t, tt)))
 fn cs_chk_pat(p, tt) = match p
     PCons(tag, ps) => cs_chk_ctor(tag, cs_len(ps), tt)
     _              => Nil
@@ -842,7 +879,7 @@ fn cs_qvar(nm, qenv) = match qenv
     Nil        => nm
     Cons(h, t) => if h.k == nm then h.v else cs_qvar(nm, t)
 
-fn cs_isvalidbinop(op) = op == "+" or op == "-" or op == "*" or op == "/" or op == "%" or op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or"
+fn cs_isvalidbinop(op) = op == "+" or op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%" or op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or"
 fn cs_cvhd(xs) = match xs
     Nil        => cs_cv_int(0)
     Cons(h, t) => h
@@ -909,7 +946,7 @@ fn cs_ceval(e, env, ft, cd) = if cd > 64 then cs_cv_err("comptime error: comptim
 fn cs_ceval1(e, env, ft, cd) = match e
     Num(n)                  => cs_cv_ok(cs_cv_int(n))
     Str(v)                  => cs_cv_ok(cs_cv_str(v))
-    Var(nm)                 => let lk = cs_envlookup(nm, env) in if lk.ok == 1 then cs_cv_ok(lk.v) else if cs_isupper(at(nm, 0)) then cs_cv_ok(cs_cv_ctor(nm, Nil)) else cs_cv_err("comptime error: unbound variable '" + nm + "'", "bind '" + nm + "' before use")
+    Var(nm)                 => let lk = cs_envlookup(nm, env) in if lk.ok == 1 then cs_cv_ok(lk.v) else if nm == "true" then cs_cv_ok(cs_cv_int(1)) else if nm == "false" then cs_cv_ok(cs_cv_int(0)) else if cs_isupper(at(nm, 0)) then cs_cv_ok(cs_cv_ctor(nm, Nil)) else cs_cv_err("comptime error: unbound variable '" + nm + "'", "bind '" + nm + "' before use")
     LetIn(nm, v, b)         => let rv = cs_ceval(v, env, ft, cd) in if rv.ok == 0 then rv else cs_ceval(b, Cons({k: nm, v: rv.v}, env), ft, cd)
     VarIn(nm, v, b)         => let rv = cs_ceval(v, env, ft, cd) in if rv.ok == 0 then rv else cs_ceval(b, Cons({k: nm, v: rv.v}, env), ft, cd)
     OwnE(inner)             => cs_ceval(inner, env, ft, cd)
@@ -918,7 +955,7 @@ fn cs_ceval1(e, env, ft, cd) = match e
     ScopeE(snm, b)          => cs_ceval(b, Cons({k: snm, v: cs_cv_int(1)}, env), ft, cd)
     SpawnE(inner)           => cs_ceval(inner, env, ft, cd)
     If(c, t, e2)            => let rc = cs_ceval(c, env, ft, cd) in if rc.ok == 0 then rc else if rc.v.i != 0 then cs_ceval(t, env, ft, cd) else cs_ceval(e2, env, ft, cd)
-    Bin(op, a, b)           => let ra = cs_ceval(a, env, ft, cd) in if ra.ok == 0 then ra else let rb = cs_ceval(b, env, ft, cd) in if rb.ok == 0 then rb else cs_cbin(op, ra.v, rb.v)
+    Bin(op, a, b)           => let ra = cs_ceval(a, env, ft, cd) in if ra.ok == 0 then ra else if op == "and" and ra.v.kind == "int" then (if ra.v.i == 0 then cs_cv_ok(cs_cv_int(0)) else let rb = cs_ceval(b, env, ft, cd) in if rb.ok == 0 then rb else if rb.v.kind == "int" then cs_cv_ok(cs_cv_int(if rb.v.i != 0 then 1 else 0)) else cs_cv_err("comptime error: type mismatch in operator 'and'", "use matching operand types for 'and'")) else if op == "or" and ra.v.kind == "int" then (if ra.v.i != 0 then cs_cv_ok(cs_cv_int(1)) else let rb = cs_ceval(b, env, ft, cd) in if rb.ok == 0 then rb else if rb.v.kind == "int" then cs_cv_ok(cs_cv_int(if rb.v.i != 0 then 1 else 0)) else cs_cv_err("comptime error: type mismatch in operator 'or'", "use matching operand types for 'or'")) else let rb = cs_ceval(b, env, ft, cd) in if rb.ok == 0 then rb else cs_cbin(op, ra.v, rb.v)
     Match(sc, arms)         => let rsc = cs_ceval(sc, env, ft, cd) in if rsc.ok == 0 then rsc else cs_cmatch(rsc.v, arms, env, ft, cd)
     Quote(inner)            => cs_quasiquote(inner, Nil, env, ft, cd)
     Splice(inner)           => let r = cs_ceval(inner, env, ft, cd) in if r.ok == 0 then r else let u = cs_unreify(r.v) in if u.ok == 0 then cs_cv_err(u.err, u.fix) else cs_ceval(u.node, env, ft, cd)
@@ -937,7 +974,7 @@ fn cs_ceval_list(xs, env, ft, cd) = match xs
 fn cs_cbin_str(op, x, y) = if op == "+" then (if count(x) + count(y) > 1048576 then cs_cv_err("comptime error: string too long to evaluate", "run the program") else cs_cv_ok(cs_cv_str(x + y))) else if op == "<" then cs_cv_ok(cs_cv_int(if x < y then 1 else 0)) else if op == ">" then cs_cv_ok(cs_cv_int(if x > y then 1 else 0)) else if op == "<=" then cs_cv_ok(cs_cv_int(if x <= y then 1 else 0)) else if op == ">=" then cs_cv_ok(cs_cv_int(if x >= y then 1 else 0)) else cs_cv_err("comptime error: unknown string operator '" + op + "'", "use a valid string operator")
 fn cs_cbin(op, l, r) = if op == "==" then cs_cv_ok(cs_cv_int(cs_cveq(l, r))) else if op == "!=" then cs_cv_ok(cs_cv_int(if cs_cveq(l, r) == 1 then 0 else 1)) else if l.kind == "str" and r.kind == "str" then cs_cbin_str(op, l.s, r.s) else if l.kind == "int" and r.kind == "int" then cs_cbin_int(op, l.i, r.i) else cs_cv_err("comptime error: type mismatch in operator '" + op + "'", "use matching operand types for '" + op + "'")
 fn cs_ovf() = cs_cv_err("comptime error: integer overflow at compile time", "use smaller values, or leave this to run time")
-fn cs_cbin_int(op, x, y) = if op == "+" then (if cadd_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x + y))) else if op == "-" then (if csub_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x - y))) else if op == "*" then (if cmul_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x * y))) else if op == "/" then (if y == 0 then cs_cv_err("comptime error: division by zero at compile time", "ensure divisor is non-zero") else if cdiv_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x / y))) else if op == "%" then (if y == 0 then cs_cv_err("comptime error: modulo by zero at compile time", "ensure modulus is non-zero") else if cdiv_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x % y))) else if op == "<" then cs_cv_ok(cs_cv_int(x < y)) else if op == ">" then cs_cv_ok(cs_cv_int(x > y)) else if op == "<=" then cs_cv_ok(cs_cv_int(x <= y)) else if op == ">=" then cs_cv_ok(cs_cv_int(x >= y)) else if op == "and" then cs_cv_ok(cs_cv_int(if x != 0 then (if y != 0 then 1 else 0) else 0)) else if op == "or" then cs_cv_ok(cs_cv_int(if x != 0 then 1 else if y != 0 then 1 else 0)) else cs_cv_err("comptime error: unknown operator '" + op + "'", "use a valid operator")
+fn cs_cbin_int(op, x, y) = if op == "+" then (if cadd_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x + y))) else if op == "-" then (if csub_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x - y))) else if op == "*" then (if cmul_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x * y))) else if op == "+%" then cs_cv_ok(cs_cv_int(x +% y)) else if op == "-%" then cs_cv_ok(cs_cv_int(x -% y)) else if op == "*%" then cs_cv_ok(cs_cv_int(x *% y)) else if op == "/" then (if y == 0 then cs_cv_err("comptime error: division by zero at compile time", "ensure divisor is non-zero") else if cdiv_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x / y))) else if op == "%" then (if y == 0 then cs_cv_err("comptime error: modulo by zero at compile time", "ensure modulus is non-zero") else if cdiv_ovf(x, y) then cs_ovf() else cs_cv_ok(cs_cv_int(x % y))) else if op == "<" then cs_cv_ok(cs_cv_int(x < y)) else if op == ">" then cs_cv_ok(cs_cv_int(x > y)) else if op == "<=" then cs_cv_ok(cs_cv_int(x <= y)) else if op == ">=" then cs_cv_ok(cs_cv_int(x >= y)) else if op == "and" then cs_cv_ok(cs_cv_int(if x != 0 then (if y != 0 then 1 else 0) else 0)) else if op == "or" then cs_cv_ok(cs_cv_int(if x != 0 then 1 else if y != 0 then 1 else 0)) else cs_cv_err("comptime error: unknown operator '" + op + "'", "use a valid operator")
 
 fn cs_cbind(ps, vals, env) = match ps
     Nil         => env
@@ -1068,7 +1105,7 @@ fn cs_ochkrec(items, ctx, moved) = match items
     Cons(h, t) => let r = cs_ochke(h.val, ctx, moved) in let rr = cs_ochkrec(t, ctx, r.moved) in {diags: cs_app(r.diags, rr.diags), moved: rr.moved, origin: cs_borrow_org(r.origin, rr.origin)}
 fn cs_ochkarms(arms, ctx, moved, scf) = match arms
     Nil        => {diags: Nil, moved: moved, origin: ""}
-    Cons(h, t) => let c2 = cs_octx_pat(ctx, h.pat, scf) in let r = cs_ochke(h.body, c2, oa_rem_all(oa_rids(oa_pat_names(h.pat), c2.oa), moved)) in let rr = cs_ochkarms(t, ctx, moved, scf) in {diags: cs_app(r.diags, rr.diags), moved: cs_app(r.moved, rr.moved), origin: if r.origin != "" then r.origin else rr.origin}
+    Cons(h, t) => let c2 = cs_octx_pat(ctx, h.pat, scf) in let r = cs_ochke(h.body, c2, oa_rem_all(oa_rids(oa_pat_names(h.pat), c2.oa), moved)) in let rr = cs_ochkarms(t, ctx, moved, scf) in {diags: cs_app(r.diags, rr.diags), moved: cs_app(r.moved, rr.moved), origin: cs_borrow_org(r.origin, rr.origin)}
 fn cs_ochke(e, ctx, moved) = match e
     Var(x)           => if oa_moved(oa_rid(x, ctx.oa), moved) == 1 then {diags: cs_omoved_diag(x).diags, moved: moved, origin: ""} else {diags: Nil, moved: moved, origin: cs_olookup_org(x, ctx.origins)}
     Field(o, fld)    => cs_ochk_field(oa_path(e), o, ctx, moved)
@@ -1080,7 +1117,7 @@ fn cs_ochke(e, ctx, moved) = match e
     ErrDeferE(c, b)  => let rb = cs_ochke(b, ctx, moved) in let rc = cs_ochke(c, ctx, rb.moved) in {diags: cs_app(rb.diags, rc.diags), moved: rc.moved, origin: rb.origin}
     WithAllocE(a, b) => let ra = cs_ochke(a, ctx, moved) in let rb = cs_ochke(b, {fnm: ctx.fnm, pubf: ctx.pubf, freef: ctx.freef, halloc: 1, bparams: ctx.bparams, mvars: ctx.mvars, origins: ctx.origins, osigs: ctx.osigs, oa: ctx.oa}, ra.moved) in {diags: cs_app(ra.diags, rb.diags), moved: rb.moved, origin: rb.origin}
     Bin(op, l, r)    => let rl = cs_ochke(l, ctx, moved) in let rr = cs_ochke(r, ctx, rl.moved) in {diags: cs_app(rl.diags, rr.diags), moved: rr.moved, origin: ""}
-    If(c, t, e2)     => let rc = cs_ochke(c, ctx, moved) in let rt = cs_ochke(t, ctx, rc.moved) in let re = cs_ochke(e2, ctx, rc.moved) in {diags: cs_app(rc.diags, cs_app(rt.diags, re.diags)), moved: cs_app(rt.moved, re.moved), origin: if rt.origin != "" then rt.origin else re.origin}
+    If(c, t, e2)     => let rc = cs_ochke(c, ctx, moved) in let rt = cs_ochke(t, ctx, rc.moved) in let re = cs_ochke(e2, ctx, rc.moved) in {diags: cs_app(rc.diags, cs_app(rt.diags, re.diags)), moved: cs_app(rt.moved, re.moved), origin: cs_borrow_org(rt.origin, re.origin)}
     Call(nm, args)   => cs_ochkcall(nm, args, ctx, moved)
     Rec(items)       => cs_ochkrec0(items, ctx, moved)
     RecT(tn, items)  => cs_ochkrec0(items, ctx, moved)
@@ -1095,7 +1132,64 @@ fn cs_ochke(e, ctx, moved) = match e
 fn cs_ochkargs(args, ctx, moved) = match args
     Nil        => {diags: Nil, moved: moved, origin: ""}
     Cons(h, t) => let r1 = cs_ochke(h, ctx, moved) in let r2 = cs_ochkargs(t, ctx, r1.moved) in {diags: cs_app(r1.diags, r2.diags), moved: r2.moved, origin: cs_borrow_org(r1.origin, r2.origin)}
-fn cs_ois_heap(nm) = nm == "rc_new" or nm == "arc_new" or nm == "alloc_heap" or nm == "table_new" or nm == "box_new"
+fn cs_ois_heap(nm) = nm == "Cons" or nm == "rc" or nm == "arc" or nm == "rc_new" or nm == "arc_new" or nm == "alloc_heap" or nm == "table_new" or nm == "box_new" or nm == "cell_new" or nm == "promise" or nm == "promise_new" or nm == "signal" or nm == "signal_new" or nm == "chan" or nm == "chan_new"
+fn cs_oe_uses_heap_args(xs, ft, d) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_oe_uses_heap(h, ft, d) == 1 then 1 else cs_oe_uses_heap_args(t, ft, d)
+fn cs_oe_uses_heap_rec(xs, ft, d) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_oe_uses_heap(h.val, ft, d) == 1 then 1 else cs_oe_uses_heap_rec(t, ft, d)
+fn cs_oe_uses_heap_arms(xs, ft, d) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_oe_uses_heap(h.body, ft, d) == 1 then 1 else cs_oe_uses_heap_arms(t, ft, d)
+fn cs_oe_uses_heap(e, ft, d) = match e
+    Call(nm, args)   => if cs_ois_heap(nm) then 1 else if cs_oe_uses_heap_args(args, ft, d) == 1 then 1 else cs_ofn_uses_heap(nm, ft, d)
+    Bin(op, l, r)    => if cs_oe_uses_heap(l, ft, d) == 1 then 1 else cs_oe_uses_heap(r, ft, d)
+    If(c, t, e2)     => if cs_oe_uses_heap(c, ft, d) == 1 then 1 else if cs_oe_uses_heap(t, ft, d) == 1 then 1 else cs_oe_uses_heap(e2, ft, d)
+    LetIn(nm, v, b)  => if cs_oe_uses_heap(v, ft, d) == 1 then 1 else cs_oe_uses_heap(b, ft, d)
+    VarIn(nm, v, b)  => if cs_oe_uses_heap(v, ft, d) == 1 then 1 else cs_oe_uses_heap(b, ft, d)
+    WithAllocE(a, b) => cs_oe_uses_heap(a, ft, d)
+    DeferE(c, b)     => if cs_oe_uses_heap(c, ft, d) == 1 then 1 else cs_oe_uses_heap(b, ft, d)
+    ErrDeferE(c, b)  => if cs_oe_uses_heap(c, ft, d) == 1 then 1 else cs_oe_uses_heap(b, ft, d)
+    Rec(items)       => cs_oe_uses_heap_rec(items, ft, d)
+    RecT(tn, items)  => cs_oe_uses_heap_rec(items, ft, d)
+    Field(o, fld)    => cs_oe_uses_heap(o, ft, d)
+    Match(sc, arms)  => if cs_oe_uses_heap(sc, ft, d) == 1 then 1 else cs_oe_uses_heap_arms(arms, ft, d)
+    OwnE(inner)      => cs_oe_uses_heap(inner, ft, d)
+    MutE(inner)      => cs_oe_uses_heap(inner, ft, d)
+    _                => 0
+fn cs_ofn_uses_heap_f(fn0, ft, d) = match fn0
+    Fn(nm, ps, body) => cs_oe_uses_heap(body, ft, d + 1)
+    _                => 0
+fn cs_ofn_uses_heap_m(mf, ft, d) = match mf
+    Nil          => 0
+    Cons(fn0, r) => cs_ofn_uses_heap_f(fn0, ft, d)
+fn cs_ofn_uses_heap(nm, ft, d) = if d >= 16 then 0 else cs_ofn_uses_heap_m(cs_fnlookup(nm, ft), ft, d)
+fn cs_ochk_free_args(xs, fnm, halloc, ft) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_ochk_free_e(h, fnm, halloc, ft), cs_ochk_free_args(t, fnm, halloc, ft))
+fn cs_ochk_free_rec(xs, fnm, halloc, ft) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_ochk_free_e(h.val, fnm, halloc, ft), cs_ochk_free_rec(t, fnm, halloc, ft))
+fn cs_ochk_free_arms(xs, fnm, halloc, ft) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_ochk_free_e(h.body, fnm, halloc, ft), cs_ochk_free_arms(t, fnm, halloc, ft))
+fn cs_ochk_free_e(e, fnm, halloc, ft) = match e
+    Call(nm, args)   => let d0 = if halloc == 0 and cs_ois_heap(nm) == 0 and cs_ofn_uses_heap(nm, ft, 0) == 1 then Cons(cs_mkdiag("O0030", "ownership", "ownership error: ambient heap allocation '" + nm + "' in '@freestanding' function '" + fnm + "'", "wrap allocation in 'with alloc = <arena> in ...'"), Nil) else Nil in cs_app(d0, cs_ochk_free_args(args, fnm, halloc, ft))
+    WithAllocE(a, b) => cs_app(cs_ochk_free_e(a, fnm, halloc, ft), cs_ochk_free_e(b, fnm, 1, ft))
+    Bin(op, l, r)    => cs_app(cs_ochk_free_e(l, fnm, halloc, ft), cs_ochk_free_e(r, fnm, halloc, ft))
+    If(c, t, e2)     => cs_app(cs_ochk_free_e(c, fnm, halloc, ft), cs_app(cs_ochk_free_e(t, fnm, halloc, ft), cs_ochk_free_e(e2, fnm, halloc, ft)))
+    LetIn(nm, v, b)  => cs_app(cs_ochk_free_e(v, fnm, halloc, ft), cs_ochk_free_e(b, fnm, halloc, ft))
+    VarIn(nm, v, b)  => cs_app(cs_ochk_free_e(v, fnm, halloc, ft), cs_ochk_free_e(b, fnm, halloc, ft))
+    DeferE(c, b)     => cs_app(cs_ochk_free_e(c, fnm, halloc, ft), cs_ochk_free_e(b, fnm, halloc, ft))
+    ErrDeferE(c, b)  => cs_app(cs_ochk_free_e(c, fnm, halloc, ft), cs_ochk_free_e(b, fnm, halloc, ft))
+    Rec(items)       => cs_ochk_free_rec(items, fnm, halloc, ft)
+    RecT(tn, items)  => cs_ochk_free_rec(items, fnm, halloc, ft)
+    Field(o, fld)    => cs_ochk_free_e(o, fnm, halloc, ft)
+    Match(sc, arms)  => cs_app(cs_ochk_free_e(sc, fnm, halloc, ft), cs_ochk_free_arms(arms, fnm, halloc, ft))
+    OwnE(inner)      => cs_ochk_free_e(inner, fnm, halloc, ft)
+    MutE(inner)      => cs_ochk_free_e(inner, fnm, halloc, ft)
+    _                => Nil
 fn cs_ois_free(mf) = mf % 2
 fn cs_ois_total(mf) = mf / 2 % 2
 fn cs_ois_llm(mf) = mf / 4 % 2
@@ -1441,46 +1535,168 @@ fn cs_keff_diff(xs, ys) = match xs
     Nil        => Nil
     Cons(h, t) => if h == "pure" or cs_omem(h, ys) == 1 then cs_keff_diff(t, ys) else Cons(h, cs_keff_diff(t, ys))
 fn cs_kprim_eff(cnm) = if cnm == "io_write" or cnm == "io_read" or cnm == "println" or cnm == "read" or cnm == "readall" or cnm == "io_read_byte" or cnm == "emit" or cnm == "flush" or cnm == "os_exec" or cnm == "os_kill" or cnm == "os_waitpid_status" then "io" else if cnm == "fs_read" or cnm == "fs_write" or cnm == "fs_open" then "fs" else if cnm == "net_send" or cnm == "net_recv" or cnm == "net_connect" or cnm == "db_exec" then "net" else if cnm == "rc_new" or cnm == "arc_new" or cnm == "alloc_heap" or cnm == "table_new" or cnm == "box_new" or cnm == "arena_new" or cnm == "arena_alloc" or cnm == "__lume_mem_pack" or cnm == "__lume_mem_unpack" or cnm == "__lume_arena_freeze" or cnm == "__lume_arena_thaw" or cnm == "__lume_arena_secret" or cnm == "__lume_arena_frozen" or cnm == "__lume_arena_new" or cnm == "__lume_arena_alloc" or cnm == "__lume_rc_new" or cnm == "__lume_arc_new" then "alloc" else if cnm == "rand_int" or cnm == "prob_sample" or cnm == "llm_complete" then "rand" else if cnm == "sample_dist" or cnm == "observe_lik" then "prob" else if cnm == "llm_prompt" then "llm" else if cnm == "wasm_module_new" or cnm == "wasm_call_add" or cnm == "wasm_store32" or cnm == "wasm_load32" or cnm == "wasm_call_host_fs" then "wasm" else if cnm == "ffi_call" then "ffi" else if cnm == "time_now" or cnm == "clock_now" or cnm == "sleep_ms" then "time" else if cnm == "fail_err" or cnm == "raise_err" then "fail" else if cnm == "panic_msg" then "panic" else if cnm == "async_await" or cnm == "spawn_task" then "async" else ""
-fn cs_kinfer_call_effs(cnm, ksigs, edecls) = let pe = cs_kprim_eff(cnm) in let ue = cs_kop_effect(cnm, edecls) in let base0 = cs_keff_add(pe, cs_keff_add(ue, Nil)) in let base = if cnm == "wasm_call_host_fs" then cs_keff_add("fs", base0) else if cnm == "wasm_call_host_net" then cs_keff_add("net", base0) else base0 in match cs_keffsig_lookup(cnm, ksigs)
-    Cons(ks, r) => cs_keff_union(base, cs_keff_diff(ks.effs, Cons("pure", Nil)))
-    Nil         => base
-fn cs_kinfer_effs_e(e, ksigs, edecls) = match e
-    Bin(op, l, r)           => cs_keff_union(cs_kinfer_effs_e(l, ksigs, edecls), cs_kinfer_effs_e(r, ksigs, edecls))
-    If(c, t, e2)            => cs_keff_union(cs_kinfer_effs_e(c, ksigs, edecls), cs_keff_union(cs_kinfer_effs_e(t, ksigs, edecls), cs_kinfer_effs_e(e2, ksigs, edecls)))
-    LetIn(nm, v, b)         => cs_keff_union(cs_kinfer_effs_e(v, ksigs, edecls), cs_kinfer_effs_e(b, ksigs, edecls))
-    VarIn(nm, v, b)         => cs_keff_union(cs_kinfer_effs_e(v, ksigs, edecls), cs_kinfer_effs_e(b, ksigs, edecls))
-    OwnE(inner)             => cs_kinfer_effs_e(inner, ksigs, edecls)
-    MutE(inner)             => cs_kinfer_effs_e(inner, ksigs, edecls)
-    DeferE(c, b)            => cs_keff_union(cs_kinfer_effs_e(c, ksigs, edecls), cs_kinfer_effs_e(b, ksigs, edecls))
-    ErrDeferE(c, b)         => cs_keff_union(cs_kinfer_effs_e(c, ksigs, edecls), cs_kinfer_effs_e(b, ksigs, edecls))
-    WithAllocE(a, b)        => cs_keff_union(cs_kinfer_effs_e(a, ksigs, edecls), cs_orem("alloc", cs_kinfer_effs_e(b, ksigs, edecls)))
-    WithHandlerE(en, hs, b) => cs_keff_union(cs_kinfer_hops(hs, ksigs, edecls), cs_orem(en, cs_kinfer_effs_e(b, ksigs, edecls)))
-    Call(cnm, args)         => cs_keff_union(cs_kinfer_call_effs(cnm, ksigs, edecls), cs_kinfer_args(args, ksigs, edecls))
-    Match(sc, arms)         => cs_keff_union(cs_kinfer_effs_e(sc, ksigs, edecls), cs_kinfer_arms(arms, ksigs, edecls))
-    _                       => Nil
-fn cs_kinfer_hops(hs, ksigs, edecls) = match hs
+fn cs_khops_has_op(opnm, hs) = match hs
+    Nil        => 0
+    Cons(h, t) => if h.op == opnm then 1 else cs_khops_has_op(opnm, t)
+fn cs_kops_all_handled(ops, hs) = match ops
+    Nil         => 1
+    Cons(op, r) => if cs_khops_has_op(op.op, hs) == 1 then cs_kops_all_handled(r, hs) else 0
+fn cs_khandled_edecls(hs, edecls) = match edecls
     Nil        => Nil
-    Cons(h, t) => cs_keff_union(cs_kinfer_effs_e(h.body, ksigs, edecls), cs_kinfer_hops(t, ksigs, edecls))
-fn cs_kinfer_args(xs, ksigs, edecls) = match xs
+    Cons(d, r) => if cs_isnil(d.ops) == 0 and cs_kops_all_handled(d.ops, hs) == 1 then Cons(d.enm, cs_khandled_edecls(hs, r)) else cs_khandled_edecls(hs, r)
+fn cs_khandled_effs(en, hs, edecls) = let he = cs_khandled_edecls(hs, edecls) in if en != "" and cs_kop_is_edecl(en, edecls) == 0 then cs_keff_add(en, he) else he
+fn cs_kinfer_fn_body(fn0, ksigs, edecls, ft, d) = match fn0
+    Fn(nm, ps, body) => cs_kinfer_effs_e(body, Cons({nm: nm, effs: Cons("pure", Nil)}, ksigs), edecls, ft, d + 1)
+    _                => Nil
+fn cs_kinfer_fn_m(mf, ksigs, edecls, ft, d) = match mf
+    Nil          => Nil
+    Cons(fn0, r) => cs_kinfer_fn_body(fn0, ksigs, edecls, ft, d)
+fn cs_kinfer_call_m(cnm, mks, ksigs, edecls, ft, d) = match mks
+    Cons(ks, r) => cs_keff_diff(ks.effs, Cons("pure", Nil))
+    Nil         => cs_kinfer_fn_m(cs_fnlookup(cnm, ft), ksigs, edecls, ft, d)
+fn cs_kinfer_call_effs(cnm, ksigs, edecls, ft, d) = let pe = cs_kprim_eff(cnm) in let ue = cs_kop_effect(cnm, edecls) in let base0 = cs_keff_add(pe, cs_keff_add(ue, Nil)) in let base = if cnm == "wasm_call_host_fs" then cs_keff_add("fs", base0) else if cnm == "wasm_call_host_net" then cs_keff_add("net", base0) else base0 in if d >= 24 then base else cs_keff_union(base, cs_kinfer_call_m(cnm, cs_keffsig_lookup(cnm, ksigs), ksigs, edecls, ft, d))
+fn cs_kinfer_is_fnval(v, ft) = match v
+    Var(x)                     => if cs_isnil(cs_fnlookup(x, ft)) == 0 then x else ""
+    LambdaE(ps, tys, rt, body) => "__lambda__"
+    _                          => ""
+fn cs_kinfer_effs_e(e, ksigs, edecls, ft, d) = if d > 24 then Nil else cs_kinfer_effs_e1(e, ksigs, edecls, ft, d)
+fn cs_kinfer_effs_e1(e, ksigs, edecls, ft, d) = match e
+    Bin(op, l, r)              => cs_keff_union(cs_kinfer_effs_e(l, ksigs, edecls, ft, d), cs_kinfer_effs_e(r, ksigs, edecls, ft, d))
+    If(c, t, e2)               => cs_keff_union(cs_kinfer_effs_e(c, ksigs, edecls, ft, d), cs_keff_union(cs_kinfer_effs_e(t, ksigs, edecls, ft, d), cs_kinfer_effs_e(e2, ksigs, edecls, ft, d)))
+    LetIn(nm, v, b)            => let fnv = cs_kinfer_is_fnval(v, ft) in let ev = cs_kinfer_effs_e(v, ksigs, edecls, ft, d) in let ks2 = if fnv != "" then Cons({nm: nm, effs: if fnv == "__lambda__" then (if cs_isnil(ev) == 1 then Cons("pure", Nil) else ev) else cs_kinfer_call_effs(fnv, ksigs, edecls, ft, d)}, ksigs) else ksigs in cs_keff_union(ev, cs_kinfer_effs_e(b, ks2, edecls, ft, d))
+    VarIn(nm, v, b)            => let fnv = cs_kinfer_is_fnval(v, ft) in let ev = cs_kinfer_effs_e(v, ksigs, edecls, ft, d) in let ks2 = if fnv != "" then Cons({nm: nm, effs: if fnv == "__lambda__" then (if cs_isnil(ev) == 1 then Cons("pure", Nil) else ev) else cs_kinfer_call_effs(fnv, ksigs, edecls, ft, d)}, ksigs) else ksigs in cs_keff_union(ev, cs_kinfer_effs_e(b, ks2, edecls, ft, d))
+    OwnE(inner)                => cs_kinfer_effs_e(inner, ksigs, edecls, ft, d)
+    MutE(inner)                => cs_kinfer_effs_e(inner, ksigs, edecls, ft, d)
+    DeferE(c, b)               => cs_keff_union(cs_kinfer_effs_e(c, ksigs, edecls, ft, d), cs_kinfer_effs_e(b, ksigs, edecls, ft, d))
+    ErrDeferE(c, b)            => cs_keff_union(cs_kinfer_effs_e(c, ksigs, edecls, ft, d), cs_kinfer_effs_e(b, ksigs, edecls, ft, d))
+    WithAllocE(a, b)           => cs_keff_union(cs_kinfer_effs_e(a, ksigs, edecls, ft, d), cs_orem("alloc", cs_kinfer_effs_e(b, ksigs, edecls, ft, d)))
+    WithHandlerE(en, hs, b)    => cs_keff_union(cs_kinfer_hops(hs, ksigs, edecls, ft, d), cs_keff_diff(cs_kinfer_effs_e(b, ksigs, edecls, ft, d), cs_khandled_effs(en, hs, edecls)))
+    ScopeE(snm, b)             => cs_kinfer_effs_e(b, ksigs, edecls, ft, d)
+    SpawnE(inner)              => cs_kinfer_effs_e(inner, ksigs, edecls, ft, d)
+    AwaitE(inner)              => cs_kinfer_effs_e(inner, ksigs, edecls, ft, d)
+    ShardE(vnm, lo, hi, b)     => cs_keff_union(cs_kinfer_effs_e(lo, ksigs, edecls, ft, d), cs_keff_union(cs_kinfer_effs_e(hi, ksigs, edecls, ft, d), cs_kinfer_effs_e(b, ksigs, edecls, ft, d)))
+    LambdaE(ps, tys, rt, body) => cs_kinfer_effs_e(body, ksigs, edecls, ft, d)
+    Field(o, fld)              => cs_kinfer_effs_e(o, ksigs, edecls, ft, d)
+    Rec(items)                 => cs_kinfer_rec(items, ksigs, edecls, ft, d)
+    RecT(tn, items)            => cs_kinfer_rec(items, ksigs, edecls, ft, d)
+    Call(cnm, args)            => cs_keff_union(cs_kinfer_call_effs(cnm, ksigs, edecls, ft, d), cs_kinfer_args(args, ksigs, edecls, ft, d))
+    Match(sc, arms)            => cs_keff_union(cs_kinfer_effs_e(sc, ksigs, edecls, ft, d), cs_kinfer_arms(arms, ksigs, edecls, ft, d))
+    _                          => Nil
+fn cs_kinfer_hops(hs, ksigs, edecls, ft, d) = match hs
     Nil        => Nil
-    Cons(h, t) => cs_keff_union(cs_kinfer_effs_e(h, ksigs, edecls), cs_kinfer_args(t, ksigs, edecls))
-fn cs_kinfer_arms(xs, ksigs, edecls) = match xs
+    Cons(h, t) => cs_keff_union(cs_kinfer_effs_e(h.body, ksigs, edecls, ft, d), cs_kinfer_hops(t, ksigs, edecls, ft, d))
+fn cs_kinfer_args(xs, ksigs, edecls, ft, d) = match xs
     Nil        => Nil
-    Cons(h, t) => cs_keff_union(cs_kinfer_effs_e(h.body, ksigs, edecls), cs_kinfer_arms(t, ksigs, edecls))
+    Cons(h, t) => cs_keff_union(cs_kinfer_effs_e(h, ksigs, edecls, ft, d), cs_kinfer_args(t, ksigs, edecls, ft, d))
+fn cs_kinfer_rec(xs, ksigs, edecls, ft, d) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_keff_union(cs_kinfer_effs_e(h.val, ksigs, edecls, ft, d), cs_kinfer_rec(t, ksigs, edecls, ft, d))
+fn cs_kinfer_arms(xs, ksigs, edecls, ft, d) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_keff_union(cs_kinfer_effs_e(h.body, ksigs, edecls, ft, d), cs_kinfer_arms(t, ksigs, edecls, ft, d))
 fn cs_kget_dec_effs(mks) = match mks
     Nil         => Nil
     Cons(ks, r) => ks.effs
 fn cs_kuses_ffi_e(e, osigs) = match e
-    Call(cnm, args) => if cs_is_ffi_osig(cs_osiglookup(cnm, osigs)) == 1 then 1 else cs_kuses_ffi_args(args, osigs)
-    Bin(op, l, r)   => if cs_kuses_ffi_e(l, osigs) == 1 then 1 else cs_kuses_ffi_e(r, osigs)
-    If(c, t, e2)    => if cs_kuses_ffi_e(c, osigs) == 1 then 1 else if cs_kuses_ffi_e(t, osigs) == 1 then 1 else cs_kuses_ffi_e(e2, osigs)
-    LetIn(nm, v, b) => if cs_kuses_ffi_e(v, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
-    VarIn(nm, v, b) => if cs_kuses_ffi_e(v, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
-    _               => 0
+    Call(cnm, args)         => if cs_is_ffi_osig(cs_osiglookup(cnm, osigs)) == 1 then 1 else cs_kuses_ffi_args(args, osigs)
+    Bin(op, l, r)           => if cs_kuses_ffi_e(l, osigs) == 1 then 1 else cs_kuses_ffi_e(r, osigs)
+    If(c, t, e2)            => if cs_kuses_ffi_e(c, osigs) == 1 then 1 else if cs_kuses_ffi_e(t, osigs) == 1 then 1 else cs_kuses_ffi_e(e2, osigs)
+    LetIn(nm, v, b)         => if cs_kuses_ffi_e(v, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
+    VarIn(nm, v, b)         => if cs_kuses_ffi_e(v, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
+    DeferE(c, b)            => if cs_kuses_ffi_e(c, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
+    ErrDeferE(c, b)         => if cs_kuses_ffi_e(c, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
+    WithAllocE(a, b)        => if cs_kuses_ffi_e(a, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
+    WithHandlerE(en, hs, b) => cs_kuses_ffi_e(b, osigs)
+    ScopeE(snm, b)          => cs_kuses_ffi_e(b, osigs)
+    SpawnE(inner)           => cs_kuses_ffi_e(inner, osigs)
+    AwaitE(inner)           => cs_kuses_ffi_e(inner, osigs)
+    ShardE(vnm, lo, hi, b)  => if cs_kuses_ffi_e(lo, osigs) == 1 then 1 else if cs_kuses_ffi_e(hi, osigs) == 1 then 1 else cs_kuses_ffi_e(b, osigs)
+    OwnE(inner)             => cs_kuses_ffi_e(inner, osigs)
+    MutE(inner)             => cs_kuses_ffi_e(inner, osigs)
+    Field(o, fld)           => cs_kuses_ffi_e(o, osigs)
+    Rec(items)              => cs_kuses_ffi_rec(items, osigs)
+    RecT(tn, items)         => cs_kuses_ffi_rec(items, osigs)
+    Match(sc, arms)         => if cs_kuses_ffi_e(sc, osigs) == 1 then 1 else cs_kuses_ffi_arms(arms, osigs)
+    _                       => 0
 fn cs_kuses_ffi_args(xs, osigs) = match xs
     Nil        => 0
     Cons(h, t) => if cs_kuses_ffi_e(h, osigs) == 1 then 1 else cs_kuses_ffi_args(t, osigs)
-fn cs_kchk_fn(nm, pubf, body, kt) = let inf0 = cs_kinfer_effs_e(body, kt.ksigs, kt.edecls) in let inf = if cs_kuses_ffi_e(body, kt.osigs) == 1 then cs_keff_add("ffi", inf0) else inf0 in let mks = cs_keffsig_lookup(nm, kt.ksigs) in let dec = cs_kget_dec_effs(mks) in let missing_pub = if pubf == 1 and cs_isnil(mks) == 1 then inf else cs_keff_diff(inf, dec) in let d1 = if (pubf == 1 or cs_isnil(mks) == 0) and cs_isnil(missing_pub) == 0 then Cons(cs_mkdiag("E0200", "effect", "effect error: function '" + nm + "' performs undeclared effect '{" + cs_joinsep(missing_pub, ", ") + "}'", "add '/ {" + cs_joinsep(cs_keff_union(dec, inf), ", ") + "}' to the signature of '" + nm + "' or handle it with 'with handler'"), Nil) else Nil in let d2 = if cs_isnil(kt.caps) == 0 and cs_isnil(cs_keff_diff(inf, kt.caps)) == 0 then let uncap = cs_keff_diff(inf, kt.caps) in Cons(cs_mkdiag("E0200", "capability", "capability error: function '" + nm + "' requires capability '{" + cs_joinsep(uncap, ", ") + "}' not granted to this module", "add '@capability " + cs_hd_str(uncap, "io") + "' or declare it in lume.toml"), Nil) else Nil in cs_app(d1, d2)
+fn cs_kuses_ffi_rec(xs, osigs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_kuses_ffi_e(h.val, osigs) == 1 then 1 else cs_kuses_ffi_rec(t, osigs)
+fn cs_kuses_ffi_arms(xs, osigs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_kuses_ffi_e(h.body, osigs) == 1 then 1 else cs_kuses_ffi_arms(t, osigs)
+fn cs_khas_await_args(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_khas_await_e(h) == 1 then 1 else cs_khas_await_args(t)
+fn cs_khas_await_rec(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_khas_await_e(h.val) == 1 then 1 else cs_khas_await_rec(t)
+fn cs_khas_await_arms(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_khas_await_e(h.body) == 1 then 1 else cs_khas_await_arms(t)
+fn cs_khas_await_e(e) = match e
+    AwaitE(inner)           => 1
+    Call(cnm, args)         => if cnm == "await" or cnm == "promise_await" then 1 else cs_khas_await_args(args)
+    Bin(op, l, r)           => if cs_khas_await_e(l) == 1 then 1 else cs_khas_await_e(r)
+    If(c, t, e2)            => if cs_khas_await_e(c) == 1 then 1 else if cs_khas_await_e(t) == 1 then 1 else cs_khas_await_e(e2)
+    LetIn(nm, v, b)         => if cs_khas_await_e(v) == 1 then 1 else cs_khas_await_e(b)
+    VarIn(nm, v, b)         => if cs_khas_await_e(v) == 1 then 1 else cs_khas_await_e(b)
+    OwnE(inner)             => cs_khas_await_e(inner)
+    MutE(inner)             => cs_khas_await_e(inner)
+    DeferE(c, b)            => if cs_khas_await_e(c) == 1 then 1 else cs_khas_await_e(b)
+    ErrDeferE(c, b)         => if cs_khas_await_e(c) == 1 then 1 else cs_khas_await_e(b)
+    WithAllocE(a, b)        => if cs_khas_await_e(a) == 1 then 1 else cs_khas_await_e(b)
+    WithHandlerE(en, hs, b) => cs_khas_await_e(b)
+    ScopeE(snm, b)          => cs_khas_await_e(b)
+    SpawnE(inner)           => 0
+    Field(o, fld)           => cs_khas_await_e(o)
+    Rec(items)              => cs_khas_await_rec(items)
+    RecT(tn, items)         => cs_khas_await_rec(items)
+    Match(sc, arms)         => if cs_khas_await_e(sc) == 1 then 1 else cs_khas_await_arms(arms)
+    _                       => 0
+fn cs_kchk_shard_target(a, fnm, kt) = match a
+    Var(tnm)                   => let teffs = cs_kinfer_call_effs(tnm, kt.ksigs, kt.edecls, kt.ft, 0) in if cs_isnil(teffs) == 0 then Cons(cs_mkdiag("E0200", "effect", "effect error: data-parallel 'shard' target '" + tnm + "' in '" + fnm + "' performs impure effect '{" + cs_joinsep(teffs, ", ") + "}'", "pass a pure function to 'shard'"), Nil) else Nil
+    LambdaE(ps, tys, rt, body) => let teffs = cs_kinfer_effs_e(body, kt.ksigs, kt.edecls, kt.ft, 0) in if cs_isnil(teffs) == 0 then Cons(cs_mkdiag("E0200", "effect", "effect error: data-parallel 'shard' target in '" + fnm + "' performs impure effect '{" + cs_joinsep(teffs, ", ") + "}'", "pass a pure function to 'shard'"), Nil) else Nil
+    _                          => Nil
+fn cs_kchk_shard_args(xs, fnm, kt) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_kchk_shard_e(h, fnm, kt), cs_kchk_shard_args(t, fnm, kt))
+fn cs_kchk_shard_rec(xs, fnm, kt) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_kchk_shard_e(h.val, fnm, kt), cs_kchk_shard_rec(t, fnm, kt))
+fn cs_kchk_shard_arms(xs, fnm, kt) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_kchk_shard_e(h.body, fnm, kt), cs_kchk_shard_arms(t, fnm, kt))
+fn cs_kchk_shard_e(e, fnm, kt) = match e
+    ShardE(vnm, lo, hi, b)  => let d0 = cs_app(cs_kchk_shard_e(lo, fnm, kt), cs_app(cs_kchk_shard_e(hi, fnm, kt), cs_kchk_shard_e(b, fnm, kt))) in let beffs = cs_kinfer_effs_e(b, kt.ksigs, kt.edecls, kt.ft, 0) in if cs_isnil(beffs) == 0 then cs_app(d0, Cons(cs_mkdiag("E0200", "effect", "effect error: data-parallel 'shard " + vnm + "' body in '" + fnm + "' performs impure effect '{" + cs_joinsep(beffs, ", ") + "}'", "keep 'shard' body pure"), Nil)) else d0
+    Call(cnm, args)         => let d0 = if (cnm == "shard" or cnm == "vmap") and cs_isnil(args) == 0 then cs_kchk_shard_target(cs_asthead(args), fnm, kt) else Nil in cs_app(d0, cs_kchk_shard_args(args, fnm, kt))
+    Bin(op, l, r)           => cs_app(cs_kchk_shard_e(l, fnm, kt), cs_kchk_shard_e(r, fnm, kt))
+    If(c, t, e2)            => cs_app(cs_kchk_shard_e(c, fnm, kt), cs_app(cs_kchk_shard_e(t, fnm, kt), cs_kchk_shard_e(e2, fnm, kt)))
+    LetIn(nm, v, b)         => cs_app(cs_kchk_shard_e(v, fnm, kt), cs_kchk_shard_e(b, fnm, kt))
+    VarIn(nm, v, b)         => cs_app(cs_kchk_shard_e(v, fnm, kt), cs_kchk_shard_e(b, fnm, kt))
+    DeferE(c, b)            => cs_app(cs_kchk_shard_e(c, fnm, kt), cs_kchk_shard_e(b, fnm, kt))
+    ErrDeferE(c, b)         => cs_app(cs_kchk_shard_e(c, fnm, kt), cs_kchk_shard_e(b, fnm, kt))
+    WithAllocE(a, b)        => cs_app(cs_kchk_shard_e(a, fnm, kt), cs_kchk_shard_e(b, fnm, kt))
+    WithHandlerE(en, hs, b) => cs_kchk_shard_e(b, fnm, kt)
+    ScopeE(snm, b)          => cs_kchk_shard_e(b, fnm, kt)
+    SpawnE(inner)           => cs_kchk_shard_e(inner, fnm, kt)
+    AwaitE(inner)           => cs_kchk_shard_e(inner, fnm, kt)
+    OwnE(inner)             => cs_kchk_shard_e(inner, fnm, kt)
+    MutE(inner)             => cs_kchk_shard_e(inner, fnm, kt)
+    Field(o, fld)           => cs_kchk_shard_e(o, fnm, kt)
+    Rec(items)              => cs_kchk_shard_rec(items, fnm, kt)
+    RecT(tn, items)         => cs_kchk_shard_rec(items, fnm, kt)
+    Match(sc, arms)         => cs_app(cs_kchk_shard_e(sc, fnm, kt), cs_kchk_shard_arms(arms, fnm, kt))
+    _                       => Nil
+fn cs_kop_is_edecl(enm, edecls) = match edecls
+    Nil        => 0
+    Cons(d, r) => if d.enm == enm then 1 else cs_kop_is_edecl(enm, r)
+fn cs_kfilter_edecls(effs, edecls) = match effs
+    Nil        => Nil
+    Cons(h, t) => if cs_kop_is_edecl(h, edecls) == 1 then Cons(h, cs_kfilter_edecls(t, edecls)) else cs_kfilter_edecls(t, edecls)
+fn cs_kchk_fn(nm, pubf, body, kt) = let d_sh = cs_kchk_shard_e(body, nm, kt) in let inf0 = cs_kinfer_effs_e(body, kt.ksigs, kt.edecls, kt.ft, 0) in let inf = if cs_kuses_ffi_e(body, kt.osigs) == 1 then cs_keff_add("ffi", inf0) else inf0 in let mks = cs_keffsig_lookup(nm, kt.ksigs) in let dec = cs_kget_dec_effs(mks) in let d_aw = if nm != "main" and nm != "<main>" and cs_khas_await_e(body) == 1 and cs_omem("async", dec) == 0 then Cons(cs_mkdiag("E0200", "effect", "effect error: 'await' in synchronous function '" + nm + "' requires 'async fn' or '/ " + "{" + "async}' effect", "mark '" + nm + "' as 'async fn " + nm + "' or add '/ " + "{" + "async}'"), Nil) else Nil in let ueffs = cs_kfilter_edecls(inf, kt.edecls) in let missing_ueffs = if nm == "main" or nm == "<main>" then ueffs else cs_keff_diff(ueffs, dec) in let d0 = if cs_isnil(missing_ueffs) == 0 then Cons(cs_mkdiag("E0200", "effect", "effect error: function '" + nm + "' performs unhandled effect '{" + cs_joinsep(missing_ueffs, ", ") + "}'", "handle it with 'with handler' or add '/ {" + cs_joinsep(cs_keff_union(dec, missing_ueffs), ", ") + "}' to '" + nm + "'"), Nil) else Nil in let missing_pub = if pubf == 1 and cs_isnil(mks) == 1 then inf else cs_keff_diff(inf, dec) in let d1 = if (pubf == 1 or cs_isnil(mks) == 0) and cs_isnil(missing_pub) == 0 then Cons(cs_mkdiag("E0200", "effect", "effect error: function '" + nm + "' performs undeclared effect '{" + cs_joinsep(missing_pub, ", ") + "}'", "add '/ {" + cs_joinsep(cs_keff_union(dec, inf), ", ") + "}' to the signature of '" + nm + "' or handle it with 'with handler'"), Nil) else Nil in let d2 = if cs_isnil(kt.caps) == 0 and cs_isnil(cs_keff_diff(inf, kt.caps)) == 0 then let uncap = cs_keff_diff(inf, kt.caps) in Cons(cs_mkdiag("E0200", "capability", "capability error: function '" + nm + "' requires capability '{" + cs_joinsep(uncap, ", ") + "}' not granted to this module", "add '@capability " + cs_hd_str(uncap, "io") + "' or declare it in lume.toml"), Nil) else Nil in cs_app(d_sh, cs_app(d_aw, cs_app(d0, cs_app(d1, d2))))
 
 ## --- Track S1: structured concurrency (`scope` / `spawn`) & `Send`/`Sync` (`[S0001]`) ---
 fn cs_sis_nonsend_ty(ty) = match ty
@@ -1508,6 +1724,9 @@ fn cs_schk_spawn_body(e, fnm, nsvars, mvars) = match e
     OwnE(inner)     => cs_schk_spawn_own(inner, fnm, nsvars)
     MutE(inner)     => Cons(cs_mkdiag("S0001", "concurrency", "concurrency error: cannot capture mutable borrow 'mut' across 'spawn' in '" + fnm + "'", "transfer ownership with 'own' or synchronize via 'chan[T]'"), Nil)
     Field(o, fld)   => cs_schk_spawn_body(o, fnm, nsvars, mvars)
+    Rec(items)      => cs_schk_spawn_rec(items, fnm, nsvars, mvars)
+    RecT(tn, items) => cs_schk_spawn_rec(items, fnm, nsvars, mvars)
+    Match(sc, arms) => cs_app(cs_schk_spawn_body(sc, fnm, nsvars, mvars), cs_schk_spawn_arms(arms, fnm, nsvars, mvars))
     Bin(op, l, r)   => cs_app(cs_schk_spawn_body(l, fnm, nsvars, mvars), cs_schk_spawn_body(r, fnm, nsvars, mvars))
     If(c, t, e2)    => cs_app(cs_schk_spawn_body(c, fnm, nsvars, mvars), cs_app(cs_schk_spawn_body(t, fnm, nsvars, mvars), cs_schk_spawn_body(e2, fnm, nsvars, mvars)))
     LetIn(nm, v, b) => cs_app(cs_schk_spawn_body(v, fnm, nsvars, mvars), cs_schk_spawn_body(b, fnm, cs_orem(nm, nsvars), cs_orem(nm, mvars)))
@@ -1520,6 +1739,12 @@ fn cs_schk_spawn_own(inner, fnm, nsvars) = match inner
 fn cs_schk_spawn_args(args, fnm, nsvars, mvars) = match args
     Nil        => Nil
     Cons(h, t) => cs_app(cs_schk_spawn_body(h, fnm, nsvars, mvars), cs_schk_spawn_args(t, fnm, nsvars, mvars))
+fn cs_schk_spawn_rec(xs, fnm, nsvars, mvars) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_schk_spawn_body(h.val, fnm, nsvars, mvars), cs_schk_spawn_rec(t, fnm, nsvars, mvars))
+fn cs_schk_spawn_arms(xs, fnm, nsvars, mvars) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_schk_spawn_body(h.body, fnm, nsvars, mvars), cs_schk_spawn_arms(t, fnm, nsvars, mvars))
 fn cs_schk_conc_e(e, fnm, in_scope, nsvars, mvars) = match e
     ScopeE(snm, b)          => cs_schk_conc_e(b, fnm, 1, nsvars, mvars)
     SpawnE(inner)           => let d0 = if in_scope == 0 then Cons(cs_mkdiag("S0001", "concurrency", "concurrency error: unstructured 'spawn' in '" + fnm + "' is forbidden outside a lexical 'scope' block", "wrap the task in 'scope s in spawn(...)'"), Nil) else Nil in cs_app(d0, cs_app(cs_schk_spawn_body(inner, fnm, nsvars, mvars), cs_schk_conc_e(inner, fnm, in_scope, nsvars, mvars)))
@@ -1532,11 +1757,21 @@ fn cs_schk_conc_e(e, fnm, in_scope, nsvars, mvars) = match e
     ErrDeferE(c, b)         => cs_app(cs_schk_conc_e(c, fnm, in_scope, nsvars, mvars), cs_schk_conc_e(b, fnm, in_scope, nsvars, mvars))
     WithAllocE(a, b)        => cs_app(cs_schk_conc_e(a, fnm, in_scope, nsvars, mvars), cs_schk_conc_e(b, fnm, in_scope, nsvars, mvars))
     WithHandlerE(en, hs, b) => cs_schk_conc_e(b, fnm, in_scope, nsvars, mvars)
+    Field(o, fld)           => cs_schk_conc_e(o, fnm, in_scope, nsvars, mvars)
+    Rec(items)              => cs_schk_conc_rec(items, fnm, in_scope, nsvars, mvars)
+    RecT(tn, items)         => cs_schk_conc_rec(items, fnm, in_scope, nsvars, mvars)
+    Match(sc, arms)         => cs_app(cs_schk_conc_e(sc, fnm, in_scope, nsvars, mvars), cs_schk_conc_arms(arms, fnm, in_scope, nsvars, mvars))
     Call(cnm, args)         => if cnm == "spawn_task" then let d0 = if in_scope == 0 then Cons(cs_mkdiag("S0001", "concurrency", "concurrency error: unstructured 'spawn_task' in '" + fnm + "' is forbidden outside a lexical 'scope' block", "wrap the task in 'scope s in ...'"), Nil) else Nil in cs_app(d0, cs_schk_spawn_args(args, fnm, nsvars, mvars)) else cs_schk_conc_args(args, fnm, in_scope, nsvars, mvars)
     _                       => Nil
 fn cs_schk_conc_args(args, fnm, in_scope, nsvars, mvars) = match args
     Nil        => Nil
     Cons(h, t) => cs_app(cs_schk_conc_e(h, fnm, in_scope, nsvars, mvars), cs_schk_conc_args(t, fnm, in_scope, nsvars, mvars))
+fn cs_schk_conc_rec(xs, fnm, in_scope, nsvars, mvars) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_schk_conc_e(h.val, fnm, in_scope, nsvars, mvars), cs_schk_conc_rec(t, fnm, in_scope, nsvars, mvars))
+fn cs_schk_conc_arms(xs, fnm, in_scope, nsvars, mvars) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_schk_conc_e(h.body, fnm, in_scope, nsvars, mvars), cs_schk_conc_arms(t, fnm, in_scope, nsvars, mvars))
 
 ## --- Track V: Contract Verification (`requires`/`ensures`/`invariant`/`old`/`law`, `[V0001]`, `proofs`) ---
 fn cs_vcollect_rtypes(prog) = match prog
@@ -1628,7 +1863,10 @@ fn cs_vbind_p1(p, r, vs) = match vs
 fn cs_vfields_env(fs) = match fs
     Nil        => Nil
     Cons(h, t) => Cons({k: h.key, v: h.val}, cs_vfields_env(t))
-fn cs_veval_bin(op, rl, rr) = if rl.ok == 0 or rr.ok == 0 then cs_vv_err() else let x = rl.i in let y = rr.i in if op == "+" then cs_vv_int(x + y) else if op == "-" then cs_vv_int(x - y) else if op == "*" then cs_vv_int(x * y) else if op == "/" then (if y == 0 then cs_vv_err() else cs_vv_int(x / y)) else if op == "%" then (if y == 0 then cs_vv_err() else cs_vv_int(x % y)) else if op == "==" then cs_vv_int(if x == y then 1 else 0) else if op == "!=" then cs_vv_int(if x != y then 1 else 0) else if op == "<" then cs_vv_int(if x < y then 1 else 0) else if op == ">" then cs_vv_int(if x > y then 1 else 0) else if op == "<=" then cs_vv_int(if x <= y then 1 else 0) else if op == ">=" then cs_vv_int(if x >= y then 1 else 0) else if op == "and" then cs_vv_int(if x != 0 and y != 0 then 1 else 0) else if op == "or" then cs_vv_int(if x != 0 or y != 0 then 1 else 0) else cs_vv_err()
+fn cs_vlin_min_int() = (0 - 9223372036854775807) -% 1
+fn cs_veval_add_ovf(x, y) = if x > 0 and y > 0 and (x +% y) < 0 then 1 else if x < 0 and y < 0 and (x +% y) >= 0 then 1 else 0
+fn cs_veval_mul_ovf(x, y) = if x == 0 or y == 0 then 0 else if x == cs_vlin_min_int() or y == cs_vlin_min_int() then 1 else if (x *% y) / x != y then 1 else 0
+fn cs_veval_bin(op, rl, rr) = if rl.ok == 0 or rr.ok == 0 then cs_vv_err() else let x = rl.i in let y = rr.i in if op == "+" then (if cs_veval_add_ovf(x, y) == 1 then cs_vv_err() else cs_vv_int(x +% y)) else if op == "+%" then cs_vv_int(x +% y) else if op == "-" then (if y == cs_vlin_min_int() or cs_veval_add_ovf(x, 0 -% y) == 1 then cs_vv_err() else cs_vv_int(x -% y)) else if op == "-%" then cs_vv_int(x -% y) else if op == "*" then (if cs_veval_mul_ovf(x, y) == 1 then cs_vv_err() else cs_vv_int(x *% y)) else if op == "*%" then cs_vv_int(x *% y) else if op == "/" then (if y == 0 or (x == cs_vlin_min_int() and y == 0 - 1) then cs_vv_err() else cs_vv_int(x / y)) else if op == "%" then (if y == 0 or (x == cs_vlin_min_int() and y == 0 - 1) then cs_vv_err() else cs_vv_int(x % y)) else if op == "==" then cs_vv_int(if x == y then 1 else 0) else if op == "!=" then cs_vv_int(if x != y then 1 else 0) else if op == "<" then cs_vv_int(if x < y then 1 else 0) else if op == ">" then cs_vv_int(if x > y then 1 else 0) else if op == "<=" then cs_vv_int(if x <= y then 1 else 0) else if op == ">=" then cs_vv_int(if x >= y then 1 else 0) else if op == "and" then cs_vv_int(if x != 0 and y != 0 then 1 else 0) else if op == "or" then cs_vv_int(if x != 0 or y != 0 then 1 else 0) else cs_vv_err()
 fn cs_veval(e, env, old_env, ft, d) = if d > 20 then cs_vv_err() else cs_veval1(e, env, old_env, ft, d)
 fn cs_veval1(e, env, old_env, ft, d) = match e
     Num(n)                  => cs_vv_int(n)
@@ -1675,14 +1913,14 @@ fn cs_n4_subst_args(xs, vnm, gfn) = match xs
     Nil        => Nil
     Cons(h, t) => Cons(cs_n4_subst_call(h, vnm, gfn), cs_n4_subst_args(t, vnm, gfn))
 fn cs_vbv_pow2(k) = if k <= 0 then 1 else if k >= 63 then 0 else if k >= 16 then 65536 * cs_vbv_pow2(k - 16) else if k >= 8 then 256 * cs_vbv_pow2(k - 8) else if k >= 4 then 16 * cs_vbv_pow2(k - 4) else 2 * cs_vbv_pow2(k - 1)
-fn cs_vbv_mod(x, m) = let r = x % m in if r < 0 then r + m else r
+fn cs_vbv_mod(x, m) = if m <= 0 or x == cs_vlin_min_int() then 0 else let r = x % m in if r < 0 then r + m else r
 fn cs_vbv_and(x, y, b) = if b <= 0 or x <= 0 or y <= 0 then 0 else x % 2 * (y % 2) + 2 * cs_vbv_and(x / 2, y / 2, b - 1)
 fn cs_vbv_or(x, y, b) = if b <= 0 or x <= 0 and y <= 0 then 0 else (if x % 2 + y % 2 >= 1 then 1 else 0) + 2 * cs_vbv_or(x / 2, y / 2, b - 1)
 fn cs_vbv_xor(x, y, b) = if b <= 0 or x <= 0 and y <= 0 then 0 else (x % 2 + y % 2) % 2 + 2 * cs_vbv_xor(x / 2, y / 2, b - 1)
 fn cs_veval_arr_lookup(k, ar) = let r = cs_vflookup(k, ar.fields) in if r.ok == 1 then r else let d = cs_vflookup("__def", ar.fields) in if d.ok == 1 then d else cs_vv_int(ar.i)
 fn cs_veval_forall_loop(vnm, k, hi, pred, env, ft) = if k > hi then cs_vv_int(1) else let r = cs_veval(pred, Cons({k: vnm, v: cs_vv_int(k)}, env), env, ft, 0) in if r.ok == 0 then cs_vv_err() else if r.i == 0 then cs_vv_int(0) else cs_veval_forall_loop(vnm, k + 1, hi, pred, env, ft)
 fn cs_veval_exists_loop(vnm, k, hi, pred, env, ft) = if k > hi then cs_vv_int(0) else let r = cs_veval(pred, Cons({k: vnm, v: cs_vv_int(k)}, env), env, ft, 0) in if r.ok == 0 then cs_vv_err() else if r.i != 0 then cs_vv_int(1) else cs_veval_exists_loop(vnm, k + 1, hi, pred, env, ft)
-fn cs_veval_m1_call(cnm, args, env, old_env, ft, d) = if (cnm == "bv_and" or cnm == "bit_and") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_and(cs_vbv_mod(a.i, 65536), cs_vbv_mod(b.i, 65536), 16)) else if (cnm == "bv_or" or cnm == "bit_or") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_or(cs_vbv_mod(a.i, 65536), cs_vbv_mod(b.i, 65536), 16)) else if (cnm == "bv_xor" or cnm == "bit_xor") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_xor(cs_vbv_mod(a.i, 65536), cs_vbv_mod(b.i, 65536), 16)) else if (cnm == "bv_shl" or cnm == "bit_shl") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 or b.i < 0 or b.i >= 63 then cs_vv_err() else cs_vv_int(a.i * cs_vbv_pow2(b.i)) else if (cnm == "bv_shr" or cnm == "bit_shr") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 or b.i < 0 or b.i >= 63 then cs_vv_err() else cs_vv_int(a.i / cs_vbv_pow2(b.i)) else if cnm == "bv_u8" and cs_len(args) == 1 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in if a.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i, 256)) else if cnm == "bv_not_u8" and cs_len(args) == 1 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in if a.ok == 0 then cs_vv_err() else cs_vv_int(255 - cs_vbv_mod(a.i, 256)) else if cnm == "bv_add_u8" and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i + b.i, 256)) else if cnm == "bv_sub_u8" and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i - b.i, 256)) else if cnm == "bv_mul_u8" and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i * b.i, 256)) else if (cnm == "array_new" or cnm == "array_const") and cs_len(args) == 1 then let dv = cs_veval(cs_asthead(args), env, old_env, ft, d) in if dv.ok == 0 then cs_vv_err() else cs_vv_rec(Cons({key: "__def", val: dv}, Nil)) else if (cnm == "array_store" or cnm == "heap_write") and cs_len(args) == 3 then let ar = cs_veval(cs_asthead(args), env, old_env, ft, d) in let ix = cs_veval(cs_astsecond(args), env, old_env, ft, d) in let vl = cs_veval(cs_asthead(cs_cvtl(cs_cvtl(args))), env, old_env, ft, d) in if ar.ok == 0 or ix.ok == 0 or vl.ok == 0 then cs_vv_err() else let d0 = cs_vflookup("__def", ar.fields) in let fs0 = if d0.ok == 1 then ar.fields else Cons({key: "__def", val: cs_vv_int(ar.i)}, ar.fields) in cs_vv_rec(Cons({key: str(ix.i), val: vl}, fs0)) else if (cnm == "array_select" or cnm == "heap_read") and cs_len(args) == 2 then let ar = cs_veval(cs_asthead(args), env, old_env, ft, d) in let ix = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if ar.ok == 0 or ix.ok == 0 then cs_vv_err() else cs_veval_arr_lookup(str(ix.i), ar) else if (cnm == "points_to" or cnm == "heap_new") and cs_len(args) == 2 then let pt = cs_veval(cs_asthead(args), env, old_env, ft, d) in let vl = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if pt.ok == 0 or vl.ok == 0 then cs_vv_err() else cs_vv_rec(Cons({key: str(pt.i), val: vl}, Cons({key: "__dom", val: cs_vv_int(pt.i)}, Cons({key: "__valid", val: cs_vv_int(1)}, Nil)))) else if cnm == "sep_disjoint" and cs_len(args) == 2 then let p1 = cs_veval(cs_asthead(args), env, old_env, ft, d) in let p2 = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if p1.ok == 0 or p2.ok == 0 then cs_vv_err() else cs_vv_int(if p1.i != p2.i then 1 else 0) else if cnm == "sep_conj" and cs_len(args) == 2 then let h1 = cs_veval(cs_asthead(args), env, old_env, ft, d) in let h2 = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if h1.ok == 0 or h2.ok == 0 then cs_vv_err() else let d1 = cs_vflookup("__dom", h1.fields) in let d2 = cs_vflookup("__dom", h2.fields) in let v1 = cs_vflookup("__valid", h1.fields) in let v2 = cs_vflookup("__valid", h2.fields) in let ok_sep = if d1.ok == 1 and d2.ok == 1 and d1.i != d2.i and (v1.ok == 0 or v1.i != 0) and (v2.ok == 0 or v2.i != 0) then 1 else 0 in {ok: 1, i: ok_sep, fields: Cons({key: "__valid", val: cs_vv_int(ok_sep)}, cs_app(h1.fields, h2.fields))} else if cnm == "sep_valid" and cs_len(args) == 1 then let h = cs_veval(cs_asthead(args), env, old_env, ft, d) in if h.ok == 0 then cs_vv_err() else let v = cs_vflookup("__valid", h.fields) in if v.ok == 1 then v else cs_vv_int(h.i) else if cnm == "forall_range" and cs_len(args) == 4 then let vnm = cs_n4_var_name(cs_asthead(args)) in let lo = cs_veval(cs_astsecond(args), env, old_env, ft, d) in let hi = cs_veval(cs_asthead(cs_cvtl(cs_cvtl(args))), env, old_env, ft, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or hi.i - lo.i > 32 then cs_vv_err() else cs_veval_forall_loop(vnm, lo.i, hi.i, cs_asthead(cs_cvtl(cs_cvtl(cs_cvtl(args)))), env, ft) else if cnm == "exists_range" and cs_len(args) == 4 then let vnm = cs_n4_var_name(cs_asthead(args)) in let lo = cs_veval(cs_astsecond(args), env, old_env, ft, d) in let hi = cs_veval(cs_asthead(cs_cvtl(cs_cvtl(args))), env, old_env, ft, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or hi.i - lo.i > 32 then cs_vv_err() else cs_veval_exists_loop(vnm, lo.i, hi.i, cs_asthead(cs_cvtl(cs_cvtl(cs_cvtl(args)))), env, ft) else cs_veval_ufn(cs_fnlookup(cnm, ft), cs_veval_args(args, env, old_env, ft, d), ft, d)
+fn cs_veval_m1_call(cnm, args, env, old_env, ft, d) = if (cnm == "bv_and" or cnm == "bit_and") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 or a.i < 0 or a.i >= 65536 or b.i < 0 or b.i >= 65536 then cs_vv_err() else cs_vv_int(cs_vbv_and(cs_vbv_mod(a.i, 65536), cs_vbv_mod(b.i, 65536), 16)) else if (cnm == "bv_or" or cnm == "bit_or") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 or a.i < 0 or a.i >= 65536 or b.i < 0 or b.i >= 65536 then cs_vv_err() else cs_vv_int(cs_vbv_or(cs_vbv_mod(a.i, 65536), cs_vbv_mod(b.i, 65536), 16)) else if (cnm == "bv_xor" or cnm == "bit_xor") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 or a.i < 0 or a.i >= 65536 or b.i < 0 or b.i >= 65536 then cs_vv_err() else cs_vv_int(cs_vbv_xor(cs_vbv_mod(a.i, 65536), cs_vbv_mod(b.i, 65536), 16)) else if (cnm == "bv_shl" or cnm == "bit_shl") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 or b.i < 0 or b.i >= 63 or cs_veval_mul_ovf(a.i, cs_vbv_pow2(b.i)) == 1 then cs_vv_err() else cs_vv_int(a.i *% cs_vbv_pow2(b.i)) else if (cnm == "bv_shr" or cnm == "bit_shr") and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 or b.i < 0 or b.i >= 63 or cs_vbv_pow2(b.i) <= 0 or a.i == cs_vlin_min_int() then cs_vv_err() else cs_vv_int(a.i / cs_vbv_pow2(b.i)) else if cnm == "bv_u8" and cs_len(args) == 1 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in if a.ok == 0 or a.i == cs_vlin_min_int() then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i, 256)) else if cnm == "bv_not_u8" and cs_len(args) == 1 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in if a.ok == 0 or a.i == cs_vlin_min_int() then cs_vv_err() else cs_vv_int(255 - cs_vbv_mod(a.i, 256)) else if cnm == "bv_add_u8" and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i +% b.i, 256)) else if cnm == "bv_sub_u8" and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i -% b.i, 256)) else if cnm == "bv_mul_u8" and cs_len(args) == 2 then let a = cs_veval(cs_asthead(args), env, old_env, ft, d) in let b = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if a.ok == 0 or b.ok == 0 then cs_vv_err() else cs_vv_int(cs_vbv_mod(a.i *% b.i, 256)) else if (cnm == "array_new" or cnm == "array_const") and cs_len(args) == 1 then let dv = cs_veval(cs_asthead(args), env, old_env, ft, d) in if dv.ok == 0 then cs_vv_err() else cs_vv_rec(Cons({key: "__def", val: dv}, Nil)) else if (cnm == "array_store" or cnm == "heap_write") and cs_len(args) == 3 then let ar = cs_veval(cs_asthead(args), env, old_env, ft, d) in let ix = cs_veval(cs_astsecond(args), env, old_env, ft, d) in let vl = cs_veval(cs_asthead(cs_cvtl(cs_cvtl(args))), env, old_env, ft, d) in if ar.ok == 0 or ix.ok == 0 or vl.ok == 0 then cs_vv_err() else let d0 = cs_vflookup("__def", ar.fields) in let fs0 = if d0.ok == 1 then ar.fields else Cons({key: "__def", val: cs_vv_int(ar.i)}, ar.fields) in cs_vv_rec(Cons({key: str(ix.i), val: vl}, fs0)) else if (cnm == "array_select" or cnm == "heap_read") and cs_len(args) == 2 then let ar = cs_veval(cs_asthead(args), env, old_env, ft, d) in let ix = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if ar.ok == 0 or ix.ok == 0 then cs_vv_err() else cs_veval_arr_lookup(str(ix.i), ar) else if (cnm == "points_to" or cnm == "heap_new") and cs_len(args) == 2 then let pt = cs_veval(cs_asthead(args), env, old_env, ft, d) in let vl = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if pt.ok == 0 or vl.ok == 0 then cs_vv_err() else cs_vv_rec(Cons({key: str(pt.i), val: vl}, Cons({key: "__dom", val: cs_vv_int(pt.i)}, Cons({key: "__valid", val: cs_vv_int(1)}, Nil)))) else if cnm == "sep_disjoint" and cs_len(args) == 2 then let p1 = cs_veval(cs_asthead(args), env, old_env, ft, d) in let p2 = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if p1.ok == 0 or p2.ok == 0 then cs_vv_err() else cs_vv_int(if p1.i != p2.i then 1 else 0) else if cnm == "sep_conj" and cs_len(args) == 2 then let h1 = cs_veval(cs_asthead(args), env, old_env, ft, d) in let h2 = cs_veval(cs_astsecond(args), env, old_env, ft, d) in if h1.ok == 0 or h2.ok == 0 then cs_vv_err() else let d1 = cs_vflookup("__dom", h1.fields) in let d2 = cs_vflookup("__dom", h2.fields) in let v1 = cs_vflookup("__valid", h1.fields) in let v2 = cs_vflookup("__valid", h2.fields) in let ok_sep = if d1.ok == 1 and d2.ok == 1 and d1.i != d2.i and (v1.ok == 0 or v1.i != 0) and (v2.ok == 0 or v2.i != 0) then 1 else 0 in {ok: 1, i: ok_sep, fields: Cons({key: "__valid", val: cs_vv_int(ok_sep)}, cs_app(h1.fields, h2.fields))} else if cnm == "sep_valid" and cs_len(args) == 1 then let h = cs_veval(cs_asthead(args), env, old_env, ft, d) in if h.ok == 0 then cs_vv_err() else let v = cs_vflookup("__valid", h.fields) in if v.ok == 1 then v else cs_vv_int(h.i) else if cnm == "forall_range" and cs_len(args) == 4 then let vnm = cs_n4_var_name(cs_asthead(args)) in let lo = cs_veval(cs_astsecond(args), env, old_env, ft, d) in let hi = cs_veval(cs_asthead(cs_cvtl(cs_cvtl(args))), env, old_env, ft, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or lo.i < 0 - 1000000 or hi.i > 1000000 or hi.i - lo.i > 32 then cs_vv_err() else cs_veval_forall_loop(vnm, lo.i, hi.i, cs_asthead(cs_cvtl(cs_cvtl(cs_cvtl(args)))), env, ft) else if cnm == "exists_range" and cs_len(args) == 4 then let vnm = cs_n4_var_name(cs_asthead(args)) in let lo = cs_veval(cs_astsecond(args), env, old_env, ft, d) in let hi = cs_veval(cs_asthead(cs_cvtl(cs_cvtl(args))), env, old_env, ft, d) in if vnm == "" or lo.ok == 0 or hi.ok == 0 or lo.i < 0 - 1000000 or hi.i > 1000000 or hi.i - lo.i > 32 then cs_vv_err() else cs_veval_exists_loop(vnm, lo.i, hi.i, cs_asthead(cs_cvtl(cs_cvtl(cs_cvtl(args)))), env, ft) else cs_veval_ufn(cs_fnlookup(cnm, ft), cs_veval_args(args, env, old_env, ft, d), ft, d)
 fn cs_veval_call(cnm, args, env, old_env, ft, d) = if cnm == "old" and cs_len(args) == 1 then cs_veval(cs_asthead(args), old_env, old_env, ft, d) else if (cnm == "verify" or cnm == "law_check" or cnm == "evolve_approve" or cnm == "borrow" or cnm == "borrow_mut" or cnm == "move" or cnm == "clone") and cs_len(args) >= 1 then cs_veval(cs_asthead(args), env, old_env, ft, d) else if cnm == "grad" and cs_len(args) >= 2 then cs_veval_call("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), cs_cvtl(args), env, old_env, ft, d) else if cnm == "jit" and cs_len(args) >= 2 then cs_veval_call(cs_n4_var_name(cs_asthead(args)), cs_cvtl(args), env, old_env, ft, d) else if cnm == "dec_add" and cs_len(args) == 2 then cs_veval_bin("+", cs_veval(cs_asthead(args), env, old_env, ft, d), cs_veval(cs_astsecond(args), env, old_env, ft, d)) else if cnm == "dec_sub" and cs_len(args) == 2 then cs_veval_bin("-", cs_veval(cs_asthead(args), env, old_env, ft, d), cs_veval(cs_astsecond(args), env, old_env, ft, d)) else if cnm == "dec_eq" and cs_len(args) == 2 then cs_veval_bin("==", cs_veval(cs_asthead(args), env, old_env, ft, d), cs_veval(cs_astsecond(args), env, old_env, ft, d)) else if cnm == "dec_lt" and cs_len(args) == 2 then cs_veval_bin("<", cs_veval(cs_asthead(args), env, old_env, ft, d), cs_veval(cs_astsecond(args), env, old_env, ft, d)) else if cnm == "dec_le" and cs_len(args) == 2 then cs_veval_bin("<=", cs_veval(cs_asthead(args), env, old_env, ft, d), cs_veval(cs_astsecond(args), env, old_env, ft, d)) else if cnm == "dec_gt" and cs_len(args) == 2 then cs_veval_bin(">", cs_veval(cs_asthead(args), env, old_env, ft, d), cs_veval(cs_astsecond(args), env, old_env, ft, d)) else if cnm == "dec_ge" and cs_len(args) == 2 then cs_veval_bin(">=", cs_veval(cs_asthead(args), env, old_env, ft, d), cs_veval(cs_astsecond(args), env, old_env, ft, d)) else cs_veval_m1_call(cnm, args, env, old_env, ft, d)
 fn cs_veval_ufn(mf, ra, ft, d) = match mf
     Nil          => cs_vv_err()
@@ -1690,7 +1928,7 @@ fn cs_veval_ufn(mf, ra, ft, d) = match mf
 fn cs_veval_ufn2(fn0, vals, ft, d) = match fn0
     Fn(fnm, ps, body) => let fenv = cs_vbind_ps(ps, vals) in cs_veval(body, fenv, fenv, ft, d + 1)
     _                 => cs_vv_err()
-fn cs_vpts_a() = Cons(0, Cons(1, Cons(0 - 1, Nil)))
+fn cs_vpts_a() = Cons(0, Cons(1, Cons(0 - 1, Cons(9223372036854775807, Cons(cs_vlin_min_int(), Nil)))))
 fn cs_vpts_b() = Cons(0, Cons(1, Nil))
 fn cs_vpts_c() = Cons(0, Cons(1, Nil))
 fn cs_vpts_for(idx, total) = if total <= 1 then cs_vpts_a() else if total == 2 then cs_vpts_b() else if idx < 5 then cs_vpts_c() else Cons(0, Nil)
@@ -1717,14 +1955,16 @@ fn cs_vprove_law_envs(envs, body, ft, undec) = match envs
     Cons(env, r) => let rb = cs_veval(body, env, env, ft, 0) in if rb.ok == 0 then cs_vprove_law_envs(r, body, ft, 1) else if rb.i == 0 then {status: "refuted", cex: cs_vfmt_env(env)} else cs_vprove_law_envs(r, body, ft, undec)
 
 ## --- Stage B: Sound QF_LIA (Quantifier-Free Linear Integer Arithmetic) Decision Procedure (Fourier-Motzkin) ---
-fn cs_vlin_ovf(x) = if x > 2000000000 or x < 0 - 2000000000 then 1 else 0
-fn cs_vlin_mul_ovf(k, c) = if k == 0 or c == 0 then 0 else let p = k * c in if p / k != c or cs_vlin_ovf(p) == 1 then 1 else 0
+fn cs_vlin_ovf(x) = if x > 100000000000000000 or x < 0 - 100000000000000000 then 1 else 0
+fn cs_vlin_coeff_ovf(x) = if x > 2000000000 or x < 0 - 2000000000 then 1 else 0
+fn cs_vlin_abs(x) = if x < 0 then 0 - x else x
+fn cs_vlin_mul_ovf(k, c) = if k == 0 or c == 0 then 0 else if cs_vlin_ovf(k) == 1 or cs_vlin_ovf(c) == 1 then 1 else if cs_vlin_abs(c) > 100000000000000000 / cs_vlin_abs(k) then 1 else 0
 fn cs_vlin_cs_ovf(cs) = match cs
     Nil        => 0
-    Cons(h, t) => if cs_vlin_ovf(h.c) == 1 then 1 else cs_vlin_cs_ovf(t)
+    Cons(h, t) => if cs_vlin_coeff_ovf(h.c) == 1 then 1 else cs_vlin_cs_ovf(t)
 fn cs_vlin_scale_ovf(k, cs) = match cs
     Nil        => 0
-    Cons(h, t) => if cs_vlin_mul_ovf(k, h.c) == 1 then 1 else cs_vlin_scale_ovf(k, t)
+    Cons(h, t) => if cs_vlin_coeff_ovf(k) == 1 or cs_vlin_coeff_ovf(h.c) == 1 or (k != 0 and cs_vlin_abs(h.c) > 2000000000 / cs_vlin_abs(k)) then 1 else cs_vlin_scale_ovf(k, t)
 fn cs_vlin_const(n) = if cs_vlin_ovf(n) == 1 then cs_vlin_err() else {ok: 1, c0: n, cs: Nil}
 fn cs_vlin_var(nm) = {ok: 1, c0: 0, cs: Cons({k: nm, c: 1}, Nil)}
 fn cs_vlin_err() = {ok: 0, c0: 0, cs: Nil}
@@ -1746,13 +1986,19 @@ fn cs_vlin_add(a, b) = if a.ok == 0 or b.ok == 0 or cs_vlin_ovf(a.c0) == 1 or cs
 fn cs_vlin_scale(k, a) = if a.ok == 0 or cs_vlin_ovf(k) == 1 or cs_vlin_mul_ovf(k, a.c0) == 1 or cs_vlin_scale_ovf(k, a.cs) == 1 then cs_vlin_err() else {ok: 1, c0: k * a.c0, cs: cs_vlin_scale_cs(k, a.cs)}
 fn cs_vlin_sub(a, b) = cs_vlin_add(a, cs_vlin_scale(0 - 1, b))
 fn cs_vmono_key(k1, k2) = if k1 <= k2 then k1 + "*" + k2 else k2 + "*" + k1
+fn cs_vlin_mul_t1_ovf(c1, cs2) = match cs2
+    Nil        => 0
+    Cons(h, t) => if cs_vlin_mul_ovf(c1, h.c) == 1 then 1 else cs_vlin_mul_t1_ovf(c1, t)
+fn cs_vlin_mul_cs_ovf(cs1, cs2) = match cs1
+    Nil        => 0
+    Cons(h, t) => if cs_vlin_mul_t1_ovf(h.c, cs2) == 1 then 1 else cs_vlin_mul_cs_ovf(t, cs2)
 fn cs_vlin_mul_term_cs(k1, c1, cs2) = match cs2
     Nil        => Nil
     Cons(h, t) => cs_vlin_add_term(cs_vmono_key(k1, h.k), c1 * h.c, cs_vlin_mul_term_cs(k1, c1, t))
 fn cs_vlin_mul_cs(cs1, cs2) = match cs1
     Nil        => Nil
     Cons(h, t) => cs_vlin_add_cs(cs_vlin_mul_term_cs(h.k, h.c, cs2), cs_vlin_mul_cs(t, cs2))
-fn cs_vlin_mul(a, b) = if a.ok == 0 or b.ok == 0 then cs_vlin_err() else if cs_isnil(a.cs) == 1 then cs_vlin_scale(a.c0, b) else if cs_isnil(b.cs) == 1 then cs_vlin_scale(b.c0, a) else let t0 = cs_vlin_add(cs_vlin_scale(a.c0, b), cs_vlin_scale(b.c0, {ok: 1, c0: 0, cs: a.cs})) in {ok: 1, c0: t0.c0, cs: cs_vlin_add_cs(t0.cs, cs_vlin_mul_cs(a.cs, b.cs))}
+fn cs_vlin_mul(a, b) = if a.ok == 0 or b.ok == 0 then cs_vlin_err() else if cs_isnil(a.cs) == 1 then cs_vlin_scale(a.c0, b) else if cs_isnil(b.cs) == 1 then cs_vlin_scale(b.c0, a) else let t0 = cs_vlin_add(cs_vlin_scale(a.c0, b), cs_vlin_scale(b.c0, {ok: 1, c0: 0, cs: a.cs})) in if t0.ok == 0 or cs_vlin_mul_cs_ovf(a.cs, b.cs) == 1 then cs_vlin_err() else let cs = cs_vlin_add_cs(t0.cs, cs_vlin_mul_cs(a.cs, b.cs)) in if cs_vlin_cs_ovf(cs) == 1 then cs_vlin_err() else {ok: 1, c0: t0.c0, cs: cs}
 fn cs_vlin_is_zero(l) = if l.ok == 1 and l.c0 == 0 and cs_isnil(l.cs) == 1 then 1 else 0
 fn cs_vlin_eq(a, b) = cs_vlin_is_zero(cs_vlin_sub(a, b))
 fn cs_phd_cs(cs) = match cs
@@ -1828,13 +2074,13 @@ fn cs_vnia_all_diff_sq(vars) = match vars
     Cons(v, r) => cs_app(cs_vnia_diff_sq_pairs(v, r), cs_vnia_all_diff_sq(r))
 fn cs_vnia_prod_pair(v1, lb1, vars, hyps) = match vars
     Nil         => Nil
-    Cons(v2, r) => let lb2 = cs_vnia_var_lb(v2, hyps) in let ub1 = cs_vnia_var_ub(v1, hyps) in let ub2 = cs_vnia_var_ub(v2, hyps) in let rest0 = cs_vnia_prod_pair(v1, lb1, r, hyps) in let rest = if lb1 >= 0 and lb2 >= 0 and ub1 < 999999 and ub2 < 999999 then Cons({ok: 1, c0: ub1 * ub2, cs: Cons({k: cs_vmono_key(v1, v2), c: 0 - 1}, Nil)}, Cons(cs_vlin_mul(cs_vlin_sub(cs_vlin_const(ub1), cs_vlin_var(v1)), cs_vlin_sub(cs_vlin_const(ub2), cs_vlin_var(v2))), rest0)) else rest0 in if lb1 >= 0 and lb2 >= 0 then Cons({ok: 1, c0: 0 - lb1 * lb2, cs: Cons({k: cs_vmono_key(v1, v2), c: 1}, Nil)}, Cons(cs_vlin_mul(cs_vlin_sub(cs_vlin_var(v1), cs_vlin_const(lb1)), cs_vlin_sub(cs_vlin_var(v2), cs_vlin_const(lb2))), rest)) else rest
+    Cons(v2, r) => let lb2 = cs_vnia_var_lb(v2, hyps) in let ub1 = cs_vnia_var_ub(v1, hyps) in let ub2 = cs_vnia_var_ub(v2, hyps) in let rest0 = cs_vnia_prod_pair(v1, lb1, r, hyps) in let rest = if lb1 >= 0 and lb2 >= 0 and ub1 < 999999 and ub2 < 999999 then Cons({ok: 1, c0: ub1 * ub2, cs: Cons({k: cs_vmono_key(v1, v2), c: 0 - 1}, Nil)}, Cons(cs_vlin_mul(cs_vlin_sub(cs_vlin_const(ub1), cs_vlin_var(v1)), cs_vlin_sub(cs_vlin_const(ub2), cs_vlin_var(v2))), rest0)) else rest0 in if lb1 >= 0 and lb2 >= 0 and lb1 < 999999 and lb2 < 999999 then Cons({ok: 1, c0: 0 - lb1 * lb2, cs: Cons({k: cs_vmono_key(v1, v2), c: 1}, Nil)}, Cons(cs_vlin_mul(cs_vlin_sub(cs_vlin_var(v1), cs_vlin_const(lb1)), cs_vlin_sub(cs_vlin_var(v2), cs_vlin_const(lb2))), rest)) else rest
 fn cs_vnia_prod_hyps(vars, hyps) = match vars
     Nil         => Nil
     Cons(v1, r) => let lb1 = cs_vnia_var_lb(v1, hyps) in cs_app(if lb1 >= 0 then cs_vnia_prod_pair(v1, lb1, vars, hyps) else Nil, cs_vnia_prod_hyps(r, hyps))
 fn cs_vnia_mono_z(x, y, vars, hyps) = match vars
     Nil        => Nil
-    Cons(z, r) => let lbz = cs_vnia_var_lb(z, hyps) in let rest0 = cs_vnia_mono_z(x, y, r, hyps) in let d_xy = cs_vlin_sub(cs_vlin_var(cs_vmono_key(x, z)), cs_vlin_var(cs_vmono_key(y, z))) in let rest = if lbz > 0 then Cons(cs_vlin_sub(d_xy, cs_vlin_scale(lbz, cs_vlin_sub(cs_vlin_var(x), cs_vlin_var(y)))), rest0) else rest0 in if lbz >= 0 then Cons(d_xy, rest) else rest
+    Cons(z, r) => let lbz = cs_vnia_var_lb(z, hyps) in let rest0 = cs_vnia_mono_z(x, y, r, hyps) in let d_xy = cs_vlin_sub(cs_vlin_var(cs_vmono_key(x, z)), cs_vlin_var(cs_vmono_key(y, z))) in let rest = if lbz > 0 and lbz < 999999 then Cons(cs_vlin_sub(d_xy, cs_vlin_scale(lbz, cs_vlin_sub(cs_vlin_var(x), cs_vlin_var(y)))), rest0) else rest0 in if lbz >= 0 then Cons(d_xy, rest) else rest
 fn cs_vnia_mono_h1(h, vars, hyps) = if h.c0 <= 0 and cs_len(h.cs) == 2 then let c1 = cs_phd_cs(h.cs) in let c2 = cs_phd_cs(cs_cvtl_cs(h.cs)) in if c1.c == 1 and c2.c == 0 - 1 then cs_vnia_mono_z(c1.k, c2.k, vars, hyps) else if c2.c == 1 and c1.c == 0 - 1 then cs_vnia_mono_z(c2.k, c1.k, vars, hyps) else Nil else Nil
 fn cs_cvtl_cs(cs) = match cs
     Nil        => Nil
@@ -1844,7 +2090,7 @@ fn cs_vnia_mono_hyps(cur, vars, hyps) = match cur
     Cons(h, t) => cs_app(cs_vnia_mono_h1(h, vars, hyps), cs_vnia_mono_hyps(t, vars, hyps))
 fn cs_vnia_enrich_hyps(goal_hyps, hyps) = let bvars = cs_vnia_base_vars(goal_hyps, cs_vnia_base_vars(hyps, Nil)) in let sqs = if cs_isnil(bvars) == 0 then cs_app(cs_vnia_sq_hyps(bvars), cs_vnia_all_diff_sq(bvars)) else Nil in cs_app(sqs, cs_app(cs_vnia_prod_hyps(bvars, hyps), cs_app(cs_vnia_mono_hyps(hyps, bvars, hyps), hyps)))
 fn cs_vlin_u_div_hyps(la, k, q) = let r = cs_vlin_sub(la, cs_vlin_scale(k, q)) in Cons(r, Cons(cs_vlin_sub(cs_vlin_const(k - 1), r), Nil))
-fn cs_vlin_div_hyps(la, k, q, hyps) = let r = cs_vlin_sub(la, cs_vlin_scale(k, q)) in let base = Cons(cs_vlin_add(r, cs_vlin_const(k - 1)), Cons(cs_vlin_sub(cs_vlin_const(k - 1), r), Nil)) in if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 1 then Cons(r, base) else base
+fn cs_vlin_div_hyps(la, k, q, hyps) = let r = cs_vlin_sub(la, cs_vlin_scale(k, q)) in let base = Cons(cs_vlin_add(r, cs_vlin_const(k - 1)), Cons(cs_vlin_sub(cs_vlin_const(k - 1), r), Nil)) in if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 1 then Cons(q, Cons(r, base)) else base
 fn cs_vlin_add_k(k, ks) = if k < 0 or cs_vmem_int(k, ks) == 1 then ks else Cons(k, ks)
 fn cs_vlin_cand_ks(vb, hyps, acc) = match hyps
     Nil        => acc
@@ -1854,7 +2100,7 @@ fn cs_vlin_vardiv_ratios(la, lb, q, ks, hyps) = match ks
     Cons(k, r) => let rest = cs_vlin_vardiv_ratios(la, lb, q, r, hyps) in let r1 = if cs_vfm_check_unsat(Cons(cs_vlin_sub(la, cs_vlin_scale(k + 1, lb)), hyps)) == 1 then Cons(cs_vlin_sub(cs_vlin_const(k), q), rest) else rest in if k > 0 and cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_sub(cs_vlin_scale(k, lb), la), cs_vlin_const(1)), hyps)) == 1 then Cons(cs_vlin_sub(q, cs_vlin_const(k)), r1) else r1
 fn cs_vlin_vardiv_hyps(la, lb, q, hyps) = if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 0 or cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 0 then Nil else let ks = cs_vlin_cand_ks((cs_phd_cs(lb.cs)).k, hyps, Cons(0, Cons(1, Cons(2, Cons(10, Cons(100, Nil)))))) in let base = Cons(q, Cons(cs_vlin_sub(la, q), cs_vlin_vardiv_ratios(la, lb, q, ks, hyps))) in let b0 = if cs_vlin_eq(la, lb) == 1 then Cons(cs_vlin_sub(q, cs_vlin_const(1)), Cons(cs_vlin_sub(cs_vlin_const(1), q), base)) else base in if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), la), hyps)) == 1 and cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(1), lb), hyps)) == 1 then Cons(cs_vlin_sub(cs_vlin_sub(la, q), cs_vlin_const(1)), b0) else b0
 fn cs_vlin_varmod_hyps(la, lb, m, hyps) = if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 0 or cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 0 then Nil else let base = Cons(m, Cons(cs_vlin_sub(cs_vlin_sub(lb, cs_vlin_const(1)), m), Cons(cs_vlin_sub(la, m), Nil))) in if cs_vlin_eq(la, lb) == 1 then Cons(cs_vlin_sub(cs_vlin_const(0), m), base) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(la, lb), hyps)) == 1 then Cons(cs_vlin_sub(m, la), base) else base
-fn cs_vis_struct_call(cnm) = if cnm == "array_new" or cnm == "array_const" or cnm == "array_store" or cnm == "heap_write" or cnm == "points_to" or cnm == "heap_new" or cnm == "sep_conj" then 1 else 0
+fn cs_vis_struct_call(cnm) = if cnm == "array_new" or cnm == "array_const" or cnm == "array_store" or cnm == "heap_write" or cnm == "points_to" or cnm == "heap_new" or cnm == "sep_conj" or cnm == "__lume_rec_update" then 1 else 0
 fn cs_vis_struct_expr(e) = match e
     Call(cnm, args) => cs_vis_struct_call(cnm)
     Rec(items)      => 1
@@ -1882,12 +2128,12 @@ fn cs_vlin_xor_cancel(a, lb, hyps, lenv, ft, d) = match a
 fn cs_vlin_and_idem(a, lb, hyps, lenv, ft, d) = match a
     Call(cnm, args) => if (cnm == "bv_and" or cnm == "bit_and") and cs_len(args) == 2 then let lk = cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d) in if lk.ok == 1 and cs_vlin_eq(lk, lb) == 1 then cs_vlin_expr(a, hyps, lenv, ft, d) else cs_vlin_err() else cs_vlin_err()
     _               => cs_vlin_err()
-fn cs_vlin_bv_xor(a, b, hyps, lenv, ft, d) = let la = cs_vlin_expr(a, hyps, lenv, ft, d) in let lb = cs_vlin_expr(b, hyps, lenv, ft, d) in if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_vlin_eq(la, lb) == 1 then cs_vlin_const(0) else if cs_vlin_is_zero(la) == 1 then lb else if cs_vlin_is_zero(lb) == 1 then la else if cs_isnil(la.cs) == 1 and cs_isnil(lb.cs) == 1 then cs_vlin_const(cs_vbv_xor(cs_vbv_mod(la.c0, 65536), cs_vbv_mod(lb.c0, 65536), 16)) else let cx = cs_vlin_xor_cancel(a, lb, hyps, lenv, ft, d) in if cx.ok == 1 then cx else let cy = cs_vlin_xor_cancel(b, la, hyps, lenv, ft, d) in if cy.ok == 1 then cy else cs_vlin_var("bv_xor(" + cs_vmono_key(cs_vlin_key_str(la), cs_vlin_key_str(lb)) + ")")
-fn cs_vlin_bv_and(a, b, hyps, lenv, ft, d) = let la = cs_vlin_expr(a, hyps, lenv, ft, d) in let lb = cs_vlin_expr(b, hyps, lenv, ft, d) in if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_vlin_is_zero(la) == 1 or cs_vlin_is_zero(lb) == 1 then cs_vlin_const(0) else if cs_vlin_eq(la, lb) == 1 then la else if cs_isnil(la.cs) == 1 and cs_isnil(lb.cs) == 1 then cs_vlin_const(cs_vbv_and(cs_vbv_mod(la.c0, 65536), cs_vbv_mod(lb.c0, 65536), 16)) else let ci = cs_vlin_and_idem(a, lb, hyps, lenv, ft, d) in if ci.ok == 1 then ci else if cs_isnil(lb.cs) == 1 and (lb.c0 == 1 or lb.c0 == 3 or lb.c0 == 7 or lb.c0 == 15 or lb.c0 == 31 or lb.c0 == 63 or lb.c0 == 127 or lb.c0 == 255) then (if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 1 and cs_vfm_check_unsat(Cons(cs_vlin_sub(la, cs_vlin_const(lb.c0 + 1)), hyps)) == 1 then la else cs_vlin_sub(la, cs_vlin_scale(lb.c0 + 1, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0 + 1) + ")")))) else cs_vlin_var("bv_and(" + cs_vmono_key(cs_vlin_key_str(la), cs_vlin_key_str(lb)) + ")")
-fn cs_vlin_bv_or(a, b, hyps, lenv, ft, d) = let la = cs_vlin_expr(a, hyps, lenv, ft, d) in let lb = cs_vlin_expr(b, hyps, lenv, ft, d) in if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_vlin_is_zero(la) == 1 then lb else if cs_vlin_is_zero(lb) == 1 then la else if cs_vlin_eq(la, lb) == 1 then la else if cs_isnil(la.cs) == 1 and cs_isnil(lb.cs) == 1 then cs_vlin_const(cs_vbv_or(cs_vbv_mod(la.c0, 65536), cs_vbv_mod(lb.c0, 65536), 16)) else cs_vlin_var("bv_or(" + cs_vmono_key(cs_vlin_key_str(la), cs_vlin_key_str(lb)) + ")")
+fn cs_vlin_bv_xor(a, b, hyps, lenv, ft, d) = let la = cs_vlin_expr(a, hyps, lenv, ft, d) in let lb = cs_vlin_expr(b, hyps, lenv, ft, d) in if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_vlin_eq(la, lb) == 1 then cs_vlin_const(0) else if cs_vlin_is_zero(la) == 1 then lb else if cs_vlin_is_zero(lb) == 1 then la else if cs_isnil(la.cs) == 1 and cs_isnil(lb.cs) == 1 then (if la.c0 >= 0 and la.c0 < 65536 and lb.c0 >= 0 and lb.c0 < 65536 then cs_vlin_const(cs_vbv_xor(la.c0, lb.c0, 16)) else cs_vlin_err()) else let cx = cs_vlin_xor_cancel(a, lb, hyps, lenv, ft, d) in if cx.ok == 1 then cx else let cy = cs_vlin_xor_cancel(b, la, hyps, lenv, ft, d) in if cy.ok == 1 then cy else cs_vlin_var("bv_xor(" + cs_vmono_key(cs_vlin_key_str(la), cs_vlin_key_str(lb)) + ")")
+fn cs_vlin_bv_and(a, b, hyps, lenv, ft, d) = let la = cs_vlin_expr(a, hyps, lenv, ft, d) in let lb = cs_vlin_expr(b, hyps, lenv, ft, d) in if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_vlin_is_zero(la) == 1 or cs_vlin_is_zero(lb) == 1 then cs_vlin_const(0) else if cs_vlin_eq(la, lb) == 1 then la else if cs_isnil(la.cs) == 1 and cs_isnil(lb.cs) == 1 then (if la.c0 >= 0 and la.c0 < 65536 and lb.c0 >= 0 and lb.c0 < 65536 then cs_vlin_const(cs_vbv_and(la.c0, lb.c0, 16)) else cs_vlin_err()) else let ci = cs_vlin_and_idem(a, lb, hyps, lenv, ft, d) in if ci.ok == 1 then ci else if cs_isnil(lb.cs) == 1 and (lb.c0 == 1 or lb.c0 == 3 or lb.c0 == 7 or lb.c0 == 15 or lb.c0 == 31 or lb.c0 == 63 or lb.c0 == 127 or lb.c0 == 255) then (if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 1 and cs_vfm_check_unsat(Cons(cs_vlin_sub(la, cs_vlin_const(lb.c0 + 1)), hyps)) == 1 then la else cs_vlin_sub(la, cs_vlin_scale(lb.c0 + 1, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0 + 1) + ")")))) else cs_vlin_var("bv_and(" + cs_vmono_key(cs_vlin_key_str(la), cs_vlin_key_str(lb)) + ")")
+fn cs_vlin_bv_or(a, b, hyps, lenv, ft, d) = let la = cs_vlin_expr(a, hyps, lenv, ft, d) in let lb = cs_vlin_expr(b, hyps, lenv, ft, d) in if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_vlin_is_zero(la) == 1 then lb else if cs_vlin_is_zero(lb) == 1 then la else if cs_vlin_eq(la, lb) == 1 then la else if cs_isnil(la.cs) == 1 and cs_isnil(lb.cs) == 1 then (if la.c0 >= 0 and la.c0 < 65536 and lb.c0 >= 0 and lb.c0 < 65536 then cs_vlin_const(cs_vbv_or(la.c0, lb.c0, 16)) else cs_vlin_err()) else cs_vlin_var("bv_or(" + cs_vmono_key(cs_vlin_key_str(la), cs_vlin_key_str(lb)) + ")")
 fn cs_vlin_bv_u8(a, hyps, lenv, ft, d) = let la = cs_vlin_expr(a, hyps, lenv, ft, d) in if la.ok == 0 then cs_vlin_err() else if cs_isnil(la.cs) == 1 then cs_vlin_const(cs_vbv_mod(la.c0, 256)) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 1 and cs_vfm_check_unsat(Cons(cs_vlin_sub(la, cs_vlin_const(256)), hyps)) == 1 then la else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(255), la), hyps)) == 1 and cs_vfm_check_unsat(Cons(cs_vlin_sub(la, cs_vlin_const(512)), hyps)) == 1 then cs_vlin_sub(la, cs_vlin_const(256)) else cs_vlin_sub(la, cs_vlin_scale(256, cs_vlin_var("div(" + cs_vlin_key_str(la) + ",256)")))
 fn cs_vcollect_div_hyps_e(e, hyps, lenv, ft, d) = match e
-    Bin(op, a, b)   => let h1 = cs_app(cs_vcollect_div_hyps_e(a, hyps, lenv, ft, d), cs_vcollect_div_hyps_e(b, hyps, lenv, ft, d)) in if op == "/" or op == "%" then let la = cs_vlin_expr(a, hyps, lenv, ft, d) in let lb = cs_vlin_expr(b, hyps, lenv, ft, d) in if la.ok == 1 and lb.ok == 1 and cs_isnil(lb.cs) == 1 and lb.c0 > 0 then cs_app(cs_vlin_div_hyps(la, lb.c0, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")"), hyps), h1) else if la.ok == 1 and lb.ok == 1 and op == "/" then cs_app(cs_vlin_vardiv_hyps(la, lb, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")"), hyps), h1) else if la.ok == 1 and lb.ok == 1 and op == "%" then cs_app(cs_vlin_varmod_hyps(la, lb, cs_vlin_var("mod(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")"), hyps), h1) else h1 else h1
+    Bin(op, a, b)   => let h1 = cs_app(cs_vcollect_div_hyps_e(a, hyps, lenv, ft, d), cs_vcollect_div_hyps_e(b, hyps, lenv, ft, d)) in let hcur = cs_app(h1, hyps) in if op == "/" or op == "%" then let la = cs_vlin_expr(a, hcur, lenv, ft, d) in let lb = cs_vlin_expr(b, hcur, lenv, ft, d) in if la.ok == 1 and lb.ok == 1 and cs_isnil(lb.cs) == 1 and lb.c0 > 0 then cs_app(cs_vlin_div_hyps(la, lb.c0, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")"), hcur), h1) else if la.ok == 1 and lb.ok == 1 and op == "/" then cs_app(cs_vlin_vardiv_hyps(la, lb, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")"), hcur), h1) else if la.ok == 1 and lb.ok == 1 and op == "%" then cs_app(cs_vlin_varmod_hyps(la, lb, cs_vlin_var("mod(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")"), hcur), h1) else h1 else h1
     Call(cnm, args) => let h1 = cs_vcollect_div_hyps_args(args, hyps, lenv, ft, d) in if (cnm == "bv_and" or cnm == "bit_and") and cs_len(args) == 2 then let la = cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d) in let lb = cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d) in if la.ok == 1 and lb.ok == 1 and cs_isnil(lb.cs) == 1 and (lb.c0 == 1 or lb.c0 == 3 or lb.c0 == 7 or lb.c0 == 15 or lb.c0 == 31 or lb.c0 == 63 or lb.c0 == 127 or lb.c0 == 255) then cs_app(cs_vlin_u_div_hyps(la, lb.c0 + 1, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0 + 1) + ")")), h1) else h1 else if (cnm == "bv_u8" or cnm == "bv_not_u8") and cs_len(args) == 1 then let la = cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d) in if la.ok == 1 then cs_app(cs_vlin_u_div_hyps(la, 256, cs_vlin_var("div(" + cs_vlin_key_str(la) + ",256)")), h1) else h1 else if cnm == "bv_add_u8" and cs_len(args) == 2 then let la = cs_vlin_expr(Bin("+", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) in if la.ok == 1 then cs_app(cs_vlin_u_div_hyps(la, 256, cs_vlin_var("div(" + cs_vlin_key_str(la) + ",256)")), h1) else h1 else h1
     If(c, t, e2)    => cs_app(cs_vcollect_div_hyps_e(c, hyps, lenv, ft, d), cs_app(cs_vcollect_div_hyps_e(t, hyps, lenv, ft, d), cs_vcollect_div_hyps_e(e2, hyps, lenv, ft, d)))
     LetIn(nm, v, b) => cs_app(cs_vcollect_div_hyps_e(v, hyps, lenv, ft, d), cs_vcollect_div_hyps_e(b, hyps, lenv, ft, d))
@@ -1908,7 +2154,7 @@ fn cs_vlin_bind_ps(ps, vs) = match ps
 fn cs_vlin_bind_p1(p, r, vs) = match vs
     Nil         => Nil
     Cons(v, vr) => Cons({k: p, v: v}, cs_vlin_bind_ps(r, vr))
-fn cs_vlin_bin_op(op, l, r, hyps, lenv, ft, d) = let la = cs_vlin_expr(l, hyps, lenv, ft, d) in let lb = cs_vlin_expr(r, hyps, lenv, ft, d) in if op == "+" then cs_vlin_add(la, lb) else if op == "-" then cs_vlin_sub(la, lb) else if op == "*" then cs_vlin_mul(la, lb) else if op == "/" then (if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_isnil(lb.cs) == 1 and lb.c0 > 0 then (if cs_isnil(la.cs) == 1 then cs_vlin_const(la.c0 / lb.c0) else cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")")) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 1 then cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")") else cs_vlin_err()) else if op == "%" then (if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_isnil(lb.cs) == 1 and lb.c0 > 0 then (if cs_isnil(la.cs) == 1 then cs_vlin_const(la.c0 % lb.c0) else cs_vlin_sub(la, cs_vlin_scale(lb.c0, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")")))) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 1 then cs_vlin_var("mod(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")") else cs_vlin_err()) else cs_vlin_err()
+fn cs_vlin_bin_op(op, l, r, hyps, lenv, ft, d) = let la = cs_vlin_expr(l, hyps, lenv, ft, d) in let lb = cs_vlin_expr(r, hyps, lenv, ft, d) in if op == "+" then cs_vlin_add(la, lb) else if op == "-" then cs_vlin_sub(la, lb) else if op == "*" then cs_vlin_mul(la, lb) else if op == "/" then (if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_isnil(lb.cs) == 1 and lb.c0 > 0 then (if cs_isnil(la.cs) == 1 then cs_vlin_const(la.c0 / lb.c0) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 1 then cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")") else cs_vlin_err()) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 1 then cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")") else cs_vlin_err()) else if op == "%" then (if la.ok == 0 or lb.ok == 0 then cs_vlin_err() else if cs_isnil(lb.cs) == 1 and lb.c0 > 0 then (if cs_isnil(la.cs) == 1 then cs_vlin_const(la.c0 % lb.c0) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0 - 1), la), hyps)) == 1 then cs_vlin_sub(la, cs_vlin_scale(lb.c0, cs_vlin_var("div(" + cs_vlin_key_str(la) + "," + str(lb.c0) + ")"))) else cs_vlin_err()) else if cs_vfm_check_unsat(Cons(cs_vlin_sub(cs_vlin_const(0), lb), hyps)) == 1 then cs_vlin_var("mod(" + cs_vlin_key_str(la) + "," + cs_vlin_key_str(lb) + ")") else cs_vlin_err()) else cs_vlin_err()
 fn cs_cert_rec_lookup(fld, items, def) = match items
     Nil        => def
     Cons(h, t) => if h.key == fld then h.val else cs_cert_rec_lookup(fld, t, def)
@@ -1919,6 +2165,7 @@ fn cs_vfield_root(o, hyps, lenv, ft, d) = match o
 fn cs_vlin_field(o, fld, hyps, lenv, ft, d) = match o
     Rec(items)      => cs_vlin_expr(cs_cert_rec_lookup(fld, items, Num(0)), hyps, lenv, ft, d)
     RecT(tn, items) => cs_vlin_expr(cs_cert_rec_lookup(fld, items, Num(0)), hyps, lenv, ft, d)
+    Call(cnm, args) => if cnm == "__lume_rec_update" and cs_len(args) == 2 then cs_vlin_expr(cs_cert_rec_lookup(fld, cs_ps_rec_items(cs_astsecond(args)), Field(cs_asthead(args), fld)), hyps, lenv, ft, d) else cs_vlin_err()
     Var(vnm)        => let rt = cs_vfield_root(o, hyps, lenv, ft, d) in let lk = cs_vlin_lookup(rt + "." + fld, lenv) in if lk.ok == 1 then lk else cs_vlin_var("field(" + rt + "." + fld + ")")
     Field(o2, fn2)  => let rt = cs_vfield_root(o, hyps, lenv, ft, d) in if rt == "" then cs_vlin_err() else let lk = cs_vlin_lookup(rt + "." + fld, lenv) in if lk.ok == 1 then lk else cs_vlin_var("field(" + rt + "." + fld + ")")
     _               => cs_vlin_err()
@@ -1949,7 +2196,7 @@ fn cs_vnorm_if(c, t, e2) = match c
 fn cs_vlin_args(args, hyps, lenv, ft, d) = match args
     Nil        => {ok: 1, vals: Nil}
     Cons(h, t) => let rh = cs_vlin_expr(h, hyps, lenv, ft, d) in if rh.ok == 0 then {ok: 0, vals: Nil} else let rt = cs_vlin_args(t, hyps, lenv, ft, d) in if rt.ok == 0 then {ok: 0, vals: Nil} else {ok: 1, vals: Cons(rh, rt.vals)}
-fn cs_vlin_m1_call(cnm, args, hyps, lenv, ft, d) = if (cnm == "bv_xor" or cnm == "bit_xor") and cs_len(args) == 2 then cs_vlin_bv_xor(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if (cnm == "bv_and" or cnm == "bit_and") and cs_len(args) == 2 then cs_vlin_bv_and(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if (cnm == "bv_or" or cnm == "bit_or") and cs_len(args) == 2 then cs_vlin_bv_or(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if (cnm == "bv_shl" or cnm == "bit_shl") and cs_len(args) == 2 then let lk = cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d) in if lk.ok == 1 and cs_isnil(lk.cs) == 1 and lk.c0 >= 0 and lk.c0 < 63 then cs_vlin_scale(cs_vbv_pow2(lk.c0), cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d)) else cs_vlin_err() else if (cnm == "bv_shr" or cnm == "bit_shr") and cs_len(args) == 2 then let la = cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d) in let lk = cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d) in if la.ok == 1 and lk.ok == 1 and cs_isnil(lk.cs) == 1 and lk.c0 >= 0 and lk.c0 < 63 then (if cs_isnil(la.cs) == 1 and la.c0 >= 0 then cs_vlin_const(la.c0 / cs_vbv_pow2(lk.c0)) else cs_vlin_var("shr(" + cs_vlin_key_str(la) + "," + str(lk.c0) + ")")) else cs_vlin_err() else if cnm == "bv_u8" and cs_len(args) == 1 then cs_vlin_bv_u8(cs_asthead(args), hyps, lenv, ft, d) else if cnm == "bv_not_u8" and cs_len(args) == 1 then cs_vlin_sub(cs_vlin_const(255), cs_vlin_bv_u8(cs_asthead(args), hyps, lenv, ft, d)) else if cnm == "bv_add_u8" and cs_len(args) == 2 then cs_vlin_bv_u8(Bin("+", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "bv_sub_u8" and cs_len(args) == 2 then cs_vlin_bv_u8(Bin("-", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if (cnm == "array_select" or cnm == "heap_read") and cs_len(args) == 2 then cs_varr_select(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if cnm == "sep_valid" and cs_len(args) == 1 then (if cs_vsep_valid(cs_asthead(args), hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else if cnm == "sep_disjoint" and cs_len(args) == 2 then (if cs_vprove_goal(Bin("!=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else if cnm == "forall_range" and cs_len(args) == 4 then (if cs_vprove_forall_range(args, hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else if cnm == "exists_range" and cs_len(args) == 4 then (if cs_vprove_exists_range(args, hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else cs_vlin_ufn(cs_fnlookup(cnm, ft), cs_vlin_args(args, hyps, lenv, ft, d), hyps, ft, d)
+fn cs_vlin_m1_call(cnm, args, hyps, lenv, ft, d) = if (cnm == "bv_xor" or cnm == "bit_xor") and cs_len(args) == 2 then cs_vlin_bv_xor(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if (cnm == "bv_and" or cnm == "bit_and") and cs_len(args) == 2 then cs_vlin_bv_and(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if (cnm == "bv_or" or cnm == "bit_or") and cs_len(args) == 2 then cs_vlin_bv_or(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if (cnm == "bv_shl" or cnm == "bit_shl") and cs_len(args) == 2 then let la = cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d) in let lk = cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d) in if la.ok == 1 and lk.ok == 1 and cs_isnil(lk.cs) == 1 and lk.c0 >= 0 and lk.c0 <= 16 and (cs_isnil(la.cs) == 0 or cs_vlin_mul_ovf(la.c0, cs_vbv_pow2(lk.c0)) == 0) then cs_vlin_scale(cs_vbv_pow2(lk.c0), la) else cs_vlin_err() else if (cnm == "bv_shr" or cnm == "bit_shr") and cs_len(args) == 2 then let la = cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d) in let lk = cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d) in if la.ok == 1 and lk.ok == 1 and cs_isnil(lk.cs) == 1 and lk.c0 >= 0 and lk.c0 < 63 then (if cs_isnil(la.cs) == 1 and la.c0 >= 0 then cs_vlin_const(la.c0 / cs_vbv_pow2(lk.c0)) else cs_vlin_var("shr(" + cs_vlin_key_str(la) + "," + str(lk.c0) + ")")) else cs_vlin_err() else if cnm == "bv_u8" and cs_len(args) == 1 then cs_vlin_bv_u8(cs_asthead(args), hyps, lenv, ft, d) else if cnm == "bv_not_u8" and cs_len(args) == 1 then cs_vlin_sub(cs_vlin_const(255), cs_vlin_bv_u8(cs_asthead(args), hyps, lenv, ft, d)) else if cnm == "bv_add_u8" and cs_len(args) == 2 then cs_vlin_bv_u8(Bin("+", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if cnm == "bv_sub_u8" and cs_len(args) == 2 then cs_vlin_bv_u8(Bin("-", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) else if (cnm == "array_select" or cnm == "heap_read") and cs_len(args) == 2 then cs_varr_select(cs_asthead(args), cs_astsecond(args), hyps, lenv, ft, d) else if cnm == "sep_valid" and cs_len(args) == 1 then (if cs_vsep_valid(cs_asthead(args), hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else if cnm == "sep_disjoint" and cs_len(args) == 2 then (if cs_vprove_goal(Bin("!=", cs_asthead(args), cs_astsecond(args)), hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else if cnm == "forall_range" and cs_len(args) == 4 then (if cs_vprove_forall_range(args, hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else if cnm == "exists_range" and cs_len(args) == 4 then (if cs_vprove_exists_range(args, hyps, lenv, ft, d) == 1 then cs_vlin_const(1) else cs_vlin_err()) else cs_vlin_ufn(cs_fnlookup(cnm, ft), cs_vlin_args(args, hyps, lenv, ft, d), hyps, ft, d)
 fn cs_vlin_call(cnm, args, hyps, lenv, ft, d) = if cnm == "old" and cs_len(args) == 1 then cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d) else if (cnm == "verify" or cnm == "law_check" or cnm == "evolve_approve" or cnm == "borrow" or cnm == "borrow_mut" or cnm == "move" or cnm == "clone") and cs_len(args) >= 1 then cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d) else if cnm == "grad" and cs_len(args) >= 2 then cs_vlin_call("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), cs_cvtl(args), hyps, lenv, ft, d) else if cnm == "jvp" and cs_len(args) == 3 then cs_vlin_mul(cs_vlin_call("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), Cons(cs_astsecond(args), Nil), hyps, lenv, ft, d), cs_vlin_expr(cs_asthead(cs_cvtl(cs_cvtl(args))), hyps, lenv, ft, d)) else if cnm == "vjp" and cs_len(args) == 3 then cs_vlin_mul(cs_vlin_expr(cs_asthead(cs_cvtl(cs_cvtl(args))), hyps, lenv, ft, d), cs_vlin_call("__ad_grad_" + cs_n4_var_name(cs_asthead(args)), Cons(cs_astsecond(args), Nil), hyps, lenv, ft, d)) else if cnm == "jit" and cs_len(args) >= 2 then cs_vlin_call(cs_n4_var_name(cs_asthead(args)), cs_cvtl(args), hyps, lenv, ft, d) else if cnm == "dec_add" and cs_len(args) == 2 then cs_vlin_add(cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d), cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d)) else if cnm == "dec_sub" and cs_len(args) == 2 then cs_vlin_sub(cs_vlin_expr(cs_asthead(args), hyps, lenv, ft, d), cs_vlin_expr(cs_astsecond(args), hyps, lenv, ft, d)) else cs_vlin_m1_call(cnm, args, hyps, lenv, ft, d)
 fn cs_vlin_ufn(mf, ra, hyps, ft, d) = match mf
     Nil          => cs_vlin_err()
@@ -1984,7 +2231,7 @@ fn cs_vprove_let_val(nm, v, b, hyps, lenv, ft) = match v
 fn cs_vfilter_no_var(v, hyps) = match hyps
     Nil        => Nil
     Cons(h, t) => if cs_vlin_coeff(v, h.cs) == 0 then Cons(h, cs_vfilter_no_var(v, t)) else cs_vfilter_no_var(v, t)
-fn cs_vprove_forall_range(args, hyps, lenv, ft, d) = let vnm = cs_n4_var_name(cs_asthead(args)) in let lo_e = cs_astsecond(args) in let hi_e = cs_asthead(cs_cvtl(cs_cvtl(args))) in let pred_e = cs_asthead(cs_cvtl(cs_cvtl(cs_cvtl(args)))) in let llo = cs_vlin_expr(lo_e, hyps, lenv, ft, d) in let lhi = cs_vlin_expr(hi_e, hyps, lenv, ft, d) in if vnm == "" or llo.ok == 0 or lhi.ok == 0 then 0 else let qnm = "_q_" + vnm in let lv = cs_vlin_var(qnm) in let hyps0 = cs_vfilter_no_var(qnm, hyps) in let hyps2 = Cons(cs_vlin_sub(lv, llo), Cons(cs_vlin_sub(lhi, lv), hyps0)) in cs_vprove_goal(pred_e, hyps2, Cons({k: vnm, v: lv}, lenv), ft, d + 1)
+fn cs_vprove_forall_range(args, hyps, lenv, ft, d) = let vnm = cs_n4_var_name(cs_asthead(args)) in let lo_e = cs_astsecond(args) in let hi_e = cs_asthead(cs_cvtl(cs_cvtl(args))) in let pred_e = cs_asthead(cs_cvtl(cs_cvtl(cs_cvtl(args)))) in let llo = cs_vlin_expr(lo_e, hyps, lenv, ft, d) in let lhi = cs_vlin_expr(hi_e, hyps, lenv, ft, d) in if vnm == "" or llo.ok == 0 or lhi.ok == 0 then 0 else let qnm = "_q" + str(d) + "_" + vnm in let lv = cs_vlin_var(qnm) in let hyps0 = cs_vfilter_no_var(qnm, hyps) in let hyps2 = Cons(cs_vlin_sub(lv, llo), Cons(cs_vlin_sub(lhi, lv), hyps0)) in cs_vprove_goal(pred_e, hyps2, Cons({k: vnm, v: lv}, lenv), ft, d + 1)
 fn cs_vprove_exists_w(vnm, w, lo_e, hi_e, pred_e, ctx) = if cs_vprove_goal(Bin(">=", w, lo_e), ctx.hyps, ctx.lenv, ctx.ft, ctx.d) == 1 and cs_vprove_goal(Bin("<=", w, hi_e), ctx.hyps, ctx.lenv, ctx.ft, ctx.d) == 1 and cs_vprove_goal(cs_temp_subst_var(pred_e, vnm, w), ctx.hyps, ctx.lenv, ctx.ft, ctx.d) == 1 then 1 else 0
 fn cs_vprove_exists_list(vnm, ws, lo_e, hi_e, pred_e, ctx) = match ws
     Nil         => 0
@@ -2032,10 +2279,10 @@ fn cs_vcollect_body_hyps(body, hyps, lenv, enss, ft, d) = match body
 fn cs_vmem_int(x, xs) = match xs
     Nil        => 0
     Cons(h, t) => if h == x then 1 else cs_vmem_int(x, t)
-fn cs_vadd_int_uniq(x, xs) = if cs_vmem_int(x, xs) == 1 or cs_len(xs) >= 6 then xs else cs_app(xs, Cons(x, Nil))
+fn cs_vadd_int_uniq(x, xs) = if cs_vmem_int(x, xs) == 1 or cs_len(xs) >= 12 then xs else cs_app(xs, Cons(x, Nil))
 fn cs_vpts_from_hyps(p, hyps, acc) = match hyps
     Nil        => acc
-    Cons(h, t) => let c = cs_vlin_coeff(p, h.cs) in if c == 0 then cs_vpts_from_hyps(p, t, acc) else let b = (0 - h.c0) / c in cs_vpts_from_hyps(p, t, cs_vadd_int_uniq(b + 1, cs_vadd_int_uniq(b, acc)))
+    Cons(h, t) => let c = cs_vlin_coeff(p, h.cs) in if c == 0 or cs_vlin_ovf(h.c0) == 1 then cs_vpts_from_hyps(p, t, acc) else let b = (0 - h.c0) / c in cs_vpts_from_hyps(p, t, cs_vadd_int_uniq(b - 1, cs_vadd_int_uniq(b + 1, cs_vadd_int_uniq(b, acc))))
 fn cs_vfm_trace_hyps(hyps, vars) = match vars
     Nil        => hyps
     Cons(v, r) => let next = cs_vfm_elim_var(v, hyps) in if cs_len(next) > 32 then hyps else cs_app(hyps, cs_vfm_trace_hyps(next, r))
@@ -2082,8 +2329,8 @@ fn cs_cert_subst_env(e, env) = match e
     RecT(tn, items) => RecT(tn, cs_cert_subst_env_rec(items, env))
     Bin(op, a, b)   => Bin(op, cs_cert_subst_env(a, env), cs_cert_subst_env(b, env))
     If(c, t, e2)    => If(cs_cert_subst_env(c, env), cs_cert_subst_env(t, env), cs_cert_subst_env(e2, env))
-    LetIn(nm, v, b) => LetIn(nm, cs_cert_subst_env(v, env), cs_cert_subst_env(b, Cons({k: nm, v: Var(nm)}, env)))
-    VarIn(nm, v, b) => LetIn(nm, cs_cert_subst_env(v, env), cs_cert_subst_env(b, Cons({k: nm, v: Var(nm)}, env)))
+    LetIn(nm, v, b) => let nm2 = "_cinl_" + nm in LetIn(nm2, cs_cert_subst_env(v, env), cs_cert_subst_env(cs_temp_subst_var(b, nm, Var(nm2)), Cons({k: nm2, v: Var(nm2)}, env)))
+    VarIn(nm, v, b) => let nm2 = "_cinl_" + nm in LetIn(nm2, cs_cert_subst_env(v, env), cs_cert_subst_env(cs_temp_subst_var(b, nm, Var(nm2)), Cons({k: nm2, v: Var(nm2)}, env)))
     Call(cnm, args) => Call(cnm, cs_cert_subst_env_args(args, env))
     _               => e
 fn cs_cert_subst_env_args(xs, env) = match xs
@@ -2104,11 +2351,13 @@ fn cs_cert_clean_rec(items, ft, d) = match items
 fn cs_cert_clean_field(co, fld) = match co
     Rec(items)      => cs_cert_rec_lookup(fld, items, Field(co, fld))
     RecT(tn, items) => cs_cert_rec_lookup(fld, items, Field(co, fld))
+    Call(cnm, args) => if cnm == "__lume_rec_update" and cs_len(args) == 2 then cs_cert_rec_lookup(fld, cs_ps_rec_items(cs_astsecond(args)), cs_cert_clean_field(cs_asthead(args), fld)) else Field(co, fld)
     _               => Field(co, fld)
 fn cs_cert_clean_let(nm, cv, b, ft, d) = match cv
     LetIn(nm1, v1, b1) => LetIn(nm1, v1, cs_cert_clean_let(nm, b1, b, ft, d))
     Rec(items)         => cs_cert_clean_e(cs_temp_subst_var(b, nm, cv), ft, d)
     RecT(tn, items)    => cs_cert_clean_e(cs_temp_subst_var(b, nm, cv), ft, d)
+    Call(cnm, args)    => if cnm == "__lume_rec_update" then cs_cert_clean_e(cs_temp_subst_var(b, nm, cv), ft, d) else LetIn(nm, cv, cs_cert_clean_e(b, ft, d))
     _                  => LetIn(nm, cv, cs_cert_clean_e(b, ft, d))
 fn cs_vis_m1_intrinsic(cnm) = if cs_vis_struct_call(cnm) == 1 or cnm == "array_select" or cnm == "heap_read" or cnm == "sep_valid" or cnm == "sep_disjoint" or cnm == "forall_range" or cnm == "exists_range" then 1 else 0
 fn cs_cert_lift_bin_r(op, ca, cb) = match cb
@@ -2133,6 +2382,7 @@ fn cs_cert_embed_let(nm, cv, b, enss, ft) = match cv
     LetIn(nm1, v1, b1) => LetIn(nm1, v1, cs_cert_embed_let(nm, b1, b, enss, ft))
     Rec(items)         => cs_cert_embed_body(cs_temp_subst_var(b, nm, cv), enss, ft)
     RecT(tn, items)    => cs_cert_embed_body(cs_temp_subst_var(b, nm, cv), enss, ft)
+    Call(cnm, args)    => if cnm == "__lume_rec_update" then cs_cert_embed_body(cs_temp_subst_var(b, nm, cv), enss, ft) else LetIn(nm, cv, cs_cert_embed_body(b, enss, ft))
     _                  => LetIn(nm, cv, cs_cert_embed_body(b, enss, ft))
 fn cs_cert_embed_body(body, enss, ft) = match body
     LetIn(nm, v, b) => let gfn = cs_n4_is_grad_let(v) in if gfn != "" then cs_cert_embed_body(cs_n4_subst_call(b, nm, "__ad_grad_" + gfn), enss, ft) else cs_cert_embed_let(nm, cs_cert_clean_e(v, ft, 0), b, enss, ft)
@@ -2162,6 +2412,11 @@ fn cs_vchk_call_req(cnm, args, fnm, mvs, caller_mvs, ft) = match mvs
 fn cs_vchk_rect_inv(tn, items, fnm, miv, ft) = match miv
     Nil         => {proofs: Nil, diags: Nil}
     Cons(iv, r) => let rr = cs_veval_rec(items, Nil, Nil, ft, 0) in if rr.ok == 0 then {proofs: Nil, diags: Nil} else let env = cs_vfields_env(rr.fields) in let ri = cs_veval(iv.inv, env, env, ft, 0) in if ri.ok == 1 and ri.i == 0 then let cex = cs_vfmt_env(env) in {proofs: Cons({name: tn, kind: "invariant", status: "refuted", obligation: cs_expr_sexpr(iv.inv), term: "(implies (and) " + cs_expr_sexpr(iv.inv) + ")", counterexample: cex}, Nil), diags: Cons(cs_mkdiag("V0001", "contract", "contract error: record construction of '" + tn + "' in '" + fnm + "' violates type 'invariant' with counterexample: " + cex, "satisfy the 'invariant' of '" + tn + "' before constructing the record"), Nil)} else {proofs: Nil, diags: Nil}
+fn cs_vis_const_let_val(v) = match v
+    Num(n)        => 1
+    Str(s)        => 1
+    Bin(op, a, b) => if cs_vis_const_let_val(a) == 1 then cs_vis_const_let_val(b) else 0
+    _             => 0
 fn cs_vchk_expr_e(e, fnm, vsigs, invs, ft) = match e
     Call(cnm, args) => let r1 = cs_vchk_call_req(cnm, args, fnm, cs_vsiglookup(cnm, vsigs), cs_vsiglookup(fnm, vsigs), ft) in let r2 = cs_vchk_args_e(args, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, r2.proofs), diags: cs_app(r1.diags, r2.diags)}
     RecT(tn, items) => let r1 = cs_vchk_rect_inv(tn, items, fnm, cs_vinvlookup(tn, invs), ft) in let r2 = cs_vchk_rec_e(items, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, r2.proofs), diags: cs_app(r1.diags, r2.diags)}
@@ -2169,8 +2424,8 @@ fn cs_vchk_expr_e(e, fnm, vsigs, invs, ft) = match e
     Field(o, fld)   => cs_vchk_expr_e(o, fnm, vsigs, invs, ft)
     Bin(op, l, r)   => let r1 = cs_vchk_expr_e(l, fnm, vsigs, invs, ft) in let r2 = cs_vchk_expr_e(r, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, r2.proofs), diags: cs_app(r1.diags, r2.diags)}
     If(c, t, e2)    => let r1 = cs_vchk_expr_e(c, fnm, vsigs, invs, ft) in let r2 = cs_vchk_expr_e(t, fnm, vsigs, invs, ft) in let r3 = cs_vchk_expr_e(e2, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, cs_app(r2.proofs, r3.proofs)), diags: cs_app(r1.diags, cs_app(r2.diags, r3.diags))}
-    LetIn(nm, v, b) => let r1 = cs_vchk_expr_e(v, fnm, vsigs, invs, ft) in let r2 = cs_vchk_expr_e(b, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, r2.proofs), diags: cs_app(r1.diags, r2.diags)}
-    VarIn(nm, v, b) => let r1 = cs_vchk_expr_e(v, fnm, vsigs, invs, ft) in let r2 = cs_vchk_expr_e(b, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, r2.proofs), diags: cs_app(r1.diags, r2.diags)}
+    LetIn(nm, v, b) => let r1 = cs_vchk_expr_e(v, fnm, vsigs, invs, ft) in let r2 = cs_vchk_expr_e(if cs_vis_const_let_val(v) == 1 then cs_temp_subst_var(b, nm, v) else b, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, r2.proofs), diags: cs_app(r1.diags, r2.diags)}
+    VarIn(nm, v, b) => let r1 = cs_vchk_expr_e(v, fnm, vsigs, invs, ft) in let r2 = cs_vchk_expr_e(if cs_vis_const_let_val(v) == 1 then cs_temp_subst_var(b, nm, v) else b, fnm, vsigs, invs, ft) in {proofs: cs_app(r1.proofs, r2.proofs), diags: cs_app(r1.diags, r2.diags)}
     _               => {proofs: Nil, diags: Nil}
 fn cs_vchk_args_e(args, fnm, vsigs, invs, ft) = match args
     Nil        => {proofs: Nil, diags: Nil}
@@ -2222,8 +2477,8 @@ fn cs_temp_subst_var(e, vnm, rep) = match e
     RecT(tn, items) => RecT(tn, cs_temp_subst_rec(items, vnm, rep))
     Bin(op, a, b)   => Bin(op, cs_temp_subst_var(a, vnm, rep), cs_temp_subst_var(b, vnm, rep))
     If(c, t, e2)    => If(cs_temp_subst_var(c, vnm, rep), cs_temp_subst_var(t, vnm, rep), cs_temp_subst_var(e2, vnm, rep))
-    LetIn(nm, v, b) => LetIn(nm, cs_temp_subst_var(v, vnm, rep), if nm == vnm then b else cs_temp_subst_var(b, vnm, rep))
-    VarIn(nm, v, b) => VarIn(nm, cs_temp_subst_var(v, vnm, rep), if nm == vnm then b else cs_temp_subst_var(b, vnm, rep))
+    LetIn(nm, v, b) => if nm == vnm then LetIn(nm, cs_temp_subst_var(v, vnm, rep), b) else if cs_c9_mentions_secret(rep, Cons(nm, Nil)) == 1 then (let fnm2 = "_av_" + nm in LetIn(fnm2, cs_temp_subst_var(v, vnm, rep), cs_temp_subst_var(cs_temp_subst_var(b, nm, Var(fnm2)), vnm, rep))) else LetIn(nm, cs_temp_subst_var(v, vnm, rep), cs_temp_subst_var(b, vnm, rep))
+    VarIn(nm, v, b) => if nm == vnm then VarIn(nm, cs_temp_subst_var(v, vnm, rep), b) else if cs_c9_mentions_secret(rep, Cons(nm, Nil)) == 1 then (let fnm2 = "_av_" + nm in VarIn(fnm2, cs_temp_subst_var(v, vnm, rep), cs_temp_subst_var(cs_temp_subst_var(b, nm, Var(fnm2)), vnm, rep))) else VarIn(nm, cs_temp_subst_var(v, vnm, rep), cs_temp_subst_var(b, vnm, rep))
     Call(cnm, args) => Call(cnm, cs_temp_subst_args(args, vnm, rep))
     _               => e
 
@@ -2361,7 +2616,7 @@ fn cs_n4_chk_fn_tensors(nm, body, msig, recs) = let tenv = cs_n4_init_tenv_sig(m
 fn cs_n4_chk_fn_t1(nm, rb, msig) = match msig
     Nil          => rb.diags
     Cons(sg, sr) => let rds = cs_n4_ty_dims(sg.rt) in if cs_isnil(rds) == 0 and cs_isnil(rb.ds) == 0 and cs_n4_dims_eq(rb.ds, rds) == 0 then cs_app(rb.diags, Cons(cs_mkdiag("T0300", "tensor", "tensor shape error: function '" + nm + "' returns tensor shape " + cs_n4_dims_str(rb.ds) + " but signature declares " + cs_n4_dims_str(rds), "update return type shape to " + cs_n4_dims_str(rb.ds)), Nil)) else rb.diags
-fn cs_n4_chk_kernel_fn(nm, freef, body, kt) = let inf = cs_kinfer_effs_e(body, kt.ksigs, kt.edecls) in if cs_ois_kernel(freef) == 1 then let bad = cs_keff_diff(inf, Cons("gpu", Cons("simd", Nil))) in if cs_isnil(bad) == 0 then Cons(cs_mkdiag("E0200", "kernel", "effect error: accelerator 'kernel fn " + nm + "' cannot perform host/heap effect '{" + cs_joinsep(bad, ", ") + "}'", "remove host I/O or heap allocation from 'kernel fn " + nm + "'"), Nil) else Nil else if cs_ois_interrupt(freef) == 1 and (cs_omem("alloc", inf) == 1 or cs_omem("io", inf) == 1 or cs_omem("fs", inf) == 1 or cs_omem("net", inf) == 1 or cs_omem("async", inf) == 1) then Cons(cs_mkdiag("E0200", "interrupt", "effect error: interrupt handler '@interrupt fn " + nm + "' cannot allocate or block (performs '{" + cs_joinsep(inf, ", ") + "}')", "pre-allocate state in a static capability region and remove blocking I/O from the ISR"), Nil) else Nil
+fn cs_n4_chk_kernel_fn(nm, freef, body, kt) = let inf = cs_kinfer_effs_e(body, kt.ksigs, kt.edecls, kt.ft, 0) in if cs_ois_kernel(freef) == 1 then let bad = cs_keff_diff(inf, Cons("gpu", Cons("simd", Nil))) in if cs_isnil(bad) == 0 then Cons(cs_mkdiag("E0200", "kernel", "effect error: accelerator 'kernel fn " + nm + "' cannot perform host/heap effect '{" + cs_joinsep(bad, ", ") + "}'", "remove host I/O or heap allocation from 'kernel fn " + nm + "'"), Nil) else Nil else if cs_ois_interrupt(freef) == 1 and (cs_omem("alloc", inf) == 1 or cs_omem("io", inf) == 1 or cs_omem("fs", inf) == 1 or cs_omem("net", inf) == 1 or cs_omem("async", inf) == 1) then Cons(cs_mkdiag("E0200", "interrupt", "effect error: interrupt handler '@interrupt fn " + nm + "' cannot allocate or block (performs '{" + cs_joinsep(inf, ", ") + "}')", "pre-allocate state in a static capability region and remove blocking I/O from the ISR"), Nil) else Nil
 fn cs_n4_diff_lookup(nm, dv, dmap) = if nm == dv then Num(1) else cs_n4_diff_l1(nm, dmap)
 fn cs_n4_diff_l1(nm, dmap) = match dmap
     Nil        => Num(0)
@@ -2432,14 +2687,14 @@ fn cs_n4_synth_grad_fn2(fnm, fn0, rest) = match fn0
 
 fn cs_ochk_fn(nm, ps, body, msig, osigs, sigs, kt) = match msig
     Nil          => let dt = cs_n4_chk_fn_tensors(nm, body, cs_siglookup(nm, sigs), kt.recs) in let dk = cs_kchk_fn(nm, 0, body, kt) in let ds = cs_schk_conc_e(body, nm, 0, cs_sinit_ns_sig(cs_siglookup(nm, sigs)), Nil) in let rp = cs_achk_prov_e(body, nm, cs_uinit_sig(cs_siglookup(nm, sigs)), osigs, sigs, kt.vsigs) in let ctx = {fnm: nm, pubf: 0, freef: 0, halloc: 0, bparams: ps, mvars: Nil, origins: cs_oinit_orgs(ps), osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, body)} in let rb = cs_ochke(body, ctx, Nil) in cs_app(dt, cs_app(dk, cs_app(ds, cs_app(rp.diags, cs_app(rb.diags, cs_app(cs_odiag_msg("O0002", "ownership", "ownership error", "take it as 'own'", oa_res_ret(nm, body, ps, ctx.oa)), cs_ochk_ret(nm, 0, "", rb.origin)))))))
-    Cons(sg, sr) => let dsec = if sg.pubf == 1 or cs_ois_protect(sg.freef) == 1 then cs_w33_chk_sec_e(body, nm) else Nil in let dt = cs_n4_chk_fn_tensors(nm, body, cs_siglookup(nm, sigs), kt.recs) in let dkern = cs_n4_chk_kernel_fn(nm, sg.freef, body, kt) in let dk = cs_kchk_fn(nm, sg.pubf, body, kt) in let mvars = cs_omvars(sg.pl) in let ds = cs_schk_conc_e(body, nm, 0, cs_sinit_ns_sig(cs_siglookup(nm, sigs)), mvars) in let dtot = if cs_ois_total(sg.freef) == 1 then cs_achk_total_e(body, nm, ps, Nil, Nil) else Nil in let rp = cs_achk_prov_e(body, nm, cs_uinit_sig(cs_siglookup(nm, sigs)), osigs, sigs, kt.vsigs) in let dret = if sg.pubf == 1 and cs_ois_llm(sg.freef) == 0 and cs_is_unv_ty(sg.rty) == 0 and rp.taint == 1 then Cons(cs_mkdiag("A0003", "provenance", "provenance error: unverified AI/probabilistic value cannot be returned from trusted 'pub fn " + nm + "' without verification", "wrap the return value in 'verify(val, <contract>)'"), Nil) else Nil in let bparams = if cs_isnil(sg.pl) == 1 then ps else cs_obparams(sg.pl) in let ctx = {fnm: nm, pubf: sg.pubf, freef: sg.freef, halloc: 0, bparams: bparams, mvars: mvars, origins: cs_oinit_orgs(ps), osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, body)} in let rb = cs_ochke(body, ctx, Nil) in cs_app(dsec, cs_app(dt, cs_app(dkern, cs_app(dk, cs_app(ds, cs_app(dtot, cs_app(rp.diags, cs_app(dret, cs_app(rb.diags, cs_app(cs_odiag_msg("O0002", "ownership", "ownership error", "take it as 'own'", oa_res_ret(nm, body, bparams, ctx.oa)), cs_ochk_ret(nm, sg.pubf, sg.fromp, rb.origin)))))))))))
+    Cons(sg, sr) => let dsec = if sg.pubf == 1 or cs_ois_protect(sg.freef) == 1 then cs_w33_chk_sec_e(body, nm) else Nil in let dt = cs_n4_chk_fn_tensors(nm, body, cs_siglookup(nm, sigs), kt.recs) in let dkern = cs_n4_chk_kernel_fn(nm, sg.freef, body, kt) in let dk = cs_kchk_fn(nm, sg.pubf, body, kt) in let mvars = cs_omvars(sg.pl) in let ds = cs_schk_conc_e(body, nm, 0, cs_sinit_ns_sig(cs_siglookup(nm, sigs)), mvars) in let dtot = if cs_ois_total(sg.freef) == 1 then cs_achk_total_e(body, nm, ps, Nil, Nil) else Nil in let rp = cs_achk_prov_e(body, nm, cs_uinit_sig(cs_siglookup(nm, sigs)), osigs, sigs, kt.vsigs) in let dret = if sg.pubf == 1 and cs_ois_llm(sg.freef) == 0 and cs_is_unv_ty(sg.rty) == 0 and rp.taint == 1 then Cons(cs_mkdiag("A0003", "provenance", "provenance error: unverified AI/probabilistic value cannot be returned from trusted 'pub fn " + nm + "' without verification", "wrap the return value in 'verify(val, <contract>)'"), Nil) else Nil in let dfree = if cs_ois_free(sg.freef) == 1 then cs_ochk_free_e(body, nm, 0, kt.ft) else Nil in let bparams = if cs_isnil(sg.pl) == 1 then ps else cs_obparams(sg.pl) in let ctx = {fnm: nm, pubf: sg.pubf, freef: sg.freef, halloc: 0, bparams: bparams, mvars: mvars, origins: cs_oinit_orgs(ps), osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, body)} in let rb = cs_ochke(body, ctx, Nil) in cs_app(dsec, cs_app(dt, cs_app(dkern, cs_app(dk, cs_app(ds, cs_app(dtot, cs_app(rp.diags, cs_app(dret, cs_app(dfree, cs_app(rb.diags, cs_app(cs_odiag_msg("O0002", "ownership", "ownership error", "take it as 'own'", oa_res_ret(nm, body, bparams, ctx.oa)), cs_ochk_ret(nm, sg.pubf, sg.fromp, rb.origin))))))))))))
 fn cs_odiagnose_stmts(prog, osigs, sigs, kt, moved) = match prog
     Nil        => Nil
     Cons(h, t) => cs_odiagnose_stmt1(h, t, osigs, sigs, kt, moved)
 fn cs_odiagnose_stmt1(s0, rest, osigs, sigs, kt, moved) = match s0
     Fn(nm, ps, body) => cs_app(cs_ochk_fn(nm, ps, body, cs_osiglookup(nm, osigs), osigs, sigs, kt), cs_odiagnose_stmts(rest, osigs, sigs, kt, moved))
-    Print(v)         => let ds = cs_schk_conc_e(v, "<main>", 0, Nil, Nil) in let r = cs_ochke(v, {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, origins: Nil, osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, v)}, moved) in cs_app(ds, cs_app(r.diags, cs_odiagnose_stmts(rest, osigs, sigs, kt, r.moved)))
-    ExprS(v)         => let ds = cs_schk_conc_e(v, "<main>", 0, Nil, Nil) in let r = cs_ochke(v, {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, origins: Nil, osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, v)}, moved) in cs_app(ds, cs_app(r.diags, cs_odiagnose_stmts(rest, osigs, sigs, kt, r.moved)))
+    Print(v)         => let dk = cs_kchk_fn("<main>", 0, v, kt) in let ds = cs_schk_conc_e(v, "<main>", 0, Nil, Nil) in let r = cs_ochke(v, {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, origins: Nil, osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, v)}, moved) in cs_app(dk, cs_app(ds, cs_app(r.diags, cs_odiagnose_stmts(rest, osigs, sigs, kt, r.moved))))
+    ExprS(v)         => let dk = cs_kchk_fn("<main>", 0, v, kt) in let ds = cs_schk_conc_e(v, "<main>", 0, Nil, Nil) in let r = cs_ochke(v, {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, origins: Nil, osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, v)}, moved) in cs_app(dk, cs_app(ds, cs_app(r.diags, cs_odiagnose_stmts(rest, osigs, sigs, kt, r.moved))))
     _                => cs_odiagnose_stmts(rest, osigs, sigs, kt, moved)
 
 fn cs_diagnose_stmts(prog, tt) = match prog
@@ -2487,6 +2742,9 @@ fn cs_c9_init_secrets(nm, ps) = let sp = cs_c9_secret_params(ps) in if cs_starts
 fn cs_c9_mentions_secret_args(xs, svars) = match xs
     Nil        => 0
     Cons(h, t) => if cs_c9_mentions_secret(h, svars) == 1 then 1 else cs_c9_mentions_secret_args(t, svars)
+fn cs_c9_mentions_secret_rec(xs, svars) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_c9_mentions_secret(h.val, svars) == 1 then 1 else cs_c9_mentions_secret_rec(t, svars)
 fn cs_c9_mentions_secret(e, svars) = match e
     Var(x)          => cs_omem(x, svars)
     Bin(op, l, r)   => if cs_c9_mentions_secret(l, svars) == 1 then 1 else cs_c9_mentions_secret(r, svars)
@@ -2495,25 +2753,52 @@ fn cs_c9_mentions_secret(e, svars) = match e
     VarIn(nm, v, b) => let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else svars in if cs_c9_mentions_secret(v, svars) == 1 then 1 else cs_c9_mentions_secret(b, sv2)
     Call(cnm, args) => cs_c9_mentions_secret_args(args, svars)
     Field(o, k)     => cs_c9_mentions_secret(o, svars)
+    Rec(items)      => cs_c9_mentions_secret_rec(items, svars)
+    RecT(tn, items) => cs_c9_mentions_secret_rec(items, svars)
+    OwnE(inner)     => cs_c9_mentions_secret(inner, svars)
+    MutE(inner)     => cs_c9_mentions_secret(inner, svars)
+    CT(inner)       => cs_c9_mentions_secret(inner, svars)
+    AwaitE(inner)   => cs_c9_mentions_secret(inner, svars)
+    SpawnE(inner)   => cs_c9_mentions_secret(inner, svars)
+    ScopeE(snm, b)  => cs_c9_mentions_secret(b, svars)
     _               => 0
 fn cs_c9_is_mem_idx_call(cnm, args, svars) = if (cnm == "at" or cnm == "slice" or cnm == "slicen") and cs_len(args) >= 2 then cs_c9_mentions_secret(cs_astsecond(args), svars) else if (cnm == "mmio_volatile_read8" or cnm == "mmio_volatile_read16" or cnm == "mmio_volatile_read32" or cnm == "mmio_volatile_read64" or cs_k5_is_phys_write_fn(cnm) == 1) and cs_isnil(args) == 0 then cs_c9_mentions_secret(cs_asthead(args), svars) else 0
 fn cs_c9_chk_ct_args(xs, svars, fnm) = match xs
     Nil        => Nil
     Cons(h, t) => cs_app(cs_c9_chk_ct_e(h, svars, fnm), cs_c9_chk_ct_args(t, svars, fnm))
+fn cs_c9_chk_ct_rec(xs, svars, fnm) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.val, svars, fnm), cs_c9_chk_ct_rec(t, svars, fnm))
 fn cs_c9_chk_ct_arms(xs, svars, fnm) = match xs
     Nil        => Nil
     Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.body, svars, fnm), cs_c9_chk_ct_arms(t, svars, fnm))
+fn cs_c9_chk_ct_hops(xs, svars, fnm) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.body, svars, fnm), cs_c9_chk_ct_hops(t, svars, fnm))
 fn cs_c9_chk_ct_e(e, svars, fnm) = match e
-    If(c, t, e2)    => let d0 = if cs_c9_mentions_secret(c, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: branch condition in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking bv_xor/bv_and/bv_or/bv_shr instead of branching on secrets"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(t, svars, fnm), cs_c9_chk_ct_e(e2, svars, fnm)))
-    Match(sc, arms) => let d0 = if cs_c9_mentions_secret(sc, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking instead of pattern matching on secrets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_arms(arms, svars, fnm))
-    Bin(op, l, r)   => let d0 = if (op == "/" or op == "%" or op == "and" or op == "or") and (cs_c9_mentions_secret(l, svars) == 1 or cs_c9_mentions_secret(r, svars) == 1) then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value", "use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(l, svars, fnm), cs_c9_chk_ct_e(r, svars, fnm)))
-    Call(cnm, args) => let d0 = if cs_c9_is_mem_idx_call(cnm, args, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information", "avoid indexing memory or strings by secret offsets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_args(args, svars, fnm))
-    LetIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
-    VarIn(nm, v, b) => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
-    _               => Nil
-fn cs_c9_taints_let(fnm, v, svars) = match v
-    Call(cnm, args) => if cs_startswith(fnm, "ct_") == 1 or cs_startswith(cnm, "bv_") == 1 then cs_c9_mentions_secret(v, svars) else 0
-    _               => cs_c9_mentions_secret(v, svars)
+    If(c, t, e2)               => let d0 = if cs_c9_mentions_secret(c, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: branch condition in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking bv_xor/bv_and/bv_or/bv_shr instead of branching on secrets"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(t, svars, fnm), cs_c9_chk_ct_e(e2, svars, fnm)))
+    Match(sc, arms)            => let d0 = if cs_c9_mentions_secret(sc, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking instead of pattern matching on secrets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_arms(arms, svars, fnm))
+    Bin(op, l, r)              => let d0 = if (op == "/" or op == "%" or op == "and" or op == "or") and (cs_c9_mentions_secret(l, svars) == 1 or cs_c9_mentions_secret(r, svars) == 1) then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value", "use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(l, svars, fnm), cs_c9_chk_ct_e(r, svars, fnm)))
+    Call(cnm, args)            => let d0 = if cs_c9_is_mem_idx_call(cnm, args, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information", "avoid indexing memory or strings by secret offsets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_args(args, svars, fnm))
+    LetIn(nm, v, b)            => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
+    VarIn(nm, v, b)            => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
+    Rec(items)                 => cs_c9_chk_ct_rec(items, svars, fnm)
+    RecT(tn, items)            => cs_c9_chk_ct_rec(items, svars, fnm)
+    Field(o, fld)              => cs_c9_chk_ct_e(o, svars, fnm)
+    OwnE(inner)                => cs_c9_chk_ct_e(inner, svars, fnm)
+    MutE(inner)                => cs_c9_chk_ct_e(inner, svars, fnm)
+    CT(inner)                  => cs_c9_chk_ct_e(inner, svars, fnm)
+    AwaitE(inner)              => cs_c9_chk_ct_e(inner, svars, fnm)
+    DeferE(c, b)               => cs_app(cs_c9_chk_ct_e(c, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
+    ErrDeferE(c, b)            => cs_app(cs_c9_chk_ct_e(c, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
+    WithAllocE(a, b)           => cs_app(cs_c9_chk_ct_e(a, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
+    WithHandlerE(en, hs, b)    => cs_app(cs_c9_chk_ct_hops(hs, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
+    ScopeE(snm, b)             => cs_c9_chk_ct_e(b, svars, fnm)
+    SpawnE(inner)              => cs_c9_chk_ct_e(inner, svars, fnm)
+    ShardE(vnm, lo, hi, b)     => cs_app(cs_c9_chk_ct_e(lo, svars, fnm), cs_app(cs_c9_chk_ct_e(hi, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm)))
+    LambdaE(ps, tys, rt, body) => cs_c9_chk_ct_e(body, svars, fnm)
+    _                          => Nil
+fn cs_c9_taints_let(fnm, v, svars) = cs_c9_mentions_secret(v, svars)
 fn cs_c9_chk_fn(nm, ps, body) = let svars = cs_c9_init_secrets(nm, ps) in if cs_isnil(svars) == 1 then Nil else cs_c9_chk_ct_e(body, svars, nm)
 fn cs_k6_fn_calls(target, e) = match e
     Call(cnm, args) => if cnm == target then 1 else cs_k6_fn_calls_args(target, args)
@@ -2555,7 +2840,7 @@ fn cs_diagnose_stmt(s0, tt) = match s0
     Print(v)         => cs_chk_expr(v, tt)
     ExprS(v)         => cs_chk_expr(v, tt)
     _                => Nil
-fn cs_diagnose(prog0) = let ft0 = cs_buildft(prog0) in let gnms = cs_n4_collect_grads_prog(prog0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let prog = cs_app(gfns, prog0) in let tt = cs_tcollect(prog) in let osigs = cs_ocollects(prog) in let vsigs = cs_vcollect_vsigs(prog) in let laws = cs_vcollect_laws(prog) in let kt = {ksigs: cs_kcollect_effsigs(prog), edecls: cs_kcollect_effdecls(prog), caps: cs_kcollect_caps(prog), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(prog)} in let hr = cs_collect_holes_stmts(prog, tt.sigs, osigs, vsigs, laws, tt.ft) in let prog2 = cs_fill_prog_holes(prog, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_all(prog2) in cs_app(cs_p35_diags(osigs, prog0), cs_app(d_ad, cs_app(cs_diagnose_stmts(prog2, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(prog2, osigs, tt.sigs, kt, Nil))))))
+fn cs_diagnose(prog0) = let ft0 = cs_buildft(prog0) in let gnms = cs_n4_collect_grads_prog(prog0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let prog = cs_app(gfns, prog0) in let tt = cs_tcollect(prog) in let osigs = cs_ocollects(prog) in let vsigs = cs_vcollect_vsigs(prog) in let laws = cs_vcollect_laws(prog) in let kt = {ksigs: cs_kcollect_effsigs(prog), edecls: cs_kcollect_effdecls(prog), caps: cs_kcollect_caps(prog), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(prog), ft: tt.ft} in let hr = cs_collect_holes_stmts(prog, tt.sigs, osigs, vsigs, laws, tt.ft) in let prog2 = cs_fill_prog_holes(prog, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_all(prog2) in cs_app(cs_p35_diags(osigs, prog0), cs_app(d_ad, cs_app(cs_diagnose_stmts(prog2, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(prog2, osigs, tt.sigs, kt, Nil))))))
 
 ## --- C3 generic erasure & C1/C2/M1/M2 comptime + hygienic macro expansion ---
 fn cs_gcfs(pl) = match pl
@@ -2783,7 +3068,7 @@ fn caas_compile(src) = caas_compile_in(src, src)
 ## an analysis that stops is reported, never a reply cut short
 fn caas_compile_in(src, whole) = if __lume_try_begin() == 0 then let r = caas_compile_run(src, whole) in let z = __lume_try_end() in r else caas_compile_stopped(__lume_try_msg())
 fn caas_compile_stopped(msg) = {ok: 0, diagnostics: Cons(cs_mkdiag("E0002", "oracle", "an analysis stopped: " + cs_real_text(msg), "report this with the program that caused it"), Nil), holes: Nil, proofs: Nil, symbols: Nil, ast: Nil, ast_sexpr: "", expanded: Nil, expanded_sexpr: "", asm: "", result: ""}
-fn caas_compile_run(src, whole) = let pf = cs_parse_full(src) in let ast0 = pf.prog in let syntax_diags = cs_syntax_merge(pf.fail, cs_app(pf.diags, cs_unclosed_param_diags(ast0))) in let real = if pf.fail == "" then cs_real_compile(whole) else {ok: 1, asm: "", msg: ""} in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kt = {ksigs: cs_kcollect_effsigs(ast), edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(ast)} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, tt.ft) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_stmts(ast_filled, vsigs, invs, wcets, osigs, cs_buildft(ast_filled)) in let diags = cs_diags_spanned(src, cs_real_verdict(real, cs_app(syntax_diags, cs_app(cs_name_phase(real, whole), cs_app(cs_p35_diags_mode(osigs, ast0, cs_startswith(src, "## @strict_p35")), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil)))))))), if src == whole then 1 else 0)) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
+fn caas_compile_run(src, whole) = let pf = cs_parse_full(src) in let ast0 = pf.prog in let syntax_diags = cs_syntax_merge(pf.fail, cs_app(pf.diags, cs_unclosed_param_diags(ast0))) in let real = if pf.fail == "" then cs_real_compile(whole) else {ok: 1, asm: "", msg: ""} in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kt = {ksigs: cs_kcollect_effsigs(ast), edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(ast), ft: tt.ft} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, tt.ft) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, tt.ft) in let vr = cs_vprove_stmts(ast_filled, vsigs, invs, wcets, osigs, cs_buildft(ast_filled)) in let diags = cs_diags_spanned(src, cs_real_verdict(real, cs_app(syntax_diags, cs_app(cs_name_phase(real, whole), cs_app(cs_p35_diags_mode(osigs, ast0, cs_startswith(src, "## @strict_p35")), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil)))))))), if src == whole then 1 else 0)) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
 
 fn caas_check(src) = caas_compile(src)
 fn caas_fill(src) = (caas_compile(src)).holes
@@ -3462,7 +3747,7 @@ fn cs_replay_steps(prog, ft, ksigs, idx, first_neg) = match prog
     Cons(h, t) => cs_replay_step1(h, t, ft, ksigs, idx, first_neg)
 
 fn cs_replay_step1(st, rest, ft, ksigs, idx, first_neg) = match st
-    Print(v) => let ev = cs_ceval(v, Nil, ft, 0) in let vs = if ev.ok == 1 then cs_cv_show(ev.v) else "<error>" in let is_neg = if ev.ok == 1 and ev.v.kind == "int" and ev.v.i < 0 then 1 else 0 in let fn2 = if first_neg == 0 and is_neg == 1 then idx else first_neg in let sx = cs_expr_sexpr(v) in let effs = cs_kinfer_effs_e(v, ksigs, Nil) in let eff = if cs_isnil(effs) == 1 then "pure" else cs_joinsep(effs, ",") in let sh = lc_sha256(str(idx) + ":" + sx + ":" + vs) in let item = "{\"step\":" + str(idx) + ",\"expr\":\"" + cs_jesc(sx) + "\",\"effect\":\"" + cs_jesc(eff) + "\",\"value\":\"" + cs_jesc(vs) + "\",\"negative\":" + (if is_neg == 1 then "true" else "false") + ",\"state_hash\":\"" + cs_jesc(sh) + "\"}" in let rr = cs_replay_steps(rest, ft, ksigs, idx + 1, fn2) in {items: Cons(item, rr.items), canon: sh + "|" + rr.canon, cnt: rr.cnt, first_neg: rr.first_neg}
+    Print(v) => let ev = cs_ceval(v, Nil, ft, 0) in let vs = if ev.ok == 1 then cs_cv_show(ev.v) else "<error>" in let is_neg = if ev.ok == 1 and ev.v.kind == "int" and ev.v.i < 0 then 1 else 0 in let fn2 = if first_neg == 0 and is_neg == 1 then idx else first_neg in let sx = cs_expr_sexpr(v) in let effs = cs_kinfer_effs_e(v, ksigs, Nil, ft, 0) in let eff = if cs_isnil(effs) == 1 then "pure" else cs_joinsep(effs, ",") in let sh = lc_sha256(str(idx) + ":" + sx + ":" + vs) in let item = "{\"step\":" + str(idx) + ",\"expr\":\"" + cs_jesc(sx) + "\",\"effect\":\"" + cs_jesc(eff) + "\",\"value\":\"" + cs_jesc(vs) + "\",\"negative\":" + (if is_neg == 1 then "true" else "false") + ",\"state_hash\":\"" + cs_jesc(sh) + "\"}" in let rr = cs_replay_steps(rest, ft, ksigs, idx + 1, fn2) in {items: Cons(item, rr.items), canon: sh + "|" + rr.canon, cnt: rr.cnt, first_neg: rr.first_neg}
     _        => cs_replay_steps(rest, ft, ksigs, idx, first_neg)
 
 fn caas_replay_json(src) = let r = caas_compile(src) in let exp = if r.ok == 1 then r.expanded else r.ast in let ft = cs_buildft(exp) in let ksigs = cs_kcollect_effsigs(r.ast) in let s1 = cs_replay_steps(exp, ft, ksigs, 1, 0) in let s2 = cs_replay_steps(exp, ft, ksigs, 1, 0) in let th1 = lc_sha256(s1.canon) in let th2 = lc_sha256(s2.canon) in let ver = if th1 == th2 then 1 else 0 in "{\"ok\":" + (if r.ok == 1 and ver == 1 then "true" else "false") + ",\"mode\":\"replay\",\"replay_verified\":" + (if ver == 1 then "true" else "false") + ",\"step_count\":" + str(s1.cnt) + ",\"first_negative_step\":" + str(s1.first_neg) + ",\"trace_hash\":\"" + cs_jesc(th1) + "\",\"output\":\"" + cs_jesc(r.result) + "\",\"trace\":[" + cs_joinsep(s1.items, ",") + "]}"
@@ -3767,9 +4052,19 @@ fn cs_equiv_check_vals(f1, ft1, f2, ft2, xs) = match xs
     Nil        => {ok: 1, cex: ""}
     Cons(x, r) => let res = cs_equiv_eval_at(f1, ft1, f2, ft2, x) in if res.ok == 0 then res else cs_equiv_check_vals(f1, ft1, f2, ft2, r)
 
-fn caas_equiv_superopt_json(body) = let sp = cs_split2(body) in let ast1 = cs_parse(sp.a) in let ast2 = cs_parse(sp.b) in let f1 = cs_first_fn(ast1) in let f2 = cs_first_fn(ast2) in if f1.found == 0 or f2.found == 0 then "{\"ok\":false,\"mode\":\"equiv\",\"equivalent\":false,\"error\":\"missing function in spec or candidate\"}" else let chk = cs_equiv_check_vals(f1, ast1, f2, ast2, cs_equiv_test_vals()) in let ops1 = cs_ast_op_count(f1.body) in let ops2 = cs_ast_op_count(f2.body) in "{\"ok\":true,\"mode\":\"equiv\",\"equivalent\":" + (if chk.ok == 1 then "true" else "false") + ",\"spec_fn\":\"" + cs_jesc(f1.nm) + "\",\"candidate_fn\":\"" + cs_jesc(f2.nm) + "\",\"spec_ops\":" + str(ops1) + ",\"candidate_ops\":" + str(ops2) + ",\"ops_saved\":" + str(ops1 - ops2) + ",\"superoptimized\":" + (if chk.ok == 1 and ops2 < ops1 then "true" else "false") + ",\"proof_method\":\"QF_LIA+BoundedSymbolic\",\"counterexample\":\"" + cs_jesc(chk.cex) + "\"}"
+fn caas_equiv_superopt_json(body) = let sp = cs_split2(body) in let ast1 = cs_parse(sp.a) in let ast2 = cs_parse(sp.b) in let f1 = cs_first_fn(ast1) in let f2 = cs_first_fn(ast2) in if f1.found == 0 or f2.found == 0 then "{\"ok\":false,\"mode\":\"equiv\",\"equivalent\":false,\"error\":\"missing function in spec or candidate\"}" else let chk = cs_equiv_check_vals(f1, ast1, f2, ast2, cs_equiv_test_vals()) in let ops1 = cs_ast_op_count(f1.body) in let ops2 = cs_ast_op_count(f2.body) in "{\"ok\":" + (if chk.ok == 1 then "true" else "false") + ",\"mode\":\"equiv\",\"equivalent\":" + (if chk.ok == 1 then "true" else "false") + ",\"spec_fn\":\"" + cs_jesc(f1.nm) + "\",\"candidate_fn\":\"" + cs_jesc(f2.nm) + "\",\"spec_ops\":" + str(ops1) + ",\"candidate_ops\":" + str(ops2) + ",\"ops_saved\":" + str(ops1 - ops2) + ",\"superoptimized\":" + (if chk.ok == 1 and ops2 < ops1 then "true" else "false") + ",\"proof_method\":\"QF_LIA+BoundedSymbolic\",\"counterexample\":\"" + cs_jesc(chk.cex) + "\"}"
 
-fn cs_morph_detect_lang(raw) = if cs_contains_sub(raw, "CREATE TABLE") == 1 or cs_contains_sub(raw, "create table") == 1 then "sql" else if cs_contains_sub(raw, "def ") == 1 then "python" else if cs_contains_sub(raw, "int ") == 1 or cs_contains_sub(raw, "int64_t ") == 1 then "c" else "openapi"
+fn cs_morph_detect_lang(raw) =
+    let tr = lc_trim(raw) in
+    if count(tr) == 0 then "unknown"
+    else if cs_contains_sub(raw, "CREATE TABLE") == 1 or cs_contains_sub(raw, "create table") == 1 or cs_contains_sub(raw, "SELECT ") == 1 or cs_contains_sub(raw, "select ") == 1 or cs_contains_sub(raw, "INSERT ") == 1 or cs_contains_sub(raw, "insert ") == 1 or cs_contains_sub(raw, "UPDATE ") == 1 or cs_contains_sub(raw, "update ") == 1 or cs_contains_sub(raw, "DELETE ") == 1 or cs_contains_sub(raw, "delete ") == 1 or (cs_contains_sub(raw, "FROM ") == 1 and cs_contains_sub(raw, "WHERE ") == 1) then "sql"
+    else if cs_contains_sub(raw, "def ") == 1 then "python"
+    else if cs_contains_sub(raw, "function ") == 1 or cs_contains_sub(raw, "export function ") == 1 then "javascript"
+    else if cs_contains_sub(raw, "func ") == 1 then "go"
+    else if cs_contains_sub(raw, "pub fn ") == 1 or cs_contains_sub(raw, "fn ") == 1 then "rust"
+    else if cs_contains_sub(raw, "int64_t ") == 1 or cs_contains_sub(raw, "int ") == 1 or cs_contains_sub(raw, "long ") == 1 or cs_contains_sub(raw, "void ") == 1 or cs_contains_sub(raw, "#include") == 1 then "c"
+    else if cs_contains_sub(raw, "openapi:") == 1 or cs_contains_sub(raw, "swagger:") == 1 or cs_contains_sub(raw, "paths:") == 1 or cs_contains_sub(raw, "GET /") == 1 or cs_contains_sub(raw, "POST /") == 1 then "openapi"
+    else "unknown"
 
 fn cs_is_ident_ch(c) = (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_"
 
@@ -3777,9 +4072,103 @@ fn cs_scan_ident_end(s, i, n) = if i >= n or cs_is_ident_ch(at(s, i)) == 0 then 
 
 fn cs_morph_ident_after(raw, kw, fallback) = let idx = cs_find_sub_idx(raw, kw) in if idx < 0 then fallback else let rest = lc_trim(slice(raw, idx + count(kw), count(raw))) in let e = cs_scan_ident_end(rest, 0, count(rest)) in if e <= 0 then fallback else slice(rest, 0, e)
 
-fn cs_morph_transmute(lang, raw) = if lang == "sql" then let tbl = cs_morph_ident_after(raw, "CREATE TABLE ", cs_morph_ident_after(raw, "create table ", "ledger_entries")) in "type LedgerRow = record id: int, amount: int\nlaw " + tbl + "_nonneg(x: int) = x * x >= 0\npub fn " + tbl + "_schema() = comptime table_schema(LedgerRow)\npub fn insert_" + tbl + "(amount: int) -> int / pure requires amount >= 0 ensures result >= 0 = amount\nprint insert_" + tbl + "(100)\n" else if lang == "python" then let fnm = cs_morph_ident_after(raw, "def ", "py_transmuted") in "pub fn " + fnm + "(x: int) -> int / pure requires x >= 0 ensures result >= x = x * 2 + 1\nprint " + fnm + "(20)\n" else if lang == "c" then let fnm = cs_morph_ident_after(raw, "int64_t ", cs_morph_ident_after(raw, "int ", "c_transmuted")) in "pub fn " + fnm + "(a: int, b: int) -> int / pure requires a >= 0 requires b >= 0 ensures result >= a = a + b\nprint " + fnm + "(15, 27)\n" else "pub fn api_handler(req_id: int) -> int / pure requires req_id >= 1 ensures result >= 200 = 200\nprint api_handler(1)\n"
+fn cs_morph_find_end_expr(s, i, n) = if i >= n then n else let c = at(s, i) in if c == "\n" or c == "\r" or c == ";" or c == "}" then i else cs_morph_find_end_expr(s, i + 1, n)
 
-fn caas_morph_json(raw_input) = let lang = cs_morph_detect_lang(raw_input) in let lume_src = cs_morph_transmute(lang, raw_input) in let r = caas_compile(lume_src) in let pcnt = lc_count_proven(r.proofs) in "{\"ok\":true,\"mode\":\"morph\",\"source_lang\":\"" + lang + "\",\"source_language\":\"" + lang + "\",\"proven_count\":" + str(pcnt) + ",\"proof_status\":\"proven\",\"transmuted_source\":\"" + cs_jesc(lume_src) + "\"}"
+fn cs_morph_extract_return(raw, fallback) =
+    let idx = cs_find_sub_idx(raw, "return ") in
+    if idx < 0 then fallback else
+    let rest = slice(raw, idx + 7, count(raw)) in
+    let e = cs_morph_find_end_expr(rest, 0, count(rest)) in
+    let expr = lc_trim(slice(rest, 0, e)) in
+    if count(expr) == 0 then fallback else expr
+
+fn cs_morph_last_ident_start(s, i) = if i <= 0 then 0 else if cs_is_ident_ch(at(s, i - 1)) == 1 then cs_morph_last_ident_start(s, i - 1) else i
+
+fn cs_morph_clean_one_param(seg, fallback) =
+    let t = lc_trim(seg) in
+    if count(t) == 0 or t == "void" then "" else
+    let cidx = cs_find_sub_idx(t, ":") in
+    let core = if cidx >= 0 then lc_trim(slice(t, 0, cidx)) else t in
+    let n = count(core) in
+    if n == 0 then fallback else
+    let st = cs_morph_last_ident_start(core, n) in
+    let id = slice(core, st, n) in
+    if count(id) == 0 then fallback else id
+
+fn cs_morph_split_comma(s, i, start, acc) =
+    if i >= count(s) then
+        let last = lc_trim(slice(s, start, count(s))) in
+        cs_rev(if count(last) > 0 then Cons(last, acc) else acc)
+    else if at(s, i) == "," then
+        let seg = lc_trim(slice(s, start, i)) in
+        cs_morph_split_comma(s, i + 1, i + 1, if count(seg) > 0 then Cons(seg, acc) else acc)
+    else cs_morph_split_comma(s, i + 1, start, acc)
+
+fn cs_morph_format_params(segs, idx) = match segs
+    Nil        => {decl: "", args: "", first: "", cnt: 0}
+    Cons(h, t) =>
+        let pnm = cs_morph_clean_one_param(h, "p" + str(idx)) in
+        if pnm == "" then cs_morph_format_params(t, idx) else
+        let rest = cs_morph_format_params(t, idx + 1) in
+        let arg_v = str(10 + idx * 5) in
+        {
+            decl: pnm + ": int" + (if rest.cnt > 0 then ", " + rest.decl else ""),
+            args: arg_v + (if rest.cnt > 0 then ", " + rest.args else ""),
+            first: pnm,
+            cnt: 1 + rest.cnt
+        }
+
+fn cs_morph_extract_params(raw, def_param) =
+    let lp = cs_find_sub_idx(raw, "(") in
+    if lp < 0 then {decl: def_param + ": int", args: "10", first: def_param, cnt: 1} else
+    let after_lp = slice(raw, lp + 1, count(raw)) in
+    let rp = cs_find_sub_idx(after_lp, ")") in
+    if rp <= 0 then {decl: def_param + ": int", args: "10", first: def_param, cnt: 1} else
+    let inside = lc_trim(slice(after_lp, 0, rp)) in
+    if count(inside) == 0 or inside == "void" then {decl: def_param + ": int", args: "10", first: def_param, cnt: 1} else
+    let segs = cs_morph_split_comma(inside, 0, 0, Nil) in
+    let fp = cs_morph_format_params(segs, 0) in
+    if fp.cnt == 0 then {decl: def_param + ": int", args: "10", first: def_param, cnt: 1} else fp
+
+fn cs_morph_has_source_contract(raw) =
+    if cs_contains_sub(raw, "assert ") == 1 or cs_contains_sub(raw, "requires ") == 1 or cs_contains_sub(raw, "ensures ") == 1 or cs_contains_sub(raw, "CHECK (") == 1 or cs_contains_sub(raw, "CREATE TABLE") == 1 or cs_contains_sub(raw, "create table") == 1 then 1 else 0
+
+fn cs_morph_transmute(lang, raw) =
+    if lang == "sql" then
+        if cs_contains_sub(raw, "CREATE TABLE") == 1 or cs_contains_sub(raw, "create table") == 1 then
+            let tbl = cs_morph_ident_after(raw, "CREATE TABLE ", cs_morph_ident_after(raw, "create table ", "ledger_entries")) in
+            "type LedgerRow = record id: int, amount: int\nlaw " + tbl + "_nonneg(x: int) = x * x >= 0\npub fn " + tbl + "_schema() = comptime table_schema(LedgerRow)\npub fn insert_" + tbl + "(amount: int) -> int / pure requires amount >= 0 ensures result >= 0 = amount\nprint insert_" + tbl + "(100)\n"
+        else
+            let tbl = cs_morph_ident_after(raw, "FROM ", cs_morph_ident_after(raw, "from ", "query_table")) in
+            "pub fn select_" + tbl + "(row_id: int) -> int / pure = row_id\nprint select_" + tbl + "(1)\n"
+    else if lang == "python" or lang == "javascript" or lang == "go" or lang == "rust" or lang == "c" then
+        let fnm = if lang == "python" then cs_morph_ident_after(raw, "def ", "py_transmuted")
+                  else if lang == "javascript" then cs_morph_ident_after(raw, "function ", "js_transmuted")
+                  else if lang == "go" then cs_morph_ident_after(raw, "func ", "go_transmuted")
+                  else if lang == "rust" then cs_morph_ident_after(raw, "fn ", "rs_transmuted")
+                  else cs_morph_ident_after(raw, "int64_t ", cs_morph_ident_after(raw, "int ", cs_morph_ident_after(raw, "long ", "c_transmuted"))) in
+        let ps = cs_morph_extract_params(raw, "x") in
+        let ret_expr = cs_morph_extract_return(raw, ps.first) in
+        let has_contract = cs_morph_has_source_contract(raw) in
+        let contract_str = if has_contract == 1 then " requires " + ps.first + " >= 0 ensures result == " + ret_expr else "" in
+        "pub fn " + fnm + "(" + ps.decl + ") -> int / pure" + contract_str + " = " + ret_expr + "\nprint " + fnm + "(" + ps.args + ")\n"
+    else if lang == "openapi" then
+        "pub fn api_handler(req_id: int) -> int / pure = 200\nprint api_handler(1)\n"
+    else ""
+
+fn caas_morph_json(raw_input) =
+    let lang = cs_morph_detect_lang(raw_input) in
+    if lang == "unknown" then
+        "{\"ok\":false,\"mode\":\"morph\",\"source_lang\":\"unknown\",\"source_language\":\"unknown\",\"proven_count\":0,\"proof_status\":\"unverified\",\"error\":\"unrecognized source format\"}"
+    else
+        let lume_src = cs_morph_transmute(lang, raw_input) in
+        let r = caas_compile(lume_src) in
+        let real = cs_real_compile(lume_src) in
+        let pcnt = lc_count_proven(r.proofs) in
+        let total_obls = cs_len(r.proofs) in
+        let ok_flag = if r.ok == 1 and real.ok == 1 then 1 else 0 in
+        let pstatus = if ok_flag == 0 then "unverified" else if total_obls > 0 and pcnt == total_obls then "proven" else "translated_unproven" in
+        "{\"ok\":" + (if ok_flag == 1 then "true" else "false") + ",\"mode\":\"morph\",\"source_lang\":\"" + lang + "\",\"source_language\":\"" + lang + "\",\"proven_count\":" + str(pcnt) + ",\"proof_status\":\"" + pstatus + "\",\"transmuted_source\":\"" + cs_jesc(lume_src) + "\"}"
 
 ## `@focus <n>\n<entry of n chars><bundle>`: the driver sends an imported program this way
 fn caas_focus_json(input) = let n = cs_real_num(input, 7, 0) in let b = 7 + count(str(n)) + 1 in caas_json(caas_compile_in(slice(input, b, b + n), slice(input, b + n, count(input))))

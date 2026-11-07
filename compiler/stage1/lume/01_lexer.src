@@ -12,12 +12,25 @@ fn isalnum(c) = isdigit(c) or isalpha(c)
 fn idend(s, n, i) = if i < n and isalnum(at(s, i)) then idend(s, n, i + 1) else i
 ## End of a `##` comment: the index of the newline (or EOF) that terminates the line starting at i.
 fn lineend(s, n, i) = if i >= n or at(s, i) == "\n" then i else lineend(s, n, i + 1)
-fn numendn(s, n, i) requires i >= 0 ensures result >= i = if i < n and isdigit(at(s, i)) then numendn(s, n, i + 1) else i
+fn ishex(c) = isdigit(c) or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")
+fn isbin(c) = c == "0" or c == "1"
+fn isoct(c) = c >= "0" and c <= "7"
+fn hexdig(c) = if isdigit(c) then ord(c) - 48 else if c >= "a" and c <= "f" then ord(c) - 87 else ord(c) - 55
+fn hexendn(s, n, i) = if i < n and (ishex(at(s, i)) or at(s, i) == "_") then hexendn(s, n, i + 1) else i
+fn binendn(s, n, i) = if i < n and (isbin(at(s, i)) or at(s, i) == "_") then binendn(s, n, i + 1) else i
+fn octendn(s, n, i) = if i < n and (isoct(at(s, i)) or at(s, i) == "_") then octendn(s, n, i + 1) else i
+fn parse_radix(s, i, n, base, acc, has_d) = if i >= n then (if has_d == 0 then ctfail("lume: lex error [L0003]: integer literal with radix prefix has no digits\n") else str(acc)) else let c = at(s, i) in if c == "_" then parse_radix(s, i + 1, n, base, acc, has_d) else let d = hexdig(c) in if base == 16 and acc == 576460752303423488 and d == 0 and i + 1 == n then "9223372036854775808" else if acc > (9223372036854775807 - d) / base then "99999999999999999999" else parse_radix(s, i + 1, n, base, acc * base + d, 1)
+fn numendn(s, n, i) requires i >= 0 ensures result >= i = if i < n and (isdigit(at(s, i)) or (at(s, i) == "_" and i + 1 < n and isdigit(at(s, i + 1)))) then numendn(s, n, i + 1) else i
 fn decimalendn(s, n, i) requires i >= 0 ensures result >= i = let j = numendn(s, n, i) in if j + 1 < n and at(s, j) == "." and isdigit(at(s, j + 1)) then numendn(s, n, j + 1) else j
 fn numend(s, i) requires i >= 0 ensures result >= i = numendn(s, count(s), i)
 fn decimalend(s, i) requires i >= 0 ensures result >= i = decimalendn(s, count(s), i)
+fn has_us(s, i, n) = if i >= n then 0 else if at(s, i) == "_" then 1 else has_us(s, i + 1, n)
+fn strip_us_acc(s, i, n, acc) = if i >= n then joinall(own lex_rev(acc, Nil)) else if at(s, i) == "_" then strip_us_acc(s, i + 1, n, acc) else strip_us_acc(s, i + 1, n, Cons(at(s, i), acc))
+fn clean_num(s) = let n = count(s) in if has_us(s, 0, n) == 1 then strip_us_acc(s, 0, n, Nil) else s
 fn decscan(s, i, coefficient, scale, past, digits) requires i >= 0 requires scale >= 0 requires digits >= 0 ensures result.scale >= scale = if i >= count(s) then {coefficient: coefficient, scale: scale} else if at(s, i) == "." then decscan(s, i + 1, coefficient, scale, 1, digits) else let digit = toint(at(s, i)) in if past == 1 and scale >= 18 then ctfail("lume: decimal scale exceeds the 18 digit limit\n") else if coefficient == 0 and digit == 0 then decscan(s, i + 1, 0, scale + past, past, digits) else if digits >= 18 then ctfail("lume: decimal coefficient exceeds the 18 digit limit\n") else decscan(s, i + 1, coefficient * 10 + digit, scale + past, past, digits + 1)
 fn decnode(s, negative) = let d = decscan(s, 0, 0, 0, 0, 0) in Rec(Cons({key: "coefficient", val: Num(if negative then 0 - d.coefficient else d.coefficient)}, Cons({key: "scale", val: Num(d.scale)}, Cons({key: "precision", val: Num(0)}, Nil))))
+fn is_triple_quote(s, n, i) = if i + 2 < n and at(s, i) == "\"" and at(s, i + 1) == "\"" and at(s, i + 2) == "\"" then 1 else 0
+fn strend3(s, n, i, ls, ln, spos) = if i >= n then ctfail("lume: lex error [L0001]: unterminated triple-quoted string literal at end of input (started at " + spos + ")\n") else if is_triple_quote(s, n, i) == 1 and (i + 3 >= n or at(s, i + 3) != "\"") then {j: i + 3, ls: ls, ln: ln} else if at(s, i) == "\n" then strend3(s, n, i + 1, i + 1, ln + 1, spos) else if at(s, i) == "\\" and i + 1 < n then (if at(s, i + 1) == "\n" then strend3(s, n, i + 2, i + 2, ln + 1, spos) else strend3(s, n, i + 2, ls, ln, spos)) else strend3(s, n, i + 1, ls, ln, spos)
 fn strend(s, n, i, ls, ln, spos) = if i >= n then ctfail("lume: lex error [L0001]: unterminated string literal at end of input (started at " + spos + ")\n") else if at(s, i) == "\"" then {j: i + 1, ls: ls, ln: ln} else if at(s, i) == "\n" then strend(s, n, i + 1, i + 1, ln + 1, spos) else if at(s, i) == "\\" and i + 1 < n then (if at(s, i + 1) == "\n" then strend(s, n, i + 2, i + 2, ln + 1, spos) else strend(s, n, i + 2, ls, ln, spos)) else if at(s, i) == "\\" then strend(s, n, i + 1, ls, ln, spos) else strend(s, n, i + 1, ls, ln, spos)
 ## String literal value: drop the delimiting quotes and decode \n \t \r (any other \x -> x, so \\ and \" decode to themselves), like the seed lexer.
 fn lex_rev(xs, acc) = match xs
@@ -26,11 +39,12 @@ fn lex_rev(xs, acc) = match xs
 fn unesc1(c) = if c == "n" then "\n" else if c == "t" then "\t" else if c == "r" then "\r" else if c == "b" then chr(8) else if c == "f" then chr(12) else if c == "\\" or c == "\"" or c == "'" or c == "{" or c == "}" or c == "$" then c else if c == "0" then ctfail("lume: lex error [L0002]: '\\0' is not representable: native strings are NUL-terminated\n") else ctfail("lume: lex error [L0002]: unsupported escape sequence '\\" + c + "' in string literal (valid: \\n \\t \\r \\b \\f \\\\ \\\" \\' \\$ \\\{ \\\})\n")
 fn unescl_acc(s, i, n, acc) = if i >= n then lex_rev(acc, Nil) else if at(s, i) == "\\" and i + 1 < n then unescl_acc(s, i + 2, n, Cons(unesc1(at(s, i + 1)), acc)) else if at(s, i) == "\r" then unescl_acc(s, i + 1, n, acc) else unescl_acc(s, i + 1, n, Cons(at(s, i), acc))
 fn unescl(s, i, n) = unescl_acc(s, i, n, Nil)
-fn strval(t) = let tn = count(t) in let b = slicen(t, tn, 1, tn - 1) in joinall(own unescl(b, 0, tn - 2))
+fn strval(t) = let b = strbody(t) in joinall(own unescl(b, 0, count(b)))
 fn two(s, n, i) = slicen(s, n, i, if i + 2 > n then n else i + 2)
 fn istwo(t) = t == "==" or t == "!=" or t == "<=" or t == ">=" or t == "+%" or t == "-%" or t == "*%"
 fn skip_bom(s, n, i) = if i == 0 and n >= 3 and ord(at(s, 0)) == 239 and ord(at(s, 1)) == 187 and ord(at(s, 2)) == 191 then 3 else i
-fn lexn_acc(s, n, i, ls, ln, acc) = if i >= n then lex_rev(acc, Nil) else let c = at(s, i) in if c == "\n" then lexn_acc(s, n, i + 1, i + 1, ln + 1, acc) else if c == " " or c == "\t" or c == "\r" then lexn_acc(s, n, i + 1, ls, ln, acc) else if c == "#" then let le = lineend(s, n, i) in lexn_acc(s, n, le, le, ln, acc) else if isdigit(c) then let jn = numendn(s, n, i) in let jd = decimalendn(s, n, i) in lexn_acc(s, n, jd, ls, ln, Cons({kind: if jd > jn then "decimal" else "int", text: slicen(s, n, i, jd), col: i - ls, line: ln}, acc)) else if isalpha(c) then let ji = idend(s, n, i) in lexn_acc(s, n, ji, ls, ln, Cons({kind: "id", text: slicen(s, n, i, ji), col: i - ls, line: ln}, acc)) else if c == "\"" then let sr = strend(s, n, i + 1, ls, ln, "line " + str(ln) + ", col " + str(i - ls + 1)) in lexn_acc(s, n, sr.j, sr.ls, sr.ln, Cons({kind: "str", text: slicen(s, n, i, sr.j), col: i - ls, line: ln}, acc)) else if (c == "=" or c == "!" or c == "<" or c == ">" or c == "+" or c == "-" or c == "*") and istwo(two(s, n, i)) then lexn_acc(s, n, i + 2, ls, ln, Cons({kind: "op", text: two(s, n, i), col: i - ls, line: ln}, acc)) else lexn_acc(s, n, i + 1, ls, ln, Cons({kind: "op", text: c, col: i - ls, line: ln}, acc))
+fn lex_num(s, n, i, ls, ln, acc) = if at(s, i) == "0" and i + 1 < n and (at(s, i + 1) == "x" or at(s, i + 1) == "X") then (let jx = hexendn(s, n, i + 2) in lexn_acc(s, n, jx, ls, ln, Cons({kind: "int", text: parse_radix(s, i + 2, jx, 16, 0, 0), col: i - ls, line: ln}, acc))) else if at(s, i) == "0" and i + 1 < n and (at(s, i + 1) == "b" or at(s, i + 1) == "B") then (let jb = binendn(s, n, i + 2) in lexn_acc(s, n, jb, ls, ln, Cons({kind: "int", text: parse_radix(s, i + 2, jb, 2, 0, 0), col: i - ls, line: ln}, acc))) else if at(s, i) == "0" and i + 1 < n and (at(s, i + 1) == "o" or at(s, i + 1) == "O") then (let jo = octendn(s, n, i + 2) in lexn_acc(s, n, jo, ls, ln, Cons({kind: "int", text: parse_radix(s, i + 2, jo, 8, 0, 0), col: i - ls, line: ln}, acc))) else let jn = numendn(s, n, i) in let jd = decimalendn(s, n, i) in lexn_acc(s, n, jd, ls, ln, Cons({kind: if jd > jn then "decimal" else "int", text: clean_num(slicen(s, n, i, jd)), col: i - ls, line: ln}, acc))
+fn lexn_acc(s, n, i, ls, ln, acc) = if i >= n then lex_rev(acc, Nil) else let c = at(s, i) in if c == "\n" then lexn_acc(s, n, i + 1, i + 1, ln + 1, acc) else if c == " " or c == "\t" or c == "\r" then lexn_acc(s, n, i + 1, ls, ln, acc) else if c == "#" then let le = lineend(s, n, i) in lexn_acc(s, n, le, le, ln, acc) else if isdigit(c) then lex_num(s, n, i, ls, ln, acc) else if isalpha(c) then let ji = idend(s, n, i) in lexn_acc(s, n, ji, ls, ln, Cons({kind: "id", text: slicen(s, n, i, ji), col: i - ls, line: ln}, acc)) else if c == "\"" then (let sr = if is_triple_quote(s, n, i) == 1 then strend3(s, n, i + 3, ls, ln, "line " + str(ln) + ", col " + str(i - ls + 1)) else strend(s, n, i + 1, ls, ln, "line " + str(ln) + ", col " + str(i - ls + 1)) in lexn_acc(s, n, sr.j, sr.ls, sr.ln, Cons({kind: "str", text: slicen(s, n, i, sr.j), col: i - ls, line: ln}, acc))) else if (c == "=" or c == "!" or c == "<" or c == ">" or c == "+" or c == "-" or c == "*") and istwo(two(s, n, i)) then lexn_acc(s, n, i + 2, ls, ln, Cons({kind: "op", text: two(s, n, i), col: i - ls, line: ln}, acc)) else lexn_acc(s, n, i + 1, ls, ln, Cons({kind: "op", text: c, col: i - ls, line: ln}, acc))
 fn lexn(s, n, i) = let i0 = skip_bom(s, n, i) in lexn_acc(s, n, i0, i0, 1, Nil)
 fn lex(s, i) = lexn(s, count(s), i)
 
@@ -63,7 +77,8 @@ fn isrecwith(ts) = headtext(ts) != "}" and headtext(droponce(ts)) == "with"
 fn expecteq(ts) = if headtext(ts) == "=" then droponce(ts) else ctfail("lume: parse error [P0002]: expected '=' in binding " + headpos(ts) + "\n")
 fn letin(ts, ln) = if headtext(ts) == "in" or headtext(ts) == ";" then droponce(ts) else if headline(ts) == ln then ctfail("lume: parse error [P0002]: expected 'in' or a new line after 'let' value " + headpos(ts) + "\n") else ts
 fn dropin(ts) = if headtext(ts) == "in" or headtext(ts) == ";" then droponce(ts) else ts
-fn recentries(ts) = if headtext(ts) == "}" then {items: Nil, rest: droponce(ts)} else recmore(headtext(ts), expr(dropkw(droponce(ts), ":")))
+fn reckey(ts) = if headkind(ts) == "str" then strval(headtext(ts)) else headtext(ts)
+fn recentries(ts) = if headtext(ts) == "}" then {items: Nil, rest: droponce(ts)} else recmore(reckey(ts), expr(dropkw(droponce(ts), ":")))
 fn recmore(k, rv) = if headtext(rv.rest) == "," then let rr = recentries(droponce(rv.rest)) in {items: Cons({key: k, val: rv.node}, rr.items), rest: rr.rest} else {items: Cons({key: k, val: rv.node}, Nil), rest: skiprb(rv.rest)}
 fn dropkw(ts, kw) = if headtext(ts) == kw then droponce(ts) else ts
 ## F4 (front-end unification): `if c then t elif c2 then t2 ... else e` is the surface's chained-if form; it
@@ -81,6 +96,23 @@ fn parseifelse(c, tb, rest) = if headtext(rest) == "elif" then parseifelif(c, tb
 fn parseifelif(c, tb, r) = {node: If(c, tb, r.node), rest: r.rest}
 fn parseifplain(c, tb, eb) = {node: If(c, tb, eb.node), rest: eb.rest}
 fn dropletty(ts) = if headtext(ts) == ":" then (parsetype1(droponce(ts))).rest else ts
+fn parseletty(ts) = if headtext(ts) == ":" then parsetype1(droponce(ts)) else {node: TyAny, rest: ts}
+fn tyenc_fields(fs) = match fs
+    Nil        => ""
+    Cons(h, t) => h.fname + ":" + tyenc(h.fty) + (if isnil(t) == 1 then "" else "," + tyenc_fields(t))
+fn tyenc(ty) = match ty
+    TyName(n)       => n
+    TyList(e)       => "[" + tyenc(e) + "]"
+    TyRec(fs)       => "{" + tyenc_fields(fs) + "}"
+    TyApply(n, a)   => n + "[" + tyenc(a) + "]"
+    TyRefine(b, pr) => tyenc(b)
+    _               => ""
+fn is_own_or_mut_nd(e) = match e
+    OwnE(i)      => 1
+    MutE(i)      => 1
+    Call(nm, xs) => if nm == "borrow" or nm == "borrow_mut" or nm == "move" then 1 else 0
+    _            => 0
+fn wrap_tyann(nd, ty) = let ts = tyenc(ty) in if ts == "" or ts == "any" or is_own_or_mut_nd(nd) == 1 then nd else If(Num(1), nd, Call("_tyann_", Cons(Str(ts), Nil)))
 fn parsetupletids(ts) = if headtext(ts) == ")" then {items: Nil, rest: droponce(ts)} else let nm = headtext(ts) in let t1 = dropletty(droponce(ts)) in if headtext(t1) == "," then let rr = parsetupletids(droponce(t1)) in {items: Cons(nm, rr.items), rest: rr.rest} else {items: Cons(nm, Nil), rest: skiprp(t1)}
 fn mktupletbinds(tnm, ids, idx, body) = match ids
     Nil        => body
@@ -101,8 +133,8 @@ fn recletnames(xs) = match xs
     Cons(h, t) => Cons(h.nm, recletnames(t))
 fn parseletrec(t) = let fs = parserecletfields(t) in let z0 = checknames(recletnames(fs.items), Nil, headpos(fs.rest)) in let rv = expr(expecteq(dropletty(fs.rest))) in let rb = expr(letin(rv.rest, headline(t))) in let tnm = "_lrec_" + letrechd(fs.items) in {node: LetIn(tnm, rv.node, mkrecletbinds(tnm, fs.items, rb.node)), rest: rb.rest}
 fn parseletpat(t) = let p = parsepat(t) in let pnode = checkpat(p.node, headpos(p.rest)) in let rv = expr(expecteq(dropletty(p.rest))) in let rb = expr(letin(rv.rest, headline(t))) in {node: Match(rv.node, Cons({pat: pnode, body: rb.node}, Nil)), rest: rb.rest}
-fn parselet(t) = if headtext(t) == "mut" then parsevar(droponce(t)) else if headtext(t) == "(" then parselettup(droponce(t)) else if headtext(t) == "{" then parseletrec(droponce(t)) else if isctor(headtext(t)) == 1 then parseletpat(t) else if headtext(t) == "_" and headtext(droponce(t)) != "=" and headtext(droponce(t)) != ":" then parselet(droponce(t)) else let nm = headtext(t) in let rv = expr(expecteq(dropletty(droponce(t)))) in let rb = expr(letin(rv.rest, headline(t))) in {node: LetIn(nm, rv.node, rb.node), rest: rb.rest}
-fn parsevar(t) = let nm = headtext(t) in let rv = expr(expecteq(dropletty(droponce(t)))) in let rb = expr(letin(rv.rest, headline(t))) in {node: VarIn(nm, rv.node, rb.node), rest: rb.rest}
+fn parselet(t) = if headtext(t) == "mut" then parsevar(droponce(t)) else if headtext(t) == "(" then parselettup(droponce(t)) else if headtext(t) == "{" then parseletrec(droponce(t)) else if isctor(headtext(t)) == 1 then parseletpat(t) else if headtext(t) == "_" and headtext(droponce(t)) != "=" and headtext(droponce(t)) != ":" then parselet(droponce(t)) else let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in let rb = expr(letin(rv.rest, headline(t))) in {node: LetIn(nm, wrap_tyann(rv.node, lty.node), rb.node), rest: rb.rest}
+fn parsevar(t) = let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in let rb = expr(letin(rv.rest, headline(t))) in {node: VarIn(nm, wrap_tyann(rv.node, lty.node), rb.node), rest: rb.rest}
 fn parseowne(t) = let r = post(t) in {node: OwnE(r.node), rest: r.rest}
 fn parsemute(t) = let r = post(t) in {node: MutE(r.node), rest: r.rest}
 fn parsedefer(t) = let rc = expr(t) in let rb = expr(dropin(rc.rest)) in {node: DeferE(rc.node, rb.node), rest: rb.rest}
@@ -121,6 +153,12 @@ fn is_lambda_nd(nd) = match nd
     _                       => 0
 fn postloop(r) = if headtext(r.rest) == "." and headtext(droponce(r.rest)) != "." then (let t1 = droponce(r.rest) in let mnm = headtext(t1) in let t2 = droponce(t1) in if headtext(t2) == "(" then postloop(postdotcall(r.node, mnm, arglist(droponce(t2)))) else if mnm == "await" then postloop({node: AwaitE(r.node), rest: t2}) else postloop({node: Field(r.node, mnm), rest: t2})) else if headtext(r.rest) == "(" and is_lambda_nd(r.node) == 1 then (let a = arglist(droponce(r.rest)) in postloop({node: Call("_call", Cons(r.node, a.items)), rest: a.rest})) else r
 fn post(ts) = postindex(postloop(prim(ts)), headline(ts))
+fn is_str_nd(e) = match e
+    Str(v) => 1
+    _      => 0
+fn str_nd_v(e) = match e
+    Str(v) => v
+    _      => ""
 ## an index has to start on the line of its value: a `[` on the next line opens a list in a new statement
-fn postindex(r, ln) = if headtext(r.rest) == "[" and headline(r.rest) == ln then (let i = expr(droponce(r.rest)) in postindex(postloop({node: Call("lidx", Cons(r.node, Cons(i.node, Nil))), rest: skiprk(i.rest)}), ln)) else if headtext(r.rest) == "(" and headline(r.rest) == ln then (let a = arglist(droponce(r.rest)) in postindex(postloop({node: Call("_call", Cons(r.node, a.items)), rest: a.rest}), ln)) else r
+fn postindex(r, ln) = if headtext(r.rest) == "[" and headline(r.rest) == ln then (let i = expr(droponce(r.rest)) in postindex(postloop({node: if is_str_nd(i.node) == 1 then Field(r.node, str_nd_v(i.node)) else Call("lidx", Cons(r.node, Cons(i.node, Nil))), rest: skiprk(i.rest)}), ln)) else if headtext(r.rest) == "(" and headline(r.rest) == ln then (let a = arglist(droponce(r.rest)) in postindex(postloop({node: Call("_call", Cons(r.node, a.items)), rest: a.rest}), ln)) else r
 

@@ -116,8 +116,10 @@ fn ldec_expr(e, names) = match e
     Rec(items)    => len(items) == 3 and ldec_key(items, "coefficient") == 1 and ldec_key(items, "scale") == 1 and ldec_key(items, "precision") == 1
     Call(nm, args) => nm == "decimal" or nm == "decimal_make" or nm == "decimal_parse" or nm == "decimal_cast" or nm == "decimal_div_exact" or nm == "decimal_add" or nm == "decimal_sub" or nm == "decimal_mul" or nm == "decimal_div"
     Var(nm)       => ldec_name(names, nm)
-    If(c, t, e2) => ldec_expr(t, names) and ldec_expr(e2, names)
+    Bin(op, a, b) => (op == "+" or op == "-" or op == "*" or op == "/") and ldec_expr(a, names) and ldec_expr(b, names)
+    If(c, t, e2) => ldec_expr(t, names) or ldec_expr(e2, names)
     LetIn(nm, v, body) => ldec_expr(body, if ldec_expr(v, names) then Cons(nm, ldec_remove(names, nm)) else ldec_remove(names, nm))
+    VarIn(nm, v, body) => ldec_expr(body, if ldec_expr(v, names) then Cons(nm, ldec_remove(names, nm)) else ldec_remove(names, nm))
     _             => 0
 fn ldec_tail(op) = if op == "+" then "    call decimal_add\n" else if op == "-" then "    call decimal_sub\n" else if op == "*" then "    call decimal_mul\n" else if op == "/" then "    call decimal_div\n" else "    call decimal_compare\n    cmpq $1, %rax\n" + (if op == "==" then "    sete %al\n" else if op == "!=" then "    setne %al\n" else lsetc(op)) + "    movzbq %al, %rax\n    leaq 1(%rax,%rax), %rax\n"
 
@@ -398,7 +400,8 @@ fn lord_at_inner(e) = match e
     Call(nm, a2) => if nm == "at" and len(a2) == 2 then {ok: 1, s: lqhead(a2), i: lqhead(lqrest(a2))} else {ok: 0, s: Num(0), i: Num(0)}
     _            => {ok: 0, s: Num(0), i: Num(0)}
 fn lord_at(s_e, i_e, ctx, s) = let a = lbinargs(s_e, i_e, ctx, s) in lres(a.code + "    call ord_at\n", a)
-fn lcallx(nm, args, ctx, s) = if isctor(nm) then lctor(nm, args, ctx, s) else if nm == "__perceus_reuse_2" then lreuse2(args, ctx, s) else if nm == "__perceus_reuse_1" then lreuse1(args, ctx, s) else if nm == "ord" and len(args) == 1 then (let oa = lord_at_args(args) in if oa.ok == 1 then lord_at(oa.s, oa.i, ctx, s) else lcall(nm, args, ctx, s)) else if lis_bv2_call(nm) and len(args) == 2 then lbv2(nm, args, ctx, s) else if lis_bv1_call(nm) and len(args) == 1 then lbv1(nm, args, ctx, s) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lquant(nm, args, ctx, s) else lcall(nm, args, ctx, s)
+fn lis_err_call(arg, ctx, s) = let d1 = lctordesc("Err", 1, s) in let d0 = lctordesc("Err", 0, d1) in let lab = d0.pfx + str(d0.nl) in let a = lax(arg, ctx, lnext(d0)) in let neg_chk = if ctx.fnm == "run_errdefer" then "    testb $1, %cl\n    jz .Lerr_n" + lab + "\n    testq %rcx, %rcx\n    js .Lerr_y" + lab + "\n    jmp .Lerr_n" + lab + "\n" else "    jmp .Lerr_n" + lab + "\n" in lres(a.code + "    movq %rax, %rcx\n    movq $1, %rax\n    testb $7, %cl\n    jz .Lerr_p" + lab + "\n" + neg_chk + ".Lerr_p" + lab + ":\n    testq %rcx, %rcx\n    jz .Lerr_n" + lab + "\n    leaq " + d1.lab + "(%rip), %rdx\n    cmpq %rdx, (%rcx)\n    je .Lerr_y" + lab + "\n    leaq " + d0.lab + "(%rip), %rdx\n    cmpq %rdx, %rcx\n    jne .Lerr_n" + lab + "\n.Lerr_y" + lab + ":\n    movq $3, %rax\n.Lerr_n" + lab + ":\n", a)
+fn lcallx(nm, args, ctx, s) = if isctor(nm) then lctor(nm, args, ctx, s) else if nm == "__lume_is_err" and len(args) == 1 then lis_err_call(lqhead(args), ctx, s) else if nm == "__perceus_reuse_2" then lreuse2(args, ctx, s) else if nm == "__perceus_reuse_1" then lreuse1(args, ctx, s) else if nm == "ord" and len(args) == 1 then (let oa = lord_at_args(args) in if oa.ok == 1 then lord_at(oa.s, oa.i, ctx, s) else lcall(nm, args, ctx, s)) else if lis_bv2_call(nm) and len(args) == 2 then lbv2(nm, args, ctx, s) else if lis_bv1_call(nm) and len(args) == 1 then lbv1(nm, args, ctx, s) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lquant(nm, args, ctx, s) else lcall(nm, args, ctx, s)
 ## constant-string folding: a chain of `+` over string literals is one .rodata literal, so a long runtime
 ## fragment costs nothing at run time. A chain is only walked when its leftmost leaf is a literal.
 fn lstr_chain_head(e) = match e
@@ -536,10 +539,17 @@ fn lalpha_quant(nm, args, st) = let vnm = lqvar(lqhead(args)) in let a1 = lqrest
 fn llistlower(xs) = match xs
     Nil        => Var("Nil")
     Cons(h, t) => Call("Cons", Cons(h, Cons(llistlower(t), Nil)))
+fn lis_ed_var(e) = match e
+    Var(vn) => if count(vn) >= 8 and slice(vn, 0, 8) == "_ed_val_" then 1 else 0
+    _       => 0
+fn lis_ed_zero(e) = match e
+    Num(n) => if n == 0 then 1 else 0
+    _      => 0
+fn lis_ed_cond(op, l, r) = if op == "<" and lis_ed_var(l) == 1 and lis_ed_zero(r) == 1 then 1 else 0
 fn lalpha_e(e, st) = match e
     Var(nm)         => {node: Var(lenv_get(st.env, nm)), k: st.k}
     LetIn(nm, v, b) => lalpha_let(nm, v, b, st)
-    Bin(op, l, r)   => let rl = lalpha_e(l, st) in let rr = lalpha_e(r, {bound: st.bound, env: st.env, k: rl.k}) in {node: Bin(op, rl.node, rr.node), k: rr.k}
+    Bin(op, l, r)   => if lis_ed_cond(op, l, r) == 1 then lalpha_e(Call("__lume_is_err", Cons(l, Nil)), st) else let rl = lalpha_e(l, st) in let rr = lalpha_e(r, {bound: st.bound, env: st.env, k: rl.k}) in {node: Bin(op, rl.node, rr.node), k: rr.k}
     If(c, t, e2)    => let rc = lalpha_e(c, st) in let rt = lalpha_e(t, {bound: st.bound, env: st.env, k: rc.k}) in let re = lalpha_e(e2, {bound: st.bound, env: st.env, k: rt.k}) in {node: If(rc.node, rt.node, re.node), k: re.k}
     Call(nm, args)  => if nm == "_tylist_" then lalpha_e(llistlower(args), st) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lalpha_quant(nm, args, st) else let ra = lalpha_args(args, st) in {node: Call(nm, ra.items), k: ra.k}
     Field(o, nm)    => let ro = lalpha_e(o, st) in {node: Field(ro.node, nm), k: ro.k}

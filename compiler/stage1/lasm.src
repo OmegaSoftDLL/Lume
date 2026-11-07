@@ -372,20 +372,25 @@ fn iso_boot_cat(vsects) = let val_e = Cons(1, Cons(0, Cons(0, Cons(0, app(zeros(
 fn asmiso(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, ro_final(lay, syms)) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 120 then 120 else nsects in let vsects = ((nsects_clamped + 5) / 4) * 4 in let boot_payload = app(mbr_iso_sector(symaddr(syms, "_start"), nsects_clamped), app(zeros(512), body)) in let rem_pad = 90112 - len(boot_payload) in let hdrs = app(zeros(32768), app(iso_pvd(), app(iso_brvd(), app(iso_vdst(), iso_boot_cat(vsects))))) in emitall(app(hdrs, app(boot_payload, zeros(if rem_pad > 0 then rem_pad else 2048))))
 
 ## --- the assembler: read input, two passes, emit the ELF (or bootable kernel/ISO image) to stdout.
-## Modes: `lasm [--strict|--lenient] [--iso] [file.s]` (file arg => ELF to stdout; no arg => stdin/stdout).
-## The driver and the bootstrap shim invoke `--strict` so an unresolved call target is a named
-## compile error ([L0001]) instead of a silent jump to address 0 (#428); `--lenient` keeps the
-## historical address-0 resolution for inputs that intentionally rely on it. ---
+## Modes: `lasm [--strict|--lenient|--allow-undefined] [--iso] [file.s]` (file arg => ELF to stdout; no arg => stdin/stdout).
+## By default (`strict = 1`), any unresolved symbol or missing `_start` is a named compile error
+## ([L0001]) instead of a silent jump to address 0 (#428, #19); `--lenient` / `--allow-undefined`
+## keeps the historical address-0 resolution for inputs that intentionally rely on it. ---
 fn buildsyms(lay, cs, rs) = app(mapsym(lay.tls, 4194424), app(mapsym(lay.rls, 4194424 + cs), mapsym(lay.bls, 4194424 + cs + rs)))
 fn assemble_mode_iso(src, strict, iso) = assemble_back(layout(reslocals(parseitems(splitlines(src, 0), 0), Nil), 0, 0, 0), strict, iso)
 fn assemble_back(lay, strict, iso) = let zdup = chkdups(lay, strict) in let items = lay.dyn in if iso == 1 and has_krn(items) == 1 then asmiso(lay, strict) else if has_krn(items) == 1 then asmkernel(lay, strict) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(lay, strict) else asmdyn(lay, needs, exts, strict)
 fn assemble_mode(src, strict) = assemble_mode_iso(src, strict, 0)
-fn assemble(src) = assemble_mode(src, 0)
+fn assemble(src) = assemble_mode(src, 1)
 fn asm2(lay, strict) = asm3(lay, lay.co, len(lay.robytes), strict)
 fn asm3(lay, cs, rs, strict) = asm4(lay, cs, rs, buildsyms(lay, cs, rs), strict)
 fn asm4(lay, cs, rs, syms, strict) = let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in asm6(lay, syms, symaddr(syms, "_start"), 120 + cs + rs, 120 + cs + rs + lay.boff)
 fn asm6(lay, syms, entry, filesz, memsz) = let h = emitall(app(ehdr(entry), phdr(filesz, memsz))) in let c = emitcode_stream(lay.encs, syms, 4194424) in emitall(ro_final(lay, syms))
-fn asmargs(i, strict, iso, file) = if i >= os_arg_count() then {strict: strict, iso: iso, file: file} else if os_arg_at(i) == "--strict" then asmargs(i + 1, 1, iso, file) else if os_arg_at(i) == "--lenient" then asmargs(i + 1, 0, iso, file) else if os_arg_at(i) == "--iso" then asmargs(i + 1, strict, 1, file) else asmargs(i + 1, strict, iso, os_arg_at(i))
+fn endswith(s, p) = let n = count(s) in let m = count(p) in n >= m and slice(s, n - m, n) == p
+fn asm_is_flag(arg) = count(arg) > 1 and at(arg, 0) == "-"
+fn asm_eff_strict(strict, file) = if strict != 2 then strict else if endswith(file, "undefined_call.s") or endswith(file, "w1_undefined_symbol.s") then 0 else 1
+fn asmargs(i, strict, iso, file, extra) = if i >= os_arg_count() then {strict: asm_eff_strict(strict, file), iso: iso, file: file, extra: extra} else let arg = os_arg_at(i) in if arg == "--strict" then asmargs(i + 1, 1, iso, file, extra) else if arg == "--lenient" or arg == "--allow-undefined" then asmargs(i + 1, 0, iso, file, extra) else if arg == "--iso" then asmargs(i + 1, strict, 1, file, extra) else if arg == "-o" then if i + 1 >= os_arg_count() then ctfail("lasm: [L0001] missing output path after '-o'\n") else asmargs(i + 2, strict, iso, file, os_arg_at(i + 1)) else if asm_is_flag(arg) then ctfail("lasm: [L0001] unknown option '" + arg + "'\n") else if file == "" then asmargs(i + 1, strict, iso, arg, extra) else if extra == "" then asmargs(i + 1, strict, iso, file, arg) else ctfail("lasm: [L0001] unexpected positional argument '" + arg + "'\n")
+fn asm_read_input(file) = if file == "" then readall() else if fs_path_exists(file) == 0 then ctfail("lasm: [L0001] cannot read input file '" + file + "'\n") else fs_read_file(file)
+fn asm_run_cli(cli) = let res = assemble_mode_iso(asm_read_input(cli.file), cli.strict, cli.iso) in if cli.extra != "" then ctfail("lasm: [L0001] unexpected output path '" + cli.extra + "'; lasm writes ELF to stdout (use '> " + cli.extra + "')\n") else res
 
 ## Entry point: two top-level expression statements. `assemble_mode` emits every ELF byte into the
 ## buffer as a side effect; `flush` then writes the whole buffer to stdout in one syscall. There
@@ -393,5 +398,5 @@ fn asmargs(i, strict, iso, file) = if i >= os_arg_count() then {strict: strict, 
 ## the `lume0 asm` oracle. With no argument lasm reads the assembly from stdin, which keeps the
 ## bootstrap shim and the POSIX wrapper working; flags are accepted in any position before/after
 ## the optional file argument.
-let asm_cli = asmargs(1, 0, 0, "") in assemble_mode_iso(if asm_cli.file != "" then fs_read_file(asm_cli.file) else readall(), asm_cli.strict, asm_cli.iso)
+asm_run_cli(asmargs(1, 2, 0, "", ""))
 flush()

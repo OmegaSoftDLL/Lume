@@ -1,8 +1,8 @@
 # Engineering a Self-Hosted Programming Language with Built-In `QF_LIA` Verification and a Zero-C Native Backend
 
-*Design notes on Lume (`v1.0.0`), achieving a bit-identical `stage2 == stage3` bootstrap fixpoint, and integrating linear integer arithmetic proofs directly into the typechecker.*
+*Design notes on Lume (`v1.1.0`), achieving a bit-identical `stage2 == stage3` bootstrap fixpoint, and integrating linear integer arithmetic proofs directly into the typechecker.*
 
-![Lume v1.0.0 Architecture & Formal Verification](lume_linkedin_cover.png)
+![Lume v1.1.0 Architecture & Formal Verification](lume_linkedin_cover.png)
 
 Modern software infrastructure forces an uncomfortable split across the engineering stack.
 
@@ -12,7 +12,7 @@ Adding formal verification to production code usually makes this split worse. Mo
 
 **Lume** (`https://github.com/OmegaSoftDLL/lume`) is an open-source systems and data programming language built from scratch to test a specific engineering hypothesis: *can a single, small, self-hosted compiler emit native machine binaries across architectures without an external C toolchain, verify functional contracts deterministically at compile time, and support bare-metal systems, financial data, and differentiable programming under one type system?*
 
-With `v1.0.0` now tagged on GitHub, this article documents the core architectural decisions, the compiler bottlenecks we hit along the way, and how the toolchain works under the hood.
+With `v1.1.0` now tagged on GitHub, this article documents the core architectural decisions, the compiler bottlenecks we hit along the way, and how the toolchain works under the hood.
 
 ---
 
@@ -23,7 +23,7 @@ Most contemporary languages rely on LLVM, GCC, or the host OS linker (`ld`, `lin
 Lume uses a three-stage bootstrap designed to reach a **Zero-C steady state**:
 
 1. **Stage 0 (`lume0`):** A minimal reference interpreter written in portable C11 with zero third-party dependencies. Its sole job is to evaluate the compiler source tree from cold start.
-2. **Stage 1 (`lumec` + `lasm`):** The self-hosted compiler (`lumec`) and native assembler/linker (`lasm`), both written in Lume (`compiler/stage1/`). Rather than shelling out to `binutils` or `clang`, `lasm` directly encodes executable formats byte-for-byte: `ELF64` (`x86_64-linux`, `aarch64-linux`, `riscv64-linux`), `PE64` (`x86_64-windows` with a native `kernel32.dll` Import Address Table), `Mach-O` (`aarch64-macos`), `WASM` (`wasm32-wasi`), and bootable `.kernel` images (16-bit MBR real-mode bootstrap transitioning into 64-bit long mode).
+2. **Stage 1 (`lumec` + `lasm` + `ltarget`):** The self-hosted compiler (`lumec`), native x86-64 ELF64/kernel assembler (`lasm`), and multi-target emitter (`ltarget`), all written in Lume (`compiler/stage1/`). Rather than shelling out to `binutils` or `clang`, `lasm` directly encodes native `x86_64-linux` `ELF64` executables and bootable `.kernel` images (16-bit MBR real-mode bootstrap transitioning into 64-bit long mode), while `ltarget.src` emits cross-target containers (`aarch64-linux`, `riscv64-linux`, `x86_64-windows` `PE64`, `aarch64-macos` `Mach-O`, `wasm32-wasi`, and `lumb` bytecode).
 3. **Self-Hosted Fixpoint (`stage2 == stage3`):** The Stage-1 compiler compiles its own source tree to produce `lumec2`. Then `lumec2` compiles the exact same source tree to produce `lumec3`. Every CI run verifies that `sha256(lumec2) == sha256(lumec3)` with zero byte diffs.
 
 Reaching a bit-identical fixpoint without LLVM exposed classic compiler problems that higher-level backends usually hide:
@@ -62,7 +62,7 @@ During `lume check` or `lume verify`, the compiler performs Hindley-Milner type 
 - If a counterexample exists, compilation fails closed with diagnostic `[V0001]` and prints the concrete variable assignment that violates the postcondition.
 - If the negation is unsatisfiable, `lcert` emits a deterministic proof certificate hashed with FIPS 180-4 `SHA-256` and signed with `Ed25519`. Downstream consumers can verify a compiled module's proof bundle (`lume evidence verify`) in milliseconds without re-running proof search.
 
-To anchor the soundness of the core calculus, the operational semantics and type safety proofs of Lume-Core are mechanized in **Lean 4** (`formal/lean/LumeCore.lean`).
+To anchor the soundness of the core calculus, the operational semantics and proof-certificate obligations of Lume-Core are specified in `docs/28-formal-semantics.md` and independently checked by the standalone proof kernel (`compiler/stage1/lcert.src`).
 
 ---
 
@@ -101,11 +101,11 @@ Through its built-in JSON/MCP server (`lume mcp`, `lume certify --json`, `lume a
 
 ---
 
-## 6. Exploring `v1.0.0`
+## 6. Exploring `v1.1.0`
 
-Lume `v1.0.0` is available under the MIT License with prebuilt release archives for **Linux (`x86_64`, `aarch64`, `riscv64`)**, **Windows (`x86_64`)**, and **macOS (`aarch64` Apple Silicon & `x86_64`)**, backed by a 410-test Stage-0 conformance suite, 317 red-team assertions, 159 semantic batch checks, 75,512 differential value-representation test cases, AddressSanitizer/UBSan verification, and 44 continuous integration steps.
+Lume `v1.1.0` is available under the MIT License with prebuilt release archives for **Linux (`x86_64`, `aarch64`, `riscv64`)**, **Windows (`x86_64`)**, and **macOS (`aarch64` Apple Silicon & `x86_64`)** (providing the native self-hosted `lumec` + `lasm` ELF64 pipeline on `x86_64-linux` and the portable `lume0` Stage-0 interpreter + Stage-1 compiler bundle across all host platforms), backed by a 410-test Stage-0 conformance suite, 317 red-team assertions, 159 semantic batch checks, 75,512 differential value-representation test cases, AddressSanitizer/UBSan verification, and 44 continuous integration steps.
 
 - **GitHub Repository:** https://github.com/OmegaSoftDLL/lume
-- **Release `v1.0.0` Binaries & `SHA256SUMS`:** https://github.com/OmegaSoftDLL/lume/releases/tag/v1.0.0
+- **Release `v1.1.0` Binaries & `SHA256SUMS`:** https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0
 - **Compiler Source Tree (`lumec` + `lasm` + `lcert`):** `compiler/stage1/`
-- **Lean 4 Mechanization:** `formal/lean/LumeCore.lean`
+- **Formal Semantics & Proof Certificate Kernel:** `docs/28-formal-semantics.md`, `compiler/stage1/lcert.src`
