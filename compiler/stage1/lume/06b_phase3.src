@@ -517,7 +517,7 @@ fn oinfer_fromp(f) = let bo = oquick_origin(f.body, oinit_origins(f.ps)) in if o
 
 fn oinfer_upd_sig(osigs, f, rtn, fp) = match osigs
     Nil         => Nil
-    Cons(sg, r) => if sg.nm == f.nm then Cons({nm: sg.nm, pubf: sg.pubf, freef: sg.freef, pl: if isnil(sg.pl) == 1 then opl_plain(f.ps) else sg.pl, rty: if rtn != "" and ois_res_rty(sg.rty, Cons({nm: rtn, kind: "resource"}, Nil)) == "" then TyName(rtn) else sg.rty, fromp: if sg.fromp != "" then sg.fromp else fp}, r) else Cons(sg, oinfer_upd_sig(r, f, rtn, fp))
+    Cons(sg, r) => if sg.nm == f.nm then Cons({nm: sg.nm, pubf: sg.pubf, freef: sg.freef, pl: if isnil(sg.pl) == 1 then opl_plain(f.ps) else sg.pl, rty: if rtn != "" and ois_res_rty(sg.rty, Cons({nm: rtn, kind: "resource"}, Nil)) == "" then TyName(rtn) else sg.rty, fromp: if sg.fromp != "" then sg.fromp else if sg.pubf == 0 then fp else ""}, r) else Cons(sg, oinfer_upd_sig(r, f, rtn, fp))
 
 fn oinfer_priv_osigs(fns, osigs, otypes) = match fns
     Nil        => osigs
@@ -526,7 +526,7 @@ fn oinfer_priv_osigs(fns, osigs, otypes) = match fns
 fn oinfer_priv_one(f, osigs, otypes) = let rtn = if isnil(otypes) == 1 then "" else oinfer_res_body(f.body, osigs, otypes) in let fp = oinfer_fromp(f) in oinfer_priv_one_m(osiglookup(f.nm, osigs), f, osigs, rtn, fp)
 
 fn oinfer_priv_one_m(m, f, osigs, rtn, fp) = match m
-    Cons(sg, r) => if rtn != "" or (sg.fromp == "" and fp != "") then oinfer_upd_sig(osigs, f, rtn, fp) else osigs
+    Cons(sg, r) => if rtn != "" or (sg.pubf == 0 and sg.fromp == "" and fp != "") then oinfer_upd_sig(osigs, f, rtn, fp) else osigs
     Nil         => if rtn != "" or fp != "" then Cons({nm: f.nm, pubf: 0, freef: 0, pl: opl_plain(f.ps), rty: if rtn != "" then TyName(rtn) else TyAny, fromp: fp}, osigs) else osigs
 
 ## --- call-site conflict & mode helpers ---
@@ -2721,7 +2721,7 @@ fn ofn_pl(nm, osigs) = match osiglookup(nm, osigs)
     Cons(sg, sr) => sg.pl
 fn pu_env_ps(fnm, body, pl, st) = match pl
     Nil        => Nil
-    Cons(p, r) => let rest = pu_env_ps(fnm, body, r, st) in if p.cf == 2 and omem(pu_key(fnm, p.pn), st.u) == 1 and pu_uses(p.pn, body) <= 1 then Cons(p.pn, rest) else rest
+    Cons(p, r) => let rest = pu_env_ps(fnm, body, r, st) in if (p.cf == 2 and omem(pu_key(fnm, p.pn), st.u) == 1 and pu_uses(p.pn, body) <= 1) or pu_scalar_ty(p.pt) == 1 then Cons(p.pn, rest) else rest
 
 ## drop from `u` every own parameter with a call site that is not provably unique
 fn pu_drop_fn(nm, pl, u) = match pl
@@ -2966,7 +2966,7 @@ fn vwrap_fn_contract(nm, ps, raw_body, low_body, lctx, vctx) = vwrap_fn_c1(nm, p
 
 fn vwrap_fn_c1(nm, ps, raw_body, low_body, lctx, mvs) = match mvs
     Nil          => low_body
-    Cons(vsg, r) => let post = if vqflia_prove_fn(ps, vsg.reqs, vsg.enss, raw_body, lctx.fns) == 1 or isnil(vsg.enss) == 1 then low_body else LetIn("result", low_body, LetIn("ret", Var("result"), LetIn("_vens_ok", If(vconj_conds(vsg.enss, lctx, 100), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (ensures) in '" + nm + "'\n"), Nil))), Var("result")))) in if isnil(vsg.reqs) == 1 then post else LetIn("_vreq_ok", If(vconj_conds(vsg.reqs, lctx, 200), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (requires) in '" + nm + "'\n"), Nil))), post)
+    Cons(vsg, r) => if vqflia_prove_fn(ps, vsg.reqs, vsg.enss, raw_body, lctx.fns) == 1 then low_body else let post = if isnil(vsg.enss) == 1 then low_body else LetIn("result", low_body, LetIn("ret", Var("result"), LetIn("_vens_ok", If(vconj_conds(vsg.enss, lctx, 100), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (ensures) in '" + nm + "'\n"), Nil))), Var("result")))) in if isnil(vsg.reqs) == 1 then post else LetIn("_vreq_ok", If(vconj_conds(vsg.reqs, lctx, 200), Num(1), Call("ctfail", Cons(Str("lume: runtime contract violation (requires) in '" + nm + "'\n"), Nil))), post)
 
 fn klower_eff_ops(ops, ufns, rest) = match ops
     Nil         => rest
