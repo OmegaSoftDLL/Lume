@@ -2159,7 +2159,7 @@ if [ -n "$caller_bin_dir" ]; then
 fi
 if [ -n "${ntmp:-}" ] && [ "${LUME_BIN_DIR:-}" = "$ntmp" ]; then rm -rf -- "$ntmp"; unset LUME_BIN_DIR; fi
 
-echo "== AI-first: `lume0 describe` emits valid JSON"
+echo "== AI-first: 'lume0 describe' emits valid JSON"
 if command -v python3 >/dev/null 2>&1; then
     if $BIN describe | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then ok "describe --json"; else bad "describe --json"; fi
 fi

@@ -209,6 +209,15 @@ collect_reachable_mods() {
             _ucand="$_mdir/deps/$_u.src"
         elif [ -f "$SRC_DIR/$_u.src" ]; then
             _ucand="$SRC_DIR/$_u.src"
+        elif [ "$_u" = "lumec" ] && [ -f "$ROOT/scripts/amalgamate.src" ]; then
+            ensure_seed
+            _am_in=$(mktemp)
+            printf '@root %s\n' "$ROOT" > "$_am_in"
+            run_l0 run "$SRC_DIR/compiler_in_core.lume" "$ROOT/scripts/amalgamate.src" "$_am_in" >/dev/null
+            rm -f "$_am_in"
+            if [ -f "$SRC_DIR/lumec.src" ]; then
+                _ucand="$SRC_DIR/lumec.src"
+            fi
         fi
         if [ -n "$_ucand" ]; then
             printf '@module %s\n' "$_u" >> "$_modin"

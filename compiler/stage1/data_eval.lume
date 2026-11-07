@@ -203,7 +203,7 @@ fn deval_fast_lmod(raw: str) -> str
     var out = []
     for mnm in imports
         let mlines = mod_bodies.get(mnm) ?? []
-        if mlines.len() > 0
+        if mlines.len() > 0 and not (mnm == "lumec" and sha_only)
             out.push("## --- module " + mnm + " ---")
             if mnm == "lcaas" and sha_only
                 var keep_fn = false
@@ -341,7 +341,21 @@ fn env_copy(env: map[str, RV]) -> map[str, RV]
         out[e[0]] = e[1]
     out
 
+fn deval_try_get(env: map[str, RV], key: str) -> RV
+    match env.get("$fs") ?? VInt(n: 0)
+        VRec(fsm) => fsm.get(key) ?? VInt(n: 0)
+        _ => VInt(n: 0)
+
+fn deval_try_set(env: map[str, RV], key: str, val: RV)
+    match env.get("$fs") ?? VInt(n: 0)
+        VRec(fsm) => do
+            fsm[key] = val
+        _ => do
+            let _ = 0
+
 fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
+    if rv_int(deval_try_get(env, "$try_failed")) != 0
+        return VInt(n: 0)
     match e
         DInt(n)       => VInt(n: n)
         DDecimal(coefficient, scale) => do
@@ -508,7 +522,7 @@ fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
                 let qhi = rv_int(deval(args[2], env, fns))
                 var qok = if name == "forall_range" then 1 else 0
                 var qi = qlo
-                while qi <= qhi
+                while qi <= qhi and rv_int(deval_try_get(env, "$try_failed")) == 0
                     var qenv = env_copy(env)
                     qenv[qvar] = VInt(n: qi)
                     let qv = rv_int(deval(args[3], qenv, fns))
@@ -518,8 +532,26 @@ fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
                         qok = 1
                     qi = qi + 1
                 result = VInt(n: qok)
+            if not found and name == "__lume_try_begin"
+                let d = rv_int(deval_try_get(env, "$try_depth"))
+                deval_try_set(env, "$try_depth", VInt(n: d + 1))
+                deval_try_set(env, "$try_failed", VInt(n: 0))
+                result = VInt(n: 0)
+            if not found and name == "__lume_try_end"
+                let d = rv_int(deval_try_get(env, "$try_depth"))
+                if d > 0
+                    deval_try_set(env, "$try_depth", VInt(n: d - 1))
+                result = VInt(n: 0)
+            if not found and name == "__lume_try_msg"
+                result = VStr(s: rv_str(deval_try_get(env, "$try_msg")))
             if not found and name == "ctfail"
-                panic rv_str(deval(args[0], env, fns))
+                let msg = rv_str(deval(args[0], env, fns))
+                if rv_int(deval_try_get(env, "$try_depth")) > 0
+                    deval_try_set(env, "$try_failed", VInt(n: 1))
+                    deval_try_set(env, "$try_msg", VStr(s: msg))
+                    result = VInt(n: 0)
+                else
+                    panic msg
             if not found and name == "nl"
                 result = VStr(s: "\n")
             if not found and name == "dq"
@@ -589,7 +621,19 @@ fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
             env2[name] = deval(value, env2, fns)
             deval(body, env2, fns)
         DIf(c, a, b) => do
-            if rv_int(deval(c, env, fns)) != 0
+            let d0 = rv_int(deval_try_get(env, "$try_depth"))
+            let cv = rv_int(deval(c, env, fns))
+            let d1 = rv_int(deval_try_get(env, "$try_depth"))
+            if d1 > d0
+                let av = deval(a, env, fns)
+                if rv_int(deval_try_get(env, "$try_failed")) != 0
+                    deval_try_set(env, "$try_depth", VInt(n: d0))
+                    deval_try_set(env, "$try_failed", VInt(n: 0))
+                    deval(b, env, fns)
+                else
+                    deval_try_set(env, "$try_depth", VInt(n: d0))
+                    av
+            elif cv != 0
                 deval(a, env, fns)
             else
                 deval(b, env, fns)
