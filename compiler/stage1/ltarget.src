@@ -227,13 +227,17 @@ fn tg_lookup_val(env, nm) = match env
     Nil        => 0
     Cons(h, t) => if h.k == nm then h.v else tg_lookup_val(t, nm)
 
-fn tg_eval_pure(e, env, fns) = match e
+fn tg_eval_pure(e, env, fns) = tg_eval_pure_d(e, env, fns, 0)
+
+fn tg_eval_pure_d(e, env, fns, d) = if d > 24 then 0 else tg_eval_pure_m(e, env, fns, d)
+
+fn tg_eval_pure_m(e, env, fns, d) = match e
     TNum(n)        => n
     TVar(nm)       => tg_lookup_val(env, nm)
-    TBin(op, l, r) => tg_eval_bin(op, tg_eval_pure(l, env, fns), tg_eval_pure(r, env, fns))
-    TIf(c, t, f)   => if tg_eval_pure(c, env, fns) != 0 then tg_eval_pure(t, env, fns) else tg_eval_pure(f, env, fns)
-    TLet(n, v, b)  => let vv = tg_eval_pure(v, env, fns) in tg_eval_pure(b, Cons({k: n, v: vv}, env), fns)
-    TCall(nm, xs)  => tg_eval_call(nm, xs, env, fns)
+    TBin(op, l, r) => tg_eval_bin(op, tg_eval_pure_d(l, env, fns, d), tg_eval_pure_d(r, env, fns, d))
+    TIf(c, t, f)   => if tg_eval_pure_d(c, env, fns, d) != 0 then tg_eval_pure_d(t, env, fns, d) else tg_eval_pure_d(f, env, fns, d)
+    TLet(n, v, b)  => let vv = tg_eval_pure_d(v, env, fns, d) in tg_eval_pure_d(b, Cons({k: n, v: vv}, env), fns, d)
+    TCall(nm, xs)  => tg_eval_call(nm, xs, env, fns, d + 1)
     _              => 0
 
 fn tg_eval_bin(op, a, b) = if op == "+" then a + b else if op == "-" then a - b else if op == "*" then a * b else if op == "/" then (if b == 0 then 0 else a / b) else if op == "%" then (if b == 0 then 0 else a % b) else if op == "==" then (if a == b then 1 else 0) else if op == "!=" then (if a != b then 1 else 0) else if op == "<" then (if a < b then 1 else 0) else if op == ">" then (if a > b then 1 else 0) else if op == "<=" then (if a <= b then 1 else 0) else if op == ">=" then (if a >= b then 1 else 0) else if op == "and" then (if a != 0 and b != 0 then 1 else 0) else if op == "or" then (if a != 0 or b != 0 then 1 else 0) else 0
@@ -242,15 +246,15 @@ fn tg_find_fn(nm, fns) = match fns
     Nil        => {found: 0, fn_rec: {nm: "", ps: Nil, reqs: Nil, enss: Nil, body: TNum(0)}}
     Cons(f, r) => if f.nm == nm then {found: 1, fn_rec: f} else tg_find_fn(nm, r)
 
-fn tg_bind_params(ps, args, env, fns) = match ps
+fn tg_bind_params(ps, args, env, fns, d) = match ps
     Nil        => Nil
-    Cons(p, r) => tg_bind_param1(p, r, args, env, fns)
+    Cons(p, r) => tg_bind_param1(p, r, args, env, fns, d)
 
-fn tg_bind_param1(p, r, args, env, fns) = match args
+fn tg_bind_param1(p, r, args, env, fns, d) = match args
     Nil        => Nil
-    Cons(a, t) => Cons({k: p, v: tg_eval_pure(a, env, fns)}, tg_bind_params(r, t, env, fns))
+    Cons(a, t) => Cons({k: p, v: tg_eval_pure_d(a, env, fns, d)}, tg_bind_params(r, t, env, fns, d))
 
-fn tg_eval_call(nm, xs, env, fns) = let lk = tg_find_fn(nm, fns) in if lk.found == 0 then 0 else let f = lk.fn_rec in let cenv = tg_bind_params(f.ps, xs, env, fns) in tg_eval_pure(f.body, cenv, fns)
+fn tg_eval_call(nm, xs, env, fns, d) = if d > 24 then 0 else let lk = tg_find_fn(nm, fns) in if lk.found == 0 then 0 else let f = lk.fn_rec in let cenv = tg_bind_params(f.ps, xs, env, fns, d) in tg_eval_pure_d(f.body, cenv, fns, d)
 
 fn tg_all_hold(conds, env, fns) = match conds
     Nil        => 1
@@ -285,7 +289,27 @@ fn tg_check_samples(f, fns, samples) = match samples
 
 fn tg_check_offdiag(f, fns) = if tg_check_env_one(f, fns, tg_mk_env_step(f.ps, 0, 1, 0)) == 0 then 0 else if tg_check_env_one(f, fns, tg_mk_env_step(f.ps, 1, 4, 0)) == 0 then 0 else if tg_check_env_one(f, fns, tg_mk_env_step(f.ps, 10, 0 - 3, 0)) == 0 then 0 else tg_check_env_one(f, fns, tg_mk_env_step(f.ps, 2, 5, 0))
 
-fn tg_contract_status(f, fns) = if tg_isnil(f.reqs) == 1 and tg_isnil(f.enss) == 1 then "none" else let samples = Cons(0 - 10, Cons(0 - 1, Cons(0, Cons(1, Cons(5, Cons(11, Cons(100, Nil))))))) in if tg_check_samples(f, fns, samples) == 0 or tg_check_offdiag(f, fns) == 0 then "refuted" else if tg_is_nonlinear(f.body) == 1 or tg_list_nonlinear(f.reqs) == 1 or tg_list_nonlinear(f.enss) == 1 then "runtime_checked" else "proven"
+fn tg_has_int(xs, n) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == n then 1 else tg_has_int(t, n)
+
+fn tg_add_int(xs, n) = if tg_has_int(xs, n) == 1 then xs else Cons(n, xs)
+
+fn tg_add_cands(xs, n) = tg_add_int(tg_add_int(tg_add_int(xs, n - 1), n), n + 1)
+
+fn tg_expr_consts(e, acc) = match e
+    TNum(n)        => tg_add_cands(acc, n)
+    TBin(op, l, r) => tg_expr_consts(r, tg_expr_consts(l, acc))
+    TIf(c, t, f)   => tg_expr_consts(f, tg_expr_consts(t, tg_expr_consts(c, acc)))
+    TLet(n, v, b)  => tg_expr_consts(b, tg_expr_consts(v, acc))
+    TCall(nm, xs)  => tg_list_consts(xs, acc)
+    _              => acc
+
+fn tg_list_consts(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => tg_list_consts(t, tg_expr_consts(h, acc))
+
+fn tg_contract_status(f, fns) = if tg_isnil(f.reqs) == 1 and tg_isnil(f.enss) == 1 then "none" else let base_s = Cons(0 - 10, Cons(0 - 1, Cons(0, Cons(1, Cons(5, Cons(11, Cons(100, Nil))))))) in let samples = tg_expr_consts(f.body, tg_list_consts(f.enss, tg_list_consts(f.reqs, base_s))) in if tg_check_samples(f, fns, samples) == 0 or tg_check_offdiag(f, fns) == 0 then "refuted" else if tg_is_nonlinear(f.body) == 1 or tg_list_nonlinear(f.reqs) == 1 or tg_list_nonlinear(f.enss) == 1 then "runtime_checked" else "proven"
 
 fn tg_list_nonlinear(xs) = match xs
     Nil        => 0
@@ -510,8 +534,10 @@ fn rv_compile_args(xs, slots, fns_off, cur_off) = match xs
     Nil        => Nil
     Cons(h, t) => let hw = rv_compile_expr(h, slots, fns_off, cur_off) in let hpush = tg_app(hw, rv_push_a0()) in tg_app(hpush, rv_compile_args(t, slots, fns_off, cur_off + tg_len(hpush)))
 
+fn rv_load_imm(n) = if n < 2048 and n >= 0 - 2048 then Cons(rv_addi(10, 0, n), Nil) else let q = n / 1024 in let r = n % 1024 in tg_app(rv_load_imm(q), Cons(rv_addi(6, 0, 1024), Cons(rv_mul(10, 10, 6), Cons(rv_addi(10, 10, r), Nil))))
+
 fn rv_compile_expr(e, slots, fns_off, cur_off) = match e
-    TNum(n)        => if n < 2048 and n >= 0 - 2048 then Cons(rv_addi(10, 0, n), Nil) else Cons(rv_addi(10, 0, n / 1024), Cons(rv_addi(6, 0, 1024), Cons(rv_mul(10, 10, 6), Cons(rv_addi(10, 10, n % 1024), Nil))))
+    TNum(n)        => rv_load_imm(n)
     TVar(nm)       => Cons(rv_ld(10, 8, 8 * tg_slot_idx(slots, nm)), Nil)
     TTrap          => Cons(rv_jal(0, (1 - cur_off) * 4), Nil)
     TLet(nm, v, b) => let vw = rv_compile_expr(v, slots, fns_off, cur_off) in let st = Cons(rv_sd(10, 8, 8 * tg_slot_idx(slots, nm)), Nil) in let v_st = tg_app(vw, st) in tg_app(v_st, rv_compile_expr(b, slots, fns_off, cur_off + tg_len(v_st)))

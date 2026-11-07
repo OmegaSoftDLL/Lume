@@ -275,6 +275,7 @@ fn oa_roots_items(xs, oa) = match xs
     Cons(h, t) => of_app(oa_own_roots(h.val, oa), oa_roots_items(t, oa))
 fn oa_root_of(i, oa) = let p = oa_path(i) in if p.root == "" then Nil else Cons(oa_rid(p.root, oa), Nil)
 fn oa_own_roots(e, oa) = match e
+    Var(x)          => if of_mem(x, oa.res) == 1 then Cons(oa_rid(x, oa), Nil) else Nil
     OwnE(i)         => oa_root_of(i, oa)
     Call(nm, args)  => if nm == "move" and of_len(args) == 1 then oa_root_of(of_hd(args), oa) else oa_roots_list(args, oa)
     Rec(items)      => oa_roots_items(items, oa)
@@ -451,8 +452,9 @@ fn of_res_name(tn, ots) = match ots
     Nil        => 0
     Cons(h, t) => if h.nm == tn then (if h.kind == "resource" then 1 else 0) else of_res_name(tn, t)
 fn of_res_ty(ty, ots) = match ty
-    TyName(n) => of_res_name(n, ots)
-    _         => 0
+    TyName(n)       => of_res_name(n, ots)
+    TyApply(n, sub) => if n == "cap" then 1 else of_res_name(n, ots)
+    _               => 0
 fn of_sig_rt(nm, sigs) = match sigs
     Nil        => TyAny
     Cons(h, t) => if h.fname == nm then h.rt else of_sig_rt(nm, t)
@@ -602,11 +604,29 @@ fn omust_fld_read(x, fld, e) = match e
 fn omust_rec_flds(nm, items, b, oa) = match items
     Nil        => 1
     Cons(h, t) => if of_res_value(h.val, oa) == 1 and omust_fld(nm, h.key, b) == 0 then 0 else omust_rec_flds(nm, t, b, oa)
-fn omust_res_val(nm, v, b, oa) = if omust(nm, b) == 1 then 1 else omust_res_val1(nm, v, b, oa)
+fn omust_subs(args, subs, body, oa) = match args
+    Nil        => 1
+    Cons(a, r) => omust_sub1(a, r, subs, body, oa)
+fn omust_sub1(a, r, subs, body, oa) = match subs
+    Nil        => if of_res_value(a, oa) == 1 then 0 else omust_subs(r, Nil, body, oa)
+    Cons(s, t) => if of_res_value(a, oa) == 1 and omust_any(oa_pat_names(s), body) == 0 then 0 else omust_subs(r, t, body, oa)
+fn omust_pcons(cnm, args, pat, body, oa) = match pat
+    PCons(tag, subs) => if tag == cnm then omust_subs(args, subs, body, oa) else omust_any(oa_pat_names(pat), body)
+    _                => omust_any(oa_pat_names(pat), body)
+fn omust_ctor_arms(cnm, args, arms, oa) = match arms
+    Nil        => 1
+    Cons(h, t) => if omust_pcons(cnm, args, h.pat, h.body, oa) == 1 then omust_ctor_arms(cnm, args, t, oa) else 0
+fn omust_ctor_body(nm, cnm, args, e, oa) = match e
+    Match(sc, arms) => if of_is_var(sc, nm) == 1 then omust_ctor_arms(cnm, args, arms, oa) else omust(nm, e)
+    LetIn(x, v, b)  => if x == nm then 0 else if omust_read(nm, v) == 1 then 1 else omust_ctor_body(nm, cnm, args, b, oa)
+    VarIn(x, v, b)  => if x == nm then 0 else if omust_read(nm, v) == 1 then 1 else omust_ctor_body(nm, cnm, args, b, oa)
+    _               => omust(nm, e)
+fn omust_res_val(nm, v, b, oa) = omust_res_val1(nm, v, b, oa)
 fn omust_res_val1(nm, v, b, oa) = match v
-    Rec(items)      => omust_rec_flds(nm, items, b, oa)
-    RecT(tn, items) => if of_res_name(tn, oa.otypes) == 1 then 0 else omust_rec_flds(nm, items, b, oa)
-    _               => 0
+    Rec(items)      => if omust(nm, b) == 1 then 1 else omust_rec_flds(nm, items, b, oa)
+    RecT(tn, items) => if omust(nm, b) == 1 then 1 else if of_res_name(tn, oa.otypes) == 1 then 0 else omust_rec_flds(nm, items, b, oa)
+    Call(cnm, args) => if of_ctor(cnm) == 1 then omust_ctor_body(nm, cnm, args, b, oa) else omust(nm, b)
+    _               => omust(nm, b)
 ## a function that returns a resource it only borrowed would duplicate it
 fn oa_res_ret(fnm, body, bps, oa) = if of_nil(oa.otypes) == 1 or of_res_call(fnm, oa) == 0 then "" else let bp = oa_first_borrowed(bps, oa_flow_all(oa_flow(body, oa)), oa) in if bp == "" then "" else "cannot return borrowed resource '" + bp + "' from '" + fnm + "' (help: take it as 'own " + bp + "')"
 fn oa_res_chk(nm, v, b, oa, fnm) = if of_nil(oa.otypes) == 1 or of_res_value(v, oa) == 0 then "" else if omust_res_val(nm, v, b, oa) == 1 then "" else "resource '" + nm + "' in '" + fnm + "' is not consumed on every path (help: pass it with 'own " + nm + "', return it, or release it in a 'defer')"

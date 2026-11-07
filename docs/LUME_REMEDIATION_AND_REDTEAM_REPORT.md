@@ -2,7 +2,7 @@
 
 **Date:** November 7, 2026  
 **Target Repository:** `https://github.com/OmegaSoftDLL/lume` (`main`)  
-**Scope:** Complete remediation of all 21 GitHub Issues (`#1`–`#21` / `B-01`–`B-21`) raised by the Claude Opus 5.5 Independent Red-Team Audit (Rounds 1–6), plus 32 additional adversarial vulnerabilities discovered and fixed during Autonomous Red Team Round 1, verified by a 100% native Lume test and 4-way differential fuzzing gate (`tests/harness/claude_audit_gate.src`).
+**Scope:** Complete remediation of all 21 GitHub Issues (`#1`–`#21` / `B-01`–`B-21`) raised by the Claude Opus 5.5 Independent Red-Team Audit (Rounds 1–6), plus 64 additional adversarial vulnerabilities discovered and fixed across Autonomous Red Team Round 1 (32 findings) and Red Team Round 2 (32 findings), verified by a 100% native Lume test and 4-way differential fuzzing gate (`tests/harness/claude_audit_gate.src`).
 
 ---
 
@@ -13,7 +13,9 @@ Following the six-round adversarial audit by Claude Opus 5.5 (`docs/CLAUDE_OPUS_
 In strict adherence to the **"Lume gera Lume" (100% Lume generates Lume)** principle:
 1. **All 21 Claude Opus 5.5 Audit Issues (`#1`–`#21`) are 100% resolved and verified in native Lume.**
 2. **All 32 Red Team Round 1 vulnerabilities (`RT1-01`–`RT1-08`, `RT2-01`–`RT2-12`, `RT3-01`–`RT3-12`) discovered by our three specialized adversarial subagents are 100% resolved.**
-3. **Zero Python or external scripting remains in the repository:** All verification and 4-way differential fuzzing (`lumec` native ELF vs. `LUME_GC_STRESS=1` vs. Stage-0 seed `lume0` vs. `lcaas` oracle) is implemented natively in Lume at `tests/harness/claude_audit_gate.src` and wired into `.github/workflows/ci.yml`.
+3. **All 32 Red Team Round 2 vulnerabilities (`[RT2-A01]`–`[RT2-A09]`, `[RT2-B01]`–`[RT2-B12]`, `[RT2-G01]`–`[RT2-G11]`) discovered during the second-order deep-dive across all 18 compiler/runtime/prover subsystems are 100% resolved.**
+4. **Zero Python or external scripting remains in the repository:** All verification and 4-way differential fuzzing (`lumec` native ELF vs. `LUME_GC_STRESS=1` vs. Stage-0 seed `lume0` vs. `lcaas` oracle) is implemented natively in Lume at `tests/harness/claude_audit_gate.src` and wired into `.github/workflows/ci.yml`.
+5. **Fresh-Clone Stage-0 Seed Bootstrap Verified (`bootstrap/lume0/lume0`):** `06b_phase3.src` and `lcaas.src` compile cleanly through the frozen C11 seed (`SEED_FREEZE.sha256`) using pure arithmetic helpers (`vlin_add_ovf`, `vlin_sub_ovf`, `vlin_mul_ovf`, `vwrap_add`, `vwrap_sub`, `vbv_*`).
 4. **Zero Regressions Across All Self-Hosting & CI Gates:**
    - `./lume bootstrap`: `stage2 == stage3` bit-identical (`4,507,936` bytes).
    - `./lume zero-c`: `stage2 == stage3` with `cc`/`gcc`/`clang`/`as`/`ld` blocked in `PATH`.
@@ -76,7 +78,41 @@ After resolving Issues `#1`–`#21`, three independent Red Team subagents attack
 
 ---
 
-## 4. Verification Summary
+## 4. Red Team Round 2 — 32 Second-Order Vulnerabilities Found & Fixed
+
+Following the full local build, a second wave of three Red Team subagents (`Alpha`, `Beta`, `Gamma`) performed a line-by-line adversarial audit across 18 compiler, prover, certificate, ownership, target, and stdlib modules:
+
+### 4.1 Squad Alpha — Prover, Certificates, Evidence, Registry & Evolve (`[RT2-A01]`–`[RT2-A09]`)
+- **`[RT2-A01]` (`lume_driver.src`):** `ld_verify_cert_entry` now rejects certificates containing `"status":"runtime_checked"` or `"status":"unproven"`.
+- **`[RT2-A02]` & `[RT2-A06]` (`lcaas.src`):** `cs_vchk_rect_inv` uses `cs_vcaller_ps_ft` (extracting parameters from `ft` even when a function has no `requires` clause) and evaluates symbolic environments against type `invariant` clauses while respecting `if`/`and` path guards.
+- **`[RT2-A03]` & `[RT2-A04]` (`lcert.src`):** `lk_lin_slist` handles negative constant dividends and requires a proven positive divisor before algebraic cancellation; `lcert_verify_artifact` enforces `lk_envelope_ok` (`@version 1`, 64-hex `@sha256`, and exact `@obligations_count`).
+- **`[RT2-A05]` (`lcaas.src`):** `cs_pdiff_contract_refines_new` and `cs_pdiff_proven_old` verify parameter list equality (`po.ps == fnw.ps`) to prevent parameter-swap proof reuse.
+- **`[RT2-A07]` (`levidence.src`):** `ev_refs_missing_previous` traverses `claims` transitively and `ev_verify` requires `built.verdict == "PASS"` for `fresh == 1`.
+- **`[RT2-A08]` (`lregistry.src`):** Added `rg_jesc` JSON escaping, `rg_valid_sha` 64-hex validation, and non-empty `_t_msg(` test verification in `ld_reg_execute_tests`.
+- **`[RT2-A09]` (`levolve.src`):** Added `ev_safe_rel_path` blocking path traversal (`..`, `/`, `\`, `:`) in proposal `target_file` and `bench_file`.
+
+### 4.2 Squad Beta — Compiler, Ownership, Name Flow, Assembler & Targets (`[RT2-B01]`–`[RT2-B12]`)
+- **`[RT2-B01]` (`06b_phase3.src`):** `ochk_field` recursively checks intermediate prefixes (`ochke(o, ctx, moved)`) to catch use-after-move on `p.a.b` after `move(p.a)`.
+- **`[RT2-B02]` (`06b_phase3.src` & `own_flow.src`):** `omust_ctor_arms` and `omust_ctor_body` require every linear sub-binding in multi-resource constructor patterns (`Pair(r1, r2)`) to be consumed.
+- **`[RT2-B03]` (`06b_phase3.src` & `own_flow.src`):** `ois_tier_ty` and `of_res_ty` classify `cap[Page|Port|Irq]` as linear resources even without `own`/`mut` keywords.
+- **`[RT2-B04]` (`own_flow.src`):** `oa_own_roots` treats `Var(x)` where `of_mem(x, oa.res) == 1` as moving `x`, rejecting duplicate linear resource arguments (`Pair(r, r)`).
+- **`[RT2-B05]` (`06b_phase3.src` & `lcaas.src`):** `khandled_effs` and `cs_khandled_effs` forbid `with handler` from masking built-in primitive host effects (`io`, `fs`, `net`, `alloc`, `ffi`, `async`) inside `/ pure` functions (`[E0200]`).
+- **`[RT2-B06]`–`[RT2-B08]` (`name_flow.src`):** Added `nf_repeats` duplicate parameter/pattern binder checks (`[D0002]`), literal-only `match` exhaustiveness checks (`[T1002]`), and `Sig` arity tracking for `extern` functions (`[R0202]`).
+- **`[RT2-B09]` (`lasm.src`):** `encalu3` fails closed with `ctfail("lasm: [L0001] unknown instruction\n")` when `ext < 0`.
+- **`[RT2-B10]`–`[RT2-B12]` (`ltarget.src`):** Bounded `tg_eval_pure_d` recursion at `d <= 24`, added AST constant boundary extraction (`c - 1, c, c + 1`) in `tg_contract_status`, and implemented multi-step 64-bit immediate loading in RISC-V `rv_load_imm`.
+
+### 4.3 Squad Gamma — Bundler, Mesh, Interactive LSP/DAP, FFI, Driver & Stdlib (`[RT2-G01]`–`[RT2-G11]`)
+- **`[RT2-G01]`–`[RT2-G03]` (`lmod.src`):** Full-path `..` traversal rejection (`[M0024]`), entry-module cycle tracking, multi-digit `__lmod_priv_` mangling, and lexer-tokenized capability scanning (ignoring string literals and comments).
+- **`[RT2-G04]` (`lmesh.src`):** Added `mh_jesc` JSON escaping, `@deterministic false`/`0` rejection, and fail-closed unknown `@need` capability checks.
+- **`[RT2-G05]` (`lume_driver.src`):** Replaced `/bin/sh -c` calls in `ld_mkdir_p`, `ld_chmod_x`, `ld_cp_file`, and `ld_rm_rf` with direct `execve` (`os_run("/bin/mkdir", ...)`, etc.) to eliminate shell metacharacter injection.
+- **`[RT2-G06]` (`lcaas.src`):** `lume adapt c` (`lc_param_info` / `lc_bind_line`) rejects internal whitespace in C type names and prototypes with `> 6` parameters (`[I0003]`).
+- **`[RT2-G07]` (`linteractive.src`):** `li_split_lines` handles EOF without trailing newline and validates `li_all_digits` on `Content-Length`.
+- **`[RT2-G08]`–`[RT2-G10]` (`decimal.src`, `table.src`, `query.src`):** Bounded `decimal` scale/precision to `0..18` (`[D0001]`), added WAL `\|`/`\n`/`\\` escaping and `COMMIT` marker verification in `table.src`, and guarded `q_avg(Nil)` against division by zero in `query.src`.
+- **`[RT2-G11]` (`lume_crypto_blockchain_engine.src`):** Bound Schnorr public keys to 54-hex SHA-256 commitments, rejected `y <= 1` and `r_pt <= 1` in `crypto_verify_tx_sig`, and clamped `btc_halving_reward_sats` for `epoch >= 33`.
+
+---
+
+## 5. Verification Summary
 
 ```text
 OK: Lume is self-hosted -- stages 1-3 use NO C, and stage 2 == stage 3 bit-identically
@@ -85,5 +121,5 @@ OK: native lume_driver check, fmt, test, build, run, agent, certify, verify-cert
 OK: native incremental build cache, warm-noop, body-only edit, signature invalidation, corrupt-cache heal, and capability audit gates passed
 OK: native evolve apply, atomic multi-file grow, rollback, and negative gates passed
 OK: native interactive LSP, DAP, REPL, framing, failure, and rollback checks passed
-OK: 100% pure-Lume Claude Opus 5.5 + Red Team audit gate and 4-way differential fuzzer (12 random programs) passed
+OK: 100% pure-Lume Claude Opus 5.5 + Red Team (Rounds 1 & 2) audit gate and 4-way differential fuzzer (12 random programs) passed
 ```

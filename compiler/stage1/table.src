@@ -1,6 +1,7 @@
 ## table.src — typed in-memory relations and strict CSV ingestion for ML-core.
 ## A schema is a Cons-list of {name: str, type: "str" | "int" | "decimal"} records.
 ## Rows are Cons-lists of tagged values, preserving the declared type of every column.
+use decimal
 
 fn table_error(message) = {ok: 0, error: message, schema: Nil, rows: Nil}
 fn table_success(schema, rows) = {ok: 1, error: "", schema: schema, rows: rows}
@@ -60,7 +61,8 @@ fn csv_int_valid(s, i, digits) = if i >= count(s) then digits else if i == 0 and
 fn csv_int_value(s) = if count(s) == 0 or csv_int_valid(s, 0, 0) == 0 or csv_int_valid(s, 0, 0) > 18 then {ok: 0, value: 0} else csv_int_value_valid(s, if at(s, 0) == "-" or at(s, 0) == "+" then 1 else 0, if at(s, 0) == "-" then 0 - 1 else 1)
 fn csv_int_value_valid(s, start, sign) = {ok: 1, value: sign * csv_int_digits(s, start, 0)}
 fn csv_int_digits(s, i, value) = if i >= count(s) then value else csv_int_digits(s, i + 1, value * 10 + toint(at(s, i)))
-fn csv_decimal_valid(s, i, point, digit) = if i >= count(s) then digit else if i == 0 and (at(s, i) == "-" or at(s, i) == "+") then csv_decimal_valid(s, i + 1, point, digit) else if at(s, i) >= "0" and at(s, i) <= "9" then csv_decimal_valid(s, i + 1, point, 1) else if at(s, i) == "." and point == 0 then csv_decimal_valid(s, i + 1, 1, digit) else 0
+fn csv_decimal_bounds(s, i, sig_digits, frac_digits, past_point) = if i >= count(s) then (if sig_digits <= 18 and frac_digits <= 18 then 1 else 0) else let c = at(s, i) in if c == "-" or c == "+" then csv_decimal_bounds(s, i + 1, sig_digits, frac_digits, past_point) else if c == "." then csv_decimal_bounds(s, i + 1, sig_digits, frac_digits, 1) else let next_sig = if sig_digits == 0 and c == "0" then 0 else sig_digits + 1 in csv_decimal_bounds(s, i + 1, next_sig, frac_digits + past_point, past_point)
+fn csv_decimal_valid(s, i, point, digit) = if i >= count(s) then (if digit == 1 then csv_decimal_bounds(s, 0, 0, 0, 0) else 0) else if i == 0 and (at(s, i) == "-" or at(s, i) == "+") then csv_decimal_valid(s, i + 1, point, digit) else if at(s, i) >= "0" and at(s, i) <= "9" then csv_decimal_valid(s, i + 1, point, 1) else if at(s, i) == "." and point == 0 then csv_decimal_valid(s, i + 1, 1, digit) else 0
 fn csv_convert(value, kind) = if kind == "str" then {ok: 1, value: {kind: "str", value: value}} else if kind == "int" then csv_convert_int(csv_int_value(value)) else if kind == "decimal" then csv_convert_decimal(value, csv_decimal_valid(value, 0, 0, 0)) else {ok: 0, value: {kind: "error", value: "unsupported schema type"}}
 fn csv_convert_int(parsed) = if parsed.ok == 1 then {ok: 1, value: {kind: "int", value: parsed.value}} else {ok: 0, value: {kind: "error", value: "invalid integer"}}
 fn csv_convert_decimal(value, valid) = if valid == 1 then {ok: 1, value: {kind: "decimal", value: decimal_parse(value)}} else {ok: 0, value: {kind: "error", value: "invalid decimal"}}

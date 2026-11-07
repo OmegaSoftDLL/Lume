@@ -86,11 +86,13 @@ fn entrylines(lines) = match lines
     Nil        => Nil
     Cons(h, t) => let raw = rtrim(h) in let tr = ltrim(raw) in if startswith(tr, "use ") then entrylines(t) else Cons(raw, entrylines(t))
 
-## --- capability scanner: detect I/O calls (`read(`, `readall(`, `emit(`, `flush(`) in module text ---
+## --- capability scanner: detect I/O calls (`read`, `readall`, `emit`, `flush`, `fs_*`, `os_*`, `net_*`) in module text ---
 fn isidch(c) = isalnum(c)
 fn prev_boundary(s, i) = if i <= 0 then 1 else isidch(at(s, i - 1)) == 0
-fn matchkwat(s, n, i, kw) = let kl = count(kw) in if i + kl > n then 0 else if prev_boundary(s, i) == 0 then 0 else slicen(s, n, i, i + kl) == kw
-fn iocapat(s, n, i) = if matchkwat(s, n, i, "read(") then "read" else if matchkwat(s, n, i, "readall(") then "readall" else if matchkwat(s, n, i, "emit(") then "emit" else if matchkwat(s, n, i, "flush(") then "flush" else ""
+fn id_end(s, i, n) = if i >= n then i else if isidch(at(s, i)) == 1 then id_end(s, i + 1, n) else i
+fn matchcallat(s, n, i, kw) = let kl = count(kw) in if i + kl > n then 0 else if prev_boundary(s, i) == 0 then 0 else if slicen(s, n, i, i + kl) != kw then 0 else if i + kl < n and isidch(at(s, i + kl)) == 1 then 0 else let j = skipws(s, i + kl, n) in j < n and at(s, j) == "("
+fn matchpfxcall(s, n, i, pfx) = let pl = count(pfx) in if i + pl >= n then "" else if prev_boundary(s, i) == 0 then "" else if slicen(s, n, i, i + pl) != pfx then "" else let e = id_end(s, i + pl, n) in if e <= i + pl then "" else let j = skipws(s, e, n) in if j < n and at(s, j) == "(" then slicen(s, n, i, e) else ""
+fn iocapat(s, n, i) = if matchcallat(s, n, i, "read") then "read" else if matchcallat(s, n, i, "readall") then "readall" else if matchcallat(s, n, i, "emit") then "emit" else if matchcallat(s, n, i, "flush") then "flush" else let fc = matchpfxcall(s, n, i, "fs_") in if fc != "" then fc else let oc = matchpfxcall(s, n, i, "os_") in if oc != "" then oc else matchpfxcall(s, n, i, "net_")
 fn scanioline(s, n, i) = if i >= n then "" else let c = at(s, i) in if c == "#" then "" else if c == "\"" then scanioline(s, n, strend(s, i + 1, n)) else let cap = iocapat(s, n, i) in if cap != "" then cap else scanioline(s, n, i + 1)
 fn strend(s, i, n) = if i >= n then i else if at(s, i) == "\"" then i + 1 else if at(s, i) == "\\" then strend(s, i + 2, n) else strend(s, i + 1, n)
 fn findiocap(lines) = match lines
@@ -122,14 +124,14 @@ fn resolve_one(nm, mods, grant, visiting, visited, chunks) = if contains(visited
 
 fn resolve_mod(m, mods, grant, visiting, visited, chunks) = let chk = checkcap(m.name, m.lines, grant) in let r = resolve_list(m.uses, mods, grant, visiting, visited, chunks) in {visited: Cons(m.name, r.visited), chunks: app(r.chunks, Cons("## --- module " + m.name + " ---\n" + joinsep(liblines(m.lines), "\n"), Nil))}
 
-fn bundle(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let ebody = joinsep(entrylines(st.entry.lines), "\n") in joinsep(app(r.chunks, Cons(ebody, Nil)), "\n\n")
+fn bundle(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let ebody = joinsep(entrylines(st.entry.lines), "\n") in joinsep(app(r.chunks, Cons(ebody, Nil)), "\n\n")
 
 ## --- `@manifest` mode: parse & validate `lume.toml` in Lume-Core ---
 fn unquote(s) = let t = trim(s) in let n = count(t) in if n < 2 then t else if at(t, 0) == "\"" and at(t, n - 1) == "\"" then slicen(t, n, 1, n - 1) else t
 fn parse_kv(tr) = let eq = findeq(tr, 0, count(tr)) in if eq >= count(tr) then {k: "", v: ""} else {k: trim(slice(tr, 0, eq)), v: trim(slice(tr, eq + 1, count(tr)))}
 fn findeq(s, i, n) = if i >= n then n else if at(s, i) == "=" then i else findeq(s, i + 1, n)
 
-fn parse_cap_val(v) = if contains_sub(v, "\"pure\"", 0, count(v)) == 1 then "pure" else if contains_sub(v, "\"ffi\"", 0, count(v)) == 1 then "ffi" else "io"
+fn parse_cap_val(v) = let hp = contains_sub(v, "\"pure\"", 0, count(v)) in let hf = contains_sub(v, "\"ffi\"", 0, count(v)) in let hi = contains_sub(v, "\"io\"", 0, count(v)) in if hp == 1 and (hf == 1 or hi == 1) then ctfail("lume: manifest error: 'pure' capability cannot be combined with 'io' or 'ffi' in lume.toml\n") else if hp == 1 then "pure" else if hf == 1 then "ffi" else if hi == 1 then "io" else ctfail("lume: manifest error: unsupported or empty capability grant in lume.toml (expected \"pure\", \"io\", or \"ffi\")\n")
 fn contains_sub(s, sub, i, n) = let m = count(sub) in if i + m > n then 0 else if slicen(s, n, i, i + m) == sub then 1 else contains_sub(s, sub, i + 1, n)
 
 fn scanmanifest(lines, st) = match lines

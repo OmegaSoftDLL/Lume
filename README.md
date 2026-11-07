@@ -6,17 +6,18 @@
 *Mathematically Proven by Compiler · Self-Hosted Zero-C Steady State (`stage2 == stage3`) · 27 Target Architectures*
 
 [![CI](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml/badge.svg)](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.0.0-blue)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.0.0)
+[![Release](https://img.shields.io/badge/release-v1.1.0-blue)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0)
 [![Zero-C Steady State](https://img.shields.io/badge/steady--state-100%25%20Lume%20%28Zero--C%29-success)](docs/PROJECT_STATE.md)
 [![Acceptance Matrix](https://img.shields.io/badge/acceptance%20matrix-24%2F24%20PASS-brightgreen)](docs/acceptance-matrix.md)
+[![Red Team & Claude Audit](https://img.shields.io/badge/Claude%20%2B%20Red%20Team%20Audit-85%2F85%20Remediated-brightgreen)](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md)
 [![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](docs/26-targets.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
-[**Installation**](#installation) · [**Quickstart**](#quickstart) · [**Memory Saga & Atomic Compactor (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.0.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
+[**Installation**](#installation--terminal-setup-lume-command) · [**Quickstart**](#quickstart) · [**Claude & Red Team Audit (`EN` / `PT-BR`)**](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md) · [**Memory Saga (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.1.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
 
 <br/>
 
-![Lume v1.0.0 Architecture & Formal Verification](docs/lume_linkedin_cover.png)
+![Lume v1.1.0 Architecture & Formal Verification](docs/lume_linkedin_cover.png)
 
 </div>
 
@@ -24,7 +25,7 @@
 
 ## Overview
 
-**Lume (`v1.0.0`, Edition 2026)** is a statically typed, formally verified systems, artificial intelligence, and quantum programming language. Its entire production toolchain is written in Lume itself and operates in a verified **Zero-C steady state**:
+**Lume (`v1.1.0`, Edition 2026)** is a statically typed, formally verified systems, artificial intelligence, and quantum programming language. Its entire production toolchain is written in Lume itself and operates in a verified **Zero-C steady state**:
 
 - **Self-Hosted Fixpoint (`stage2 == stage3`):** The compiler (`lumec`), machine-code assembler and binary linker (`lasm`), module bundler (`lmod`), theorem prover (`lcaas`), independent proof certificate kernel (`lcert`), formatter (`lfmt`), test runner (`ltest`), and unified CLI driver (`lume_driver` + `lcli`) compile themselves bit-for-bit (`0 diff`) in **~3.8 seconds** without any external C compiler, assembler (`as`), or linker (`ld`).
 - **Sound Compile-Time Verification (`QF_LIA`, `QF_NIA`, `QF_BV`, Separation Logic):** Built-in Fourier-Motzkin linear integer arithmetic solver with cutting-plane tightening, nonlinear Positivstellensatz and shifted bilinear monotonicity, bitvector verification, Separation Logic heap frame reasoning, `[K0005]` W^X DMA protection, `[K0006]` kernel stack bounds, `[C0009]` constant-time cryptographic side-channel analysis, and standalone certificate checking via `lcert`.
@@ -101,8 +102,8 @@ lume --version
 Download the release archive and add `$HOME\.lume\bin` to your **persistent Windows User `PATH`** so you can type `lume` directly in any PowerShell or Command Prompt window:
 
 ```powershell
-# 1. Download and extract Lume v1.0.0 to $HOME\.lume
-Invoke-WebRequest -Uri "https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz" -OutFile "lume-win64.tar.gz"
+# 1. Download and extract Lume v1.1.0 to $HOME\.lume
+Invoke-WebRequest -Uri "https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-windows-x86_64.tar.gz" -OutFile "lume-win64.tar.gz"
 mkdir "$HOME\.lume" -Force | Out-Null
 tar -xzf lume-win64.tar.gz --strip-components=1 -C "$HOME\.lume"
 
@@ -120,17 +121,17 @@ lume self verify
 lume evolve list
 ```
 
-### 4. Official Prebuilt Archives (`v1.0.0`)
+### 4. Official Prebuilt Archives (`v1.1.0`)
 
 | Platform / Architecture | Archive |
 | :--- | :--- |
-| **Linux x86-64** | [`lume-v1.0.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-x86_64.tar.gz) |
-| **Linux ARM64 (`aarch64`)** | [`lume-v1.0.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-aarch64.tar.gz) |
-| **Linux RISC-V 64 (`riscv64`)** | [`lume-v1.0.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-linux-riscv64.tar.gz) |
-| **macOS Apple Silicon (`M1/M2/M3/M4`)** | [`lume-v1.0.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-aarch64.tar.gz) |
-| **macOS Intel (`x86_64`)** | [`lume-v1.0.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-macos-x86_64.tar.gz) |
-| **Windows x64 (`PE32+`)** | [`lume-v1.0.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/lume-v1.0.0-windows-x86_64.tar.gz) |
-| **SHA-256 Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.0.0/SHA256SUMS) |
+| **Linux x86-64** | [`lume-v1.1.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-x86_64.tar.gz) |
+| **Linux ARM64 (`aarch64`)** | [`lume-v1.1.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-aarch64.tar.gz) |
+| **Linux RISC-V 64 (`riscv64`)** | [`lume-v1.1.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-riscv64.tar.gz) |
+| **macOS Apple Silicon (`M1/M2/M3/M4`)** | [`lume-v1.1.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-aarch64.tar.gz) |
+| **macOS Intel (`x86_64`)** | [`lume-v1.1.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-x86_64.tar.gz) |
+| **Windows x64 (`PE32+`)** | [`lume-v1.1.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-windows-x86_64.tar.gz) |
+| **SHA-256 Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/SHA256SUMS) |
 
 ### 5. Teach Your AI Assistant to Program in Lume (`skills/lume`)
 
@@ -210,6 +211,7 @@ Lume pairs formal verification with concise functional and systems syntax:
 | **Nested & Braced `match`** | `let y = match xs ... in y + 1` or `match x { ... }` | Indentation-aware `ispipe` + `arm_dedent` and braced arms |
 | **Top-Level `const`** | `const MAX_BYTES: int = 4096` | Substituted across functions, `requires`/`ensures` contracts, and `law` declarations |
 | **Destructuring Bindings** | `let (a, b) = pair`, `let {x, y} = pt`, `let Cons(h, t) = xs` | Supported in both `let ... in` expressions and imperative `var` statements |
+| **Wrapping Arithmetic (`+%`, `-%`, `*%`)** | `a +% b`, `a -% b`, `a *% b` | Explicit 64-bit two's-complement modular arithmetic (distinct from checked `+`, `-`, `*`) |
 | **Scalar Replacement (`SRA`)** | `let p = {a: x, b: y} in p.a + p.b` | Promotes non-escaping records to stack slots with zero heap allocation |
 
 ---
@@ -345,13 +347,15 @@ lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE3
 │   ├── lprotect.src / protect.src      # P33 software protection, MBA obfuscation, secret scanner & symbolize
 │   └── std & domain modules            # fs, bytes, map, arena, capsule, db, net, gfx, gui, nn, tensor, quantum...
 ├── skills/lume/                        # Official AI Agent Skill (SKILL.md, references/, verified_showcase.src)
-├── editors/vscode-lume/                # Official VS Code / Cursor / Antigravity grammar & Dracula Lume theme
+├── editors/                            # Official VS Code LSP bridge (vscode-lume) & OpenIDEA plugin (openidea-lume)
 ├── examples/
 │   ├── 01_hello.lume .. 09_*.lume      # Surface Lume tour
 │   └── apps/                           # Capstones: inventory, job_server, mnist, agent, p0_tenant_ledger,
 │                                       #            p0_rtc_kernel, supply_chain_demo, lume_os,
 │                                       #            pix_fraud_trace, sentry_uav_guard, verified_accounting,
-│                                       #            dfe_pix_bacen, omniroute_guard, brasil_public_id
+│                                       #            dfe_pix_bacen, omniroute_guard, brasil_public_id,
+│                                       #            zero_breach_forensics, sovereign_llm_router
+├── tests/harness/claude_audit_gate.src # 100% pure-Lume Claude Opus 5.5 + Red Team (R1 & R2) audit & 4-way fuzzer
 ├── acceptance/matrix.json              # Track A/L Acceptance Matrix (24/24 PASS, 0 UNKNOWN, 0 FAIL)
 ├── formal/lean/LumeCore.lean           # Mechanized Lean 4 formalization of Lume-Core soundness
 ├── grammar/lume.ebnf                   # Complete formal grammar
@@ -360,20 +364,25 @@ lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE3
 
 ---
 
-## Verification & Quality Gates
+## Verification & Quality Gates (`100% Lume Generates Lume`)
 
-Run the complete self-hosted verification suite locally:
+Run the complete self-hosted verification and adversarial Red Team suite locally (zero Python or external test runners):
 
 ```sh
-./lume self-prove                                         # 14 batteries, 396 proofs, 134 unit tests, 98 SHA-256 files
+./lume self-prove                                         # 14 batteries, live K0005/K0006/C0009/SRA probes & SHA-256 verification
 ./lume test compiler/stage1/lume_quantum_nexus_engine.src # Quantum Nexus unit & proof suite (15/15)
 ./lume test compiler/stage1/ltarget.src                   # 27 universal targets & quantum emitters (16/16)
 ./lume test compiler/stage1/lmanual.src                   # Bilingual manual suite (3/3)
 build/bin/lume_make bootstrap                             # Triple self-build fixpoint (stage2 == stage3)
 build/bin/lume_make zero-c                                # Prove steady-state compilation with C compilers blocked
-make -C bootstrap/lume0 test                              # Frozen Stage-0 conformance suite (393/393)
-make -C bootstrap/lume0 asan                              # Stage-0 under AddressSanitizer & UBSan (168/168)
+build/bin/lume_make test                                  # Frozen Stage-0 conformance suite via native Lume runner
+build/bin/lume_make asan                                  # Stage-0 under AddressSanitizer & UBSan via native Lume runner
+./lume build tests/harness/claude_audit_gate.src -o build/claude_audit_gate && printf '@root %s\n' "$(pwd)" | build/claude_audit_gate
 ```
+
+📄 **Bilingual Audit & Red Team Reports:**
+- **English:** [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md)
+- **Português (`pt-BR`):** [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md)
 
 ---
 

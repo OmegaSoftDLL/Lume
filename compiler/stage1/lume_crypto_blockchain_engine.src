@@ -10,7 +10,13 @@ law kelly_risk_cap_law(alloc_bp: int, max_cap_bp: int) = if alloc_bp >= 0 and al
 ## --- 2. Cryptographic Primitives, HMAC-SHA256, HD Wallet Derivation & Signatures ---
 pub fn crypto_hmac_sha256(key: str, message: str) = let k_hash = capsule_sha256_text("HMAC_KEY:" + key) in let inner = capsule_sha256_text("IPAD_0x36:" + k_hash + ":" + message) in capsule_sha256_text("OPAD_0x5c:" + k_hash + ":" + inner)
 
-pub fn crypto_pubkey_from_priv(privkey: str) = capsule_sha256_text("SECP256K1_ED25519_PUB:" + privkey)
+fn crypto_hex_val(c) = if c >= "0" and c <= "9" then toint(c) else if c == "a" or c == "A" then 10 else if c == "b" or c == "B" then 11 else if c == "c" or c == "C" then 12 else if c == "d" or c == "D" then 13 else if c == "e" or c == "E" then 14 else if c == "f" or c == "F" then 15 else 0
+
+fn crypto_scalar_from_hex(h, i, acc) = if i >= 12 or i >= count(h) then (acc % 999999937) + 2 else crypto_scalar_from_hex(h, i + 1, (acc * 16 + crypto_hex_val(at(h, i))) % 999999937)
+
+fn crypto_mod_pow(base, exp, m) = if exp <= 0 then 1 else let half = crypto_mod_pow((base * base) % m, exp / 2, m) in if exp % 2 == 1 then (half * base) % m else half
+
+pub fn crypto_pubkey_from_priv(privkey: str) = let x = crypto_scalar_from_hex(capsule_sha256_text("SECP256K1_SCALAR:" + privkey), 0, 0) in let y = crypto_mod_pow(5, x, 1000000007) in slice(capsule_sha256_text("SECP256K1_PUB_COMMIT:" + str(y)), 0, 54) + ":" + str(y)
 
 pub fn crypto_address_from_pubkey(pubkey: str) = "bc1q" + slice(capsule_sha256_text("RIPEMD160_SHA256:" + pubkey), 0, 38)
 
@@ -18,9 +24,13 @@ pub fn hd_derive_wallet(master_seed: str, account: int, index: int) = let master
 
 fn chain_tag(m) = "BIP32_CHAIN:" + m
 
-pub fn crypto_sign_tx_digest(privkey: str, tx_digest: str) = let pubkey = crypto_pubkey_from_priv(privkey) in capsule_sha256_text("SIG_COMMIT:" + pubkey + ":" + tx_digest)
+fn crypto_pub_point(pubkey, i) = if i >= count(pubkey) then 0 else if at(pubkey, i) == ":" then toint(slice(pubkey, i + 1, count(pubkey))) else crypto_pub_point(pubkey, i + 1)
 
-pub fn crypto_verify_tx_sig(pubkey: str, tx_digest: str, signature: str) = let expected = capsule_sha256_text("SIG_COMMIT:" + pubkey + ":" + tx_digest) in if signature == expected then 1 else 0
+pub fn crypto_sign_tx_digest(privkey: str, tx_digest: str) = let pubkey = crypto_pubkey_from_priv(privkey) in let x = crypto_scalar_from_hex(capsule_sha256_text("SECP256K1_SCALAR:" + privkey), 0, 0) in let k = crypto_scalar_from_hex(capsule_sha256_text("RFC6979_NONCE:" + privkey + ":" + tx_digest), 0, 0) in let r_pt = crypto_mod_pow(5, k, 1000000007) in let e_sc = crypto_scalar_from_hex(capsule_sha256_text("SCHNORR_CHALLENGE:" + str(r_pt) + ":" + pubkey + ":" + tx_digest), 0, 0) in let s_sc = (k + e_sc * x) % 1000000006 in slice(capsule_sha256_text("SCHNORR_SIG:" + str(r_pt) + ":" + str(s_sc) + ":" + tx_digest), 0, 40) + ":" + str(r_pt) + ":" + str(s_sc)
+
+fn crypto_sig_parts(sig, i, first_colon) = if i >= count(sig) then {ok: 0, prefix: "", r_pt: 0, s_sc: 0} else if at(sig, i) == ":" then (if first_colon < 0 then crypto_sig_parts(sig, i + 1, i) else {ok: 1, prefix: slice(sig, 0, first_colon), r_pt: toint(slice(sig, first_colon + 1, i)), s_sc: toint(slice(sig, i + 1, count(sig)))}) else crypto_sig_parts(sig, i + 1, first_colon)
+
+pub fn crypto_verify_tx_sig(pubkey: str, tx_digest: str, signature: str) = let y = crypto_pub_point(pubkey, 0) in let sp = crypto_sig_parts(signature, 0, 0 - 1) in if y <= 1 or sp.ok == 0 or sp.r_pt <= 1 then 0 else if slice(pubkey, 0, 54) != slice(capsule_sha256_text("SECP256K1_PUB_COMMIT:" + str(y)), 0, 54) then 0 else let expected_prefix = slice(capsule_sha256_text("SCHNORR_SIG:" + str(sp.r_pt) + ":" + str(sp.s_sc) + ":" + tx_digest), 0, 40) in if sp.prefix != expected_prefix then 0 else let e_sc = crypto_scalar_from_hex(capsule_sha256_text("SCHNORR_CHALLENGE:" + str(sp.r_pt) + ":" + pubkey + ":" + tx_digest), 0, 0) in let lhs = crypto_mod_pow(5, sp.s_sc, 1000000007) in let rhs = (sp.r_pt * crypto_mod_pow(y, e_sc, 1000000007)) % 1000000007 in if lhs == rhs then 1 else 0
 
 ## --- 3. Dynamic N-Leaf Merkle Tree & Multi-Difficulty Proof-of-Work ---
 pub fn merkle_leaf_tag(leaf_val: int) -> int requires leaf_val >= 0 ensures result == 257 * leaf_val + 17 and result >= 17 = 257 * leaf_val + 17

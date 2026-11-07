@@ -105,8 +105,9 @@ fn nf_defs(prog) = match prog
     Nil        => Nil
     Cons(h, t) => nf_def1(h, nf_defs(t))
 fn nf_def1(st, rest) = match st
-    Fn(nm, ps, body) => Cons({nm: nm, n: of_len(ps)}, rest)
-    _                => rest
+    Fn(nm, ps, body)    => Cons({nm: nm, n: of_len(ps)}, rest)
+    Sig(nm, ps, ts, rt) => if nf_arity(nm, rest) >= 0 then rest else Cons({nm: nm, n: of_len(ps)}, rest)
+    _                   => rest
 ## a generic's comptime parameters are erased from its Fn, so only its signature knows how many arguments it takes
 fn nf_generics(prog) = match prog
     Nil        => Nil
@@ -186,12 +187,12 @@ fn nf_any_complete(seen, cands) = match cands
     Cons(h, t) => if nf_missing(h.tags, seen) == "" then 1 else nf_any_complete(seen, t)
 fn nf_exhaust3(seen, cands, acc) = if nf_any_complete(seen, cands) == 1 then acc else nf_exhaust2(seen, cands, acc)
 fn nf_exhaust1(seen, ctx, acc) = match seen
-    Nil        => acc
+    Nil        => nf_bad("T1002", "_", "match on literal patterns has no catch-all '_' arm", "add a catch-all '_' arm", acc)
     Cons(h, t) => nf_exhaust3(seen, nf_enums_of(seen, ctx.enums), acc)
-fn nf_exhaust(arms, ctx, acc) = if nf_any_catch(arms) == 1 then acc else nf_exhaust1(nf_arm_tags(arms), ctx, acc)
+fn nf_exhaust(arms, ctx, acc) = if of_nil(arms) == 1 or nf_any_catch(arms) == 1 then acc else nf_exhaust1(nf_arm_tags(arms), ctx, acc)
 fn nf_arms(arms, bound, ctx, acc) = match arms
     Nil        => acc
-    Cons(h, t) => nf_arms(t, bound, ctx, nf_expr(h.body, of_app(oa_pat_names(h.pat), bound), ctx, nf_pat(h.pat, ctx, acc)))
+    Cons(h, t) => let pns = oa_pat_names(h.pat) in nf_arms(t, bound, ctx, nf_expr(h.body, of_app(pns, bound), ctx, nf_repeats(nf_sort(pns), "D0002", "pattern binding", nf_pat(h.pat, ctx, acc))))
 ## effect and trait declarations carry signature-only ops and impl methods are plain Fn statements, so only
 ## `with handler` op bodies are walked, with their own params in scope.
 fn nf_ops(ops, bound, ctx, acc) = match ops
@@ -203,7 +204,7 @@ fn nf_expr(e, bound, ctx, acc) = match e
     If(c, t, e2)            => nf_expr(e2, bound, ctx, nf_expr(t, bound, ctx, nf_expr(c, bound, ctx, acc)))
     LetIn(nm, v, b)         => nf_expr(b, Cons(nm, bound), ctx, nf_expr(v, bound, ctx, acc))
     VarIn(nm, v, b)         => nf_expr(b, Cons(nm, bound), ctx, nf_expr(v, bound, ctx, acc))
-    LambdaE(ps, tys, rt, b) => nf_expr(b, of_app(ps, bound), ctx, acc)
+    LambdaE(ps, tys, rt, b) => nf_expr(b, of_app(ps, bound), ctx, nf_repeats(nf_sort(ps), "D0002", "parameter", acc))
     Call(nm, args)          => if nm == "forall_range" or nm == "exists_range" then nf_qargs(args, bound, ctx, acc) else if nm == "_call" then nf_exprs(args, bound, ctx, nf_bad("fnval", nm, "", "", acc)) else nf_exprs(args, bound, ctx, nf_call(nm, args, bound, ctx, acc))
     Rec(items)              => nf_rec(items, bound, ctx, acc)
     RecT(tn, items)         => nf_rec(items, bound, ctx, acc)
@@ -223,7 +224,7 @@ fn nf_expr(e, bound, ctx, acc) = match e
     Splice(inner)           => nf_expr(inner, bound, ctx, acc)
     _                       => acc
 fn nf_stmt(st, ctx, acc) = match st
-    Fn(nm, ps, body)                 => nf_expr(body, ps, ctx, acc)
+    Fn(nm, ps, body)                 => nf_expr(body, ps, ctx, nf_repeats(nf_sort(ps), "D0002", "parameter", acc))
     Print(v)                         => nf_expr(v, Nil, ctx, acc)
     ExprS(v)                         => nf_expr(v, Nil, ctx, acc)
     VLawDecl(nm, ps, body)           => nf_expr(body, ps, ctx, acc)
@@ -251,7 +252,7 @@ fn nf_repeats(xs, code, what, acc) = match xs
     Nil        => acc
     Cons(h, t) => match t
         Nil        => acc
-        Cons(y, r) => nf_repeats(t, code, what, if h == y then nf_bad(code, h, what + " '" + h + "' is defined more than once", "keep one definition of '" + h + "', or rename the other", acc) else acc)
+        Cons(y, r) => nf_repeats(t, code, what, if h == y and h != "_" then nf_bad(code, h, what + " '" + h + "' is defined more than once", "keep one definition of '" + h + "', or rename the other", acc) else acc)
 fn nf_type_names(prog) = match prog
     Nil        => Nil
     Cons(h, t) => match h
