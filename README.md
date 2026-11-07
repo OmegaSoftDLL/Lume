@@ -205,13 +205,13 @@ Lume pairs formal verification with concise functional and systems syntax:
 
 | Feature | Syntax in `.src` (Lume-Core) | Compiler & Prover Support |
 | :--- | :--- | :--- |
-| **String Interpolation** | `f"total={x + y}"` or `"total=${x + y}"` | Desugared in `01_lexer.src` / `02_parser.src` with automatic `str(...)` conversion |
-| **Pipe Operator (`\|>`)** | `data \|> normalize(10) \|> encode` | Left-associative binary operator lowered to direct calls |
-| **Functional Record Update** | `{ state with count: state.count + 1, ok: 1 }` | Preserves unmodified fields; reduced symbolically in `lcaas` and `lcert` |
-| **Nested & Braced `match`** | `let y = match xs ... in y + 1` or `match x { ... }` | Indentation-aware `ispipe` + `arm_dedent` and braced arms |
-| **Top-Level `const`** | `const MAX_BYTES: int = 4096` | Substituted across functions, `requires`/`ensures` contracts, and `law` declarations |
-| **Destructuring Bindings** | `let (a, b) = pair`, `let {x, y} = pt`, `let Cons(h, t) = xs` | Supported in both `let ... in` expressions and imperative `var` statements |
-| **Wrapping Arithmetic (`+%`, `-%`, `*%`)** | `a +% b`, `a -% b`, `a *% b` | Explicit 64-bit two's-complement modular arithmetic (distinct from checked `+`, `-`, `*`) |
+| **String Interpolation** | `f"total={x + y}"` or `"total=${x + y}"` | Desugared in `01_lexer.src` and `02_parser.src` with automatic `str(...)` conversion |
+| **Pipe Operator (`\|>`)** | `x \|> scale(10) \|> encode` | Left-associative binary operator lowered to direct calls |
+| **Functional Record Update** | `{ st with count: st.count + 1 }` | Preserves unmodified fields; reduced symbolically in `lcaas` and `lcert` |
+| **Nested & Braced `match`** | `let y = match xs ...` or `match x { ... }` | Indentation-aware `ispipe` + `arm_dedent` and braced arms |
+| **Top-Level `const`** | `const MAX_BYTES: int = 4096` | Substituted across functions, `requires` / `ensures` contracts, and `law` declarations |
+| **Destructuring Bindings** | `let (a, b) = pair`, `let {x, y} = pt` | Supported in `let ... in` expressions and imperative `var` statements (`Cons(h, t)`) |
+| **Wrapping Arithmetic** | `a +% b`, `a -% b`, `a *% b` | Explicit 64-bit two's-complement modular arithmetic (distinct from checked `+`, `-`, `*`) |
 | **Scalar Replacement (`SRA`)** | `let p = {a: x, b: y} in p.a + p.b` | Promotes non-escaping records to stack slots with zero heap allocation |
 
 ---
@@ -241,15 +241,15 @@ Pre-exported manuals in the repository:
 
 ## Architecture & Verification Matrix
 
-| Milestone | Core Capabilities | Evidence |
+| Milestone | Core Capabilities (`compiler/stage1/`) | Verification Evidence |
 | :--- | :--- | :--- |
 | **Stage 0 Seed** | Frozen C11 bootstrap interpreter (`bootstrap/lume0/`), LBE binary AST, `lume0 asm` ELF64 writer | `393/393` conformance · `168/168` ASan/UBSan |
-| **Phase 1 — Self-Host** | Self-hosted `lumec`, `lasm`, `lmod`, Zero-C fixpoint (`stage2 == stage3`) | `scripts/zero_c.src` (`15/15`) · `0 diff` |
-| **Phase 2 — Data & Meta** | Comptime `C1–C4`, Hygienic Macros `M1–M2`, Data `D1–D4` (`decimal`, `table`, `query`, `money`, WAL), HM Inference `F1–F4`, Single CLI `T1–T3`, Self-Evolution `E1–E3` | `compiler/stage1/{decimal,table,query,lfmt,lmod,lcaas,levolve}.src` |
-| **Phase 3 — Safety & Proofs** | Ownership `O1–O4` (`own`, `mut`, `from`, `rc`/`arc`/`weak`, `arena`), AI Authoring `A1–A3`, Effects & Perceus `K1–K3`, Concurrency `S1–S3`, `QF_LIA` / `QF_NIA` Prover & `law` `V1–V3` | `compiler/stage1/{ownership,concurrency,actor,qflia_ok,intent_oracle_ok}.src` |
-| **Phase 4 — Differentiable & AI** | Shape-checked `tensor[DType, ...]`, Autodiff (`grad`, `jvp`, `vjp`), `@schedule(...) kernel fn` -> CUDA PTX 8.0 & SPIR-V 1.6, `.safetensors` & `.onnx` (`nn.src`), Datalog, `std.prob`, LIF `std.neuro` | `compiler/stage1/{tensor,nn,ai_runtime}.src` · `examples/apps/{mnist,agent}/` |
-| **Phase 5 — Systems & Kernels** | `@repr(c)`, `@packed`, `@bits`, `@mmio`, Fail-closed `lume adapt c`, Freestanding Kernels `K0–K9` (`@freestanding`, `.kernel` writer, `@interrupt`, `@bound` WCET `[V0002]`, `cap[Page\|Port\|Irq]`), 27 Targets, `lcert.src`, Lean 4 (`LumeCore.lean`), P33 Protection | `examples/apps/lume_os/` · `compiler/stage1/{ltarget,lcert,lprotect}.src` |
-| **Production Waves 1–12 & Audit** | Incremental cache, Arenas, E-Capsules, `--memory` profiler, `lume symbolize`, P35, WASM sandbox (`[I0275]`), OS async runtime, B+Tree ACID WAL (`db.src`), TLS 1.3 (`net.src`), X11/Web GUI (`gui.src`), `LumeMIR` SSA, APK/IPA/ISO/UEFI, `genesis`/`heal`/`equiv`/`morph`/`neural-kernel`, Quantum Nexus, **85/85 Audit & Red Team Gate** | `acceptance/matrix.json` (`24/24 PASS`) · `tests/harness/claude_audit_gate.src` |
+| **Phase 1 — Self-Host** | Self-hosted `lumec`, `lasm`, `lmod`, Zero-C fixpoint (`stage2 == stage3`) | `zero_c.src` (`15/15`) · `0 diff` |
+| **Phase 2 — Data & Meta** | Comptime `C1–C4`, Hygienic Macros `M1–M2`, Data `D1–D4` (`decimal`, `table`, `query`, `money`, WAL), HM Inference `F1–F4`, Single CLI `T1–T3`, Self-Evolution `E1–E3` | `decimal.src`, `table.src`, `query.src`, `lfmt.src`, `lmod.src`, `lcaas.src`, `levolve.src` |
+| **Phase 3 — Safety & Proofs** | Ownership `O1–O4` (`own`, `mut`, `from`, `rc` / `arc` / `weak`, `arena`), AI Authoring `A1–A3`, Effects & Perceus `K1–K3`, Concurrency `S1–S3`, `QF_LIA` / `QF_NIA` Prover & `law` `V1–V3` | `ownership.src`, `concurrency.src`, `actor.src`, `qflia_ok.src`, `intent_oracle_ok.src` |
+| **Phase 4 — Differentiable & AI** | Shape-checked `tensor[DType, ...]`, Autodiff (`grad`, `jvp`, `vjp`), `@schedule(...)` `kernel fn` -> CUDA PTX 8.0 & SPIR-V 1.6, `.safetensors` & `.onnx` (`nn.src`), Datalog, `std.prob`, LIF `std.neuro` | `tensor.src`, `nn.src`, `ai_runtime.src`, `apps/mnist/`, `apps/agent/` |
+| **Phase 5 — Systems & Kernels** | `@repr(c)`, `@packed`, `@bits`, `@mmio`, Fail-closed `lume adapt c`, Freestanding Kernels `K0–K9` (`@freestanding`, `.kernel` writer, `@interrupt`, `@bound` WCET `[V0002]`, `cap[Page]`), 27 Targets, `lcert.src`, Lean 4 (`LumeCore.lean`), P33 Protection | `apps/lume_os/`, `ltarget.src`, `lcert.src`, `lprotect.src` |
+| **Waves 1–12 & Audit** | Incremental cache, Arenas, E-Capsules, `--memory` profiler, `lume symbolize`, P35, WASM sandbox (`[I0275]`), OS async runtime, B+Tree ACID WAL (`db.src`), TLS 1.3 (`net.src`), X11/Web GUI (`gui.src`), `LumeMIR` SSA, APK / IPA / ISO / UEFI, `genesis`, `heal`, `equiv`, `morph`, `neural-kernel`, Quantum Nexus, **85/85 Audit & Red Team Gate** | `acceptance/matrix.json` (`24/24 PASS`), `claude_audit_gate.src` |
 
 ---
 
