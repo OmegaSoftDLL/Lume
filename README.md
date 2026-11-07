@@ -17,7 +17,7 @@
 
 <br/>
 
-![Lume v1.1.0 Architecture & Formal Verification](docs/lume_linkedin_cover.png)
+![Lume v1.1.0 Live Programming, Formal Verification & 27-Target Native Compilation](docs/assets/lume-hero-animated.svg)
 
 </div>
 
@@ -55,18 +55,18 @@ Lume's native x86-64 runtime ([`compiler/stage1/runtime_core.lume`](compiler/sta
 
 ### Complete 3-Generation Benchmark Evolution Matrix (Intel Core Ultra 5 135U, WSL2 x86-64)
 
-| Workload / Benchmark | Gen 1: Baseline (Pre-R5) | Gen 2: Round 5 (Mark-Sweep GC + Ownership v2) | **Gen 3: Round 6 (4-Tier Atomic Compactor)** | Speedup & Allocation Collapse | Total RAM Reduction |
-| :--- | :---: | :---: | :---: | :--- | :--- |
-| **Integer Loop (`b_loop`, 100M iters)** | `~4,800 MB` (unbounded) | `2,796 ms` · `68 MB` (`200M` allocs) | **`88 ms` · `0.39 MB` (`1` alloc!)** | **`31.8×` faster · `200,000,000×` fewer allocs** | **`174×` less RAM vs. R5 (`-99.4%`)** |
-| **Full Bootstrap from C Seed** | `194.8 s` · `12,700 MB` | `200.0 s` · `2,500 MB` | **`22.0 s` · `537 MB`** | **`9.0×` faster full chain** | **`23.6×` less RAM (`-95.8%`)** |
-| **Stage-0 C Seed $\rightarrow$ `lumec.src`** | `102.0 s` · `12,500 MB` | `5.5 s` · `472 MB` | **`5.5 s` · `472 MB`** | **`18.5×` faster** | **`26.5×` less RAM (`-96.2%`)** |
-| **`lumec` Self-Compile (`stage2 == stage3`)** | `1,820 ms` · `1,165 MB` | `1,908 ms` · `228 MB` | **`445 ms` · `115 MB`** | **`4.3×` faster · ELF `-34%` (`1.01 MB`)** | **`10.1×` less RAM (`-90.1%`)** |
-| **Records (`b_rec`, 20M 3-field recs)** | `~6,000 MB` (unbounded) | `3,270 ms` · `67 MB` (`240M` allocs) | **`429 ms` · `66 MB` (`20M` allocs)** | **`7.6×` faster · `12×` fewer allocs** | **Bounded by 64 MiB GC pacing** |
-| **ADT Pattern Match (`b_match`, 20M)** | Unbounded | `1,617 ms` · `72 MB` (`80M` allocs) | **`235 ms` · `68 MB` (`20M` allocs)** | **`6.9×` faster · `4×` fewer allocs** | **Bounded by 64 MiB GC pacing** |
-| **Linked Lists (`b_list`, 30 × 1M `Cons`)** | Unbounded | `2,747 ms` · `239 MB` (`180M` allocs) | **`480 ms` · `67 MB` (`30M` allocs)** | **`5.7×` faster · `6×` fewer allocs** | **`3.6×` less RAM vs. R5 (`-72%`)** |
-| **String Workload (`b_str`)** | `5,090 ms` · `6,013 MB` | `679 ms` · `74 MB` (`42.6M` allocs) | **`131 ms` · `2.2 MB` (`17` allocs!)** | **`5.2×` faster vs. R5 (`38.8×` vs. Gen 1)** | **`2,733×` less RAM (`-99.96%`)** |
-| **Recursive `fib(38)` (`b_fib`)** | `1,190 ms` | `1,042 ms` | **`273 ms`** | **`3.8×` faster vs. R5 (`4.4×` vs. Gen 1)** | **`0 B` heap** |
-| **Full 410-Test Verification Suite** | `> 600 s` · `12,700 MB` | `529 s` · `2,490 MB` (`404` tests) | **`136 s` · `537 MB` (`410/410` pass)** | **`3.9×` faster (`410/410`, `0` fail)** | **`23.6×` less RAM (`-95.8%`)** |
+| Workload | Gen 1: Baseline | Gen 2: Round 5 (GC + Own v2) | **Gen 3: Round 6 (Atomic Compactor)** | Speedup & Allocs | RAM Reduction |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`b_loop` (`100M` iters)** | `4,800 MB` | `2,796 ms` · `68 MB` (`200M`) | **`88 ms` · `0.39 MB` (`1` alloc!)** | **`31.8×` · `-99.9999%` allocs** | **`174×` (`-99.4%`)** |
+| **Full C Seed Bootstrap** | `194.8 s` · `12.7 GB` | `200.0 s` · `2.5 GB` | **`22.0 s` · `537 MB`** | **`9.0×` faster chain** | **`23.6×` (`-95.8%`)** |
+| **Seed $\rightarrow$ `lumec.src`** | `102.0 s` · `12.5 GB` | `5.5 s` · `472 MB` | **`5.5 s` · `472 MB`** | **`18.5×` faster** | **`26.5×` (`-96.2%`)** |
+| **`lumec` (`stage2 == 3`)** | `1,820 ms` · `1,165 MB` | `1,908 ms` · `228 MB` | **`445 ms` · `115 MB` (`1.01 MB` ELF)** | **`4.3×` · ELF `-34%`** | **`10.1×` (`-90.1%`)** |
+| **`b_rec` (`20M` 3-field)** | `6,000 MB` | `3,270 ms` · `67 MB` (`240M`) | **`429 ms` · `66 MB` (`20M` allocs)** | **`7.6×` · `12×` fewer allocs** | **64 MiB GC cap** |
+| **`b_match` (`20M` ADT)** | Unbounded | `1,617 ms` · `72 MB` (`80M`) | **`235 ms` · `68 MB` (`20M` allocs)** | **`6.9×` · `4×` fewer allocs** | **64 MiB GC cap** |
+| **`b_list` (`30M` `Cons`)** | Unbounded | `2,747 ms` · `239 MB` (`180M`) | **`480 ms` · `67 MB` (`30M` allocs)** | **`5.7×` · `6×` fewer allocs** | **`3.6×` (`-72%`)** |
+| **`b_str` (Strings)** | `5,090 ms` · `6.0 GB` | `679 ms` · `74 MB` (`42.6M`) | **`131 ms` · `2.2 MB` (`17` allocs!)** | **`5.2×` (`38.8×` vs Gen 1)** | **`2,733×` (`-99.96%`)** |
+| **`b_fib` (`fib(38)`)** | `1,190 ms` | `1,042 ms` | **`273 ms`** | **`3.8×` (`4.4×` vs Gen 1)** | **`0 B` heap** |
+| **410-Test Suite** | `> 600 s` · `12.7 GB` | `529 s` · `2.49 GB` (`404`) | **`136 s` · `537 MB` (`410/410`)** | **`3.9×` (`0` fail)** | **`23.6×` (`-95.8%`)** |
 
 ---
 
@@ -241,15 +241,15 @@ Pre-exported manuals in the repository:
 
 ## Architecture & Verification Matrix
 
-| Milestone | Core Capabilities | Verification Evidence |
+| Milestone | Core Capabilities | Evidence |
 | :--- | :--- | :--- |
-| **Stage 0 Seed** | Frozen C11 bootstrap interpreter (`bootstrap/lume0/`, `SEED_FREEZE.sha256`), LBE binary AST (`lbe.c`), `lume0 asm` ELF64 writer | `393/393` conformance tests + `168/168` ASan/UBSan (`0 failed`) |
-| **Phase 1 — Self-Host** | Self-hosted compiler (`lumec`), native assembler (`lasm`), module bundler (`lmod`), Zero-C fixpoint (`stage2 == stage3`) | `scripts/zero_c.src` (`15/15`), `0 diff` between `lumec2.s` and `lumec3.s` |
-| **Phase 2 — Data & Metaprogramming** | Comptime `C1–C4` (`comptime`, generics, `embed`, `table_schema`), Hygienic Macros `M1–M2`, Data `D1–D4` (`decimal(p,s)`, `table[T]`, `query`, `money[CCY]`, durable WAL `persist table`), HM Type Inference `F1–F4`, Single CLI `T1–T3` (`lsp`, `dap`, `repl`), Self-Evolution `E1–E3` | `compiler/stage1/{decimal,table,query,lfmt,lmod,lcaas,levolve}.src` |
-| **Phase 3 — Safety & Proofs** | Ownership & Borrow Checker `O1–O4` (`own`, `mut`, `from` regions, `rc`/`arc`/`weak`, `arena`), AI Authoring `A1–A3` (typed holes `_`, `total fn`, `unverified[T]`), Algebraic Effects & Perceus Reuse `K1–K3` (`/ pure`, `with handler`), Structured Concurrency & Actors `S1–S3`, Sound `QF_LIA` / `QF_NIA` Prover & `law` `V1–V3` | `compiler/stage1/{ownership,concurrency,actor,qflia_ok,intent_oracle_ok}.src` |
-| **Phase 4 — Differentiable & AI** | Shape-checked `tensor[DType, ...]` (`[T0300]`), forward/reverse Autodiff (`grad`, `value_and_grad`, `jvp`, `vjp`), `@schedule(...) kernel fn` -> CUDA PTX 8.0 & Vulkan SPIR-V 1.6 with VM execution, binary `.safetensors` & `.onnx` (`nn.src`), semi-naive Datalog, `std.prob`, LIF `std.neuro` | `compiler/stage1/{tensor,nn,ai_runtime}.src`, `examples/apps/{mnist,agent}/` |
-| **Phase 5 — Systems & Kernels** | Machine layout (`@repr(c)`, `@packed`, `@bits`, `@mmio`), Fail-closed C/WASM Interop (`lume adapt c`), Freestanding Kernels `K0–K9` (`@freestanding`, MBR + 64-bit Long Mode `.kernel` writer, `@interrupt`, `@bound(cycles: N)` WCET `[V0002]`, linear `cap[Page\|Port\|Irq]`), 27 Universal Targets, Standalone Proof Kernel (`lcert.src`), Lean 4 Mechanization (`formal/lean/LumeCore.lean`), P33 Software Protection (`--protect max`) | `examples/apps/lume_os/`, `compiler/stage1/{ltarget,lcert,lprotect}.src` |
-| **Production Waves 1–12** | Incremental module cache (`--incremental`), Scoped Arenas (`arena.src`), E-Capsules (`capsule.src`), `--memory` RSS profiler, `lume symbolize`, P35 hardware verification, WASM binary ULEB128 sandbox (`[I0275]`), Multi-worker OS async runtime (`async_rt.src`), B+Tree + ACID WAL crash recovery (`db.src`), RFC 793 TCP + RFC 8446 TLS 1.3 (`net.src`), X11 Core Wire GUI (`gui.src`), `LumeMIR` SSA IR, APK/IPA/ISO/UEFI packagers, `lume genesis`, `lume heal`, `lume equiv`, `lume morph`, `lume neural-kernel`, and Quantum Nexus | `docs/WAVE_01_AUDIT.md` .. `docs/WAVE_10_AUDIT.md`, `acceptance/matrix.json` (`24/24 PASS`) |
+| **Stage 0 Seed** | Frozen C11 bootstrap interpreter (`bootstrap/lume0/`), LBE binary AST, `lume0 asm` ELF64 writer | `393/393` conformance · `168/168` ASan/UBSan |
+| **Phase 1 — Self-Host** | Self-hosted `lumec`, `lasm`, `lmod`, Zero-C fixpoint (`stage2 == stage3`) | `scripts/zero_c.src` (`15/15`) · `0 diff` |
+| **Phase 2 — Data & Meta** | Comptime `C1–C4`, Hygienic Macros `M1–M2`, Data `D1–D4` (`decimal`, `table`, `query`, `money`, WAL), HM Inference `F1–F4`, Single CLI `T1–T3`, Self-Evolution `E1–E3` | `compiler/stage1/{decimal,table,query,lfmt,lmod,lcaas,levolve}.src` |
+| **Phase 3 — Safety & Proofs** | Ownership `O1–O4` (`own`, `mut`, `from`, `rc`/`arc`/`weak`, `arena`), AI Authoring `A1–A3`, Effects & Perceus `K1–K3`, Concurrency `S1–S3`, `QF_LIA` / `QF_NIA` Prover & `law` `V1–V3` | `compiler/stage1/{ownership,concurrency,actor,qflia_ok,intent_oracle_ok}.src` |
+| **Phase 4 — Differentiable & AI** | Shape-checked `tensor[DType, ...]`, Autodiff (`grad`, `jvp`, `vjp`), `@schedule(...) kernel fn` -> CUDA PTX 8.0 & SPIR-V 1.6, `.safetensors` & `.onnx` (`nn.src`), Datalog, `std.prob`, LIF `std.neuro` | `compiler/stage1/{tensor,nn,ai_runtime}.src` · `examples/apps/{mnist,agent}/` |
+| **Phase 5 — Systems & Kernels** | `@repr(c)`, `@packed`, `@bits`, `@mmio`, Fail-closed `lume adapt c`, Freestanding Kernels `K0–K9` (`@freestanding`, `.kernel` writer, `@interrupt`, `@bound` WCET `[V0002]`, `cap[Page\|Port\|Irq]`), 27 Targets, `lcert.src`, Lean 4 (`LumeCore.lean`), P33 Protection | `examples/apps/lume_os/` · `compiler/stage1/{ltarget,lcert,lprotect}.src` |
+| **Production Waves 1–12 & Audit** | Incremental cache, Arenas, E-Capsules, `--memory` profiler, `lume symbolize`, P35, WASM sandbox (`[I0275]`), OS async runtime, B+Tree ACID WAL (`db.src`), TLS 1.3 (`net.src`), X11/Web GUI (`gui.src`), `LumeMIR` SSA, APK/IPA/ISO/UEFI, `genesis`/`heal`/`equiv`/`morph`/`neural-kernel`, Quantum Nexus, **85/85 Audit & Red Team Gate** | `acceptance/matrix.json` (`24/24 PASS`) · `tests/harness/claude_audit_gate.src` |
 
 ---
 
