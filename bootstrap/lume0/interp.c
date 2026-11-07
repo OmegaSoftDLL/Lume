@@ -7,9 +7,6 @@
 #include <string.h>
 #include <math.h>
 
-/* runtime arena = an AST Arena instance */
-void *lume_rt_alloc(Interp *ip, size_t n) { return arena_alloc(ip->rt, n); }
-
 /* ---------- registries built from the module ---------- */
 typedef struct { const char *name; int len; const Node *decl; } TypeReg;
 typedef struct { const char *name; int len; const char *owner; const Node *variant; } VarReg;
@@ -27,12 +24,18 @@ typedef struct {
 
 static Registry REG;
 
+/* The method tables are the only references to their closures. */
+static void registry_roots(void) {
+    gc_scan_range(REG.meths, REG.meths + REG.nmeths);
+    gc_scan_range(REG.defs, REG.defs + REG.ndefs);
+}
+
 /* ---------- helpers ---------- */
 static char *dup_text(Interp *ip, const Node *n) {
-    char *s = lume_rt_alloc(ip, (size_t)n->text_len + 1);
+    char *s = arena_alloc(ip->a, (size_t)n->text_len + 1);
     memcpy(s, n->text, (size_t)n->text_len); s[n->text_len] = 0; return s;
 }
-static char *ntz(Interp *ip, const char *t, int len) { char *s = lume_rt_alloc(ip, (size_t)len+1); memcpy(s, t, (size_t)len); s[len]=0; return s; }
+static char *ntz(Interp *ip, const char *t, int len) { char *s = arena_alloc(ip->a, (size_t)len+1); memcpy(s, t, (size_t)len); s[len]=0; return s; }
 static bool text_is(const Node *n, const char *s) {
     return n->text && (int)strlen(s) == n->text_len && memcmp(n->text, s, (size_t)n->text_len) == 0;
 }
@@ -97,8 +100,8 @@ static Val *eval_string(Interp *ip, const Node *n, Env *env, bool interp, bool r
     while (start < tl && (t[start] == 'r' || t[start] == 'b' || t[start] == 'e')) start++;
     if (start + 2 < tl && t[start] == '"' && t[start+1] == '"' && t[start+2] == '"') { qs = 3; qe = 3; }
     int i = start + qs, end = tl - qe;
-    char *buf = lume_rt_alloc(ip, (size_t)(tl * 4 + 1)); int bl = 0;
-    Val *result_pieces = NULL; /* if interpolation, we build incrementally into buf */
+    int cap = tl * 4 + 1, bl = 0;
+    char *buf = lume_rt_alloc_atomic(ip, (size_t)cap);
     for (; i < end; i++) {
         char c = t[i];
         if (!raw && c == '\\' && i + 1 < end) {
@@ -131,6 +134,12 @@ static Val *eval_string(Interp *ip, const Node *n, Env *env, bool interp, bool r
             char *piece; int plen;
             if (colon >= 0) apply_format(ip, ev, t + colon + 1, exprend - (colon + 1), &piece, &plen);
             else piece = val_to_cstr(ip, ev, &plen);
+            /* everything still to copy fits in the slack the initial size kept for the literal */
+            if (bl + plen + tl * 4 + 1 > cap) {
+                cap = (bl + plen + tl * 4 + 1) * 2;
+                char *nb = lume_rt_alloc_atomic(ip, (size_t)cap);
+                memcpy(nb, buf, (size_t)bl); buf = nb;
+            }
             memcpy(buf + bl, piece, (size_t)plen); bl += plen;
             i = exprend;
             continue;
@@ -139,7 +148,6 @@ static Val *eval_string(Interp *ip, const Node *n, Env *env, bool interp, bool r
         buf[bl++] = c;
     }
     buf[bl] = 0;
-    (void)result_pieces;
     return v_str_owned(ip, buf, bl);
 }
 
@@ -160,9 +168,9 @@ static void apply_format(Interp *ip, Val *v, const char *spec, int spec_len, cha
     } else {
         body = val_to_cstr(ip, v, &blen);
     }
-    if (width <= blen) { char *b = lume_rt_alloc(ip, (size_t)blen + 1); memcpy(b, body, (size_t)blen); b[blen] = 0; *out = b; *outlen = blen; return; }
+    if (width <= blen) { char *b = lume_rt_alloc_atomic(ip, (size_t)blen + 1); memcpy(b, body, (size_t)blen); b[blen] = 0; *out = b; *outlen = blen; return; }
     int pad = width - blen;
-    char *buf = lume_rt_alloc(ip, (size_t)width + 1);
+    char *buf = lume_rt_alloc_atomic(ip, (size_t)width + 1);
     int left = 0;
     if (align == '>' ) left = pad; else if (align == '^') left = pad/2; else left = 0; /* default left for strings */
     /* numbers default right-align */
@@ -226,7 +234,7 @@ static Val *arith(Interp *ip, const char *op, int oplen, Val *a, Val *b, const N
         return v_bool(ip, o == '<' ? c <= 0 : c >= 0);   /* <=, >= */
     }
     if (a->kind == V_STR && b->kind == V_STR && o == '+') {
-        int nl = a->slen + b->slen; char *buf = lume_rt_alloc(ip, (size_t)nl + 1);
+        int nl = a->slen + b->slen; char *buf = lume_rt_alloc_atomic(ip, (size_t)nl + 1);
         memcpy(buf, a->s, (size_t)a->slen); memcpy(buf + a->slen, b->s, (size_t)b->slen); buf[nl] = 0;
         return v_str_owned(ip, buf, nl);
     }
@@ -441,8 +449,8 @@ BI(bi_pop) { (void)n; (void)site; Val *l = a[0]; if (l->n == 0) return v_opt_non
 BI(bi_keys) { (void)n; (void)site; Val *out = v_list(ip); if (a[0]->kind == V_MAP) for (int i = 0; i < a[0]->nent; i++) v_push(ip, out, v_str(ip, a[0]->ent[i].key, a[0]->ent[i].klen)); return out; }
 BI(bi_values) { (void)n; (void)site; Val *out = v_list(ip); if (a[0]->kind == V_MAP) for (int i = 0; i < a[0]->nent; i++) v_push(ip, out, a[0]->ent[i].val); return out; }
 BI(bi_str) { (void)n; (void)site; int l; char *s = val_to_cstr(ip, a[0], &l); return v_str_owned(ip, s, l); }
-BI(bi_upper) { (void)n; (void)site; Val *v = a[0]; char *b = lume_rt_alloc(ip, (size_t)v->slen + 1); for (int i = 0; i < v->slen; i++) { char c = v->s[i]; b[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; } b[v->slen] = 0; return v_str_owned(ip, b, v->slen); }
-BI(bi_lower) { (void)n; (void)site; Val *v = a[0]; char *b = lume_rt_alloc(ip, (size_t)v->slen + 1); for (int i = 0; i < v->slen; i++) { char c = v->s[i]; b[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; } b[v->slen] = 0; return v_str_owned(ip, b, v->slen); }
+BI(bi_upper) { (void)n; (void)site; Val *v = a[0]; char *b = lume_rt_alloc_atomic(ip, (size_t)v->slen + 1); for (int i = 0; i < v->slen; i++) { char c = v->s[i]; b[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; } b[v->slen] = 0; return v_str_owned(ip, b, v->slen); }
+BI(bi_lower) { (void)n; (void)site; Val *v = a[0]; char *b = lume_rt_alloc_atomic(ip, (size_t)v->slen + 1); for (int i = 0; i < v->slen; i++) { char c = v->s[i]; b[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; } b[v->slen] = 0; return v_str_owned(ip, b, v->slen); }
 BI(bi_trim) { (void)n; (void)site; Val *v = a[0]; int s = 0, e = v->slen; while (s < e && (v->s[s]==' '||v->s[s]=='\t'||v->s[s]=='\n'||v->s[s]=='\r')) s++; while (e > s && (v->s[e-1]==' '||v->s[e-1]=='\t'||v->s[e-1]=='\n'||v->s[e-1]=='\r')) e--; return v_str(ip, v->s + s, e - s); }
 BI(bi_max) { (void)site; (void)ip; Val *m = a[0]; for (int i = 1; i < n; i++) if (cmp_vals(a[i], m) > 0) m = a[i]; return m; }
 BI(bi_min) { (void)site; (void)ip; Val *m = a[0]; for (int i = 1; i < n; i++) if (cmp_vals(a[i], m) < 0) m = a[i]; return m; }
@@ -464,20 +472,20 @@ BI(bi_split) { (void)n; (void)site; Val *s = a[0], *sep = a[1]; Val *out = v_lis
     int start = 0; for (int i = 0; i + sep->slen <= s->slen; ) { if (memcmp(s->s + i, sep->s, (size_t)sep->slen) == 0) { v_push(ip, out, v_str(ip, s->s + start, i - start)); i += sep->slen; start = i; } else i++; }
     v_push(ip, out, v_str(ip, s->s + start, s->slen - start)); return out; }
 BI(bi_replace) { (void)n; (void)site; Val *s = a[0], *from = a[1], *to = a[2]; if (from->slen == 0) return s;
-    char *buf = lume_rt_alloc(ip, (size_t)s->slen * (to->slen > from->slen ? (size_t)(to->slen) : 1) + (size_t)s->slen + 1); int w = 0;
+    char *buf = lume_rt_alloc_atomic(ip, (size_t)s->slen * (to->slen > from->slen ? (size_t)(to->slen) : 1) + (size_t)s->slen + 1); int w = 0;
     for (int i = 0; i < s->slen; ) { if (i + from->slen <= s->slen && memcmp(s->s + i, from->s, (size_t)from->slen) == 0) { memcpy(buf + w, to->s, (size_t)to->slen); w += to->slen; i += from->slen; } else buf[w++] = s->s[i++]; }
     buf[w] = 0; return v_str_owned(ip, buf, w); }
-BI(bi_repeat) { (void)n; (void)site; Val *s = a[0]; long long cnt = a[1]->i; if (cnt < 0) cnt = 0; char *buf = lume_rt_alloc(ip, (size_t)(s->slen) * (size_t)cnt + 1); int w = 0; for (long long k = 0; k < cnt; k++) { memcpy(buf + w, s->s, (size_t)s->slen); w += s->slen; } buf[w] = 0; return v_str_owned(ip, buf, w); }
+BI(bi_repeat) { (void)n; (void)site; Val *s = a[0]; long long cnt = a[1]->i; if (cnt < 0) cnt = 0; char *buf = lume_rt_alloc_atomic(ip, (size_t)(s->slen) * (size_t)cnt + 1); int w = 0; for (long long k = 0; k < cnt; k++) { memcpy(buf + w, s->s, (size_t)s->slen); w += s->slen; } buf[w] = 0; return v_str_owned(ip, buf, w); }
 BI(bi_chars) { (void)n; (void)site; return to_iter_list(ip, a[0]); }
 BI(bi_join) { (void)n; (void)site; Val *lst = to_iter_list(ip, a[0]); Val *sep = n >= 2 ? a[1] : NULL;
-    int cap = 64, w = 0; char *buf = lume_rt_alloc(ip, (size_t)cap);
-    for (int i = 0; i < lst->n; i++) { if (i && sep) { while (w + sep->slen + 1 > cap) { cap *= 2; char *nb = lume_rt_alloc(ip, (size_t)cap); memcpy(nb, buf, (size_t)w); buf = nb; } memcpy(buf + w, sep->s, (size_t)sep->slen); w += sep->slen; }
-        int el; char *es = val_to_cstr(ip, lst->items[i], &el); while (w + el + 1 > cap) { cap *= 2; char *nb = lume_rt_alloc(ip, (size_t)cap); memcpy(nb, buf, (size_t)w); buf = nb; } memcpy(buf + w, es, (size_t)el); w += el; }
+    int cap = 64, w = 0; char *buf = lume_rt_alloc_atomic(ip, (size_t)cap);
+    for (int i = 0; i < lst->n; i++) { if (i && sep) { while (w + sep->slen + 1 > cap) { cap *= 2; char *nb = lume_rt_alloc_atomic(ip, (size_t)cap); memcpy(nb, buf, (size_t)w); buf = nb; } memcpy(buf + w, sep->s, (size_t)sep->slen); w += sep->slen; }
+        int el; char *es = val_to_cstr(ip, lst->items[i], &el); while (w + el + 1 > cap) { cap *= 2; char *nb = lume_rt_alloc_atomic(ip, (size_t)cap); memcpy(nb, buf, (size_t)w); buf = nb; } memcpy(buf + w, es, (size_t)el); w += el; }
     buf[w] = 0; return v_str_owned(ip, buf, w); }
 BI(bi_parse_int) { (void)n; (void)site; Val *s = a[0]; if (s->kind != V_STR || s->slen == 0) return v_opt_none(ip); long long v = 0; int i = 0; bool neg = false; if (s->s[0] == '-') { neg = true; i = 1; } if (i >= s->slen) return v_opt_none(ip); for (; i < s->slen; i++) { char c = s->s[i]; if (c < '0' || c > '9') return v_opt_none(ip); v = v * 10 + (c - '0'); } return v_opt_some(ip, v_int(ip, neg ? -v : v)); }
 /* --- extended std: lists --- */
 BI(bi_reverse) { (void)n; (void)site; Val *src = to_iter_list(ip, a[0]);
-    if (a[0]->kind == V_STR) { char *buf = lume_rt_alloc(ip, (size_t)src->n * 4 + 1); int w = 0; for (int i = src->n - 1; i >= 0; i--) { int cl; char *cs = val_to_cstr(ip, src->items[i], &cl); memcpy(buf + w, cs, (size_t)cl); w += cl; } buf[w] = 0; return v_str_owned(ip, buf, w); }
+    if (a[0]->kind == V_STR) { char *buf = lume_rt_alloc_atomic(ip, (size_t)src->n * 4 + 1); int w = 0; for (int i = src->n - 1; i >= 0; i--) { int cl; char *cs = val_to_cstr(ip, src->items[i], &cl); memcpy(buf + w, cs, (size_t)cl); w += cl; } buf[w] = 0; return v_str_owned(ip, buf, w); }
     Val *out = v_list(ip); for (int i = src->n - 1; i >= 0; i--) v_push(ip, out, src->items[i]); return out; }
 BI(bi_take) { (void)n; (void)site; Val *src = to_iter_list(ip, a[0]); long long k = a[1]->i; Val *out = v_list(ip); for (int i = 0; i < src->n && i < k; i++) v_push(ip, out, src->items[i]); return out; }
 BI(bi_drop) { (void)n; (void)site; Val *src = to_iter_list(ip, a[0]); long long k = a[1]->i; Val *out = v_list(ip); for (int i = (int)k; i < src->n; i++) if (i >= 0) v_push(ip, out, src->items[i]); return out; }
@@ -486,7 +494,7 @@ BI(bi_any) { (void)n; Val *src = to_iter_list(ip, a[0]); Val *f = a[1]; for (int
 BI(bi_all) { (void)n; Val *src = to_iter_list(ip, a[0]); Val *f = a[1]; for (int i = 0; i < src->n; i++) { Val *r = call_value(ip, f, &src->items[i], 1, site); if (ip->flow != FL_NORMAL) return r; if (!val_truthy(r)) return v_bool(ip, false); } return v_bool(ip, true); }
 BI(bi_zip) { (void)n; (void)site; Val *x = to_iter_list(ip, a[0]); Val *y = to_iter_list(ip, a[1]); Val *out = v_list(ip); int m = x->n < y->n ? x->n : y->n; for (int i = 0; i < m; i++) { Val *t = v_list(ip); t->kind = V_TUPLE; v_push(ip, t, x->items[i]); v_push(ip, t, y->items[i]); v_push(ip, out, t); } return out; }
 BI(bi_concat) { (void)site; Val *out = v_list(ip); for (int k = 0; k < n; k++) { Val *s = to_iter_list(ip, a[k]); for (int i = 0; i < s->n; i++) v_push(ip, out, s->items[i]); } return out; }
-BI(bi_range) { (void)site; Val *v = v_unit(ip); v->kind = V_RANGE; v->lo = n >= 2 ? a[0]->i : 0; v->hi = n >= 2 ? a[1]->i : a[0]->i; v->inc = false; return to_iter_list(ip, v); }
+BI(bi_range) { (void)site; Val *v = v_new(ip, V_RANGE); v->lo = n >= 2 ? a[0]->i : 0; v->hi = n >= 2 ? a[1]->i : a[0]->i; v->inc = false; return to_iter_list(ip, v); }
 /* --- extended std: maps --- */
 BI(bi_get) { (void)n; (void)site; Val *m = a[0]; int kl; char *ks = val_to_cstr(ip, a[1], &kl); for (int i = 0; i < m->nent; i++) if (m->ent[i].klen == kl && memcmp(m->ent[i].key, ks, (size_t)kl) == 0) return v_opt_some(ip, m->ent[i].val); return v_opt_none(ip); }
 BI(bi_has) { (void)n; (void)site; Val *m = a[0]; int kl; char *ks = val_to_cstr(ip, a[1], &kl); for (int i = 0; i < m->nent; i++) if (m->ent[i].klen == kl && memcmp(m->ent[i].key, ks, (size_t)kl) == 0) return v_bool(ip, true); return v_bool(ip, false); }
@@ -502,7 +510,7 @@ BI(bi_pow) { (void)n; (void)site; return v_float(ip, pow(as_double(a[0]), as_dou
 
 
 static Val *mk_builtin(Interp *ip, const char *name, Val *(*fn)(Interp *, Val **, int, const Node *)) {
-    Val *v = v_unit(ip); v->kind = V_BUILTIN; v->builtin = fn; v->bname = name; return v;
+    Val *v = v_new(ip, V_BUILTIN); v->builtin = fn; v->bname = name; return v;
 }
 static Val *lookup_builtin(Interp *ip, const char *name, int len) {
     struct { const char *n; Val *(*f)(Interp *, Val **, int, const Node *); } T[] = {
@@ -540,12 +548,12 @@ BI(bi_print)   { (void)site; for (int i = 0; i < n; i++) { if (i) fputc(' ', std
 
 static Val *deep_copy(Interp *ip, Val *v) {
     switch (v->kind) {
-    case V_RECORD: case V_MAP: { Val *c = v_unit(ip); *c = *v; c->ent = lume_rt_alloc(ip, (size_t)(v->nent ? v->nent : 1) * sizeof(Entry));
+    case V_RECORD: case V_MAP: { Val *c = v_new(ip, v->kind); *c = *v; c->ent = lume_rt_alloc(ip, (size_t)(v->nent ? v->nent : 1) * sizeof(Entry));
         for (int i = 0; i < v->nent; i++) { c->ent[i] = v->ent[i]; c->ent[i].val = deep_copy(ip, v->ent[i].val); } c->cent = v->nent; return c; }
-    case V_LIST: case V_SET: case V_TUPLE: case V_VARIANT: { Val *c = v_unit(ip); *c = *v; c->items = lume_rt_alloc(ip, (size_t)(v->n ? v->n : 1) * sizeof(Val *));
+    case V_LIST: case V_SET: case V_TUPLE: case V_VARIANT: { Val *c = v_new(ip, v->kind); *c = *v; c->items = lume_rt_alloc(ip, (size_t)(v->n ? v->n : 1) * sizeof(Val *));
         for (int i = 0; i < v->n; i++) c->items[i] = deep_copy(ip, v->items[i]);
         c->cap = v->n; return c; }
-    default: { Val *c = v_unit(ip); *c = *v; return c; }
+    default: { Val *c = v_new(ip, v->kind); *c = *v; return c; }
     }
 }
 
@@ -668,7 +676,7 @@ static const Node *record_node_of(const Node *typedecl) {
 static Val *construct_record(Interp *ip, const char *tname, const Node *decl, Val **vals, char **names, int *nlens, int nargs, const Node *site) {
     const Node *rec = record_node_of(decl);
     if (!rec) { rerror(ip, site, "type is not a record"); return v_unit(ip); }
-    Val *v = v_unit(ip); v->kind = V_RECORD; v->tname = tname;
+    Val *v = v_new(ip, V_RECORD); v->tname = tname;
     int nf = 0; for (int i = 0; i < rec->nkid; i++) if (rec->kids[i]->kind == N_FIELD) nf++;
     v->ent = lume_rt_alloc(ip, (size_t)(nf ? nf : 1) * sizeof(Entry)); v->cent = nf;
     int fieldpos = 0;
@@ -693,7 +701,7 @@ static Val *construct_record(Interp *ip, const char *tname, const Node *decl, Va
 }
 static Val *construct_variant(Interp *ip, const VarReg *vr, const char *name, int len, Val **vals, int nargs, const Node *site) {
     (void)site;
-    Val *v = v_unit(ip); v->kind = V_VARIANT;
+    Val *v = v_new(ip, V_VARIANT);
     v->tag = vr ? vr->name : ntz(ip, name, len); v->tname = vr ? vr->owner : NULL;
     if (nargs) {
         v->items = lume_rt_alloc(ip, (size_t)nargs * sizeof(Val *));
@@ -885,19 +893,19 @@ static Val *eval(Interp *ip, const Node *n, Env *env) {
     case N_HOLE:  { ip->flow = FL_PANIC; ip->signal = v_str(ip, "reached a typed hole", 20); return v_unit(ip); }
     case N_SELF:  { Val *v = env_get(env, "self", 4); return v ? v : v_unit(ip); }
     case N_IDENT: return resolve_ident(ip, n, env);
-    case N_FIELDACC: { Val *v = v_unit(ip); v->kind = V_FIELDACC; v->facc = n->kids[0]->text; v->facc_len = n->kids[0]->text_len; return v; }
+    case N_FIELDACC: { Val *v = v_new(ip, V_FIELDACC); v->facc = n->kids[0]->text; v->facc_len = n->kids[0]->text_len; return v; }
     case N_TUPLE: { Val *v = v_list(ip); v->kind = V_TUPLE; for (int i = 0; i < n->nkid; i++) { v_push(ip, v, eval(ip, n->kids[i], env)); if (ip->flow != FL_NORMAL) return v; } return v; }
     case N_LIST:  { Val *v = v_list(ip); for (int i = 0; i < n->nkid; i++) { v_push(ip, v, eval(ip, n->kids[i], env)); if (ip->flow != FL_NORMAL) return v; } return v; }
     case N_SET:   { Val *v = v_list(ip); v->kind = V_SET; for (int i = 0; i < n->nkid; i++) { Val *e = eval(ip, n->kids[i], env); if (ip->flow != FL_NORMAL) return v; bool dup = false; for (int k = 0; k < v->n; k++) if (val_equal(v->items[k], e)) dup = true; if (!dup) v_push(ip, v, e); } return v; }
     case N_LISTREPEAT: { Val *item = eval(ip, n->kids[0], env); Val *cnt = eval(ip, n->kids[1], env); Val *v = v_list(ip); for (long long i = 0; i < cnt->i; i++) v_push(ip, v, item); return v; }
-    case N_MAP: { Val *v = v_unit(ip); v->kind = V_MAP; for (int i = 0; i < n->nkid; i++) { const Node *e = n->kids[i]; Val *k = eval(ip, e->kids[0], env); Val *val = eval(ip, e->kids[1], env); if (ip->flow != FL_NORMAL) return v; int kl; char *ks = val_to_cstr(ip, k, &kl); if (v->nent == v->cent) { int nc = v->cent ? v->cent*2 : 8; Entry *ne = lume_rt_alloc(ip, (size_t)nc*sizeof(Entry)); if (v->ent) memcpy(ne, v->ent, (size_t)v->nent*sizeof(Entry)); v->ent = ne; v->cent = nc; } v->ent[v->nent].key = ks; v->ent[v->nent].klen = kl; v->ent[v->nent].val = val; v->nent++; } return v; }
+    case N_MAP: { Val *v = v_new(ip, V_MAP); for (int i = 0; i < n->nkid; i++) { const Node *e = n->kids[i]; Val *k = eval(ip, e->kids[0], env); Val *val = eval(ip, e->kids[1], env); if (ip->flow != FL_NORMAL) return v; int kl; char *ks = val_to_cstr(ip, k, &kl); if (v->nent == v->cent) { int nc = v->cent ? v->cent*2 : 8; Entry *ne = lume_rt_alloc(ip, (size_t)nc*sizeof(Entry)); if (v->ent) memcpy(ne, v->ent, (size_t)v->nent*sizeof(Entry)); v->ent = ne; v->cent = nc; } v->ent[v->nent].key = ks; v->ent[v->nent].klen = kl; v->ent[v->nent].val = val; v->nent++; } return v; }
     case N_COMPREHENSION: {
         Val *out = v_list(ip); const Node *body = n->kids[0];
         /* single for + optional if (Stage 0) */
         const Node *cf = NULL, *cond = NULL;
         for (int i = 1; i < n->nkid; i++) { if (n->kids[i]->kind == N_COMPFOR) cf = n->kids[i]; else cond = n->kids[i]; }
         Val *src = to_iter_list(ip, eval(ip, cf->kids[1], env));
-        bool is_map = body->kind == N_MAPENTRY; if (is_map) { out = v_unit(ip); out->kind = V_MAP; }
+        bool is_map = body->kind == N_MAPENTRY; if (is_map) { out = v_new(ip, V_MAP); }
         for (int i = 0; i < src->n; i++) {
             Env *e = env_new(ip, env);
             if (!pattern_match(ip, cf->kids[0], src->items[i], e)) continue;
@@ -906,7 +914,7 @@ static Val *eval(Interp *ip, const Node *n, Env *env) {
             else { Val *val = eval(ip, body, e); if (ip->flow != FL_NORMAL) return out; v_push(ip, out, val); }
         }
         return out; }
-    case N_RANGE: { Val *v = v_unit(ip); v->kind = V_RANGE; v->inc = (n->flags & F_INCLUSIVE) != 0;
+    case N_RANGE: { Val *v = v_new(ip, V_RANGE); v->inc = (n->flags & F_INCLUSIVE) != 0;
         if (n->nkid == 2) { v->lo = eval(ip, n->kids[0], env)->i; v->hi = eval(ip, n->kids[1], env)->i; }
         else if (n->nkid == 1) { v->lo = 0; v->hi = eval(ip, n->kids[0], env)->i; }
         return v; }
@@ -950,7 +958,7 @@ static Val *eval(Interp *ip, const Node *n, Env *env) {
                 if (hi > ncp) hi = ncp;
                 if (hi < lo) hi = lo;
                 int blo = str_cp_byteoff(coll, lo); int bhi = str_cp_byteoff(coll, hi);
-                int bl = bhi - blo; char *buf = lume_rt_alloc(ip, (size_t)bl + 1);
+                int bl = bhi - blo; char *buf = lume_rt_alloc_atomic(ip, (size_t)bl + 1);
                 memcpy(buf, coll->s + blo, (size_t)bl); buf[bl] = 0; return v_str_owned(ip, buf, bl);
             }
             Val *lst = to_iter_list(ip, coll); long long lo = 0, hi = lst->n;
@@ -1081,7 +1089,7 @@ static Val *eval(Interp *ip, const Node *n, Env *env) {
     case N_ASSERT: { Val *c = eval(ip, n->kids[0], env); if (ip->flow != FL_NORMAL) return c; if (!val_truthy(c)) { int l = 0; char *msg = n->nkid >= 2 ? val_to_cstr(ip, eval(ip, n->kids[1], env), &l) : (char*)"assertion failed"; diag_add(ip->d, SEV_ERROR, "R0200", n->line, n->col, 1, msg, NULL); ip->had_runtime_error = true; ip->flow = FL_PANIC; ip->signal = v_str(ip, msg, (int)strlen(msg)); } return v_unit(ip); }
     case N_REQUIRES: { Val *c = eval(ip, n->kids[0], env); if (ip->flow != FL_NORMAL) return c; if (!val_truthy(c)) { if (n->nkid >= 2) { ip->signal = eval(ip, n->kids[1], env); ip->flow = FL_FAIL; } else { diag_add(ip->d, SEV_ERROR, "R0201", n->line, n->col, 1, "precondition (requires) violated", NULL); ip->had_runtime_error = true; ip->flow = FL_PANIC; ip->signal = v_str(ip, "requires violated", 17); } } return v_unit(ip); }
     case N_ENSURES: return v_unit(ip);
-    case N_CLOSURE: { Val *v = v_unit(ip); v->kind = V_CLOSURE; v->cl_params_owner = n; v->cl_env = env; v->is_closure_fn = false; return v; }
+    case N_CLOSURE: { Val *v = v_new(ip, V_CLOSURE); v->cl_params_owner = n; v->cl_env = env; v->is_closure_fn = false; return v; }
     default: rerror(ip, n, "unsupported expression in Stage 0"); return v_unit(ip);
     }
 }
@@ -1090,7 +1098,7 @@ static Val *eval(Interp *ip, const Node *n, Env *env) {
  *  eval_source_expr (for string interpolation)
  * ====================================================================== */
 static Val *eval_source_expr(Interp *ip, const char *src, int len, Env *env) {
-    char *buf = lume_rt_alloc(ip, (size_t)len + 2); memcpy(buf, src, (size_t)len); buf[len] = '\n'; buf[len+1] = 0;
+    char *buf = arena_alloc(ip->a, (size_t)len + 2); memcpy(buf, src, (size_t)len); buf[len] = '\n'; buf[len+1] = 0;
     DiagList d = {0}; TokenList toks = {0};
     lume_lex(buf, (size_t)len + 1, &toks, &d);
     Node *mod = lume_parse(&toks, ip->a, &d);
@@ -1107,7 +1115,7 @@ static Val *eval_source_expr(Interp *ip, const char *src, int len, Env *env) {
 /* ======================================================================
  *  registry build + lume_run
  * ====================================================================== */
-static Val *mk_fn_closure(Interp *ip, const Node *fn, const char *name) { Val *v = v_unit(ip); v->kind = V_CLOSURE; v->cl_params_owner = fn; v->cl_env = ip->globals; v->is_closure_fn = true; v->cl_name = name; return v; }
+static Val *mk_fn_closure(Interp *ip, const Node *fn, const char *name) { Val *v = v_new(ip, V_CLOSURE); v->cl_params_owner = fn; v->cl_env = ip->globals; v->is_closure_fn = true; v->cl_name = name; return v; }
 static const char *fn_name(const Node *fn) { for (int i = 0; i < fn->nkid; i++) if (fn->kids[i]->kind == N_IDENT) return fn->kids[i]->text; return "?"; }
 static int fn_name_len(const Node *fn) { for (int i = 0; i < fn->nkid; i++) if (fn->kids[i]->kind == N_IDENT) return fn->kids[i]->text_len; return 1; }
 static bool fn_has_body(const Node *fn) { FnParts fp = fn_parts(fn); return fp.body != NULL; }
@@ -1203,7 +1211,9 @@ static void load_module(Interp *ip, const Node *mod, const char *dir, DiagList *
 int lume_run(const Node *module, const char *file, DiagList *diags) {
     memset(&REG, 0, sizeof REG);
     Interp ip; memset(&ip, 0, sizeof ip);
-    ip.rt = arena_new(); ip.a = arena_new(); ip.d = diags; ip.file = file; ip.flow = FL_NORMAL;
+    char stack_mark = 0;
+    gc_init((char *)&ip + sizeof ip > &stack_mark ? (char *)&ip + sizeof ip : &stack_mark + 1, registry_roots);
+    ip.a = arena_new(); ip.d = diags; ip.file = file; ip.flow = FL_NORMAL;
     ip.globals = env_new(&ip, NULL);
     /* load local module dependencies first, then collect them, then the entry module */
     char dir[1024]; dirname_of(file, dir, sizeof dir);
@@ -1228,6 +1238,6 @@ int lume_run(const Node *module, const char *file, DiagList *diags) {
     free(REG.types); free(REG.vars); free(REG.meths); free(REG.defs); free(REG.impls);
     for (int i = 0; i < vis.n; i++) free(vis.paths[i]);
     free(vis.paths); free(deps);
-    arena_free(ip.rt); arena_free(ip.a);
+    gc_shutdown(); arena_free(ip.a);
     return rc;
 }

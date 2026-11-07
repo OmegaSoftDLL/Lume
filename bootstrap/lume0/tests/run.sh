@@ -28,6 +28,11 @@ fi
 # to the toolchain, so a fresh checkout (where lumec.src is gitignored) still runs.
 _amtmp=$(mktemp -d)
 printf '@root %s\n' "$(CDPATH= cd -- ../.. && pwd)" > "$_amtmp/amalgamate.in"
+# the seed heap: every case here allocates past the first collection
+for f in tests/gc/*.lume; do
+    if "$BIN" run "$f" 2>&1 | diff -u "${f%.lume}.expected" - >/dev/null; then ok "seed collector: $f"; else bad "seed collector: $f"; fi
+done
+
 if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_ASAN:-}" ]; then
     ./lume0 run ../../compiler/stage1/data_asm_cc.lume ../../scripts/amalgamate.src "$_amtmp/amalgamate.s" >/dev/null 2>&1
     ./lume0 asm "$_amtmp/amalgamate.s" "$_amtmp/amalgamate" >/dev/null 2>&1
@@ -163,18 +168,18 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
         $BIN asm "$ntmp/blk_$blk.s" "$ntmp/blk_$blk" >/dev/null 2>&1
         if [ -x "$ntmp/blk_$blk" ] && "$ntmp/blk_$blk" 2>/dev/null | diff -u ../../tests/conformance/stage1/$exp.expected - >/dev/null; then ok "no-toolchain: block_cc $blk.blk ($feat) -> native"; else bad "no-toolchain: block_cc $blk.blk ($feat) -> native"; fi
     done
-    cat ../../compiler/stage1/decimal.src ../../compiler/stage1/decimal_native.src >"$ntmp/decimal.src"
-    $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/decimal.src" >"$ntmp/decimal_interp.out" 2>"$ntmp/decimal_interp.err"
-    $BIN run ../../compiler/stage1/data_cc.lume "$ntmp/decimal.src" "$ntmp/decimal.s" >"$ntmp/decimal_codegen.out" 2>"$ntmp/decimal_codegen.err"
+    cat ../../compiler/stage1/decimal.src ../../compiler/stage1/decimal_native.src >"$ntmp/decimal_cat.src"
+    $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/decimal_cat.src" >"$ntmp/decimal_interp.out" 2>"$ntmp/decimal_interp.err"
+    $BIN run ../../compiler/stage1/data_cc.lume "$ntmp/decimal_cat.src" "$ntmp/decimal.s" >"$ntmp/decimal_codegen.out" 2>"$ntmp/decimal_codegen.err"
     $BIN asm "$ntmp/decimal.s" "$ntmp/decimal" >"$ntmp/decimal_asm.out" 2>"$ntmp/decimal_asm.err"
     if [ -x "$ntmp/decimal" ] && "$ntmp/decimal" >"$ntmp/decimal_native.out" 2>"$ntmp/decimal_native.err" && diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_interp.out" >/dev/null && diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_native.out" >/dev/null; then ok "phase-2 D1: exact decimal literals + scale-aware arithmetic agree in interpreter and native"; else bad "phase-2 D1: exact decimal literals + scale-aware arithmetic"; diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_interp.out" || true; diff -u ../../tests/conformance/stage1/decimal_native.expected "$ntmp/decimal_native.out" || true; cat "$ntmp/decimal_interp.err" "$ntmp/decimal_codegen.err" "$ntmp/decimal_asm.err" "$ntmp/decimal_native.err"; fi
-    cat ../../compiler/stage1/table.src ../../compiler/stage1/decimal.src ../../compiler/stage1/table_test.src >"$ntmp/table.src"
-    $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/table.src" >"$ntmp/table_interp.out" 2>"$ntmp/table_interp.err"
-    $BIN run ../../compiler/stage1/data_asm_cc.lume "$ntmp/table.src" "$ntmp/table.s" >"$ntmp/table_codegen.out" 2>"$ntmp/table_codegen.err"
+    cat ../../compiler/stage1/table.src ../../compiler/stage1/decimal.src ../../compiler/stage1/table_test.src >"$ntmp/table_cat.src"
+    $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/table_cat.src" >"$ntmp/table_interp.out" 2>"$ntmp/table_interp.err"
+    $BIN run ../../compiler/stage1/data_asm_cc.lume "$ntmp/table_cat.src" "$ntmp/table.s" >"$ntmp/table_codegen.out" 2>"$ntmp/table_codegen.err"
     if as -o "$ntmp/table.o" "$ntmp/table.s" 2>/dev/null && ld -o "$ntmp/table" "$ntmp/table.o" 2>/dev/null && "$ntmp/table" >"$ntmp/table_native.out" 2>"$ntmp/table_native.err" && diff -u ../../tests/conformance/stage1/table_native.expected "$ntmp/table_interp.out" >/dev/null && diff -u ../../tests/conformance/stage1/table_native.expected "$ntmp/table_native.out" >/dev/null; then ok "phase-2 D2: typed CSV table parsing agrees in interpreter and native"; else bad "phase-2 D2: typed CSV table parsing"; diff -u ../../tests/conformance/stage1/table_native.expected "$ntmp/table_interp.out" || true; diff -u ../../tests/conformance/stage1/table_native.expected "$ntmp/table_native.out" || true; cat "$ntmp/table_interp.err" "$ntmp/table_codegen.err" "$ntmp/table_native.err"; fi
-    cat ../../compiler/stage1/table.src ../../compiler/stage1/decimal.src ../../compiler/stage1/query.src ../../compiler/stage1/query_test.src >"$ntmp/query.src"
-    $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/query.src" >"$ntmp/query_interp.out" 2>"$ntmp/query_interp.err"
-    $BIN run ../../compiler/stage1/data_asm_cc.lume "$ntmp/query.src" "$ntmp/query.s" >"$ntmp/query_codegen.out" 2>"$ntmp/query_codegen.err"
+    cat ../../compiler/stage1/table.src ../../compiler/stage1/decimal.src ../../compiler/stage1/query.src ../../compiler/stage1/query_test.src >"$ntmp/query_cat.src"
+    $BIN run ../../compiler/stage1/compiler_in_core.lume "$ntmp/query_cat.src" >"$ntmp/query_interp.out" 2>"$ntmp/query_interp.err"
+    $BIN run ../../compiler/stage1/data_asm_cc.lume "$ntmp/query_cat.src" "$ntmp/query.s" >"$ntmp/query_codegen.out" 2>"$ntmp/query_codegen.err"
     if as -o "$ntmp/query.o" "$ntmp/query.s" 2>/dev/null && ld -o "$ntmp/query" "$ntmp/query.o" 2>/dev/null && "$ntmp/query" >"$ntmp/query_native.out" 2>"$ntmp/query_native.err" && diff -u ../../tests/conformance/stage1/query_native.expected "$ntmp/query_interp.out" >/dev/null && diff -u ../../tests/conformance/stage1/query_native.expected "$ntmp/query_native.out" >/dev/null; then ok "phase-2 D3: where/order/join/group queries agree in interpreter and native"; else bad "phase-2 D3: where/order/join/group queries"; diff -u ../../tests/conformance/stage1/query_native.expected "$ntmp/query_interp.out" || true; diff -u ../../tests/conformance/stage1/query_native.expected "$ntmp/query_native.out" || true; cat "$ntmp/query_interp.err" "$ntmp/query_codegen.err" "$ntmp/query_native.err"; fi
     $BIN run ../../compiler/stage1/data_asm_cc.lume ../../compiler/stage1/sh_rpn.src "$ntmp/sh_rpn.s" >/dev/null 2>&1; $BIN asm "$ntmp/sh_rpn.s" "$ntmp/sh_rpn" >/dev/null 2>&1; if [ -x "$ntmp/sh_rpn" ] && "$ntmp/sh_rpn" 2>/dev/null | diff -u ../../tests/conformance/stage1/sh_rpn_asm.expected - >/dev/null; then ok "no-toolchain stress: sh_rpn.src -> lume0 asm -> native"; else bad "no-toolchain stress: sh_rpn.src -> lume0 asm -> native"; fi
     $BIN run ../../compiler/stage1/data_asm_cc.lume ../../compiler/stage1/sh_tree.src "$ntmp/sh_tree.s" >/dev/null 2>&1; $BIN asm "$ntmp/sh_tree.s" "$ntmp/sh_tree" >/dev/null 2>&1; if [ -x "$ntmp/sh_tree" ] && "$ntmp/sh_tree" 2>/dev/null | diff -u ../../tests/conformance/stage1/sh_tree_asm.expected - >/dev/null; then ok "no-toolchain stress: sh_tree.src -> lume0 asm -> native"; else bad "no-toolchain stress: sh_tree.src -> lume0 asm -> native"; fi
@@ -279,7 +284,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     # immediate with NO runtime arithmetic in its body (the runtime routines, which legitimately use addq/imulq,
     # live elsewhere -- so scope the check to main_val's body only).
     awk '/^main_val:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/ct.s" >"$ntmp/ct_mv.s"
-    grep -q 'movq \$14, %rdi' "$ntmp/ct_mv.s" || ct_ok=0
+    grep -q 'movq \$29, %rax' "$ntmp/ct_mv.s" || ct_ok=0
     grep -Eq 'addq|imulq|subq|idivq' "$ntmp/ct_mv.s" && ct_ok=0
     if [ "$ct_ok" = 1 ]; then ok "phase-2 comptime: lumec folds comptime(expr) to a constant (native, no C)"; else bad "phase-2 comptime: lumec folds comptime(expr) to a constant (native, no C)"; fi
     # a comptime over something NOT constant-foldable (here a function call) is a HARD compile-time error:
@@ -295,8 +300,8 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     # PROOF of compile-time folding: each comptime call becomes a `movq $N` immediate in the program-entry (main)
     # section -- there is NO `call fib`/`call fact` after `_start:` (fib/fact are still emitted as callable fns).
     awk '/^_start:/{p=1} p{print}' "$ntmp/ct2.s" >"$ntmp/ct2_main.s"
-    grep -q 'movq \$55, %rdi' "$ntmp/ct2_main.s" || ct2_ok=0
-    grep -q 'movq \$120, %rdi' "$ntmp/ct2_main.s" || ct2_ok=0
+    grep -q 'movq \$111, %rax' "$ntmp/ct2_main.s" || ct2_ok=0
+    grep -q 'movq \$241, %rax' "$ntmp/ct2_main.s" || ct2_ok=0
     grep -q 'call fib' "$ntmp/ct2_main.s" && ct2_ok=0
     grep -q 'call fact' "$ntmp/ct2_main.s" && ct2_ok=0
     if [ "$ct2_ok" = 1 ]; then ok "phase-2 C2: comptime folds pure user-fn calls fib(10)=55 / fact(5)=120 (no call in main)"; else bad "phase-2 C2: comptime folds pure user-fn calls"; fi
@@ -407,6 +412,15 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     "$ntmp/lc" <../../compiler/stage1/fmt_sample.src >"$ntmp/fs_orig.s" 2>/dev/null
     "$ntmp/lc" <"$ntmp/fmt1.src" >"$ntmp/fs_fmt.s" 2>/dev/null
     if diff -u ../../tests/conformance/stage1/lfmt_asm.expected "$ntmp/fmt1.src" >/dev/null && cmp -s "$ntmp/fmt1.src" "$ntmp/fmt2.src" && LUME_BIN_DIR="$ntmp" ../../lume fmt --check ../../compiler/stage1/lfmt.src >/dev/null 2>&1 && cmp -s "$ntmp/fs_orig.s" "$ntmp/fs_fmt.s"; then ok "phase-2 T2: native lfmt.src canonical AST formatter (idempotent, self-canonical & codegen-invariant)"; else bad "phase-2 T2: native lfmt.src canonical AST formatter"; fi
+    # `lume fmt` rewrites files in place, so it must never change what a program means, whatever syntax it meets.
+    fmt_bad=""
+    for fmt_src in ../../compiler/stage1/*_ok.src ../../tests/conformance/stage1/ownership/*.src; do
+        "$ntmp/lc" <"$fmt_src" >"$ntmp/fmt_a.s" 2>/dev/null || continue
+        LUME_BIN_DIR="$ntmp" ../../lume fmt --stdout "$fmt_src" >"$ntmp/fmt_x.src" 2>/dev/null
+        "$ntmp/lc" <"$ntmp/fmt_x.src" >"$ntmp/fmt_b.s" 2>/dev/null
+        cmp -s "$ntmp/fmt_a.s" "$ntmp/fmt_b.s" || fmt_bad="$fmt_bad $fmt_src"
+    done
+    if [ -z "$fmt_bad" ]; then ok "phase-2 T2: lume fmt leaves the meaning of every *_ok.src and ownership fixture unchanged"; else bad "phase-2 T2: lume fmt changed:$fmt_bad"; fi
     # phase-2 T3: modules (`use <mod>` topological bundler in Lume-Core `compiler/stage1/lmod.src`) + package manager (`lume pkg`: lume.toml, SHA-256 lume.lock, P26 capability audit).
     if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/mod_app.src 2>/dev/null | diff -u ../../tests/conformance/stage1/lmod_app_asm.expected - >/dev/null; then ok "phase-2 T3: native lmod.src resolves diamond 'use' module graph and runs natively"; else bad "phase-2 T3: native lmod.src resolves diamond 'use' module graph"; fi
     mkdir -p "$ntmp/merr"
@@ -441,6 +455,54 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     if diff -u ../../tests/conformance/stage1/fs_ok_asm.expected "$ntmp/fs_ok.out" >/dev/null 2>&1; then ok "std.fs (#406): safe file wrapper (structured errors, with_file close-on-all-paths, use-after-close fails closed)"; else bad "std.fs (#406): safe file wrapper"; cat "$ntmp/fs_ok.out" "$ntmp/fs_ok.err"; fi
     rm -f std_fs_ok_probe std_fs_ok_roundtrip std_fs_ok_append std_fs_ok_with std_fs_ok_with_err std_fs_ok_badmode std_fs_ok_uac std_fs_roundtrip_probe std_fs_append_probe std_fs_size_probe std_fs_with_probe std_fs_with_err_probe std_fs_uac_probe std_fs_mode_probe
     # #404: real memory management -- heap observability, scoped arenas, heap cap.
+    # the guarantees that span several front-ends have their own Lume gates
+    for gate in ownership_gate runtime_sync_gate gc_gate; do
+        if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/harness/$gate.src -o ../../build/bin/$gate 2>"$ntmp/$gate.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | ../../build/bin/$gate >"$ntmp/$gate.out" 2>>"$ntmp/$gate.err"; then ok "$(cat "$ntmp/$gate.out")"; else bad "$gate"; tail -3 "$ntmp/$gate.err"; fi
+    done
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/gc_ok.src >"$ntmp/gc_ok.out" 2>"$ntmp/gc_ok.err"
+    if grep -q " passed, 0 failed" "$ntmp/gc_ok.out"; then ok "collector: live data survives forced collections, garbage is freed (gc_ok.src)"; else bad "collector: gc_ok.src"; tail -5 "$ntmp/gc_ok.out"; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/gc_stress_ok.src -o "$ntmp/gc_stress_ok.elf" 2>"$ntmp/gcs_build.err"
+    "$ntmp/gc_stress_ok.elf" >"$ntmp/gcs_plain.out" 2>&1; gcs0=$?
+    LUME_GC_STRESS=3 "$ntmp/gc_stress_ok.elf" >"$ntmp/gcs_stress.out" 2>&1; gcs1=$?
+    if [ "$gcs0" = 0 ] && [ "$gcs1" = 0 ] && grep -q "^survivors ok$" "$ntmp/gcs_stress.out" && cmp -s "$ntmp/gcs_plain.out" "$ntmp/gcs_stress.out"; then ok "collector: same output when collecting every 3 allocations with freed memory poisoned"; else bad "collector: stress run diverged"; tail -3 "$ntmp/gcs_stress.out"; fi
+    # the compact value representation and the compactor (docs/38-memory-management.md): zero-allocation hot paths
+    # measured through heap_stats, 64-bit integers behind 63-bit immediates, cell sizes, pack/unpack, frozen arenas
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/atomic_compactor_ok.src -o "$ntmp/atomic_compactor_ok.elf" 2>"$ntmp/acmp_build.err"
+    "$ntmp/atomic_compactor_ok.elf" >"$ntmp/acmp.out" 2>&1; acmp0=$?
+    LUME_GC_STRESS=7 "$ntmp/atomic_compactor_ok.elf" >"$ntmp/acmp_stress.out" 2>&1; acmp1=$?
+    if [ "$acmp0" = 0 ] && diff -u ../../tests/memory/atomic_compactor_ok.expected "$ntmp/acmp.out" && [ "$acmp1" = 0 ] && [ "$(grep -v _bytes "$ntmp/acmp.out")" = "$(grep -v _bytes "$ntmp/acmp_stress.out")" ]; then ok "compactor: step 0 + levels 1, 2 and 3 hold together, also with a collection every 7 allocations"; else bad "compactor: atomic_compactor_ok.src"; tail -5 "$ntmp/acmp_build.err"; fi
+    acmpf=0
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/secret_pack_fail.src -o "$ntmp/acmp_sp.elf" >"$ntmp/acmp_sp.out" 2>"$ntmp/acmp_sp.err" && acmpf=1
+    grep -q "\[C0009\]" "$ntmp/acmp_sp.err" || acmpf=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/bound_pack_fail.src -o "$ntmp/acmp_bp.elf" >"$ntmp/acmp_bp.out" 2>"$ntmp/acmp_bp.err" && acmpf=1
+    grep -q "\[V0002\]" "$ntmp/acmp_bp.err" || acmpf=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/secret_arena_fail.src -o "$ntmp/acmp_sa.elf" 2>"$ntmp/acmp_sa_build.err" || acmpf=1
+    "$ntmp/acmp_sa.elf" >"$ntmp/acmp_sa.out" 2>"$ntmp/acmp_sa.err"; acmp2=$?
+    [ "$acmp2" = 12 ] && grep -q "secret arena is never compressed" "$ntmp/acmp_sa.err" || acmpf=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/pack_corrupt_fail.src -o "$ntmp/acmp_pc.elf" 2>"$ntmp/acmp_pc_build.err" || acmpf=1
+    "$ntmp/acmp_pc.elf" >"$ntmp/acmp_pc.out" 2>"$ntmp/acmp_pc.err"; acmp3=$?
+    [ "$acmp3" = 3 ] && grep -q "packed data is corrupt" "$ntmp/acmp_pc.err" || acmpf=1
+    ../../lume pack ../../compiler/stage1/lumec.src -o "$ntmp/acmp.lz" >/dev/null 2>"$ntmp/acmp_lz.err" || acmpf=1
+    ../../lume unpack "$ntmp/acmp.lz" -o "$ntmp/acmp.src" >/dev/null 2>>"$ntmp/acmp_lz.err" || acmpf=1
+    cmp -s ../../compiler/stage1/lumec.src "$ntmp/acmp.src" || acmpf=1
+    [ "$(wc -c <"$ntmp/acmp.lz")" -lt "$(($(wc -c <../../compiler/stage1/lumec.src) / 2))" ] || acmpf=1
+    if [ "$acmpf" = 0 ]; then ok "compactor: a secret never reaches it ([C0009], secret arena), @bound rejects it ([V0002]), corrupt data stops"; else bad "compactor: fail-closed gates"; cat "$ntmp/acmp_sp.err" "$ntmp/acmp_bp.err" "$ntmp/acmp_sa.err" "$ntmp/acmp_pc.err" 2>/dev/null | tail -5; fi
+    # the same answers as when every value was a cell: digests of all operations over the boundary values of the word
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/value_matrix_ok.src -o "$ntmp/value_matrix_ok.elf" 2>"$ntmp/vm_build.err"
+    if "$ntmp/value_matrix_ok.elf" 2>&1 | diff -u ../../tests/memory/value_matrix_ok.expected - >"$ntmp/vm.diff"; then ok "values: every operation over the boundary values of the word gives the digests of the cell representation"; else bad "values: value_matrix_ok.src"; head -8 "$ntmp/vm.diff"; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/value_edges_ok.src -o "$ntmp/value_edges_ok.elf" 2>"$ntmp/ve_build.err"
+    if "$ntmp/value_edges_ok.elf" 2>&1 | diff -u ../../tests/memory/value_edges_ok.expected - >"$ntmp/ve.diff"; then ok "values: subtraction across 63 bits, quantifiers at the top of int, NUL bytes in order and match"; else bad "values: value_edges_ok.src"; head -8 "$ntmp/ve.diff"; fi
+    edgef=0
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/chr_range_fail.src -o "$ntmp/chr_range_fail.elf" 2>"$ntmp/crf_build.err" || edgef=1
+    "$ntmp/chr_range_fail.elf" >"$ntmp/crf.out" 2>"$ntmp/crf.err"; crf_rc=$?
+    [ "$crf_rc" = 3 ] && [ "$(cat "$ntmp/crf.out")" = "255" ] && grep -q "chr needs a byte, 0 to 255" "$ntmp/crf.err" || edgef=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/count_record_fail.src -o "$ntmp/count_record_fail.elf" 2>"$ntmp/cr_build.err" || edgef=1
+    "$ntmp/count_record_fail.elf" >"$ntmp/cr.out" 2>"$ntmp/cr.err"; cr_rc=$?
+    [ "$cr_rc" = 3 ] && [ "$(cat "$ntmp/cr.out")" = "3" ] || edgef=1
+    printf '.text\ndup:\n    ret\ndup:\n    ret\n.globl _start\n_start:\n    ret\n' >"$ntmp/dup.s"
+    "$ntmp/lasm" --strict "$ntmp/dup.s" >"$ntmp/dup.elf" 2>"$ntmp/dup.err" && edgef=1
+    grep -q "\[L0010\]" "$ntmp/dup.err" || edgef=1
+    if [ "$edgef" = 0 ]; then ok "values: chr out of 0..255 and count of a record stop, a label defined twice is a link error ([L0010])"; else bad "values: fail-closed edges"; cat "$ntmp/crf.err" "$ntmp/cr.err" "$ntmp/dup.err" 2>/dev/null | tail -5; fi
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/arena_ok.src >"$ntmp/arena_ok.out" 2>"$ntmp/arena_ok.err"
     if grep -q "8 passed, 0 failed" "$ntmp/arena_ok.out"; then ok "#404: heap_stats + arenas (bump/reset/destroy, 1M-cell bulk used-drop, monotonic no-arena growth)"; else bad "#404: heap_stats + scoped arena"; cat "$ntmp/arena_ok.out" "$ntmp/arena_ok.err"; fi
     if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/arena_mem.src >"$ntmp/arena_mem.out" 2>"$ntmp/arena_mem.err" && grep -q "^arena_drop 1" "$ntmp/arena_mem.out" && grep -q "^monotonic_growth 1" "$ntmp/arena_mem.out" && grep -q "^vmhwm_at_least_24m 1" "$ntmp/arena_mem.out"; then ok "#404: memory-peak evidence (heap_stats used drop + peak high-water + VmHWM peak RSS)"; else bad "#404: memory-peak evidence"; cat "$ntmp/arena_mem.out" "$ntmp/arena_mem.err"; fi
@@ -457,10 +519,91 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/arena_budget_fail.src -o "$ntmp/arena_budget_fail.elf" 2>"$ntmp/abg_build.err" || memfail=1
     "$ntmp/arena_budget_fail.elf" >"$ntmp/abg.out" 2>"$ntmp/abg.err"; abg_rc=$?
     if [ "$abg_rc" != 12 ] || ! grep -q "capacity exceeded" "$ntmp/abg.err"; then memfail=1; fi
-    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/arena_pin_fail.src -o "$ntmp/arena_pin_fail.elf" 2>"$ntmp/ap_build.err" || memfail=1
-    "$ntmp/arena_pin_fail.elf" >"$ntmp/ap.out" 2>"$ntmp/ap.err"; ap_rc=$?
-    if [ "$ap_rc" != 12 ] || ! grep -q "pinned by a live arena" "$ntmp/ap.err"; then memfail=1; fi
-    if [ "$memfail" = 0 ]; then ok "#404: heap cap + arena fail-closed diagnostics (cap/bad-env/too-many/budget/pin, exit 12)"; else bad "#404: heap cap + arena fail-closed diagnostics"; cat "$ntmp/hcf.err" "$ntmp/heb.err" "$ntmp/abf.err" "$ntmp/abg.err" "$ntmp/ap.err" "$ntmp/hcf_build.err" "$ntmp/heb_build.err" "$ntmp/abf_build.err" "$ntmp/abg_build.err" "$ntmp/ap_build.err"; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/arena_nopin_ok.src -o "$ntmp/arena_nopin_ok.elf" 2>"$ntmp/ap_build.err" || memfail=1
+    "$ntmp/arena_nopin_ok.elf" >"$ntmp/ap.out" 2>"$ntmp/ap.err"; ap_rc=$?
+    if [ "$ap_rc" != 0 ] || [ "$(cat "$ntmp/ap.out")" != 1000000 ]; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/gc_cap_ok.src -o "$ntmp/gc_cap_ok.elf" 2>"$ntmp/gcc_build.err" || memfail=1
+    LUME_HEAP_CAP=32m "$ntmp/gc_cap_ok.elf" >"$ntmp/gcc.out" 2>"$ntmp/gcc.err"; gcc_rc=$?
+    if [ "$gcc_rc" != 0 ] || [ "$(cat "$ntmp/gcc.out")" != 10000000 ]; then memfail=1; fi
+    LUME_GC=off LUME_HEAP_CAP=32m "$ntmp/gc_cap_ok.elf" >"$ntmp/gco.out" 2>"$ntmp/gco.err"; gco_rc=$?
+    if [ "$gco_rc" != 12 ] || ! grep -q "heap cap exceeded" "$ntmp/gco.err"; then memfail=1; fi
+    LUME_GC=bogus "$ntmp/gc_cap_ok.elf" >"$ntmp/gcb.out" 2>"$ntmp/gcb.err"; gcb_rc=$?
+    if [ "$gcb_rc" != 12 ] || ! grep -q "invalid LUME_GC" "$ntmp/gcb.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/gc_frag_cap_ok.src -o "$ntmp/gc_frag_cap_ok.elf" 2>"$ntmp/gfc_build.err" || memfail=1
+    LUME_HEAP_CAP=16m "$ntmp/gc_frag_cap_ok.elf" >"$ntmp/gfc.out" 2>"$ntmp/gfc.err" || memfail=1
+    if [ "$(cat "$ntmp/gfc.out")" != 1000 ]; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/arena_cap_ok.src -o "$ntmp/arena_cap_ok.elf" 2>"$ntmp/acp_build.err" || memfail=1
+    LUME_HEAP_CAP=64m "$ntmp/arena_cap_ok.elf" >"$ntmp/acp.out" 2>"$ntmp/acp.err" || memfail=1
+    if [ "$(cat "$ntmp/acp.out")" != 7 ]; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/dir_race_ok.src -o "$ntmp/dir_race_ok.elf" 2>"$ntmp/drc_build.err" || memfail=1
+    mkdir -p "$ntmp/racedir"
+    ( i=0; while [ "$i" -lt 2000 ] && [ ! -e "$ntmp/racedir.stop" ]; do : > "$ntmp/racedir/entry_with_a_long_enough_name_$i"; i=$((i+1)); done ) &
+    drc_pid=$!
+    "$ntmp/dir_race_ok.elf" "$ntmp/racedir" >"$ntmp/drc.out" 2>"$ntmp/drc.err"; drc_rc=$?
+    : > "$ntmp/racedir.stop"; wait "$drc_pid"
+    if [ "$drc_rc" != 0 ] || [ "$(cat "$ntmp/drc.out")" != 4000 ]; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/values_ok.src -o "$ntmp/values_ok.elf" 2>"$ntmp/val_build.err" || memfail=1
+    "$ntmp/values_ok.elf" 2>&1 | diff -u ../../tests/memory/values_ok.expected - >/dev/null || memfail=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/type_error_fail.src -o "$ntmp/type_error_fail.elf" 2>"$ntmp/te_build.err" || memfail=1
+    "$ntmp/type_error_fail.elf" >"$ntmp/te.out" 2>"$ntmp/te.err"; te_rc=$?
+    if [ "$te_rc" != 3 ] || ! grep -q "needs a string" "$ntmp/te.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/div_zero_fail.src -o "$ntmp/div_zero_fail.elf" 2>"$ntmp/dz_build.err" || memfail=1
+    "$ntmp/div_zero_fail.elf" >"$ntmp/dz.out" 2>"$ntmp/dz.err"; dz_rc=$?
+    if [ "$dz_rc" != 3 ] || ! grep -q "division by zero" "$ntmp/dz.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/int_wrap_ok.src -o "$ntmp/int_wrap_ok.elf" 2>"$ntmp/iw_build.err" || memfail=1
+    "$ntmp/int_wrap_ok.elf" 2>&1 | diff -u ../../tests/memory/int_wrap_ok.expected - >/dev/null || memfail=1
+    for ovf_expr in 'big() + 1' '0 - big() - 2' 'big() * 2'; do
+        printf 'fn big() = 9223372036854775807\nprint %s\n' "$ovf_expr" >"$ntmp/ovf.src"
+        "$ntmp/lc" <"$ntmp/ovf.src" >"$ntmp/ovf.s" 2>"$ntmp/ovf.cerr" || memfail=1
+        "$ntmp/lasm" <"$ntmp/ovf.s" >"$ntmp/ovf.elf" 2>/dev/null; chmod +x "$ntmp/ovf.elf"
+        "$ntmp/ovf.elf" >"$ntmp/ovf.out" 2>"$ntmp/ovf.err"; ovf_rc=$?
+        if [ "$ovf_rc" != 3 ] || ! grep -q "integer overflow" "$ntmp/ovf.err"; then memfail=1; fi
+    done
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/dyn_type_fail.src -o "$ntmp/dyn_type_fail.elf" 2>"$ntmp/dt_build.err" || memfail=1
+    dt_args=""
+    for dt_want in "no match arm" "no such field" "no such field" "no such field" "arithmetic needs integers" "arithmetic needs integers" "arithmetic needs integers" "integer overflow" "condition needs a boolean" "integer overflow" "integer overflow" "division by zero"; do
+        "$ntmp/dyn_type_fail.elf" $dt_args >"$ntmp/dt.out" 2>"$ntmp/dt.err"; dt_rc=$?
+        if [ "$dt_rc" != 3 ] || ! grep -q "$dt_want" "$ntmp/dt.err"; then memfail=1; fi
+        dt_args="$dt_args x"
+    done
+    for ok_t in bool_ok handler_lowering_ok hof_only_ok slicen_ok rec_update_ok shadow_call_ok pattern_int_ok comptime_limits_ok toint_ok; do
+        LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/$ok_t.src -o "$ntmp/$ok_t.elf" 2>"$ntmp/$ok_t.berr" || memfail=1
+        "$ntmp/$ok_t.elf" 2>&1 | diff -u ../../tests/memory/$ok_t.expected - >/dev/null || memfail=1
+    done
+    for fl_t in "string_index_fail:string index out of bounds" "string_index_neg_fail:string index out of bounds" "index_type_fail:this needs an integer" "at_type_fail:this needs an integer" "slice_type_fail:this needs an integer" "toint_overflow_fail:integer overflow"; do
+        fl_n=${fl_t%%:*}; fl_m=${fl_t#*:}
+        LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/$fl_n.src -o "$ntmp/$fl_n.elf" 2>"$ntmp/$fl_n.berr" || memfail=1
+        "$ntmp/$fl_n.elf" >"$ntmp/$fl_n.out" 2>"$ntmp/$fl_n.err"; fl_rc=$?
+        if [ "$fl_rc" != 3 ] || ! grep -q "$fl_m" "$ntmp/$fl_n.err"; then memfail=1; fi
+    done
+    printf 'fn f(a, b, c) = (a < b) == c\nprint f(1, 2, 1)\n' >"$ntmp/fmt_cmp.src"
+    LUME_BIN_DIR="$ntmp" ../../lume fmt "$ntmp/fmt_cmp.src" >/dev/null 2>&1 || memfail=1
+    grep -q '(a < b) == c' "$ntmp/fmt_cmp.src" || memfail=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/rec_update_fail.src -o "$ntmp/rec_update_fail.elf" 2>"$ntmp/ruf.berr" || memfail=1
+    "$ntmp/rec_update_fail.elf" >"$ntmp/ruf.out" 2>"$ntmp/ruf.err"; ruf_rc=$?
+    if [ "$ruf_rc" != 3 ] || ! grep -q "no such field" "$ntmp/ruf.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/fn_values_ok.src -o "$ntmp/fn_values_ok.elf" 2>"$ntmp/fv_build.err" || memfail=1
+    "$ntmp/fn_values_ok.elf" 2>&1 | diff -u ../../tests/memory/fn_values_ok.expected - >/dev/null || memfail=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/closures_ok.src -o "$ntmp/closures_ok.elf" 2>"$ntmp/cl_build.err" || memfail=1
+    "$ntmp/closures_ok.elf" 2>&1 | diff -u ../../tests/memory/closures_ok.expected - >/dev/null || memfail=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/closure_arity_fail.src -o "$ntmp/closure_arity_fail.elf" 2>"$ntmp/cla_build.err" || memfail=1
+    "$ntmp/closure_arity_fail.elf" >"$ntmp/cla.out" 2>"$ntmp/cla.err"; cla_rc=$?
+    if [ "$cla_rc" != 3 ] || ! grep -q "not a function of that many arguments" "$ntmp/cla.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/list_index_ok.src -o "$ntmp/list_index_ok.elf" 2>"$ntmp/li_build.err" || memfail=1
+    "$ntmp/list_index_ok.elf" 2>&1 | diff -u ../../tests/memory/list_index_ok.expected - >/dev/null || memfail=1
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/list_index_fail.src -o "$ntmp/list_index_fail.elf" 2>"$ntmp/lif_build.err" || memfail=1
+    "$ntmp/list_index_fail.elf" >"$ntmp/lif.out" 2>"$ntmp/lif.err"; lif_rc=$?
+    if [ "$lif_rc" != 3 ] || ! grep -q "out of bounds" "$ntmp/lif.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/list_index_type_fail.src -o "$ntmp/list_index_type_fail.elf" 2>"$ntmp/lit_build.err" || memfail=1
+    "$ntmp/list_index_type_fail.elf" >"$ntmp/lit.out" 2>"$ntmp/lit.err"; lit_rc=$?
+    if [ "$lit_rc" != 3 ] || ! grep -q "indexing needs" "$ntmp/lit.err"; then memfail=1; fi
+    printf 'fn count(x: int) -> int = x + 1\nprint count(41)\n' >"$ntmp/clash.src"
+    "$ntmp/lc" <"$ntmp/clash.src" >"$ntmp/clash.s" 2>"$ntmp/clash.err"; clash_rc=$?
+    if [ "$clash_rc" != 3 ] || ! grep -q "\[R0201\]" "$ntmp/clash.err"; then memfail=1; fi
+    LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/stack_overflow_fail.src -o "$ntmp/stack_overflow_fail.elf" 2>"$ntmp/so_build.err" || memfail=1
+    (ulimit -Ss 8192 2>/dev/null; ulimit -Hs 65536 2>/dev/null; "$ntmp/stack_overflow_fail.elf" >"$ntmp/so.out" 2>"$ntmp/so.err"; echo $? >"$ntmp/so.code")
+    if [ "$(cat "$ntmp/so.code")" != 12 ] || ! grep -q "stack overflow" "$ntmp/so.err"; then memfail=1; fi
+    if [ "$memfail" = 0 ]; then ok "#404: heap cap + arena + collector (cap/bad-env/too-many/budget/no-pin, 2 GiB of garbage under a 32 MiB cap, and the same run failing closed with LUME_GC=off)"; else bad "#404: heap cap + arena + collector"; cat "$ntmp/hcf.err" "$ntmp/heb.err" "$ntmp/abf.err" "$ntmp/abg.err" "$ntmp/ap.err" "$ntmp/hcf_build.err" "$ntmp/heb_build.err" "$ntmp/abf_build.err" "$ntmp/abg_build.err" "$ntmp/ap_build.err"; fi
     LUME_BIN_DIR="$ntmp" ../../lume pkg init "$ntmp/pkgdemo" >/dev/null 2>&1
     LUME_BIN_DIR="$ntmp" ../../lume pkg lock "$ntmp/pkgdemo" >/dev/null 2>&1
     pkg_ok=1
@@ -508,7 +651,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     awk '/^_start:/{p=1} p{print}' "$ntmp/c3e.s" >"$ntmp/c3e_main.s"
     c3e_ok=1
     grep -q 'call id' "$ntmp/c3e_main.s" || c3e_ok=0
-    grep -q 'movq \$42, %rdi' "$ntmp/c3e_main.s" || c3e_ok=0
+    grep -q 'movq \$85, %rdi' "$ntmp/c3e_main.s" || c3e_ok=0
     grep -q 'popq %rsi' "$ntmp/c3e_main.s" && c3e_ok=0
     if [ "$c3e_ok" = 1 ]; then ok "phase-2 C3: type erasure -- id(int, 42) calls id with ONE arg (type arg erased, no popq %rsi)"; else bad "phase-2 C3: type erasure -- id(int, 42) calls id with ONE arg"; fi
     # NEGATIVE: once the type parameter is bound (T := int), an argument of the wrong concrete type is a clear error.
@@ -538,9 +681,10 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     if [ -x "$ntmp/tg.elf" ] && "$ntmp/tg.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/table_generic_asm.expected - >/dev/null; then ok "phase-2 D2: table[T] annotations type-check generic function results"; else bad "phase-2 D2: table[T] annotations type-check generic function results"; cat "$ntmp/tg.err"; fi
     "$ntmp/lc" <../../compiler/stage1/table_generic_bad.src >"$ntmp/tgbad.s" 2>"$ntmp/tgbad.err"; tgbad=$?
     if [ "$tgbad" = 3 ] && [ ! -s "$ntmp/tgbad.s" ] && grep -q "has type table\[str\] but parameter 'table' expects table\[int\]" "$ntmp/tgbad.err"; then ok "phase-2 D2: table[T] rejects a mismatched generic row type"; else bad "phase-2 D2: table[T] rejects a mismatched generic row type"; fi
-    printf 'type Customer = record id: int, spend: int, city: str\ntype Order = record id: int, customer_id: int\ntype Joined = record orders_id: int, orders_customer_id: int, customers_id: int, customers_spend: int, customers_city: str\ntype Agg = record city: str, count: int, sum: int\nfn q(table: table[Customer]) = query_where(Customer, table, "spend", ">", 4)\nfn o(table: table[Customer]) = query_order(Customer, table, "spend", "desc")\nfn j(a: table[Order], b: table[Customer]) = query_join(Order, Customer, Joined, a, b, "orders", "customers", "customer_id", "id")\nfn g(table: table[Customer]) = query_group(Customer, Agg, table, "city", "spend")\n' >"$ntmp/d3ok.src"
-    "$ntmp/lc" <"$ntmp/d3ok.src" >"$ntmp/d3ok.s" 2>"$ntmp/d3ok.err"; d3ok=$?
-    if [ "$d3ok" = 0 ] && [ -s "$ntmp/d3ok.s" ]; then ok "phase-2 D3: query field and literal types are accepted"; else bad "phase-2 D3: query field and literal types are accepted"; cat "$ntmp/d3ok.err"; fi
+    mkdir -p "$ntmp/d3_iso"
+    printf 'use decimal\nuse table\nuse query\ntype Customer = record id: int, spend: int, city: str\ntype Order = record id: int, customer_id: int\ntype Joined = record orders_id: int, orders_customer_id: int, customers_id: int, customers_spend: int, customers_city: str\ntype Agg = record city: str, count: int, sum: int\nfn q(table: table[Customer]) = query_where(Customer, table, "spend", ">", 4)\nfn o(table: table[Customer]) = query_order(Customer, table, "spend", "desc")\nfn j(a: table[Order], b: table[Customer]) = query_join(Order, Customer, Joined, a, b, "orders", "customers", "customer_id", "id")\nfn g(table: table[Customer]) = query_group(Customer, Agg, table, "city", "spend")\n' >"$ntmp/d3_iso/d3ok.src"
+    LUME_BIN_DIR="$ntmp" ../../lume build "$ntmp/d3_iso/d3ok.src" -o "$ntmp/d3_iso/d3ok.elf" 2>"$ntmp/d3ok.err"; d3ok=$?
+    if [ "$d3ok" = 0 ] && [ -s "$ntmp/d3_iso/d3ok.elf" ]; then ok "phase-2 D3: query field and literal types are accepted"; else bad "phase-2 D3: query field and literal types are accepted"; cat "$ntmp/d3ok.err"; fi
     printf 'type Customer = record id: int, spend: int\nfn q(table: table[Customer]) = query_where(Customer, table, "missing", ">", 4)\n' >"$ntmp/d3field.src"
     "$ntmp/lc" <"$ntmp/d3field.src" >"$ntmp/d3field.s" 2>"$ntmp/d3field.err"; d3field=$?
     if [ "$d3field" = 3 ] && [ ! -s "$ntmp/d3field.s" ] && grep -q "query on 'Customer' has no field 'missing'" "$ntmp/d3field.err"; then ok "phase-2 D3: query rejects an unknown record field"; else bad "phase-2 D3: query rejects an unknown record field"; cat "$ntmp/d3field.err"; fi
@@ -565,7 +709,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     grep -Eq 'call unroll_pow|call pow4' "$ntmp/am_p4.s" && m1_ok=0
     # 3. `comptime(ast_nodes(...))` folds to `movq $7, %rdi` in `_start` with NO call to `ast_nodes` or `ast_sexpr`.
     awk '/^_start:/{p=1} p{print}' "$ntmp/am.s" >"$ntmp/am_main.s"
-    grep -q 'movq \$7, %rdi' "$ntmp/am_main.s" || m1_ok=0
+    grep -q 'movq \$15, %rax' "$ntmp/am_main.s" || m1_ok=0
     grep -Eq 'call ast_nodes|call ast_sexpr' "$ntmp/am_main.s" && m1_ok=0
     if [ "$m1_ok" = 1 ]; then ok "phase-2 M1: first-class comptime AST (quote, match over AST, algebraic simplify & unroll via splice)"; else bad "phase-2 M1: first-class comptime AST (quote, match, splice)"; fi
     printf 'print splice(42)\n' >"$ntmp/m1bad1.src"
@@ -804,7 +948,7 @@ PY
     "$ntmp/lc" <../../compiler/stage1/own_ok.src >"$ntmp/own.s" 2>"$ntmp/own.err"
     if [ -s "$ntmp/own.s" ]; then "$ntmp/lasm" <"$ntmp/own.s" >"$ntmp/own.elf" 2>/dev/null; chmod +x "$ntmp/own.elf"; fi
     if [ -x "$ntmp/own.elf" ] && "$ntmp/own.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/own_ok_asm.expected - >/dev/null; then ok "phase-3 O1-O4: ownership, mut/own borrows, LIFO defer/errdefer, 'from' regions, and '@freestanding' compile + run"; else bad "phase-3 O1-O4: own_ok.src compile + run"; cat "$ntmp/own.err"; fi
-    if LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/ownership.src 2>/dev/null | grep -q "5 passed, 0 failed" && ! grep -Eq '^fn (rc_|arc_|weak_)' ../../compiler/stage1/ownership.src; then ok "phase-3 O4: ownership.src tiers (compiler rc[T]/arc[T]/weak[T], cell, arena) pass native lume test"; else bad "phase-3 O4: ownership.src tiers unit tests"; fi
+    if LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/ownership.src 2>/dev/null | grep -q "7 passed, 0 failed" && ! grep -Eq '^fn (rc_|arc_|weak_)' ../../compiler/stage1/ownership.src; then ok "phase-3 O4: ownership.src tiers (compiler rc[T]/arc[T]/weak[T], cell, arena) pass native lume test"; else bad "phase-3 O4: ownership.src tiers unit tests"; fi
     # O0001: use of moved value
     printf 'fn consume(own x: int) -> int = x\nfn bad() -> int = let f = 42 in let c = consume(own f) in f\nprint bad()\n' >"$ntmp/o1.src"
     "$ntmp/lc" <"$ntmp/o1.src" >"$ntmp/o1.s" 2>"$ntmp/o1.err"; o1c=$?
@@ -1014,14 +1158,13 @@ PY
     # `geexpr`/`geargs`/`gerec`/`gearms` and `cfold`/`cfoldstmts`/`cfoldstmt` in `03_comptime.src`):
     "$ntmp/lc" <../../compiler/stage1/compiler_perceus_ok.src >"$ntmp/cp_ok.s" 2>"$ntmp/cp_ok.err"
     if [ -s "$ntmp/cp_ok.s" ]; then "$ntmp/lasm" <"$ntmp/cp_ok.s" >"$ntmp/cp_ok.elf" 2>/dev/null; chmod +x "$ntmp/cp_ok.elf"; fi
-    awk '/^gestmts:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/bp_c.s" >"$ntmp/lc_gestmts.s"
-    awk '/^geargs:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/bp_c.s" >"$ntmp/lc_geargs.s"
-    awk '/^cfoldstmts:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/bp_c.s" >"$ntmp/lc_cfoldstmts.s"
-    awk '/^pairs2:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/bp_c.s" >"$ntmp/lc_pairs2.s"
-    awk '/^geexpr:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/bp_c.s" >"$ntmp/lc_geexpr.s"
+    awk '/^gestmts:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/cp_ok.s" >"$ntmp/lc_gestmts.s"
+    awk '/^geargs:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/cp_ok.s" >"$ntmp/lc_geargs.s"
+    awk '/^pairs2:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/cp_ok.s" >"$ntmp/lc_pairs2.s"
+    awk '/^geexpr:/{p=1} p{print} p&&/^    ret$/{exit}' "$ntmp/cp_ok.s" >"$ntmp/lc_geexpr.s"
     printf 'fn joinall(own xs) = match xs { Nil => "", Cons(a, Nil) => a, Cons(a, b) => a }\nfn bad(xs) = joinall(xs)\nprint bad(Nil)\n' >"$ntmp/cp_bad.src"
     "$ntmp/lc" <"$ntmp/cp_bad.src" >"$ntmp/cp_bad.s" 2>"$ntmp/cp_bad.err"; cpbadc=$?
-    if [ -x "$ntmp/cp_ok.elf" ] && "$ntmp/cp_ok.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/compiler_perceus_ok_asm.expected - >/dev/null && [ -s "$ntmp/lc_gestmts.s" ] && ! grep -q "call alloc" "$ntmp/lc_gestmts.s" && grep -q "movq %rdx, 8(%rcx)" "$ntmp/lc_gestmts.s" && [ -s "$ntmp/lc_geargs.s" ] && ! grep -q "call alloc" "$ntmp/lc_geargs.s" && grep -q "movq %rdx, 8(%rcx)" "$ntmp/lc_geargs.s" && [ -s "$ntmp/lc_cfoldstmts.s" ] && ! grep -q "call alloc" "$ntmp/lc_cfoldstmts.s" && grep -q "movq %rdx, 8(%rcx)" "$ntmp/lc_cfoldstmts.s" && [ -s "$ntmp/lc_pairs2.s" ] && grep -q "movq %rdx, 8(%rcx)" "$ntmp/lc_pairs2.s" && [ -s "$ntmp/lc_geexpr.s" ] && grep -q "movq %rsi, 0(%rcx)" "$ntmp/lc_geexpr.s" && [ "$cpbadc" = 3 ] && [ ! -s "$ntmp/cp_bad.s" ] && grep -q "\[O0012\]" "$ntmp/cp_bad.err"; then ok "inflection Stage D: Perceus in-place reuse in lumec (zero 'call alloc' in gestmts/geargs/cfoldstmts + in-place reuse in pairs2/geexpr + [O0012] enforcement)"; else bad "inflection Stage D: Perceus in-place reuse in lumec"; cat "$ntmp/cp_ok.err" "$ntmp/cp_bad.err" 2>/dev/null; fi
+    if [ -x "$ntmp/cp_ok.elf" ] && "$ntmp/cp_ok.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/compiler_perceus_ok_asm.expected - >/dev/null && [ -s "$ntmp/lc_gestmts.s" ] && ! grep -q "call alloc" "$ntmp/lc_gestmts.s" && grep -q "movq %rdx, 16(%rax)" "$ntmp/lc_gestmts.s" && [ -s "$ntmp/lc_geargs.s" ] && ! grep -q "call alloc" "$ntmp/lc_geargs.s" && grep -q "movq %rdx, 16(%rax)" "$ntmp/lc_geargs.s" && [ -s "$ntmp/lc_pairs2.s" ] && grep -q "movq %rdx, 16(%rax)" "$ntmp/lc_pairs2.s" && [ -s "$ntmp/lc_geexpr.s" ] && grep -q "movq %rsi, 8(%rax)" "$ntmp/lc_geexpr.s" && [ "$cpbadc" = 3 ] && [ ! -s "$ntmp/cp_bad.s" ] && grep -q "\[O0012\]" "$ntmp/cp_bad.err"; then ok "Perceus in-place reuse where uniqueness is proven (zero 'call alloc' in gestmts/geargs + in-place reuse in pairs2/geexpr + [O0012] enforcement)"; else bad "Perceus in-place reuse where uniqueness is proven"; cat "$ntmp/cp_ok.err" "$ntmp/cp_bad.err" 2>/dev/null; fi
     # Compiler-as-Oracle & Intent-as-Source loop (`docs/19-intent-as-source.md`):
     # 1. `intent_oracle_ok.src` synthesizes `_` holes from `requires`/`ensures` contracts and `law` (`P34`),
     #    proves them via `QF_LIA` (`vqflia_prove_fn`/`vqflia_prove_law`), and elides runtime guards (`call ctfail` == 0).
@@ -1064,7 +1207,7 @@ PY
     LUME_BIN_DIR="$ntmp" ../../lume agent kernel "$ntmp/p4_bad_krec.src" >"$ntmp/p4_bad_krec.json" 2>/dev/null || true
     printf 'kernel fn bad_k_str(x: int) -> int / gpu = let s = "gpu" in x\nprint 0\n' >"$ntmp/p4_bad_kstr.src"
     LUME_BIN_DIR="$ntmp" ../../lume agent kernel "$ntmp/p4_bad_kstr.src" >"$ntmp/p4_bad_kstr.json" 2>/dev/null || true
-    printf 'print with alloc = 1 in fn(x: int) -> int => x\n' >"$ntmp/p4_bad_c0001.src"
+    printf 'fn f(x) requires (fn(y) => y)(x) > 0 = x\nprint f(1)\n' >"$ntmp/p4_bad_c0001.src"
     "$ntmp/lc" <"$ntmp/p4_bad_c0001.src" >"$ntmp/p4_bad_c0001.s" 2>"$ntmp/p4_bad_c0001.err"; p4bc0001=$?
     # 2. Negative checks: `[T0300]` tensor shape mismatch on `matmul` inner dimensions, `[E0200]` host I/O inside `kernel fn`,
     #    and `[N0400]` (#184) symbolic autodiff on non-polynomial ops (`/`) or unhandled function calls:
@@ -1269,32 +1412,32 @@ EOF
     # Process 2 (d4_reader.elf) is a separate native ELF binary that receives ONLY the file path lume_crossproc_crash.wal
     # and recovers the committed table from disk via persist_recover_path.
     rm -f lume_crossproc_crash.wal
-    mkdir -p "$ntmp/d4_procs"
-    sed '/^print /d' ../../compiler/stage1/data_d4_ok.src >"$ntmp/d4_procs/d4_base.src"
-    cp "$ntmp/d4_procs/d4_base.src" "$ntmp/d4_procs/d4_writer.src"
-    printf 'fn run_writer() -> int = let p = "lume_crossproc_crash.wal" in let t1 = initial_ledger() in let s1 = persist_open(p, ledger_schema(), t1) in let t2 = table_insert_row(t1, new_row_v2()) in let s2 = persist_commit(s1, t2) in let crashed = persist_append_torn(s2, "id,account,amount,units\\n99,Corrupt,\\"unterminated") in s2.ok == 1 and s2.version == 2\nprint run_writer()\n' >>"$ntmp/d4_procs/d4_writer.src"
-    cp "$ntmp/d4_procs/d4_base.src" "$ntmp/d4_procs/d4_tx_worker.src"
-    printf 'fn run_tx() -> int = let s = persist_tx_insert_row("lume_crossproc_crash.wal", ledger_schema(), new_row_v3()) in s.ok\nprint run_tx()\n' >>"$ntmp/d4_procs/d4_tx_worker.src"
-    cp "$ntmp/d4_procs/d4_base.src" "$ntmp/d4_procs/d4_reader.src"
-    printf 'fn run_reader() -> int = let rec = persist_recover_path("lume_crossproc_crash.wal", ledger_schema()) in if rec.ok == 1 and table_cell(rec.current, 2, 1).value.value == "Tax" then rec.version * 10 + table_row_count(rec.current) else 0\nprint run_reader()\n' >>"$ntmp/d4_procs/d4_reader.src"
-    LUME_BIN_DIR="$ntmp" ../../lume build "$ntmp/d4_procs/d4_writer.src" -o "$ntmp/d4_procs/d4_writer.elf" 2>"$ntmp/d4_build.err"
-    LUME_BIN_DIR="$ntmp" ../../lume build "$ntmp/d4_procs/d4_tx_worker.src" -o "$ntmp/d4_procs/d4_tx_worker.elf" 2>>"$ntmp/d4_build.err"
-    LUME_BIN_DIR="$ntmp" ../../lume build "$ntmp/d4_procs/d4_reader.src" -o "$ntmp/d4_procs/d4_reader.elf" 2>>"$ntmp/d4_build.err"
-    "$ntmp/d4_procs/d4_writer.elf" >"$ntmp/d4_w.out"
+    mkdir -p "$ntmp/d4_iso/procs"
+    sed '/^print /d' ../../compiler/stage1/data_d4_ok.src >"$ntmp/d4_iso/procs/d4_base.src"
+    cp "$ntmp/d4_iso/procs/d4_base.src" "$ntmp/d4_iso/procs/d4_writer.src"
+    printf 'fn run_writer() -> int = let p = "lume_crossproc_crash.wal" in let t1 = initial_ledger() in let s1 = persist_open(p, ledger_schema(), t1) in let t2 = table_insert_row(t1, new_row_v2()) in let s2 = persist_commit(s1, t2) in let crashed = persist_append_torn(s2, "id,account,amount,units\\n99,Corrupt,\\"unterminated") in s2.ok == 1 and s2.version == 2\nprint run_writer()\n' >>"$ntmp/d4_iso/procs/d4_writer.src"
+    cp "$ntmp/d4_iso/procs/d4_base.src" "$ntmp/d4_iso/procs/d4_tx_worker.src"
+    printf 'fn run_tx() -> int = let s = persist_tx_insert_row("lume_crossproc_crash.wal", ledger_schema(), new_row_v3()) in s.ok\nprint run_tx()\n' >>"$ntmp/d4_iso/procs/d4_tx_worker.src"
+    cp "$ntmp/d4_iso/procs/d4_base.src" "$ntmp/d4_iso/procs/d4_reader.src"
+    printf 'fn run_reader() -> int = let rec = persist_recover_path("lume_crossproc_crash.wal", ledger_schema()) in if rec.ok == 1 and table_cell(rec.current, 2, 1).value.value == "Tax" then rec.version * 10 + table_row_count(rec.current) else 0\nprint run_reader()\n' >>"$ntmp/d4_iso/procs/d4_reader.src"
+    LUME_BIN_DIR="$ntmp" ../../lume build "$ntmp/d4_iso/procs/d4_writer.src" -o "$ntmp/d4_iso/procs/d4_writer.elf" 2>"$ntmp/d4_build.err"
+    LUME_BIN_DIR="$ntmp" ../../lume build "$ntmp/d4_iso/procs/d4_tx_worker.src" -o "$ntmp/d4_iso/procs/d4_tx_worker.elf" 2>>"$ntmp/d4_build.err"
+    LUME_BIN_DIR="$ntmp" ../../lume build "$ntmp/d4_iso/procs/d4_reader.src" -o "$ntmp/d4_iso/procs/d4_reader.elf" 2>>"$ntmp/d4_build.err"
+    "$ntmp/d4_iso/procs/d4_writer.elf" >"$ntmp/d4_w.out"
     # Simulate a mid-syscall process kill by appending an unterminated, un-checksummed partial WAL record:
     printf '@tx|99|1|99999|id,account,amount,units~n999,PartialKill\n' >>lume_crossproc_crash.wal
-    "$ntmp/d4_procs/d4_reader.elf" >"$ntmp/d4_r1.out"
+    "$ntmp/d4_iso/procs/d4_reader.elf" >"$ntmp/d4_r1.out"
     # Run two concurrent OS processes appending under flock(LOCK_EX) + fsync:
-    "$ntmp/d4_procs/d4_tx_worker.elf" >"$ntmp/d4_tx1.out" &
+    "$ntmp/d4_iso/procs/d4_tx_worker.elf" >"$ntmp/d4_tx1.out" &
     _pid1=$!
-    "$ntmp/d4_procs/d4_tx_worker.elf" >"$ntmp/d4_tx2.out" &
+    "$ntmp/d4_iso/procs/d4_tx_worker.elf" >"$ntmp/d4_tx2.out" &
     _pid2=$!
     wait "$_pid1" "$_pid2"
-    "$ntmp/d4_procs/d4_reader.elf" >"$ntmp/d4_r2.out"
+    "$ntmp/d4_iso/procs/d4_reader.elf" >"$ntmp/d4_r2.out"
     # Negative test: corrupt all committed records on disk and verify persist_recover_path rejects the tampered WAL:
     sed 's/Cash/HACK/g' lume_crossproc_crash.wal >"$ntmp/crash_tampered.wal"
     mv "$ntmp/crash_tampered.wal" lume_crossproc_crash.wal
-    "$ntmp/d4_procs/d4_reader.elf" >"$ntmp/d4_r_neg.out"
+    "$ntmp/d4_iso/procs/d4_reader.elf" >"$ntmp/d4_r_neg.out"
     rm -f lume_crossproc_crash.wal
     if diff -u ../../tests/conformance/stage1/data_d4_ok_asm.expected "$ntmp/d4_run.out" >/dev/null && grep -q "20 passed, 0 failed" "$ntmp/d4_test.out" && grep -q "test_persist_wal_crash_recovery" "$ntmp/d4_test.out" && grep -q "test_soa_columnar_vectorised_ops" "$ntmp/d4_test.out" && [ "$d4bccy" = 3 ] && [ ! -s "$ntmp/d4_bad_ccy.s" ] && grep -q "type error: argument 1 of 'take_brl' has type money\[USD\] but parameter 'x' expects money\[BRL\]" "$ntmp/d4_bad_ccy.err" && grep -q '"code":"T2001"' "$ntmp/d4_bad_ccy.json" && [ "$(cat "$ntmp/d4_w.out")" = "1" ] && [ "$(cat "$ntmp/d4_r1.out")" = "23" ] && [ "$(cat "$ntmp/d4_tx1.out")" = "1" ] && [ "$(cat "$ntmp/d4_tx2.out")" = "1" ] && grep -Eq "^(34|45)$" "$ntmp/d4_r2.out" && [ "$(cat "$ntmp/d4_r_neg.out")" = "0" ]; then ok "phase-2 D4 (#214): durable on-disk WAL (open+flock+write+fsync+close, cross-process crash recovery, concurrent tx & tamper rejection), versioned, money[CCY] & @soa"; else bad "phase-2 D4 (#214): durable on-disk WAL & money[CCY] check"; cat "$ntmp/d4_build.err" "$ntmp/d4_run.err" "$ntmp/d4_run.out" "$ntmp/d4_test.out" "$ntmp/d4_w.out" "$ntmp/d4_r1.out" "$ntmp/d4_r2.out" "$ntmp/d4_r_neg.out" 2>/dev/null; fi
     # Stage 1/2 Tooling & AI-Author Substrate (#209, #210, #211, #230):
@@ -1372,6 +1515,15 @@ EOF
     "$ntmp/par_os_ok.elf" >"$ntmp/par_os.out" 2>>"$ntmp/par_os.err"
     if [ "$(cat "$ntmp/par_os.out")" = "par_os=ok distinct_pids=1 val1=21 val2=42 sum=63 map_sum=60 atomic=142" ]; then ok "phase-3 Track S (#193) & K7: real OS multi-process parallelism (fork+pipe+waitpid with distinct kernel PIDs) & hardware atomics (lock xaddq + spinlocks)"; else bad "phase-3 Track S (#193) & K7: real OS multi-process parallelism & hardware atomics"; cat "$ntmp/par_os.err" "$ntmp/par_os.out" 2>/dev/null; fi
 
+    # indexing, count and immediates on the kernel runtime, without an operating system underneath
+    LUME_BIN_DIR="$ntmp" ../../lume compile ../../tests/memory/freestanding_values_ok.src >"$ntmp/fsv.s" 2>"$ntmp/fsv.err"
+    "$ntmp/lasm" <"$ntmp/fsv.s" >"$ntmp/fsv.img" 2>>"$ntmp/fsv.err"
+    if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+        timeout 15s qemu-system-x86_64 -drive format=raw,file="$ntmp/fsv.img" -serial stdio -display none -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 2>/dev/null | tr -d '\r' >"$ntmp/fsv.out" || true
+        if [ "$(tr '\n' ',' <"$ntmp/fsv.out")" = "20116,0,8," ]; then ok "values: xs[i], s[i] and count on the freestanding runtime, in QEMU"; else bad "values: freestanding_values_ok.src"; head -5 "$ntmp/fsv.out" "$ntmp/fsv.err"; fi
+    else
+        skip "values: freestanding_values_ok.src (no qemu-system-x86_64)"
+    fi
     # 7. Stage 5 Systems & Kernels (#227 K0-K9 & #193 Bare-Metal SMP): Real Bare-Metal x86-64 `lume-os` SMP Kernel Image Booting in QEMU (`-smp 2`):
     LUME_BIN_DIR="$ntmp" ../../lume compile ../../examples/apps/lume_os/kernel_qemu.src >"$ntmp/kernel_qemu.s" 2>"$ntmp/kernel_qemu.err"
     _krn_syscalls=$(grep -c '^[[:space:]]*syscall$' "$ntmp/kernel_qemu.s" || true)

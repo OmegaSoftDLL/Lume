@@ -71,7 +71,14 @@ fn cpatlist2(p, pt, vs, env) = match vs
     Nil         => {ok: 0, env: env}
     Cons(v, vt) => cpatlist3(cpatmatch(p, v, env), pt, vt)
 fn cpatlist3(r, pt, vt) = if r.ok == 1 then cpatlist(pt, vt, r.env) else r
-fn cveq(a, b) = if a.kind != b.kind then 0 else if a.kind == "int" then (if a.i == b.i then 1 else 0) else if a.kind == "str" then (if a.s == b.s then 1 else 0) else if a.s == b.s and len(a.items) == len(b.items) then cveqlist(a.items, b.items) else 0
+fn cveq(a, b) = if a.kind != b.kind then 0 else if a.kind == "int" then (if a.i == b.i then 1 else 0) else if a.kind == "str" then (if a.s == b.s then 1 else 0) else if a.kind == "rec" then (if len(a.items) == len(b.items) then cveqrec(a.items, b.items) else 0) else if a.s == b.s and len(a.items) == len(b.items) then cveqlist(a.items, b.items) else 0
+## records compare by field, in any order, as they do at run time
+fn cveqrec(xs, ys) = match xs
+    Nil        => 1
+    Cons(h, t) => if cveqfield(h, ys) == 1 then cveqrec(t, ys) else 0
+fn cveqfield(h, ys) = match ys
+    Nil        => 0
+    Cons(y, r) => if y.s == h.s then cveq(h, y) else cveqfield(h, r)
 fn cveqlist(xs, ys) = match xs
     Nil          => 1
     Cons(h, t)   => cveqlist2(h, t, ys)
@@ -84,12 +91,21 @@ fn cif(rc, t, e2, env, ft, cd) = cif2(rc.v, rc.f, t, e2, env, ft, cd)
 fn cif2(cv, f, t, e2, env, ft, cd) = if cv.kind == "int" then (if cv.i != 0 then ceval(t, env, ft, f, cd) else ceval(e2, env, ft, f, cd)) else ctfail("lume: comptime error: `if` condition is not an integer at compile time\n")
 fn clet(nm, rv, b, env, ft, cd) = ceval(b, Cons({k: nm, v: rv.v}, env), ft, rv.f, cd)
 fn cevalvar(nm, env) = match env
-    Nil        => ctfail("lume: comptime error: free variable '" + nm + "' is not bound by a comptime let-in or function parameter\n")
+    Nil        => if nm == "true" then cv_int(1) else if nm == "false" then cv_int(0) else ctfail("lume: comptime error: free variable '" + nm + "' is not bound by a comptime let-in or function parameter\n")
     Cons(h, t) => if h.k == nm then h.v else cevalvar(nm, t)
 fn cevalbin(op, a, b) = if op == "==" and a.kind == b.kind then cv_int(cveq(a, b)) else if op == "!=" and a.kind == b.kind then cv_int(if cveq(a, b) == 1 then 0 else 1) else if a.kind == "int" and b.kind == "int" then cevalii(op, a.i, b.i) else if op == "+" and a.kind == "str" and b.kind == "str" then cv_str(a.s + b.s) else ctfail("lume: comptime error: operator '" + op + "' is not defined for these comptime value types\n")
-fn cevalii(op, x, y) = if op == "+" then cv_int(x + y) else if op == "-" then cv_int(x - y) else if op == "*" then cv_int(x * y) else if op == "/" then cevaldiv(x, y) else if op == "%" then cevalmod(x, y) else if op == "==" then cv_int(x == y) else if op == "!=" then cv_int(x != y) else if op == "<" then cv_int(x < y) else if op == ">" then cv_int(x > y) else if op == "<=" then cv_int(x <= y) else if op == ">=" then cv_int(x >= y) else if op == "and" then cv_int(x != 0 and y != 0) else if op == "or" then cv_int(x != 0 or y != 0) else ctfail("lume: comptime error: unknown operator '" + op + "' at compile time\n")
-fn cevaldiv(x, y) = if y == 0 then ctfail("lume: comptime error: division by zero at compile time\n") else if y == 0 - 1 then cv_int(0 - x) else cv_int(x / y)
-fn cevalmod(x, y) = if y == 0 then ctfail("lume: comptime error: modulo by zero at compile time\n") else if y == 0 - 1 then cv_int(0) else cv_int(x % y)
+## comptime integers are the same 64 bits as run-time ones. These test before computing: the compiler's own `+`
+## would stop the compiler, with no code and no span, on what is the program's error.
+fn cimax() = 9223372036854775807
+fn cimin() = 0 - 9223372036854775807 - 1
+fn cadd_ovf(x, y) = (y > 0 and x > cimax() - y) or (y < 0 and x < cimin() - y)
+fn csub_ovf(x, y) = (y < 0 and x > cimax() + y) or (y > 0 and x < cimin() + y)
+fn cmul_ovf(x, y) = if x == 0 or y == 0 then false else if y == 0 - 1 then x == cimin() else if x == 0 - 1 then y == cimin() else if y > 0 then x > cimax() / y or x < cimin() / y else x < cimax() / y or x > cimin() / y
+fn cdiv_ovf(x, y) = x == cimin() and y == 0 - 1
+fn covf() = ctfail("lume: comptime error [C1001]: integer overflow at compile time\n")
+fn cevalii(op, x, y) = if op == "+" then (if cadd_ovf(x, y) then covf() else cv_int(x + y)) else if op == "-" then (if csub_ovf(x, y) then covf() else cv_int(x - y)) else if op == "*" then (if cmul_ovf(x, y) then covf() else cv_int(x * y)) else if op == "+%" or op == "-%" or op == "*%" then ctfail("lume: comptime error: wrapping arithmetic is not evaluated at compile time\n") else if op == "/" then cevaldiv(x, y) else if op == "%" then cevalmod(x, y) else if op == "==" then cv_int(x == y) else if op == "!=" then cv_int(x != y) else if op == "<" then cv_int(x < y) else if op == ">" then cv_int(x > y) else if op == "<=" then cv_int(x <= y) else if op == ">=" then cv_int(x >= y) else if op == "and" then cv_int(x != 0 and y != 0) else if op == "or" then cv_int(x != 0 or y != 0) else ctfail("lume: comptime error: unknown operator '" + op + "' at compile time\n")
+fn cevaldiv(x, y) = if y == 0 then ctfail("lume: comptime error: division by zero at compile time\n") else if cdiv_ovf(x, y) then covf() else if y == 0 - 1 then cv_int(0 - x) else cv_int(x / y)
+fn cevalmod(x, y) = if y == 0 then ctfail("lume: comptime error: modulo by zero at compile time\n") else if cdiv_ovf(x, y) then covf() else if y == 0 - 1 then cv_int(0) else cv_int(x % y)
 fn ctnoderec(xs) = match xs
     Nil        => Nil
     Cons(h, t) => Cons({key: h.s, val: ctnode(cvhd(h.items))}, ctnoderec(t))
@@ -129,7 +145,7 @@ fn cqlist(xs, qenv, env, ft, f, cd) = match xs
     Cons(h, t) => cqlist2(cquasiquote(h, qenv, env, ft, f, cd), t, qenv, env, ft, cd)
 fn cqlist2(rh, t, qenv, env, ft, cd) = cqlist3(rh.v, cqlist(t, qenv, env, ft, rh.f, cd))
 fn cqlist3(hv, rt) = cr(cv_ctor("Cons", Cons(hv, Cons(rt.v, Nil))), rt.f)
-fn isvalidbinop(op) = op == "+" or op == "-" or op == "*" or op == "/" or op == "%" or op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or"
+fn isvalidbinop(op) = op == "+" or op == "-" or op == "*" or op == "+%" or op == "-%" or op == "*%" or op == "/" or op == "%" or op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or"
 fn cunreify(cv) = if cv.kind != "ctor" then ctfail("lume: comptime error: splice expects an AST constructor value (Num, Str, Var, Bin, If, LetIn, Call)\n") else cunreifyctor(cv.s, cv.items)
 fn cunreifyctor(tag, xs) = if tag == "Num" and len(xs) == 1 and (cvhd(xs)).kind == "int" then Num((cvhd(xs)).i) else if tag == "Str" and len(xs) == 1 and (cvhd(xs)).kind == "str" then Str((cvhd(xs)).s) else if tag == "Var" and len(xs) == 1 and (cvhd(xs)).kind == "str" and count((cvhd(xs)).s) > 0 then Var((cvhd(xs)).s) else if tag == "Bin" and len(xs) == 3 and (cvhd(xs)).kind == "str" and isvalidbinop((cvhd(xs)).s) then Bin((cvhd(xs)).s, cunreify(cvhd(cvtl(xs))), cunreify(cvhd(cvtl(cvtl(xs))))) else if tag == "If" and len(xs) == 3 then If(cunreify(cvhd(xs)), cunreify(cvhd(cvtl(xs))), cunreify(cvhd(cvtl(cvtl(xs))))) else if tag == "LetIn" and len(xs) == 3 and (cvhd(xs)).kind == "str" and count((cvhd(xs)).s) > 0 then LetIn((cvhd(xs)).s, cunreify(cvhd(cvtl(xs))), cunreify(cvhd(cvtl(cvtl(xs))))) else if tag == "Call" and len(xs) == 2 and (cvhd(xs)).kind == "str" and count((cvhd(xs)).s) > 0 then Call((cvhd(xs)).s, cunreifylist(cvhd(cvtl(xs)))) else ctfail("lume: comptime error: invalid AST node '" + tag + "' in splice\n")
 fn cunreifylist(cv) = if cv.kind != "ctor" then ctfail("lume: comptime error: Call arguments in splice must be a Cons/Nil list of AST nodes\n") else if cv.s == "Nil" and len(cv.items) == 0 then Nil else if cv.s == "Cons" and len(cv.items) == 2 then Cons(cunreify(cvhd(cv.items)), cunreifylist(cvhd(cvtl(cv.items)))) else ctfail("lume: comptime error: Call arguments in splice must be a Cons/Nil list of AST nodes\n")
@@ -232,6 +248,9 @@ fn chygarms(xs, renv, n) = match xs
     Cons(h, t) => chygarms2(h.pat, chyg(h.body, renv, n), t, renv)
 fn chygarms2(p, rb, t, renv) = chygarms3(p, rb.node, chygarms(t, renv, rb.n))
 fn chygarms3(p, bn, rt) = {items: Cons({pat: p, body: bn}, rt.items), n: rt.n}
+fn cfoldhops(hs, ft) = match hs
+    Nil        => Nil
+    Cons(h, t) => Cons({op: h.op, ps: h.ps, body: cfolde(h.body, ft)}, cfoldhops(t, ft))
 fn cfold(own prog) = let ft = cbuildft(prog) in cfoldstmts(own prog, ft)
 fn cbuildft(prog) = match prog
     Nil        => Nil
@@ -336,6 +355,7 @@ fn cfolde(e, ft) = match e
     DeferE(c, b)    => DeferE(cfolde(c, ft), cfolde(b, ft))
     ErrDeferE(c, b) => ErrDeferE(cfolde(c, ft), cfolde(b, ft))
     WithAllocE(a, b) => WithAllocE(cfolde(a, ft), cfolde(b, ft))
+    WithHandlerE(en, hs, b) => WithHandlerE(en, cfoldhops(hs, ft), cfolde(b, ft))
     ScopeE(snm, b)  => ScopeE(snm, cfolde(b, ft))
     SpawnE(i)       => SpawnE(cfolde(i, ft))
     AwaitE(i)       => AwaitE(cfolde(i, ft))
@@ -396,6 +416,7 @@ fn geexpr(own e, gt) = match e
     DeferE(c, b)    => DeferE(geexpr(own c, gt), geexpr(own b, gt))
     ErrDeferE(c, b) => ErrDeferE(geexpr(own c, gt), geexpr(own b, gt))
     WithAllocE(a, b) => WithAllocE(geexpr(own a, gt), geexpr(own b, gt))
+    WithHandlerE(en, hs, b) => WithHandlerE(en, gehops(own hs, gt), geexpr(own b, gt))
     ScopeE(snm, b)  => ScopeE(snm, geexpr(own b, gt))
     SpawnE(i)       => SpawnE(geexpr(own i, gt))
     AwaitE(i)       => AwaitE(geexpr(own i, gt))
@@ -410,6 +431,9 @@ fn geargs(own xs, gt) = match xs
 fn gerec(own xs, gt) = match xs
     Nil        => Nil
     Cons(h, t) => Cons({key: h.key, val: geexpr(own h.val, gt)}, gerec(own t, gt))
+fn gehops(own xs, gt) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons({op: h.op, ps: h.ps, body: geexpr(own h.body, gt)}, gehops(own t, gt))
 fn gearms(own xs, gt) = match xs
     Nil        => Nil
     Cons(h, t) => Cons({pat: h.pat, body: geexpr(own h.body, gt)}, gearms(own t, gt))

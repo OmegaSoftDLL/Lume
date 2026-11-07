@@ -66,15 +66,15 @@ To anchor the soundness of the core calculus, the operational semantics and type
 
 ---
 
-## 3. Memory Model: Ownership, Perceus In-Place Reuse, and Scoped Arenas
+## 3. Memory Model: Ownership, a Collected Heap, Perceus Reuse, and Scoped Arenas
 
-Systems languages typically pick one of two extremes: tracing garbage collection with non-deterministic tail latency, or pervasive lifetime annotations across every function signature.
+Lume separates two questions. Who may use a value, and when, is decided at compile time. Reclaiming memory is the runtime's job: the hosted runtime has a non-moving mark-sweep collector whose pause is proportional to the live heap, so annotations are never required for a program to run in bounded memory (`docs/38-memory-management.md`).
 
-Lume combines three deterministic mechanisms:
+On top of that collector, Lume adds three mechanisms:
 
-1. **Linear Ownership and Borrow Checking (`[O0001]`–`[O0030]`):** External resources—file descriptors (`std.fs.with_file`), network sockets, and hardware capabilities (`cap[Page]`, `cap[Port]`, `cap[Irq]`)—are tracked linearly. Using a handle after close, or failing to close it on every control-flow path, is rejected at compile time.
-2. **Perceus-Style Functional Reuse (`__perceus_reuse_1/2`) & Small-Int Caching:** When pattern matching destructures an algebraic data type whose reference count is provably unique at that program point, the compiler reuses the existing allocation cell in place for the newly constructed value. Combined with a static cache for integers in `[-1024..1024]` and direct self-tail-call jumps (`.Ltail_<fn>`), functional transformations run with near-zero allocation overhead.
-3. **Lexically Scoped Arenas (`std.arena`) and Hard Heap Caps (`LUME_HEAP_CAP`):** Batch workloads can allocate inside scoped arenas (`arena_new`, `arena_enter`, `arena_reset`, `arena_destroy`). To preserve referential transparency, the effect checker rejects arena mutations inside `/ pure` functions (`[E0200]`), and `--memory` reports exact child peak RSS (`os_self_maxrss_kb`).
+1. **Linear Ownership and Borrow Checking (`[O0001]`–`[O0030]`):** A move invalidates every binding that can observe the value, and a borrow lasts until its last use. A `resource type` value held by a `let` is linear: using it after it is consumed, or leaving it unconsumed on any control-flow path, is rejected at compile time (`[O0001]`, `[O0004]`). Conflicts with a live borrow are `[O0013]`, and a capability such as `cap[Page]` cannot be mapped twice.
+2. **Perceus-Style Functional Reuse (`__perceus_reuse_1/2`) & Small-Int Caching:** When pattern matching destructures a value that every call site provably passes as unique, the compiler reuses the existing cell in place for the newly constructed value; when uniqueness cannot be proven it allocates, which is always correct. Combined with a static cache for integers in `[-1..1024]` and direct self-tail-call jumps (`.Ltail_<fn>`), proven functional transformations run with near-zero allocation overhead.
+3. **Lexically Scoped Arenas (`std.arena`) and Hard Heap Caps (`LUME_HEAP_CAP`):** Batch workloads can allocate inside scoped arenas (`arena_new`, `arena_alloc`, `arena_reset`, `arena_destroy`). To preserve referential transparency, the effect checker rejects arena mutations inside `/ pure` functions (`[E0200]`), and `--memory` reports exact child peak RSS (`os_self_maxrss_kb`).
 
 ---
 

@@ -200,15 +200,21 @@ fn man_en_effects() = "# CHAPTER 5: ALGEBRAIC EFFECTS, DETERMINISTIC MEMORY, ARE
 "  global arena mutation; violations fail closed with `[E0200]`.\n" +
 "- Custom effects are declared with `effect Name " + man_br(" fn op(...) -> T ") + "` and handled via\n" +
 "  `handle expr with " + man_br(" ... ") + "`.\n\n" +
-"## 5.2 Deterministic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)\n" +
-"- No stop-the-world GC pauses! Lume combines Perceus compile-time reference reuse,\n" +
+"## 5.2 Automatic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)\n" +
+"- Lume collects garbage (a mark-sweep pause proportional to the live heap) and avoids heap work\n" +
+"  where it can prove it safe: Perceus reuse for provably unique values,\n" +
 "  Escape Analysis & Scalar Replacement of Aggregates (`lsra_expr`: non-escaping\n" +
 "  `let r = " + man_br("k1: v1, ...") + " in body` records are lowered directly into `%rbp` stack\n" +
-"  slots `_sra_<r>_<k>` with 0 heap `mkrec`/`recget` allocations), small-integer\n" +
-"  caching (`[-1024..1024]`), self-tail-call `jmp`, and O(1) bump arenas.\n" +
+"  slots `_sra_<r>_<k>` with 0 heap allocations), self-tail-call `jmp`, and O(1) arenas.\n" +
+"- Value words: an integer of 63 bits and a string of at most 7 bytes live in one machine word and\n" +
+"  never reach the heap; `int` still holds the full 64-bit range. A constructor costs 8 bytes plus its\n" +
+"  fields, a record 8 bytes plus its values, and a constructor without fields is one static cell.\n" +
 "- Builtins & `use arena`:\n" +
 "  - `let a = arena_new(65536)`   Create a scoped region arena\n" +
-"  - `arena_enter(a)` / `arena_leave(a)` / `arena_reset(a)` / `arena_destroy(a)`\n" +
+"  - `mem_pack(s)` / `mem_unpack(b)`   Compress cold data (LZ4 block format, corrupt input stops)\n" +
+"  - `arena_freeze(a)` / `arena_thaw(a)`   Compress an arena; a frozen page returns on first touch\n" +
+"  - `arena_mark_secret(a)`, `@secret fn`   Secrets never reach the compactor ([C0009])\n" +
+"  - `arena_reset(a)` / `arena_destroy(a)`\n" +
 "  - `heap_stats()`               Query live heap allocations and bytes\n" +
 "  - `lume run --memory <file.src>` Measure peak RSS memory in KB\n\n" +
 "## 5.3 Tamper-Evident E-Capsules (`std.capsule` & `lume capsule`)\n" +
@@ -514,6 +520,7 @@ fn man_en_errors() = "# CHAPTER 10: COMPILER DIAGNOSTIC CODES & HOW TO FIX THEM\
 "|-----------|----------------------|----------------------|\n" +
 "| `[P0002]` | Parser / Syntax      | Unexpected token or nested unbraced `match`. Move `match` to top-level helper `fn f(x) = match x ...` or wrap in braces `match x " + man_br(" ... ") + "`, and verify pure LF (`\\n`) line endings. |\n" +
 "| `[R0200]` | Name Resolution      | Call to undefined function or variable. Check spelling or add `use <module>` at top of file. |\n" +
+"| `[R0201]` | Name Resolution      | A function reuses the name of a runtime routine (`count`, `at`, ...) or a prefix reserved for it (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Rename it. |\n" +
 "| `[T0300]` | Type / Tensor Shape  | Type mismatch, currency mismatch (`money[BRL]` vs `money[USD]`), or tensor shape mismatch. |\n" +
 "| `[E0200]` | Algebraic Effects    | Impure operation (`io`, `fs`, `net`, `arena_new`, `embed`) called inside a `/ pure` function. Remove `/ pure` or add the required effect to the function signature. |\n" +
 "| `[O0001]` | Ownership / Borrow   | Use-after-move, double-close of file handle, or conflicting mutable borrow (`mut`). Clone or restructure ownership scope. |\n" +
@@ -529,6 +536,7 @@ fn man_en_errors() = "# CHAPTER 10: COMPILER DIAGNOSTIC CODES & HOW TO FIX THEM\
 "| `[Q0001]` | Quantum Linearity    | Non-linear `Qubit` duplication (No-Cloning violation) or reuse of measured qubit. Ensure each `Qubit` wire is consumed linearly. |\n" +
 "| `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\\dagger$ (`q_silq_qfree_verify`) before returning. |\n" +
 "| `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |\n" +
+"| `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |\n" +
 "| `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\\n`, `\\r`, `\\t`, `\\b`, `\\f`, `\\0`, `\\'`, `\\\"`, `\\\\`, `\\{`, `\\}`, `\\$`). |\n" +
 "| `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |\n"
 
@@ -717,15 +725,25 @@ fn man_pt_effects() = "# CAPITULO 5: EFEITOS ALGEBRICOS, MEMORIA DETERMINISTICA 
 "## 5.1 Efeitos Algebricos (`/ pure`, `/ " + man_br("io, fs, net") + "`)\n" +
 "- Funcoes marcadas com `/ pure` sao matematicamente puras: nao podem acessar disco,\n" +
 "  rede, processos ou mutar estado externo. Qualquer violacao gera `[E0200]`.\n\n" +
-"## 5.2 Memoria sem Pausas de Garbage Collector, SRA Zero-Heap e Arenas (`std.arena`)\n" +
-"A Lume usa reuso estatico Perceus + Escape Analysis / Scalar Replacement of Aggregates\n" +
-"(`lsra_expr`: registros locais `let r = " + man_br("k1: v1, ...") + " in corpo` que nao escapam sao\n" +
+"## 5.2 Memoria Automatica, SRA Zero-Heap e Arenas (`std.arena`)\n" +
+"A Lume recupera memoria sozinha: o runtime nativo tem um coletor mark-sweep nao movel que\n" +
+"devolve memoria ao sistema. A pausa e proporcional ao heap vivo, nao ao lixo; um programa\n" +
+"abaixo de 64 MiB nunca coleta. `own`, borrows e `resource type` sao regras de compilacao e nao\n" +
+"dependem do coletor (`docs/38-memory-management.md`). Ele nao substitui as otimizacoes abaixo:\n" +
+"reuso estatico Perceus onde a unicidade e provada + Escape Analysis / Scalar Replacement of\n" +
+"Aggregates (`lsra_expr`: registros locais `let r = " + man_br("k1: v1, ...") + " in corpo` que nao escapam sao\n" +
 "alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de heap) +\n" +
-"cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionais `O(1)`:\n" +
+"palavras de valor (inteiro de 63 bits e string de ate 7 bytes dentro da palavra, sem heap; `int`\n" +
+"continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:\n" +
 "- `let a = arena_new(65536)`   Cria uma arena de 64 KB\n" +
-"- `arena_enter(a)` / `arena_leave(a)` / `arena_reset(a)` / `arena_destroy(a)`\n" +
+"- `mem_pack(s)` / `mem_unpack(b)`   Comprime dados frios (formato de bloco LZ4; dado corrompido para)\n" +
+"- `arena_freeze(a)` / `arena_thaw(a)`   Comprime uma arena; a pagina volta no primeiro toque\n" +
+"- `arena_mark_secret(a)`, `@secret fn`   Segredos nunca chegam ao compactador ([C0009])\n" +
+"- `arena_reset(a)` / `arena_destroy(a)`\n" +
 "- `heap_stats()`               Retorna estatisticas do heap em tempo real\n" +
-"- `lume run --memory <arq.src>` Mede o pico de memoria fisica (RSS em KB)\n\n" +
+"- `gc_collect()` / `gc_count()` Forca uma coleta / conta as coletas\n" +
+"- `lume run --memory <arq.src>` Mede o pico de memoria fisica (RSS em KB)\n" +
+"- `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>` Controlam o heap\n\n" +
 "## 5.3 E-Capsules Reprodutiveis (`std.capsule`)\n" +
 "- `lume capsule seal <arq.src> -o <saida.lcaps>` Sela codigo, entradas, saidas e SHA-256.\n" +
 "- `lume capsule replay <saida.lcaps>`            Reproduz e audita a execucao selada.\n"
@@ -1018,6 +1036,7 @@ fn man_pt_errors() = "# CAPITULO 10: TABELA DE CODIGOS DE ERRO E COMO CORRIGIR\n
 "|-----------|----------------------|-----------------------|\n" +
 "| `[P0002]` | Sintaxe / Parser     | Token inesperado, `let` solto no topo de `.src`, ou `match` sem chaves aninhado. Mova o `match` para `fn aux(x) = match x ...` ou use `match x " + man_br(" ... ") + "`, e garanta quebras de linha LF (`\\n`). |\n" +
 "| `[R0200]` | Escopo / Nomes       | Funcao ou variavel nao declarada. Verifique a grafia ou adicione `use <modulo>` no topo do arquivo. |\n" +
+"| `[R0201]` | Escopo / Nomes       | Funcao com o nome de uma rotina do runtime (`count`, `at`, ...) ou com um prefixo reservado a ele (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Renomeie. |\n" +
 "| `[T0300]` | Tipos / Tensores     | Tipos incompativeis, soma de moedas distintas (`money[BRL]` + `money[USD]`) ou dimensoes invalidas em `tensor[...]`. |\n" +
 "| `[E0200]` | Efeitos Algebricos   | Funcao marcada com `/ pure` tentou fazer I/O, rede, `arena_new` ou `embed`. Remova `/ pure` ou declare o efeito. |\n" +
 "| `[O0001]` | Ownership / Borrow   | Uso de valor apos transferencia de posse (`move`) ou uso de arquivo ja fechado. |\n" +
@@ -1033,6 +1052,7 @@ fn man_pt_errors() = "# CAPITULO 10: TABELA DE CODIGOS DE ERRO E COMO CORRIGIR\n
 "| `[Q0001]` | Linearidade Quantica | Violacao de `No-Cloning` (duplicacao de `Qubit`) ou reuso de qubit medido. Consuma cada fio `Qubit` linearmente. |\n" +
 "| `[Q0002]` | Uncompute `qfree`    | Fio ancilla nao descomputado em funcao `qfree` (`anc_leaked > 0`). Aplique o adjunto $U^\\dagger$ (`q_silq_qfree_verify`) antes de retornar. |\n" +
 "| `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |\n" +
+"| `[L0010]` | Ligacao              | Um simbolo definido duas vezes na mesma imagem, o que mandaria chamadas para a rotina errada. |\n" +
 "| `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\\n`, `\\r`, `\\t`, `\\b`, `\\f`, `\\0`, `\\'`, `\\\"`, `\\\\`, `\\{`, `\\}`, `\\$`). |\n" +
 "| `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |\n"
 

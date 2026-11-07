@@ -89,7 +89,7 @@ fn skipatparen1(ts, d) = if d <= 0 then ts else if isnil(ts) == 1 then Nil else 
 fn skipatparen(ts) = if headtext(ts) == "(" then skipatparen1(droponce(ts), 1) else ts
 fn parseboundval(ts) = if headtext(ts) != "(" then 0 else let t1 = droponce(ts) in if headtext(droponce(t1)) == ":" then toint(headtext(droponce(droponce(t1)))) else toint(headtext(t1))
 fn progfnwcet(wcet, fnm, r) = if wcet > 0 then Cons(WcetSig(fnm, wcet), progfn(r)) else progfn(r)
-fn parseattrs(ts, freef, wcet) = if headtext(ts) == "@" then (let t1 = droponce(ts) in let anm = headtext(t1) in let t2 = droponce(t1) in if anm == "freestanding" then parseattrs(skipatparen(t2), freef + 1, wcet) else if anm == "interrupt" then parseattrs(skipatparen(t2), freef + 16, wcet) else if anm == "export" then parseattrs(skipatparen(t2), if (freef / 32) % 2 == 0 then freef + 32 else freef, wcet) else if anm == "protect" then parseattrs(skipatparen(t2), freef + 64, wcet) else if anm == "bound" then parseattrs(skipatparen(t2), freef, parseboundval(t2)) else parseattrs(skipatparen(t2), freef, wcet)) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "extern" then progextern(droponce(droponce(ts)), 1) else if headtext(ts) == "extern" then progextern(droponce(ts), 0) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "fn" then let ft = droponce(droponce(ts)) in progfnwcet(wcet, headtext(ft), parsefnp(ft, 1, freef)) else if headtext(ts) == "fn" then let ft = droponce(ts) in progfnwcet(wcet, headtext(ft), parsefnp(ft, if (freef / 32) % 2 == 1 then 1 else 0, freef)) else parseprog(ts)
+fn parseattrs(ts, freef, wcet) = if headtext(ts) == "@" then (let t1 = droponce(ts) in let anm = headtext(t1) in let t2 = droponce(t1) in if anm == "freestanding" then parseattrs(skipatparen(t2), freef + 1, wcet) else if anm == "interrupt" then parseattrs(skipatparen(t2), freef + 16, wcet) else if anm == "export" then parseattrs(skipatparen(t2), if (freef / 32) % 2 == 0 then freef + 32 else freef, wcet) else if anm == "protect" then parseattrs(skipatparen(t2), freef + 64, wcet) else if anm == "secret" then parseattrs(skipatparen(t2), freef + 128, wcet) else if anm == "bound" then parseattrs(skipatparen(t2), freef, parseboundval(t2)) else if anm == "overflow" then ctfail("lume: parse error [P0002]: '@overflow' is not supported; write the wrapping operators '+%', '-%' or '*%' where wrapping is meant\n") else parseattrs(skipatparen(t2), freef, wcet)) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "extern" then progextern(droponce(droponce(ts)), 1) else if headtext(ts) == "extern" then progextern(droponce(ts), 0) else if headtext(ts) == "pub" and headtext(droponce(ts)) == "fn" then let ft = droponce(droponce(ts)) in progfnwcet(wcet, headtext(ft), parsefnp(ft, 1, freef)) else if headtext(ts) == "fn" then let ft = droponce(ts) in progfnwcet(wcet, headtext(ft), parsefnp(ft, if (freef / 32) % 2 == 1 then 1 else 0, freef)) else parseprog(ts)
 fn progfree(ts) = if headtext(ts) == "pub" then progfn(parsefnp(droponce(droponce(ts)), 1, 1)) else progfn(parsefnp(droponce(ts), 0, 1))
 fn progat(t) = if headtext(t) == "gc" then progtyped("gc", parsetype(droponce(droponce(t)))) else if headtext(t) == "soa" and headtext(droponce(t)) == "type" then progtyped("soa", parsetype(droponce(droponce(t)))) else if headtext(t) == "capability" or headtext(t) == "grant" then parsecapat(t) else if headtext(t) == "link" or headtext(t) == "need" then parselinkat(t) else parseattrs(Cons({kind: "op", text: "@", col: 0, line: 1}, t), 0, 0)
 fn progextern(t, pubf) = if headtext(t) == "llm" and headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), pubf, 4)) else if headtext(droponce(t)) == "fn" then progfn(parsefnp(droponce(droponce(t)), pubf, 32)) else if headtext(t) == "fn" then progfn(parsefnp(droponce(t), pubf, 32)) else progfn(parsefnp(droponce(t), pubf, 4))
@@ -103,7 +103,7 @@ fn parseprog(ts) = match ts
 
 ## --- ergonomic AST sugar expansion: top-level `const` / `let` and `{ s with field: val }` ---
 fn has_rec_with_e(e) = match e
-    Call(nm, args)         => if nm == "__lume_rec_with" then 1 else has_rec_with_el(args)
+    Call(nm, args)         => if nm == "__lume_rec_with" or nf_tyapp(nm) then 1 else has_rec_with_el(args)
     Bin(op, a, b)          => if has_rec_with_e(a) == 1 then 1 else has_rec_with_e(b)
     If(c, t, e2)           => if has_rec_with_e(c) == 1 then 1 else if has_rec_with_e(t) == 1 then 1 else has_rec_with_e(e2)
     LetIn(nm, v, b)        => if has_rec_with_e(v) == 1 then 1 else has_rec_with_e(b)
@@ -119,11 +119,15 @@ fn has_rec_with_e(e) = match e
     DeferE(c, b)           => if has_rec_with_e(c) == 1 then 1 else has_rec_with_e(b)
     ErrDeferE(c, b)        => if has_rec_with_e(c) == 1 then 1 else has_rec_with_e(b)
     WithAllocE(a, b)       => if has_rec_with_e(a) == 1 then 1 else has_rec_with_e(b)
-    WithHandlerE(e0, h, b) => has_rec_with_e(b)
+    WithHandlerE(e0, h, b) => if has_rec_with_hops(h) == 1 then 1 else has_rec_with_e(b)
     ScopeE(s, b)           => has_rec_with_e(b)
     SpawnE(x)              => has_rec_with_e(x)
+    AwaitE(x)              => has_rec_with_e(x)
     CT(x)                  => has_rec_with_e(x)
     _                      => 0
+fn has_rec_with_hops(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if has_rec_with_e(h.body) == 1 then 1 else has_rec_with_hops(t)
 fn has_rec_with_el(xs) = match xs
     Nil        => 0
     Cons(h, t) => if has_rec_with_e(h) == 1 then 1 else has_rec_with_el(t)
@@ -137,6 +141,8 @@ fn has_prog_sugar_s(s0) = match s0
     ConstDecl(nm, v)          => 1
     Fn(nm, ps, body)          => has_rec_with_e(body)
     VContractSig(nm, p, r, e) => if has_rec_with_el(r) == 1 then 1 else has_rec_with_el(e)
+    Print(v)                  => has_rec_with_e(v)
+    ExprS(v)                  => has_rec_with_e(v)
     VLawDecl(nm, ps, b)       => has_rec_with_e(b)
     Print(v)                  => has_rec_with_e(v)
     ExprS(v)                  => has_rec_with_e(v)
@@ -197,9 +203,6 @@ fn ps_lookup_rec(rnm, recs) = match recs
 fn ps_all_keys_in(upds, fnames) = match upds
     Nil        => 1
     Cons(h, t) => if ps_has_str(h.key, fnames) == 1 then ps_all_keys_in(t, fnames) else 0
-fn ps_match_rec_by_keys(upds, recs) = match recs
-    Nil        => {rname: "", fnames: Nil}
-    Cons(h, t) => if isnil(upds) == 0 and ps_all_keys_in(upds, h.fnames) == 1 then h else ps_match_rec_by_keys(upds, t)
 fn ps_lrec_lookup(nm, lrecs) = match lrecs
     Nil        => {rname: "", fnames: Nil}
     Cons(h, t) => if h.nm == nm then {rname: h.rname, fnames: h.fnames} else ps_lrec_lookup(nm, t)
@@ -247,19 +250,28 @@ fn ps_pat_bind_list(ps) = match ps
     Nil        => Nil
     Cons(h, t) => app(ps_pat_binds(h), ps_pat_bind_list(t))
 fn ps_expand_rec_with(args, ctx, shadow, lrecs) = match args
-    Cons(tn_e, Cons(base_e, Cons(upd_e, r))) => let tnm = ps_str_val(tn_e) in let b2 = ps_exp_e(base_e, ctx, shadow, lrecs) in let u2 = ps_exp_recl(ps_rec_items(upd_e), ctx, shadow, lrecs) in let bnm = ps_var_name(b2) in let lr = if bnm != "" then ps_lrec_lookup(bnm, lrecs) else {rname: "", fnames: Nil} in let rnm = if tnm != "" then tnm else lr.rname in let fns1 = if tnm != "" then ps_lookup_rec(tnm, ctx.recs) else lr.fnames in let mr = if isnil(fns1) == 1 then ps_match_rec_by_keys(u2, ctx.recs) else {rname: rnm, fnames: fns1} in if isnil(mr.fnames) == 1 then Rec(u2) else if bnm != "" then (let m = ps_build_merged(bnm, mr.fnames, u2) in if mr.rname != "" then RecT(mr.rname, m) else Rec(m)) else (let m = ps_build_merged("_ru", mr.fnames, u2) in LetIn("_ru", b2, if mr.rname != "" then RecT(mr.rname, m) else Rec(m)))
+    Cons(tn_e, Cons(base_e, Cons(upd_e, r))) => let tnm = ps_str_val(tn_e) in let b2 = ps_exp_e(base_e, ctx, shadow, lrecs) in let u2 = ps_exp_recl(ps_rec_items(upd_e), ctx, shadow, lrecs) in let bnm = ps_var_name(b2) in let lr = if bnm != "" then ps_lrec_lookup(bnm, lrecs) else {rname: "", fnames: Nil} in let rnm = if tnm != "" then tnm else lr.rname in let fns1 = if tnm != "" then ps_lookup_rec(tnm, ctx.recs) else lr.fnames in let mr = {rname: rnm, fnames: fns1} in if isnil(mr.fnames) == 1 then Call("__lume_rec_update", Cons(b2, Cons(Rec(u2), Nil))) else if bnm != "" then (let m = ps_build_merged(bnm, mr.fnames, u2) in if mr.rname != "" then RecT(mr.rname, m) else Rec(m)) else (let m = ps_build_merged("_ru", mr.fnames, u2) in LetIn("_ru", b2, if mr.rname != "" then RecT(mr.rname, m) else Rec(m)))
     _                                        => Num(0)
 fn ps_exp_var(nm, ctx, shadow) = if ps_has_str(nm, shadow) == 1 then Var(nm) else ps_exp_var2(nm, ps_const_lookup(nm, ctx.consts))
 fn ps_exp_var2(nm, m) = match m
     Cons(v, r) => v
     Nil        => Var(nm)
+## `name[e]` parses as a type application, because `list[int]` is a value when it is the comptime argument of a
+## generic. Scope decides: on a name that is bound here it is an index, and it has to become one before ownership
+## and Perceus read the program, or the use of `xs` would be invisible to them.
+fn ps_index_base(nm) = slice(nm, 7, count(nm))
+fn ps_const_known(m) = match m
+    Cons(v, r) => 1
+    Nil        => 0
+fn ps_is_index(nm, ctx, shadow) = if nf_tyapp(nm) == 0 then 0 else let b = ps_index_base(nm) in if nf_isctor(b) == 1 then 0 else if ps_has_str(b, shadow) == 1 then 1 else ps_const_known(ps_const_lookup(b, ctx.consts))
+fn ps_is_const_call(nm, ctx, shadow) = if ps_has_str(nm, shadow) == 1 then 0 else ps_const_known(ps_const_lookup(nm, ctx.consts))
 fn ps_exp_e(e, ctx, shadow, lrecs) = match e
     Var(nm)                => ps_exp_var(nm, ctx, shadow)
     Bin(op, a, b)          => Bin(op, ps_exp_e(a, ctx, shadow, lrecs), ps_exp_e(b, ctx, shadow, lrecs))
     If(c, t, e2)           => If(ps_exp_e(c, ctx, shadow, lrecs), ps_exp_e(t, ctx, shadow, lrecs), ps_exp_e(e2, ctx, shadow, lrecs))
     LetIn(nm, v, b)        => let v2 = ps_exp_e(v, ctx, shadow, lrecs) in let ri = ps_expr_rec_info(v2, ctx.recs) in let lr2 = if isnil(ri.fnames) == 0 then Cons({nm: nm, rname: ri.rname, fnames: ri.fnames}, lrecs) else lrecs in LetIn(nm, v2, ps_exp_e(b, ctx, Cons(nm, shadow), lr2))
     VarIn(nm, v, b)        => let v2 = ps_exp_e(v, ctx, shadow, lrecs) in let ri = ps_expr_rec_info(v2, ctx.recs) in let lr2 = if isnil(ri.fnames) == 0 then Cons({nm: nm, rname: ri.rname, fnames: ri.fnames}, lrecs) else lrecs in VarIn(nm, v2, ps_exp_e(b, ctx, Cons(nm, shadow), lr2))
-    Call(nm, args)         => if nm == "__lume_rec_with" then ps_expand_rec_with(args, ctx, shadow, lrecs) else Call(nm, ps_exp_el(args, ctx, shadow, lrecs))
+    Call(nm, args)         => if nm == "__lume_rec_with" then ps_expand_rec_with(args, ctx, shadow, lrecs) else if ps_is_index(nm, ctx, shadow) == 1 then Call("lidx", Cons(ps_exp_var(ps_index_base(nm), ctx, shadow), ps_exp_el(args, ctx, shadow, lrecs))) else if ps_is_const_call(nm, ctx, shadow) == 1 then Call("_call", Cons(ps_exp_var(nm, ctx, shadow), ps_exp_el(args, ctx, shadow, lrecs))) else Call(nm, ps_exp_el(args, ctx, shadow, lrecs))
     Rec(items)             => Rec(ps_exp_recl(items, ctx, shadow, lrecs))
     RecT(tn, items)        => RecT(tn, ps_exp_recl(items, ctx, shadow, lrecs))
     Field(o, nm)           => Field(ps_exp_e(o, ctx, shadow, lrecs), nm)
@@ -271,11 +283,15 @@ fn ps_exp_e(e, ctx, shadow, lrecs) = match e
     DeferE(c, b)           => DeferE(ps_exp_e(c, ctx, shadow, lrecs), ps_exp_e(b, ctx, shadow, lrecs))
     ErrDeferE(c, b)        => ErrDeferE(ps_exp_e(c, ctx, shadow, lrecs), ps_exp_e(b, ctx, shadow, lrecs))
     WithAllocE(a, b)       => WithAllocE(ps_exp_e(a, ctx, shadow, lrecs), ps_exp_e(b, ctx, shadow, lrecs))
-    WithHandlerE(e0, h, b) => WithHandlerE(e0, h, ps_exp_e(b, ctx, shadow, lrecs))
-    ScopeE(s, b)           => ScopeE(s, ps_exp_e(b, ctx, shadow, lrecs))
+    WithHandlerE(e0, h, b) => WithHandlerE(e0, ps_exp_hops(h, ctx, shadow, lrecs), ps_exp_e(b, ctx, shadow, lrecs))
+    ScopeE(s, b)           => ScopeE(s, ps_exp_e(b, ctx, Cons(s, shadow), lrecs))
     SpawnE(x)              => SpawnE(ps_exp_e(x, ctx, shadow, lrecs))
+    AwaitE(x)              => AwaitE(ps_exp_e(x, ctx, shadow, lrecs))
     CT(x)                  => CT(ps_exp_e(x, ctx, shadow, lrecs))
     _                      => e
+fn ps_exp_hops(xs, ctx, shadow, lrecs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons({op: h.op, ps: h.ps, body: ps_exp_e(h.body, ctx, app(h.ps, shadow), lrecs)}, ps_exp_hops(t, ctx, shadow, lrecs))
 fn ps_exp_el(xs, ctx, shadow, lrecs) = match xs
     Nil        => Nil
     Cons(h, t) => Cons(ps_exp_e(h, ctx, shadow, lrecs), ps_exp_el(t, ctx, shadow, lrecs))
@@ -285,14 +301,42 @@ fn ps_exp_recl(xs, ctx, shadow, lrecs) = match xs
 fn ps_exp_arms(xs, ctx, shadow, lrecs) = match xs
     Nil        => Nil
     Cons(h, t) => Cons({pat: h.pat, body: ps_exp_e(h.body, ctx, app(ps_pat_binds(h.pat), shadow), lrecs)}, ps_exp_arms(t, ctx, shadow, lrecs))
-fn ps_collect_consts1(s0, acc, recs, sigs) = match s0
-    ConstDecl(nm, v) => Cons({k: nm, v: ps_exp_e(v, {consts: acc, recs: recs, sigs: sigs}, Nil, Nil)}, acc)
+## A top-level `let` made of literals and constructors is a constant and is inlined. Anything else runs once, at
+## its statement: its value goes in a global slot, so a side effect never repeats per use. A kernel has no slot
+## table, and keeps the inlining.
+fn ps_pure_args(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if ps_pure_const(h) == 1 then ps_pure_args(t) else 0
+fn ps_pure_items(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if ps_pure_const(h.val) == 1 then ps_pure_items(t) else 0
+fn ps_pure_const(e) = match e
+    Num(n)          => 1
+    Str(v)          => 1
+    Var(x)          => 1
+    Bin(op, l, r)   => if ps_pure_const(l) == 1 then ps_pure_const(r) else 0
+    Rec(items)      => ps_pure_items(items)
+    RecT(tn, items) => ps_pure_items(items)
+    Call(nm, args)  => if isctor(nm) then ps_pure_args(args) else if nm == "__lume_global_get" then 1 else 0
+    _               => 0
+fn ps_is_freestanding(prog) = match prog
+    Nil        => 0
+    Cons(h, t) => (match h
+        OSig(nm, pubf, freef, pl, rty, fromp) => if freef % 2 == 1 then 1 else ps_is_freestanding(t)
+        _                                     => ps_is_freestanding(t))
+fn ps_global_slot(e, idx) = Call("__lume_global_get", Cons(Num(idx), Nil))
+fn ps_collect_consts1(s0, acc, recs, sigs, krn) = match s0
+    ConstDecl(nm, v) => let ev = ps_exp_e(v, {consts: acc, recs: recs, sigs: sigs}, Nil, Nil) in let keep = if krn == 1 or ps_pure_const(ev) == 1 then 1 else 0 in Cons({k: nm, v: if keep == 1 then ev else ps_global_slot(ev, len(acc)), slot: if keep == 1 then 0 - 1 else len(acc)}, acc)
     _                => acc
-fn ps_collect_consts(prog, acc, recs, sigs) = match prog
+fn ps_collect_consts(prog, acc, recs, sigs, krn) = match prog
     Nil        => acc
-    Cons(h, t) => ps_collect_consts(t, ps_collect_consts1(h, acc, recs, sigs), recs, sigs)
+    Cons(h, t) => ps_collect_consts(t, ps_collect_consts1(h, acc, recs, sigs, krn), recs, sigs, krn)
+fn ps_const_slot(nm, consts) = match consts
+    Nil        => 0 - 1
+    Cons(h, t) => if h.k == nm then h.slot else ps_const_slot(nm, t)
+fn ps_exp_const(nm, v, slot) = if slot < 0 then Fn(nm, Nil, v) else ExprS(Call("__lume_global_set", Cons(Num(slot), Cons(v, Nil))))
 fn ps_exp_stmt(s0, ctx) = match s0
-    ConstDecl(nm, v)          => Fn(nm, Nil, ps_exp_e(v, ctx, Nil, Nil))
+    ConstDecl(nm, v)          => ps_exp_const(nm, ps_exp_e(v, ctx, Nil, Nil), ps_const_slot(nm, ctx.consts))
     Fn(nm, ps, body)          => let lr = ps_fn_lrecs(nm, ctx.sigs, ctx.recs) in Fn(nm, ps, ps_exp_e(body, ctx, ps, lr))
     VContractSig(nm, p, r, e) => let lr = ps_fn_lrecs(nm, ctx.sigs, ctx.recs) in VContractSig(nm, p, ps_exp_el(r, ctx, p, lr), ps_exp_el(e, ctx, Cons("result", p), lr))
     VLawDecl(nm, ps, b)       => VLawDecl(nm, ps, ps_exp_e(b, ctx, ps, Nil))
@@ -303,7 +347,7 @@ fn ps_exp_stmt(s0, ctx) = match s0
 fn ps_exp_prog(prog, ctx) = match prog
     Nil        => Nil
     Cons(h, t) => Cons(ps_exp_stmt(h, ctx), ps_exp_prog(t, ctx))
-fn expand_prog_sugar(prog) = if has_prog_sugar(prog) == 0 then prog else let recs = ps_collect_recs(prog) in let sigs = ps_collect_sigs(prog) in let consts = ps_collect_consts(prog, Nil, recs, sigs) in ps_exp_prog(prog, {consts: consts, recs: recs, sigs: sigs})
+fn expand_prog_sugar(prog) = if has_prog_sugar(prog) == 0 then prog else let recs = ps_collect_recs(prog) in let sigs = ps_collect_sigs(prog) in let consts = ps_collect_consts(prog, Nil, recs, sigs, ps_is_freestanding(prog)) in ps_exp_prog(prog, {consts: consts, recs: recs, sigs: sigs})
 fn parseprogram(s) = expand_prog_sugar(parseprog(lex(s, 0)))
 
 ## --- parser: named type declarations (F1) -----------------------------------------------------------------
@@ -323,7 +367,8 @@ fn skiptypeparams(ts) = if headtext(ts) == "[" then skiptp1(droponce(ts), "]", 1
 fn parsetype(t) = parsetypebody(headtext(t), dropkw(skiptypeparams(droponce(t)), "="))
 fn parserefinety(nm, t) = let bty = TyName(headtext(t)) in let pr = expr(droponce(droponce(t))) in {node: TypeRefineS(nm, bty, pr.node), inv: Nil, rest: pr.rest}
 fn parserefinebrace(nm, t) = let t1 = droponce(t) in let bty = TyName(headtext(droponce(droponce(t1)))) in let pr = expr(dropkw(droponce(droponce(droponce(t1))), "|")) in {node: TypeRefineS(nm, bty, pr.node), inv: Nil, rest: skiprb(pr.rest)}
-fn parsetypebody(nm, t) = if headtext(t) == "record" or headtext(t) == "model" then parserecordty(nm, droponce(t)) else if headtext(t) == "{" and headtext(droponce(droponce(droponce(droponce(t))))) == "|" then parserefinebrace(nm, t) else if headtext(t) == "{" and headtext(droponce(droponce(t))) == ":" then parserecordty(nm, t) else if headtext(droponce(t)) == "where" then parserefinety(nm, t) else parseenumty(nm, dropkw(t, "enum"))
+fn parsetypebody(nm, t) = if headtext(t) == "record" or headtext(t) == "model" then parserecordty(nm, droponce(t)) else if headtext(t) == "{" and headtext(droponce(droponce(droponce(droponce(t))))) == "|" then parserefinebrace(nm, t) else if headtext(t) == "{" and headtext(droponce(droponce(t))) == ":" then parserecordty(nm, t) else if headtext(droponce(t)) == "where" then parserefinety(nm, t) else if isbasealias(t) == 1 then {node: TypeRefineS(nm, TyName(headtext(t)), Num(1)), inv: Nil, rest: droponce(t)} else parseenumty(nm, dropkw(t, "enum"))
+fn isbasealias(t) = if (headtext(t) == "int" or headtext(t) == "str" or headtext(t) == "bool") and headtext(droponce(t)) != "|" and headtext(droponce(t)) != "(" then 1 else 0
 fn parseenumty(nm, t) = let hb = if headtext(t) == "{" then 1 else 0 in parseenumty2(nm, hb, parsevariants(dropkw(dropkw(t, "{"), "|")))
 fn parseenumty2(nm, hb, vs) = {node: TypeS(nm, "enum", vs.items), inv: Nil, rest: if hb == 1 then skiprb(vs.rest) else vs.rest}
 fn parsevariants(ts) = parsevariant(headtext(ts), droponce(ts))

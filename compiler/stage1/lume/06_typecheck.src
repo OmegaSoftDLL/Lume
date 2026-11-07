@@ -68,7 +68,20 @@ fn tcoerce_expr(e, sigs) = match e
     LambdaE(ps, tys, rt, body) => LambdaE(ps, tys, rt, tcoerce_expr(body, sigs))
     AwaitE(inner) => AwaitE(tcoerce_expr(inner, sigs))
     ShardE(vnm, lo, hi, body) => ShardE(vnm, tcoerce_expr(lo, sigs), tcoerce_expr(hi, sigs), tcoerce_expr(body, sigs))
+    WithAllocE(a, b) => WithAllocE(tcoerce_expr(a, sigs), tcoerce_expr(b, sigs))
+    WithHandlerE(en, hs, b) => WithHandlerE(en, tcoerce_hops(hs, sigs), tcoerce_expr(b, sigs))
+    VarIn(nm, v, body) => VarIn(nm, tcoerce_expr(v, sigs), tcoerce_expr(body, sigs))
+    OwnE(inner) => OwnE(tcoerce_expr(inner, sigs))
+    MutE(inner) => MutE(tcoerce_expr(inner, sigs))
+    DeferE(c, b) => DeferE(tcoerce_expr(c, sigs), tcoerce_expr(b, sigs))
+    ErrDeferE(c, b) => ErrDeferE(tcoerce_expr(c, sigs), tcoerce_expr(b, sigs))
+    ScopeE(snm, b) => ScopeE(snm, tcoerce_expr(b, sigs))
+    SpawnE(inner) => SpawnE(tcoerce_expr(inner, sigs))
+    Field(o, nm) => Field(tcoerce_expr(o, sigs), nm)
     _ => e
+fn tcoerce_hops(hs, sigs) = match hs
+    Nil        => Nil
+    Cons(h, t) => Cons({op: h.op, ps: h.ps, body: tcoerce_expr(h.body, sigs)}, tcoerce_hops(t, sigs))
 fn tcoerce_entries(items, sigs) = match items
     Nil => Nil
     Cons(h, t) => Cons({key: h.key, val: tcoerce_expr(h.val, sigs)}, tcoerce_entries(t, sigs))
@@ -264,6 +277,7 @@ fn tchke(e, tt) = match e
     DeferE(c, b)               => tchke(c, tt) + tchke(b, tt)
     ErrDeferE(c, b)            => tchke(c, tt) + tchke(b, tt)
     WithAllocE(a, b)           => tchke(a, tt) + tchke(b, tt)
+    WithHandlerE(en, hs, b)    => tchkhops(hs, tt) + tchke(b, tt)
     ScopeE(snm, b)             => tchke(b, tt)
     SpawnE(inner)              => tchke(inner, tt)
     AwaitE(inner)              => tchke(inner, tt)
@@ -338,13 +352,19 @@ fn tctorlookup(tag, cs) = match cs
 fn tchkrect(tn, items, tt) = tchkrect2(tn, items, trecptypelookup(tn, tt.recs), tt.decl)
 fn tchkrect2(tn, items, m, dc) = match m
     Nil        => if dc == 1 then ctfail("lume: type error: record type '" + tn + "' is not declared (declare it with `type " + tn + " = record ...`)\n") else 0
-    Cons(rd, r) => tchkfields(tn, items, rd.fields)
+    Cons(rd, r) => tchkfields(tn, items, rd.fields) + tchkmissing(tn, rd.fields, items)
 fn trecptypelookup(tn, rs) = match rs
     Nil        => Nil
     Cons(h, t) => if h.rname == tn then Cons(h, Nil) else trecptypelookup(tn, t)
 fn tchkfields(tn, items, fields) = match items
     Nil        => 0
     Cons(h, t) => tchkfield(tn, h.key, fields) + tchkfields(tn, t, fields)
+fn titemhas(items, key) = match items
+    Nil        => 0
+    Cons(h, t) => if h.key == key then 1 else titemhas(t, key)
+fn tchkmissing(tn, fields, items) = match fields
+    Nil        => 0
+    Cons(f, r) => if titemhas(items, f.fname) == 1 then tchkmissing(tn, r, items) else ctfail("lume: type error: record type '" + tn + "' needs field '" + f.fname + "'\n")
 fn tchkfield(tn, key, fields) = if tfieldhas(fields, key) == 1 then 1 else ctfail("lume: type error: record type '" + tn + "' has no field '" + key + "'\n")
 fn tfieldhas(fields, key) = match fields
     Nil        => 0
@@ -361,7 +381,7 @@ fn tctorcnt(tag, cs) = match cs
 fn tknown(e, tt) = match e
     Num(n)        => TyName("int")
     Str(s)        => TyName("str")
-    Var(nm)       => tknownctor(nm, tt)
+    Var(nm)       => if nm == "true" or nm == "false" then TyName("bool") else tknownctor(nm, tt)
     Call(nm, xs)  => tknowncall(nm, xs, tt)
     CT(inner)     => tknown(inner, tt)
     Rec(items)    => tknown_decimal_record(items)
@@ -530,9 +550,9 @@ fn tisint(ty) = match ty
 fn tisstr(ty) = match ty
     TyName(n) => if n == "str" then 1 else 0
     _         => 0
-fn tisarith(op) = op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
+fn tisarith(op) = op == "+" or op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%"
 fn tiscmp(op) = op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or"
-fn tknownlbin(op, ka, kb) = if op == "+" and tisstr(ka) == 1 and tisstr(kb) == 1 then TyName("str") else if tisarith(op) == 1 and tisint(ka) == 1 and tisint(kb) == 1 then TyName("int") else if tiscmp(op) == 1 then TyName("int") else TyAny
+fn tknownlbin(op, ka, kb) = if op == "+" and (tisstr(ka) == 1 or tisstr(kb) == 1) then TyName("str") else if tisarith(op) == 1 and tisint(ka) == 1 and tisint(kb) == 1 then TyName("int") else if tiscmp(op) == 1 then TyName("bool") else TyAny
 fn tknownlif(kt, ke) = if tsameconcrete(kt, ke) == 1 then tnarrow(kt) else TyAny
 fn tsameconcrete(a, b) = if tystr(a) == "?" then 0 else if tystr(a) == tystr(b) then 1 else 0
 fn tparamlenv(sg) = tparamlenv2(sg.pn, sg.pt)
@@ -782,7 +802,7 @@ fn tcompattensor(e, ds, k) = match k
     _ => 0
 fn tcompatn(n, k) = match k
     TyAny     => 1
-    TyName(m) => if n == m then 1 else 0
+    TyName(m) => if n == m or (n == "int" and m == "bool") then 1 else 0
     TyApply(n2, e2) => if n == n2 then 1 else if tiswrapty(n2) == 1 then tcompatn(n, e2) else 0
     TyRefine(bty, pr) => tcompatn(n, bty)
     TyList(e) => 0
@@ -830,7 +850,22 @@ fn tchkargs2(nm, i, a, rest, pns, pts, tt) = match pts
 fn tchkarg(nm, i, pn, ty, k) = if tcompat(ty, k) == 1 then 1 else ctfail("lume: type error: argument " + str(i) + " of '" + nm + "' has type " + tystr(k) + " but parameter '" + pn + "' expects " + tystr(ty) + "\n")
 fn tchkret(nm, body, m, tt) = match m
     Nil        => 0
-    Cons(sg, r) => tchkret2(nm, sg.rt, tknownl(body, tt, tparamlenv(sg)))
+    Cons(sg, r) => tchkret_e(nm, sg.rt, body, tt, tparamlenv(sg))
+## every branch has to fit the declared type: one that does not is not excused by another that does
+fn tchkret_e(nm, rt, e, tt, lenv) = match e
+    If(c, t, e2)    => tchkret_e(nm, rt, t, tt, lenv) + tchkret_e(nm, rt, e2, tt, lenv)
+    LetIn(x, v, b)  => tchkret_e(nm, rt, b, tt, Cons({k: x, v: tletscheme_lenv(v, tt, lenv)}, lenv))
+    Match(sc, arms) => tchkret_arms(nm, rt, arms, tt, lenv)
+    _               => tchkret2(nm, rt, tknownl(e, tt, lenv))
+fn tchkhops(hs, tt) = match hs
+    Nil        => 0
+    Cons(h, t) => tchke(h.body, tt) + tchkhops(t, tt)
+fn tchkret_arms(nm, rt, arms, tt, lenv) = match arms
+    Nil        => 0
+    Cons(h, t) => tchkret_e(nm, rt, h.body, tt, tshadow_any(oa_pat_names(h.pat), lenv)) + tchkret_arms(nm, rt, t, tt, lenv)
+fn tshadow_any(names, lenv) = match names
+    Nil        => lenv
+    Cons(h, t) => Cons({k: h, v: TyAny}, tshadow_any(t, lenv))
 fn tchkret2(nm, rt, k) = if tcompat(rt, k) == 1 then 1 else ctfail("lume: type error: function '" + nm + "' returns " + tystr(k) + " but is declared to return " + tystr(rt) + "\n")
 
 ## --- C3: generic argument checking (reuses F2's `tknown`/`tcompat`/`tchkarg`) -----------------------------------
@@ -857,9 +892,6 @@ fn tchkgargs2(nm, i, args, p, pr, c) = match args
     Cons(a, ar) => tchkgstep(nm, i, a, ar, p, pr, c)
 fn tchkgstep(nm, i, a, ar, p, pr, c) = if p.cf == 1 then tchkgargs(nm, i + 1, ar, pr, {env: gbind(p.pn, a, c.env), tps: c.tps, tt: c.tt}) else tchkgrt(nm, i, a, ar, p, pr, c)
 fn tchkgrt(nm, i, a, ar, p, pr, c) = tchkarg(nm, i, p.pn, tsubst(p.pt, c.env, c.tps), tknownl(a, c.tt, (c.tt).lenv)) + tchkgargs(nm, i + 1, ar, pr, c)
-fn tpset(ps) = match ps
-    Nil        => Nil
-    Cons(p, r) => if p.cf == 1 then Cons(p.pn, tpset(r)) else tpset(r)
 fn gbind(pn, a, env) = gbind2(pn, gtypeval(a), env)
 fn gbind2(pn, mt, env) = match mt
     Nil         => env

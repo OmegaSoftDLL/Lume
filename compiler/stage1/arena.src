@@ -21,18 +21,14 @@
 ##   `heap_peak_used()` is the high-water mark of `used` over the process
 ##   lifetime. After `arena_reset`, `used` drops immediately (the region is
 ##   reusable); `heap_peak_used()` keeps the high-water mark.
-## - Arenas are real second heap regions: `arena_new(cap_hint)` carves a
-##   dedicated `brk` region ABOVE the normal heap, so arena allocation
-##   INTERLEAVES freely with ordinary boxed allocation (no LIFO discipline,
-##   no scope restrictions). Up to 4 arenas are live at once; `arena_new`
-##   fails closed beyond that. `cap_hint` (<= 0 means default 1 MiB) is a HARD
-##   per-arena budget enforced at `arena_alloc`.
-## - Stated limitation (real, fail-closed): while any arena is live, the
-##   normal heap cannot grow past the lowest arena base -- the arena "pins
-##   the heap ceiling". A normal allocation that would need to grow beyond
-##   the pin fails closed with a clear diagnostic (exit 12); reset/destroy
-##   the arenas to unpin. Arena regions are carved on demand and bounded by
-##   LUME_HEAP_CAP like every other mapping.
+## - Arenas are real second heap regions: `arena_new(cap_hint)` maps a dedicated
+##   region outside the collected heap, so arena allocation INTERLEAVES freely
+##   with ordinary boxed allocation (no LIFO discipline, no scope restrictions).
+##   Up to 4 arenas are live at once; `arena_new` fails closed beyond that.
+##   `cap_hint` (<= 0 means default 1 MiB) is a HARD per-arena budget enforced
+##   at `arena_alloc`. `arena_destroy` returns the memory to the OS.
+## - The normal heap is collected (docs/38-memory-management.md): `gc_collect()`
+##   forces a collection and returns the live size, `gc_count()` counts them.
 ## - `arena_alloc(arena, n)` is an O(1) bump: it returns the address of `n`
 ##   raw bytes as a boxed int. The address DANGLES after `arena_reset`/
 ##   `arena_destroy` (the next alloc reuses it); only the handle is stable
@@ -41,8 +37,8 @@
 ##   with it so the kernel really supplies the pages.
 ## - Fail-closed diagnostics go to stderr and exit with status 12 (the memory
 ##   error family, same as out-of-memory): heap cap exceeded, invalid
-##   LUME_HEAP_CAP at startup, arena too-many/dead-handle/budget/size, heap
-##   ceiling pinned by an arena. Observability and arenas are HOSTED-runtime
+##   LUME_HEAP_CAP at startup, arena too-many/dead-handle/budget/size.
+##   Observability and arenas are HOSTED-runtime
 ##   features; `@freestanding` kernel images keep their fixed heap and do not
 ##   get these builtins.
 ##
@@ -58,6 +54,21 @@ fn arena_alloc(arena, n) = __lume_arena_alloc(arena, n)
 fn arena_reset(arena) = __lume_arena_reset(arena)
 fn arena_destroy(arena) = __lume_arena_destroy(arena)
 fn heap_stats() = __lume_heap_stats()
+
+## the compactor, level 3 (docs/38-memory-management.md). Cold data only: packing costs microseconds, hot values
+## already fit a machine word. Data that is `@secret` never gets here ([C0009]: decompression time leaks the bytes).
+## mem_pack / mem_unpack: LZ4 block format behind a header (magic, length, checksum). Corrupt input stops with an error.
+## arena_freeze: compresses an arena page by page, gives its memory back to the OS and returns the stored bytes;
+## pointers stay valid: the first touch of a frozen page brings that page back, arena_thaw brings all of them.
+fn mem_pack(s) = __lume_mem_pack(s)
+fn mem_unpack(blob) = __lume_mem_unpack(blob)
+fn arena_freeze(arena) = __lume_arena_freeze(arena)
+fn arena_compact(arena) = __lume_arena_freeze(arena)
+fn arena_thaw(arena) = __lume_arena_thaw(arena)
+fn arena_frozen(arena) = __lume_arena_frozen(arena)
+fn arena_mark_secret(arena) = __lume_arena_secret(arena)
+fn gc_collect() = __lume_gc_collect()
+fn gc_count() = __lume_gc_count()
 fn heap_peak_used() = __lume_heap_peak_used()
 fn peak_rss_kb() = os_self_maxrss_kb()
 fn child_peak_rss_kb() = os_last_child_maxrss_kb()

@@ -61,7 +61,7 @@ typedef struct {
     long long imm;        /* O_IMM, or O_MEM disp/addend */
     int base, index, scale;
     int rip;
-    char sym[64];
+    char sym[128];
 } Operand;
 
 static int parse_operand(const char *s, Operand *o, char *err) {
@@ -116,7 +116,7 @@ typedef struct {
     Operand a, b;
     int nop;
     size_t off, len;
-    char target[64];
+    char target[128];
 } Ins;
 
 static int scale_bits(int s) { return s == 2 ? 1 : s == 4 ? 2 : s == 8 ? 3 : 0; }
@@ -124,6 +124,7 @@ static int scale_bits(int s) { return s == 2 ? 1 : s == 4 ? 2 : s == 8 ? 3 : 0; 
 static int emit_rm(Buf *out, int opsize, const uint8_t *opc, int nopc, int rf, const Operand *rm,
                    Syms *syms, uint64_t insn_end, int strict, char *err) {
     uint8_t rex = 0x40;
+    int bare_rex = opsize == 1 && rm->type == O_REG && rm->reg >= 4 && rm->reg < 8;
     if (opsize == 8) rex |= 0x08;
     if (rf >= 8) rex |= 0x04;
     int modrm_mod = 0, modrm_rm = 0;
@@ -147,13 +148,13 @@ static int emit_rm(Buf *out, int opsize, const uint8_t *opc, int nopc, int rf, c
             disp = rm->imm;
         }
     }
-    if (rex != 0x40) buf_put(out, rex);
+    if (rex != 0x40 || bare_rex) buf_put(out, rex);
     for (int i = 0; i < nopc; i++) buf_put(out, opc[i]);
     buf_put(out, (uint8_t)((modrm_mod << 6) | ((rf & 7) << 3) | modrm_rm));
     if (use_sib) buf_put(out, sib);
     if (rip) {
         uint64_t target = 0;
-        if (rm->sym[0]) { Sym *sy = sym_get(syms, rm->sym); if (sy->known) target = sy->vaddr + (uint64_t)rm->imm; else if (strict) { snprintf(err,128,"undefined symbol %s",rm->sym); return 1; } }
+        if (rm->sym[0]) { Sym *sy = sym_get(syms, rm->sym); if (sy->known) target = sy->vaddr + (uint64_t)rm->imm; else if (strict) { snprintf(err,128,"undefined symbol %.100s",rm->sym); return 1; } }
         buf_put32(out, (uint32_t)(int32_t)((uint64_t)target - insn_end));
     } else if (disp_sz == 1) buf_put(out, (uint8_t)(int8_t)disp);
     else if (disp_sz == 4) buf_put32(out, (uint32_t)(int32_t)disp);
@@ -181,6 +182,10 @@ static int alu_store_op(const char *m) {
 static int jcc_op(const char *m) {
     if (!strcmp(m,"je")||!strcmp(m,"jz")) return 0x84;
     if (!strcmp(m,"jne")||!strcmp(m,"jnz")) return 0x85;
+    if (!strcmp(m,"jo")) return 0x80;
+    if (!strcmp(m,"jno")) return 0x81;
+    if (!strcmp(m,"jc")) return 0x82;
+    if (!strcmp(m,"jnc")) return 0x83;
     if (!strcmp(m,"jl")) return 0x8C;
     if (!strcmp(m,"jg")) return 0x8F;
     if (!strcmp(m,"jle")) return 0x8E;
@@ -219,12 +224,12 @@ static int emit_ins(Ins *in, Buf *out, Syms *syms, uint64_t payload_vaddr, int s
     }
     if (!strcmp(m,"jmp")||!strcmp(m,"call")) {
         Sym *sy=sym_get(syms,in->target); uint64_t t=0;
-        if (sy->known) t=sy->vaddr; else if (strict){snprintf(err,128,"undefined %s",in->target);return 1;}
+        if (sy->known) t=sy->vaddr; else if (strict){snprintf(err,128,"undefined %.100s",in->target);return 1;}
         buf_put(out,(uint8_t)(!strcmp(m,"jmp")?0xE9:0xE8)); buf_put32(out,(uint32_t)(int32_t)((uint64_t)t-insn_end)); return 0;
     }
     if (jcc_op(m)>=0) {
         Sym *sy=sym_get(syms,in->target); uint64_t t=0;
-        if (sy->known) t=sy->vaddr; else if (strict){snprintf(err,128,"undefined %s",in->target);return 1;}
+        if (sy->known) t=sy->vaddr; else if (strict){snprintf(err,128,"undefined %.100s",in->target);return 1;}
         buf_put(out,0x0F); buf_put(out,(uint8_t)jcc_op(m)); buf_put32(out,(uint32_t)(int32_t)((uint64_t)t-insn_end)); return 0;
     }
     if (setcc_op(m)>=0) { uint8_t opc[2]={0x0F,(uint8_t)setcc_op(m)}; return emit_rm(out,1,opc,2,0,&in->a,syms,insn_end,strict,err); }
@@ -234,6 +239,18 @@ static int emit_ins(Ins *in, Buf *out, Syms *syms, uint64_t payload_vaddr, int s
         if (!strcmp(m,"incq")){ext=0;op=0xFF;} else if (!strcmp(m,"decq")){ext=1;op=0xFF;}
         else { op=0xF7; ext=!strcmp(m,"negq")?3:!strcmp(m,"notq")?2:!strcmp(m,"mulq")?4:!strcmp(m,"divq")?6:7; }
         uint8_t opc[1]={op}; return emit_rm(out,8,opc,1,ext,&in->a,syms,insn_end,strict,err);
+    }
+    if (!strcmp(m,"salq")||!strcmp(m,"shlq")||!strcmp(m,"sarq")||!strcmp(m,"shrq")) {
+        int ext=(!strcmp(m,"shrq"))?5:(!strcmp(m,"sarq"))?7:4;
+        if (in->a.type==O_IMM){ uint8_t opc[1]={0xC1}; if(emit_rm(out,8,opc,1,ext,&in->b,syms,insn_end,strict,err))return 1; buf_put(out,(uint8_t)in->a.imm); return 0; }
+        uint8_t opc[1]={0xD3}; return emit_rm(out,8,opc,1,ext,&in->b,syms,insn_end,strict,err);
+    }
+    if ((!strcmp(m,"testq")||!strcmp(m,"testb")) && in->a.type==O_IMM) {
+        int bt=!strcmp(m,"testb");
+        uint8_t opc[1]={(uint8_t)(bt?0xF6:0xF7)};
+        if(emit_rm(out,bt?1:8,opc,1,0,&in->b,syms,insn_end,strict,err))return 1;
+        if(bt)buf_put(out,(uint8_t)in->a.imm); else buf_put32(out,(uint32_t)(int32_t)in->a.imm);
+        return 0;
     }
     if (!strcmp(m,"imulq")) {
         if (in->a.type==O_IMM){ uint8_t opc[1]={0x69}; if(emit_rm(out,8,opc,1,in->b.reg,&in->b,syms,insn_end,strict,err))return 1; buf_put32(out,(uint32_t)(int32_t)in->a.imm); return 0; }
@@ -282,6 +299,7 @@ int elf_assemble(const char *src, const char *outpath) {
     Syms syms={0};
     Buf rodata={0};
     typedef struct { char *name; size_t roff; } RoLab; RoLab *rol=NULL; int nrol=0,rolcap=0;
+    RoLab *rfx=NULL; int nrfx=0,rfxcap=0; /* .quad <label> fixups in .rodata */
     typedef struct { char *name; size_t off, size; } Bss; Bss *bss=NULL; int nbss=0,bsscap=0; size_t bss_total=0;
     typedef struct { char *name; int idx; } TLab; TLab *tl=NULL; int ntl=0,tlcap=0;
     int section=0; int entry=0;
@@ -307,6 +325,21 @@ int elf_assemble(const char *src, const char *outpath) {
                 if (c){*c=0; sz=(size_t)strtoull(trim(c+1),NULL,10);} char *nm=trim(p);
                 if (nbss==bsscap){bsscap=bsscap?bsscap*2:16;bss=realloc(bss,(size_t)bsscap*sizeof(Bss));}
                 bss[nbss].name=xstrdup(nm); bss[nbss].off=bss_total; bss[nbss].size=sz; nbss++; bss_total+=sz;
+                continue;
+            }
+            if (!strncmp(s,".quad",5)) {
+                char *v=trim(s+5);
+                if ((v[0]>='0'&&v[0]<='9')||v[0]=='-') { buf_put64(&rodata,(uint64_t)strtoll(v,NULL,0)); }
+                else {
+                    if(nrfx==rfxcap){rfxcap=rfxcap?rfxcap*2:64;rfx=realloc(rfx,(size_t)rfxcap*sizeof(RoLab));}
+                    rfx[nrfx].name=xstrdup(v); rfx[nrfx].roff=rodata.n; nrfx++;
+                    buf_put64(&rodata,0);
+                }
+                continue;
+            }
+            if (!strncmp(s,".balign",7)) {
+                size_t a=(size_t)strtoull(trim(s+7),NULL,10);
+                while(a>1 && rodata.n%a!=0) buf_put(&rodata,0);
                 continue;
             }
             if (!strncmp(s,".asciz",6)||!strncmp(s,".ascii",6)) {
@@ -350,15 +383,23 @@ int elf_assemble(const char *src, const char *outpath) {
             if(emit_ins(&ins[i],&tmp,&syms,0,0,err)){free(tmp.d);goto fail;}
             ins[i].len=tmp.n; off+=tmp.n; free(tmp.d);
         }
-        size_t code_size=off;
+        size_t code_raw=off;
+        size_t code_size=(code_raw+7)&~(size_t)7;  /* ELF_HDRS is 8-aligned, so rodata lands on an 8-byte boundary */
         for(int i=0;i<ntl;i++){ Sym *sy=sym_get(&syms,tl[i].name); sy->vaddr=ELF_VBASE+ELF_HDRS+((tl[i].idx<ni)?ins[tl[i].idx].off:code_size); sy->known=1; }
         for(int i=0;i<nrol;i++){ Sym *sy=sym_get(&syms,rol[i].name); sy->vaddr=ELF_VBASE+ELF_HDRS+code_size+rol[i].roff; sy->known=1; }
+        while(rodata.n%16!=0) buf_put(&rodata,0);
         size_t data_end=code_size+rodata.n;
         for(int i=0;i<nbss;i++){ Sym *sy=sym_get(&syms,bss[i].name); sy->vaddr=ELF_VBASE+ELF_HDRS+data_end+bss[i].off; sy->known=1; }
 
         Buf code={0};
         for(int i=0;i<ni;i++){ if(emit_ins(&ins[i],&code,&syms,ELF_VBASE+ELF_HDRS,1,err)){free(code.d);goto fail;} }
-        if(code.n!=code_size){ snprintf(err,sizeof(err),"internal size mismatch %zu vs %zu",code.n,code_size); free(code.d); goto fail; }
+        if(code.n!=code_raw){ snprintf(err,sizeof(err),"internal size mismatch %zu vs %zu",code.n,code_raw); free(code.d); goto fail; }
+        while(code.n<code_size) buf_put(&code,0xCC);
+        for(int i=0;i<nrfx;i++){
+            Sym *sy=sym_get(&syms,rfx[i].name);
+            if(!sy->known){snprintf(err,sizeof(err),"undefined symbol %.100s in .quad",rfx[i].name);free(code.d);goto fail;}
+            for(int k=0;k<8;k++) rodata.d[rfx[i].roff+(size_t)k]=(uint8_t)((sy->vaddr>>(8*k))&0xff);
+        }
 
         Buf payload={0};
         for(size_t i=0;i<code.n;i++)buf_put(&payload,code.d[i]);
@@ -392,6 +433,7 @@ int elf_assemble(const char *src, const char *outpath) {
     free(buf); free(ins); free(rodata.d);
     for(int i=0;i<syms.n;i++){ free(syms.v[i].name); } free(syms.v);
     for(int i=0;i<nrol;i++){ free(rol[i].name); } free(rol);
+    for(int i=0;i<nrfx;i++){ free(rfx[i].name); } free(rfx);
     for(int i=0;i<nbss;i++){ free(bss[i].name); } free(bss);
     for(int i=0;i<ntl;i++){ free(tl[i].name); } free(tl);
     return 0;
@@ -400,6 +442,7 @@ fail:
     free(buf); free(ins); free(rodata.d);
     for(int i=0;i<syms.n;i++){ free(syms.v[i].name); } free(syms.v);
     for(int i=0;i<nrol;i++){ free(rol[i].name); } free(rol);
+    for(int i=0;i<nrfx;i++){ free(rfx[i].name); } free(rfx);
     for(int i=0;i<nbss;i++){ free(bss[i].name); } free(bss);
     for(int i=0;i<ntl;i++){ free(tl[i].name); } free(tl);
     return 1;

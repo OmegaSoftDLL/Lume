@@ -1,0 +1,10 @@
+## gc_gate.src -- the collector is correct if the compiler cannot tell it is there. `lumec` compiles itself with
+## collections forced far more often than normal and freed objects poisoned: an object freed while still in use
+## turns into a crash or into different output, so the assembly must match the plain run byte for byte.
+fn gg_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else gg_line_end(s, i + 1)
+fn gg_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else slice(input, 6, gg_line_end(input, 0))
+fn gg_compile(root, env_setting, out) = os_run_input_capture_timeout("/usr/bin/env", Cons(env_setting, Cons(root + "/build/bin/lumec", Nil)), root + "/compiler/stage1/lumec.src", out, out + ".err", 600000)
+fn gg_main(root) = let tmp = root + "/build/gc-gate" in let c = os_run_capture_timeout("/bin/mkdir", Cons("-p", Cons(tmp, Nil)), tmp + ".mkdir", tmp + ".mkdir.err", 60000) in let a = gg_compile(root, "LUME_GC=on", tmp + "/plain.s") in let b = gg_compile(root, "LUME_GC_STRESS=100000", tmp + "/stress.s") in let d = gg_compile(root, "LUME_GC=off", tmp + "/off.s") in if a != 0 or b != 0 or d != 0 then ctfail("collector gate failed: self-compilation exited with " + str(a) + "/" + str(b) + "/" + str(d) + "\n") else let p = fs_read_file(tmp + "/plain.s") in if count(p) < 1000000 then ctfail("collector gate failed: no compiler output\n") else if p != fs_read_file(tmp + "/stress.s") then ctfail("collector gate failed: output changed under LUME_GC_STRESS\n") else if p != fs_read_file(tmp + "/off.s") then ctfail("collector gate failed: output depends on the collector\n") else "OK: lumec output is byte-identical with the collector on, off and under stress"
+fn gg_dispatch(input) = let root = gg_root(input) in if root == "" then ctfail("collector gate requires @root\n") else gg_main(root)
+
+print gg_dispatch(readall())

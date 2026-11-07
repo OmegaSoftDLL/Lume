@@ -140,22 +140,31 @@ if [ ! -x "$DRIVER" ]; then
         cp -f "$LUME_BIN_DIR/lasm" "$LASM" && chmod +x "$LASM"
     fi
     if [ ! -x "$LUMEC" ]; then
-        "$L0" run "$SRC/data_asm_cc.lume" "$ROOT/scripts/amalgamate.src" "$BIN/amalgamate.s" >/dev/null 2>&1
-        "$L0" asm "$BIN/amalgamate.s" "$BIN/amalgamate" >/dev/null 2>&1
+        "$L0" run "$SRC/data_asm_cc.lume" "$ROOT/scripts/amalgamate.src" "$BIN/amalgamate.s" >/dev/null || { echo "lume: bootstrap failed compiling amalgamate with the seed" >&2; exit 1; }
+        "$L0" asm "$BIN/amalgamate.s" "$BIN/amalgamate" >/dev/null || { echo "lume: bootstrap failed assembling amalgamate with the seed" >&2; exit 1; }
         chmod +x "$BIN/amalgamate"
         printf '@root %s\n' "$ROOT" | "$BIN/amalgamate" >/dev/null
         rm -f "$BIN/amalgamate.s"
         [ -f "$SRC/lumec.src" ] || { echo "lume: amalgamation did not produce compiler/stage1/lumec.src" >&2; exit 1; }
-        "$L0" run "$SRC/data_asm_cc.lume" "$SRC/lumec.src" "$BIN/lumec.s" >/dev/null 2>&1
-        "$L0" asm "$BIN/lumec.s" "$LUMEC" >/dev/null 2>&1
+        "$L0" run "$SRC/data_asm_cc.lume" "$SRC/lumec.src" "$BIN/lumec.s" >/dev/null || { echo "lume: bootstrap failed compiling lumec with the seed" >&2; exit 1; }
+        "$L0" asm "$BIN/lumec.s" "$LUMEC" >/dev/null || { echo "lume: bootstrap failed assembling lumec with the seed" >&2; exit 1; }
         chmod +x "$LUMEC"
         rm -f "$BIN/lumec.s"
+        FROM_SEED=1
     fi
     if [ ! -x "$LASM" ]; then
         "$LUMEC" < "$SRC/lasm.src" > "$BIN/lasm.s" || { echo "lume: bootstrap failed compiling lasm" >&2; exit 1; }
-        "$L0" asm "$BIN/lasm.s" "$LASM" >/dev/null 2>&1
+        "$L0" asm "$BIN/lasm.s" "$LASM" >/dev/null || { echo "lume: bootstrap failed assembling lasm with the seed" >&2; exit 1; }
         chmod +x "$LASM"
         rm -f "$BIN/lasm.s"
+    fi
+    if [ -n "${FROM_SEED:-}" ]; then
+        # The seed only starts the chain: the compiler we keep is the one built by itself.
+        "$LUMEC" < "$SRC/lumec.src" > "$BIN/lumec.s" || { echo "lume: bootstrap failed compiling lumec with itself" >&2; exit 1; }
+        "$LASM" --strict < "$BIN/lumec.s" > "$BIN/lumec.next" || { echo "lume: bootstrap failed assembling lumec" >&2; exit 1; }
+        chmod +x "$BIN/lumec.next"
+        mv -f "$BIN/lumec.next" "$LUMEC"
+        rm -f "$BIN/lumec.s"
     fi
     "$LUMEC" < "$SRC/lmod.src" > "$BIN/lmod.s" || { echo "lume: bootstrap failed compiling lmod" >&2; exit 1; }
     "$LASM" --strict < "$BIN/lmod.s" > "$BIN/lmod" || { echo "lume: bootstrap failed assembling lmod" >&2; exit 1; }

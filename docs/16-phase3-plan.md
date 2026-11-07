@@ -65,6 +65,8 @@ Every Phase 3 brick obeys the project's non-negotiable rules:
     `fn first(items: [T]) -> T from items`.
   - Diagnostics:
     - `O0020`: borrowed value escapes its owner's scope.
+    - `O0004`: a `resource type` value held by a `let` is not consumed on every path.
+    - `O0013`: a move, mutable borrow, or use conflicts with a borrow that is used later.
     - `O0021`: function returns a borrow without a `from <param>` origin clause (fix-it synthesizes
       the exact `from` clause).
   - *Ref: Rust elided lifetimes, Carbon/Austral region tracking. Superior: readable `from param`

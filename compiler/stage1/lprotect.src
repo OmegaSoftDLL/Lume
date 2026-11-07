@@ -10,12 +10,12 @@
 ##       contract expressions, or internal panic text.
 ##   - Brick W2 (`hardened` / `max`):
 ##     - Derives a deterministic per-build stream key `k` (131..250) from the seed via FIPS 180-4 SHA-256,
-##     - Encrypts every `.rodata` user string literal (`.LsN` referenced by `mkstr`) into `.byte b0, b1, ..., 0`
-##       where each non-zero byte is XOR-masked with `k`,
-##     - Injects `mkstr_enc:` before `mkstr:` in `.text` and rewrites `call mkstr` on `.rodata` literals to
-##       `call mkstr_enc`, which allocates a fresh copy in the Lume heap and XOR-unmasks each byte with `k`,
-##       so `strings <binary>` NEVER sees plaintext strings in `.rodata` while running the binary produces
-##       100% identical stdout!
+##     - Encrypts every static string cell (`.Ls_...`) into `.byte b0, b1, ..., 0` where each non-zero byte is
+##       XOR-masked with `k`,
+##     - Injects `mkstr_enc:` before `mkstr:` in `.text` and rewrites every load of such a cell to a call of
+##       `mkstr_enc`, which allocates a fresh copy in the Lume heap and XOR-unmasks each byte with `k`,
+##     - Masks the 64-bit immediates of the program text (a string of up to 7 bytes lives inside the word), so
+##       `strings <binary>` NEVER sees plaintext strings while running the binary produces 100% identical stdout!
 ##   - Brick W3 & W5 (`hardened` / `max`):
 ##     - Injects Mixed Boolean-Arithmetic (MBA) instruction sequences into function prologues in `max` mode
 ##       and embeds a deterministic FIPS 180-4 SHA-256 tamper seal (`LUME_SEAL:<hex>`) in `.rodata`.
@@ -117,7 +117,10 @@ fn lp_asc_bytes(s, i, n, k) = if i >= n then Cons("0", Nil) else if at(s, i) == 
 fn lp_encrypt_asciz(tr, k) = let n = count(tr) in let q1 = lp_findq(tr, 0, n) in "    .byte " + lp_joinsep(lp_asc_bytes(tr, q1 + 1, n, k), ", ")
 
 ## --- Identify `.LsN` labels passed to `call mkstr` ---
-fn lp_leaq_lab(tr) = if lp_startswith(tr, "leaq .Ls") == 1 and lp_endswith(tr, "(%rip), %rdi") == 1 then slice(tr, 5, count(tr) - 12) else ""
+fn lp_leaq_lab(tr) = if lp_startswith(tr, "leaq .Ls_") == 0 then "" else slice(tr, 5, lp_find_sub(tr, "(%rip), ", 0))
+fn lp_leaq_reg(tr) = slice(tr, lp_find_sub(tr, "(%rip), ", 0) + 8, count(tr))
+## a load of an encrypted cell keeps every register but its target
+fn lp_dec_site(tr) = let r = lp_leaq_reg(tr) in let lab = lp_leaq_lab(tr) in if r == "%rax" then "    leaq " + lab + "(%rip), %rax\n    call mkstr_enc" else "    pushq %rax\n    leaq " + lab + "(%rip), %rax\n    call mkstr_enc\n    movq %rax, " + r + "\n    popq %rax"
 fn lp_next_is_mkstr(t) = match t
     Nil        => 0
     Cons(h, r) => lp_trim(h) == "call mkstr"
@@ -126,7 +129,7 @@ fn lp_drop1(t) = match t
     Cons(h, r) => r
 fn lp_collect_mkstr_labs(lines) = match lines
     Nil        => Nil
-    Cons(h, t) => let lab = lp_leaq_lab(lp_trim(h)) in if lab != "" and lp_next_is_mkstr(t) == 1 then Cons(lab, lp_collect_mkstr_labs(t)) else lp_collect_mkstr_labs(t)
+    Cons(h, t) => let lab = lp_leaq_lab(lp_trim(h)) in if lab != "" then Cons(lab, lp_collect_mkstr_labs(t)) else lp_collect_mkstr_labs(t)
 
 ## --- Identify runtime labels vs user function labels ---
 fn lp_is_rt_label(nm) = nm == "_start" or nm == "alloc" or nm == "alloc_grow" or nm == "agok" or nm == "alloc_oom" or nm == "mkint" or nm == "mkstr" or nm == "mkstr_enc" or nm == "mkctor" or nm == "mkrec" or nm == "mklist" or nm == "recget" or nm == "rg0" or nm == "rghit" or nm == "rgmiss" or nm == "rgdone" or nm == "lidx" or nm == "lix0" or nm == "strcmpv" or nm == "scp0" or nm == "scpne" or nm == "scplt" or nm == "scpeq" or nm == "cmpv" or nm == "cmpvi" or nm == "cmpvlt" or nm == "cmpvgt" or nm == "addv" or nm == "addvs" or nm == "avca" or nm == "avcb" or nm == "avcc" or nm == "avcd" or nm == "read" or nm == "rd0" or nm == "rd1" or nm == "readall" or nm == "rda0" or nm == "count" or nm == "cnts" or nm == "at" or nm == "slice" or nm == "slao" or nm == "slbo" or nm == "slno" or nm == "slcp" or nm == "slce" or nm == "slicen" or nm == "snao" or nm == "snbo" or nm == "snno" or nm == "sncp" or nm == "snce" or nm == "toint" or nm == "ti0" or nm == "ti1" or nm == "str" or nm == "strni" or nm == "stp" or nm == "stl" or nm == "std" or nm == "stro" or nm == "strlen" or nm == "sl0" or nm == "sl1" or nm == "streq" or nm == "se0" or nm == "se1" or nm == "se2" or nm == "eqv" or nm == "eqvi" or nm == "eqvs" or nm == "eqvc" or nm == "eqv0" or nm == "printval" or nm == "showval" or nm == "sv1" or nm == "sv2" or nm == "svc" or nm == "svc1" or nm == "svce" or nm == "sv3" or nm == "svr" or nm == "svr1" or nm == "svre" or nm == "sv4" or nm == "svl" or nm == "svl1" or nm == "svle" or nm == "svdone" or nm == "wcomma" or nm == "wch" or nm == "emit" or nm == "emitapp" or nm == "emit_grow" or nm == "egdbl" or nm == "egalloc" or nm == "egcopy" or nm == "egdone" or nm == "flush" or nm == "ord" or nm == "wstr" or nm == "wint" or nm == "wi1" or nm == "wi2" or nm == "wi3" or nm == "print_int" or nm == "ctfail" or nm == "oom_msg"
@@ -160,7 +163,7 @@ fn lp_scan_secrets(lines) = let ds = lp_scan_secrets_lines(lines, 1) in "{\"ok\"
 
 ## --- Assembly Protection Transform (`@asm <level>`) ---
 ## Prepends `mkstr_enc:` before `mkstr:` in `.text` when `level == "hardened"` or `level == "max"`:
-fn lp_mkstr_enc_stub(k) = "mkstr_enc:\n    pushq %rcx\n    pushq %rdx\n    pushq %r12\n    pushq %r13\n    pushq %r14\n    movq %rdi, %r12\n    call strlen\n    movq %rax, %r13\n    leaq 1(%r13), %rdi\n    call alloc\n    movq %rax, %r14\n    xorq %rcx, %rcx\n.Lmkd0:\n    cmpq %r13, %rcx\n    jge .Lmkd1\n    movb (%r12,%rcx), %dl\n    cmpb $" + str(k) + ", %dl\n    je .Lmkd_s\n    xorb $" + str(k) + ", %dl\n.Lmkd_s:\n    movb %dl, (%r14,%rcx)\n    incq %rcx\n    jmp .Lmkd0\n.Lmkd1:\n    movb $0, (%r14,%r13)\n    movq %r14, %rdi\n    popq %r14\n    popq %r13\n    popq %r12\n    popq %rdx\n    popq %rcx\nmkstr:"
+fn lp_mkstr_enc_stub(k) = "mkstr_enc:\n    pushq %rcx\n    pushq %rdx\n    pushq %rdi\n    pushq %r12\n    pushq %r13\n    pushq %r14\n    movq %rax, %r12\n    movq (%r12), %r13\n    shrq $8, %r13\n    leaq 9(%r13), %rdi\n    call __lume_alloc_a\n    movq %rax, %r14\n    movq (%r12), %rcx\n    movq %rcx, (%r14)\n    xorq %rcx, %rcx\n.Lmkd0:\n    cmpq %r13, %rcx\n    jge .Lmkd1\n    movb 8(%r12,%rcx), %dl\n    cmpb $" + str(k) + ", %dl\n    je .Lmkd_s\n    xorb $" + str(k) + ", %dl\n.Lmkd_s:\n    movb %dl, 8(%r14,%rcx)\n    incq %rcx\n    jmp .Lmkd0\n.Lmkd1:\n    movb $0, 8(%r14,%r13)\n    movq %r14, %rax\n    popq %r14\n    popq %r13\n    popq %r12\n    popq %rdi\n    popq %rdx\n    popq %rcx\n    ret\nmkstr:"
 
 fn lp_mba_prologue(fn_idx) = let mask = (fn_idx * 73 + 19) % 120 + 1 in "    addq $" + str(mask) + ", %rax\n    xorq $0, %rax\n    subq $" + str(mask) + ", %rax"
 
@@ -186,13 +189,31 @@ fn lp_all_digits(s, i, n) = if n == 0 then 0 else if i >= n then 1 else if lp_is
 
 fn lp_mba_imm_rdi(tr, k, fidx) = if lp_startswith(tr, "movq $") == 0 or lp_endswith(tr, ", %rdi") == 0 then "" else let nstr = slice(tr, 6, count(tr) - 6) in if lp_all_digits(nstr, 0, count(nstr)) == 0 or count(nstr) > 7 then "" else let val = toint(nstr) in let delta = (k * 13 + fidx * 7) % 97 + 1 in "    movq $" + str(val + delta) + ", %rdi\n    subq $" + str(delta) + ", %rdi"
 
+## immediates of the program text: no flag is alive across a literal load there, and %r11 is free
+fn lp_is_valreg(r) = r == "%rax" or r == "%rcx" or r == "%rdi" or r == "%rsi" or r == "%rdx"
+fn lp_imm_parts(tr) = let c = lp_find_sub(tr, ", ", 0) in {num: slice(tr, 6, c), reg: slice(tr, c + 2, count(tr))}
+fn lp_imm_ok(nm) = let neg = count(nm) > 0 and at(nm, 0) == "-" in let d = if neg then slice(nm, 1, count(nm)) else nm in lp_all_digits(d, 0, count(d))
+fn lp_imm_val(nm) = if at(nm, 0) == "-" then 0 - toint(slice(nm, 1, count(nm))) else toint(nm)
+fn lp_mask_word(k) = (k % 128) * 72340172838076673
+fn lp_mask_imm2(v, reg, k, fidx) = if v >= 0 - 2147483648 and v <= 2147483647 then lp_mask_small(v, reg, k, fidx) else let m = lp_mask_word(k) in "    movq $" + str(bit_xor(v, m)) + ", " + reg + "\n    movq $" + str(m) + ", %r11\n    xorq %r11, " + reg
+fn lp_mask_small(v, reg, k, fidx) = if reg != "%rax" or v < 0 or v > 9999999 then "" else let d = (k * 13 + fidx * 7) % 97 + 1 in "    movq $" + str(v + d) + ", %rax\n    subq $" + str(d) + ", %rax"
+fn lp_mask_imm(tr, k, fidx) = if lp_startswith(tr, "movq $") == 0 then "" else let p = lp_imm_parts(tr) in if lp_is_valreg(p.reg) == 0 or lp_imm_ok(p.num) == 0 then "" else lp_mask_imm2(lp_imm_val(p.num), p.reg, k, fidx)
+fn lp_is_cell_hdr(tr, cur_lab, t) = lp_startswith(tr, ".quad ") == 1 and lp_startswith(cur_lab, ".Ls_") == 1 and lp_next_asciz(t) == 1
+fn lp_next_asciz(t) = match t
+    Nil        => 0
+    Cons(h, r) => lp_startswith(lp_trim(h), ".asciz ")
+fn lp_hd(t) = match t
+    Nil        => ""
+    Cons(h, r) => h
+## a panic text shrinks to `E#n\n`, so the length in the cell header shrinks with it
+fn lp_cell_hdr(h, np, pidx) = if np != pidx then "    .quad " + str((count("E#" + str(pidx)) + 1) * 256 + 1) else h
 fn lp_xform_rodata_asciz(h, tr, cur_lab, cfg, pidx) = let raw = lp_asciz_raw(tr) in let is_panic = lp_startswith(raw, "lume: ") == 1 and lp_startswith(raw, "lume: out of memory") == 0 in let stripped = if is_panic == 1 then "    .asciz \"E#" + str(pidx) + "\\n\"" else h in let np = if is_panic == 1 then pidx + 1 else pidx in let enc = (cfg.level == "hardened" or cfg.level == "max") and lp_has(cfg.mlabs, cur_lab) == 1 in {line: if enc == 1 then lp_encrypt_asciz(lp_trim(stripped), cfg.k) else stripped, pidx: np}
 
 fn lp_xform_text_line(h, tr, t, cfg, fidx) = if tr == "_start:" and cfg.level == "max" then lp_seal_start_guard() else if lp_endswith(tr, ":") == 1 then let nm = slice(tr, 0, count(tr) - 1) in let obf = lp_lookup_ufn(cfg.fmap, nm) in if obf != "" then obf + ":" else lp_rewrite_tail_lbl(h, cfg.fmap) else if lp_startswith(tr, "call ") == 1 then let callee = lp_trim(slice(tr, 5, count(tr))) in let obf = lp_lookup_ufn(cfg.fmap, callee) in if obf != "" then "    call " + obf else h else if lp_startswith(tr, "jmp ") == 1 then lp_rewrite_tail_lbl(h, cfg.fmap) else if (cfg.level == "hardened" or cfg.level == "max") and lp_next_is_mkint(t) == 1 then let mba = lp_mba_imm_rdi(tr, cfg.k, fidx) in if mba != "" then mba else h else h
 
 fn lp_xform_lines(lines, cfg, sec, cur_lab, pidx, fidx) = match lines
     Nil        => if cfg.level == "max" then Cons("    .section .rodata\n.Lprotect_seal:\n    .asciz \"LUME_SEAL:" + str(cfg.k) + "\"", Nil) else Nil
-    Cons(h, t) => let tr = lp_trim(h) in if tr == "" or at(tr, 0) == "#" then lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx) else if tr == ".section .rodata" then Cons(h, lp_xform_lines(t, cfg, 1, "", pidx, fidx)) else if tr == ".section .text" then Cons(h, lp_xform_lines(t, cfg, 0, "", pidx, fidx)) else if tr == ".section .bss" then Cons(h, lp_xform_lines(t, cfg, 2, "", pidx, fidx)) else if sec == 1 and lp_endswith(tr, ":") == 1 then Cons(h, lp_xform_lines(t, cfg, sec, slice(tr, 0, count(tr) - 1), pidx, fidx)) else if sec == 1 and lp_startswith(tr, ".asciz ") == 1 then let r = lp_xform_rodata_asciz(h, tr, cur_lab, cfg, pidx) in Cons(r.line, lp_xform_lines(t, cfg, sec, cur_lab, r.pidx, fidx)) else if sec == 0 and (cfg.level == "hardened" or cfg.level == "max") and lp_leaq_lab(tr) != "" and lp_next_is_mkstr(t) == 1 then Cons(h, Cons("    call mkstr_enc", lp_xform_lines(lp_drop1(t), cfg, sec, cur_lab, pidx, fidx))) else if sec == 0 and tr == "mkstr:" and (cfg.level == "hardened" or cfg.level == "max") then Cons(lp_mkstr_enc_stub(cfg.k), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx)) else if sec == 0 and tr == "movq %rsp, %rbp" and cfg.level == "max" then Cons(h, Cons(lp_mba_prologue(fidx), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx + 1))) else if sec == 0 then Cons(lp_xform_text_line(h, tr, t, cfg, fidx), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx)) else Cons(h, lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx))
+    Cons(h, t) => let tr = lp_trim(h) in if tr == "" or at(tr, 0) == "#" then lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx) else if tr == ".section .rodata" then Cons(h, lp_xform_lines(t, cfg, 1, "", pidx, fidx)) else if tr == ".section .text" then Cons(h, lp_xform_lines(t, cfg, 0, "", pidx, fidx)) else if tr == ".section .bss" then Cons(h, lp_xform_lines(t, cfg, 2, "", pidx, fidx)) else if sec == 1 and lp_endswith(tr, ":") == 1 then Cons(h, lp_xform_lines(t, cfg, sec, slice(tr, 0, count(tr) - 1), pidx, fidx)) else if sec == 1 and lp_is_cell_hdr(tr, cur_lab, t) == 1 then let r = lp_xform_rodata_asciz(lp_hd(t), lp_trim(lp_hd(t)), cur_lab, cfg, pidx) in Cons(lp_cell_hdr(h, r.pidx, pidx), Cons(r.line, lp_xform_lines(lp_drop1(t), cfg, sec, cur_lab, r.pidx, fidx))) else if sec == 1 and lp_startswith(tr, ".asciz ") == 1 then let r = lp_xform_rodata_asciz(h, tr, cur_lab, cfg, pidx) in Cons(r.line, lp_xform_lines(t, cfg, sec, cur_lab, r.pidx, fidx)) else if sec == 0 and (cfg.level == "hardened" or cfg.level == "max") and lp_leaq_lab(tr) != "" then Cons(lp_dec_site(tr), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx)) else if sec == 0 and tr == "alloc:" then Cons(h, lp_xform_lines(t, cfg, sec, "rt", pidx, fidx)) else if sec == 0 and tr == "_start:" then Cons(lp_xform_text_line(h, tr, t, cfg, fidx), lp_xform_lines(t, cfg, sec, "", pidx, fidx)) else if sec == 0 and cur_lab == "" and (cfg.level == "hardened" or cfg.level == "max") and lp_next_is_mkint(t) == 0 and lp_mask_imm(tr, cfg.k, fidx) != "" then Cons(lp_mask_imm(tr, cfg.k, fidx), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx)) else if sec == 0 and tr == "mkstr:" and (cfg.level == "hardened" or cfg.level == "max") then Cons(lp_mkstr_enc_stub(cfg.k), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx)) else if sec == 0 and tr == "movq %rsp, %rbp" and cfg.level == "max" then Cons(h, Cons(lp_mba_prologue(fidx), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx + 1))) else if sec == 0 then Cons(lp_xform_text_line(h, tr, t, cfg, fidx), lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx)) else Cons(h, lp_xform_lines(t, cfg, sec, cur_lab, pidx, fidx))
 
 fn lp_parse_header(hdr) = let tr = lp_trim(hdr) in if lp_startswith(tr, "@lsym ") == 1 then let rest = lp_trim(slice(tr, 6, count(tr))) in {mode: "lsym", level: rest} else if lp_startswith(tr, "@symbolize ") == 1 then let rest = lp_trim(slice(tr, 11, count(tr))) in {mode: "symbolize", level: rest} else if tr == "@scan-secrets" or lp_startswith(tr, "@scan-secrets ") == 1 then {mode: "scan-secrets", level: ""} else if lp_startswith(tr, "@asm ") == 1 then let rest = lp_trim(slice(tr, 5, count(tr))) in {mode: "asm", level: rest} else {mode: "asm", level: "standard"}
 

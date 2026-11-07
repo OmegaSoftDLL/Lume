@@ -39,6 +39,12 @@ single `runtime_tail()` function returning one asm string, in the tail of the co
 | `06_typecheck.src`    | 640–973 | type checker `tcheck` + type table (F1/F2) + C3 generic argument checking (**track F edits here**) |
 | `07_driver.src`       | 974–975 | the driver: `print lgen(cfold(gerase(tcheck(parseprogram(readall())))))` |
 
+Three modules outside `lume/` are amalgamated with these: `compiler/stage1/runtime_core.lume` (the hosted runtime,
+placed before `05_codegen.src`, also read by `data_asmgen.lume` through `use`), and `compiler/stage1/own_flow.src`
+and `name_flow.src` (ownership and name analysis, placed before `06b_phase3.src`). The line ranges above are
+historical. `lcaas.src` and `lfmt.src` import the generated `lumec.src` as a library; the bundler drops its final
+`print`, so they get the whole compiler as functions.
+
 The `NN_` prefix fixes each module's position in the generated file. To add or re-order a module,
 add/rename a `compiler/stage1/lume/NN_*.src` file — never edit the generated `lumec.src`.
 

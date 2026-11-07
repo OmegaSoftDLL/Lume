@@ -101,10 +101,17 @@ pub use self.types.*        # re-export
 | `()` | unit |
 | `never` | the type of expressions that do not return (`fail`, `panic`, `return`, infinite `loop`) |
 
+`int` holds the full 64-bit range whatever its machine representation: the native runtime keeps values of 63 bits
+inside the word and the others in a small cell (docs/38-memory-management.md).
+
 Integer arithmetic is **checked** (panics on overflow) in debug and test builds and **wrapping** is
 *never* the silent default: release builds keep checks unless the module opts into
 `@overflow(wrap)` or uses the explicit operators `+%` (wrapping), `+|` (saturating),
 `+?` (checked, returns `T?`). Division by zero is an error value for `checked_div` and a panic for `/`.
+
+Implemented today in native code: `+`, `-` and `*` stop the program on overflow in every build, and `+%`, `-%`, `*%`
+wrap. `@overflow(wrap)` is rejected with `[P0002]` rather than ignored, and `+|` and `+?` do not exist yet. The Stage-0
+seed wraps: it only runs the bootstrap.
 
 ### 3.2 Compound types
 | Syntax | Type |
@@ -189,7 +196,7 @@ Precedence, highest first (same row = same level, left-associative unless noted)
 8. `^`
 9. `|`
 10. `..` `..=` (ranges; non-associative)
-11. `== != < <= > >= in is as`
+11. `== != < <= > >= in is as` (non-associative: `a < b < c` is a parse error)
 12. `??` (right-assoc)
 13. `and` / `&&`
 14. `or` / `||`

@@ -1,0 +1,44 @@
+## gc_ok.src -- the native collector (`lume test compiler/stage1/gc_ok.src`). Every test forces collections and
+## then checks the data that must have survived, value by value, so a collector that frees a live object fails
+## here. `used` is compared before and after, so a collector that frees nothing fails too.
+use arena
+
+fn mk_list(n, acc) = if n == 0 then acc else mk_list(n - 1, Cons(n, acc))
+fn sum_list(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => sum_list(t, acc + h)
+fn churn(n) = if n == 0 then 0 else let g = mk_list(16, Nil) in churn(n - 1)
+fn forced(n, acc) = if n == 0 then acc else let c = gc_collect() in forced(n - 1, acc + 1)
+
+fn test_collect_counts_and_frees() = let before = heap_stats() in let z = churn(200000) in let c0 = gc_count() in let u = gc_collect() in gc_count() == c0 + 1 and u < before.used + 4194304
+
+fn test_retained_list_survives() = let keep = mk_list(100000, Nil) in let z = forced(5, 0) in let y = churn(100000) in sum_list(keep, 0) == 5000050000
+
+fn str_list(n, acc) = if n == 0 then acc else str_list(n - 1, Cons("item-" + str(n * 100003), acc))
+fn str_ok(xs, n) = match xs
+    Nil        => n == 0
+    Cons(h, t) => if h == "item-" + str((1 + 2000 - n) * 100003) then str_ok(t, n - 1) else 0
+fn test_strings_survive() = let keep = str_list(2000, Nil) in let z = forced(3, 0) in str_ok(keep, 2000)
+
+## `str(n)` keeps a pointer into the middle of its buffer: a collector without interior pointers loses it
+fn test_interior_pointer_survives() = let s = str(987654321) in let z = forced(3, 0) in s == "987654321" and count(s) == 9
+
+fn mk_recs(n, acc) = if n == 0 then acc else mk_recs(n - 1, Cons({id: n, name: "r" + str(n), nested: {v: n * 2}}, acc))
+fn recs_ok(xs, i) = match xs
+    Nil        => 1
+    Cons(h, t) => if h.id == i and h.name == "r" + str(i) and h.nested.v == i * 2 then recs_ok(t, i + 1) else 0
+fn test_records_survive() = let keep = mk_recs(5000, Nil) in let z = forced(3, 0) in recs_ok(keep, 1)
+
+fn big_str(s, n) = if n == 0 then s else big_str(s + s, n - 1)
+fn test_large_object_survives_and_is_freed() = let b = big_str("0123456789abcdef", 16) in let u1 = gc_collect() in let ok1 = count(b) == 1048576 and at(b, 1048575) == "f" and at(b, 0) == "0" in let n = count(b) in ok1 and n == 1048576
+fn drop_big() = let b = big_str("x", 24) in count(b)
+fn test_large_object_memory_returns() = let u0 = gc_collect() in let n = drop_big() in let u1 = gc_collect() in n == 16777216 and u1 < u0 + 8388608
+
+fn test_closure_survives() = let k = 40 in let f = fn(x) => x + k in let z = forced(3, 0) in f(2) == 42
+
+fn test_rc_survives() = let r: rc[int] = rc(77) in let z = forced(3, 0) in r.get() == 77
+
+fn deep(n, keep) = if n == 0 then sum_list(keep, 0) else let local = Cons(n, keep) in let z = if n % 20000 == 0 then gc_collect() else 0 in deep(n - 1, local) + 0
+fn test_stack_roots_survive() = deep(100000, Nil) == 5000050000
+
+fn test_arena_is_not_collected() = let a = arena_new(4096) in let p = arena_alloc(a, 64) in let w = mmio_volatile_write64(p, 12345) in let z = forced(3, 0) in let v = mmio_volatile_read64(p) in let d = arena_destroy(a) in v == 12345

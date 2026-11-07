@@ -121,7 +121,7 @@ fn nn_str_contains(s, pat) = let m = count(pat) in if m == 0 then 1 else nn_str_
 
 fn model_verify_safetensors(st_json, m) = let o1 = nn_data_bytes(m.w1) in let o2 = o1 + nn_data_bytes(m.b1) in let o3 = o2 + nn_data_bytes(m.w2) in let o4 = o3 + nn_data_bytes(m.b2) in if nn_str_contains(st_json, "\"data_offsets\":[0," + str(o1) + "]") == 0 then 0 else if nn_str_contains(st_json, "\"data_offsets\":[" + str(o3) + "," + str(o4) + "]") == 0 then 0 else if nn_str_contains(st_json, "\"data\":[" + nn_data_csv(m.w1.data) + "]") == 0 then 0 else nn_str_contains(st_json, "\"version\":\"sha256:")
 
-fn model_export_onnx(m, name) = "{\"ir_version\":9,\"graph\":{\"name\":\"" + name + "\",\"hash\":\"" + model_content_hash(m) + "\",\"initializers\":{\"w1\":[" + nn_data_csv(m.w1.data) + "],\"b1\":[" + nn_data_csv(m.b1.data) + "],\"w2\":[" + nn_data_csv(m.w2.data) + "],\"b2\":[" + nn_data_csv(m.b2.data) + "]},\"nodes\":[\"MatMul\",\"Add\",\"Relu\",\"MatMul\",\"Add\"]}}"
+fn model_export_onnx(m, name) = "{\"ir_version\":9,\"graph\":{\"name\":\"" + name + "\",\"hash\":\"" + model_content_hash(m) + "\",\"initializers\":{\"w1\":[" + nn_data_csv(m.w1.data) + "],\"b1\":[" + nn_data_csv(m.b1.data) + "],\"w2\":[" + nn_data_csv(m.w2.data) + "],\"b2\":[" + nn_data_csv(m.b2.data) + "]},\"nodes\":[\"MatMul\",\"Add\",\"Relu\",\"MatMul\",\"Add\"]\}\}"
 
 fn model_verify_onnx(onnx_json, m, name) = if nn_str_contains(onnx_json, "\"ir_version\":9") == 0 then 0 else if nn_str_contains(onnx_json, "\"name\":\"" + name + "\"") == 0 then 0 else if nn_str_contains(onnx_json, "\"MatMul\",\"Add\",\"Relu\"") == 0 then 0 else if nn_str_contains(onnx_json, "\"w1\":[" + nn_data_csv(m.w1.data) + "]") == 0 then 0 else nn_str_contains(onnx_json, "\"hash\":\"sha256:")
 
@@ -134,7 +134,7 @@ fn nn_le64_hex(v) = if v < 0 then nn_le64_hex_neg_lp(0 - 1 - v, 0) else nn_le64_
 
 fn nn_hex_nib(c) = if c >= "0" and c <= "9" then toint(c) else if c == "a" then 10 else if c == "b" then 11 else if c == "c" then 12 else if c == "d" then 13 else if c == "e" then 14 else if c == "f" then 15 else 0
 fn nn_hex_byte_at(hex, idx) = (nn_hex_nib(at(hex, idx * 2)) * 16) + nn_hex_nib(at(hex, idx * 2 + 1))
-fn nn_hex_to_i64_le_lp(hex, idx, mult, acc, inv_acc) = if idx >= 8 then acc else let b = nn_hex_byte_at(hex, idx) in if idx == 7 and b >= 128 then 0 - 1 - (inv_acc + ((255 - b) * mult)) else nn_hex_to_i64_le_lp(hex, idx + 1, mult * 256, acc + (b * mult), inv_acc + ((255 - b) * mult))
+fn nn_hex_to_i64_le_lp(hex, idx, mult, acc, inv_acc) = if idx >= 8 then acc else let b = nn_hex_byte_at(hex, idx) in if idx == 7 then (if b >= 128 then 0 - 1 - (inv_acc + ((255 - b) * mult)) else acc + (b * mult)) else nn_hex_to_i64_le_lp(hex, idx + 1, mult * 256, acc + (b * mult), inv_acc + ((255 - b) * mult))
 fn nn_hex_to_i64_le(hex) = if count(hex) < 16 then 0 else nn_hex_to_i64_le_lp(hex, 0, 1, 0, 0)
 
 fn nn_str_hex(s, i, n) = if i >= n then "" else nn_hex_byte(sha_ord(at(s, i))) + nn_str_hex(s, i + 1, n)
@@ -144,7 +144,7 @@ fn nn_list_le64_hex(xs) = match xs
 
 fn safetensors_write_bin(path, m) = let hdr = model_save_safetensors(m) in let hlen = count(hdr) in let hex = nn_le64_hex(hlen) + nn_str_hex(hdr, 0, hlen) + nn_list_le64_hex(m.w1.data) + nn_list_le64_hex(m.b1.data) + nn_list_le64_hex(m.w2.data) + nn_list_le64_hex(m.b2.data) in fs_write_hex_file(path, hex)
 
-fn nn_read_le64_lp(path, off, idx, mult, acc, inv_acc) = if idx >= 8 then {ok: 1, val: acc} else let b = fs_read_byte(path, off + idx) in if b < 0 then {ok: 0, val: 0} else if idx == 7 and b >= 128 then {ok: 1, val: 0 - 1 - (inv_acc + ((255 - b) * mult))} else nn_read_le64_lp(path, off, idx + 1, mult * 256, acc + (b * mult), inv_acc + ((255 - b) * mult))
+fn nn_read_le64_lp(path, off, idx, mult, acc, inv_acc) = if idx >= 8 then {ok: 1, val: acc} else let b = fs_read_byte(path, off + idx) in if b < 0 then {ok: 0, val: 0} else if idx == 7 then {ok: 1, val: if b >= 128 then 0 - 1 - (inv_acc + ((255 - b) * mult)) else acc + (b * mult)} else nn_read_le64_lp(path, off, idx + 1, mult * 256, acc + (b * mult), inv_acc + ((255 - b) * mult))
 fn nn_read_le64(path, off) = nn_read_le64_lp(path, off, 0, 1, 0, 0)
 
 fn nn_file_size_lp(path, off) = if fs_read_byte(path, off) < 0 then off else nn_file_size_lp(path, off + 1)

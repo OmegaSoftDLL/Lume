@@ -7,7 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Compact values.** A value is one word: an integer of 63 bits and a string of at most 7 bytes live in it and never touch the heap, and `int` keeps its full 64-bit range through a 16-byte cell used only past 63 bits. A constructor without fields is one static cell, a string literal is a static cell, `at` and `chr` never allocate. A constructor costs 8 bytes plus its fields (`Cons` went from 56 to 24), a record 8 bytes plus its values with one static shape (3 fields went from 88 to 32). `match` compares one word and field access compares interned keys.
+- **Direct code.** The code generator keeps the value in `%rax`, loads literals and locals straight into registers, does tagged arithmetic inline with one overflow test, and turns a comparison inside `if` into a compare-and-jump.
+- **The compactor.** `mem_pack`/`mem_unpack` (LZ4 block format, bounds-checked decoder, corrupt input stops) and `arena_freeze`/`arena_thaw`: an arena is compressed page by page, its memory goes back to the OS, pointers stay valid and a frozen page returns on first touch. `LUME_ARENA_COLD=<n>` freezes an arena unused for `n` collections. `.lcaps` and `.lumb` are stored packed when that is smaller, `lume pack` and `lume unpack` work on any file.
+- **`@secret fn`** and **`arena_mark_secret`:** a secret never reaches the compactor, because decompression time depends on the bytes (`[C0009]`, secret arenas stop at run time). The compactor also has no place under `@bound` (`[V0002]`).
+- `tests/memory/atomic_compactor_ok.src` holds the cell sizes, the zero-allocation paths and the compactor to measured numbers.
+- `tests/memory/value_matrix_ok.src` runs every operation over the boundary values of the word and pins one digest per group to the answers of the cell representation. `value_edges_ok.src` holds the cases where an earlier answer was wrong, and `freestanding_values_ok.src` runs `xs[i]`, `s[i]` and `count` on the kernel runtime in QEMU.
+- **`[R0201]` covers the prefixes of the runtime** (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`), and the runtime's internal labels are `.Lrt_*`, which no Lume name can spell. A probe with one function per runtime label found 396 of 450 labels free to be replaced by a user function, silently.
+- **`[L0010]`:** `lasm` rejects a symbol defined twice. It used to keep one of them, which is how a stale routine could survive a merge.
+- **Native memory reclamation.** The hosted runtime now collects garbage: a non-moving mark-sweep collector with lazy sweeping that returns memory to the OS. `LUME_GC=on|off`, `LUME_GC_STRESS=<n>`, and `gc_collect()`/`gc_count()` in `use arena`. Limits are stated in `docs/38-memory-management.md`.
+- **`[O0004]`:** a `resource type` value held by a `let` must be consumed on every path.
+- **`[O0013]`:** a move, mutable borrow, or use that conflicts with a borrow used later is rejected. Borrows end at their last use.
+- **`lume: stack overflow (recursion too deep)`, exit 12,** instead of a silent SIGSEGV. The stack limit is capped at 4 GiB.
+- `tests/harness/ownership_gate.src`, `runtime_sync_gate.src` and `gc_gate.src`, also run in CI. The ownership gate also holds every fail-closed fixture and every `compiler/stage1/*_ok.src` to the same verdict from `lumec` and `lcaas`.
+- **`lcaas` runs the real compiler.** It imports `lumec.src` and compiles every request in process, so the oracle can no longer accept what `lumec` rejects. Its own parser only recovers an AST from a broken program. Over the 547 programs in the repository the two now agree on every verdict and every error code; before this change they disagreed on 115.
+- **`ctfail` and the runtime's own stops can be caught in process** with `__lume_try_begin()`, `__lume_try_end()` and `__lume_try_msg()`, nested up to 16 deep, which is how a compile error becomes a diagnostic instead of ending the oracle.
+- **`compiler/stage1/name_flow.src`:** name resolution shared by `lumec` and `lcaas`. The oracle lists every undefined name at once, and `[R0201]` rejects a function named after a runtime routine.
+- **`lume agent` resolves `use`.** A program with imports is compiled as the bundle the build would use, while analyses and spans stay on your file. A module that cannot be found is `[R0300]`, in JSON.
+- **Integer overflow stops the program** (`lume: integer overflow`, exit 3) for `+`, `-` and `*`. `+%`, `-%` and `*%` wrap on request. This is what makes contract proofs over the integers hold on real machine integers.
+- **`xs[i]` in native code,** on any value on the same line (`f()[0]`, `"s"[1]`, `[1, 2][0]`), for lists and strings. Past the end stops the program.
+- **First-class functions:** a named function can be passed, stored and returned as a value, in a list, a record or a constructor, and closures work at any arity. A call result can be called (`mk(1)(2)`), an immediately called lambda works with no arguments, a higher-order function needs no closure elsewhere in the program, a top-level `let` can hold a function, and functions with `own` or `mut` parameters can be used as values. Before, only arities 1 and 2 were dispatched, and any other answered 0.
+- **`[R0202]` covers builtins,** so `slice("abc", 1)` is rejected instead of reading a garbage register. **`[R0203]`** rejects a call to an internal routine of the runtime, such as `strlen`. **`[C0002]`** stops the build on a name with no storage, which used to read an arbitrary stack slot.
+- **A program that passes `lume check` links.** A call that lowering left unresolved is rejected before code is generated: a routine from a module the program did not import (`[R0200]`, naming the `use` to add), a form of a compiler intrinsic that has no meaning, and `f[i]` on a function (`[R0204]`). These used to stop at link time.
+- **`[R0205]`** rejects a call whose name is both a local and a builtin or intrinsic. `fn f(get) = get(1)` used to ignore its parameter and return 1.
+- **Comparisons do not chain.** `3 > 2 > 1` compared a boolean with 1 and printed 0. It is now `[P0002]`.
+- **`[R0202]` covers `Cons` and `Nil`,** in expressions and in patterns, unless the program declares its own. A `Cons(a)` arm used to match nothing, silently.
+- **Comptime arithmetic reports overflow** as `[C1001]`, in `lumec` and in the oracle, including `min / -1`. It used to stop the compiler with no code.
+- **`true` and `false` are values.** `print true` used to crash, and `fn f() -> bool = true` printed nothing.
+- **`type Name = str`** names a base type. It used to declare an enum with a variant called `str`.
+- **`[R0202]`** rejects a call with the wrong number of arguments. It found three such calls in `lcaas`, each of which read garbage from a register.
+- **`[D0002]`, `[D0003]` and `[D0004]`** reject a name or a type defined twice in a bundle, which used to let one silently replace the other, and a record field given twice.
+- **`[T1002]`** rejects a `match` that names variants of a declared enum, has no catch-all, and leaves one out.
+- **Declared types are checked on every branch.** `-> int` is enforced on each `if` and `match` arm, where one fitting branch used to excuse another, and a typed record literal has to give every field.
+- **`[L0003]`** rejects an integer literal that does not fit in 64 bits, which used to wrap.
+- `tests/memory/`: `values_ok`, `list_index_ok`, `list_index_fail`, `list_index_type_fail`, `int_wrap_ok`, `type_error_fail`, `div_zero_fail`, `dyn_type_fail`, `closures_ok`, `closure_arity_fail`, `fn_values_ok`.
+
+### Fixed
+- **`exists_range` and `forall_range` ending at the top of `int`** stepped past it, wrapped, and answered with the wrong value. They now stop at the last integer of the range.
+- **Strings with a NUL byte** compared as C strings: `<=` and `>=` could both hold while `==` did not, and a `match` on `"a"` took `"a" + chr(0)`. Equality, order and patterns now compare the whole string, length included.
+- **Five generators emitted JSON one closing brace short:** the report of `lume economy`, the registry errors, `model_export_onnx` and the traces of the EGM and NCM engines. Each closed an object opened by an earlier piece of a concatenation with `}}`, and a literal outside an open `{` reads that pair as one brace. They now write `\}\}`.
+- **`chr(n)` outside 0..255** kept the low byte. It now stops the program.
+- **`bit_and`, `bit_or`, `bit_xor`, `bit_shl`, `bit_shr`, `bit_not`, `os_arg_at`, `fs_read_file`, `fs_read_dir` and `fs_path_exists` read a value of the wrong kind** as if it were the right one and answered anyway. They now stop with a type error. `xs[i]` and `at` check the kind of the value before the position, so a wrong kind reads the same whatever the index.
+- **`"abc"[3]` printed nothing and went on.** `xs[i]` on a string now stops past the end, as it does on a list, and `at(s, i)` keeps its `""` for scanners.
+- **`toint("-42")` was 0.** `toint` now reads a sign, and reaches the most negative integer.
+- **An index or a position that is not an integer** used to read the object as if it were one. `xs[i]`, `at`, `slice`, `slicen` and `chr` now stop with a type error.
+- **Value corruption through Perceus reuse:** `let b = a in let c = f(own a) in b` could observe the cell overwritten in place. Reuse now requires every call site to pass a provably unique value, and otherwise allocates.
+- **Ownership holes:** moves now reach aliases, containers, parts and closures; moving out of a borrowed value is caught through aliases and match patterns; borrows can no longer escape through records, constructors or match results.
+- **Heap corruption with C code:** the runtime no longer uses `brk`, which `malloc` shares. The same fix makes a Lume `.so` safe to load next to another Lume runtime.
+- **`cell[T]` aliasing:** cells lived in a 240-entry ring and silently overwrote each other. Each cell is now its own heap slot, and holds any value.
+- **String interpolation overflow in the seed:** an interpolated value longer than the literal wrote past its buffer.
+- **`fs_read_dir` overflow:** a directory growing between the two passes overran the listing buffer. The listing is now truncated to what was counted.
+- **`lcaas` nested patterns:** `Cons(a, Cons(b, t))` produced a corrupted AST and reported success. The oracle now parses nested patterns and shares the ownership analysis with `lumec`.
+- **`lume fmt` corrupted source files.** Its own parser knows only part of the language: of 234 valid programs, 96 stopped compiling or changed meaning, and the file was rewritten with exit 0. A statement is now replaced only when the compiler's parser reads the same program from both texts and it holds no comment. Everything else stays as written.
+- **`fn f(x: int) -> bool = x > 0` compiled to an error.** A comparison, `and`, `or` and `not` now have type `bool`, which is still accepted where an `int` is expected.
+- **`{ r with a: 1 }` on a value of unknown shape lost fields.** The compiler guessed a record with that key, so `{a, b, c}` came back as `{a, b}`, or as `{a}` when it found none. The update now happens at run time and keeps every field.
+- **Integer patterns past 32 bits matched the wrong value.** `4294967297 => ...` was truncated, so it matched `1`, and never matched itself.
+- **A local now shadows a top-level function when called.** The call used to go to the top-level function, so `fn g(f) = f(1)` ignored its parameter whenever a function `f` existed.
+- **`with handler` and `with alloc` bodies skipped lowering.** Constants, `xs[i]`, record updates, generics, closures and function values inside them read garbage or failed at link. They now go through every pass, and type checks reach handler bodies.
+- **`slicen` trusted its length argument** and could read past the end of the string. The length now comes from the string.
+- **`INT64_MIN / -1` and `% -1`** report `lume: integer overflow`, and division by zero reports `lume: division by zero`. Neither depends on SIGFPE any more, so the oracle survives them.
+- **`[T1002]` no longer rejects a `match` whose tags are in two enums** when it covers one of them.
+- **Untyped code fails closed.** These used to continue with a made-up value and now stop with a message and exit 3: a `match` with no arm for the value (was 0), a missing record field (was 0), arithmetic or `<` on a non-integer (read the object's length), a condition that is not a boolean, `toint` past 64 bits.
+- **Field access on a non-record** read the value's bytes as pointers, so `x.b` on a string dereferenced its text. It now reports a missing field.
+- **`print` of a tag-4 list** printed `<opaque>` after the closing bracket and crashed, on the seed path.
+- **Records at compile time:** `comptime({a: 1, b: 2} == {b: 2, a: 1})` was false while the same expression is true at run time.
+- **`lcaas` `result`:** a `print` the evaluator could not compute was dropped silently, and `str()` of a compound value or a record comparison could give a wrong line. A line it cannot compute now reads `<runtime>`.
+- **`str()` of a list, record or constructor** returned a fragment of the value. It now gives the text `print` shows.
+- **Top-level `let`** with a side effect ran at every use. It now runs once, in source order. Pure constants stay inlined.
+- **String builtins given a non-string** read the wrong object. They now stop with `lume: type error: this operation needs a string`, exit 3.
+- **Division by zero** died with a bare SIGFPE. It now reports `lume: division by zero or integer overflow`, exit 3.
+- **`print` of a string with a NUL byte** stopped at the NUL.
+- **Perceus uniqueness:** exemptions in the use count let a value reach two owners. A use now counts exactly once on each path, with no exemptions.
+
 ### Changed
+- **Runtime source:** the hosted runtime moved out of two diverging copies into `compiler/stage1/runtime_core.lume`, one instruction per line.
+- **Arenas no longer pin the heap.** Each is its own mapping and `arena_destroy` returns it to the OS. The `heap ceiling pinned` error is gone.
+- **Perceus reuse narrowed:** the compiler's own AST passes now allocate, because the parser's output is not provably unique.
+- **Bootstrap and tool builds pay for the embedded compiler:** every tool that imports `lcaas` also carries `lumec`, so building them takes longer. See `docs/PROJECT_STATE.md` for the measured cost.
+- **`lume agent check` on a `.lume` Stage-0 file** used to answer `ok:true` from a garbage parse. It now reports what the self-hosted front end sees, usually `[R0300]` for `use io`. Use `lume check` for Stage-0 files.
+- **Seed:** 64-byte values and a collected heap. `SEED_FREEZE.sha256` updated; output on `lumec.src` is byte-identical to the previous seed.
+- `lume: out of memory (heap exhausted)` replaces the `brk failed` wording.
 - **Stricter `.src` parsing (may reject code that previously compiled):** `let` requires `=`; a `let` body on the same line requires `in` or `;` (a new line still works); duplicate binders are rejected in function and lambda parameters, tuple/record `let` and patterns; `match` arms require a pattern (`=> 1` is `[P0002]`); decimal patterns are `[P0002]` in every arm position and in Stage-0; stray top-level tokens are `[P0002]`.
 - **`[L0002]` for unsupported string escapes:** `\q`-style escapes no longer silently drop the backslash. `\0` is rejected natively because native strings are NUL-terminated. `\b` and `\f` now decode to the real control bytes (they previously became the letters `b` and `f`).
 - **`not` precedence:** `not` binds looser than comparison and tighter than `and`, so `not 1 == 2` is `1`, in both native and Stage-0.

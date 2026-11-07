@@ -1,0 +1,307 @@
+## name_flow.src -- name resolution shared by `lumec` and `lcaas`.
+##
+## A call with no visible definition used to reach codegen, and lasm resolved the missing symbol to address 0,
+## so the program crashed at first use (#417, #420). A string hole naming an unbound variable produced silent
+## garbage (#423). `nf_check` walks every expression with a lexical scope BEFORE any lowering and reports both
+## as [R0200]. A function reusing the name of a runtime routine is [R0201]: the two would share one label.
+##
+## Pure, like own_flow.src: it reports and never fails. `lumec` stops at the first entry and `lcaas` turns each
+## entry into a diagnostic, so the compiler and the oracle cannot disagree about which names exist.
+##
+## A call target is visible when it is a function of this bundle (flat module scope, so forward references are
+## fine), a declared signature (OSig/Sig, which cover extern "c"), an effect or trait operation or impl method
+## (the trait pass resolves those to their mangled __impl_* functions), a constructor, a runtime entry point
+## (the `lis_*_call` predicates are the ones codegen uses to emit the runtime, so this list cannot drift from
+## what lasm sees), an intrinsic consumed by lowering, or a synthetic form (_call, _tyapp_*, quantifiers,
+## Perceus reuse). Anything else would be emitted as `call <name>` with no defining label.
+
+fn lis_bv2_call(nm) = nm == "bv_xor" or nm == "bit_xor" or nm == "bv_and" or nm == "bit_and" or nm == "bv_or" or nm == "bit_or" or nm == "bv_shl" or nm == "bit_shl" or nm == "bv_shr" or nm == "bit_shr" or nm == "bv_add_u8" or nm == "bv_sub_u8" or nm == "bv_mul_u8"
+fn lis_bv1_call(nm) = nm == "bv_u8" or nm == "bv_not_u8"
+fn lis_sys_call(nm) = nm == "port_out8" or nm == "port_in8" or nm == "port_out16" or nm == "port_in16" or nm == "port_out32" or nm == "port_in32" or nm == "cpu_cli" or nm == "cpu_sti" or nm == "cpu_hlt" or nm == "cpu_pause" or nm == "cpu_mfence" or nm == "cpu_rdtsc" or nm == "cpu_rdmsr" or nm == "cpu_wrmsr" or nm == "cpu_read_cr3" or nm == "cpu_write_cr3" or nm == "cpu_invlpg" or nm == "cpu_idt_init" or nm == "cpu_trigger_irq32" or nm == "cpu_irq32_count" or nm == "cpu_pf14_count" or nm == "cpu_pf14_addr" or nm == "cpu_wait_timer_irq" or nm == "cpu_smp_boot_ap" or nm == "cpu_run_2tasks" or nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" or nm == "bit_not" or nm == "bit_shl" or nm == "bit_shr" or nm == "mem_copy" or nm == "mem_set" or nm == "mem_crc64" or nm == "krn_slot_write" or nm == "krn_slot_read" or nm == "mmio_volatile_write8" or nm == "mmio_volatile_read8" or nm == "mmio_volatile_write16" or nm == "mmio_volatile_read16" or nm == "mmio_volatile_write32" or nm == "mmio_volatile_read32" or nm == "mmio_volatile_write64" or nm == "mmio_volatile_read64" or nm == "vga_puts" or nm == "vga_fill_row" or nm == "vga_scroll_up" or nm == "vga_set_cursor" or nm == "atomic_xadd64" or nm == "spinlock_acquire" or nm == "spinlock_release" or nm == "hw_scratch_addr" or nm == "os_getpid" or nm == "os_pipe_new" or nm == "os_pipe_write_int" or nm == "os_pipe_read_int" or nm == "os_fork" or nm == "os_waitpid" or nm == "os_waitpid_status" or nm == "os_kill" or nm == "os_run" or nm == "os_exec" or nm == "os_run_capture" or nm == "os_run_capture_timeout" or nm == "os_run_input_capture_timeout" or nm == "os_last_timed_out" or nm == "os_last_child_maxrss_kb" or nm == "os_self_maxrss_kb" or nm == "os_monotonic_ns" or nm == "os_sleep_ms" or nm == "os_exit" or nm == "net_tcp_listen" or nm == "net_tcp_connect" or nm == "net_tcp_accept" or nm == "net_udp_bind" or nm == "net_udp_sendto" or nm == "net_send_str" or nm == "net_recv_str" or nm == "net_close" or nm == "net_shutdown_write" or nm == "epoll_create_fd" or nm == "epoll_add_in" or nm == "epoll_wait_one"
+fn lis_tier_call(nm) = nm == "__lume_rc_new" or nm == "__lume_arc_new" or nm == "__lume_rc_clone" or nm == "__lume_rc_drop" or nm == "__lume_rc_get" or nm == "__lume_rc_strong_count" or nm == "__lume_weak_downgrade" or nm == "__lume_weak_upgrade" or nm == "__lume_promise_new" or nm == "__lume_promise_resolve" or nm == "__lume_signal_new" or nm == "__lume_signal_set" or nm == "__lume_signal_version"
+## the compactor (arena.src): pack keeps a value out of the hot path, unpack brings it back
+fn lis_pack_call(nm) = nm == "mem_pack" or nm == "__lume_mem_pack" or nm == "arena_freeze" or nm == "arena_compact" or nm == "__lume_arena_freeze"
+fn lis_zip_call(nm) = lis_pack_call(nm) or nm == "mem_unpack" or nm == "__lume_mem_unpack" or nm == "arena_thaw" or nm == "__lume_arena_thaw"
+fn lis_mem_call(nm) = nm == "__lume_mem_pack" or nm == "__lume_mem_unpack" or nm == "__lume_arena_freeze" or nm == "__lume_arena_thaw" or nm == "__lume_arena_secret" or nm == "__lume_arena_frozen" or nm == "__lume_gc_collect" or nm == "__lume_gc_count" or nm == "__lume_arena_new" or nm == "__lume_arena_alloc" or nm == "__lume_arena_reset" or nm == "__lume_arena_destroy" or nm == "__lume_heap_stats" or nm == "__lume_heap_peak_used"
+fn nf_rtbase(nm) = nm == "ord_at" or nm == "__lume_rec_update" or nm == "__lume_try_begin" or nm == "__lume_try_end" or nm == "__lume_try_msg" or nm == "__lume_global_get" or nm == "__lume_global_set" or nm == "alloc" or nm == "alloc_grow" or nm == "at" or nm == "chr" or nm == "count" or nm == "ctfail" or nm == "emit" or nm == "flush" or nm == "io_read_byte" or nm == "lidx" or nm == "mkctor" or nm == "mkint" or nm == "mklist" or nm == "mkrec" or nm == "mkstr" or nm == "ord" or nm == "print_int" or nm == "printval" or nm == "read" or nm == "readall" or nm == "recget" or nm == "showval" or nm == "slice" or nm == "slicen" or nm == "str" or nm == "strcmpv" or nm == "streq" or nm == "strlen" or nm == "strni" or nm == "stro" or nm == "toint" or nm == "utf8_chr" or nm == "wch" or nm == "wint" or nm == "wstr" or nm == "addv" or nm == "addvs" or nm == "cmpv" or nm == "cmpvgt" or nm == "cmpvi" or nm == "cmpvlt" or nm == "cnts" or nm == "eqv" or nm == "eqv0" or nm == "eqvc" or nm == "eqvi" or nm == "eqvs" or nm == "std" or nm == "stl" or nm == "stp" or nm == "os_arg_at" or nm == "os_arg_count" or nm == "fs_append_sync" or nm == "fs_current_dir" or nm == "fs_files_equal" or nm == "fs_mkdir" or nm == "fs_path_exists" or nm == "fs_read_byte" or nm == "fs_read_dir" or nm == "fs_remove" or nm == "fs_write_hex_file" or nm == "fs_write_sync" or nm == "fs_read_file"
+fn nf_rt(nm) = nf_rtbase(nm) == 1 or lis_sys_call(nm) == 1 or lis_tier_call(nm) == 1 or lis_bv1_call(nm) == 1 or lis_bv2_call(nm) == 1 or lis_mem_call(nm) == 1
+fn nf_tyapp(nm) = if count(nm) > 7 and slice(nm, 0, 7) == "_tyapp_" then 1 else 0
+fn nf_special1(nm) = nm == "borrow" or nm == "borrow_mut" or nm == "move" or nm == "clone" or nm == "verify" or nm == "law_check" or nm == "evolve_approve" or nm == "llm_complete" or nm == "prob_sample" or nm == "sample_dist" or nm == "observe_lik" or nm == "llm_prompt" or nm == "old" or nm == "grad" or nm == "jvp" or nm == "vjp" or nm == "vmap" or nm == "value_and_grad" or nm == "jit" or nm == "matmul" or nm == "tensor_matmul" or nm == "tensor_add" or nm == "tensor_sub" or nm == "tensor_mul" or nm == "tensor_add_bias" or nm == "cap_page_map" or nm == "rc" or nm == "arc" or nm == "rc_new" or nm == "arc_new" or nm == "rc_clone" or nm == "arc_clone" or nm == "rc_drop" or nm == "arc_drop" or nm == "rc_get" or nm == "arc_get" or nm == "rc_strong_count" or nm == "arc_strong_count" or nm == "weak_downgrade" or nm == "weak_upgrade" or nm == "downgrade" or nm == "upgrade" or nm == "strong_count" or nm == "drop" or nm == "get" or nm == "promise" or nm == "promise_new" or nm == "promise_resolve" or nm == "promise_await" or nm == "resolve" or nm == "signal" or nm == "signal_new" or nm == "signal_get" or nm == "signal_set" or nm == "signal_version" or nm == "set" or nm == "version" or nm == "block_on" or nm == "shard"
+fn nf_special2(nm) = nm == "_call" or nm == "_tylist_" or nm == "forall_range" or nm == "exists_range" or nm == "__perceus_reuse_1" or nm == "__perceus_reuse_2" or nm == "assert" or nm == "embed" or nm == "table_schema" or nm == "unquote" or nm == "ctor" or nm == "int" or nm == "decimal" or nm == "decimal_cast" or nm == "dec_add" or nm == "dec_sub" or nm == "dec_eq" or nm == "dec_lt" or nm == "dec_le" or nm == "dec_gt" or nm == "dec_ge" or nm == "money_parse" or nm == "money_make" or nm == "money_convert_fx" or nm == "money_add" or nm == "money_sub" or nm == "money_cmp" or nm == "query_where" or nm == "query_order" or nm == "query_join" or nm == "query_group" or nm == "always" or nm == "eventually" or nm == "until" or nm == "leads_to" or nm == "array_new" or nm == "array_const" or nm == "array_select" or nm == "array_store" or nm == "heap_new" or nm == "heap_write" or nm == "heap_read" or nm == "points_to" or nm == "sep_conj" or nm == "sep_disjoint" or nm == "sep_dom" or nm == "sep_valid" or nm == "bv_add_u8" or nm == "bv_sub_u8" or nm == "bv_mul_u8" or nm == "bv_xor_u8" or nm == "bv_and_u8" or nm == "bv_not_u8" or nm == "alloc_heap" or nm == "wasm_call_host_fs" or nf_tyapp(nm) == 1
+fn nf_special(nm) = nf_special1(nm) == 1 or nf_special2(nm) == 1
+## A builtin reads its arguments from registers, so a call with too few of them works on whatever is there.
+fn nf_ar0(nm) = nm == "flush" or nm == "read" or nm == "readall" or nm == "io_read_byte" or nm == "os_arg_count" or nm == "os_fork" or nm == "os_getpid" or nm == "os_last_child_maxrss_kb" or nm == "os_last_timed_out" or nm == "os_monotonic_ns" or nm == "os_pipe_new" or nm == "os_self_maxrss_kb" or nm == "fs_current_dir" or nm == "epoll_create_fd" or nm == "cpu_cli" or nm == "cpu_sti" or nm == "cpu_hlt" or nm == "cpu_pause" or nm == "cpu_mfence" or nm == "cpu_rdtsc" or nm == "cpu_read_cr3" or nm == "cpu_idt_init" or nm == "cpu_irq32_count" or nm == "cpu_pf14_addr" or nm == "cpu_pf14_count" or nm == "cpu_trigger_irq32" or nm == "cpu_wait_timer_irq" or nm == "hw_scratch_addr" or nm == "__lume_try_begin" or nm == "__lume_try_end" or nm == "__lume_try_msg" or nm == "__lume_gc_collect" or nm == "__lume_gc_count" or nm == "__lume_heap_stats" or nm == "__lume_heap_peak_used"
+fn nf_ar1(nm) = nm == "count" or nm == "str" or nm == "ctfail" or nm == "chr" or nm == "emit" or nm == "ord" or nm == "printval" or nm == "toint" or nm == "utf8_chr" or nm == "os_arg_at" or nm == "os_exit" or nm == "os_sleep_ms" or nm == "os_waitpid" or nm == "os_waitpid_status" or nm == "os_pipe_read_int" or nm == "fs_mkdir" or nm == "fs_path_exists" or nm == "fs_read_dir" or nm == "fs_read_file" or nm == "fs_remove" or nm == "net_close" or nm == "net_shutdown_write" or nm == "net_tcp_accept" or nm == "net_tcp_connect" or nm == "net_tcp_listen" or nm == "net_udp_bind" or nm == "cpu_rdmsr" or nm == "cpu_write_cr3" or nm == "cpu_invlpg" or nm == "cpu_run_2tasks" or nm == "cpu_smp_boot_ap" or nm == "port_in8" or nm == "port_in16" or nm == "port_in32" or nm == "mmio_volatile_read8" or nm == "mmio_volatile_read16" or nm == "mmio_volatile_read32" or nm == "mmio_volatile_read64" or nm == "spinlock_acquire" or nm == "spinlock_release" or nm == "krn_slot_read" or nm == "bit_not" or nm == "bv_u8" or nm == "bv_not_u8" or nm == "__lume_arena_new" or nm == "__lume_arena_destroy" or nm == "__lume_arena_reset" or nm == "__lume_rc_get" or nm == "__lume_signal_new" or nm == "__lume_signal_version" or nm == "__lume_global_get"
+fn nf_ar2(nm) = nm == "__lume_rec_update" or nm == "at" or nm == "lidx" or nm == "os_exec" or nm == "os_kill" or nm == "os_pipe_write_int" or nm == "os_run" or nm == "fs_append_sync" or nm == "fs_files_equal" or nm == "fs_read_byte" or nm == "fs_write_hex_file" or nm == "fs_write_sync" or nm == "net_send_str" or nm == "net_recv_str" or nm == "net_udp_sendto" or nm == "epoll_wait_one" or nm == "atomic_xadd64" or nm == "cpu_wrmsr" or nm == "port_out8" or nm == "port_out16" or nm == "port_out32" or nm == "mmio_volatile_write8" or nm == "mmio_volatile_write16" or nm == "mmio_volatile_write32" or nm == "mmio_volatile_write64" or nm == "krn_slot_write" or nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" or nm == "bit_shl" or nm == "bit_shr" or nm == "bv_and" or nm == "bv_or" or nm == "bv_xor" or nm == "bv_shl" or nm == "bv_shr" or nm == "__lume_arena_alloc" or nm == "__lume_signal_set" or nm == "__lume_global_set"
+fn nf_ar3(nm) = nm == "slice" or nm == "epoll_add_in" or nm == "mem_copy" or nm == "mem_set"
+fn nf_builtin_arity(nm) = if nf_ar1(nm) then 1 else if nf_ar2(nm) then 2 else if nf_ar0(nm) then 0 else if nf_ar3(nm) then 3 else if nm == "slicen" or nm == "os_run_capture" then 4 else if nm == "os_run_capture_timeout" then 5 else if nm == "os_run_input_capture_timeout" then 6 else 0 - 1
+## These take raw machine values, not Lume values: they are the runtime's own, and a program never calls them.
+fn nf_internal(nm) = nm == "addv" or nm == "addvs" or nm == "alloc" or nm == "alloc_grow" or nm == "cmpv" or nm == "cmpvgt" or nm == "cmpvi" or nm == "cmpvlt" or nm == "cnts" or nm == "eqv" or nm == "eqv0" or nm == "eqvc" or nm == "eqvi" or nm == "eqvs" or nm == "mkctor" or nm == "mkint" or nm == "mklist" or nm == "mkrec" or nm == "mkstr" or nm == "print_int" or nm == "recget" or nm == "showval" or nm == "std" or nm == "stl" or nm == "stp" or nm == "strcmpv" or nm == "streq" or nm == "strlen" or nm == "strni" or nm == "stro" or nm == "wch" or nm == "wint" or nm == "wstr"
+fn tpset(ps) = match ps
+    Nil        => Nil
+    Cons(p, r) => if p.cf == 1 then Cons(p.pn, tpset(r)) else tpset(r)
+fn nf_is_hole(nm) = if nm == "_" or count(nm) >= 5 and slice(nm, 0, 5) == "_hole" then 1 else 0
+fn nf_isctor(nm) = let c = at(nm, 0) in if c >= "A" and c <= "Z" then 1 else 0
+fn nf_callok(nm, ctx) = if of_mem(nm, ctx.onames) == 1 or of_mem(nm, ctx.eops) == 1 or nf_isctor(nm) == 1 or nf_rt(nm) == 1 then 1 else nf_special(nm)
+fn nf_fnames(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => nf_fname1(h, nf_fnames(t))
+fn nf_fname1(st, rest) = match st
+    Fn(nm, ps, body) => Cons(nm, rest)
+    _                => rest
+fn nf_sig_names(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => nf_sig1(h, nf_sig_names(t))
+fn nf_sig1(st, rest) = match st
+    OSig(nm, pubf, freef, pl, rty, fromp) => Cons(nm, rest)
+    Sig(nm, ps, ts, rt)                   => Cons(nm, rest)
+    _                                     => rest
+fn nf_opnames(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => nf_opnames(t, if of_mem(h.op, acc) == 1 then acc else Cons(h.op, acc))
+fn nf_eops(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => nf_eop1(h, nf_eops(t))
+fn nf_eop1(st, rest) = match st
+    KEffectDecl(enm, ops)    => of_app(nf_opnames(ops, Nil), rest)
+    TraitDecl(tnm, ops)      => of_app(nf_opnames(ops, Nil), rest)
+    ImplDecl(tnm, tty, mths) => of_app(nf_opnames(mths, Nil), rest)
+    _                        => rest
+
+## builtin scalar type names (and declared `type` names) reach value positions as the erased comptime-type
+## arguments of generics (`id(int, 42)`), so they are legal bare variables even though they name no runtime slot.
+fn nf_tynames(prog) = Cons("int", Cons("str", Cons("bool", nf_tys(prog, Nil))))
+fn nf_tyadd(nm, acc) = if of_mem(nm, acc) == 1 then acc else Cons(nm, acc)
+fn nf_tys(prog, acc) = match prog
+    Nil        => acc
+    Cons(h, t) => nf_tys(t, nf_ty1(h, acc))
+fn nf_ty1(st, acc) = match st
+    OType(nm, k)             => nf_tyadd(nm, acc)
+    TypeS(nm, k, items)      => nf_tyadd(nm, acc)
+    TypeRefineS(nm, bty, pr) => nf_tyadd(nm, acc)
+    GSig(nm, pl, rt)         => of_app(tpset(pl), acc)
+    _                        => acc
+
+fn nf_has(code, nm, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h.code == code and h.name == nm then 1 else nf_has(code, nm, t)
+fn nf_bad(code, nm, msg, fix, acc) = if nf_has(code, nm, acc) == 1 then acc else Cons({code: code, name: nm, msg: msg, fix: fix}, acc)
+fn nf_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => nf_rev(t, Cons(h, acc))
+## labels of the runtime and of the static data: a function under one of these prefixes would share a label with them
+fn nf_rt_prefix(nm) = nf_pre(nm, "__rt_") == 1 or nf_pre(nm, "__gc_") == 1 or nf_pre(nm, "__lume_") == 1 or nf_pre(nm, "__c_") == 1 or nf_pre(nm, "__k_") == 1 or nf_pre(nm, "__r_") == 1 or nf_pre(nm, "__isr_") == 1 or nf_pre(nm, "__cpu_") == 1 or nf_pre(nm, "__krn_") == 1 or nf_pre(nm, "__net_") == 1
+fn nf_clash(fns, acc) = match fns
+    Nil        => acc
+    Cons(h, t) => nf_clash(t, if nf_rt(h) == 1 or nf_rt_prefix(h) == 1 then nf_bad("R0201", h, "function '" + h + "' collides with the runtime builtin of the same name (fix-it: rename it)", "rename '" + h + "'", acc) else acc)
+fn nf_var(x, bound, ctx, acc) = if of_mem(x, bound) == 1 or nf_isctor(x) == 1 then acc else if of_mem(x, ctx.fns) == 1 then nf_bad("fnval", x, "", "", acc) else if x == "true" or x == "false" or of_mem(x, ctx.tynames) == 1 or nf_is_hole(x) == 1 then acc else nf_bad("R0200", x, "undefined variable '" + x + "' (not bound by a parameter, let/var, match arm, shard, or scope in this function)", "bind '" + x + "' or correct its spelling", acc)
+fn nf_arity(nm, defs) = match defs
+    Nil        => 0 - 1
+    Cons(h, t) => if h.nm == nm then h.n else nf_arity(nm, t)
+fn nf_defs(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => nf_def1(h, nf_defs(t))
+fn nf_def1(st, rest) = match st
+    Fn(nm, ps, body) => Cons({nm: nm, n: of_len(ps)}, rest)
+    _                => rest
+## a generic's comptime parameters are erased from its Fn, so only its signature knows how many arguments it takes
+fn nf_generics(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => match h
+        GSig(nm, pl, rt) => Cons({nm: nm, n: of_len(pl), pl: pl}, nf_generics(t))
+        _                => nf_generics(t)
+fn nf_gen_total(nm, gens) = match gens
+    Nil        => 0 - 1
+    Cons(h, t) => if h.nm == nm then h.n else nf_gen_total(nm, t)
+## calling with too few arguments reads whatever the registers hold, so a known function is held to its parameter list
+fn nf_argc(nm, args, n0, ctx, acc) = let got = of_len(args) in let g = nf_gen_total(nm, ctx.gens) in let n = if g >= 0 then g else n0 in if got == n or nf_special(nm) == 1 then acc else nf_bad("R0202", nm, "call to '" + nm + "' passes " + str(got) + " argument(s) but it takes " + str(n), "pass " + str(n) + " argument(s) to '" + nm + "'", acc)
+## a call by one of these names is the compiler's, whatever is in scope
+fn nf_taken_call(nm) = if nf_rt(nm) == 1 or nf_special(nm) == 1 or nf_builtin_arity(nm) >= 0 then 1 else 0
+fn nf_tag_declared(nm, enums) = match enums
+    Nil        => 0
+    Cons(h, t) => if of_mem(nm, h.tags) == 1 then 1 else nf_tag_declared(nm, t)
+fn nf_list_ctor(nm, n, ctx, acc) = let want = if nm == "Cons" then 2 else 0 in if n == want or nf_tag_declared(nm, ctx.enums) == 1 then acc else nf_bad("R0202", nm, "constructor '" + nm + "' takes " + str(want) + " field(s) but this gives " + str(n), "give '" + nm + "' " + str(want) + " field(s)", acc)
+fn nf_is_list_ctor(nm) = nm == "Cons" or nm == "Nil"
+fn nf_pat(p, ctx, acc) = match p
+    PCons(tag, subs) => nf_pats(subs, ctx, if nf_is_list_ctor(tag) then nf_list_ctor(tag, of_len(subs), ctx, acc) else acc)
+    _                => acc
+fn nf_pats(xs, ctx, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => nf_pats(t, ctx, nf_pat(h, ctx, acc))
+fn nf_call(nm, args, bound, ctx, acc) = if nf_is_list_ctor(nm) then nf_list_ctor(nm, of_len(args), ctx, acc) else if nf_internal(nm) == 1 then nf_bad("R0203", nm, "'" + nm + "' is an internal routine of the runtime and cannot be called", "use the public builtins, such as count, at, slice and str", acc) else if of_mem(nm, bound) == 1 then (if nf_taken_call(nm) == 1 then nf_bad("R0205", nm, "this call goes to the compiler's '" + nm + "', not to the local '" + nm + "' in scope (fix-it: rename the local)", "rename the local '" + nm + "'", acc) else nf_bad("fnval", nm, "", "", acc)) else let n = nf_arity(nm, ctx.defs) in if n >= 0 then nf_argc(nm, args, n, ctx, acc) else nf_call2(nm, args, nf_builtin_arity(nm), bound, ctx, acc)
+## a call through a local needs closure conversion, even in a program that never builds a closure
+fn nf_call2(nm, args, n, bound, ctx, acc) = if n >= 0 then nf_argc(nm, args, n, ctx, acc) else if of_mem(nm, bound) == 1 then nf_bad("fnval", nm, "", "", acc) else if nf_callok(nm, ctx) == 1 then acc else nf_bad("R0200", nm, "call to undefined function '" + nm + "' (no visible definition in this bundle; fix-it: define '" + nm + "' or import the module providing it)", "define '" + nm + "' or import the module providing it", acc)
+fn nf_exprs(xs, bound, ctx, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => nf_exprs(t, bound, ctx, nf_expr(h, bound, ctx, acc))
+fn nf_has_key(key, items) = match items
+    Nil        => 0
+    Cons(h, t) => if h.key == key then 1 else nf_has_key(key, t)
+fn nf_rec(items, bound, ctx, acc) = match items
+    Nil        => acc
+    Cons(h, t) => nf_rec(t, bound, ctx, nf_expr(h.val, bound, ctx, if nf_has_key(h.key, t) == 1 then nf_bad("D0004", h.key, "record field '" + h.key + "' is given more than once", "keep one '" + h.key + "'", acc) else acc))
+fn nf_qargs(args, bound, ctx, acc) = match args
+    Cons(Var(vnm), rest) => nf_exprs(rest, Cons(vnm, bound), ctx, acc)
+    _                    => nf_exprs(args, bound, ctx, acc)
+## a `match` that names variants of a declared enum and has no catch-all has to name them all. Arms that cover a
+## variant only partly, by their nested patterns, are left to the run-time check.
+fn nf_tags(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(h.tag, nf_tags(t))
+fn nf_enums(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => match h
+        TypeS(nm, k, items) => if k == "enum" then Cons({nm: nm, tags: nf_tags(items)}, nf_enums(t)) else nf_enums(t)
+        _                   => nf_enums(t)
+fn nf_catches(p) = match p
+    PCons(tag, subs) => 0
+    PInt(n)          => 0
+    PStr(v)          => 0
+    _                => 1
+fn nf_any_catch(arms) = match arms
+    Nil        => 0
+    Cons(h, t) => if nf_catches(h.pat) == 1 then 1 else nf_any_catch(t)
+fn nf_arm_tags(arms) = match arms
+    Nil        => Nil
+    Cons(h, t) => match h.pat
+        PCons(tag, subs) => Cons(tag, nf_arm_tags(t))
+        _                => nf_arm_tags(t)
+fn nf_has_all(seen, tags) = match seen
+    Nil        => 1
+    Cons(h, t) => if of_mem(h, tags) == 1 then nf_has_all(t, tags) else 0
+fn nf_enums_of(seen, enums) = match enums
+    Nil        => Nil
+    Cons(h, t) => if nf_has_all(seen, h.tags) == 1 then Cons(h, nf_enums_of(seen, t)) else nf_enums_of(seen, t)
+fn nf_missing(tags, seen) = match tags
+    Nil        => ""
+    Cons(h, t) => if of_mem(h, seen) == 1 then nf_missing(t, seen) else h
+fn nf_exhaust2(seen, m, acc) = match m
+    Nil         => acc
+    Cons(en, z) => let miss = nf_missing(en.tags, seen) in if miss == "" then acc else nf_bad("T1002", en.nm + "." + miss, "match on enum '" + en.nm + "' does not handle '" + miss + "'", "add an arm for '" + miss + "', or a catch-all '_'", acc)
+fn nf_any_complete(seen, cands) = match cands
+    Nil        => 0
+    Cons(h, t) => if nf_missing(h.tags, seen) == "" then 1 else nf_any_complete(seen, t)
+fn nf_exhaust3(seen, cands, acc) = if nf_any_complete(seen, cands) == 1 then acc else nf_exhaust2(seen, cands, acc)
+fn nf_exhaust1(seen, ctx, acc) = match seen
+    Nil        => acc
+    Cons(h, t) => nf_exhaust3(seen, nf_enums_of(seen, ctx.enums), acc)
+fn nf_exhaust(arms, ctx, acc) = if nf_any_catch(arms) == 1 then acc else nf_exhaust1(nf_arm_tags(arms), ctx, acc)
+fn nf_arms(arms, bound, ctx, acc) = match arms
+    Nil        => acc
+    Cons(h, t) => nf_arms(t, bound, ctx, nf_expr(h.body, of_app(oa_pat_names(h.pat), bound), ctx, nf_pat(h.pat, ctx, acc)))
+## effect and trait declarations carry signature-only ops and impl methods are plain Fn statements, so only
+## `with handler` op bodies are walked, with their own params in scope.
+fn nf_ops(ops, bound, ctx, acc) = match ops
+    Nil        => acc
+    Cons(h, t) => nf_ops(t, bound, ctx, nf_expr(h.body, of_app(h.ps, bound), ctx, acc))
+fn nf_expr(e, bound, ctx, acc) = match e
+    Var(x)                  => nf_var(x, bound, ctx, acc)
+    Bin(op, l, r)           => nf_expr(r, bound, ctx, nf_expr(l, bound, ctx, acc))
+    If(c, t, e2)            => nf_expr(e2, bound, ctx, nf_expr(t, bound, ctx, nf_expr(c, bound, ctx, acc)))
+    LetIn(nm, v, b)         => nf_expr(b, Cons(nm, bound), ctx, nf_expr(v, bound, ctx, acc))
+    VarIn(nm, v, b)         => nf_expr(b, Cons(nm, bound), ctx, nf_expr(v, bound, ctx, acc))
+    LambdaE(ps, tys, rt, b) => nf_expr(b, of_app(ps, bound), ctx, acc)
+    Call(nm, args)          => if nm == "forall_range" or nm == "exists_range" then nf_qargs(args, bound, ctx, acc) else if nm == "_call" then nf_exprs(args, bound, ctx, nf_bad("fnval", nm, "", "", acc)) else nf_exprs(args, bound, ctx, nf_call(nm, args, bound, ctx, acc))
+    Rec(items)              => nf_rec(items, bound, ctx, acc)
+    RecT(tn, items)         => nf_rec(items, bound, ctx, acc)
+    Field(o, fld)           => nf_expr(o, bound, ctx, acc)
+    Match(sc, arms)         => nf_arms(arms, bound, ctx, nf_exhaust(arms, ctx, nf_expr(sc, bound, ctx, acc)))
+    OwnE(inner)             => nf_expr(inner, bound, ctx, acc)
+    MutE(inner)             => nf_expr(inner, bound, ctx, acc)
+    DeferE(c, b)            => nf_expr(c, bound, ctx, nf_expr(b, bound, ctx, acc))
+    ErrDeferE(c, b)         => nf_expr(c, bound, ctx, nf_expr(b, bound, ctx, acc))
+    WithAllocE(a, b)        => nf_expr(b, bound, ctx, nf_expr(a, bound, ctx, acc))
+    WithHandlerE(en, hs, b) => nf_expr(b, bound, ctx, nf_ops(hs, bound, ctx, acc))
+    ScopeE(snm, b)          => nf_expr(b, Cons(snm, bound), ctx, acc)
+    SpawnE(inner)           => nf_expr(inner, bound, ctx, acc)
+    AwaitE(inner)           => nf_expr(inner, bound, ctx, acc)
+    ShardE(vnm, lo, hi, b)  => nf_expr(b, Cons(vnm, bound), ctx, nf_expr(hi, bound, ctx, nf_expr(lo, bound, ctx, acc)))
+    Quote(inner)            => nf_expr(inner, bound, ctx, acc)
+    Splice(inner)           => nf_expr(inner, bound, ctx, acc)
+    _                       => acc
+fn nf_stmt(st, ctx, acc) = match st
+    Fn(nm, ps, body)                 => nf_expr(body, ps, ctx, acc)
+    Print(v)                         => nf_expr(v, Nil, ctx, acc)
+    ExprS(v)                         => nf_expr(v, Nil, ctx, acc)
+    VLawDecl(nm, ps, body)           => nf_expr(body, ps, ctx, acc)
+    VContractSig(nm, ps, reqs, enss) => nf_exprs(enss, Cons("result", ps), ctx, nf_exprs(reqs, ps, ctx, acc))
+    _                                => acc
+fn nf_stmts(prog, ctx, acc) = match prog
+    Nil        => acc
+    Cons(h, t) => nf_stmts(t, ctx, nf_stmt(h, ctx, acc))
+## a sorted copy of the names finds a repeat in n log n, which matters on a bundle of thousands of functions
+fn nf_split(xs, a, b) = match xs
+    Nil        => {a: a, b: b}
+    Cons(h, t) => nf_split(t, Cons(h, b), a)
+fn nf_merge(xs, ys) = match xs
+    Nil        => ys
+    Cons(x, xt) => nf_merge2(x, xt, ys, xs)
+fn nf_merge2(x, xt, ys, xs) = match ys
+    Nil         => xs
+    Cons(y, yt) => if x <= y then Cons(x, nf_merge(xt, ys)) else Cons(y, nf_merge(xs, yt))
+fn nf_sort(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => match t
+        Nil => xs
+        _   => let p = nf_split(xs, Nil, Nil) in nf_merge(nf_sort(p.a), nf_sort(p.b))
+fn nf_repeats(xs, code, what, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => match t
+        Nil        => acc
+        Cons(y, r) => nf_repeats(t, code, what, if h == y then nf_bad(code, h, what + " '" + h + "' is defined more than once", "keep one definition of '" + h + "', or rename the other", acc) else acc)
+fn nf_type_names(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => match h
+        TypeS(nm, k, items) => Cons(nm, nf_type_names(t))
+        _                   => nf_type_names(t)
+fn nf_kind(code) = if at(code, 0) == "T" then "type" else "name"
+## `fnval` entries are facts, not errors: a function used as a value needs closure conversion
+fn nf_errors(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h.code == "fnval" then nf_errors(t) else Cons(h, nf_errors(t))
+fn nf_has_fnval(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h.code == "fnval" then 1 else nf_has_fnval(t)
+## every name problem of the program, in source order: [{code, name, msg, fix}]
+fn nf_check(prog) = let fns = nf_fnames(prog) in let ctx = {fns: fns, defs: nf_defs(prog), gens: nf_generics(prog), enums: nf_enums(prog), onames: nf_sig_names(prog), eops: nf_eops(prog), tynames: nf_tynames(prog)} in nf_rev(nf_stmts(prog, ctx, nf_repeats(nf_sort(nf_type_names(prog)), "D0003", "type", nf_repeats(nf_sort(fns), "D0002", "name", nf_clash(fns, Nil)))), Nil)
+
+## What is left after lowering is what the assembler will get, so every call here has to resolve now. The link step
+## is the only other place that would notice, and by then `lume check` has said yes. The compiler rewrites the forms
+## it knows of a special name, so a special name that is still here has no definition. Codegen lowers the few below.
+fn nf_libmod(nm) = if nm == "decimal" or nm == "decimal_cast" then "decimal" else if nm == "matmul" or nf_pre(nm, "tensor_") == 1 then "tensor" else if nf_pre(nm, "money_") == 1 then "table" else if nf_pre(nm, "query_") == 1 then "query" else ""
+fn nf_pre(nm, p) = if count(nm) > count(p) and slice(nm, 0, count(p)) == p then 1 else 0
+fn nl_codegen(nm, n) = nm == "_tylist_" or nm == "__perceus_reuse_1" or nm == "__perceus_reuse_2" or (lis_bv2_call(nm) == 1 and n == 2) or (lis_bv1_call(nm) == 1 and n == 1) or ((nm == "forall_range" or nm == "exists_range") and n == 4)
+fn nl_fail(code, msg) = ctfail("lume: name error [" + code + "]: " + msg + "\n")
+fn nl_index(b, fns) = if of_mem(b, fns) == 1 then nl_fail("R0204", b + "[...] does not index anything, because '" + b + "' is a function (fix-it: call it as " + b + "(...); a generic takes its type as the first argument, as in " + b + "(int, value))") else nl_fail("R0200", "undefined variable '" + b + "' (no visible definition in this bundle; fix-it: define '" + b + "' or import the module providing it)")
+fn nl_special(nm, n) = let m = nf_libmod(nm) in if m != "" then nl_fail("R0200", "call to undefined function '" + nm + "' (it comes from module '" + m + "'; fix-it: add `use " + m + "`)") else nl_fail("R0200", "call to undefined function '" + nm + "' with " + str(n) + " argument(s) (the compiler has no meaning for this form; fix-it: check the arguments, or define '" + nm + "')")
+fn nl_labelled(nm) = nf_rt(nm) == 1 and lis_bv1_call(nm) == 0 and lis_bv2_call(nm) == 0
+fn nl_no_target(nm, fns) = nm == "__ad_grad_" or (nf_pre(nm, "__closure_call_") == 1 and of_mem(nm, fns) == 0)
+fn nl_call(nm, args, fns) = if nf_tyapp(nm) == 1 then (if of_mem(nm, fns) == 1 then 0 else nl_index(ps_index_base(nm), fns)) else if nm == "_call" then ctfail("lume: codegen error [C0001]: a call through a value has no lowering here, as with a lambda in a contract (fix-it: call a named function)\n") else if nl_no_target(nm, fns) then nl_fail("R0200", "grad, jvp, vjp and vmap need a function as their first argument (fix-it: pass the name of a function)") else if nf_special(nm) == 0 or nl_labelled(nm) then 0 else let n = of_len(args) in if nl_codegen(nm, n) or of_mem(nm, fns) == 1 then 0 else nl_special(nm, n)
+fn nl_e(e, fns) = match e
+    Bin(op, a, b)   => let z = nl_e(a, fns) in nl_e(b, fns)
+    If(c, t, x)     => let z = nl_e(c, fns) in let y = nl_e(t, fns) in nl_e(x, fns)
+    LetIn(nm, v, b) => let z = nl_e(v, fns) in nl_e(b, fns)
+    Call(nm, args)  => let z = nl_call(nm, args, fns) in nl_es(args, fns)
+    Rec(items)      => nl_rec(items, fns)
+    RecT(tn, items) => nl_rec(items, fns)
+    Field(o, nm)    => nl_e(o, fns)
+    Match(sc, arms) => let z = nl_e(sc, fns) in nl_arms(arms, fns)
+    _               => 0
+fn nl_es(xs, fns) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = nl_e(h, fns) in nl_es(t, fns)
+fn nl_rec(items, fns) = match items
+    Nil        => 0
+    Cons(h, t) => let z = nl_e(h.val, fns) in nl_rec(t, fns)
+fn nl_arms(arms, fns) = match arms
+    Nil        => 0
+    Cons(h, t) => let z = nl_e(h.body, fns) in nl_arms(t, fns)
+fn nl_stmts(prog, fns) = match prog
+    Nil        => 0
+    Cons(h, t) => let z = nl_stmt(h, fns) in nl_stmts(t, fns)
+fn nl_stmt(st, fns) = match st
+    Fn(nm, ps, body) => nl_e(body, fns)
+    Print(v)         => nl_e(v, fns)
+    ExprS(v)         => nl_e(v, fns)
+    _                => 0
+fn nf_late(prog) = let z = nl_stmts(prog, nf_fnames(prog)) in prog

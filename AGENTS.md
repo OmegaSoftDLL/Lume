@@ -16,6 +16,10 @@ is the short version.
   from the modules in numeric order by `scripts/amalgamate.src` (`build/bin/lume_make amalgamate`); the
   concatenation is byte-identical to the historical monolith. See `docs/13-module-split-plan.md`.
 - **Do not fake completion.** The triple self-build (Phase 1 exit) **is done** — `stage 2 == stage 3` holds in CI (the `bootstrap` gate) — so never regress it, and never claim a milestone that is not real. Phases 1–5, Waves 1–12 (`v1.0.0`), the compiler-self-hosting inflection, verification/trust-layer hardening (`#183`, `#184`, `#185`, `#186`), P33 software protection (`#188`), `lume evolve` fixpoint/proof/benchmark gates + RFC 8032 Ed25519 asymmetric maintainer signature verification (`evolve/maintainers.pub`) + end-to-end `lume evolve apply` (`0003_decimal_clamp`, `#194`, `#203`), the self-hosted `lcli.src` CLI control plane (`#204`), the frozen C seed (`bootstrap/lume0/SEED_FREEZE.sha256`, `#205`), `docs/19` §2 oracle `witness`/`repair`/`impact` queries (`#195`), and all 27 compilation targets are complete and verified in CI. State features at their real level: shipped, a model/stub, or planned.
+- **The hosted runtime has one source: `compiler/stage1/runtime_core.lume`.** Every instruction in it must
+  assemble with both `lasm` and the seed (`lume0 asm`, no shifts, no unsigned jumps). The memory model is in
+  `docs/38-memory-management.md`.
+- **`lcaas` runs the real compiler** (`use lumec`), and `lfmt` proves each rewrite with the same parser. Change the grammar and the checks in `compiler/stage1/lume/`; the `cs_*` parser only recovers from broken input.
 - **C is the disposable seed only.** The end state is no C and no external `as`/`ld` (Lume
   emits native ELF itself — see `lume0 asm`). Move work toward native, not toward C.
 - For each feature borrowed from another language, make ours **superior**, not a shallow clone.

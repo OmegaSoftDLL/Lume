@@ -71,6 +71,7 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - `fn nome(a, b) = expr`       Define uma funcao.
 - `pub fn nome(a, b) = expr`   Define uma funcao publica exportada.
 - `const NOME: T = expr`       Define uma constante de modulo (disponivel em funcoes e contratos).
+- `let nome = expr`            Valor de modulo. Constante pura e embutida; o resto roda uma vez, na ordem do arquivo.
 - `law nome(a: int) = expr`    Define uma lei matematica universal provada pelo compilador.
 - `print <expr>`               Ponto de entrada executavel do programa.
 
@@ -83,12 +84,13 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - Interpolacao de Strings:    `f"valor={x}"` ou `"valor=${x}"`
 - Condicional (`if..then..else`): `if x > 0 then "positivo" else "zero ou negativo"`
 - Operadores logicos (curto-circuito): `a == 1 and b == 2`, `x < 0 or x > 10`, `not ativo`
-- Aritmetica: `+`, `-`, `*`, `/`, `%`
+- Aritmetica: `+`, `-`, `*`, `/`, `%`. Estouro de `+`, `-`, `*` interrompe o programa (saida 3). `+%`, `-%`, `*%` dao a volta quando voce pede, e o verificador nunca os prova.
 - Comparacao: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - Concatenacao/interpolacao: `"Valor = " + str(100)` (nota: `{ident}` dentro de strings
                              faz interpolacao automatica; separe `"{" + s + "}"` para chave literal)
 - Registros (Structs): `let p = {x: 10, y: 20} in p.x + p.y`
 - Listas encadeadas: `Nil` (lista vazia) e `Cons(cabeca, cauda)`
+- Literal e indice: `[1, 2, 3]` e uma lista `Cons`; `xs[i]` percorre a lista (em string equivale a `at(s, i)`). Indice alem do fim interrompe o programa (saida 3).
 - Comentarios: `## Comentarios comecam com dois sustenidos`
 
 ## 2.3 Reconhecimento de Padroes (`match` — DX 10/10)
@@ -201,15 +203,21 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 - Funcoes marcadas com `/ pure` sao matematicamente puras: nao podem acessar disco,
   rede, processos ou mutar estado externo. Qualquer violacao gera `[E0200]`.
 
-## 5.2 Memoria sem Pausas de Garbage Collector, SRA Zero-Heap e Arenas (`std.arena`)
-A Lume usa reuso estatico Perceus + Escape Analysis / Scalar Replacement of Aggregates
-(`lsra_expr`: registros locais `let r = {k1: v1, ...} in corpo` que nao escapam sao
+## 5.2 Memoria Automatica, SRA Zero-Heap e Arenas (`std.arena`)
+A Lume recupera memoria sozinha: o runtime nativo tem um coletor mark-sweep nao movel que
+devolve memoria ao sistema. A pausa e proporcional ao heap vivo, nao ao lixo; um programa
+abaixo de 64 MiB nunca coleta. `own`, borrows e `resource type` sao regras de compilacao e nao
+dependem do coletor (`docs/38-memory-management.md`). Ele nao substitui as otimizacoes abaixo:
+reuso estatico Perceus onde a unicidade e provada + Escape Analysis / Scalar Replacement of
+Aggregates (`lsra_expr`: registros locais `let r = {k1: v1, ...} in corpo` que nao escapam sao
 alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de heap) +
-cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionais `O(1)`:
+cache de inteiros pequenos (`[-1..1024]`) + tail-call `jmp` + arenas regionais `O(1)`:
 - `let a = arena_new(65536)`   Cria uma arena de 64 KB
-- `arena_enter(a)` / `arena_leave(a)` / `arena_reset(a)` / `arena_destroy(a)`
+- `arena_reset(a)` / `arena_destroy(a)`
 - `heap_stats()`               Retorna estatisticas do heap em tempo real
+- `gc_collect()` / `gc_count()` Forca uma coleta / conta as coletas
 - `lume run --memory <arq.src>` Mede o pico de memoria fisica (RSS em KB)
+- `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>` Controlam o heap
 
 ## 5.3 E-Capsules Reprodutiveis (`std.capsule`)
 - `lume capsule seal <arq.src> -o <saida.lcaps>` Sela codigo, entradas, saidas e SHA-256.
@@ -220,6 +228,7 @@ cache de inteiros pequenos (`[-1024..1024]`) + tail-call `jmp` + arenas regionai
 ## 6.1 Funcoes Nativas (Sempre Disponiveis sem `use`)
 - Texto (`str`): `count(s)`, `at(s, i)`, `slice(s, ini, fim)`, `slicen(s, n, start, end)`,
                  `ord(c)`, `chr(cod)`, `str(n)`, `toint(s)`
+                 `toint(s)` le um `-` opcional e os digitos seguintes: `toint("12x")` da 12 e `toint("x")` da 0.
 - Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`,
                    `fs_write_sync(caminho, texto)`, `fs_path_exists(caminho)`,
                    `fs_read_byte(caminho, offset)`
@@ -527,8 +536,20 @@ print str(bcd_para_binario(35))
 
 | Codigo    | Categoria            | Causa e Como Resolver |
 |-----------|----------------------|-----------------------|
-| `[P0002]` | Sintaxe / Parser     | Token inesperado, `let` solto no topo de `.src`, ou `match` sem chaves aninhado. Mova o `match` para `fn aux(x) = match x ...` ou use `match x { ... }`, e garanta quebras de linha LF (`\n`). |
+| `[P0002]` | Sintaxe / Parser     | Token inesperado ou `match` sem chaves aninhado. Mova o `match` para `fn aux(x) = match x ...` ou use `match x { ... }`, e garanta quebras de linha LF (`\n`). |
 | `[R0200]` | Escopo / Nomes       | Funcao ou variavel nao declarada. Verifique a grafia ou adicione `use <modulo>` no topo do arquivo. |
+| `[R0201]` | Escopo / Nomes       | Funcao com o nome de uma rotina do runtime (`count`, `at`, ...) ou com um prefixo reservado a ele (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Renomeie. |
+| `[R0202]` | Escopo / Nomes       | Chamada de funcao ou builtin com numero errado de argumentos. |
+| `[R0203]` | Escopo / Nomes       | Chamada a uma rotina interna do runtime, como `strlen`. Use os builtins publicos. |
+| `[R0204]` | Escopo / Nomes       | `f[i]` em que `f` e uma funcao, o que inclui `id[int](x)`. Chame a funcao e passe o tipo de um generico como primeiro argumento. |
+| `[R0205]` | Escopo / Nomes       | Chamada cujo nome e ao mesmo tempo um local e um builtin ou intrinseco do compilador. A chamada ignoraria o local, entao renomeie-o. |
+| `[C0002]` | Geracao de Codigo    | Um nome sem valor neste ponto, como um builtin usado como valor. |
+| `[R0300]` | Modulos              | `lume agent`: um `use` aponta para um modulo que nao foi encontrado. |
+| `[D0002]` | Definicao Duplicada  | Funcao definida duas vezes no bundle. Mantenha uma ou renomeie. |
+| `[D0003]` | Definicao Duplicada  | Tipo definido duas vezes no bundle. Mantenha um ou renomeie. |
+| `[L0003]` | Lexico               | Literal inteiro nao cabe em 64 bits. |
+| `[D0004]` | Definicao Duplicada  | Record com o mesmo campo duas vezes. |
+| `[T1002]` | Tipos                | `match` em enum declarado sem uma das variantes e sem braco `_`. |
 | `[T0300]` | Tipos / Tensores     | Tipos incompativeis, soma de moedas distintas (`money[BRL]` + `money[USD]`) ou dimensoes invalidas em `tensor[...]`. |
 | `[E0200]` | Efeitos Algebricos   | Funcao marcada com `/ pure` tentou fazer I/O, rede, `arena_new` ou `embed`. Remova `/ pure` ou declare o efeito. |
 | `[O0001]` | Ownership / Borrow   | Uso de valor apos transferencia de posse (`move`) ou uso de arquivo ja fechado. |
@@ -544,4 +565,5 @@ print str(bcd_para_binario(35))
 | `[Q0001]` | Linearidade Quantica | Violacao de `No-Cloning` (duplicacao de `Qubit`) ou reuso de qubit medido. Consuma cada fio `Qubit` linearmente. |
 | `[Q0002]` | Uncompute `qfree`    | Fio ancilla nao descomputado em funcao `qfree` (`anc_leaked > 0`). Aplique o adjunto $U^\dagger$ (`q_silq_qfree_verify`) antes de retornar. |
 | `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |
+| `[L0010]` | Ligacao              | Um simbolo definido duas vezes na mesma imagem, o que mandaria chamadas para a rotina errada. |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |

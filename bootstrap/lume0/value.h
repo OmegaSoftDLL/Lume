@@ -1,8 +1,10 @@
-/* Runtime values for the Stage-0 interpreter. Boxed: everything is a Val* from a grow-only arena. */
+/* Runtime values for the Stage-0 interpreter. Boxed: every Val* is either collected heap memory
+ * or an immortal (AST-arena / static) constant. See "Stage-0 heap" in value.c. */
 #ifndef LUME0_VALUE_H
 #define LUME0_VALUE_H
 #include "ast.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef enum {
     V_UNIT, V_BOOL, V_INT, V_FLOAT, V_DEC, V_CHAR, V_STR,
@@ -14,47 +16,52 @@ typedef struct Val Val;
 typedef struct Env Env;
 typedef struct Interp Interp;
 
-typedef struct { char *key; int klen; Val *val; } Entry;
+typedef struct { const char *key; int klen; Val *val; } Entry;
 
+/* 64 bytes. The payload unions overlay fields that no single kind uses together; the int counters
+   and `tname` stay separate because generic code reads them on values of any kind. */
 struct Val {
     VKind kind;
-    /* scalars */
-    long long i;        /* V_INT; V_DEC units; V_CHAR codepoint */
-    double    f;        /* V_FLOAT */
-    int       scale;    /* V_DEC: number of fractional digits */
-    bool      b;        /* V_BOOL; V_OPT is_some; V_RESULT is_ok */
-    /* string */
-    char     *s; int slen;
-    /* sequences: list/set/tuple items, variant payload */
-    Val     **items; int n, cap;
-    char    **names;   /* optional field/payload names, parallel to items */
-    /* map / record fields */
-    Entry    *ent; int nent, cent;
-    /* names */
+    union {
+        int slen;       /* V_STR */
+        int scale;      /* V_DEC: number of fractional digits */
+        int facc_len;   /* V_FIELDACC */
+    };
+    int n, cap;         /* list/set/tuple items, variant payload; V_STR: cap = cached codepoints + 1 */
+    int nent, cent;     /* map / record fields */
     const char *tname;  /* type name (record/variant/type) */
-    const char *tag;    /* variant tag */
-    /* opt/result inner */
-    Val *inner;
-    /* range */
-    long long lo, hi; bool inc;
-    /* closure */
-    const Node *cl_params_owner; /* the N_FN or N_CLOSURE node (for params/body) */
-    Env  *cl_env;
-    const char *cl_name;
-    bool  is_closure_fn;         /* true if from N_FN (params are N_PARAM kids) */
-    /* builtin */
-    Val *(*builtin)(Interp *, Val **args, int nargs, const Node *site);
-    const char *bname;
-    /* fieldacc: the field name */
-    const char *facc; int facc_len;
+    union {
+        long long i;    /* V_INT; V_DEC units; V_CHAR codepoint */
+        double    f;    /* V_FLOAT */
+        char     *s;    /* V_STR */
+        Val     **items;
+        Entry    *ent;
+        Val      *inner;   /* opt/result */
+        long long lo;      /* range */
+        const Node *cl_params_owner; /* the N_FN or N_CLOSURE node (for params/body) */
+        Val *(*builtin)(Interp *, Val **args, int nargs, const Node *site);
+        const char *facc;  /* fieldacc: the field name */
+    };
+    union {
+        long long hi;      /* range */
+        char    **names;   /* variant: optional payload names, parallel to items */
+        Env      *cl_env;
+        const char *bname; /* builtin */
+    };
+    union {
+        const char *tag;     /* variant tag */
+        const char *cl_name;
+    };
+    bool b;             /* V_BOOL; V_OPT is_some; V_RESULT is_ok */
+    bool inc;           /* range */
+    bool is_closure_fn; /* true if from N_FN (params are N_PARAM kids) */
 };
 
 /* control-flow signal threaded through evaluation */
 typedef enum { FL_NORMAL, FL_RETURN, FL_BREAK, FL_CONTINUE, FL_FAIL, FL_PANIC } Flow;
 
 struct Interp {
-    Arena      *a;          /* AST arena (borrowed) */
-    Arena      *rt;         /* runtime arena (values, envs) */
+    Arena      *a;          /* immortal arena: AST, interned names, constant values */
     DiagList   *d;
     const char *file;
     Env        *globals;
@@ -67,7 +74,16 @@ struct Interp {
     bool        had_runtime_error;
 };
 
-/* arena-backed constructors */
+/* heap: conservative mark-sweep. `stack_base` is an address above every frame that holds a value;
+   `roots` marks what lives outside the stack and the heap, through gc_scan_range. */
+void  gc_init(void *stack_base, void (*roots)(void));
+void  gc_shutdown(void);
+void  gc_scan_range(const void *lo, const void *hi);
+void *lume_rt_alloc(Interp *ip, size_t n);          /* zeroed; scanned for pointers */
+void *lume_rt_alloc_atomic(Interp *ip, size_t n);   /* zeroed; never holds pointers */
+
+/* constructors. Scalars may be shared immortal constants: to fill a value in by hand use v_new. */
+Val *v_new(Interp *, VKind);
 Val *v_unit(Interp *);
 Val *v_bool(Interp *, bool);
 Val *v_int(Interp *, long long);
@@ -83,7 +99,7 @@ Val *v_ok(Interp *, Val *);
 Val *v_err(Interp *, Val *);
 void v_push(Interp *, Val *list, Val *item);
 
-/* environment */
+/* environment. Names are not copied: callers pass text that outlives the run (AST or literals). */
 Env *env_new(Interp *, Env *parent);
 Val *env_get(Env *, const char *name, int len);
 Val **env_slot(Env *, const char *name, int len);     /* for assignment; NULL if absent */

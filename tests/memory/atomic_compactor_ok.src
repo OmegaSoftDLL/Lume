@@ -1,0 +1,88 @@
+## atomic_compactor_ok.src -- the compact value representation and the compactor, working together.
+## Every line prints a name and 1 when the claim holds; the claims measure the runtime through heap_stats,
+## so a value that starts allocating again, or a cell that grows, fails this program.
+##   step 0   static literals, one shared constructor without fields, one-byte strings: no heap at all
+##   level 1  integers of 63 bits and strings of at most 7 bytes live in the word; 64 bits still work
+##   level 2  a constructor costs 8 bytes plus its fields, a record 8 bytes plus its values, match and field agree
+##   level 3  mem_pack / mem_unpack, arena_freeze / arena_thaw, a frozen page comes back on first touch
+use arena
+
+fn show(name, ok) = name + " " + str(if ok then 1 else 0)
+## the allocations of `heap_stats` itself: the record, nothing else (its integers are immediates)
+fn allocs_now() = (heap_stats()).allocs
+fn used_now() = (heap_stats()).used
+
+## --- step 0 -------------------------------------------------------------------------------------------------
+fn long_literal(i, acc) = if i == 0 then acc else long_literal(i - 1, if "this literal has more than seven bytes" == acc then "this literal has more than seven bytes" else acc)
+fn empty_list(i, acc) = if i == 0 then acc else empty_list(i - 1, Nil)
+fn is_nil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn scan_bytes(s, i, n, acc) = if i >= n then acc else scan_bytes(s, i + 1, n, if at(s, i) == "a" then acc + 1 else acc)
+fn chr_loop(i, acc) = if i == 0 then acc else chr_loop(i - 1, if chr(i % 256) == chr(65) then acc + 1 else acc)
+
+fn step0_literals() = let a = allocs_now() in let r = long_literal(100000, "this literal has more than seven bytes") in let b = allocs_now() in show("step0_literal_no_heap", b - a == 1 and r == "this literal has more than seven bytes")
+fn step0_singletons() = let a = allocs_now() in let r = empty_list(100000, Cons(1, Nil)) in let b = allocs_now() in show("step0_singleton_no_heap", b - a == 2 and is_nil(r) == 1 and r == Nil)
+fn step0_bytes() = let s = "banana bread and a lot of bananas" in let a = allocs_now() in let r = scan_bytes(s, 0, count(s), 0) in let b = allocs_now() in show("step0_at_no_heap", b - a == 1 and r == 9)
+fn step0_chr() = let a = allocs_now() in let r = chr_loop(1000, 0) in let b = allocs_now() in show("step0_chr_no_heap", b - a == 1 and r == 4 and chr(0) != "" and count(chr(0)) == 1)
+
+## --- level 1 ------------------------------------------------------------------------------------------------
+fn int_loop(i, acc) = if i == 0 then acc else int_loop(i - 1, acc + i * 3 - 1)
+fn level1_ints() = let a = allocs_now() in let r = int_loop(1000000, 0) in let b = allocs_now() in show("level1_int_no_heap", b - a == 1 and r == 1500000500000)
+fn top63() = 4611686018427387903
+fn level1_edge() = let big = top63() + 1 in show("level1_crosses_63_bits", big == 4611686018427387904 and big - 1 == top63() and big / 2 == 2305843009213693952 and str(big) == "4611686018427387904" and big > top63())
+fn level1_max() = let m = 9223372036854775807 in show("level1_keeps_64_bits", m - 1 + 1 == m and m +% 1 == 0 - 9223372036854775807 - 1 and (0 - m) - 1 < 0 and bit_and(m, 255) == 255 and bit_shr(m, 62) == 1)
+fn minus(a, b) = a - b
+fn level1_sub_edge() = show("level1_sub_crosses_63_bits", minus(top63(), 0 - 1) == 4611686018427387904 and minus(0 - top63() - 1, 1) == 0 - 4611686018427387905 and minus(top63(), 0 - top63() - 1) == 9223372036854775807 and minus(top63(), top63()) == 0)
+fn short_concat(i, acc) = if i == 0 then acc else short_concat(i - 1, if "abc" + "defg" == "abcdefg" then acc + 1 else acc)
+fn level1_strings() = let a = allocs_now() in let r = short_concat(100000, 0) in let b = allocs_now() in show("level1_short_string_no_heap", b - a == 1 and r == 100000)
+fn level1_string_edges() = let s7 = "1234567" in let s8 = s7 + "8" in show("level1_string_edges", count(s7) == 7 and count(s8) == 8 and slice(s8, 0, 7) == s7 and at(s8, 7) == "8" and at(s7, 6) == "7" and s7 < s8 and "" + s7 == s7 and slice(s7, 3, 3) == "" and ord(at(s7, 0)) == 49 and toint("1234") == 1234 and str(1234) == "1234" and "é" != "e" and count("é") == 2)
+
+## --- level 2 ------------------------------------------------------------------------------------------------
+fn big_list(n, acc) = if n == 0 then acc else big_list(n - 1, Cons(n, acc))
+fn sum_list(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => sum_list(t, acc + h)
+fn level2_ctor() = let a = used_now() in let xs = big_list(1000, Nil) in let b = used_now() in show("level2_cons_24_bytes", b - a == 24 * 1000 + 32 and sum_list(xs, 0) == 500500)
+fn point(i) = {x: i, y: i + 1, z: i + 2}
+fn level2_record() = let a = used_now() in let p = point(5) in let b = used_now() in show("level2_record_32_bytes", b - a == 32 + 32 and p.x == 5 and p.z == 7 and p == {z: 7, y: 6, x: 5} and p != {x: 5, y: 6, z: 8})
+fn kind(v) = match v
+    Leaf         => 0
+    Node(l, r)   => 1 + kind(l) + kind(r)
+    Tagged(n)    => n
+    "literal"    => 100
+    "longer literal text" => 200
+    7            => 300
+    _            => 400
+fn level2_match() = show("level2_match", kind(Node(Leaf, Node(Tagged(5), Leaf))) == 7 and kind("literal") == 100 and kind("longer literal text") == 200 and kind(7) == 300 and kind(8) == 400 and kind(Node) == 400)
+
+## --- level 3 ------------------------------------------------------------------------------------------------
+fn repeat(s, k) = if k == 0 then s else repeat(s + s, k - 1)
+fn mixed(i, acc, seed) = if i == 0 then acc else let n = (seed * 1103515245 + 12345) % 2147483648 in mixed(i - 1, acc + chr(n % 251), n)
+fn level3_pack() = let raw = repeat("the quick brown fox jumps over the lazy dog ", 15) in let blob = mem_pack(raw) in show("level3_pack_ratio", count(blob) * 50 < count(raw) and mem_unpack(blob) == raw)
+fn level3_round() = let noise = mixed(5000, "", 7) in let blob = mem_pack(noise) in show("level3_incompressible_round_trip", mem_unpack(blob) == noise and count(blob) < count(noise) + 64 and mem_unpack(mem_pack("")) == "" and mem_unpack(mem_pack("abc")) == "abc" and mem_unpack(mem_pack("exactly8")) == "exactly8")
+
+fn fill(base, off, n) = if off >= n then 0 else let w = mmio_volatile_write64(base + off, off / 8 + 1) in fill(base, off + 8, n)
+fn check(base, off, n) = if off >= n then 1 else if mmio_volatile_read64(base + off) != off / 8 + 1 then 0 else check(base, off + 4096, n)
+fn level3_arena() = let n = 2097152 in let a = arena_new(4194304) in let base = arena_alloc(a, n) in let f = fill(base, 0, n) in let u0 = used_now() in let stored = arena_freeze(a) in let u1 = used_now() in let frozen = arena_frozen(a) in let collected = gc_collect() in let one = mmio_volatile_read64(base + 4096) in let still = arena_frozen(a) in let touched = check(base, 0, n) in let t = arena_thaw(a) in let thawed = arena_frozen(a) in let again = check(base, 8, n) in let more = arena_alloc(a, 4096) in let r = arena_reset(a) in let d = arena_destroy(a) in show("level3_arena_freeze", stored > 0 and stored * 3 < n * 2 and frozen == 1 and u0 - u1 > n / 3 and one == 513 and still == 1 and touched == 1 and thawed == 0 and again == 1 and more == base + n)
+fn level3_zero_arena() = let a = arena_new(1048576) in let base = arena_alloc(a, 1048576) in let stored = arena_freeze(a) in let v = mmio_volatile_read64(base + 524288) in let d = arena_destroy(a) in show("level3_zero_pages_cost_nothing", stored == 0 and v == 0)
+fn level3_frozen_reset() = let a = arena_new(1048576) in let base = arena_alloc(a, 65536) in let f = fill(base, 0, 65536) in let s = arena_freeze(a) in let r = arena_reset(a) in let back = arena_alloc(a, 65536) in let w = mmio_volatile_write64(back, 42) in let v = mmio_volatile_read64(back) in let d = arena_destroy(a) in show("level3_reset_of_a_frozen_arena", back == base and v == 42)
+
+print step0_literals()
+print step0_singletons()
+print step0_bytes()
+print step0_chr()
+print level1_ints()
+print level1_edge()
+print level1_max()
+print level1_sub_edge()
+print level1_strings()
+print level1_string_edges()
+print level2_ctor()
+print level2_record()
+print level2_match()
+print level3_pack()
+print level3_round()
+print level3_arena()
+print level3_zero_arena()
+print level3_frozen_reset()

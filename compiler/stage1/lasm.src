@@ -59,7 +59,7 @@ fn startswith(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
 fn commapos(s, i, depth) = if i >= count(s) then count(s) else if at(s, i) == "(" then commapos(s, i + 1, depth + 1) else if at(s, i) == ")" then commapos(s, i + 1, depth - 1) else if at(s, i) == "," and depth == 0 then i else commapos(s, i + 1, depth)
 
 ## --- integer parsing (signed decimal) ---
-fn parseint(s) = if count(s) == 0 then 0 else if at(s, 0) == "-" then 0 - toint(slice(s, 1, count(s))) else toint(s)
+fn parseint(s) = if count(s) == 0 then 0 else if s == "-9223372036854775808" then 0 - 9223372036854775807 - 1 else if at(s, 0) == "-" then 0 - toint(slice(s, 1, count(s))) else toint(s)
 
 ## --- registers: name -> {rg: number, sz: size}; rg = -1 if unknown ---
 fn regtab(n) = if n == "rax" then {rg: 0, sz: 8} else if n == "rcx" then {rg: 1, sz: 8} else if n == "rdx" then {rg: 2, sz: 8} else if n == "rbx" then {rg: 3, sz: 8} else if n == "rsp" then {rg: 4, sz: 8} else if n == "rbp" then {rg: 5, sz: 8} else if n == "rsi" then {rg: 6, sz: 8} else if n == "rdi" then {rg: 7, sz: 8} else if n == "r8" then {rg: 8, sz: 8} else if n == "r9" then {rg: 9, sz: 8} else if n == "r10" then {rg: 10, sz: 8} else if n == "r11" then {rg: 11, sz: 8} else if n == "r12" then {rg: 12, sz: 8} else if n == "r13" then {rg: 13, sz: 8} else if n == "r14" then {rg: 14, sz: 8} else if n == "r15" then {rg: 15, sz: 8} else if n == "eax" then {rg: 0, sz: 4} else if n == "ecx" then {rg: 1, sz: 4} else if n == "edx" then {rg: 2, sz: 4} else if n == "ebx" then {rg: 3, sz: 4} else if n == "esi" then {rg: 6, sz: 4} else if n == "edi" then {rg: 7, sz: 4} else if n == "ax" then {rg: 0, sz: 2} else if n == "dx" then {rg: 2, sz: 2} else if n == "al" then {rg: 0, sz: 1} else if n == "cl" then {rg: 1, sz: 1} else if n == "dl" then {rg: 2, sz: 1} else if n == "bl" then {rg: 3, sz: 1} else if n == "sil" then {rg: 6, sz: 1} else if n == "dil" then {rg: 7, sz: 1} else if n == "r8b" then {rg: 8, sz: 1} else if n == "r9b" then {rg: 9, sz: 1} else if n == "r10b" then {rg: 10, sz: 1} else if n == "r11b" then {rg: 11, sz: 1} else if n == "r12b" then {rg: 12, sz: 1} else if n == "r13b" then {rg: 13, sz: 1} else if n == "r14b" then {rg: 14, sz: 1} else if n == "r15b" then {rg: 15, sz: 1} else if n == "cr0" then {rg: 0, sz: 16} else if n == "cr2" then {rg: 2, sz: 16} else if n == "cr3" then {rg: 3, sz: 16} else if n == "cr4" then {rg: 4, sz: 16} else if n == "cr8" then {rg: 8, sz: 16} else {rg: 0 - 1, sz: 0}
@@ -84,7 +84,7 @@ fn parseinner2(inner, c1) = if c1 >= count(inner) then {base: regnum(inner), idx
 fn parseinner3(basepart, rest) = let c2 = findc(rest, ",", 0) in if c2 >= count(rest) then {base: regnum(basepart), idx: regnum(rest), scale: 1, rip: 0} else {base: regnum(basepart), idx: regnum(slice(rest, 0, c2)), scale: toint(slice(rest, c2 + 1, count(rest))), rip: 0}
 
 ## --- instruction line parsing ---
-fn jccop(mn) = if mn == "je" or mn == "jz" then 132 else if mn == "jne" or mn == "jnz" then 133 else if mn == "jl" then 140 else if mn == "jg" then 143 else if mn == "jle" then 142 else if mn == "jge" then 141 else if mn == "js" then 136 else if mn == "jns" then 137 else 0 - 1
+fn jccop(mn) = if mn == "je" or mn == "jz" then 132 else if mn == "jne" or mn == "jnz" then 133 else if mn == "jl" then 140 else if mn == "jg" then 143 else if mn == "jle" then 142 else if mn == "jge" then 141 else if mn == "js" then 136 else if mn == "jns" then 137 else if mn == "jo" then 128 else if mn == "jno" then 129 else if mn == "jc" then 130 else if mn == "jnc" then 131 else 0 - 1
 fn isjump(mn) = mn == "jmp" or mn == "call" or jccop(mn) >= 0
 fn alldig(s, i, n) = if i >= n then 1 else if isdigit(at(s, i)) then alldig(s, i + 1, n) else 0
 fn parseins(s0) = let s = if startswith(s0, "lock ") then "l" + trim(slice(s0, 5, count(s0))) else s0 in let sp = findc(s, " ", 0) in if sp >= count(s) then {mn: s, nop: 0, a: opnone(), b: opnone(), tgt: ""} else parseins2(slice(s, 0, sp), trim(slice(s, sp + 1, count(s))))
@@ -106,7 +106,9 @@ fn parseitems(lines, sec) = match lines
 fn parseline(s, t, sec) = if count(s) == 0 then Cons(Skip, parseitems(t, sec)) else if at(s, 0) == "#" then Cons(Skip, parseitems(t, sec)) else if endscolon(s) then parselabel(slice(s, 0, count(s) - 1), t, sec) else if at(s, 0) == "." then parsedir(s, t, sec) else Cons(Ins(parseins(s)), parseitems(t, sec))
 fn parselabel(nm, t, sec) = if sec == 1 then Cons(RL(nm), parseitems(t, sec)) else Cons(TL(nm), parseitems(t, sec))
 fn parsebytes(s, i, n) = if i >= n then Nil else let a = skipws(s, i) in if a >= n then Nil else let c = findc(s, ",", a) in let tok = trim(slice(s, a, c)) in Cons(lowbyte(parseint(tok)), parsebytes(s, c + 1, n))
-fn parsedir(s, t, sec) = if startswith(s, ".section .rodata") then Cons(Skip, parseitems(t, 1)) else if startswith(s, ".section .text") then Cons(Skip, parseitems(t, 0)) else if startswith(s, ".section .bss") then Cons(Skip, parseitems(t, 2)) else if startswith(s, ".globl") then Cons(Skip, parseitems(t, sec)) else if startswith(s, ".lcomm") then Cons(parselcomm(s), parseitems(t, sec)) else if startswith(s, ".asciz") then Cons(RO(parseasciz(s)), parseitems(t, sec)) else if startswith(s, ".byte") then Cons(RO(parsebytes(s, 5, count(s))), parseitems(t, sec)) else if startswith(s, ".long") then Cons(RO(b4(parseint(trim(slice(s, 5, count(s)))))), parseitems(t, sec)) else if startswith(s, ".quad") then Cons(RO(b8s(parseint(trim(slice(s, 5, count(s)))))), parseitems(t, sec)) else if startswith(s, ".need") then Cons(ND(parsestr(s)), parseitems(t, sec)) else if startswith(s, ".extern") then Cons(EX(trim(slice(s, 7, count(s)))), parseitems(t, sec)) else if startswith(s, ".kernel") then Cons(KRN, parseitems(t, sec)) else Cons(Skip, parseitems(t, sec))
+## `.quad 123` is literal data; `.quad name` is the 8-byte absolute address of a label, patched once the layout is final
+fn parsequad(v) = if at(v, 0) == "-" or isdigit(at(v, 0)) then RO(b8s(parseint(v))) else RQ(v)
+fn parsedir(s, t, sec) = if startswith(s, ".section .rodata") then Cons(Skip, parseitems(t, 1)) else if startswith(s, ".section .text") then Cons(Skip, parseitems(t, 0)) else if startswith(s, ".section .bss") then Cons(Skip, parseitems(t, 2)) else if startswith(s, ".globl") then Cons(Skip, parseitems(t, sec)) else if startswith(s, ".lcomm") then Cons(parselcomm(s), parseitems(t, sec)) else if startswith(s, ".asciz") then Cons(RO(parseasciz(s)), parseitems(t, sec)) else if startswith(s, ".byte") then Cons(RO(parsebytes(s, 5, count(s))), parseitems(t, sec)) else if startswith(s, ".long") then Cons(RO(b4(parseint(trim(slice(s, 5, count(s)))))), parseitems(t, sec)) else if startswith(s, ".quad") then Cons(parsequad(trim(slice(s, 5, count(s)))), parseitems(t, sec)) else if startswith(s, ".balign") then Cons(RA(toint(trim(slice(s, 7, count(s))))), parseitems(t, sec)) else if startswith(s, ".need") then Cons(ND(parsestr(s)), parseitems(t, sec)) else if startswith(s, ".extern") then Cons(EX(trim(slice(s, 7, count(s)))), parseitems(t, sec)) else if startswith(s, ".kernel") then Cons(KRN, parseitems(t, sec)) else Cons(Skip, parseitems(t, sec))
 
 ## --- GAS numeric local labels (`N:` defines, `Nf` = nearest N: AHEAD, `Nb` = nearest N: BEHIND) ---
 ## A number may be (re)defined many times. Items are in source order, so a left-to-right fold with a
@@ -175,7 +177,7 @@ fn modrmrm(base, index) = if index >= 0 then 4 else base % 8
 fn memmod(imm, base) = if imm == 0 and (base % 8) != 5 then 0 else if imm >= 0 - 128 and imm <= 127 then 1 else 2
 fn memdisp(imm, base) = if imm == 0 and (base % 8) != 5 then Nil else if imm >= 0 - 128 and imm <= 127 then Cons(lowbyte(imm), Nil) else b4(imm)
 fn encrm(opsize, opc, rf, rm, iend, syms) = if rm.k == 1 then encrm_reg(opsize, opc, rf, rm) else if rm.rip == 1 then encrm_rip(opsize, opc, rf, rm, iend, syms) else encrm_base(opsize, opc, rf, rm)
-fn encrm_reg(opsize, opc, rf, rm) = let rex = 64 + (if opsize == 8 then 8 else 0) + (if rf >= 8 then 4 else 0) + (if rm.reg >= 8 then 1 else 0) in app(if rex != 64 then Cons(rex, Nil) else Nil, app(opc, Cons(192 + (rf % 8) * 8 + (rm.reg % 8), Nil)))
+fn encrm_reg(opsize, opc, rf, rm) = let rex = 64 + (if opsize == 8 then 8 else 0) + (if rf >= 8 then 4 else 0) + (if rm.reg >= 8 then 1 else 0) in app(if rex != 64 or (opsize == 1 and rm.reg >= 4 and rm.reg < 8) then Cons(rex, Nil) else Nil, app(opc, Cons(192 + (rf % 8) * 8 + (rm.reg % 8), Nil)))
 fn encrm_rip(opsize, opc, rf, rm, iend, syms) = let rex = 64 + (if opsize == 8 then 8 else 0) + (if rf >= 8 then 4 else 0) in app(if rex != 64 then Cons(rex, Nil) else Nil, app(opc, Cons((rf % 8) * 8 + 5, b4(symaddr(syms, rm.sym) + rm.imm - iend))))
 fn encrm_base(opsize, opc, rf, rm) = encrm_base2(opsize, opc, rf, rm, rm.base, rm.idx)
 fn encrm_base2(opsize, opc, rf, rm, base, index) = let rex = 64 + (if opsize == 8 then 8 else 0) + (if rf >= 8 then 4 else 0) + (if base >= 8 then 1 else 0) + (if index >= 8 then 2 else 0) in let modrm = memmod(rm.imm, base) * 64 + (rf % 8) * 8 + modrmrm(base, index) in let sib = if hassib(base, index) == 1 then Cons(sibbyte(base, index, rm.scale), Nil) else Nil in app(if rex != 64 then Cons(rex, Nil) else Nil, app(opc, app(Cons(modrm, Nil), app(sib, memdisp(rm.imm, base)))))
@@ -195,7 +197,8 @@ fn aluext(c) = if c == "add" then 0 else if c == "or" then 1 else if c == "and" 
 fn alustore(c) = if c == "add" then 1 else if c == "or" then 9 else if c == "and" then 33 else if c == "sub" then 41 else if c == "xor" then 49 else if c == "cmp" then 57 else 0 - 1
 fn enc(ins, iend, syms) = encmn(ins.mn, ins, iend, syms)
 fn encsys0(mn) = if mn == "cli" then Cons(250, Nil) else if mn == "sti" then Cons(251, Nil) else if mn == "hlt" then Cons(244, Nil) else if mn == "iretq" then Cons(72, Cons(207, Nil)) else if mn == "rdmsr" then Cons(15, Cons(50, Nil)) else if mn == "wrmsr" then Cons(15, Cons(48, Nil)) else if mn == "rdtsc" then Cons(15, Cons(49, Nil)) else if mn == "pause" then Cons(243, Cons(144, Nil)) else if mn == "mfence" then Cons(15, Cons(174, Cons(240, Nil))) else if mn == "outb" then Cons(238, Nil) else if mn == "inb" then Cons(236, Nil) else if mn == "outw" then Cons(102, Cons(239, Nil)) else if mn == "inw" then Cons(102, Cons(237, Nil)) else if mn == "outl" then Cons(239, Nil) else if mn == "inl" then Cons(237, Nil) else Nil
-fn encmn(mn, ins, iend, syms) = let s0 = encsys0(mn) in if isnil(s0) == 0 then s0 else if mn == "syscall" then Cons(15, Cons(5, Nil)) else if mn == "ret" then Cons(195, Nil) else if mn == "cqto" then Cons(72, Cons(153, Nil)) else if mn == "int" then Cons(205, Cons(lowbyte(ins.a.imm), Nil)) else if mn == "lgdt" then encrm(0, Cons(15, Cons(1, Nil)), 2, ins.a, iend, syms) else if mn == "lidt" then encrm(0, Cons(15, Cons(1, Nil)), 3, ins.a, iend, syms) else if mn == "invlpg" then encrm(0, Cons(15, Cons(1, Nil)), 7, ins.a, iend, syms) else if mn == "xaddq" or mn == "lxaddq" then app(if mn == "lxaddq" then Cons(240, Nil) else Nil, encrm(8, Cons(15, Cons(193, Nil)), ins.a.reg, ins.b, iend, syms)) else if mn == "cmpxchgq" or mn == "lcmpxchgq" then app(if mn == "lcmpxchgq" then Cons(240, Nil) else Nil, encrm(8, Cons(15, Cons(177, Nil)), ins.a.reg, ins.b, iend, syms)) else if mn == "xchgq" then encrm(8, Cons(135, Nil), ins.a.reg, ins.b, iend, syms) else if mn == "pushq" or mn == "popq" then encpush(mn, ins.a) else if mn == "jmp" or mn == "call" then encjmp(mn, ins.tgt, iend, syms) else if jccop(mn) >= 0 then Cons(15, Cons(jccop(mn), b4(symaddr(syms, ins.tgt) - iend))) else if setccop(mn) >= 0 then encrm(1, Cons(15, Cons(setccop(mn), Nil)), 0, ins.a, iend, syms) else if mn == "movzbq" or mn == "movzbl" then encrm(if mn == "movzbq" then 8 else 4, Cons(15, Cons(182, Nil)), ins.b.reg, ins.a, iend, syms) else if isunary(mn) then encunary(mn, ins.a, iend, syms) else if isshift(mn) then encshift(mn, ins, iend, syms) else if mn == "imulq" then encimul(ins, iend, syms) else if ismov(mn) then encmov(mn, ins, iend, syms) else if mn == "leaq" then encrm(8, Cons(141, Nil), ins.b.reg, ins.a, iend, syms) else if mn == "testq" or mn == "testb" then encrm(if mn == "testb" then 1 else 8, Cons(if mn == "testb" then 132 else 133, Nil), ins.a.reg, ins.b, iend, syms) else encalu(mn, ins, iend, syms)
+fn encmn(mn, ins, iend, syms) = let s0 = encsys0(mn) in if isnil(s0) == 0 then s0 else if mn == "syscall" then Cons(15, Cons(5, Nil)) else if mn == "ret" then Cons(195, Nil) else if mn == "cqto" then Cons(72, Cons(153, Nil)) else if mn == "int" then Cons(205, Cons(lowbyte(ins.a.imm), Nil)) else if mn == "lgdt" then encrm(0, Cons(15, Cons(1, Nil)), 2, ins.a, iend, syms) else if mn == "lidt" then encrm(0, Cons(15, Cons(1, Nil)), 3, ins.a, iend, syms) else if mn == "invlpg" then encrm(0, Cons(15, Cons(1, Nil)), 7, ins.a, iend, syms) else if mn == "xaddq" or mn == "lxaddq" then app(if mn == "lxaddq" then Cons(240, Nil) else Nil, encrm(8, Cons(15, Cons(193, Nil)), ins.a.reg, ins.b, iend, syms)) else if mn == "cmpxchgq" or mn == "lcmpxchgq" then app(if mn == "lcmpxchgq" then Cons(240, Nil) else Nil, encrm(8, Cons(15, Cons(177, Nil)), ins.a.reg, ins.b, iend, syms)) else if mn == "xchgq" then encrm(8, Cons(135, Nil), ins.a.reg, ins.b, iend, syms) else if mn == "pushq" or mn == "popq" then encpush(mn, ins.a) else if mn == "jmp" or mn == "call" then encjmp(mn, ins.tgt, iend, syms) else if jccop(mn) >= 0 then Cons(15, Cons(jccop(mn), b4(symaddr(syms, ins.tgt) - iend))) else if setccop(mn) >= 0 then encrm(1, Cons(15, Cons(setccop(mn), Nil)), 0, ins.a, iend, syms) else if mn == "movzbq" or mn == "movzbl" then encrm(if mn == "movzbq" then 8 else 4, Cons(15, Cons(182, Nil)), ins.b.reg, ins.a, iend, syms) else if isunary(mn) then encunary(mn, ins.a, iend, syms) else if isshift(mn) then encshift(mn, ins, iend, syms) else if mn == "imulq" then encimul(ins, iend, syms) else if ismov(mn) then encmov(mn, ins, iend, syms) else if mn == "leaq" then encrm(8, Cons(141, Nil), ins.b.reg, ins.a, iend, syms) else if mn == "testq" or mn == "testb" then enctest(mn, ins, iend, syms) else encalu(mn, ins, iend, syms)
+fn enctest(mn, ins, iend, syms) = if ins.a.k == 2 then (if mn == "testb" then app(encrm(1, Cons(246, Nil), 0, ins.b, iend, syms), Cons(lowbyte(ins.a.imm), Nil)) else app(encrm(8, Cons(247, Nil), 0, ins.b, iend, syms), b4(ins.a.imm))) else encrm(if mn == "testb" then 1 else 8, Cons(if mn == "testb" then 132 else 133, Nil), ins.a.reg, ins.b, iend, syms)
 fn encpush(mn, a) = app(if a.reg >= 8 then Cons(65, Nil) else Nil, Cons((if mn == "pushq" then 80 else 88) + a.reg % 8, Nil))
 fn encjmp(mn, tgt, iend, syms) = Cons(if mn == "jmp" then 233 else 232, b4(symaddr(syms, tgt) - iend))
 fn encunary(mn, a, iend, syms) = if mn == "incq" then encrm(8, Cons(255, Nil), 0, a, iend, syms) else if mn == "decq" then encrm(8, Cons(255, Nil), 1, a, iend, syms) else encrm(8, Cons(247, Nil), unaryext(mn), a, iend, syms)
@@ -224,22 +227,45 @@ fn needsreloc(r) = if isjump(r.mn) then 1 else if r.a.rip == 1 then 1 else if r.
 ## offsets, rodata bytes (accumulated in O(n)) and bss size. The old code encoded every
 ## instruction once here and twice more in pass 2 (three encodes total); now non-reloc
 ## instructions are encoded exactly once and reloc ones exactly twice. ---
-fn addins(e, rec) = {encs: Cons(e, rec.encs), co: rec.co, robytes: rec.robytes, tls: rec.tls, rls: rec.rls, bls: rec.bls, boff: rec.boff}
-fn withtl(nm, co, rec) = {encs: rec.encs, co: rec.co, robytes: rec.robytes, tls: Cons({nm: nm, o: co}, rec.tls), rls: rec.rls, bls: rec.bls, boff: rec.boff}
-fn withrl(nm, roff, rec) = {encs: rec.encs, co: rec.co, robytes: rec.robytes, tls: rec.tls, rls: Cons({nm: nm, o: roff}, rec.rls), bls: rec.bls, boff: rec.boff}
-fn withro(bs, rec) = {encs: rec.encs, co: rec.co, robytes: app(bs, rec.robytes), tls: rec.tls, rls: rec.rls, bls: rec.bls, boff: rec.boff}
-fn withbs(nm, boff, rec) = {encs: rec.encs, co: rec.co, robytes: rec.robytes, tls: rec.tls, rls: rec.rls, bls: Cons({nm: nm, o: boff}, rec.bls), boff: rec.boff}
-fn layout(items, co, roff, boff) = match items
-    Nil        => {encs: Nil, co: co, robytes: Nil, tls: Nil, rls: Nil, bls: Nil, boff: boff}
-    Cons(h, t) => layoutitem(h, t, co, roff, boff)
-fn layoutitem(h, t, co, roff, boff) = match h
-    Ins(r)     => layoutins(r, t, co, roff, boff)
-    TL(nm)     => withtl(nm, co, layout(t, co, roff, boff))
-    RL(nm)     => withrl(nm, roff, layout(t, co, roff, boff))
-    RO(bs)     => withro(bs, layout(t, co, roff + len(bs), boff))
-    BS(nm, sz) => withbs(nm, boff, layout(t, co, roff, boff + sz))
-    _          => layout(t, co, roff, boff)
-fn layoutins(r, t, co, roff, boff) = let eb = enc(r, 0, Nil) in let ln = len(eb) in addins({off: co, ln: ln, reloc: needsreloc(r), bytes: eb, ins: r}, layout(t, co + ln, roff, boff))
+## one tail-recursive pass, so a parsed item is garbage as soon as it has been encoded: holding the whole
+## item list and the whole encoding at once would be the assembler's peak memory.
+fn layout(items, co, roff, boff) = layout_go(items, co, roff, boff, Nil, Nil, Nil, Nil, Nil, Cons(Nil, Nil))
+## the code is padded (int3) to 8 bytes and the rodata (zeros) to 16, so every static cell and the bss are aligned
+fn layout_pad(n, ins_off) = {off: ins_off, ln: n, reloc: 0, bytes: padbytes(n), ins: 0}
+fn padbytes(n) = if n <= 0 then Nil else Cons(204, padbytes(n - 1))
+fn zeros_on(n, ro) = if n <= 0 then ro else zeros_on(n - 1, Cons(0, ro))
+fn layout_done(co, boff, roff, encs, ro, tls, rls, bls, dyn0) = let pad = (8 - co % 8) % 8 in let ropad = (16 - roff % 16) % 16 in {encs: rev_append(Cons(layout_pad(pad, co), encs), Nil), co: co + pad, robytes: rev_append(zeros_on(ropad, ro), Nil), rofix: rev_append(lhead(dyn0), Nil), tls: rev_append(tls, Nil), rls: rev_append(rls, Nil), bls: rev_append(bls, Nil), boff: boff, dyn: rev_append(ltail(dyn0), Nil)}
+fn lhead(xs) = match xs
+    Cons(h, t) => h
+    Nil        => Nil
+fn ltail(xs) = match xs
+    Cons(h, t) => t
+    Nil        => Nil
+fn layout_enc(r, co, eb, ln) = let rl = needsreloc(r) in {off: co, ln: ln, reloc: rl, bytes: if rl == 1 then Nil else eb, ins: if rl == 1 then r else 0}
+fn layout_go(items, co, roff, boff, encs, ro, tls, rls, bls, dyn) = match items
+    Nil        => layout_done(co, boff, roff, encs, ro, tls, rls, bls, dyn)
+    Cons(h, t) => match h
+        Ins(r)     => let eb = enc(r, 0, Nil) in let ln = len(eb) in layout_go(t, co + ln, roff, boff, Cons(layout_enc(r, co, eb, ln), encs), ro, tls, rls, bls, dyn)
+        TL(nm)     => layout_go(t, co, roff, boff, encs, ro, Cons({nm: nm, o: co}, tls), rls, bls, dyn)
+        RL(nm)     => layout_go(t, co, roff, boff, encs, ro, tls, Cons({nm: nm, o: roff}, rls), bls, dyn)
+        RO(bs)     => layout_go(t, co, roff + len(bs), boff, encs, rev_append(bs, ro), tls, rls, bls, dyn)
+        RQ(nm)     => layout_go(t, co, roff + 8, boff, encs, zeros_on(8, ro), tls, rls, bls, Cons(Cons({o: roff, nm: nm}, lhead(dyn)), ltail(dyn)))
+        RA(n)      => let p = (n - roff % n) % n in layout_go(t, co, roff + p, boff, encs, zeros_on(p, ro), tls, rls, bls, dyn)
+        BS(nm, sz) => layout_go(t, co, roff, boff + sz, encs, ro, tls, rls, Cons({nm: nm, o: boff}, bls), dyn)
+        ND(x)      => layout_go(t, co, roff, boff, encs, ro, tls, rls, bls, Cons(lhead(dyn), Cons(h, ltail(dyn))))
+        EX(x)      => layout_go(t, co, roff, boff, encs, ro, tls, rls, bls, Cons(lhead(dyn), Cons(h, ltail(dyn))))
+        KRN        => layout_go(t, co, roff, boff, encs, ro, tls, rls, bls, Cons(lhead(dyn), Cons(h, ltail(dyn))))
+        _          => layout_go(t, co, roff, boff, encs, ro, tls, rls, bls, dyn)
+
+## the final rodata: every `.quad label` slot receives the label's absolute address
+fn ro_skip(bs, n, acc) = if n <= 0 then {rest: bs, acc: acc} else ro_skip1(bs, n, acc)
+fn ro_skip1(bs, n, acc) = match bs
+    Cons(h, t) => ro_skip(t, n - 1, Cons(h, acc))
+    Nil        => {rest: Nil, acc: acc}
+fn ro_patch(bs, fix, pos, syms, acc) = match fix
+    Nil        => rev_append(acc, bs)
+    Cons(f, t) => let lead = ro_skip(bs, f.o - pos, acc) in let z = chksym(syms, f.nm, ".quad operand") in let gap = ro_skip(lead.rest, 8, Nil) in ro_patch(gap.rest, t, f.o + 8, syms, rev_append(b8(symaddr(syms, f.nm)), lead.acc))
+fn ro_final(lay, syms) = ro_patch(lay.robytes, lay.rofix, 0, syms, Nil)
 
 ## --- pass 2: emit code bytes with the full symbol table. Verbatim bytes for the
 ## address-independent instructions; re-encode only the reloc ones (jumps/calls/jcc/%rip) now
@@ -249,6 +275,10 @@ fn emitcode2b_acc(encs, syms, tbase, acc) = match encs
     Cons(e, t) => let eb = if e.reloc == 1 then enc(e.ins, tbase + e.off + e.ln, syms) else e.bytes in emitcode2b_acc(t, syms, tbase, rev_append(eb, acc))
 fn emitcode2b(encs, syms, tbase) = emitcode2b_acc(encs, syms, tbase, Nil)
 fn emitcode2(encs, syms) = emitcode2b(encs, syms, 4194424)
+## the plain ELF path streams: a byte list of the whole image would be the largest thing in memory
+fn emitcode_stream(encs, syms, tbase) = match encs
+    Nil        => 0
+    Cons(e, t) => let z = emitall(if e.reloc == 1 then enc(e.ins, tbase + e.off + e.ln, syms) else e.bytes) in emitcode_stream(t, syms, tbase)
 
 ## --- strict mode (#428): fail closed on unresolved symbols instead of silently encoding
 ## address 0. Every relocatable reference (jump/call/jcc target, %rip-relative operand) must
@@ -260,6 +290,17 @@ fn chkrefs(encs, syms, strict) = if strict == 0 then 0 else chkrefs1(encs, syms)
 fn chkrefs1(encs, syms) = match encs
     Nil        => 0
     Cons(e, t) => let z = if e.reloc == 1 then chkinsref(e.ins, syms) else 0 in chkrefs1(t, syms)
+## a symbol defined twice stops the link: otherwise one definition silently wins and every jump goes there
+fn dupmem(nm, es) = match es
+    Nil        => 0
+    Cons(h, t) => if h.nm == nm then 1 else dupmem(nm, t)
+fn dupentries(es) = match es
+    Nil        => 0
+    Cons(h, t) => if dupmem(h.nm, t) == 1 then ctfail("lasm: link error [L0010]: symbol '" + h.nm + "' is defined twice\n") else dupentries(t)
+fn dupbuckets(bs) = match bs
+    Nil        => 0
+    Cons(b, t) => let z = dupentries(b.entries) in dupbuckets(t)
+fn chkdups(lay, strict) = if strict == 0 then 0 else dupbuckets(mapsym(app(lay.tls, app(lay.rls, lay.bls)), 0))
 fn chkentry(syms, strict) = if strict == 1 and symlocated(syms, "_start") == 0 then ctfail("lasm: link error [L0001]: undefined entry symbol '_start'\n") else 0
 
 ## --- ELF64 container (VBASE 0x400000, 120-byte headers, one RWX PT_LOAD; or 232-byte dynamic ELF64 with PT_INTERP/PT_DYNAMIC/DT_NEEDED/PLT/GOT) ---
@@ -303,7 +344,7 @@ fn ehdr_dyn(entry) = app(identbytes(), app(b2(2), app(b2(62), app(b4(1), app(b8(
 fn phdr_interp(ioff) = app(b4(3), app(b4(4), app(b8(ioff), app(b8(4194304 + ioff), app(b8(4194304 + ioff), app(b8(28), app(b8(28), b8(1))))))))
 fn phdr_dynamic(doff, dsz) = app(b4(2), app(b4(6), app(b8(doff), app(b8(4194304 + doff), app(b8(4194304 + doff), app(b8(dsz), app(b8(dsz), b8(8))))))))
 fn interp_bytes() = app(str_nul_bytes("/lib64/ld-linux-x86-64.so.2", 0, 27), zeros(4))
-fn asmdyn(lay, needs, exts, strict) = let nexts = len(exts) in let cs0 = lay.co in let cs = cs0 + nexts * 6 in let rs0 = len(lay.robytes) in let pad0 = (8 - ((232 + cs + rs0) % 8)) % 8 in let interp_off = 232 + cs + rs0 + pad0 in let hash_off = interp_off + 32 in let hwords = 3 + nexts in let hash_sz = (hwords + (hwords % 2)) * 4 in let dynsym_off = hash_off + hash_sz in let dynsym_sz = (1 + nexts) * 24 in let dynstr_off = dynsym_off + dynsym_sz in let pn = dynstr_pack(needs, 1) in let pe = dynstr_pack(exts, pn.end) in let dpad = (8 - (pe.end % 8)) % 8 in let dynstr_sz = pe.end + dpad in let got_off = dynstr_off + dynstr_sz in let got_sz = (3 + nexts) * 8 in let rela_off = got_off + got_sz in let rela_sz = nexts * 24 in let dyn_off = rela_off + rela_sz in let dyn_sz = (len(needs) + 10) * 16 in let filesz = dyn_off + dyn_sz in let memsz = filesz + lay.boff in let tls_all = app(mk_plt_tls(exts, cs0, 0), lay.tls) in let syms = app(mapsym(tls_all, 4194536), app(mapsym(lay.rls, 4194536 + cs), mapsym(lay.bls, 4194304 + filesz))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = app(emitcode2b(lay.encs, syms, 4194536), mk_plt_code(nexts, 0, cs0, got_off)) in let hash_bs = app(b4(1), app(b4(1 + nexts), zeros((1 + nexts + (hwords % 2)) * 4))) in let dynsym_bs = app(zeros(24), mk_dynsym(pe.offs)) in let dynstr_bs = app(Cons(0, app(pn.bytes, pe.bytes)), zeros(dpad)) in let got_bs = zeros(got_sz) in let rela_bs = mk_rela(nexts, 0, got_off) in let dyn_bs = app(mk_dt_needed(pn.offs), app(b8(4), app(b8(4194304 + hash_off), app(b8(5), app(b8(4194304 + dynstr_off), app(b8(6), app(b8(4194304 + dynsym_off), app(b8(10), app(b8(pe.end), app(b8(11), app(b8(24), app(b8(3), app(b8(4194304 + got_off), app(b8(7), app(b8(4194304 + rela_off), app(b8(8), app(b8(rela_sz), app(b8(9), app(b8(24), app(b8(0), b8(0))))))))))))))))))))) in let hdrs = app(ehdr_dyn(symaddr(syms, "_start")), app(phdr_interp(interp_off), app(phdr(filesz, memsz), phdr_dynamic(dyn_off, dyn_sz)))) in let tail = app(lay.robytes, app(zeros(pad0), app(interp_bytes(), app(hash_bs, app(dynsym_bs, app(dynstr_bs, app(got_bs, app(rela_bs, dyn_bs)))))))) in emitall(app(hdrs, app(code, tail)))
+fn asmdyn(lay, needs, exts, strict) = let nexts = len(exts) in let cs0 = lay.co in let ppad = (8 - (nexts * 6) % 8) % 8 in let cs = cs0 + nexts * 6 + ppad in let rs0 = len(lay.robytes) in let pad0 = (8 - ((232 + cs + rs0) % 8)) % 8 in let interp_off = 232 + cs + rs0 + pad0 in let hash_off = interp_off + 32 in let hwords = 3 + nexts in let hash_sz = (hwords + (hwords % 2)) * 4 in let dynsym_off = hash_off + hash_sz in let dynsym_sz = (1 + nexts) * 24 in let dynstr_off = dynsym_off + dynsym_sz in let pn = dynstr_pack(needs, 1) in let pe = dynstr_pack(exts, pn.end) in let dpad = (8 - (pe.end % 8)) % 8 in let dynstr_sz = pe.end + dpad in let got_off = dynstr_off + dynstr_sz in let got_sz = (3 + nexts) * 8 in let rela_off = got_off + got_sz in let rela_sz = nexts * 24 in let dyn_off = rela_off + rela_sz in let dyn_sz = (len(needs) + 10) * 16 in let filesz = dyn_off + dyn_sz in let memsz = filesz + lay.boff in let tls_all = app(mk_plt_tls(exts, cs0, 0), lay.tls) in let syms = app(mapsym(tls_all, 4194536), app(mapsym(lay.rls, 4194536 + cs), mapsym(lay.bls, 4194304 + filesz))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = app(emitcode2b(lay.encs, syms, 4194536), mk_plt_code(nexts, 0, cs0, got_off)) in let hash_bs = app(b4(1), app(b4(1 + nexts), zeros((1 + nexts + (hwords % 2)) * 4))) in let dynsym_bs = app(zeros(24), mk_dynsym(pe.offs)) in let dynstr_bs = app(Cons(0, app(pn.bytes, pe.bytes)), zeros(dpad)) in let got_bs = zeros(got_sz) in let rela_bs = mk_rela(nexts, 0, got_off) in let dyn_bs = app(mk_dt_needed(pn.offs), app(b8(4), app(b8(4194304 + hash_off), app(b8(5), app(b8(4194304 + dynstr_off), app(b8(6), app(b8(4194304 + dynsym_off), app(b8(10), app(b8(pe.end), app(b8(11), app(b8(24), app(b8(3), app(b8(4194304 + got_off), app(b8(7), app(b8(4194304 + rela_off), app(b8(8), app(b8(rela_sz), app(b8(9), app(b8(24), app(b8(0), b8(0))))))))))))))))))))) in let hdrs = app(ehdr_dyn(symaddr(syms, "_start")), app(phdr_interp(interp_off), app(phdr(filesz, memsz), phdr_dynamic(dyn_off, dyn_sz)))) in let tail = app(zeros(ppad), app(ro_final(lay, syms), app(zeros(pad0), app(interp_bytes(), app(hash_bs, app(dynsym_bs, app(dynstr_bs, app(got_bs, app(rela_bs, dyn_bs))))))))) in emitall(app(hdrs, app(code, tail)))
 
 fn has_krn(items) = match items
     Nil        => 0
@@ -319,7 +360,7 @@ fn mbr_dap_seg(nsects) = if nsects <= 64 then Cons(0, Cons(128, Cons(0, Cons(0, 
 fn mbr_dap(nsects) = app(Cons(16, Cons(0, app(b2(nsects), mbr_dap_seg(nsects)))), b8(1))
 fn mbr_sector(entry, nsects) = let p1 = mbr_part1() in let p2 = mbr_part2(entry) in let p3 = mbr_gdt() in let p4 = mbr_dap(nsects) in app(p1, app(zeros(128 - len(p1)), app(p2, app(zeros(64 - len(p2)), app(p3, app(zeros(48 - len(p3)), app(p4, app(zeros(270 - len(p4)), Cons(85, Cons(170, Nil))))))))))
 fn mbr_iso_sector(entry, nsects) = let p1 = mbr_part1_iso() in let p2 = mbr_part2(entry) in let p3 = mbr_gdt() in let p4 = mbr_dap(nsects) in app(p1, app(zeros(128 - len(p1)), app(p2, app(zeros(64 - len(p2)), app(p3, app(zeros(48 - len(p3)), app(p4, app(zeros(270 - len(p4)), Cons(85, Cons(170, Nil))))))))))
-fn asmkernel(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, lay.robytes) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 127 then 127 else nsects in let target_sects = if nsects_clamped <= 64 then 64 else nsects_clamped in let pad_sz = (target_sects * 512) - blen in emitall(app(mbr_sector(symaddr(syms, "_start"), nsects_clamped), app(body, zeros(if pad_sz >= 0 then pad_sz else 512))))
+fn asmkernel(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, ro_final(lay, syms)) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 127 then 127 else nsects in let target_sects = if nsects_clamped <= 64 then 64 else nsects_clamped in let pad_sz = (target_sects * 512) - blen in emitall(app(mbr_sector(symaddr(syms, "_start"), nsects_clamped), app(body, zeros(if pad_sz >= 0 then pad_sz else 512))))
 fn iso_cd001(tp) = Cons(tp, Cons(67, Cons(68, Cons(48, Cons(48, Cons(49, Cons(1, Nil)))))))
 fn iso_both16(n) = Cons(n % 256, Cons((n / 256) % 256, Cons((n / 256) % 256, Cons(n % 256, Nil))))
 fn iso_both32(n) = app(b4(n), Cons((n / 16777216) % 256, Cons((n / 65536) % 256, Cons((n / 256) % 256, Cons(n % 256, Nil)))))
@@ -328,7 +369,7 @@ fn iso_pvd() = app(iso_cd001(1), app(zeros(73), app(iso_both32(64), app(zeros(32
 fn iso_brvd() = app(iso_cd001(0), app(str_nul_bytes("EL TORITO SPECIFICATION", 0, 23), app(zeros(40), app(b4(19), zeros(1973)))))
 fn iso_vdst() = app(iso_cd001(255), zeros(2041))
 fn iso_boot_cat(vsects) = let val_e = Cons(1, Cons(0, Cons(0, Cons(0, app(zeros(24), Cons(170, Cons(85, Cons(85, Cons(170, Nil))))))))) in let init_e = app(Cons(136, Cons(0, Cons(192, Cons(7, Cons(0, Cons(0, Nil)))))), app(b2(vsects), app(b4(20), zeros(20)))) in app(val_e, app(init_e, zeros(1984)))
-fn asmiso(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, lay.robytes) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 120 then 120 else nsects in let vsects = ((nsects_clamped + 5) / 4) * 4 in let boot_payload = app(mbr_iso_sector(symaddr(syms, "_start"), nsects_clamped), app(zeros(512), body)) in let rem_pad = 90112 - len(boot_payload) in let hdrs = app(zeros(32768), app(iso_pvd(), app(iso_brvd(), app(iso_vdst(), iso_boot_cat(vsects))))) in emitall(app(hdrs, app(boot_payload, zeros(if rem_pad > 0 then rem_pad else 2048))))
+fn asmiso(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, ro_final(lay, syms)) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 120 then 120 else nsects in let vsects = ((nsects_clamped + 5) / 4) * 4 in let boot_payload = app(mbr_iso_sector(symaddr(syms, "_start"), nsects_clamped), app(zeros(512), body)) in let rem_pad = 90112 - len(boot_payload) in let hdrs = app(zeros(32768), app(iso_pvd(), app(iso_brvd(), app(iso_vdst(), iso_boot_cat(vsects))))) in emitall(app(hdrs, app(boot_payload, zeros(if rem_pad > 0 then rem_pad else 2048))))
 
 ## --- the assembler: read input, two passes, emit the ELF (or bootable kernel/ISO image) to stdout.
 ## Modes: `lasm [--strict|--lenient] [--iso] [file.s]` (file arg => ELF to stdout; no arg => stdin/stdout).
@@ -336,13 +377,14 @@ fn asmiso(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let sym
 ## compile error ([L0001]) instead of a silent jump to address 0 (#428); `--lenient` keeps the
 ## historical address-0 resolution for inputs that intentionally rely on it. ---
 fn buildsyms(lay, cs, rs) = app(mapsym(lay.tls, 4194424), app(mapsym(lay.rls, 4194424 + cs), mapsym(lay.bls, 4194424 + cs + rs)))
-fn assemble_mode_iso(src, strict, iso) = let items = reslocals(parseitems(splitlines(src, 0), 0), Nil) in if iso == 1 and has_krn(items) == 1 then asmiso(layout(items, 0, 0, 0), strict) else if has_krn(items) == 1 then asmkernel(layout(items, 0, 0, 0), strict) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(layout(items, 0, 0, 0), strict) else asmdyn(layout(items, 0, 0, 0), needs, exts, strict)
+fn assemble_mode_iso(src, strict, iso) = assemble_back(layout(reslocals(parseitems(splitlines(src, 0), 0), Nil), 0, 0, 0), strict, iso)
+fn assemble_back(lay, strict, iso) = let zdup = chkdups(lay, strict) in let items = lay.dyn in if iso == 1 and has_krn(items) == 1 then asmiso(lay, strict) else if has_krn(items) == 1 then asmkernel(lay, strict) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(lay, strict) else asmdyn(lay, needs, exts, strict)
 fn assemble_mode(src, strict) = assemble_mode_iso(src, strict, 0)
 fn assemble(src) = assemble_mode(src, 0)
 fn asm2(lay, strict) = asm3(lay, lay.co, len(lay.robytes), strict)
 fn asm3(lay, cs, rs, strict) = asm4(lay, cs, rs, buildsyms(lay, cs, rs), strict)
-fn asm4(lay, cs, rs, syms, strict) = let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in asm6(lay, syms, symaddr(syms, "_start"), 120 + cs + rs, 120 + cs + rs + lay.boff, emitcode2(lay.encs, syms))
-fn asm6(lay, syms, entry, filesz, memsz, code) = emitall(app(ehdr(entry), app(phdr(filesz, memsz), app(code, lay.robytes))))
+fn asm4(lay, cs, rs, syms, strict) = let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in asm6(lay, syms, symaddr(syms, "_start"), 120 + cs + rs, 120 + cs + rs + lay.boff)
+fn asm6(lay, syms, entry, filesz, memsz) = let h = emitall(app(ehdr(entry), phdr(filesz, memsz))) in let c = emitcode_stream(lay.encs, syms, 4194424) in emitall(ro_final(lay, syms))
 fn asmargs(i, strict, iso, file) = if i >= os_arg_count() then {strict: strict, iso: iso, file: file} else if os_arg_at(i) == "--strict" then asmargs(i + 1, 1, iso, file) else if os_arg_at(i) == "--lenient" then asmargs(i + 1, 0, iso, file) else if os_arg_at(i) == "--iso" then asmargs(i + 1, strict, 1, file) else asmargs(i + 1, strict, iso, os_arg_at(i))
 
 ## Entry point: two top-level expression statements. `assemble_mode` emits every ELF byte into the

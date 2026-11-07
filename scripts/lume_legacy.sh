@@ -604,7 +604,7 @@ for _bn in lc lumec lumec0 lumec1 lumec2 lumec3 lasm lasm0 lasm1 lasm2 lasm3 lcl
         printf '%s  build/bin/%s\n' "$(sha256_of "$PREFIX/build/bin/$_bn")" "$_bn" >> "$MANIFEST"
     fi
 done
-for _sn in lcli.src lasm.src lcaas.src lcert.src lmod.src ltarget.src lregistry.src lmesh.src los.src; do
+for _sn in own_flow.src name_flow.src lumec.src lcli.src lasm.src lcaas.src lcert.src lmod.src ltarget.src lregistry.src lmesh.src los.src; do
     if [ -f "$PREFIX/compiler/stage1/$_sn" ]; then
         printf '%s  compiler/stage1/%s\n' "$(sha256_of "$PREFIX/compiler/stage1/$_sn")" "$_sn" >> "$MANIFEST"
     fi
@@ -783,6 +783,12 @@ cmd_run() {
     fi
     case "$_file" in
         *.lumb)
+            # a container stored through the compactor is unpacked first (lume unpack: same bytes as before packing)
+            if [ "$(head -c 3 "$_file" 2>/dev/null)" = "LZ1" ]; then
+                _lumb_plain=$(mktemp)
+                "$(dirname "$0")/../lume" unpack "$_file" -o "$_lumb_plain" >/dev/null || return 3
+                _file=$_lumb_plain
+            fi
             if command -v perl >/dev/null 2>&1; then
                 perl -e '
                     open my $fh, "<:raw", $ARGV[0] or die;

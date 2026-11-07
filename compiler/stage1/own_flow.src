@@ -1,0 +1,458 @@
+## own_flow.src -- the ownership analysis shared by `lumec` and `lcaas`.
+##
+## Pure functions over the common AST. They decide, they never report: every entry point returns a value or
+## a message, and each front-end turns that into its own diagnostic ([O0013]/[O0004] and the moved set).
+## `lumec` gets this module through the amalgamation, `lcaas` through `use own_flow`, so the compiler and the
+## oracle cannot disagree about these rules.
+##
+## A plain `let b = a` shares memory, so a move has to reach every binding that can observe the moved value.
+## Each binding has a rid: bindings that are the same value share one, and `edges` records containment
+## ({c: container, e: element}) from constructors, records and closures. Moving a value invalidates everything
+## it reaches: its own class, what it contains, and every container of those. A part read out of a value (a
+## field, a match pattern) is a weak edge: moving the part invalidates the whole, but a part already read stays
+## usable when the whole moves on, because values are immutable and it may just be an int.
+## Siblings stay valid, so moving `t` out of `Cons(h, t)` leaves `h` usable, and `r.a` and `r.b` move separately.
+## These rules give Rust-style errors; they are not what keeps values correct. Unknown calls add no edge, since
+## a fresh result is the common case and must not be rejected, and in-place reuse never trusts this analysis:
+## the Perceus uniqueness gate (`pu_*` in 06b_phase3.src) proves what it needs on its own.
+
+fn of_mem(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else of_mem(x, t)
+fn of_rem(x, xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h == x then of_rem(x, t) else Cons(h, of_rem(x, t))
+fn of_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, of_app(t, ys))
+fn of_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + of_len(t)
+fn of_nil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn of_hd(xs) = match xs
+    Nil        => Num(0)
+    Cons(h, t) => h
+fn of_starts(s, p) = if count(s) < count(p) then 0 else if slice(s, 0, count(p)) == p then 1 else 0
+fn of_ctor(nm) = if count(nm) == 0 then 0 else let c = ord(at(nm, 0)) in if c >= 65 and c <= 90 then 1 else 0
+fn of_sig(nm, osigs) = match osigs
+    Nil        => Nil
+    Cons(h, t) => if h.nm == nm then Cons(h, Nil) else of_sig(nm, t)
+fn of_strip(org) = if of_starts(org, "borrow:") == 1 then of_strip(slice(org, 7, count(org))) else org
+
+## --- complete free-occurrence test: Perceus and the loan checks rely on it seeing every expression form ---
+fn omentions_args(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if omentions_var(x, h) == 1 then 1 else omentions_args(x, t)
+fn omentions_rec(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if omentions_var(x, h.val) == 1 then 1 else omentions_rec(x, t)
+fn omentions_hops(x, hs) = match hs
+    Nil        => 0
+    Cons(h, t) => if omentions_var(x, h.body) == 1 then 1 else omentions_hops(x, t)
+fn opat_binds(x, p) = match p
+    PBind(nm)        => if nm == x then 1 else 0
+    PCons(tag, subs) => opat_binds_l(x, subs)
+    _                => 0
+fn opat_binds_l(x, ps) = match ps
+    Nil        => 0
+    Cons(h, t) => if opat_binds(x, h) == 1 then 1 else opat_binds_l(x, t)
+fn omentions_arms(x, arms) = match arms
+    Nil        => 0
+    Cons(h, t) => if opat_binds(x, h.pat) == 0 and omentions_var(x, h.body) == 1 then 1 else omentions_arms(x, t)
+fn omentions_var(x, e) = match e
+    Var(nm)          => if nm == x then 1 else 0
+    OwnE(inner)      => omentions_var(x, inner)
+    MutE(inner)      => omentions_var(x, inner)
+    Field(o, fld)    => omentions_var(x, o)
+    Bin(op, l, r)    => if omentions_var(x, l) == 1 then 1 else omentions_var(x, r)
+    If(c, t, e2)     => if omentions_var(x, c) == 1 then 1 else if omentions_var(x, t) == 1 then 1 else omentions_var(x, e2)
+    LetIn(nm, v, b)  => if omentions_var(x, v) == 1 then 1 else if nm == x then 0 else omentions_var(x, b)
+    VarIn(nm, v, b)  => if omentions_var(x, v) == 1 then 1 else if nm == x then 0 else omentions_var(x, b)
+    Call(nm, args)   => omentions_args(x, args)
+    Rec(items)       => omentions_rec(x, items)
+    RecT(tn, items)  => omentions_rec(x, items)
+    Match(sc, arms)  => if omentions_var(x, sc) == 1 then 1 else omentions_arms(x, arms)
+    LambdaE(ps, tys, rt, body) => if of_mem(x, ps) == 1 then 0 else omentions_var(x, body)
+    DeferE(c, b)     => if omentions_var(x, c) == 1 then 1 else omentions_var(x, b)
+    ErrDeferE(c, b)  => if omentions_var(x, c) == 1 then 1 else omentions_var(x, b)
+    WithAllocE(a, b) => if omentions_var(x, a) == 1 then 1 else omentions_var(x, b)
+    WithHandlerE(en, hs, b) => if omentions_hops(x, hs) == 1 then 1 else omentions_var(x, b)
+    ScopeE(snm, b)   => omentions_var(x, b)
+    SpawnE(i)        => omentions_var(x, i)
+    AwaitE(i)        => omentions_var(x, i)
+    ShardE(vnm, lo, hi, b) => if omentions_var(x, lo) == 1 then 1 else if omentions_var(x, hi) == 1 then 1 else if vnm == x then 0 else omentions_var(x, b)
+    CT(i)            => omentions_var(x, i)
+    Quote(i)         => omentions_var(x, i)
+    Splice(i)        => omentions_var(x, i)
+    _                => 0
+
+## --- alias environment ---
+fn oa_new(osigs, otypes, sigs, body) = {al: Nil, edges: Nil, dep: 0, track: if of_nil(otypes) == 0 then 1 else otrack_e(body), osigs: osigs, otypes: otypes, sigs: sigs}
+fn oa_with(oa, al, edges, dep) = {al: al, edges: edges, dep: dep, track: oa.track, osigs: oa.osigs, otypes: oa.otypes, sigs: oa.sigs}
+fn oa_rid_l(x, al) = match al
+    Nil        => x
+    Cons(h, t) => if h.k == x then h.r else oa_rid_l(x, t)
+fn oa_rid(x, oa) = oa_rid_l(x, oa.al)
+
+fn oa_flow_nil() = {al: Nil, up: Nil, dn: Nil, es: Nil}
+fn oa_flow_al(xs) = {al: xs, up: Nil, dn: Nil, es: Nil}
+fn oa_flow_all(f) = of_app(f.al, of_app(f.up, f.dn))
+fn oa_flow_whole(f) = of_app(f.al, f.dn)
+fn oa_flow_join(a, b) = {al: of_app(a.al, b.al), up: of_app(a.up, b.up), dn: of_app(a.dn, b.dn), es: of_app(a.es, b.es)}
+fn oa_flow_part(f) = {al: Nil, up: oa_flow_all(f), dn: Nil, es: f.es}
+fn oa_flow_in(f) = {al: Nil, up: Nil, dn: oa_flow_all(f), es: f.es}
+fn oa_flow_es(f, es) = {al: f.al, up: f.up, dn: f.dn, es: of_app(es, f.es)}
+fn of_take(xs, n) = if n <= 0 then Nil else match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(h, of_take(t, n - 1))
+## a binding made inside an expression is out of scope afterwards, but what it linked stays linked
+fn oa_scope_es(inner, outer) = of_take(inner.edges, of_len(inner.edges) - of_len(outer.edges))
+fn oa_flow_args(args, oa) = match args
+    Nil        => oa_flow_nil()
+    Cons(h, t) => oa_flow_join(oa_flow_in(oa_flow(h, oa)), oa_flow_args(t, oa))
+fn oa_flow_items(items, oa) = match items
+    Nil        => oa_flow_nil()
+    Cons(h, t) => oa_flow_join(oa_flow_in(oa_flow(h.val, oa)), oa_flow_items(t, oa))
+fn oa_flow_arms(arms, oa, sf) = match arms
+    Nil        => oa_flow_nil()
+    Cons(h, t) => let o2 = oa_pat(oa, h.pat, oa_flow_all(sf)) in oa_flow_join(oa_flow_es(oa_flow(h.body, o2), oa_scope_es(o2, oa)), oa_flow_arms(t, oa, sf))
+fn oa_captures(al, ps, body, oa) = match al
+    Nil        => Nil
+    Cons(h, t) => if of_mem(h.k, ps) == 0 and omentions_var(h.k, body) == 1 then Cons(h.r, oa_captures(t, ps, body, oa)) else oa_captures(t, ps, body, oa)
+fn of_arg_for2(fromp, args, p, r) = match args
+    Nil         => Num(0)
+    Cons(a, ar) => if p.pn == fromp then a else of_arg_for(fromp, ar, r)
+fn of_arg_for(fromp, args, pl) = match pl
+    Nil        => Num(0)
+    Cons(p, r) => if p.cf == 1 then of_arg_for(fromp, args, r) else of_arg_for2(fromp, args, p, r)
+fn oa_flow_call(args, msig, oa) = match msig
+    Nil          => oa_flow_nil()
+    Cons(sg, sr) => if sg.fromp != "" then oa_flow(of_arg_for(sg.fromp, args, sg.pl), oa) else oa_flow_nil()
+fn oa_flow_let(nm, v, b, oa) = let o2 = oa_alias(oa, nm, v) in oa_flow_es(oa_flow(b, o2), oa_scope_es(o2, oa))
+## where can the value of `e` come from: the same value (al), a part of it (up), or stored inside it (dn)
+fn oa_flow(e, oa) = match e
+    Var(x)           => if of_ctor(x) == 1 then oa_flow_nil() else oa_flow_al(Cons(oa_rid(x, oa), Nil))
+    Field(o, fld)    => oa_flow_part(oa_flow(o, oa))
+    If(c, t, e2)     => oa_flow_join(oa_flow(t, oa), oa_flow(e2, oa))
+    LetIn(nm, v, b)  => oa_flow_let(nm, v, b, oa)
+    VarIn(nm, v, b)  => oa_flow_let(nm, v, b, oa)
+    Match(sc, arms)  => oa_flow_arms(arms, oa, oa_flow(sc, oa))
+    Rec(items)       => oa_flow_items(items, oa)
+    RecT(tn, items)  => oa_flow_items(items, oa)
+    LambdaE(ps, tys, rt, body) => {al: Nil, up: Nil, dn: oa_captures(oa.al, ps, body, oa), es: Nil}
+    DeferE(c, b)     => oa_flow(b, oa)
+    ErrDeferE(c, b)  => oa_flow(b, oa)
+    WithAllocE(a, b) => oa_flow(b, oa)
+    ScopeE(snm, b)   => oa_flow(b, oa)
+    CT(inner)        => oa_flow(inner, oa)
+    Call(nm, args)   => if of_ctor(nm) == 1 then oa_flow_args(args, oa) else if (nm == "borrow" or nm == "borrow_mut") and of_len(args) == 1 then oa_flow(of_hd(args), oa) else oa_flow_call(args, of_sig(nm, oa.osigs), oa)
+    _                => oa_flow_nil()
+
+fn oa_edge_al(r, xs, es) = match xs
+    Nil        => es
+    Cons(h, t) => oa_edge_al(r, t, Cons({c: r, e: h, w: 0}, Cons({c: h, e: r, w: 0}, es)))
+fn oa_edge_up(r, xs, es) = match xs
+    Nil        => es
+    Cons(h, t) => oa_edge_up(r, t, Cons({c: h, e: r, w: 1}, es))
+fn oa_edge_dn(r, xs, es) = match xs
+    Nil        => es
+    Cons(h, t) => oa_edge_dn(r, t, Cons({c: r, e: h, w: 0}, es))
+## bind `nm` to a flow: a single plain alias joins that class, anything else gets a fresh rid
+fn oa_bind(oa, nm, f) = if oa.track == 0 then oa else match f.al
+    Cons(a, rest) => if of_nil(rest) == 1 and of_nil(f.up) == 1 and of_nil(f.dn) == 1 then oa_with(oa, Cons({k: nm, r: a}, oa.al), of_app(f.es, oa.edges), oa.dep) else oa_fresh(oa, nm, f)
+    Nil           => oa_fresh(oa, nm, f)
+fn oa_fresh(oa, nm, f) = let r = nm + "@" + str(oa.dep) in oa_with(oa, Cons({k: nm, r: r}, oa.al), oa_edge_al(r, f.al, oa_edge_up(r, f.up, oa_edge_dn(r, f.dn, of_app(f.es, oa.edges)))), oa.dep + 1)
+## does the binding that just happened own a new identity, or join an existing one?
+fn oa_is_fresh(nm, before, after) = oa_rid(nm, after) == nm + "@" + str(before.dep)
+fn oa_alias(oa, nm, v) = if oa.track == 0 then oa else oa_bind(oa, nm, oa_flow(v, oa))
+## a match pattern binds parts of its scrutinee
+fn oa_pat(oa, p, scf) = if oa.track == 0 then oa else match p
+    PBind(nm)        => oa_bind(oa, nm, {al: Nil, up: scf, dn: Nil, es: Nil})
+    PCons(tag, subs) => oa_pats(oa, subs, scf)
+    _                => oa
+fn oa_pats(oa, ps, scf) = match ps
+    Nil        => oa
+    Cons(h, t) => oa_pats(oa_pat(oa, h, scf), t, scf)
+fn oa_pat_names(p) = match p
+    PBind(nm)        => Cons(nm, Nil)
+    PCons(tag, subs) => oa_pat_names_l(subs)
+    _                => Nil
+fn oa_pat_names_l(ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => of_app(oa_pat_names(h), oa_pat_names_l(t))
+fn oa_rids(names, oa) = match names
+    Nil        => Nil
+    Cons(h, t) => Cons(oa_rid(h, oa), oa_rids(t, oa))
+fn oa_rem_all(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => oa_rem_all(t, of_rem(h, ys))
+
+fn oa_step_dn(es, seen) = match es
+    Nil        => seen
+    Cons(h, t) => oa_step_dn(t, if h.w == 0 and of_mem(h.c, seen) == 1 and of_mem(h.e, seen) == 0 then Cons(h.e, seen) else seen)
+fn oa_step_up(es, seen) = match es
+    Nil        => seen
+    Cons(h, t) => oa_step_up(t, if of_mem(h.e, seen) == 1 and of_mem(h.c, seen) == 0 then Cons(h.c, seen) else seen)
+fn oa_reach_dn(seen, es) = let s2 = oa_step_dn(es, seen) in if of_len(s2) == of_len(seen) then seen else oa_reach_dn(s2, es)
+fn oa_reach_up(seen, es) = let s2 = oa_step_up(es, seen) in if of_len(s2) == of_len(seen) then seen else oa_reach_up(s2, es)
+## every rid invalidated by moving the value `r`
+fn oa_kill(r, oa) = oa_reach_up(oa_reach_dn(Cons(r, Nil), oa.edges), oa.edges)
+fn oa_first_borrowed(bps, s, oa) = match bps
+    Nil        => ""
+    Cons(h, t) => if of_mem(oa_rid(h, oa), s) == 1 then h else oa_first_borrowed(t, s, oa)
+fn oa_names_l(r, al) = match al
+    Nil        => Nil
+    Cons(h, t) => if h.r == r then Cons(h.k, oa_names_l(r, t)) else oa_names_l(r, t)
+## every name bound to the same value as `x`
+fn oa_names(x, oa) = Cons(x, of_rem(x, oa_names_l(oa_rid(x, oa), oa.al)))
+
+## every rid invalidated by moving any of `rs`
+fn oa_kill_all(rs, oa) = match rs
+    Nil        => Nil
+    Cons(h, t) => of_app(oa_kill(h, oa), oa_kill_all(t, oa))
+
+## --- paths: `r.a.b` moves that field, and `r.c` stays usable. The moved set holds rid + path. ---
+fn oa_path(e) = match e
+    Var(x)        => {root: x, path: ""}
+    Field(o, fld) => let p = oa_path(o) in {root: p.root, path: p.path + "." + fld}
+    _             => {root: "", path: ""}
+fn oa_overlap(a, b) = if a == b then 1 else if of_starts(a, b + ".") == 1 then 1 else of_starts(b, a + ".")
+## is `key` (a rid and path) moved, wholly or in part?
+fn oa_moved(key, moved) = match moved
+    Nil        => 0
+    Cons(h, t) => if oa_overlap(key, h) == 1 then 1 else oa_moved(key, t)
+
+## --- a move and a retained copy in one expression: `Pa(a, f(own a))`, `g(a, own a)` ---
+fn oa_roots_list(xs, oa) = match xs
+    Nil        => Nil
+    Cons(h, t) => of_app(oa_own_roots(h, oa), oa_roots_list(t, oa))
+fn oa_roots_items(xs, oa) = match xs
+    Nil        => Nil
+    Cons(h, t) => of_app(oa_own_roots(h.val, oa), oa_roots_items(t, oa))
+fn oa_root_of(i, oa) = let p = oa_path(i) in if p.root == "" then Nil else Cons(oa_rid(p.root, oa), Nil)
+fn oa_own_roots(e, oa) = match e
+    OwnE(i)         => oa_root_of(i, oa)
+    Call(nm, args)  => if nm == "move" and of_len(args) == 1 then oa_root_of(of_hd(args), oa) else oa_roots_list(args, oa)
+    Rec(items)      => oa_roots_items(items, oa)
+    RecT(tn, items) => oa_roots_items(items, oa)
+    Bin(op, l, r)   => of_app(oa_own_roots(l, oa), oa_own_roots(r, oa))
+    _               => Nil
+fn of_any_in(xs, ys) = match xs
+    Nil        => 0
+    Cons(h, t) => if of_mem(h, ys) == 1 then 1 else of_any_in(t, ys)
+fn oa_holds(args, i, j, killed, oa) = match args
+    Nil        => 0
+    Cons(a, t) => if j != i and of_any_in(oa_flow_whole(oa_flow(a, oa)), killed) == 1 then 1 else oa_holds(t, i, j + 1, killed, oa)
+fn oa_sc_roots(roots, all, i, oa) = match roots
+    Nil        => ""
+    Cons(r, t) => if oa_holds(all, i, 0, oa_kill(r, oa), oa) == 1 then "cannot move a value that the same expression also holds" else oa_sc_roots(t, all, i, oa)
+fn oa_sc_each(xs, all, i, oa) = match xs
+    Nil        => ""
+    Cons(h, t) => of_join(oa_sc_roots(oa_own_roots(h, oa), all, i, oa), oa_sc_each(t, all, i + 1, oa))
+fn oa_same_call(args, oa) = if oa.track == 0 then "" else oa_sc_each(args, args, 0, oa)
+fn oa_item_vals(items) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons(h.val, oa_item_vals(t))
+
+## --- live loans: a borrow held by a binding conflicts with accesses that happen before its last use ---
+fn of_any(names, e) = match names
+    Nil        => 0
+    Cons(h, t) => if omentions_var(h, e) == 1 then 1 else of_any(t, e)
+fn of_join(a, b) = if a != "" then a else b
+fn ols_live(st, e, live) = if live == 1 then 1 else of_any(st.hold, e)
+fn ols_msg(kind, x, st) = "cannot " + kind + " '" + x + "' while it is " + (if st.mutb == 1 then "mutably " else "") + "borrowed by '" + (match st.hold
+    Cons(h, t) => h
+    Nil        => "") + "' (the borrow is still used later; help: end the borrow first or use 'clone(" + x + ")')"
+fn ols_root(e) = match e
+    Var(x)        => x
+    Field(o, fld) => ols_root(o)
+    MutE(i)       => ols_root(i)
+    OwnE(i)       => ols_root(i)
+    _             => ""
+fn ols_skip(st, x) = {hold: st.hold, tn: of_rem(x, st.tn), mutb: st.mutb, osigs: st.osigs}
+fn ols_bind(st, nm, carries) = {hold: if carries == 1 then Cons(nm, of_rem(nm, st.hold)) else of_rem(nm, st.hold), tn: of_rem(nm, st.tn), mutb: st.mutb, osigs: st.osigs}
+fn ols_access(kind, e, st, live) = let x = ols_root(e) in if live == 1 and x != "" and of_mem(x, st.tn) == 1 then ols_msg(kind, x, st) else ols_scan(e, ols_skip(st, x), live)
+fn ols_any_items(names, items) = match items
+    Nil        => 0
+    Cons(h, t) => if of_any(names, h.val) == 1 then 1 else ols_any_items(names, t)
+fn ols_any_args(names, args) = match args
+    Nil        => 0
+    Cons(h, t) => if of_any(names, h) == 1 then 1 else ols_any_args(names, t)
+fn ols_carries(st, v) = match v
+    Var(x)          => of_mem(x, st.hold)
+    Field(o, fld)   => ols_carries(st, o)
+    Rec(items)      => ols_any_items(st.hold, items)
+    RecT(tn, items) => ols_any_items(st.hold, items)
+    If(c, t, e2)    => if ols_carries(st, t) == 1 then 1 else ols_carries(st, e2)
+    Call(nm, args)  => if of_ctor(nm) == 1 then ols_any_args(st.hold, args) else 0
+    _               => 0
+fn ols_let(nm, v, b, st, live) = of_join(ols_scan(v, st, ols_live(ols_bind(st, nm, 0), b, live)), ols_scan(b, ols_bind(st, nm, ols_carries(st, v)), live))
+fn ols_same(a, b) = match a
+    Var(x) => (match b
+        Var(y) => if x == y then 1 else 0
+        _      => 0)
+    _      => 0
+fn ols_others(names, h, all) = match all
+    Nil        => 0
+    Cons(a, t) => if of_any(names, a) == 1 and ols_same(a, h) == 0 then 1 else ols_others(names, h, t)
+fn ols_cf(pl) = match pl
+    Nil        => 0
+    Cons(p, r) => if p.cf == 1 then ols_cf(r) else p.cf
+fn ols_tl(pl) = match pl
+    Nil        => Nil
+    Cons(p, r) => if p.cf == 1 then ols_tl(r) else r
+fn ols_args(args, pl, st, live, all) = match args
+    Nil        => ""
+    Cons(a, r) => let cf = ols_cf(pl) in let lv = if live == 1 then 1 else ols_others(st.hold, a, all) in of_join(if cf == 2 then ols_access("move", a, st, lv) else if cf == 3 then ols_access("mutably borrow", a, st, lv) else ols_scan(a, st, lv), ols_args(r, ols_tl(pl), st, live, all))
+fn ols_call(nm, args, st, live) = if (nm == "move" or nm == "drop" or nm == "rc_drop" or nm == "arc_drop") and of_len(args) == 1 then ols_access("move", of_hd(args), st, live) else if nm == "borrow_mut" and of_len(args) == 1 then ols_access("mutably borrow", of_hd(args), st, live) else match of_sig(nm, st.osigs)
+    Nil          => ols_args(args, Nil, st, live, args)
+    Cons(sg, sr) => ols_args(args, sg.pl, st, live, args)
+fn ols_items(items, st, live) = match items
+    Nil        => ""
+    Cons(h, t) => of_join(ols_scan(h.val, st, if live == 1 then 1 else ols_any_items(st.hold, t)), ols_items(t, st, live))
+fn ols_pat(st, p) = match p
+    PBind(nm)        => ols_bind(st, nm, 0)
+    PCons(tag, subs) => ols_pats(st, subs)
+    _                => st
+fn ols_pats(st, ps) = match ps
+    Nil        => st
+    Cons(h, t) => ols_pats(ols_pat(st, h), t)
+fn ols_arms(arms, st, live) = match arms
+    Nil        => ""
+    Cons(h, t) => of_join(ols_scan(h.body, ols_pat(st, h.pat), live), ols_arms(t, st, live))
+fn ols_live_arms(st, arms) = match arms
+    Nil        => 0
+    Cons(h, t) => if ols_live(ols_pat(st, h.pat), h.body, 0) == 1 then 1 else ols_live_arms(st, t)
+fn ols_scan(e, st, live) = match e
+    Var(x)           => if st.mutb == 1 and live == 1 and of_mem(x, st.tn) == 1 then ols_msg("use", x, st) else ""
+    OwnE(i)          => ols_access("move", i, st, live)
+    MutE(i)          => ols_access("mutably borrow", i, st, live)
+    Field(o, fld)    => ols_scan(o, st, live)
+    Bin(op, l, r)    => of_join(ols_scan(l, st, ols_live(st, r, live)), ols_scan(r, st, live))
+    If(c, t, e2)     => of_join(ols_scan(c, st, if ols_live(st, t, live) == 1 then 1 else ols_live(st, e2, live)), of_join(ols_scan(t, st, live), ols_scan(e2, st, live)))
+    LetIn(nm, v, b)  => ols_let(nm, v, b, st, live)
+    VarIn(nm, v, b)  => ols_let(nm, v, b, st, live)
+    Call(nm, args)   => ols_call(nm, args, st, live)
+    Rec(items)       => ols_items(items, st, live)
+    RecT(tn, items)  => ols_items(items, st, live)
+    Match(sc, arms)  => of_join(ols_scan(sc, st, if live == 1 then 1 else ols_live_arms(st, arms)), ols_arms(arms, st, live))
+    DeferE(c, b)     => of_join(ols_scan(b, st, ols_live(st, c, live)), ols_scan(c, st, live))
+    ErrDeferE(c, b)  => of_join(ols_scan(b, st, ols_live(st, c, live)), ols_scan(c, st, live))
+    WithAllocE(a, b) => of_join(ols_scan(a, st, ols_live(st, b, live)), ols_scan(b, st, live))
+    ScopeE(snm, b)   => ols_scan(b, st, live)
+    SpawnE(i)        => ols_scan(i, st, live)
+    AwaitE(i)        => ols_scan(i, st, live)
+    CT(i)            => ols_scan(i, st, live)
+    _                => ""
+fn ols_target(core) = if of_starts(core, "local:") == 1 or of_starts(core, "param:") == 1 then slice(core, 6, count(core)) else ""
+fn ols_is_mut(v) = match v
+    MutE(i)        => 1
+    Call(nm, args) => if nm == "borrow_mut" then 1 else 0
+    _              => 0
+## `let nm = <borrow> in b`, `org` being the origin of the borrow: the conflict in `b`, or ""
+fn oa_loan_chk(nm, v, org, b, oa) = if oa.track == 0 or of_starts(org, "borrow:") == 0 then "" else let tgt = ols_target(of_strip(org)) in if tgt == "" then "" else ols_scan(b, {hold: Cons(nm, Nil), tn: oa_names(tgt, oa), mutb: ols_is_mut(v), osigs: oa.osigs}, 0)
+
+## --- `resource type` values are linear: one held by a `let` must leave on every path ---
+fn of_res_name(tn, ots) = match ots
+    Nil        => 0
+    Cons(h, t) => if h.nm == tn then (if h.kind == "resource" then 1 else 0) else of_res_name(tn, t)
+fn of_res_ty(ty, ots) = match ty
+    TyName(n) => of_res_name(n, ots)
+    _         => 0
+fn of_sig_rt(nm, sigs) = match sigs
+    Nil        => TyAny
+    Cons(h, t) => if h.fname == nm then h.rt else of_sig_rt(nm, t)
+fn of_res_call(nm, oa) = match of_sig(nm, oa.osigs)
+    Cons(sg, sr) => if of_res_ty(sg.rty, oa.otypes) == 1 then 1 else of_res_ty(of_sig_rt(nm, oa.sigs), oa.otypes)
+    Nil          => of_res_ty(of_sig_rt(nm, oa.sigs), oa.otypes)
+fn of_res_args(args, oa) = match args
+    Nil        => 0
+    Cons(h, t) => if of_res_value(h, oa) == 1 then 1 else of_res_args(t, oa)
+fn of_res_items(items, oa) = match items
+    Nil        => 0
+    Cons(h, t) => if of_res_value(h.val, oa) == 1 then 1 else of_res_items(t, oa)
+## a resource stored in a constructor or a record makes that value a resource too
+fn of_res_value(v, oa) = match v
+    RecT(tn, items) => if of_res_name(tn, oa.otypes) == 1 then 1 else of_res_items(items, oa)
+    Rec(items)      => of_res_items(items, oa)
+    Call(nm, args)  => if of_ctor(nm) == 1 then of_res_args(args, oa) else of_res_call(nm, oa)
+    _               => 0
+fn omust_args(x, args) = match args
+    Nil        => 0
+    Cons(h, t) => if omust(x, h) == 1 then 1 else omust_args(x, t)
+fn omust_items(x, items) = match items
+    Nil        => 0
+    Cons(h, t) => if omust(x, h.val) == 1 then 1 else omust_items(x, t)
+fn omust_arms(x, arms) = match arms
+    Nil        => 1
+    Cons(h, t) => if opat_binds(x, h.pat) == 0 and omust(x, h.body) == 1 then omust_arms(x, t) else 0
+## in a non-result position only an explicit move consumes: reading `x` does not
+fn omust_read(x, e) = match e
+    Var(nm) => 0
+    _       => omust(x, e)
+fn omust_reads(x, args) = match args
+    Nil        => 0
+    Cons(h, t) => if omust_read(x, h) == 1 then 1 else omust_reads(x, t)
+## 1 when every path through `e` consumes `x`: it is moved, or stored in the value `e` hands on
+fn omust(x, e) = match e
+    Var(nm)          => if nm == x then 1 else 0
+    OwnE(i)          => omentions_var(x, i)
+    LetIn(nm, v, b)  => if omust_read(x, v) == 1 then 1 else if nm == x then 0 else omust(x, b)
+    VarIn(nm, v, b)  => if omust_read(x, v) == 1 then 1 else if nm == x then 0 else omust(x, b)
+    If(c, t, e2)     => if omust_read(x, c) == 1 then 1 else if omust(x, t) == 1 then omust(x, e2) else 0
+    Match(sc, arms)  => if omust_read(x, sc) == 1 then 1 else omust_arms(x, arms)
+    Bin(op, l, r)    => if omust_read(x, l) == 1 then 1 else omust_read(x, r)
+    Call(nm, args)   => if (nm == "move" or nm == "drop") and of_len(args) == 1 then omentions_var(x, of_hd(args)) else if of_ctor(nm) == 1 then omust_args(x, args) else omust_reads(x, args)
+    Rec(items)       => omust_items(x, items)
+    RecT(tn, items)  => omust_items(x, items)
+    DeferE(c, b)     => if omust_read(x, c) == 1 then 1 else omust(x, b)
+    ErrDeferE(c, b)  => omust(x, b)
+    WithAllocE(a, b) => omust(x, b)
+    ScopeE(snm, b)   => omust(x, b)
+    CT(i)            => omust(x, i)
+    LambdaE(ps, tys, rt, body) => if of_mem(x, ps) == 1 then 0 else omentions_var(x, body)
+    _                => 0
+## a function that returns a resource it only borrowed would duplicate it
+fn oa_res_ret(fnm, body, bps, oa) = if of_nil(oa.otypes) == 1 or of_res_call(fnm, oa) == 0 then "" else let bp = oa_first_borrowed(bps, oa_flow_all(oa_flow(body, oa)), oa) in if bp == "" then "" else "cannot return borrowed resource '" + bp + "' from '" + fnm + "' (help: take it as 'own " + bp + "')"
+fn oa_res_chk(nm, v, b, oa, fnm) = if of_nil(oa.otypes) == 1 or of_res_value(v, oa) == 0 then "" else if omust(nm, b) == 1 then "" else "resource '" + nm + "' in '" + fnm + "' is not consumed on every path (help: pass it with 'own " + nm + "', return it, or release it in a 'defer')"
+fn oa_collect_types(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => (match h
+        OType(nm, k) => Cons({nm: nm, kind: k}, oa_collect_types(t))
+        _            => oa_collect_types(t))
+
+## does a function body need alias tracking at all?
+fn otrack_args(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if otrack_e(h) == 1 then 1 else otrack_args(t)
+fn otrack_items(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if otrack_e(h.val) == 1 then 1 else otrack_items(t)
+fn otrack_arms(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if otrack_e(h.body) == 1 then 1 else otrack_arms(t)
+fn otrack_e(e) = match e
+    OwnE(i)          => 1
+    MutE(i)          => 1
+    Call(nm, args)   => if nm == "move" or nm == "drop" or nm == "borrow" or nm == "borrow_mut" then 1 else otrack_args(args)
+    Field(o, fld)    => otrack_e(o)
+    Bin(op, l, r)    => if otrack_e(l) == 1 then 1 else otrack_e(r)
+    If(c, t, e2)     => if otrack_e(c) == 1 then 1 else if otrack_e(t) == 1 then 1 else otrack_e(e2)
+    LetIn(nm, v, b)  => if otrack_e(v) == 1 then 1 else otrack_e(b)
+    VarIn(nm, v, b)  => if otrack_e(v) == 1 then 1 else otrack_e(b)
+    Rec(items)       => otrack_items(items)
+    RecT(tn, items)  => otrack_items(items)
+    Match(sc, arms)  => if otrack_e(sc) == 1 then 1 else otrack_arms(arms)
+    LambdaE(ps, tys, rt, body) => otrack_e(body)
+    DeferE(c, b)     => if otrack_e(c) == 1 then 1 else otrack_e(b)
+    ErrDeferE(c, b)  => if otrack_e(c) == 1 then 1 else otrack_e(b)
+    WithAllocE(a, b) => if otrack_e(a) == 1 then 1 else otrack_e(b)
+    WithHandlerE(en, hs, b) => otrack_e(b)
+    ScopeE(snm, b)   => otrack_e(b)
+    SpawnE(i)        => otrack_e(i)
+    AwaitE(i)        => otrack_e(i)
+    ShardE(vnm, lo, hi, b) => otrack_e(b)
+    CT(i)            => otrack_e(i)
+    _                => 0

@@ -73,6 +73,7 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
 - `const NAME: T = expr`       Module-level constant (inlined into functions & contracts).
+- `let name = expr`            Module value. A pure constant is inlined; anything else runs once, in source order.
 - `law name(a: int) = expr`    Universal mathematical law proven across all inputs.
 - `print <expr>`               Top-level program entrypoint expression.
 
@@ -85,6 +86,8 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - Conditional:        `if a > b then a else b` or braced `if a > b { a } else { b }`
 - Logical (short-circuit): `a == 1 and b == 2`, `x < 0 or x > 10`, `not (a == b)` (`not` binds looser than `==`/`<`)
 - Arithmetic:         `+`, `-`, `*`, `/`, `%`
+                      Overflow of `+`, `-`, `*` stops the program, exit 3. `+%`, `-%`, `*%` wrap on request and are never proven by the verifier.
+- List literal/index: `[1, 2, 3]` is a `Cons` list; `xs[i]` walks it, and on a string it reads a byte. Past the end stops the program, exit 3. `at(s, i)` reads the same byte and gives `""` past the end, for scanning.
 - Comparison:         `==`, `!=` (constant-stack `O(1)` worklist structural equality on deep lists/ADTs/records), `<`, `<=`, `>`, `>=`
 - String concat/interp: `f"val={x}"`, `"val=${x}"`, or `"val={x}"`
                         (raw JSON `"{\"a\":{\"b\":1}}"` is preserved; escape literal braces with `"\{x}"`,
@@ -210,15 +213,19 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Custom effects are declared with `effect Name { fn op(...) -> T }` and handled via
   `handle expr with { ... }`.
 
-## 5.2 Deterministic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)
-- No stop-the-world GC pauses! Lume combines Perceus compile-time reference reuse,
+## 5.2 Automatic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)
+Lume reclaims memory automatically: the native runtime has a non-moving mark-sweep collector that returns
+memory to the OS. The pause is proportional to the live heap, not to the garbage, and a program below 64 MiB
+never collects. `own`, borrows and `resource type` are compile-time rules and do not depend on the collector
+(`docs/38-memory-management.md`). On top of that:
+- The compiler also avoids heap work where it can prove it safe: Perceus reuse for provably unique values,
   Escape Analysis & Scalar Replacement of Aggregates (`lsra_expr`: non-escaping
   `let r = {k1: v1, ...} in body` records are lowered directly into `%rbp` stack
   slots `_sra_<r>_<k>` with 0 heap `mkrec`/`recget` allocations), small-integer
-  caching (`[-1024..1024]`), self-tail-call `jmp`, and O(1) bump arenas.
+  caching (`[-1..1024]`), self-tail-call `jmp`, and O(1) bump arenas.
 - Builtins & `use arena`:
   - `let a = arena_new(65536)`   Create a scoped region arena
-  - `arena_enter(a)` / `arena_leave(a)` / `arena_reset(a)` / `arena_destroy(a)`
+  - `arena_reset(a)` / `arena_destroy(a)`
   - `heap_stats()`               Query live heap allocations and bytes
   - `lume run --memory <file.src>` Measure peak RSS memory in KB
 
@@ -232,6 +239,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 ## 6.1 Core Builtin Functions (Always Available in `.src`)
 - Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, n, start, end)`,
             `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`
+            `toint(s)` reads an optional `-` and the digits after it: `toint("12x")` is 12 and `toint("x")` is 0.
 - I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,
             `fs_path_exists(path)`, `fs_read_byte(path, offset)`
 - Process:  `os_arg_count()`, `os_arg_at(i)`,
@@ -551,6 +559,18 @@ print str(rtc_bcd_to_bin(35))
 |-----------|----------------------|----------------------|
 | `[P0002]` | Parser / Syntax      | Unexpected token or nested unbraced `match`. Move `match` to top-level helper `fn f(x) = match x ...` or wrap in braces `match x { ... }`, and verify pure LF (`\n`) line endings. |
 | `[R0200]` | Name Resolution      | Call to undefined function or variable. Check spelling or add `use <module>` at top of file. |
+| `[R0201]` | Name Resolution      | A function reuses the name of a runtime routine (`count`, `at`, ...) or a prefix reserved for it (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Rename it. |
+| `[R0202]` | Name Resolution      | A call to a function or builtin passes the wrong number of arguments. |
+| `[R0203]` | Name Resolution      | A call to an internal routine of the runtime, such as `strlen`. Use the public builtins. |
+| `[R0204]` | Name Resolution      | `f[i]` where `f` is a function, which includes `id[int](x)`. Call the function, and pass a generic its type as the first argument. |
+| `[R0205]` | Name Resolution      | A call whose name is both a local and a builtin or compiler intrinsic. The call would ignore the local, so rename it. |
+| `[C0002]` | Code Generation      | A name has no value here, such as a builtin used as a value. |
+| `[R0300]` | Modules              | `lume agent`: a `use` names a module that cannot be found. |
+| `[D0002]` | Duplicate Definition | A function is defined twice in the bundle. Keep one or rename it. |
+| `[D0003]` | Duplicate Definition | A type is defined twice in the bundle. Keep one or rename it. |
+| `[L0003]` | Lexer                | An integer literal does not fit in 64 bits. |
+| `[D0004]` | Duplicate Definition | A record literal gives the same field twice. |
+| `[T1002]` | Types                | A `match` on a declared enum leaves out a variant and has no `_` arm. |
 | `[T0300]` | Type / Tensor Shape  | Type mismatch, currency mismatch (`money[BRL]` vs `money[USD]`), or tensor shape mismatch. |
 | `[E0200]` | Algebraic Effects    | Impure operation (`io`, `fs`, `net`, `arena_new`, `embed`) called inside a `/ pure` function. Remove `/ pure` or add the required effect to the function signature. |
 | `[O0001]` | Ownership / Borrow   | Use-after-move, double-close of file handle, or conflicting mutable borrow (`mut`). Clone or restructure ownership scope. |
@@ -566,5 +586,6 @@ print str(rtc_bcd_to_bin(35))
 | `[Q0001]` | Quantum Linearity    | Non-linear `Qubit` duplication (No-Cloning violation) or reuse of measured qubit. Ensure each `Qubit` wire is consumed linearly. |
 | `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\dagger$ (`q_silq_qfree_verify`) before returning. |
 | `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
+| `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
 | `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |

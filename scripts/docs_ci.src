@@ -47,7 +47,7 @@ fn dc_digits_end(text, i, n) = if i < n and dc_digit(at(text, i)) then dc_digits
 fn dc_string_in(items, expected) = match items
     Nil        => 0
     Cons(h, t) => if h == expected then 1 else dc_string_in(t, expected)
-fn dc_citation_loop(text, i, n, found) = if i >= n then found else if at(text, i) == "P" and (i == 0 or dc_word(at(text, i - 1)) == 0) and i + 1 < n and dc_digit(at(text, i + 1)) then let e = dc_digits_end(text, i + 1, n) in if e < n and dc_word(at(text, e)) then dc_citation_loop(text, i + 1, n, found) else let principle = slice(text, i, e) in dc_citation_loop(text, e, n, if dc_string_in(found, principle) == 1 then found else Cons(principle, found)) else dc_citation_loop(text, i + 1, n, found)
+fn dc_citation_loop(text, i, n, found) = if i >= n then found else if at(text, i) == "P" and (i == 0 or dc_word(at(text, i - 1)) == 0) and i + 1 < n and dc_digit(at(text, i + 1)) then let e = dc_digits_end(text, i + 1, n) in if (e < n and dc_word(at(text, e))) or e - i > 4 then dc_citation_loop(text, i + 1, n, found) else let principle = slice(text, i, e) in dc_citation_loop(text, e, n, if dc_string_in(found, principle) == 1 then found else Cons(principle, found)) else dc_citation_loop(text, i + 1, n, found)
 fn dc_citations(text) = dc_citation_loop(text, 0, count(text), Nil)
 fn dc_check_citations(principles, citations) = match citations
     Nil        => ""
@@ -73,6 +73,7 @@ fn test_cr_scanner_rejects_crlf_and_bare_cr() = dc_has_cr("fn f() = 1\r\n") == 1
 fn test_crlf_checker_lists_all_offending_files() = let dir = "build" in let made = fs_mkdir(dir) in let a = "build/docs-ci-crlf-a.src" in let b = "build/docs-ci-lf.lume" in let c = "build/docs-ci-crlf-b.mesh" in let d = "build/docs-ci-ignored.md" in if fs_write_sync(a, "fn a() = 1\r\n") != 1 or fs_write_sync(b, "fn b() = 2\n") != 1 or fs_write_sync(c, "@op test\r\n") != 1 or fs_write_sync(d, "prose\r\n") != 1 then 0 else dc_check_crlf(".", Cons(a, Cons(b, Cons(c, Cons(d, Nil))))) == "CRLF found: " + a + ", " + c and dc_check_crlf(".", Cons(b, Cons(d, Nil))) == ""
 fn test_principle_parser_deduplicates_valid_citations() = let found = dc_citations("P1, P2 and P1 again; **P35**") in dc_len(found) == 3 and dc_string_in(found, "P1") == 1 and dc_string_in(found, "P2") == 1 and dc_string_in(found, "P35") == 1
 fn test_principle_parser_enforces_word_boundaries() = let found = dc_citations("XP3 _P4 9P8 P5x P6_ P7") in dc_len(found) == 1 and dc_string_in(found, "P7") == 1
+fn test_principle_parser_skips_diagnostic_codes() = let found = dc_citations("[P0002] and P7") in dc_len(found) == 1 and dc_string_in(found, "P7") == 1
 fn test_principle_parser_requires_digits() = dc_len(dc_citations("P P_ PX")) == 0
 fn test_principle_definition_does_not_prefix_match() = dc_check_citations("- **P10 — Ten", Cons("P1", Nil)) != "" and dc_check_citations("- **P1 — One", Cons("P1", Nil)) == ""
 fn test_unknown_principle_citation_is_rejected() = dc_check_citations("- **P1 — One", dc_citations("P1 and P99")) != ""

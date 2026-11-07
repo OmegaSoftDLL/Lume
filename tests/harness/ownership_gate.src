@@ -1,0 +1,36 @@
+## ownership_gate.src -- every ownership fixture must get the same verdict from `lumec` and from the `lcaas`
+## oracle: `## expect: reject <CODE>` must be refused by both with that code, and `## expect: run <output>` must
+## be accepted by both and print that output when run. A fixture that one front-end accepts and the other
+## refuses is a bug, whichever side is right. The same holds for the fail-closed fixtures, named `<CODE>_*.src`, and
+## for every `compiler/stage1/*_ok.src`, where only the verdict is compared. The one allowed difference is an unfilled
+## hole: `lumec` may synthesize it, while the oracle keeps reporting it until the author fills it in.
+fn og_dir(root) = root + "/tests/conformance/stage1/ownership"
+fn og_contains_at(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else og_contains_at(text, part, i + 1)
+fn og_contains(text, part) = og_contains_at(text, part, 0)
+fn og_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else og_line_end(s, i + 1)
+fn og_lines(s, i) = if i >= count(s) then Nil else let e = og_line_end(s, i) in Cons(slice(s, i, e), og_lines(s, e + 1))
+fn og_input(path, input, out) = os_run_input_capture_timeout(path, Nil, input, out, out + ".err", 120000)
+fn og_run(path, args, out) = os_run_capture_timeout(path, args, out, out + ".err", 120000)
+fn og_lumec(root, name, src, tmp) = let out = tmp + "/" + name + ".s" in let st = og_input(root + "/build/bin/lumec", og_dir(root) + "/" + name + ".src", out) in {st: st, asm: out, err: fs_read_file(out + ".err")}
+fn og_oracle(root, name, src, tmp) = let out = tmp + "/" + name + ".caas" in let w = fs_write_sync(out + ".in", "@mode check\n" + src) in let st = og_input(root + "/build/bin/lcaas", out + ".in", out) in fs_read_file(out)
+fn og_reject(root, name, code, src, tmp) = let c = og_lumec(root, name, src, tmp) in if c.st == 0 then name + ": lumec accepted a program that must be rejected with " + code else if og_contains(c.err, "[" + code + "]") == 0 then name + ": lumec rejected without " + code + ": " + c.err else if og_contains(og_oracle(root, name, src, tmp), "\"code\":\"" + code + "\"") == 0 then name + ": the lcaas oracle does not report " + code else ""
+fn og_accept(root, name, want, src, tmp) = let c = og_lumec(root, name, src, tmp) in if c.st != 0 then name + ": lumec rejected a valid program: " + c.err else if og_contains(og_oracle(root, name, src, tmp), "\"diagnostics\":[]") == 0 then name + ": the lcaas oracle rejects a valid program" else let elf = tmp + "/" + name + ".elf" in let a = og_run(root + "/build/bin/lasm", Cons("--strict", Cons(c.asm, Nil)), elf) in if a != 0 then name + ": assembly failed" else let m = og_run("/bin/chmod", Cons("+x", Cons(elf, Nil)), elf + ".chmod") in let r = og_run(elf, Nil, elf + ".out") in let got = fs_read_file(elf + ".out") in if r != 0 then name + ": exited with status " + str(r) else if got != want + "\n" then name + ": printed '" + got + "', expected '" + want + "' (a wrong value here means aliased data was overwritten)" else ""
+fn og_one(root, name, tmp) = let src = fs_read_file(og_dir(root) + "/" + name + ".src") in let head = slice(src, 0, og_line_end(src, 0)) in if count(head) > 18 and slice(head, 0, 18) == "## expect: reject " then og_reject(root, name, slice(head, 18, count(head)), src, tmp) else if count(head) > 15 and slice(head, 0, 15) == "## expect: run " then og_accept(root, name, slice(head, 15, count(head)), src, tmp) else name + ": fixture has no expectation line"
+fn og_all(root, names, tmp, n) = match names
+    Nil        => {err: "", n: n}
+    Cons(h, t) => if h == "" then og_all(root, t, tmp, n) else let e = og_one(root, h, tmp) in if e != "" then {err: e, n: n} else og_all(root, t, tmp, n + 1)
+fn og_ends(s, tail) = count(s) >= count(tail) and slice(s, count(s) - count(tail), count(s)) == tail
+fn og_fc_dir(root) = root + "/tests/conformance/stage1/fail_closed"
+fn og_fc_one(root, file, tmp) = let name = "fc_" + slice(file, 0, count(file) - 4) in let code = slice(file, 0, 5) in let path = og_fc_dir(root) + "/" + file in let out = tmp + "/" + name + ".s" in let st = og_input(root + "/build/bin/lumec", path, out) in if st == 0 then file + ": lumec accepted a fail-closed fixture" else if og_contains(fs_read_file(out + ".err"), "[" + code + "]") == 0 then file + ": lumec rejected without " + code else if og_contains(og_oracle(root, name, fs_read_file(path), tmp), "\"code\":\"" + code + "\"") == 0 then file + ": the lcaas oracle does not report " + code else ""
+fn og_fc_all(root, files, tmp, n) = match files
+    Nil        => {err: "", n: n}
+    Cons(h, t) => if og_ends(h, ".src") == 0 then og_fc_all(root, t, tmp, n) else let e = og_fc_one(root, h, tmp) in if e != "" then {err: e, n: n} else og_fc_all(root, t, tmp, n + 1)
+fn og_verdict_one(root, file, tmp) = let name = "v_" + slice(file, 0, count(file) - 4) in let path = root + "/compiler/stage1/" + file in let out = tmp + "/" + name + ".s" in let st = og_input(root + "/build/bin/lumec", path, out) in let said = og_oracle(root, name, fs_read_file(path), tmp) in if st == 0 and og_contains(said, "\"ok\":true") == 0 and og_contains(said, "\"code\":\"A0001\"") == 0 then file + ": the lcaas oracle rejects what lumec compiles: " + slice(said, 0, 300) else if st != 0 and og_contains(said, "\"ok\":false") == 0 then file + ": the lcaas oracle accepts what lumec rejects" else ""
+fn og_verdict_all(root, files, tmp, n) = match files
+    Nil        => {err: "", n: n}
+    Cons(h, t) => if og_ends(h, "_ok.src") == 0 then og_verdict_all(root, t, tmp, n) else let e = og_verdict_one(root, h, tmp) in if e != "" then {err: e, n: n} else og_verdict_all(root, t, tmp, n + 1)
+fn og_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else slice(input, 6, og_line_end(input, 0))
+fn og_main(root) = let tmp = root + "/build/ownership-gate" in let c = og_run("/bin/mkdir", Cons("-p", Cons(tmp, Nil)), root + "/build/ownership-gate.mkdir") in let r = og_all(root, og_lines(fs_read_file(og_dir(root) + "/MANIFEST"), 0), tmp, 0) in if r.err != "" then ctfail("ownership gate failed: " + r.err + "\n") else if r.n < 30 then ctfail("ownership gate ran too few fixtures\n") else let f = og_fc_all(root, og_lines(fs_read_dir(og_fc_dir(root)), 0), tmp, 0) in if f.err != "" then ctfail("ownership gate failed: " + f.err + "\n") else if f.n < 20 then ctfail("ownership gate ran too few fail-closed fixtures\n") else let v = og_verdict_all(root, og_lines(fs_read_dir(root + "/compiler/stage1"), 0), tmp, 0) in if v.err != "" then ctfail("ownership gate failed: " + v.err + "\n") else if v.n < 50 then ctfail("ownership gate compared too few programs\n") else "OK: " + str(r.n) + " ownership fixtures, " + str(f.n) + " fail-closed fixtures and " + str(v.n) + " programs agree across lumec and lcaas"
+fn og_dispatch(input) = let root = og_root(input) in if root == "" then ctfail("ownership gate requires @root\n") else og_main(root)
+
+print og_dispatch(readall())

@@ -6,7 +6,7 @@ BIN      = lume0
 
 all: $(BIN)
 
-$(BIN): $(SRC) lume0.h
+$(BIN): $(SRC) lume0.h value.h ast.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) -lm
 
 test: test-legacy

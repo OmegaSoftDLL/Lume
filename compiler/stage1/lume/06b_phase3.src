@@ -42,7 +42,7 @@ fn w33_chk_sec_args(xs, fnm) = match xs
     Nil        => 0
     Cons(h, t) => w33_chk_sec_e(h, fnm) + w33_chk_sec_args(t, fnm)
 
-fn ais_hole_name(nm) = if nm == "_" or ostarts(nm, "_hole") == 1 then 1 else 0
+fn ais_hole_name(nm) = nf_is_hole(nm)
 
 fn ois_unverified_ty(ty) = match ty
     TyApply(n, e) => if n == "unverified" then 1 else 0
@@ -165,13 +165,7 @@ fn ocollectf1(st, rest) = match st
     Fn(nm, ps, body) => Cons({nm: nm, ps: ps, body: body}, rest)
     _                => rest
 
-fn ocollectfnms(prog) = match prog
-    Nil        => Nil
-    Cons(h, t) => ocollectfnms1(h, ocollectfnms(t))
-
-fn ocollectfnms1(st, rest) = match st
-    Fn(nm, ps, body) => Cons(nm, rest)
-    _                => rest
+fn ocollectfnms(prog) = nf_fnames(prog)
 
 fn kcollect_effsigs(prog) = match prog
     Nil        => Nil
@@ -223,7 +217,7 @@ fn keff_join(xs) = match xs
     Nil        => ""
     Cons(h, t) => if isnil(t) == 1 then h else h + ", " + keff_join(t)
 
-fn kprim_eff(cnm) = if cnm == "io_write" or cnm == "io_read" or cnm == "println" or cnm == "read" or cnm == "readall" or cnm == "io_read_byte" or cnm == "emit" or cnm == "flush" or cnm == "os_exec" or cnm == "os_kill" or cnm == "os_waitpid_status" then "io" else if cnm == "fs_read" or cnm == "fs_write" or cnm == "fs_open" then "fs" else if cnm == "net_send" or cnm == "net_recv" or cnm == "net_connect" or cnm == "db_exec" then "net" else if cnm == "rc_new" or cnm == "arc_new" or cnm == "alloc_heap" or cnm == "table_new" or cnm == "box_new" or cnm == "arena_new" or cnm == "arena_alloc" or cnm == "__lume_arena_new" or cnm == "__lume_arena_alloc" or cnm == "__lume_rc_new" or cnm == "__lume_arc_new" then "alloc" else if cnm == "rand_int" or cnm == "prob_sample" or cnm == "llm_complete" then "rand" else if cnm == "sample_dist" or cnm == "observe_lik" then "prob" else if cnm == "llm_prompt" then "llm" else if cnm == "wasm_module_new" or cnm == "wasm_call_add" or cnm == "wasm_store32" or cnm == "wasm_load32" or cnm == "wasm_call_host_fs" then "wasm" else if cnm == "ffi_call" then "ffi" else if cnm == "time_now" or cnm == "clock_now" or cnm == "sleep_ms" then "time" else if cnm == "fail_err" or cnm == "raise_err" then "fail" else if cnm == "panic_msg" then "panic" else if cnm == "async_await" or cnm == "spawn_task" then "async" else ""
+fn kprim_eff(cnm) = if cnm == "io_write" or cnm == "io_read" or cnm == "println" or cnm == "read" or cnm == "readall" or cnm == "io_read_byte" or cnm == "emit" or cnm == "flush" or cnm == "os_exec" or cnm == "os_kill" or cnm == "os_waitpid_status" then "io" else if cnm == "fs_read" or cnm == "fs_write" or cnm == "fs_open" then "fs" else if cnm == "net_send" or cnm == "net_recv" or cnm == "net_connect" or cnm == "db_exec" then "net" else if cnm == "rc_new" or cnm == "arc_new" or cnm == "alloc_heap" or cnm == "table_new" or cnm == "box_new" or cnm == "arena_new" or cnm == "arena_alloc" or cnm == "__lume_mem_pack" or cnm == "__lume_mem_unpack" or cnm == "__lume_arena_freeze" or cnm == "__lume_arena_thaw" or cnm == "__lume_arena_secret" or cnm == "__lume_arena_frozen" or cnm == "__lume_arena_new" or cnm == "__lume_arena_alloc" or cnm == "__lume_rc_new" or cnm == "__lume_arc_new" then "alloc" else if cnm == "rand_int" or cnm == "prob_sample" or cnm == "llm_complete" then "rand" else if cnm == "sample_dist" or cnm == "observe_lik" then "prob" else if cnm == "llm_prompt" then "llm" else if cnm == "wasm_module_new" or cnm == "wasm_call_add" or cnm == "wasm_store32" or cnm == "wasm_load32" or cnm == "wasm_call_host_fs" then "wasm" else if cnm == "ffi_call" then "ffi" else if cnm == "time_now" or cnm == "clock_now" or cnm == "sleep_ms" then "time" else if cnm == "fail_err" or cnm == "raise_err" then "fail" else if cnm == "panic_msg" then "panic" else if cnm == "async_await" or cnm == "spawn_task" then "async" else ""
 
 fn kinfer_call_effs(cnm, ksigs, edecls, fns, d) = match keffsig_lookup(cnm, ksigs)
     Cons(ks, r) => keff_diff(ks.effs, Cons("pure", Nil))
@@ -398,28 +392,6 @@ fn ois_mut_expr(e) = match e
     MutE(inner) => 1
     _           => 0
 
-fn omentions_var(x, e) = match e
-    Var(nm)          => if nm == x then 1 else 0
-    OwnE(inner)      => omentions_var(x, inner)
-    MutE(inner)      => omentions_var(x, inner)
-    Field(o, fld)    => omentions_var(x, o)
-    Bin(op, l, r)    => if omentions_var(x, l) == 1 then 1 else omentions_var(x, r)
-    If(c, t, e2)     => if omentions_var(x, c) == 1 then 1 else if omentions_var(x, t) == 1 then 1 else omentions_var(x, e2)
-    LetIn(nm, v, b)  => if omentions_var(x, v) == 1 then 1 else if nm == x then 0 else omentions_var(x, b)
-    VarIn(nm, v, b)  => if omentions_var(x, v) == 1 then 1 else if nm == x then 0 else omentions_var(x, b)
-    Call(nm, args)   => omentions_args(x, args)
-    Rec(items)       => omentions_rec(x, items)
-    RecT(tn, items)  => omentions_rec(x, items)
-    _                => 0
-
-fn omentions_args(x, xs) = match xs
-    Nil        => 0
-    Cons(h, t) => if omentions_var(x, h) == 1 then 1 else omentions_args(x, t)
-
-fn omentions_rec(x, xs) = match xs
-    Nil        => 0
-    Cons(h, t) => if omentions_var(x, h.val) == 1 then 1 else omentions_rec(x, t)
-
 fn ocount_var_args(x, args) = match args
     Nil        => 0
     Cons(h, t) => omentions_var(x, h) + ocount_var_args(x, t)
@@ -453,9 +425,13 @@ fn opl_tl(pl) = match pl
     Nil        => Nil
     Cons(p, r) => r
 
-fn ochk_conflicts(fnm, muts, args) = match muts
+fn ocount_names_args(names, args) = match names
+    Nil        => 0
+    Cons(h, t) => ocount_var_args(h, args) + ocount_names_args(t, args)
+
+fn ochk_conflicts(fnm, muts, args, ctx) = match muts
     Nil         => 0
-    Cons(mx, r) => if ocount_var_args(mx, args) > 1 then ctfail("lume: borrow error [O0011]: conflicting borrow of '" + mx + "' in call to '" + fnm + "' (cannot borrow '" + mx + "' as mutable while also borrowing it in the same call)\n") else ochk_conflicts(fnm, r, args)
+    Cons(mx, r) => if ocount_names_args(oa_names(mx, ctx.oa), args) > 1 then ctfail("lume: borrow error [O0011]: conflicting borrow of '" + mx + "' in call to '" + fnm + "' (cannot borrow '" + mx + "' as mutable while also borrowing it in the same call)\n") else ochk_conflicts(fnm, r, args, ctx)
 
 fn ochk_call_modes(fnm, args, pl, ctx) = match pl
     Nil        => 0
@@ -478,35 +454,49 @@ fn oarg_for_param2(fromp, args, p, r) = match args
 fn ois_heap_alloc(nm) = if nm == "rc" or nm == "arc" or nm == "rc_new" or nm == "arc_new" or nm == "promise" or nm == "signal" or nm == "promise_new" or nm == "signal_new" or nm == "alloc_heap" or nm == "table_new" or nm == "box_new" then 1 else 0
 
 ## --- core expression ownership/borrow/region check: returns {moved, origin} ---
-fn ochk_own_field(o, fld, ctx, moved) = match o
-    Var(x) => if omem(x, moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.bparams) == 1 or ostarts(olookup_origin(x, ctx.origins), "borrow:") == 1 then ctfail("lume: ownership error [O0002]: cannot move out of borrowed field '" + x + "." + fld + "' (help: borrow '" + x + "." + fld + "' or clone the field)\n") else {moved: Cons(x, moved), origin: ""}
-    _      => let r = ochke(o, ctx, moved) in {moved: r.moved, origin: ""}
+fn ochk_own_path(p, inner, ctx, moved) = if p.root != "" then omove_var(p.root, p.path, "value '" + p.root + p.path + "'", ctx, moved) else let r = ochke(inner, ctx, moved) in {moved: app(oa_kill_all(oa_flow_all(oa_flow(inner, ctx.oa)), ctx.oa), r.moved), origin: ""}
 
-fn ochk_own_target(inner, ctx, moved) = match inner
-    Var(x)        => if omem(x, moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.bparams) == 1 or ostarts(olookup_origin(x, ctx.origins), "borrow:") == 1 then ctfail("lume: ownership error [O0002]: cannot move out of borrowed parameter '" + x + "' (help: change parameter mode to 'own " + x + "' or call 'clone(" + x + ")')\n") else {moved: Cons(x, moved), origin: ""}
-    Field(o, fld) => ochk_own_field(o, fld, ctx, moved)
-    _             => let r = ochke(inner, ctx, moved) in {moved: r.moved, origin: ""}
+fn ochk_own_target(inner, ctx, moved) = ochk_own_path(oa_path(inner), inner, ctx, moved)
 
 fn ochk_mut_field(o, fld, ctx, moved) = match o
-    Var(x) => if omem(x, moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow field of immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
+    Var(x) => if omem(oa_rid(x, ctx.oa), moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow field of immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
     _      => let r = ochke(o, ctx, moved) in {moved: r.moved, origin: ""}
 
 fn ochk_mut_target(inner, ctx, moved) = match inner
-    Var(x)        => if omem(x, moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
+    Var(x)        => if omem(oa_rid(x, ctx.oa), moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else if omem(x, ctx.mvars) == 0 then ctfail("lume: borrow error [O0010]: cannot borrow immutable binding '" + x + "' as 'mut' (help: declare 'var " + x + "' instead of 'let " + x + "')\n") else {moved: moved, origin: "borrow:" + olookup_origin(x, ctx.origins)}
     Field(o, fld) => ochk_mut_field(o, fld, ctx, moved)
     _             => let r = ochke(inner, ctx, moved) in {moved: r.moved, origin: ""}
 
-fn octx_bind(ctx, nm, ismut, org) = {fnm: ctx.fnm, pubf: ctx.pubf, freef: ctx.freef, halloc: ctx.halloc, bparams: orem(nm, ctx.bparams), mvars: if ismut == 1 then Cons(nm, orem(nm, ctx.mvars)) else orem(nm, ctx.mvars), pnames: ctx.pnames, locals: Cons(nm, ctx.locals), origins: obind_origin(nm, if org != "" then org else "local:" + nm, ctx.origins), osigs: ctx.osigs, otypes: ctx.otypes}
+fn octx_bind(ctx, nm, ismut, org) = {fnm: ctx.fnm, pubf: ctx.pubf, freef: ctx.freef, halloc: ctx.halloc, bparams: orem(nm, ctx.bparams), mvars: if ismut == 1 then Cons(nm, orem(nm, ctx.mvars)) else orem(nm, ctx.mvars), pnames: ctx.pnames, locals: Cons(nm, ctx.locals), origins: obind_origin(nm, if org != "" then org else "local:" + nm, ctx.origins), osigs: ctx.osigs, otypes: ctx.otypes, oa: ctx.oa}
 
-fn octx_with_alloc(ctx) = {fnm: ctx.fnm, pubf: ctx.pubf, freef: ctx.freef, halloc: 1, bparams: ctx.bparams, mvars: ctx.mvars, pnames: ctx.pnames, locals: ctx.locals, origins: ctx.origins, osigs: ctx.osigs, otypes: ctx.otypes}
+fn octx_with_alloc(ctx) = {fnm: ctx.fnm, pubf: ctx.pubf, freef: ctx.freef, halloc: 1, bparams: ctx.bparams, mvars: ctx.mvars, pnames: ctx.pnames, locals: ctx.locals, origins: ctx.origins, osigs: ctx.osigs, otypes: ctx.otypes, oa: ctx.oa}
+
+fn octx_oa(ctx, oa) = {fnm: ctx.fnm, pubf: ctx.pubf, freef: ctx.freef, halloc: ctx.halloc, bparams: ctx.bparams, mvars: ctx.mvars, pnames: ctx.pnames, locals: ctx.locals, origins: ctx.origins, osigs: ctx.osigs, otypes: ctx.otypes, oa: oa}
+
+fn omoved_err(x) = ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (it, or a value it aliases or contains, was moved earlier via 'own'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n")
+
+## move the whole value bound to `x`: every binding that can observe it is invalidated (own_flow.src)
+fn omove_var(x, path, what, ctx, moved) = let r = oa_rid(x, ctx.oa) in if oa_moved(r + path, moved) == 1 then omoved_err(x + path) else if omem(x, ctx.bparams) == 1 or ostarts(olookup_origin(x, ctx.origins), "borrow:") == 1 then ctfail("lume: ownership error [O0002]: cannot move out of borrowed " + what + " (help: change parameter mode to 'own " + x + "' or call 'clone(" + x + ")')\n") else let s = oa_kill(r, ctx.oa) in let bp = oa_first_borrowed(ctx.bparams, s, ctx.oa) in if bp != "" then ctfail("lume: ownership error [O0002]: cannot move '" + x + "' out of borrowed parameter '" + bp + "' (help: take '" + bp + "' as 'own " + bp + "' or call 'clone(" + x + ")')\n") else {moved: if path == "" then app(s, moved) else Cons(r + path, app(orem(r, s), moved)), origin: ""}
+
+fn oerr_if(tag, m) = if m != "" then ctfail("lume: " + tag + ": " + m + "\n") else 0
+
+fn octx_pat_names(ctx, names) = match names
+    Nil        => ctx
+    Cons(h, t) => octx_pat_names(octx_bind(ctx, h, 0, ""), t)
+
+fn octx_pat(ctx, p, scf) = if ctx.oa.track == 0 then ctx else octx_oa(octx_pat_names(ctx, oa_pat_names(p)), oa_pat(ctx.oa, p, scf))
+
+fn octx_binds(ctx, ps) = match ps
+    Nil        => ctx
+    Cons(h, t) => octx_binds(octx_oa(octx_bind(ctx, h, 0, ""), oa_bind(ctx.oa, h, oa_flow_nil())), t)
 
 fn ochke(e, ctx, moved) = match e
-    Var(x) => if omem(x, moved) == 1 then ctfail("lume: ownership error [O0001]: use of moved value '" + x + "' (moved earlier via 'own " + x + "'; help: borrow '" + x + "' instead or call 'clone(" + x + ")')\n") else {moved: moved, origin: olookup_origin(x, ctx.origins)}
-    Field(o, fld) => let ro = ochke(o, ctx, moved) in {moved: ro.moved, origin: ro.origin}
+    Var(x) => if oa_moved(oa_rid(x, ctx.oa), moved) == 1 then omoved_err(x) else {moved: moved, origin: olookup_origin(x, ctx.origins)}
+    Field(o, fld) => ochk_field(oa_path(e), o, ctx, moved)
     OwnE(inner) => ochk_own_target(inner, ctx, moved)
     MutE(inner) => ochk_mut_target(inner, ctx, moved)
-    LetIn(nm, v, b) => let rv = ochke(v, ctx, moved) in ochke(b, octx_bind(ctx, nm, 0, rv.origin), orem(nm, rv.moved))
-    VarIn(nm, v, b) => let rv = ochke(v, ctx, moved) in ochke(b, octx_bind(ctx, nm, 1, rv.origin), orem(nm, rv.moved))
+    LetIn(nm, v, b) => ochk_let(nm, 0, v, b, ctx, moved)
+    VarIn(nm, v, b) => ochk_let(nm, 1, v, b, ctx, moved)
     DeferE(c, b) => let rb = ochke(b, ctx, moved) in let rc = ochke(c, ctx, rb.moved) in {moved: rc.moved, origin: rb.origin}
     ErrDeferE(c, b) => let rb = ochke(b, ctx, moved) in let rc = ochke(c, ctx, rb.moved) in {moved: rc.moved, origin: rb.origin}
     WithAllocE(a, b) => let ra = ochke(a, ctx, moved) in ochke(b, octx_with_alloc(ctx), ra.moved)
@@ -515,12 +505,13 @@ fn ochke(e, ctx, moved) = match e
     SpawnE(inner) => ochke(inner, ctx, moved)
     Bin(op, l, r) => let rl = ochke(l, ctx, moved) in let rr = ochke(r, ctx, rl.moved) in {moved: rr.moved, origin: ""}
     If(c, t, e2) => let rc = ochke(c, ctx, moved) in let rt = ochke(t, ctx, rc.moved) in let re = ochke(e2, ctx, rc.moved) in {moved: app(rt.moved, re.moved), origin: if rt.origin != "" then rt.origin else re.origin}
-    Rec(items) => {moved: ochkrec(items, ctx, moved), origin: ""}
-    RecT(tn, items) => {moved: ochkrec(items, ctx, moved), origin: ""}
-    Match(sc, arms) => let rsc = ochke(sc, ctx, moved) in {moved: ochkarms(arms, ctx, rsc.moved), origin: ""}
+    Rec(items) => let z = oerr_if("borrow error [O0013]", oa_same_call(oa_item_vals(items), ctx.oa)) in ochkrec(items, ctx, moved)
+    RecT(tn, items) => let z = oerr_if("borrow error [O0013]", oa_same_call(oa_item_vals(items), ctx.oa)) in ochkrec(items, ctx, moved)
+    Match(sc, arms) => let rsc = ochke(sc, ctx, moved) in ochkarms(arms, ctx, rsc.moved, if ctx.oa.track == 0 then Nil else oa_flow_all(oa_flow(sc, ctx.oa)))
     CT(inner) => ochke(inner, ctx, moved)
     AwaitE(inner) => ochke(inner, ctx, moved)
-    ShardE(vnm, lo, hi, body) => let rlo = ochke(lo, ctx, moved) in let rhi = ochke(hi, ctx, rlo.moved) in let rb = ochke(body, octx_bind(ctx, vnm, 0, ""), orem(vnm, rhi.moved)) in {moved: rb.moved, origin: ""}
+    ShardE(vnm, lo, hi, body) => let rlo = ochke(lo, ctx, moved) in let rhi = ochke(hi, ctx, rlo.moved) in let c2 = octx_bind(ctx, vnm, 0, "") in let rb = ochke(body, c2, orem(vnm, rhi.moved)) in let rb2 = ochke(body, c2, orem(vnm, rb.moved)) in {moved: rb.moved, origin: ""}
+    LambdaE(ps, tys, rt, body) => let c2 = octx_binds(ctx, ps) in let rb = ochke(body, c2, moved) in let rb2 = ochke(body, c2, rb.moved) in {moved: rb.moved, origin: ""}
     Call(nm, args) => ochkcall(nm, args, ctx, moved)
     _ => {moved: moved, origin: ""}
 
@@ -528,23 +519,40 @@ fn ochkhops(hs, ctx, moved) = match hs
     Nil        => moved
     Cons(h, t) => let r = ochke(h.body, ctx, moved) in ochkhops(t, ctx, r.moved)
 
-fn ochkrec(items, ctx, moved) = match items
-    Nil        => moved
-    Cons(h, t) => let r = ochke(h.val, ctx, moved) in ochkrec(t, ctx, r.moved)
+## reading `r.a` needs only that path to be intact: `r.b` may have been moved already
+fn ochk_field(p, o, ctx, moved) = if p.root == "" then ochke(o, ctx, moved) else if oa_moved(oa_rid(p.root, ctx.oa) + p.path, moved) == 1 then omoved_err(p.root + p.path) else {moved: moved, origin: olookup_origin(p.root, ctx.origins)}
 
-fn ochkarms(arms, ctx, moved) = match arms
-    Nil        => moved
-    Cons(h, t) => let r = ochke(h.body, ctx, moved) in app(r.moved, ochkarms(t, ctx, moved))
+fn ochk_let(nm, ismut, v, b, ctx, moved) = let rv = ochke(v, ctx, moved) in let z = oerr_if("borrow error [O0013]", oa_loan_chk(nm, v, rv.origin, b, ctx.oa)) in let zr = oerr_if("ownership error [O0004]", oa_res_chk(nm, v, b, ctx.oa, ctx.fnm)) in let oa2 = oa_alias(ctx.oa, nm, v) in ochke(b, octx_oa(octx_bind(ctx, nm, ismut, rv.origin), oa2), if ctx.oa.track == 0 then orem(nm, rv.moved) else if oa_is_fresh(nm, ctx.oa, oa2) then orem(oa_rid(nm, oa2), rv.moved) else rv.moved)
+
+## the origin of a record or constructor is that of a borrow stored in it, so the value cannot smuggle the
+## borrow past [O0020]/[O0021]
+fn oborrow_org(a, b) = if ostarts(a, "borrow:") == 1 then a else b
+
+fn ochkrec(items, ctx, moved) = match items
+    Nil        => {moved: moved, origin: ""}
+    Cons(h, t) => let r = ochke(h.val, ctx, moved) in let rr = ochkrec(t, ctx, r.moved) in {moved: rr.moved, origin: oborrow_org(r.origin, rr.origin)}
+
+fn ochkarms(arms, ctx, moved, scf) = match arms
+    Nil        => {moved: moved, origin: ""}
+    Cons(h, t) => let c2 = octx_pat(ctx, h.pat, scf) in let r = ochke(h.body, c2, oa_rem_all(oa_rids(oa_pat_names(h.pat), c2.oa), moved)) in let rr = ochkarms(t, ctx, moved, scf) in {moved: app(r.moved, rr.moved), origin: if r.origin != "" then r.origin else rr.origin}
 
 fn ochkargs(args, ctx, moved) = match args
     Nil        => moved
     Cons(h, t) => let r = ochke(h, ctx, moved) in ochkargs(t, ctx, r.moved)
 
+fn ochkargs_org(args, ctx, moved) = match args
+    Nil        => {moved: moved, origin: ""}
+    Cons(h, t) => let r = ochke(h, ctx, moved) in let rr = ochkargs_org(t, ctx, r.moved) in {moved: rr.moved, origin: oborrow_org(r.origin, rr.origin)}
+
+fn ochkargs_o(fnm, args, ctx, moved) = if isctor(fnm) then ochkargs_org(args, ctx, moved) else {moved: ochkargs(args, ctx, moved), origin: ""}
+
 fn ochkcall(fnm, args, ctx, moved) = if ois_free(ctx.freef) == 1 and ctx.halloc == 0 and ois_heap_alloc(fnm) == 1 then ctfail("lume: ownership error [O0030]: ambient heap allocation '" + fnm + "' in '@freestanding' function '" + ctx.fnm + "' (help: pass an explicit allocator via 'with alloc = <arena> in ...')\n") else if (fnm == "move" or fnm == "drop" or fnm == "rc_drop" or fnm == "arc_drop") and len(args) == 1 then ochk_own_target(ohd_e(args), ctx, moved) else if fnm == "cap_page_map" and len(args) >= 1 then let r0 = ochk_own_target(ohd_e(args), ctx, moved) in {moved: ochkargs(ptl(args), ctx, r0.moved), origin: ""} else if fnm == "borrow" and len(args) == 1 then let ra = ochke(ohd_e(args), ctx, moved) in {moved: ra.moved, origin: "borrow:" + ra.origin} else if fnm == "borrow_mut" and len(args) == 1 then ochk_mut_target(ohd_e(args), ctx, moved) else ochkcall_sig(fnm, args, osiglookup(fnm, ctx.osigs), ctx, moved)
 
-fn ochkcall_sig(fnm, args, msig, ctx, moved) = match msig
-    Nil          => let z = ochk_conflicts(fnm, ocollect_mut_args(args, Nil), args) in {moved: ochkargs(args, ctx, moved), origin: ""}
-    Cons(sg, sr) => let z1 = ochk_call_modes(fnm, args, sg.pl, ctx) in let z2 = ochk_conflicts(fnm, ocollect_mut_args(args, sg.pl), args) in let mv2 = ochkargs(args, ctx, moved) in if sg.fromp != "" then let fa = oarg_for_param(sg.fromp, args, sg.pl) in let rfa = ochke(fa, ctx, moved) in {moved: mv2, origin: "borrow:" + rfa.origin} else {moved: mv2, origin: ""}
+fn ochkcall_sig(fnm, args, msig, ctx, moved) = let zs = oerr_if("borrow error [O0013]", oa_same_call(args, ctx.oa)) in ochkcall_sig2(fnm, args, msig, ctx, moved)
+
+fn ochkcall_sig2(fnm, args, msig, ctx, moved) = match msig
+    Nil          => let z = ochk_conflicts(fnm, ocollect_mut_args(args, Nil), args, ctx) in ochkargs_o(fnm, args, ctx, moved)
+    Cons(sg, sr) => let z1 = ochk_call_modes(fnm, args, sg.pl, ctx) in let z2 = ochk_conflicts(fnm, ocollect_mut_args(args, sg.pl), args, ctx) in let mv2 = ochkargs(args, ctx, moved) in if sg.fromp != "" then let fa = oarg_for_param(sg.fromp, args, sg.pl) in let rfa = ochke(fa, ctx, moved) in {moved: mv2, origin: "borrow:" + rfa.origin} else {moved: mv2, origin: ""}
 
 ## --- check function return region rules O0020 & O0021 ---
 fn ochk_ret_origin(nm, pubf, fromp, rty, pnames, org) = let core_org = ostrip_borrow(org) in if ostarts(org, "borrow:") == 1 and ostarts(core_org, "local:") == 1 then let lx = slice(core_org, 6, count(core_org)) in ctfail("lume: region error [O0020]: borrowed value '" + lx + "' does not live long enough (escapes local scope of '" + nm + "')\n") else if ostarts(org, "borrow:") == 1 and ostarts(core_org, "param:") == 1 then let px = slice(core_org, 6, count(core_org)) in (if pubf == 1 and fromp == "" then ctfail("lume: region error [O0021]: public function '" + nm + "' returns a borrow from parameter '" + px + "' without an origin clause (help: add 'from " + px + "' to the return type)\n") else if fromp != "" and fromp != px then ctfail("lume: region error [O0021]: function '" + nm + "' declares 'from " + fromp + "' but returns a borrow from parameter '" + px + "' (help: change origin clause to 'from " + px + "')\n") else 1) else if pubf == 1 and oisreftype(rty) == 1 and fromp == "" then ctfail("lume: region error [O0021]: public function '" + nm + "' returns a borrowed view without a 'from <param>' origin clause\n") else 1
@@ -2082,8 +2090,9 @@ fn vwcet_args(xs, fns, d) = match xs
     Nil        => 0
     Cons(h, t) => vwcet_e(h, fns, d) + vwcet_args(t, fns, d)
 
+## the compactor runs in time that depends on the data: it has no place under a @bound budget
 fn vwcet_call(cnm, mf, fns, d) = match mf
-    Nil        => 0
+    Nil        => if lis_zip_call(cnm) == 1 then 100000 else 0
     Cons(f, r) => if afn_calls_self(cnm, f.body) == 1 then 100000 else vwcet_e(f.body, fns, d - 1)
 
 fn vwcet_chk_fn(nm, body, wcets, fns) = let bound = vwcet_lookup(nm, wcets) in if bound <= 0 then 0 else let est = (if afn_calls_self(nm, body) == 1 then 100000 else vwcet_e(body, fns, 4)) in if est > bound then ctfail("lume: wcet budget error [V0002]: function '" + nm + "' has structural cycle cost of " + str(est) + " cycles, exceeding '@bound(cycles: " + str(bound) + ")' (fix-it: remove recursion/loops on the critical path or increase '@bound(cycles: " + str(est) + ")')\n") else 1
@@ -2091,8 +2100,8 @@ fn vwcet_chk_fn(nm, body, wcets, fns) = let bound = vwcet_lookup(nm, wcets) in i
 fn ochkfn(nm, ps, body, ot) = ochkfn2(nm, ps, body, osiglookup(nm, ot.osigs), tsiglookup(nm, ot.sigs), ot)
 
 fn ochkfn2(nm, ps, body, mosig, msig, ot) = match mosig
-    Nil          => let zwc = vwcet_chk_fn(nm, body, ot.wcets, ot.fns) in let ztn = n4_chk_fn_tensors(nm, body, msig, ot) in let zv = vprove_fn_status(nm, ps, body, ot.vsigs, ot.fns) + (if isnil(ot.vsigs) == 1 and isnil(ot.invs) == 1 then 0 else vchk_expr_e(body, nm, ot)) in let zk = kchk_fn_effs(nm, 0, body, ot) in if oanye(body) == 0 and isnil(ot.osigs) == 1 and isnil(ot.otypes) == 1 and isnil(auinit_from_sig(msig)) == 1 then 1 else let rty = aget_sig_rty(msig) in let lenv = aget_fn_lenv(msig) in let zs = schk_conc_e(body, nm, 0, sinit_nonsend_sig(msig), Nil) in let zh = achk_holes_e(body, rty, lenv, {fnm: nm, pubf: 0, ps: ps, body: body, sigs: ot.sigs, vsigs: ot.vsigs, laws: ot.laws, fns: ot.fns}) in let zp = achk_prov_e(body, nm, auinit_from_sig(msig), ot) in let ctx = {fnm: nm, pubf: 0, freef: 0, halloc: 0, bparams: ps, mvars: Nil, pnames: ps, locals: Nil, origins: oinit_origins(ps), osigs: ot.osigs, otypes: ot.otypes} in let rb = ochke(body, ctx, Nil) in ochk_ret_origin(nm, 0, "", rty, ps, rb.origin)
-    Cons(sg, sr) => if sg.pubf == 1 and oisgctype(sg.rty, ot.otypes) == 1 then ctfail("lume: ownership error [O0030]: public function '" + nm + "' cannot expose '@gc' region type across a public module boundary\n") else let zsec = (if sg.pubf == 1 or ois_protect(sg.freef) == 1 then w33_chk_sec_e(body, nm) else 0) in let zwc = vwcet_chk_fn(nm, body, ot.wcets, ot.fns) in let ztn = n4_chk_fn_tensors(nm, body, msig, ot) in let zkn = n4_chk_kernel_fn(nm, sg.freef, body, ot) in let rty = aget_fn_rty(msig, mosig) in let lenv = aget_fn_lenv(msig) in let mvars = omvars_pl(sg.pl) in let zv = vprove_fn_status(nm, ps, body, ot.vsigs, ot.fns) + vchk_expr_e(body, nm, ot) in let zk = kchk_fn_effs(nm, sg.pubf, body, ot) in let zs = schk_conc_e(body, nm, 0, sinit_nonsend_sig(msig), mvars) in let zh = achk_holes_e(body, rty, lenv, {fnm: nm, pubf: sg.pubf, ps: ps, body: body, sigs: ot.sigs, vsigs: ot.vsigs, laws: ot.laws, fns: ot.fns}) in let zt = (if ois_total(sg.freef) == 1 then achk_total_e(body, {fnm: nm, ps: ps, fns: ot.fns, osigs: ot.osigs}, Nil, Nil) else 0) in let tret = achk_prov_e(body, nm, auinit_from_sig(msig), ot) in if sg.pubf == 1 and ois_llm(sg.freef) == 0 and ois_unverified_ty(rty) == 0 and tret == 1 then ctfail("lume: provenance error [A0003]: unverified AI/probabilistic value cannot be returned from trusted 'pub fn " + nm + "' without verification (fix-it: wrap the return value in 'verify(val, <contract>)' or validate with a contract guard before returning)\n") else let bparams = if isnil(sg.pl) == 1 then ps else obparams_pl(sg.pl) in let ctx = {fnm: nm, pubf: sg.pubf, freef: sg.freef, halloc: 0, bparams: bparams, mvars: mvars, pnames: ps, locals: Nil, origins: oinit_origins(ps), osigs: ot.osigs, otypes: ot.otypes} in let rb = ochke(body, ctx, Nil) in ochk_ret_origin(nm, sg.pubf, sg.fromp, rty, ps, rb.origin)
+    Nil          => let zwc = vwcet_chk_fn(nm, body, ot.wcets, ot.fns) in let ztn = n4_chk_fn_tensors(nm, body, msig, ot) in let zv = vprove_fn_status(nm, ps, body, ot.vsigs, ot.fns) + (if isnil(ot.vsigs) == 1 and isnil(ot.invs) == 1 then 0 else vchk_expr_e(body, nm, ot)) in let zk = kchk_fn_effs(nm, 0, body, ot) in if oanye(body) == 0 and isnil(ot.osigs) == 1 and isnil(ot.otypes) == 1 and isnil(auinit_from_sig(msig)) == 1 then 1 else let rty = aget_sig_rty(msig) in let lenv = aget_fn_lenv(msig) in let zs = schk_conc_e(body, nm, 0, sinit_nonsend_sig(msig), Nil) in let zh = achk_holes_e(body, rty, lenv, {fnm: nm, pubf: 0, ps: ps, body: body, sigs: ot.sigs, vsigs: ot.vsigs, laws: ot.laws, fns: ot.fns}) in let zp = achk_prov_e(body, nm, auinit_from_sig(msig), ot) in let ctx = {fnm: nm, pubf: 0, freef: 0, halloc: 0, bparams: ps, mvars: Nil, pnames: ps, locals: Nil, origins: oinit_origins(ps), osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, body)} in let rb = ochke(body, ctx, Nil) in let zrr = oerr_if("ownership error [O0002]", oa_res_ret(nm, body, ps, ctx.oa)) in ochk_ret_origin(nm, 0, "", rty, ps, rb.origin)
+    Cons(sg, sr) => if sg.pubf == 1 and oisgctype(sg.rty, ot.otypes) == 1 then ctfail("lume: ownership error [O0030]: public function '" + nm + "' cannot expose '@gc' region type across a public module boundary\n") else let zsec = (if sg.pubf == 1 or ois_protect(sg.freef) == 1 then w33_chk_sec_e(body, nm) else 0) in let zwc = vwcet_chk_fn(nm, body, ot.wcets, ot.fns) in let ztn = n4_chk_fn_tensors(nm, body, msig, ot) in let zkn = n4_chk_kernel_fn(nm, sg.freef, body, ot) in let rty = aget_fn_rty(msig, mosig) in let lenv = aget_fn_lenv(msig) in let mvars = omvars_pl(sg.pl) in let zv = vprove_fn_status(nm, ps, body, ot.vsigs, ot.fns) + vchk_expr_e(body, nm, ot) in let zk = kchk_fn_effs(nm, sg.pubf, body, ot) in let zs = schk_conc_e(body, nm, 0, sinit_nonsend_sig(msig), mvars) in let zh = achk_holes_e(body, rty, lenv, {fnm: nm, pubf: sg.pubf, ps: ps, body: body, sigs: ot.sigs, vsigs: ot.vsigs, laws: ot.laws, fns: ot.fns}) in let zt = (if ois_total(sg.freef) == 1 then achk_total_e(body, {fnm: nm, ps: ps, fns: ot.fns, osigs: ot.osigs}, Nil, Nil) else 0) in let tret = achk_prov_e(body, nm, auinit_from_sig(msig), ot) in if sg.pubf == 1 and ois_llm(sg.freef) == 0 and ois_unverified_ty(rty) == 0 and tret == 1 then ctfail("lume: provenance error [A0003]: unverified AI/probabilistic value cannot be returned from trusted 'pub fn " + nm + "' without verification (fix-it: wrap the return value in 'verify(val, <contract>)' or validate with a contract guard before returning)\n") else let bparams = if isnil(sg.pl) == 1 then ps else obparams_pl(sg.pl) in let ctx = {fnm: nm, pubf: sg.pubf, freef: sg.freef, halloc: 0, bparams: bparams, mvars: mvars, pnames: ps, locals: Nil, origins: oinit_origins(ps), osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, body)} in let rb = ochke(body, ctx, Nil) in let zrr = oerr_if("ownership error [O0002]", oa_res_ret(nm, body, bparams, ctx.oa)) in ochk_ret_origin(nm, sg.pubf, sg.fromp, rty, ps, rb.origin)
 
 fn ochkstmts(prog, ot, moved) = match prog
     Nil        => 1
@@ -2100,9 +2109,9 @@ fn ochkstmts(prog, ot, moved) = match prog
 
 fn ochkstmt1(st, rest, ot, moved) = match st
     VLawDecl(nm, ps, body) => let zl = vchk_law(nm, ps, body, ot.fns) in ochkstmts(rest, ot, moved)
-    Fn(nm, ps, body)       => let z = ochkfn(nm, ps, body, ot) in ochkstmts(rest, ot, moved)
-    Print(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
-    ExprS(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
+    Fn(nm, ps, body)       => let z = if ostarts(nm, "__fnval_") == 1 then 0 else ochkfn(nm, ps, body, ot) in ochkstmts(rest, ot, moved)
+    Print(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, v)} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
+    ExprS(v)               => let zv = vchk_expr_e(v, "<main>", ot) in let zs = schk_conc_e(v, "<main>", 0, Nil, Nil) in let zp = achk_prov_e(v, "<main>", Nil, ot) in let ctx = {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, pnames: Nil, locals: Nil, origins: Nil, osigs: ot.osigs, otypes: ot.otypes, oa: oa_new(ot.osigs, ot.otypes, ot.sigs, v)} in let r = ochke(v, ctx, moved) in ochkstmts(rest, ot, r.moved)
     _                      => ochkstmts(rest, ot, moved)
 
 ## --- lower Track O, Track A, Track K, Track S & Track V surface AST nodes into canonical Lume-Core (`LetIn`/`If`) ---
@@ -2223,6 +2232,228 @@ fn ktry_perceus_body(sc_v, ptag, ar, body, lctx, d) = match body
     LetIn(nm, v, b)   => if nm == sc_v or omentions_var(sc_v, v) == 1 then olowere(body, lctx, d) else LetIn(nm, olowere(v, lctx, d), ktry_perceus_body(sc_v, ptag, ar, b, lctx, d + 1))
     _                 => olowere(body, lctx, d)
 
+## --- Perceus uniqueness gate ---
+## In-place constructor reuse (`__perceus_reuse_*`) overwrites a cell, so it is sound only when nothing else
+## can reach that cell. `own` alone does not prove it: a value can be aliased through an opaque call, or be
+## a shared part of a bigger structure. Reuse is therefore an optimization earned per parameter: an `own`
+## parameter stays in the set `u` only while EVERY call site in the program passes a deeply unique value.
+## What cannot be proven falls back to a normal allocation, which is always correct.
+fn pu_key(fnm, pn) = fnm + "#" + pn
+fn pu_scalar_ty(ty) = match ty
+    TyName(n) => if n == "int" or n == "bool" or n == "str" or n == "float" or n == "decimal" or n == "byte" or n == "char" then 1 else 0
+    _         => 0
+fn pu_scalar_body(e) = match e
+    Num(n)          => 1
+    Str(s)          => 1
+    Bin(op, l, r)   => 1
+    If(c, t, e2)    => if pu_scalar_body(t) == 1 then pu_scalar_body(e2) else 0
+    LetIn(nm, v, b) => pu_scalar_body(b)
+    VarIn(nm, v, b) => pu_scalar_body(b)
+    Match(sc, arms) => pu_scalar_arms(arms)
+    _               => 0
+fn pu_scalar_arms(arms) = match arms
+    Nil        => 1
+    Cons(h, t) => if pu_scalar_body(h.body) == 1 then pu_scalar_arms(t) else 0
+fn pu_scalar_fn(nm, st) = if nm == "count" or nm == "ord" or nm == "at" or nm == "toint" or nm == "slice" or nm == "slicen" then 1 else match pu_find(nm, st.fns)
+    Nil        => 0
+    Cons(f, r) => pu_scalar_body(f.body)
+fn pu_scalar_sig(nm, st) = match osiglookup(nm, st.osigs)
+    Cons(sg, sr) => if pu_scalar_ty(sg.rty) == 1 then 1 else pu_scalar_fn(nm, st)
+    Nil          => pu_scalar_fn(nm, st)
+fn pu_max(a, b) = if a > b then a else b
+fn pu_uses_args(x, args) = match args
+    Nil        => 0
+    Cons(h, t) => pu_uses(x, h) + pu_uses_args(x, t)
+fn pu_uses_items(x, items) = match items
+    Nil        => 0
+    Cons(h, t) => pu_uses(x, h.val) + pu_uses_items(x, t)
+fn pu_uses_arms(x, arms) = match arms
+    Nil        => 0
+    Cons(h, t) => pu_max(if opat_binds(x, h.pat) == 1 then 0 else pu_uses(x, h.body), pu_uses_arms(x, t))
+fn pu_uses_hops(x, hs) = match hs
+    Nil        => 0
+    Cons(h, t) => pu_uses(x, h.body) + pu_uses_hops(x, t)
+fn pu_many(x, e) = if omentions_var(x, e) == 1 then 2 else 0
+## how many times can one path through `e` use `x`? Only one branch runs, so branches count as their maximum.
+## Anything that can run more than once, or later, counts as many. There is deliberately no exemption for
+## "calls that only read": a read after the reuse sees the new contents, and a call returning an int can still
+## stash its argument in a `cell` or a `signal`. A value is unique only if nothing else can ever look at it.
+fn pu_uses(x, e) = match e
+    Var(nm)          => if nm == x then 1 else 0
+    OwnE(i)          => pu_uses(x, i)
+    MutE(i)          => pu_uses(x, i)
+    Field(o, fld)    => pu_uses(x, o)
+    Bin(op, l, r)    => pu_uses(x, l) + pu_uses(x, r)
+    If(c, t, e2)     => pu_uses(x, c) + pu_max(pu_uses(x, t), pu_uses(x, e2))
+    LetIn(nm, v, b)  => pu_uses(x, v) + (if nm == x then 0 else pu_uses(x, b))
+    VarIn(nm, v, b)  => pu_uses(x, v) + (if nm == x then 0 else pu_uses(x, b))
+    Call(nm, args)   => (if nm == x then 1 else 0) + pu_uses_args(x, args)
+    Rec(items)       => pu_uses_items(x, items)
+    RecT(tn, items)  => pu_uses_items(x, items)
+    Match(sc, arms)  => pu_uses(x, sc) + pu_uses_arms(x, arms)
+    LambdaE(ps, tys, rt, body) => if of_mem(x, ps) == 1 then 0 else pu_many(x, body)
+    DeferE(c, b)     => pu_uses(x, c) + pu_uses(x, b)
+    ErrDeferE(c, b)  => pu_uses(x, c) + pu_uses(x, b)
+    WithAllocE(a, b) => pu_uses(x, a) + pu_uses(x, b)
+    WithHandlerE(en, hs, b) => (if pu_uses_hops(x, hs) > 0 then 2 else 0) + pu_uses(x, b)
+    ScopeE(snm, b)   => pu_uses(x, b)
+    SpawnE(i)        => pu_many(x, i)
+    AwaitE(i)        => pu_uses(x, i)
+    ShardE(vnm, lo, hi, b) => pu_uses(x, lo) + pu_uses(x, hi) + (if vnm == x then 0 else pu_many(x, b))
+    CT(i)            => pu_uses(x, i)
+    _                => 0
+
+## can `x` reach the result of `e` or be moved by it? Only then is its uniqueness worth computing.
+fn pu_needs_args(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if pu_needs(x, h) == 1 then 1 else pu_needs_args(x, t)
+fn pu_needs_items(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if pu_needs(x, h.val) == 1 then 1 else pu_needs_items(x, t)
+fn pu_needs_arms(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if pu_needs(x, h.body) == 1 then 1 else pu_needs_arms(x, t)
+fn pu_needs(x, e) = match e
+    Var(nm)          => if nm == x then 1 else 0
+    OwnE(i)          => omentions_var(x, i)
+    If(c, t, e2)     => if pu_needs(x, c) == 1 then 1 else if pu_needs(x, t) == 1 then 1 else pu_needs(x, e2)
+    LetIn(nm, v, b)  => if pu_needs(x, v) == 1 then 1 else if nm == x then 0 else pu_needs(x, b)
+    VarIn(nm, v, b)  => if pu_needs(x, v) == 1 then 1 else if nm == x then 0 else pu_needs(x, b)
+    Match(sc, arms)  => if pu_needs(x, sc) == 1 then 1 else pu_needs_arms(x, arms)
+    Call(nm, args)   => pu_needs_args(x, args)
+    Rec(items)       => pu_needs_items(x, items)
+    RecT(tn, items)  => pu_needs_items(x, items)
+    Bin(op, l, r)    => if pu_needs(x, l) == 1 then 1 else pu_needs(x, r)
+    _                => 0
+
+## env: names whose value is deeply unique and referenced at most once
+fn pu_bind(nm, body, isu, env, st) = if isu == 1 and pu_uses(nm, body) <= 1 then Cons(nm, orem(nm, env)) else orem(nm, env)
+fn pu_let(nm, v, b, env, st, seen) = if pu_needs(nm, b) == 0 then orem(nm, env) else pu_bind(nm, b, pu_expr(v, env, st, seen), env, st)
+fn pu_pat(p, body, isu, env, st) = match p
+    PBind(nm)        => pu_bind(nm, body, isu, env, st)
+    PCons(tag, subs) => pu_pats(subs, body, isu, env, st)
+    _                => env
+fn pu_pats(ps, body, isu, env, st) = match ps
+    Nil        => env
+    Cons(h, t) => pu_pats(t, body, isu, pu_pat(h, body, isu, env, st), st)
+fn pu_scrut(sc, env) = match sc
+    Var(x) => omem(x, env)
+    _      => 0
+fn pu_all(args, env, st, seen) = match args
+    Nil        => 1
+    Cons(h, t) => if pu_expr(h, env, st, seen) == 1 then pu_all(t, env, st, seen) else 0
+fn pu_all_items(items, env, st, seen) = match items
+    Nil        => 1
+    Cons(h, t) => if pu_expr(h.val, env, st, seen) == 1 then pu_all_items(t, env, st, seen) else 0
+fn pu_all_arms(arms, sc, env, st, seen) = match arms
+    Nil        => 1
+    Cons(h, t) => if pu_expr(h.body, pu_pat(h.pat, h.body, pu_scrut(sc, env), env, st), st, seen) == 1 then pu_all_arms(t, sc, env, st, seen) else 0
+## is the value of `e` deeply unique? Literals and arithmetic hold no reusable cell.
+fn pu_expr(e, env, st, seen) = match e
+    Num(n)          => 1
+    Str(s)          => 1
+    Var(x)          => if isctor(x) then 1 else omem(x, env)
+    Bin(op, l, r)   => 1
+    OwnE(i)         => pu_expr(i, env, st, seen)
+    If(c, t, e2)    => if pu_expr(t, env, st, seen) == 1 then pu_expr(e2, env, st, seen) else 0
+    LetIn(nm, v, b) => pu_expr(b, pu_let(nm, v, b, env, st, seen), st, seen)
+    VarIn(nm, v, b) => pu_expr(b, pu_let(nm, v, b, env, st, seen), st, seen)
+    Match(sc, arms) => pu_all_arms(arms, sc, env, st, seen)
+    Rec(items)      => pu_all_items(items, env, st, seen)
+    RecT(tn, items) => pu_all_items(items, env, st, seen)
+    Call(nm, args)  => if isctor(nm) then pu_all(args, env, st, seen) else if nm == "move" and len(args) == 1 then pu_expr(ohd_e(args), env, st, seen) else pu_fresh(nm, st, seen)
+    _               => 0
+fn pu_find(nm, fns) = match fns
+    Nil        => Nil
+    Cons(f, r) => if f.nm == nm then Cons(f, Nil) else pu_find(nm, r)
+## a function returns a fresh value when its body's result is unique under what it may assume about its own
+## parameters. A recursive call is assumed fresh: the induction closes at the non-recursive arms.
+fn pu_fresh(nm, st, seen) = if omem(nm, seen) == 1 then 1 else if len(seen) > 8 then 0 else if pu_scalar_sig(nm, st) == 1 then 1 else match pu_find(nm, st.fns)
+    Nil        => 0
+    Cons(f, r) => pu_expr(f.body, pu_env0(f, st), st, Cons(nm, seen))
+fn pu_env0(f, st) = pu_env_ps(f.nm, f.body, ofn_pl(f.nm, st.osigs), st)
+fn ofn_pl(nm, osigs) = match osiglookup(nm, osigs)
+    Nil          => Nil
+    Cons(sg, sr) => sg.pl
+fn pu_env_ps(fnm, body, pl, st) = match pl
+    Nil        => Nil
+    Cons(p, r) => let rest = pu_env_ps(fnm, body, r, st) in if pu_scalar_ty(p.pt) == 1 then Cons(p.pn, rest) else if p.cf == 2 and omem(pu_key(fnm, p.pn), st.u) == 1 and pu_uses(p.pn, body) <= 1 then Cons(p.pn, rest) else rest
+
+## drop from `u` every own parameter with a call site that is not provably unique
+fn pu_drop_fn(nm, pl, u) = match pl
+    Nil        => u
+    Cons(p, r) => pu_drop_fn(nm, r, orem(pu_key(nm, p.pn), u))
+fn pu_site(nm, args, pl, env, st, u) = match pl
+    Nil        => u
+    Cons(p, r) => if p.cf == 1 then pu_site(nm, args, r, env, st, u) else match args
+        Nil        => u
+        Cons(a, t) => pu_site(nm, t, r, env, st, if p.cf == 2 and pu_expr(a, env, st, Nil) == 0 then orem(pu_key(nm, p.pn), u) else u)
+fn pu_walk_args(xs, env, st, u) = match xs
+    Nil        => u
+    Cons(h, t) => pu_walk_args(t, env, st, pu_walk(h, env, st, u))
+fn pu_walk_items(xs, env, st, u) = match xs
+    Nil        => u
+    Cons(h, t) => pu_walk_items(t, env, st, pu_walk(h.val, env, st, u))
+fn pu_walk_arms(xs, sc, env, st, u) = match xs
+    Nil        => u
+    Cons(h, t) => pu_walk_arms(t, sc, env, st, pu_walk(h.body, pu_pat(h.pat, h.body, pu_scrut(sc, env), env, st), st, u))
+fn pu_walk_hops(xs, st, u) = match xs
+    Nil        => u
+    Cons(h, t) => pu_walk_hops(t, st, pu_walk(h.body, Nil, st, u))
+fn pu_walk(e, env, st, u) = match e
+    Var(x)           => if omem(x, env) == 1 then u else match osiglookup(x, st.ofs)
+        Nil          => u
+        Cons(sg, sr) => pu_drop_fn(x, sg.pl, u)
+    OwnE(i)          => pu_walk(i, env, st, u)
+    MutE(i)          => pu_walk(i, env, st, u)
+    Field(o, fld)    => pu_walk(o, env, st, u)
+    Bin(op, l, r)    => pu_walk(r, env, st, pu_walk(l, env, st, u))
+    If(c, t, e2)     => pu_walk(e2, env, st, pu_walk(t, env, st, pu_walk(c, env, st, u)))
+    LetIn(nm, v, b)  => pu_walk(b, pu_let(nm, v, b, env, st, Nil), st, pu_walk(v, env, st, u))
+    VarIn(nm, v, b)  => pu_walk(b, pu_let(nm, v, b, env, st, Nil), st, pu_walk(v, env, st, u))
+    Call(nm, args)   => let u1 = pu_walk_args(args, env, st, u) in (match osiglookup(nm, st.ofs)
+        Nil          => u1
+        Cons(sg, sr) => pu_site(nm, args, sg.pl, env, st, u1))
+    Rec(items)       => pu_walk_items(items, env, st, u)
+    RecT(tn, items)  => pu_walk_items(items, env, st, u)
+    Match(sc, arms)  => pu_walk_arms(arms, sc, env, st, pu_walk(sc, env, st, u))
+    LambdaE(ps, tys, rt, body) => pu_walk(body, Nil, st, u)
+    DeferE(c, b)     => pu_walk(b, env, st, pu_walk(c, env, st, u))
+    ErrDeferE(c, b)  => pu_walk(b, env, st, pu_walk(c, env, st, u))
+    WithAllocE(a, b) => pu_walk(b, env, st, pu_walk(a, env, st, u))
+    WithHandlerE(en, hs, b) => pu_walk(b, env, st, pu_walk_hops(hs, st, u))
+    ScopeE(snm, b)   => pu_walk(b, env, st, u)
+    SpawnE(i)        => pu_walk(i, Nil, st, u)
+    AwaitE(i)        => pu_walk(i, env, st, u)
+    ShardE(vnm, lo, hi, b) => pu_walk(b, Nil, st, pu_walk(hi, env, st, pu_walk(lo, env, st, u)))
+    CT(i)            => pu_walk(i, env, st, u)
+    _                => u
+## however unique the argument, a function that keeps a second reference to its parameter cannot reuse the cell
+fn pu_drop_retained(nm, pl, body, st, u) = match pl
+    Nil        => u
+    Cons(p, r) => pu_drop_retained(nm, r, body, st, if p.cf == 2 and pu_uses(p.pn, body) > 1 then orem(pu_key(nm, p.pn), u) else u)
+fn pu_walk_prog(prog, st, u) = match prog
+    Nil        => u
+    Cons(h, t) => pu_walk_prog(t, st, match h
+        Fn(nm, ps, body) => pu_walk(body, pu_env0({nm: nm, body: body}, st), st, pu_drop_retained(nm, ofn_pl(nm, st.osigs), body, st, u))
+        Print(v)         => pu_walk(v, Nil, st, u)
+        ExprS(v)         => pu_walk(v, Nil, st, u)
+        _                => u)
+fn pu_seed(osigs) = match osigs
+    Nil        => Nil
+    Cons(sg, r) => if ois_ffi(sg.freef) == 1 then pu_seed(r) else pu_seed_ps(sg.nm, sg.pl, pu_seed(r))
+fn pu_seed_ps(nm, pl, rest) = match pl
+    Nil        => rest
+    Cons(p, r) => if p.cf == 2 then Cons(pu_key(nm, p.pn), pu_seed_ps(nm, r, rest)) else pu_seed_ps(nm, r, rest)
+fn pu_ownsigs(osigs) = match osigs
+    Nil         => Nil
+    Cons(sg, r) => if isnil(pu_seed_ps(sg.nm, sg.pl, Nil)) == 1 then pu_ownsigs(r) else Cons(sg, pu_ownsigs(r))
+fn pu_fix(prog, fns, osigs, ofs, u) = let u2 = pu_walk_prog(prog, {osigs: osigs, ofs: ofs, fns: fns, u: u}, u) in if len(u2) == len(u) then u else pu_fix(prog, fns, osigs, ofs, u2)
+fn pu_unique(prog, osigs) = let s = pu_seed(osigs) in if isnil(s) == 1 then Nil else pu_fix(prog, ocollectf(prog), osigs, pu_ownsigs(osigs), s)
+fn pu_filter(nm, ps, u) = match ps
+    Nil        => Nil
+    Cons(h, t) => if omem(pu_key(nm, h), u) == 1 then Cons(h, pu_filter(nm, t, u)) else pu_filter(nm, t, u)
+
 fn ksc_own_var(sc, ownps) = match sc
     Var(x) => if omem(x, ownps) == 1 then x else ""
     _      => ""
@@ -2317,9 +2548,15 @@ fn olowerrec(xs, lctx, d) = match xs
     Nil        => Nil
     Cons(h, t) => Cons({key: h.key, val: olowere(h.val, lctx, d + 1)}, olowerrec(t, lctx, d + 17))
 
+fn orem_names(names, xs) = match names
+    Nil        => xs
+    Cons(h, t) => orem_names(t, orem(h, xs))
+
+fn olctx_unown(lctx, names) = {ufns: lctx.ufns, hops: lctx.hops, ownps: orem_names(names, lctx.ownps), fns: lctx.fns}
+
 fn olowerarms(xs, sc_v, lctx, d) = match xs
     Nil        => Nil
-    Cons(h, t) => Cons({pat: h.pat, body: if sc_v != "" then ktry_perceus_arm(sc_v, h.pat, h.body, lctx, d + 1) else olowere(h.body, lctx, d + 1)}, olowerarms(t, sc_v, lctx, d + 17))
+    Cons(h, t) => let lc2 = olctx_unown(lctx, oa_pat_names(h.pat)) in Cons({pat: h.pat, body: if sc_v != "" and opat_binds(sc_v, h.pat) == 0 then ktry_perceus_arm(sc_v, h.pat, h.body, lc2, d + 1) else olowere(h.body, lc2, d + 1)}, olowerarms(t, sc_v, lctx, d + 17))
 
 fn kfn_ownps(nm, osigs) = match osiglookup(nm, osigs)
     Nil          => Nil
@@ -2366,7 +2603,7 @@ fn olowerstmt(st, rest, ufns, osigs, vctx) = match st
     TypeRefineS(nm, bty, pr)              => Cons(st, rest)
     TraitDecl(tnm, ops)                   => Cons(st, rest)
     ImplDecl(tnm, tty, mths)              => rest
-    Fn(nm, ps, body)                      => let lctx = {ufns: ufns, hops: Nil, ownps: kfn_ownps(nm, osigs), fns: vctx.fns} in let lb = if oanye(body) == 0 and isnil(lctx.ownps) == 1 then body else olowere(body, lctx, 0) in let wb = vwrap_fn_contract(nm, ps, body, lb, lctx, vctx) in Cons(Fn(nm, ps, owrap_async_body(nm, wb, osigs)), rest)
+    Fn(nm, ps, body)                      => let lctx = {ufns: ufns, hops: Nil, ownps: pu_filter(nm, kfn_ownps(nm, osigs), vctx.uniq), fns: vctx.fns} in let lb = if oanye(body) == 0 and isnil(lctx.ownps) == 1 then body else olowere(body, lctx, 0) in let wb = vwrap_fn_contract(nm, ps, body, lb, lctx, vctx) in Cons(Fn(nm, ps, owrap_async_body(nm, wb, osigs)), rest)
     Print(v)                              => Cons(Print(olowere(v, {ufns: ufns, hops: Nil, ownps: Nil, fns: vctx.fns}, 0)), rest)
     ExprS(v)                              => Cons(ExprS(olowere(v, {ufns: ufns, hops: Nil, ownps: Nil, fns: vctx.fns}, 0)), rest)
     _                                     => Cons(st, rest)
@@ -2525,17 +2762,21 @@ fn cl_has_lambda_e(e) = match e
     DeferE(c, b)               => if cl_has_lambda_e(c) == 1 then 1 else cl_has_lambda_e(b)
     ErrDeferE(c, b)            => if cl_has_lambda_e(c) == 1 then 1 else cl_has_lambda_e(b)
     WithAllocE(a, b)           => if cl_has_lambda_e(a) == 1 then 1 else cl_has_lambda_e(b)
-    WithHandlerE(en, hs, b)    => cl_has_lambda_e(b)
+    WithHandlerE(en, hs, b)    => if cl_has_lambda_hops(hs) == 1 then 1 else cl_has_lambda_e(b)
     ScopeE(snm, b)             => cl_has_lambda_e(b)
     SpawnE(inner)              => cl_has_lambda_e(inner)
     AwaitE(inner)              => cl_has_lambda_e(inner)
     ShardE(vnm, lo, hi, b)     => if cl_has_lambda_e(lo) == 1 then 1 else if cl_has_lambda_e(hi) == 1 then 1 else cl_has_lambda_e(b)
-    Call(cnm, args)            => if cnm == "_call" then 1 else cl_has_lambda_args(args)
+    Call(cnm, args)            => if cnm == "_call" or ostarts(cnm, "__closure_call_") == 1 then 1 else cl_has_lambda_args(args)
     Field(o, fld)              => cl_has_lambda_e(o)
     Rec(items)                 => cl_has_lambda_rec(items)
     RecT(tn, items)            => cl_has_lambda_rec(items)
     Match(sc, arms)            => if cl_has_lambda_e(sc) == 1 then 1 else cl_has_lambda_arms(arms)
     _                          => 0
+
+fn cl_has_lambda_hops(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cl_has_lambda_e(h.body) == 1 then 1 else cl_has_lambda_hops(t)
 
 fn cl_has_lambda_args(xs) = match xs
     Nil        => 0
@@ -2571,6 +2812,7 @@ fn cl_free_vars(e, bound, env_vars, acc) = match e
     DeferE(c, b)               => cl_free_vars(b, bound, env_vars, cl_free_vars(c, bound, env_vars, acc))
     ErrDeferE(c, b)            => cl_free_vars(b, bound, env_vars, cl_free_vars(c, bound, env_vars, acc))
     WithAllocE(a, b)           => cl_free_vars(b, bound, env_vars, cl_free_vars(a, bound, env_vars, acc))
+    WithHandlerE(en, hs, b)    => cl_free_vars(b, bound, env_vars, cl_free_vars_hops(hs, bound, env_vars, acc))
     ScopeE(snm, b)             => cl_free_vars(b, Cons(snm, bound), env_vars, acc)
     SpawnE(inner)              => cl_free_vars(inner, bound, env_vars, acc)
     AwaitE(inner)              => cl_free_vars(inner, bound, env_vars, acc)
@@ -2581,6 +2823,10 @@ fn cl_free_vars(e, bound, env_vars, acc) = match e
     RecT(tn, items)            => cl_free_vars_rec(items, bound, env_vars, acc)
     Match(sc, arms)            => cl_free_vars_arms(arms, bound, env_vars, cl_free_vars(sc, bound, env_vars, acc))
     _                          => acc
+
+fn cl_free_vars_hops(xs, bound, env_vars, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => cl_free_vars_hops(t, bound, env_vars, cl_free_vars(h.body, app(h.ps, bound), env_vars, acc))
 
 fn cl_free_vars_args(xs, bound, env_vars, acc) = match xs
     Nil        => acc
@@ -2604,17 +2850,25 @@ fn cl_subst_caps(e, caps) = match e
     MutE(inner)     => MutE(cl_subst_caps(inner, caps))
     DeferE(c, b)    => DeferE(cl_subst_caps(c, caps), cl_subst_caps(b, caps))
     ErrDeferE(c, b) => ErrDeferE(cl_subst_caps(c, caps), cl_subst_caps(b, caps))
+    WithAllocE(a, b) => WithAllocE(cl_subst_caps(a, caps), cl_subst_caps(b, caps))
+    WithHandlerE(en, hs, b) => WithHandlerE(en, cl_subst_caps_hops(hs, caps), cl_subst_caps(b, caps))
     ScopeE(snm, b)  => ScopeE(snm, cl_subst_caps(b, orem(snm, caps)))
     SpawnE(inner)   => SpawnE(cl_subst_caps(inner, caps))
     AwaitE(inner)   => AwaitE(cl_subst_caps(inner, caps))
     ShardE(v, l, h, b) => ShardE(v, cl_subst_caps(l, caps), cl_subst_caps(h, caps), cl_subst_caps(b, orem(v, caps)))
-    Call(cnm, args) => let args2 = cl_subst_caps_args(args, caps) in if omem(cnm, caps) == 1 then (if len(args2) == 1 then Call("__closure_call_1", Cons(Field(Var("__env"), cnm), args2)) else Call("__closure_call_2", Cons(Field(Var("__env"), cnm), args2))) else Call(cnm, args2)
+    Call(cnm, args) => let args2 = cl_subst_caps_args(args, caps) in if omem(cnm, caps) == 1 then Call("__closure_call_" + str(len(args2)), Cons(Field(Var("__env"), cnm), args2)) else Call(cnm, args2)
     Field(o, fld)   => Field(cl_subst_caps(o, caps), fld)
     Rec(items)      => Rec(cl_subst_caps_rec(items, caps))
     RecT(tn, items) => RecT(tn, cl_subst_caps_rec(items, caps))
     Match(sc, arms) => Match(cl_subst_caps(sc, caps), cl_subst_caps_arms(arms, caps))
     _               => e
 
+fn cl_caps_minus(ps, caps) = match ps
+    Nil        => caps
+    Cons(h, t) => cl_caps_minus(t, orem(h, caps))
+fn cl_subst_caps_hops(xs, caps) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons({op: h.op, ps: h.ps, body: cl_subst_caps(h.body, cl_caps_minus(h.ps, caps))}, cl_subst_caps_hops(t, caps))
 fn cl_subst_caps_args(xs, caps) = match xs
     Nil        => Nil
     Cons(h, t) => Cons(cl_subst_caps(h, caps), cl_subst_caps_args(t, caps))
@@ -2631,8 +2885,35 @@ fn cl_env_rec_items(caps) = match caps
     Nil        => Nil
     Cons(c, r) => Cons({key: c, val: Var(c)}, cl_env_rec_items(r))
 
+## A top-level function used as a value becomes a closure with an empty environment. The wrapper is compiler glue, so
+## the ownership checker skips it: through a function value an argument is shared, and the reuse gate sees that call
+## site as not unique, which keeps a function with `own` parameters from reusing what its caller still holds.
+fn cl_gen_pl(x, gens) = match gens
+    Nil        => Nil
+    Cons(h, t) => if h.nm == x then h.pl else cl_gen_pl(x, t)
+fn cl_eta_head(vars, r) = match vars
+    Nil         => Nil
+    Cons(v, vt) => Cons(v, cl_eta_args(r, vt))
+fn cl_eta_args(pl, vars) = match pl
+    Nil        => vars
+    Cons(p, r) => if p.cf == 1 then Cons(Var("int"), cl_eta_args(r, vars)) else cl_eta_head(vars, r)
+fn cl_fn_value(x, n, top_fns, e, lid) = if n < 0 then {e: e, lifted: Nil, lid: lid} else let ps = cl_arg_names(0, n) in let wnm = "__fnval_" + str(lid) in {e: Rec(Cons({key: "__fn_id", val: Num(lid)}, Cons({key: "__env", val: Rec(Nil)}, Nil))), lifted: Cons({id: lid, ar: n, nm: wnm, fstmt: Fn(wnm, Cons("__env", ps), Call(x, cl_eta_args(cl_gen_pl(x, top_fns.gens), cl_arg_vars(ps))))}, Nil), lid: lid + 1}
+## a call through a value; the mark asks for a dispatcher of that argument count
+fn cl_mark(n) = {id: 0 - 1, ar: n, nm: "", fstmt: Nil}
+fn cl_closure_call(f, cargs, ra) = {e: Call("__closure_call_" + str(len(cargs)), Cons(f, cargs)), lifted: Cons(cl_mark(len(cargs)), ra.lifted), lid: ra.lid}
+## the forms that take a function, or a bound variable, by name
+fn cl_by_name(nm) = if nm == "grad" or nm == "jvp" or nm == "vjp" or nm == "vmap" or nm == "value_and_grad" or nm == "jit" or nm == "shard" or nm == "forall_range" or nm == "exists_range" then 1 else 0
+fn cl_conv_keep_vars(xs, env_vars, top_fns, lid) = match xs
+    Nil        => {es: Nil, lifted: Nil, lid: lid}
+    Cons(h, t) => let rh = cl_conv_keep_var(h, env_vars, top_fns, lid) in let rt = cl_conv_keep_vars(t, env_vars, top_fns, rh.lid) in {es: Cons(rh.e, rt.es), lifted: app(rh.lifted, rt.lifted), lid: rt.lid}
+fn cl_conv_keep_var(e, env_vars, top_fns, lid) = match e
+    Var(x) => {e: e, lifted: Nil, lid: lid}
+    _      => cl_conv_e(e, env_vars, top_fns, lid)
+fn cl_conv_hops(hs, env_vars, top_fns, lid) = match hs
+    Nil        => {hs: Nil, lifted: Nil, lid: lid}
+    Cons(h, t) => let rb = cl_conv_e(h.body, app(h.ps, env_vars), top_fns, lid) in let rt = cl_conv_hops(t, env_vars, top_fns, rb.lid) in {hs: Cons({op: h.op, ps: h.ps, body: rb.e}, rt.hs), lifted: app(rb.lifted, rt.lifted), lid: rt.lid}
 fn cl_conv_e(e, env_vars, top_fns, lid) = match e
-    LambdaE(ps, tys, rt, body) => let rb = cl_conv_e(body, app(ps, env_vars), top_fns, lid) in let my_id = rb.lid in let caps = cl_free_vars(rb.e, ps, env_vars, Nil) in let lbody = cl_subst_caps(rb.e, caps) in let lfn = {id: my_id, ar: len(ps), fstmt: Fn("__lambda_" + str(my_id), Cons("__env", ps), lbody)} in let crec = Rec(Cons({key: "__fn_id", val: Num(my_id)}, Cons({key: "__env", val: Rec(cl_env_rec_items(caps))}, Nil))) in {e: crec, lifted: app(rb.lifted, Cons(lfn, Nil)), lid: my_id + 1}
+    LambdaE(ps, tys, rt, body) => let rb = cl_conv_e(body, app(ps, env_vars), top_fns, lid) in let my_id = rb.lid in let caps = cl_free_vars(rb.e, ps, env_vars, Nil) in let lbody = cl_subst_caps(rb.e, caps) in let lfn = {id: my_id, ar: len(ps), nm: "__lambda_" + str(my_id), fstmt: Fn("__lambda_" + str(my_id), Cons("__env", ps), lbody)} in let crec = Rec(Cons({key: "__fn_id", val: Num(my_id)}, Cons({key: "__env", val: Rec(cl_env_rec_items(caps))}, Nil))) in {e: crec, lifted: app(rb.lifted, Cons(lfn, Nil)), lid: my_id + 1}
     Bin(op, l, r)              => let rl = cl_conv_e(l, env_vars, top_fns, lid) in let rr = cl_conv_e(r, env_vars, top_fns, rl.lid) in {e: Bin(op, rl.e, rr.e), lifted: app(rl.lifted, rr.lifted), lid: rr.lid}
     If(c, t, e2)               => let rc = cl_conv_e(c, env_vars, top_fns, lid) in let rt = cl_conv_e(t, env_vars, top_fns, rc.lid) in let re = cl_conv_e(e2, env_vars, top_fns, rt.lid) in {e: If(rc.e, rt.e, re.e), lifted: app(rc.lifted, app(rt.lifted, re.lifted)), lid: re.lid}
     LetIn(nm, v, b)            => let rv = cl_conv_e(v, env_vars, top_fns, lid) in let rb = cl_conv_e(b, Cons(nm, env_vars), top_fns, rv.lid) in {e: LetIn(nm, rv.e, rb.e), lifted: app(rv.lifted, rb.lifted), lid: rb.lid}
@@ -2645,7 +2926,10 @@ fn cl_conv_e(e, env_vars, top_fns, lid) = match e
     SpawnE(inner)              => let r = cl_conv_e(inner, env_vars, top_fns, lid) in {e: SpawnE(r.e), lifted: r.lifted, lid: r.lid}
     AwaitE(inner)              => let r = cl_conv_e(inner, env_vars, top_fns, lid) in {e: AwaitE(r.e), lifted: r.lifted, lid: r.lid}
     ShardE(vnm, lo, hi, b)     => let rlo = cl_conv_e(lo, env_vars, top_fns, lid) in let rhi = cl_conv_e(hi, env_vars, top_fns, rlo.lid) in let rb = cl_conv_e(b, Cons(vnm, env_vars), top_fns, rhi.lid) in {e: ShardE(vnm, rlo.e, rhi.e, rb.e), lifted: app(rlo.lifted, app(rhi.lifted, rb.lifted)), lid: rb.lid}
-    Call(cnm, args)            => let ra = cl_conv_args(args, env_vars, top_fns, lid) in if cnm == "_call" and len(ra.es) >= 2 then (let fexpr = ohd_e(ra.es) in let cargs = ptl(ra.es) in let dnm = if len(cargs) == 2 then "__closure_call_2" else "__closure_call_1" in {e: Call(dnm, Cons(fexpr, cargs)), lifted: ra.lifted, lid: ra.lid}) else if omem(cnm, env_vars) == 1 and omem(cnm, top_fns) == 0 then (let dnm = if len(ra.es) == 2 then "__closure_call_2" else "__closure_call_1" in {e: Call(dnm, Cons(Var(cnm), ra.es)), lifted: ra.lifted, lid: ra.lid}) else {e: Call(cnm, ra.es), lifted: ra.lifted, lid: ra.lid}
+    Var(x)                     => if omem(x, env_vars) == 1 or nf_isctor(x) == 1 then {e: e, lifted: Nil, lid: lid} else cl_fn_value(x, nf_arity(x, top_fns.defs), top_fns, e, lid)
+    Call(cnm, args)            => let ra = (if cl_by_name(cnm) == 1 then cl_conv_keep_vars(args, env_vars, top_fns, lid) else cl_conv_args(args, env_vars, top_fns, lid)) in if cnm == "_call" and len(ra.es) >= 1 then cl_closure_call(ohd_e(ra.es), ptl(ra.es), ra) else if omem(cnm, env_vars) == 1 and nf_rt(cnm) == 0 and nf_special(cnm) == 0 then cl_closure_call(Var(cnm), ra.es, ra) else {e: Call(cnm, ra.es), lifted: if cnm == "shard" then Cons(cl_mark(1), ra.lifted) else ra.lifted, lid: ra.lid}
+    WithAllocE(a, b)           => let ra = cl_conv_e(a, env_vars, top_fns, lid) in let rb = cl_conv_e(b, env_vars, top_fns, ra.lid) in {e: WithAllocE(ra.e, rb.e), lifted: app(ra.lifted, rb.lifted), lid: rb.lid}
+    WithHandlerE(en, hs, b)    => let rh = cl_conv_hops(hs, env_vars, top_fns, lid) in let rb = cl_conv_e(b, env_vars, top_fns, rh.lid) in {e: WithHandlerE(en, rh.hs, rb.e), lifted: app(rh.lifted, rb.lifted), lid: rb.lid}
     Field(o, fld)              => let ro = cl_conv_e(o, env_vars, top_fns, lid) in {e: Field(ro.e, fld), lifted: ro.lifted, lid: ro.lid}
     Rec(items)                 => let rr = cl_conv_rec(items, env_vars, top_fns, lid) in {e: Rec(rr.items), lifted: rr.lifted, lid: rr.lid}
     RecT(tn, items)            => let rr = cl_conv_rec(items, env_vars, top_fns, lid) in {e: RecT(tn, rr.items), lifted: rr.lifted, lid: rr.lid}
@@ -2678,59 +2962,25 @@ fn cl_lifted_stmts(lifted) = match lifted
     Nil        => Nil
     Cons(h, t) => Cons(h.fstmt, cl_lifted_stmts(t))
 
-fn cl_dispatch_1(lifted) = match lifted
-    Nil        => Num(0)
-    Cons(h, t) => if h.ar == 1 then If(Bin("==", Field(Var("__cl"), "__fn_id"), Num(h.id)), Call("__lambda_" + str(h.id), Cons(Field(Var("__cl"), "__env"), Cons(Var("__a0"), Nil))), cl_dispatch_1(t)) else cl_dispatch_1(t)
-
-fn cl_dispatch_2(lifted) = match lifted
-    Nil        => Num(0)
-    Cons(h, t) => if h.ar == 2 then If(Bin("==", Field(Var("__cl"), "__fn_id"), Num(h.id)), Call("__lambda_" + str(h.id), Cons(Field(Var("__cl"), "__env"), Cons(Var("__a0"), Cons(Var("__a1"), Nil)))), cl_dispatch_2(t)) else cl_dispatch_2(t)
-
-fn cl_convert_prog(prog) = if cl_has_lambda_prog(prog) == 0 then prog else let top_fns = ocollectfnms(prog) in let r = cl_conv_stmts(prog, top_fns, 1) in if isnil(r.lifted) == 1 then r.stmts else let disp1 = Fn("__closure_call_1", Cons("__cl", Cons("__a0", Nil)), cl_dispatch_1(r.lifted)) in let disp2 = Fn("__closure_call_2", Cons("__cl", Cons("__a0", Cons("__a1", Nil))), cl_dispatch_2(r.lifted)) in app(cl_lifted_stmts(r.lifted), Cons(disp1, Cons(disp2, r.stmts)))
-
-## --- Wave 1 toolchain soundness (#428): fail-closed name resolution (R0200-class) ---
-## Before this pass the gradual checker performed no undefined-name diagnosis at all: a call to a
-## function with no visible definition was emitted blindly by codegen and lasm resolved the missing
-## symbol to address 0, so the program segfaulted at first use (#417, #420); a string interpolation
-## hole naming an unbound variable produced silent garbage (#423). orscheck walks every expression
-## with a lexical scope BEFORE any lowering/rewriting and rejects both: an undefined variable is a
-## compile error [R0200], and a call with no visible definition in the bundle is a compile error
-## [R0200] -- caught long before codegen, with the offending name in the message.
-##
-## A call target counts as visible when it is: a function defined in this bundle (flat module
-## scope, so forward references are fine), a declared signature (OSig/Sig statements, which cover
-## extern "c" declarations), a declared effect operation, a trait operation or impl method name
-## (resolved to their mangled __impl_* functions later by the trait pass), a constructor
-## (uppercase), a runtime/builtin entry point (via the SAME predicates codegen uses to emit the
-## runtime, so the check cannot drift from what lasm will see), an intrinsic consumed by the
-## lowering pass (verify/borrow/rc/promise family, grad/tensor/jit, ...), or a synthetic form
-## (_call/_tyapp_*/_tylist_/quantifiers/Perceus reuse). Anything else reaching codegen would emit
-## `call <name>` with no defining label, i.e. the exact call-to-address-0 incident of #428.
-fn ors_rtbase(nm) = nm == "alloc" or nm == "alloc_grow" or nm == "at" or nm == "chr" or nm == "count" or nm == "ctfail" or nm == "emit" or nm == "flush" or nm == "io_read_byte" or nm == "lidx" or nm == "mkctor" or nm == "mkint" or nm == "mklist" or nm == "mkrec" or nm == "mkstr" or nm == "ord" or nm == "print_int" or nm == "printval" or nm == "read" or nm == "readall" or nm == "recget" or nm == "showval" or nm == "slice" or nm == "slicen" or nm == "str" or nm == "strcmpv" or nm == "streq" or nm == "strlen" or nm == "strni" or nm == "stro" or nm == "toint" or nm == "utf8_chr" or nm == "wch" or nm == "wint" or nm == "wstr" or nm == "addv" or nm == "addvs" or nm == "cmpv" or nm == "cmpvgt" or nm == "cmpvi" or nm == "cmpvlt" or nm == "cnts" or nm == "eqv" or nm == "eqv0" or nm == "eqvc" or nm == "eqvi" or nm == "eqvs" or nm == "std" or nm == "stl" or nm == "stp" or nm == "os_arg_at" or nm == "os_arg_count" or nm == "fs_append_sync" or nm == "fs_current_dir" or nm == "fs_files_equal" or nm == "fs_mkdir" or nm == "fs_path_exists" or nm == "fs_read_byte" or nm == "fs_read_dir" or nm == "fs_remove" or nm == "fs_write_hex_file" or nm == "fs_write_sync" or nm == "fs_read_file"
-fn ors_rt(nm) = ors_rtbase(nm) == 1 or lis_sys_call(nm) == 1 or lis_tier_call(nm) == 1 or lis_bv1_call(nm) == 1 or lis_bv2_call(nm) == 1 or lis_mem_call(nm) == 1
-fn ors_tyapp(nm) = count(nm) > 7 and slice(nm, 0, 7) == "_tyapp_"
-fn ors_special1(nm) = nm == "borrow" or nm == "borrow_mut" or nm == "move" or nm == "clone" or nm == "verify" or nm == "law_check" or nm == "evolve_approve" or nm == "llm_complete" or nm == "prob_sample" or nm == "sample_dist" or nm == "observe_lik" or nm == "llm_prompt" or nm == "old" or nm == "grad" or nm == "jvp" or nm == "vjp" or nm == "vmap" or nm == "value_and_grad" or nm == "jit" or nm == "matmul" or nm == "tensor_matmul" or nm == "tensor_add" or nm == "tensor_sub" or nm == "tensor_mul" or nm == "tensor_add_bias" or nm == "cap_page_map" or nm == "rc" or nm == "arc" or nm == "rc_new" or nm == "arc_new" or nm == "rc_clone" or nm == "arc_clone" or nm == "rc_drop" or nm == "arc_drop" or nm == "rc_get" or nm == "arc_get" or nm == "rc_strong_count" or nm == "arc_strong_count" or nm == "weak_downgrade" or nm == "weak_upgrade" or nm == "downgrade" or nm == "upgrade" or nm == "strong_count" or nm == "drop" or nm == "get" or nm == "promise" or nm == "promise_new" or nm == "promise_resolve" or nm == "promise_await" or nm == "resolve" or nm == "signal" or nm == "signal_new" or nm == "signal_get" or nm == "signal_set" or nm == "signal_version" or nm == "set" or nm == "version" or nm == "block_on" or nm == "shard"
-fn ors_special2(nm) = nm == "_call" or nm == "_tylist_" or nm == "forall_range" or nm == "exists_range" or nm == "__perceus_reuse_1" or nm == "__perceus_reuse_2" or nm == "assert" or nm == "embed" or nm == "table_schema" or nm == "unquote" or nm == "ctor" or nm == "int" or nm == "decimal" or nm == "decimal_cast" or nm == "dec_add" or nm == "dec_sub" or nm == "dec_eq" or nm == "dec_lt" or nm == "dec_le" or nm == "dec_gt" or nm == "dec_ge" or nm == "money_parse" or nm == "money_make" or nm == "money_convert_fx" or nm == "money_add" or nm == "money_sub" or nm == "money_cmp" or nm == "query_where" or nm == "query_order" or nm == "query_join" or nm == "query_group" or nm == "always" or nm == "eventually" or nm == "until" or nm == "leads_to" or nm == "array_new" or nm == "array_const" or nm == "array_select" or nm == "array_store" or nm == "heap_new" or nm == "heap_write" or nm == "heap_read" or nm == "points_to" or nm == "sep_conj" or nm == "sep_disjoint" or nm == "sep_dom" or nm == "sep_valid" or nm == "bv_add_u8" or nm == "bv_sub_u8" or nm == "bv_mul_u8" or nm == "bv_xor_u8" or nm == "bv_and_u8" or nm == "bv_not_u8" or nm == "alloc_heap" or nm == "wasm_call_host_fs" or ors_tyapp(nm) == 1
-fn ors_special(nm) = ors_special1(nm) == 1 or ors_special2(nm) == 1
-fn orscallok(nm, ctx) = if omem(nm, ctx.fns) == 1 then 1 else if omem(nm, ctx.onames) == 1 then 1 else if omem(nm, ctx.eops) == 1 then 1 else if isctor(nm) == 1 then 1 else if ors_rt(nm) == 1 then 1 else ors_special(nm)
-fn orssig_names(prog) = match prog
+## one dispatcher per argument count that is called: a closure of any arity works, and the wrong count stops
+fn cl_dispatch(lifted, n, args) = match lifted
+    Nil        => Call("ctfail", Cons(Str("lume: this value is not a function of that many arguments\n"), Nil))
+    Cons(h, t) => if h.ar == n then If(Bin("==", Field(Var("__cl"), "__fn_id"), Num(h.id)), Call(h.nm, Cons(Field(Var("__cl"), "__env"), args)), cl_dispatch(t, n, args)) else cl_dispatch(t, n, args)
+fn cl_arg_names(i, n) = if i >= n then Nil else Cons("__a" + str(i), cl_arg_names(i + 1, n))
+fn cl_arg_vars(ps) = match ps
     Nil        => Nil
-    Cons(h, t) => orssig1(h, orssig_names(t))
-fn orssig1(st, rest) = match st
-    OSig(nm, pubf, freef, pl, rty, fromp) => Cons(nm, rest)
-    Sig(nm, ps, ts, rt)                  => Cons(nm, rest)
-    _                                    => rest
-fn orsopnames(xs, acc) = match xs
+    Cons(h, t) => Cons(Var(h), cl_arg_vars(t))
+fn cl_real(lifted) = match lifted
+    Nil        => Nil
+    Cons(h, t) => if h.id < 0 then cl_real(t) else Cons(h, cl_real(t))
+fn cl_arities(lifted, acc) = match lifted
     Nil        => acc
-    Cons(h, t) => orsopnames(t, if omem(h.op, acc) == 1 then acc else Cons(h.op, acc))
-fn orscollect_eops(prog) = match prog
+    Cons(h, t) => cl_arities(t, if omem(h.ar, acc) == 1 then acc else Cons(h.ar, acc))
+fn cl_dispatchers(real, ars) = match ars
     Nil        => Nil
-    Cons(h, t) => orscollect_eop1(h, orscollect_eops(t))
-fn orscollect_eop1(st, rest) = match st
-    KEffectDecl(enm, ops) => app(orsopnames(ops, Nil), rest)
-    TraitDecl(tnm, ops)   => app(orsopnames(ops, Nil), rest)
-    ImplDecl(tnm, tty, mths) => app(orsopnames(mths, Nil), rest)
-    _                     => rest
+    Cons(n, t) => let ps = cl_arg_names(0, n) in Cons(Fn("__closure_call_" + str(n), Cons("__cl", ps), cl_dispatch(real, n, cl_arg_vars(ps))), cl_dispatchers(real, t))
+fn cl_convert_prog(prog) = let r = cl_conv_stmts(prog, {defs: nf_defs(prog), gens: nf_generics(prog)}, 1) in if isnil(r.lifted) == 1 then r.stmts else let real = cl_real(r.lifted) in app(cl_lifted_stmts(real), app(cl_dispatchers(real, cl_arities(r.lifted, Cons(0, Cons(1, Cons(2, Nil))))), r.stmts))
+
 fn k5_is_phys_write_fn(cnm) = cnm == "mmio_volatile_write8" or cnm == "mmio_volatile_write16" or cnm == "mmio_volatile_write32" or cnm == "mmio_volatile_write64" or cnm == "mem_copy" or cnm == "mem_set"
 fn k5_lookup_env(nm, env) = match env
     Nil        => {ok: 0, v: 0}
@@ -2801,6 +3051,53 @@ fn c9_taints_let(fnm, v, svars) = match v
     Call(cnm, args) => if ostarts(fnm, "ct_") == 1 or ostarts(cnm, "bv_") == 1 then c9_mentions_secret(v, svars) else 0
     _               => c9_mentions_secret(v, svars)
 fn c9_chk_fn(nm, ps, body) = let svars = c9_init_secrets(nm, ps) in if isnil(svars) == 1 then 0 else c9_chk_ct_e(body, svars, nm)
+## compression and secrets: decompression time depends on the bytes (Decomp+Time), so no secret reaches the compactor.
+## `@secret fn` makes every parameter and the result secret; `secret_new`, `secret_*` parameters and `ct_*` functions are secret too.
+fn cz_member(xs, nm) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else cz_member(t, nm)
+fn cz_taint_args(xs, sv, sf) = match xs
+    Nil        => 0
+    Cons(h, t) => if cz_taint(h, sv, sf) == 1 then 1 else cz_taint_args(t, sv, sf)
+fn cz_taint(e, sv, sf) = match e
+    Var(x)          => cz_member(sv, x)
+    Bin(op, l, r)   => if cz_taint(l, sv, sf) == 1 then 1 else cz_taint(r, sv, sf)
+    If(c, t, e2)    => if cz_taint(t, sv, sf) == 1 then 1 else cz_taint(e2, sv, sf)
+    Field(o, k)     => cz_taint(o, sv, sf)
+    Call(cnm, args) => if cnm == "secret_new" or cz_member(sf, cnm) == 1 then 1 else cz_taint_args(args, sv, sf)
+    LetIn(nm, v, b) => cz_taint(b, if cz_taint(v, sv, sf) == 1 then Cons(nm, sv) else sv, sf)
+    _               => 0
+fn cz_chk_args(xs, sv, sf, fnm) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = cz_chk(h, sv, sf, fnm) in cz_chk_args(t, sv, sf, fnm)
+fn cz_chk_arms(xs, sv, sf, fnm) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = cz_chk(h.body, sv, sf, fnm) in cz_chk_arms(t, sv, sf, fnm)
+fn cz_fail(cnm, fnm) = ctfail("lume: constant-time error [C0009]: '" + cnm + "' in '" + fnm + "' would compress secret data: decompression time depends on the bytes and leaks them (Decomp+Time). Keep secrets out of mem_pack and frozen arenas (fix-it: arena_mark_secret keeps an arena uncompressed)\n")
+fn cz_chk(e, sv, sf, fnm) = match e
+    LetIn(nm, v, b) => let z = cz_chk(v, sv, sf, fnm) in cz_chk(b, if cz_taint(v, sv, sf) == 1 then Cons(nm, sv) else sv, sf, fnm)
+    Call(cnm, args) => if lis_pack_call(cnm) == 1 and cz_taint_args(args, sv, sf) == 1 then cz_fail(cnm, fnm) else cz_chk_args(args, sv, sf, fnm)
+    Bin(op, l, r)   => let z = cz_chk(l, sv, sf, fnm) in cz_chk(r, sv, sf, fnm)
+    If(c, t, e2)    => let z = cz_chk(c, sv, sf, fnm) in let y = cz_chk(t, sv, sf, fnm) in cz_chk(e2, sv, sf, fnm)
+    Field(o, k)     => cz_chk(o, sv, sf, fnm)
+    Match(sc, arms) => let z = cz_chk(sc, sv, sf, fnm) in cz_chk_arms(arms, sv, sf, fnm)
+    _               => 0
+fn cz_secret_fns(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => cz_secret_fn1(h, cz_secret_fns(t))
+fn cz_secret_fn1(st, rest) = match st
+    OSig(nm, pubf, freef, pl, rty, fromp) => if (freef / 128) % 2 == 1 then Cons(nm, rest) else rest
+    _                                     => rest
+fn cz_chk_prog(prog, sf) = match prog
+    Nil        => 0
+    Cons(h, t) => let z = cz_chk_stmt(h, sf) in cz_chk_prog(t, sf)
+fn cz_chk_stmt(st, sf) = match st
+    Fn(nm, ps, body) => if cz_member(sf, nm) == 1 then cz_chk_secret_fn(nm, ps, body, sf) else cz_chk(body, c9_init_secrets(nm, ps), sf, nm)
+    Print(v)         => cz_chk(v, Nil, sf, "<main>")
+    ExprS(v)         => cz_chk(v, Nil, sf, "<main>")
+    _                => 0
+fn cz_chk_secret_fn(nm, ps, body, sf) = let z = c9_chk_ct_e(body, ps, nm) in cz_chk(body, ps, sf, nm)
+fn cz_prog(prog) = cz_chk_prog(prog, cz_secret_fns(prog))
 fn k6_callee_calls_back(fnm, cnm, mf) = match mf
     Nil        => 0
     Cons(f, r) => if afn_calls_self(fnm, f.body) == 1 then ctfail("lume: kernel stack error [K0006]: mutual recursion between '" + fnm + "' and '" + cnm + "' in freestanding kernel overflows the bounded bare-metal stack (fix-it: convert '" + fnm + "' and '" + cnm + "' into direct self-tail recursion so Lume lowers the loop to 'jmp .Ltail_" + fnm + "')\n") else 0
@@ -2819,80 +3116,16 @@ fn k6_chk_mutual_arms(xs, fnm, fns) = match xs
     Nil        => 0
     Cons(h, t) => let z = k6_chk_mutual_e(h.body, fnm, fns) in k6_chk_mutual_arms(t, fnm, fns)
 fn k5_chk_fn(nm, ps, body, fns) = let z0 = c9_chk_fn(nm, ps, body) in let z1 = k5_chk_wx_e(body, Nil, nm) in if isnil(fns) == 0 then k6_chk_mutual_e(body, nm, fns) else 0
-fn orscheck(prog) = let fns = ocollectfnms(prog) in let fn_defs = if omem("kernel_boot_entry", fns) == 1 then ocollectf(prog) else Nil in let onames = orssig_names(prog) in let eops = orscollect_eops(prog) in let ctx = {fns: fns, fn_defs: fn_defs, onames: onames, eops: eops, tynames: orstynames(prog)} in let z = orscheckstmts(prog, ctx) in prog
+## names themselves are resolved in name_flow.src; the compiler stops at the first entry.
+fn orsk5(prog, fns) = match prog
+    Nil        => 0
+    Cons(h, t) => let z = orsk5_stmt(h, fns) in orsk5(t, fns)
+fn orsk5_stmt(st, fns) = match st
+    Fn(nm, ps, body) => k5_chk_fn(nm, ps, body, fns)
+    _                => 0
+fn orscheck(prog) = match nf_errors(nf_check(prog))
+    Cons(h, t) => ctfail("lume: " + nf_kind(h.code) + " error [" + h.code + "]: " + h.msg + "\n")
+    Nil        => let fns = ocollectfnms(prog) in let fn_defs = if omem("kernel_boot_entry", fns) == 1 then ocollectf(prog) else Nil in let z = orsk5(prog, fn_defs) in prog
 
-## builtin scalar type names (and declared `type` names) reach value positions as the erased
-## comptime-type arguments of generics (`id(int, 42)`), so they are legal bare variables even
-## though they name no runtime slot -- gerase drops them before codegen.
-fn orstynames(prog) = Cons("int", Cons("str", Cons("bool", orstypenames(prog, Nil))))
-fn orstyadd(nm, acc) = if omem(nm, acc) == 1 then acc else Cons(nm, acc)
-fn orstypenames(prog, acc) = match prog
-    Nil        => acc
-    Cons(h, t) => orstypenames(t, orstystmt(h, acc))
-fn orstystmt(st, acc) = match st
-    OType(nm, k)             => orstyadd(nm, acc)
-    TypeS(nm, k, items)      => orstyadd(nm, acc)
-    TypeRefineS(nm, bty, pr) => orstyadd(nm, acc)
-    GSig(nm, pl, rt)         => app(tpset(pl), acc)
-    _                        => acc
-fn orscheckstmts(prog, ctx) = match prog
-    Nil        => 0
-    Cons(h, t) => let z = orscheckstmt(h, ctx) in orscheckstmts(t, ctx)
-fn orscheckstmt(st, ctx) = match st
-    Fn(nm, ps, body)                 => let zk = k5_chk_fn(nm, ps, body, ctx.fn_defs) in orsexpr(body, ps, ctx)
-    Print(v)                         => orsexpr(v, Nil, ctx)
-    ExprS(v)                         => orsexpr(v, Nil, ctx)
-    VLawDecl(nm, ps, body)           => orsexpr(body, ps, ctx)
-    VContractSig(nm, ps, reqs, enss) => let z1 = orsexprs(reqs, ps, ctx) in orsexprs(enss, Cons("result", ps), ctx)
-    _                                => 0
-## note: effect/trait declarations carry signature-only ops ({op, ps, pt, rt}, no body) and impl
-## methods are emitted as plain Fn statements by the parser, so none of them need walking here;
-## `with handler` op bodies ARE walked (WithHandlerE case below) with only their own params in
-## scope, matching how the ownership checker already treats them.
-fn orscheckops(ops, bound, ctx) = match ops
-    Nil        => 0
-    Cons(h, t) => let z = orsexpr(h.body, app(h.ps, bound), ctx) in orscheckops(t, bound, ctx)
-fn orsexprs(xs, bound, ctx) = match xs
-    Nil        => 0
-    Cons(h, t) => let z = orsexpr(h, bound, ctx) in orsexprs(t, bound, ctx)
-fn orsrec(items, bound, ctx) = match items
-    Nil        => 0
-    Cons(h, t) => let z = orsexpr(h.val, bound, ctx) in orsrec(t, bound, ctx)
-fn orsargs(args, bound, ctx) = match args
-    Nil        => 0
-    Cons(h, t) => let z = orsexpr(h, bound, ctx) in orsargs(t, bound, ctx)
-fn orsqargs(args, bound, ctx) = match args
-    Cons(Var(vnm), rest) => orsargs(rest, Cons(vnm, bound), ctx)
-    _                    => orsargs(args, bound, ctx)
-fn orsarms(arms, bound, ctx) = match arms
-    Nil        => 0
-    Cons(h, t) => let z = orsexpr(h.body, app(apat_binds(h.pat), bound), ctx) in orsarms(t, bound, ctx)
-fn orsexpr(e, bound, ctx) = match e
-    Var(x)                  => if omem(x, bound) == 1 then 0 else if omem(x, ctx.fns) == 1 then 0 else if isctor(x) == 1 then 0 else if x == "true" or x == "false" then 0 else if omem(x, ctx.tynames) == 1 then 0 else if ais_hole_name(x) == 1 then 0 else ctfail("lume: name error [R0200]: undefined variable '" + x + "' (not bound by a parameter, let/var, match arm, shard, or scope in this function)\n")
-    Bin(op, l, r)           => let z = orsexpr(l, bound, ctx) in orsexpr(r, bound, ctx)
-    If(c, t, e2)            => let zc = orsexpr(c, bound, ctx) in let zt = orsexpr(t, bound, ctx) in orsexpr(e2, bound, ctx)
-    LetIn(nm, v, b)         => let z = orsexpr(v, bound, ctx) in orsexpr(b, Cons(nm, bound), ctx)
-    VarIn(nm, v, b)         => let z = orsexpr(v, bound, ctx) in orsexpr(b, Cons(nm, bound), ctx)
-    LambdaE(ps, tys, rt, b) => orsexpr(b, app(ps, bound), ctx)
-    Call(nm, args)          => if nm == "forall_range" or nm == "exists_range" then orsqargs(args, bound, ctx) else if omem(nm, bound) == 1 then orsargs(args, bound, ctx) else if orscallok(nm, ctx) == 1 then orsargs(args, bound, ctx) else ctfail("lume: name error [R0200]: call to undefined function '" + nm + "' (no visible definition in this bundle; fix-it: define '" + nm + "' or import the module providing it)\n")
-    Rec(items)              => orsrec(items, bound, ctx)
-    RecT(tn, items)         => orsrec(items, bound, ctx)
-    Field(o, fld)           => orsexpr(o, bound, ctx)
-    Match(sc, arms)         => let z = orsexpr(sc, bound, ctx) in orsarms(arms, bound, ctx)
-    OwnE(inner)             => orsexpr(inner, bound, ctx)
-    MutE(inner)             => orsexpr(inner, bound, ctx)
-    DeferE(c, b)            => let z = orsexpr(b, bound, ctx) in orsexpr(c, bound, ctx)
-    ErrDeferE(c, b)         => let z = orsexpr(b, bound, ctx) in orsexpr(c, bound, ctx)
-    WithAllocE(a, b)        => let z = orsexpr(a, bound, ctx) in orsexpr(b, bound, ctx)
-    WithHandlerE(en, hs, b) => let zh = orscheckops(hs, bound, ctx) in orsexpr(b, bound, ctx)
-    ScopeE(snm, b)          => orsexpr(b, Cons(snm, bound), ctx)
-    SpawnE(inner)           => orsexpr(inner, bound, ctx)
-    AwaitE(inner)           => orsexpr(inner, bound, ctx)
-    ShardE(vnm, lo, hi, b)  => let zlo = orsexpr(lo, bound, ctx) in let zhi = orsexpr(hi, bound, ctx) in orsexpr(b, Cons(vnm, bound), ctx)
-    CT(inner)               => 0
-    Quote(inner)            => orsexpr(inner, bound, ctx)
-    Splice(inner)           => orsexpr(inner, bound, ctx)
-    _                       => 0
-
-fn ocheck(prog) = if oany(prog) == 0 then orscheck(prog) else ocheckforce(prog)
-fn ocheckforce(prog0) = let z0 = orscheck(prog0) in let traits = t4_collect_traits(prog0) in let impls = t4_collect_impls(prog0) in let ztr = t4_chk_impls(impls, traits) in let prog_tr = if isnil(traits) == 1 then prog0 else t4_resolve_prog(prog0, traits, impls, tcollects(prog0), tcollectc(prog0)) in let zhm = if cl_has_lambda_prog(prog_tr) == 1 then (let p_hm = tcheck(prog_tr) in 1) else 0 in let prog = cl_convert_prog(prog_tr) in let raw_osigs = ocollects(prog) in let raw_fns0 = ocollectf(prog) in let grad_fns = n4_synth_grad_fns(n4_collect_grads_prog(prog, Nil), raw_fns0) in let prog1 = app(grad_fns, prog) in let raw_fns = ocollectf(prog1) in let osigs = oinfer_priv_osigs(raw_fns, raw_osigs) in let otypes = ocollectt(prog1) in let recs = tcollectr(prog1) in let sigs = tcollects(prog1) in let ksigs = kcollect_effsigs(prog1) in let edecls = kcollect_effdecls(prog1) in let caps = kcollect_caps(prog1) in let vsigs = vcollect_vsigs(prog1) in let invs = vcollect_invs(prog1) in let laws = vcollect_laws(prog1) in let wcets = vcollect_wcets(prog1) in let prog2 = afill_prog_holes(prog1, sigs, osigs, vsigs, laws, raw_fns) in let fns = ocollectf(prog2) in let ufns = ocollectfnms(prog2) in let z = ochkstmts(prog2, {osigs: osigs, otypes: otypes, recs: recs, sigs: sigs, fns: fns, ksigs: ksigs, edecls: edecls, caps: caps, vsigs: vsigs, invs: invs, laws: laws, wcets: wcets}, Nil) in olowerprog(prog2, ufns, osigs, {vsigs: vsigs, fns: fns})
+fn ocheck(prog) = let zcz = cz_prog(prog) in if oany(prog) == 0 and nf_has_fnval(nf_check(prog)) == 0 then orscheck(prog) else ocheckforce(prog)
+fn ocheckforce(prog0) = let z0 = orscheck(prog0) in let traits = t4_collect_traits(prog0) in let impls = t4_collect_impls(prog0) in let ztr = t4_chk_impls(impls, traits) in let prog_tr = if isnil(traits) == 1 then prog0 else t4_resolve_prog(prog0, traits, impls, tcollects(prog0), tcollectc(prog0)) in let zhm = if cl_has_lambda_prog(prog_tr) == 1 then (let p_hm = tcheck(prog_tr) in 1) else 0 in let prog = cl_convert_prog(prog_tr) in let raw_osigs = ocollects(prog) in let raw_fns0 = ocollectf(prog) in let grad_fns = n4_synth_grad_fns(n4_collect_grads_prog(prog, Nil), raw_fns0) in let prog1 = app(grad_fns, prog) in let raw_fns = ocollectf(prog1) in let osigs = oinfer_priv_osigs(raw_fns, raw_osigs) in let otypes = ocollectt(prog1) in let recs = tcollectr(prog1) in let sigs = tcollects(prog1) in let ksigs = kcollect_effsigs(prog1) in let edecls = kcollect_effdecls(prog1) in let caps = kcollect_caps(prog1) in let vsigs = vcollect_vsigs(prog1) in let invs = vcollect_invs(prog1) in let laws = vcollect_laws(prog1) in let wcets = vcollect_wcets(prog1) in let prog2 = afill_prog_holes(prog1, sigs, osigs, vsigs, laws, raw_fns) in let fns = ocollectf(prog2) in let ufns = ocollectfnms(prog2) in let z = ochkstmts(prog2, {osigs: osigs, otypes: otypes, recs: recs, sigs: sigs, fns: fns, ksigs: ksigs, edecls: edecls, caps: caps, vsigs: vsigs, invs: invs, laws: laws, wcets: wcets}, Nil) in olowerprog(prog2, ufns, osigs, {vsigs: vsigs, fns: fns, uniq: pu_unique(prog2, osigs)})

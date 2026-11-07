@@ -1,0 +1,85 @@
+## value_matrix_ok.src -- every operation over the boundary values of the value word, folded into one digest per group.
+## The values live in lists and reach the operators through parameters, so nothing is folded at compile time and every
+## inline fast path and its slow path run. The digests in value_matrix_ok.expected came from the compiler of round 5,
+## which kept every value in a cell: a line that changes is a change of meaning, not of representation.
+
+fn w_add(a, b) = if __lume_try_begin() == 0 then let r = a + b in let z = __lume_try_end() in str(r) else "E:" + __lume_try_msg()
+fn w_sub(a, b) = if __lume_try_begin() == 0 then let r = a - b in let z = __lume_try_end() in str(r) else "E:" + __lume_try_msg()
+fn w_mul(a, b) = if __lume_try_begin() == 0 then let r = a * b in let z = __lume_try_end() in str(r) else "E:" + __lume_try_msg()
+fn w_div(a, b) = if __lume_try_begin() == 0 then let r = a / b in let z = __lume_try_end() in str(r) else "E:" + __lume_try_msg()
+fn w_mod(a, b) = if __lume_try_begin() == 0 then let r = a % b in let z = __lume_try_end() in str(r) else "E:" + __lume_try_msg()
+fn w_wadd(a, b) = str(a +% b)
+fn w_wsub(a, b) = str(a -% b)
+fn w_wmul(a, b) = str(a *% b)
+fn w_cmp(a, b) = str(a < b) + str(a <= b) + str(a > b) + str(a >= b) + str(a == b) + str(a != b)
+fn w_bit(a, b) = str(bit_and(a, b)) + " " + str(bit_or(a, b)) + " " + str(bit_xor(a, b))
+fn w_cat(a, b) = a + b
+fn w_at(s, i) = if __lume_try_begin() == 0 then let r = str(ord(at(s, i))) + "/" + str(count(at(s, i))) in let z = __lume_try_end() in r else "E:" + __lume_try_msg()
+fn w_idx(s, i) = if __lume_try_begin() == 0 then let r = s[i] in let z = __lume_try_end() in "[" + r + "]" else "E:" + __lume_try_msg()
+fn w_toint(s) = if __lume_try_begin() == 0 then let r = toint(s) in let z = __lume_try_end() in str(r) else "E:" + __lume_try_msg()
+fn w_slice(s, a, b) = if __lume_try_begin() == 0 then let r = slice(s, a, b) in let z = __lume_try_end() in str(count(r)) + ":" + r else "E:" + __lume_try_msg()
+
+fn pat(v) = match v
+    0                    => "zero"
+    1                    => "one"
+    4611686018427387904  => "big"
+    9223372036854775807  => "max"
+    ""                   => "empty"
+    "abcdefg"            => "seven"
+    "abcdefgh"           => "eight"
+    Nil                  => "nil"
+    Cons(h, t)           => "cons"
+    _                    => "other"
+
+fn int_values() = [0, 1, 0 - 1, 2, 7, 1024, 1025, 0 - 2, 2147483647, 2147483648, 0 - 2147483648, 0 - 2147483649, 4294967296, 1152921504606846975, 2305843009213693951, 2305843009213693952, 4611686018427387902, 4611686018427387903, 4611686018427387904, 4611686018427387905, 0 - 4611686018427387903, 0 - 4611686018427387904, 0 - 4611686018427387905, 9223372036854775806, 9223372036854775807, 0 - 9223372036854775807, (0 - 9223372036854775807) - 1]
+fn str_values() = ["", "a", "b", "ab", "abc", "abcd", "abcdef", "abcdefg", "abcdefh", "abcdefgh", "abcdefgi", "abcdefghi", "abcdefghijklmno", "abcdefghijklmnop", "abcdefghijklmnopq", "é", "日本語", "日本語日本語", "1234567", "12345678", "-42", "9223372036854775807", "-9223372036854775808", " ", "\n"]
+fn index_values() = [0, 1, 6, 7, 8, 0 - 1, 100]
+fn stop_values() = [0, 3, 7, 8, 100, 0 - 1]
+
+## FNV-1a over the bytes of a result, plus one separator so that "ab","c" and "a","bc" differ
+fn mix_at(h, s, i, n) = if i >= n then bit_xor(h, 59) *% 1099511628211 else mix_at(bit_xor(h, ord(at(s, i))) *% 1099511628211, s, i + 1, n)
+fn mix(h, s) = mix_at(h, s, 0, count(s))
+fn seed() = 1469598103934665603
+
+fn opa(op, a, b) = if op == 0 then w_add(a, b) else if op == 1 then w_sub(a, b) else if op == 2 then w_mul(a, b) else if op == 3 then w_div(a, b) else if op == 4 then w_mod(a, b) else opb(op, a, b)
+fn opb(op, a, b) = if op == 5 then w_wadd(a, b) else if op == 6 then w_wsub(a, b) else if op == 7 then w_wmul(a, b) else if op == 8 then w_cmp(a, b) else if op == 9 then w_bit(a, b) else if op == 10 then w_cat(a, b) else if op == 11 then w_at(a, b) else w_idx(a, b)
+fn row(op, a, ys, j, h) = if j >= count(ys) then h else row(op, a, ys, j + 1, mix(h, opa(op, a, ys[j])))
+fn table(op, xs, ys, i, h) = if i >= count(xs) then h else table(op, xs, ys, i + 1, row(op, xs[i], ys, 0, h))
+fn group(name, op, xs, ys) = name + " " + str(table(op, xs, ys, 0, seed()))
+
+fn cut3(s, a, ys, j, h) = if j >= count(ys) then h else cut3(s, a, ys, j + 1, mix(h, w_slice(s, a, ys[j])))
+fn cut2(s, xs, i, h) = if i >= count(xs) then h else cut2(s, xs, i + 1, cut3(s, xs[i], stop_values(), 0, h))
+fn cut1(ss, i, h) = if i >= count(ss) then h else cut1(ss, i + 1, cut2(ss[i], index_values(), 0, h))
+
+fn one(op, v) = if op == 0 then str(v) else if op == 1 then pat(v) else if op == 2 then str(Cons(v, Nil) == Cons(v, Nil)) else if op == 3 then str({a: v, b: 0} == {b: 0, a: v}) else if op == 4 then str([v, 1][0] == v) else if op == 5 then str({a: v, b: v}.b == v) else if op == 6 then str(count(v)) else w_toint(v)
+fn each(op, xs, i, h) = if i >= count(xs) then h else each(op, xs, i + 1, mix(h, one(op, xs[i])))
+fn single(name, op, xs) = name + " " + str(each(op, xs, 0, seed()))
+
+print group("int_add", 0, int_values(), int_values())
+print group("int_sub", 1, int_values(), int_values())
+print group("int_mul", 2, int_values(), int_values())
+print group("int_div", 3, int_values(), int_values())
+print group("int_mod", 4, int_values(), int_values())
+print group("int_wrap_add", 5, int_values(), int_values())
+print group("int_wrap_sub", 6, int_values(), int_values())
+print group("int_wrap_mul", 7, int_values(), int_values())
+print group("int_compare", 8, int_values(), int_values())
+print group("int_bits", 9, int_values(), int_values())
+print single("int_show", 0, int_values())
+print single("int_match", 1, int_values())
+print single("int_in_cons", 2, int_values())
+print single("int_in_record", 3, int_values())
+print single("int_in_list", 4, int_values())
+print single("int_field", 5, int_values())
+print group("str_concat", 10, str_values(), str_values())
+print group("str_compare", 8, str_values(), str_values())
+print group("str_at", 11, str_values(), index_values())
+print group("str_index", 12, str_values(), index_values())
+print "str_slice " + str(cut1(str_values(), 0, seed()))
+print single("str_show", 0, str_values())
+print single("str_match", 1, str_values())
+print single("str_in_cons", 2, str_values())
+print single("str_in_record", 3, str_values())
+print single("str_field", 5, str_values())
+print single("str_count", 6, str_values())
+print single("str_toint", 7, str_values())

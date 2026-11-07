@@ -8,15 +8,13 @@
 ## user-function `rc_*`/`arc_*`/`weak_*` wrappers have been removed.
 ##
 ## Provides:
-##   - `cell[T]`: value-level interior mutability container backed by a shared slot (`cell_new`, `cell_get`, `cell_set`, `cell_writes`)
+##   - `cell[T]`: interior mutability container backed by one heap slot per cell (`cell_new`, `cell_get`, `cell_set`, `cell_writes`)
 ##   - `Arena`: deterministic bump/region allocator (`arena_new`, `arena_alloc`, `arena_used`, `arena_remaining`, `arena_reset`)
 
-fn cb_alloc(v, init_strong, init_weak, init_alive) = let base = hw_scratch_addr() in let idx = atomic_xadd64(base + 32, 1) in let cb = base + 64 + (idx % 240) * 32 in let w0 = mmio_volatile_write64(cb, init_strong) in let w1 = mmio_volatile_write64(cb + 8, init_weak) in let w2 = mmio_volatile_write64(cb + 16, init_alive) in let w3 = mmio_volatile_write64(cb + 24, v) in cb
-
-fn cell_new(v) = let cb = cb_alloc(v, 1, 0, 0) in {tier: "cell", cb: cb}
-fn cell_get(c) = mmio_volatile_read64(c.cb + 24)
-fn cell_writes(c) = mmio_volatile_read64(c.cb + 16)
-fn cell_set(c, v) = let wr = mmio_volatile_read64(c.cb + 16) in let w0 = mmio_volatile_write64(c.cb + 24, v) in let w1 = mmio_volatile_write64(c.cb + 16, wr + 1) in c
+fn cell_new(v) = {tier: "cell", cb: __lume_signal_new(v)}
+fn cell_get(c) = __lume_rc_get(c.cb)
+fn cell_writes(c) = __lume_signal_version(c.cb)
+fn cell_set(c, v) = let z = __lume_signal_set(c.cb, v) in c
 
 fn arena_new(cap) = {cap: cap, used: 0, allocs: 0}
 fn arena_used(a) = a.used
@@ -36,3 +34,12 @@ fn test_weak_upgrade_and_drop() = let r1: rc[int] = rc(77) in let w: weak[int] =
 fn test_cell_interior_mutability() = let c0 = cell_new(10) in let v_init = cell_get(c0) in let c1 = cell_set(c0, 25) in let c2 = cell_set(c1, cell_get(c0) + 5) in v_init == 10 and cell_get(c0) == 30 and cell_get(c2) == 30 and cell_writes(c0) == 2
 
 fn test_arena_bump_and_reset() = let a0 = arena_new(256) in let a1 = arena_alloc(a0, 64) in let a2 = arena_alloc(a1, 128) in let a3 = arena_reset(a2) in arena_used(a2) == 192 and arena_remaining(a2) == 64 and arena_allocs(a2) == 2 and arena_used(a3) == 0 and arena_remaining(a3) == 256
+
+## every cell is its own heap slot: a program with many live cells must not see them alias each other
+fn test_cell_many_live_cells_stay_distinct() = let cs = cell_mk(1000, Nil) in cell_sum(cs, 0) == 500500
+fn cell_mk(n, acc) = if n == 0 then acc else cell_mk(n - 1, Cons(cell_new(n), acc))
+fn cell_sum(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => cell_sum(t, acc + cell_get(h))
+
+fn test_cell_holds_any_value() = let c0 = cell_new("text") in let c1 = cell_set(c0, cell_get(c0) + "!") in cell_get(c1) == "text!"
