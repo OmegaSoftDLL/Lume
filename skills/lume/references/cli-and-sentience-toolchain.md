@@ -20,6 +20,7 @@
 | `lume fmt <file.lume\|.src>` | Canonical deterministic code formatter (`lfmt`) |
 | `lume test [dir]` | Run unit, conformance, and property tests |
 | `lume adapt c <header.h>` | Generate fail-closed Lume wrapper with contracts from a C header |
+| `lume pack <in> -o <out>` / `lume unpack <in> -o <out>` | Compress/decompress cold-arena & capsule blocks with the atomic `LZ1` codec (`64-bit` checksum) |
 | `lume lsp` / `lume dap` / `lume repl` | Start Language Server Protocol, Debug Adapter Protocol, or interactive REPL |
 | `lume self verify` | Verify all 101 installed toolchain files against `MANIFEST.sha256` |
 | `lume manual [en\|pt-br]` | Display the complete built-in Lume manual in English or Brazilian Portuguese |

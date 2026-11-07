@@ -213,26 +213,35 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Custom effects are declared with `effect Name { fn op(...) -> T }` and handled via
   `handle expr with { ... }`.
 
-## 5.2 Automatic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)
+## 5.2 Automatic Memory, 4-Tier Atomic Compactor, Zero-Heap SRA & Scoped Arenas (`std.arena`)
 Lume reclaims memory automatically: the native runtime has a non-moving mark-sweep collector that returns
 memory to the OS. The pause is proportional to the live heap, not to the garbage, and a program below 64 MiB
 never collects. `own`, borrows and `resource type` are compile-time rules and do not depend on the collector
-(`docs/38-memory-management.md`). On top of that:
-- The compiler also avoids heap work where it can prove it safe: Perceus reuse for provably unique values,
+(`docs/38-memory-management.md`, `docs/39-memory-saga-and-atomic-compactor-dossier.md`). On top of that:
+- The compiler avoids heap work where it can prove it safe: Perceus reuse for provably unique values,
   Escape Analysis & Scalar Replacement of Aggregates (`lsra_expr`: non-escaping
   `let r = {k1: v1, ...} in body` records are lowered directly into `%rbp` stack
-  slots `_sra_<r>_<k>` with 0 heap `mkrec`/`recget` allocations), small-integer
-  caching (`[-1..1024]`), self-tail-call `jmp`, and O(1) bump arenas.
+  slots `_sra_<r>_<k>` with 0 heap `mkrec`/`recget` allocations), self-tail-call `jmp`, and O(1) bump arenas.
+- **4-Tier Atomic Memory Compactor**:
+  - **Stage 0 (`.rodata` Static Unification):** String literals, constructor descriptors, record shapes, and zero-arity constructors (`Nil`, `None`) live in `.rodata` (`0 B` heap).
+  - **Level 1 (64-bit Tagged Register Word):** 63-bit signed integers (`...iiii1`) and `0..7`-byte inline SSO strings (`...ss|lll|010`) live inside a single 64-bit CPU register word (`0 B` heap); full 64-bit `int` semantics are preserved via a 16-byte overflow cell `[3][value]` for the 64th bit.
+  - **Level 2 (Compact Cells):** `Cons(h, t)` takes `24 B` (`8 B` descriptor + 2 words, down from `80 B`); a 3-field record takes `32 B` (`8 B` shape + 3 words, down from `160 B`).
+  - **Level 3 (Cold Arena Demand-Paged `LZ1` Compactor):** Cold arenas and `.lcaps`/`.lumb` artifacts compress with `LZ1` (`~355 MB/s` pack, `~975 MB/s` unpack) and thaw lazily per 4 KB page via `PROT_NONE` + `SIGSEGV` on first touch.
 - Builtins & `use arena`:
   - `let a = arena_new(65536)`   Create a scoped region arena
+  - `mem_pack(s)` / `mem_unpack(b)`   Compress/decompress cold data (`LZ1` block format with 64-bit checksum; corrupt input fails closed)
+  - `arena_freeze(a)` / `arena_thaw(a)` / `arena_compact(a)`   Compress an arena (`MADV_DONTNEED`); a frozen page thaws on first touch
+  - `arena_mark_secret(a)`, `@secret fn`   Secrets never reach the compactor (`[C0009]`); `@bound` rejects compaction (`[V0002]`)
   - `arena_reset(a)` / `arena_destroy(a)`
-  - `heap_stats()`               Query live heap allocations and bytes
+  - `heap_stats()` / `gc_collect()` / `gc_count()`   Query live heap stats and control GC
   - `lume run --memory <file.src>` Measure peak RSS memory in KB
+  - `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>`, `LUME_ARENA_COLD=<n>` Control heap & cold-arena compaction
 
 ## 5.3 Tamper-Evident E-Capsules (`std.capsule` & `lume capsule`)
-- Seal execution traces, inputs, outputs, and SHA-256 digests into reproducible capsules:
+- Seal execution traces, inputs, outputs, and SHA-256 digests into reproducible capsules (compressed with `LZ1`):
   - `lume capsule seal <source.src> -o <out.lcaps>`
   - `lume capsule replay <out.lcaps>`
+  - `lume pack <in> -o <out>` / `lume unpack <in> -o <out>`
 
 # CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULES
 
@@ -429,6 +438,7 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   lume diff-semver <old.src> <new.src>   Mathematical SemVer bump analyzer
   lume symbolize <file.lsym> <query>     P33 obfuscated symbol/address resolver
   lume capsule seal|replay <file>        Tamper-evident execution capsule V2
+  lume pack / lume unpack <in> -o <out>  LZ1 atomic cold-arena & capsule block compressor
   lume genesis <app_name> [domain]       Full-stack + 8-target autonomous app synthesizer
   lume heal <src.src>                    Counterexample-driven contract self-healer
   lume equiv <spec.src> <fast.src>       Formal algorithmic equivalence prover

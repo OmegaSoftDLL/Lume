@@ -203,25 +203,29 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 - Funcoes marcadas com `/ pure` sao matematicamente puras: nao podem acessar disco,
   rede, processos ou mutar estado externo. Qualquer violacao gera `[E0200]`.
 
-## 5.2 Memoria Automatica, SRA Zero-Heap e Arenas (`std.arena`)
+## 5.2 Memoria Automatica, Compactador Atomico em 4 Niveis, SRA Zero-Heap e Arenas (`std.arena`)
 A Lume recupera memoria sozinha: o runtime nativo tem um coletor mark-sweep nao movel que
 devolve memoria ao sistema. A pausa e proporcional ao heap vivo, nao ao lixo; um programa
 abaixo de 64 MiB nunca coleta. `own`, borrows e `resource type` sao regras de compilacao e nao
-dependem do coletor (`docs/38-memory-management.md`). Ele nao substitui as otimizacoes abaixo:
+dependem do coletor (`docs/38-memory-management.md`, `docs/LUME_MEMORY_SAGA_DOSSIER_PT_BR.md`). Ele nao substitui as otimizacoes abaixo:
 reuso estatico Perceus onde a unicidade e provada + Escape Analysis / Scalar Replacement of
 Aggregates (`lsra_expr`: registros locais `let r = {k1: v1, ...} in corpo` que nao escapam sao
 alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de heap) +
-cache de inteiros pequenos (`[-1..1024]`) + tail-call `jmp` + arenas regionais `O(1)`:
+**Compactador Atomico de Memoria em 4 Niveis** (Estagio 0: descritores e singletons `Nil`/`None` em `.rodata` com `0 B` de heap; Nivel 1: inteiros de 63 bits `...iiii1` e strings SSO de `0..7` bytes `...ss|lll|010` dentro da palavra de 64 bits do registrador com `0 B` de heap, preservando `int` de 64 bits; Nivel 2: celula `Cons` de `24 B` e registro de 3 campos de `32 B`; Nivel 3: arenas frias comprimidas com `LZ1` a `~355 MB/s` / `~975 MB/s` e descongelamento paginado sob demanda via `PROT_NONE` + `SIGSEGV`) + tail-call `jmp` + arenas regionais `O(1)`:
 - `let a = arena_new(65536)`   Cria uma arena de 64 KB
+- `mem_pack(s)` / `mem_unpack(b)`   Comprime/descomprime dados frios (`LZ1` com checksum de 64 bits; falha fechada se corrompido)
+- `arena_freeze(a)` / `arena_thaw(a)` / `arena_compact(a)`   Comprime arena (`MADV_DONTNEED`); pagina descongelada no primeiro toque
+- `arena_mark_secret(a)`, `@secret fn`   Segredos nunca chegam ao compactador (`[C0009]`); `@bound` rejeita compactacao (`[V0002]`)
 - `arena_reset(a)` / `arena_destroy(a)`
 - `heap_stats()`               Retorna estatisticas do heap em tempo real
 - `gc_collect()` / `gc_count()` Forca uma coleta / conta as coletas
 - `lume run --memory <arq.src>` Mede o pico de memoria fisica (RSS em KB)
-- `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>` Controlam o heap
+- `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>`, `LUME_ARENA_COLD=<n>` Controlam o heap e compactacao de arenas
 
 ## 5.3 E-Capsules Reprodutiveis (`std.capsule`)
-- `lume capsule seal <arq.src> -o <saida.lcaps>` Sela codigo, entradas, saidas e SHA-256.
+- `lume capsule seal <arq.src> -o <saida.lcaps>` Sela codigo, entradas, saidas e SHA-256 (comprimido com `LZ1`).
 - `lume capsule replay <saida.lcaps>`            Reproduz e audita a execucao selada.
+- `lume pack <in> -o <out>` / `lume unpack <in> -o <out>` Comprime/descomprime blocos `LZ1` pela CLI.
 
 # CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME
 
@@ -418,6 +422,7 @@ cache de inteiros pequenos (`[-1..1024]`) + tail-call `jmp` + arenas regionais `
   lume trace <src.src>                   Rastreamento estruturado de execucao em JSON
   lume diff-semver <antigo> <novo>       Calcula impacto SemVer (MAJOR/MINOR/PATCH)
   lume symbolize <arq.lsym> <consulta>   Desofusca simbolos e enderecos P33
+  lume pack / lume unpack <in> -o <out>  Compressor atomico de blocos LZ1 e capsulas
   lume genesis <nome_app> [dominio]      Sintetiza sistema full-stack para 8 alvos
   lume heal <src.src>                    Autocura contratos violados usando contraexemplos
   lume equiv <spec.src> <fast.src>       Prova equivalencia algoritmica e superotimiza

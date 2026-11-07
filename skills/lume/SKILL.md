@@ -7,7 +7,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 # Programming in Lume (v1.1.0)
 
-Lume is a **self-hosted, formally verified, zero-GC systems, AI, and quantum programming language** designed to be written seamlessly by both humans and AI agents. Every Lume program compiles directly to native machine code (`x86_64`, `aarch64`, `riscv64`, `wasm32-wasi`, bare-metal `.kernel` MBR/Long-Mode images, CUDA `PTX`, and Vulkan `SPIR-V`) with built-in **`QF_LIA` theorem proving** (`lume prove` and `lume certify`) at compile time.
+Lume is a **self-hosted, formally verified systems, AI, and quantum programming language** designed to be written seamlessly by both humans and AI agents. Every Lume program compiles directly to native machine code (`x86_64`, `aarch64`, `riscv64`, `wasm32-wasi`, `@freestanding` zero-GC bare-metal `.kernel` MBR/Long-Mode images, CUDA `PTX`, and Vulkan `SPIR-V`) with built-in **`QF_LIA` theorem proving** (`lume prove` and `lume certify`) at compile time, a single-source segregated Mark & Lazy-Sweep GC (`compiler/stage1/runtime_core.lume`), and the **4-Tier Atomic Memory Compactor** (`docs/39-memory-saga-and-atomic-compactor-dossier.md`).
 
 ---
 
@@ -70,19 +70,25 @@ print f"Verified fee: {clamp_fee(250, 10, 100)}"
 
 > **Critical Rules When Writing Lume (`.src` / `.lume`):**
 > 1. **Comments:** Always use `#` or `##` for line comments (never `//`).
-> 2. **Logical Operators in Contracts:** Use `and`, `or`, `not` (`not` binds looser than `==`/`<`, so `not 1 == 2` is `not (1 == 2)`) in `requires`, `ensures`, and `law`.
-> 3. **Conditional & List Expressions:** Both `if cond then a else b` and braced `if cond { a } else { b }` are supported; list literals `[]` (`Nil`) and `[1, 2, 3]` (`Cons` chains, `count([1, 2, 3]) == 3`) work directly in `.src`.
-> 4. **Pattern Matching & String Interpolation:** `match` works at top level, nested in `let`/`if`, call arguments, record fields, and `match` arms (or braced `match x { Pat => body, ... }`). Raw JSON strings `"{\"a\":{\"b\":1}}"` are preserved; escape literal interpolation braces with `"\{x}"`, `"{{x}}"`, or `"cost: \${x}"`.
+> 2. **Logical & Checked Arithmetic Operators:** Use `and`, `or`, `not` (`not` binds looser than `==`/`<`, so `not 1 == 2` is `not (1 == 2)`) in `requires`, `ensures`, and `law`. Signed 64-bit `+`, `-`, `*` trap on overflow (exit 3, `jo __rt_ovf`); use `+%`, `-%`, `*%` when 2's-complement wrapping is intended.
+> 3. **Conditional, List & Indexing Expressions:** Both `if cond then a else b` and braced `if cond { a } else { b }` are supported; list literals `[]` (`Nil`) and `[1, 2, 3]` (`Cons` chains, `count([1, 2, 3]) == 3`) and postfix indexing `xs[i]` (on lists and strings; out-of-range traps with exit 3, whereas `at(s, i)` returns `""` past the end) work directly in `.src`.
+> 4. **Pattern Matching & String Interpolation:** `match` works at top level, nested in `let`/`if`, call arguments, record fields, and `match` arms (or braced `match x { Pat => body, ... }`). Non-exhaustive `match` on a declared `enum` is rejected with `[T1002]`. Raw JSON strings `"{\"a\":{\"b\":1}}"` are preserved; escape literal interpolation braces with `"\{x}"`, `"{{x}}"`, or `"cost: \${x}"`.
 > 5. **Pure LF (`\n`) Line Endings:** Always save `.src`, `.lume`, `.expected`, and `.sh` files with pure `LF (\n)`, never `CRLF (\r\n)`, and never edit generated `compiler/stage1/lumec.src` directly (`make amalgamate`).
 
-### 2.1 Stage-1 `.src` Builtins, Implication Idiom & Parameter Invariants
+### 2.1 Stage-1 `.src` Builtins, 4-Tier Atomic Memory Compactor & Invariants
 
 - **Core Builtins:**
-  - Strings & Collections: `count(s_or_list)`, `at(s, i)`, `slice(s, start, end)`, `ord(ch)`, `chr(code)`, `toint(s)`, `str(v)`
+  - Strings & Collections: `count(s_or_list)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, len, start, end)`, `ord(ch)`, `chr(code)`, `toint(s)`, `str(v)`
   - Filesystem & OS Process Execution: `fs_read_file(path)`, `fs_write_file(path, data)`, `fs_write_sync(path, data)`, `fs_path_exists(path)`, `fs_read_byte(path, offset)`, `os_run(cmd, args)`, `os_getenv(name)`, `os_argc()`, `os_argv(i)`
+  - Memory, GC & Atomic Compactor (`use arena`): `arena_new(cap)`, `arena_reset(a)`, `arena_destroy(a)`, `mem_pack(s)`, `mem_unpack(b)`, `arena_freeze(a)`, `arena_thaw(a)`, `arena_compact(a)`, `arena_mark_secret(a)`, `heap_stats()`, `heap_peak_used()`, `gc_collect()`, `gc_count()`, CLI `lume pack <in> -o <out>` / `lume unpack <in> -o <out>`
+- **4-Tier Atomic Memory Compactor (`docs/39-memory-saga-and-atomic-compactor-dossier.md`):**
+  - **Stage 0 (`.rodata`):** String literals, constructor descriptors, record shapes, and zero-arity constructors (`Nil`, `None` = `0 B` heap) live in `.rodata`.
+  - **Level 1 (64-Bit Tagged Register Word):** 63-bit signed integers (`...iiii1`) and `0..7`-byte inline SSO strings (`...ss|lll|010`) live inside a single 64-bit CPU register word (`0 B` heap, beating Rust's 24-byte + heap `String`), while full 64-bit `int` semantics are preserved via a 16-byte overflow cell `[3][value]`.
+  - **Level 2 (Compact Cells):** `Cons(h, t)` is `24 B` (down from `80 B`); a 3-field record is `32 B` (down from `160 B`).
+  - **Level 3 (Cold Arena Demand-Paged `LZ1` Compactor):** `mem_pack` (`~355 MB/s`) and `mem_unpack` (`~975 MB/s`) compress cold arenas (`arena_freeze`, `LUME_ARENA_COLD=<n>`) and `.lcaps`/`.lumb` bundles with a 64-bit checksum and lazy per-page `PROT_NONE` + `SIGSEGV` thaw on first touch (`@secret` `[C0009]` and `@bound` `[V0002]` fail closed).
 - **Implication Idiom in `law`:** Express logical implication $P \implies Q$ inside `law` declarations using `if P then Q else 1 == 1`, which reduces directly to decidable branches in both `lcaas.src` and the independent proof kernel `lcert.src` (which also verifies compound `terminates` obligations via `lk_prove_term_cond` and NIST FIPS 180-4 SHA-256 KAT).
 - **Decidable `QF_LIA` vs. `runtime_checked`:** Linear integer arithmetic (`a + b`, `a - b`, `c * x` with constant integer `c`) is proven statically at compile time by `lcaas` and verified by `lcert`. Non-linear variable multiplication (`x * y`) falls outside pure `QF_LIA` and is marked `runtime_checked` unless bounded within the degree-2 Positivstellensatz `QF_NIA` fragment (`x >= 0 and y >= 0`).
-- **Arbitrary Function Arity & O(1)-Stack Structural Equality:** Functions support any number of parameters (`1..6` in SysV AMD64 registers `%rdi..%r9`, `7+` on the stack with swap-safe self-tail-call optimization `jmp`), and `==`/`!=` uses an explicit heap worklist (`O(1)` native stack) on arbitrarily deep lists, ADTs, and records.
+- **Arbitrary Function Arity, First-Class Functions & O(1)-Stack Structural Equality:** Functions and closures support any number of parameters (`1..6` in SysV AMD64 registers `%rdi..%r9`, `7+` on the stack with swap-safe self-tail-call optimization `jmp`), named functions are first-class values, and `==`/`!=` uses an explicit heap worklist (`O(1)` native stack) on arbitrarily deep lists, ADTs, and records.
 - **Unit Test Convention:** Any zero-argument function named `fn test_<name>() = <bool_expr>` is automatically discovered and executed by `lume test <file.src>`.
 
 ---
