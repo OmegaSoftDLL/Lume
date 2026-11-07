@@ -12,7 +12,7 @@
 [![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](docs/26-targets.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
-[**Installation**](#installation) · [**Quickstart**](#quickstart) · [**Technical Paper (`v1.0.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
+[**Installation**](#installation) · [**Quickstart**](#quickstart) · [**Memory Saga & Atomic Compactor (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.0.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
 
 <br/>
 
@@ -30,6 +30,42 @@
 - **Sound Compile-Time Verification (`QF_LIA`, `QF_NIA`, `QF_BV`, Separation Logic):** Built-in Fourier-Motzkin linear integer arithmetic solver with cutting-plane tightening, nonlinear Positivstellensatz and shifted bilinear monotonicity, bitvector verification, Separation Logic heap frame reasoning, `[K0005]` W^X DMA protection, `[K0006]` kernel stack bounds, `[C0009]` constant-time cryptographic side-channel analysis, and standalone certificate checking via `lcert`.
 - **Expressive Functional & Systems Ergonomics:** Combines affine ownership (`own`, `mut`, region-tracked borrows, Perceus in-place reuse, and scoped bump arenas) with layout-sensitive or braced pattern matching, `f"...{expr}..."` string interpolation, left-associative `|>` pipe operators, `{ record with field: value }` functional updates, top-level `const` declarations, and tuple/record/ADT destructuring.
 - **24/24 Acceptance Matrix (`0 UNKNOWN`, `0 FAIL`) & 14 Embedded Verification Batteries (`lume self-prove`):** Every subsystem — including B+Tree ACID WAL storage, RFC 8446 TLS 1.3, X11/Web GUI, industrial telemetry (`Modbus`, `DNP3`, `IEC 60870-5-104`, `IEC 61850`, `ANSI` protection relays), 2D/3D software rendering, differentiable tensor/GPU kernels, quantum circuit synthesis (`OpenQASM 3.0`, `QIR`, `Quil`, `IQM`, `Stim`), and the freestanding `lume-os` microkernel — is verified continuously in CI.
+
+---
+
+## Memory Saga & 4-Tier Atomic Memory Compactor Evolution
+
+<div align="center">
+
+![Lume Memory Saga & 4-Tier Atomic Memory Compactor Evolution](docs/assets/lume-memory-evolution-animated.svg)
+
+📄 **[Read the Complete Benchmark & Architecture Dossier (English)](docs/39-memory-saga-and-atomic-compactor-dossier.md)** · 🇧🇷 **[Ler o Dossiê Completo da Saga da Memória (Português `pt-BR`)](docs/LUME_MEMORY_SAGA_DOSSIER_PT_BR.md)** · ⚙️ **[Runtime & Collector Spec](docs/38-memory-management.md)**
+
+</div>
+
+Lume's native x86-64 runtime ([`compiler/stage1/runtime_core.lume`](compiler/stage1/runtime_core.lume)) combines a **43-size-class segregated Mark & Lazy-Sweep Collector** (`MADV_DONTNEED` physical page release), **Rust-grade Ownership v2 & proven-unique Perceus reuse** ([`compiler/stage1/own_flow.src`](compiler/stage1/own_flow.src)), and a **4-Tier Atomic Memory Compactor**:
+
+1. **Stage 0 — Content-Addressed `.rodata` Literals & Zero-Arity Singletons:** Deduplicated immutable string literals, constructor descriptors, and shared `Nil`/`None` singletons (`0 B` heap cost, eliminating `285 MB` of repeated `mkstr` allocations during self-compilation).
+2. **Level 1 — 64-Bit Tagged Register Word (`0–1` Cycle Pack/Unpack):**
+   - `...iiii1`: 63-bit signed integers unboxed directly inside the 64-bit register word (`0 B` heap; values using the 64th bit transparently spill to a `16 B` cell, and overflow past 64 bits traps via hardware `jo __rt_ovf`).
+   - `...ss|lll|010`: Short strings up to **7 UTF-8 bytes (`at`, `chr`, identifiers, tokens) packed inline inside the 64-bit word (`0 B` heap)** — outperforming Rust's `String` (`24 B` + heap allocation) and eliminating `74.9%–94.9%` of dynamic short string allocations.
+3. **Level 2 — Compact ADT Cells & Shared-Shape Records:** `Cons(int, tail)` shrunk from `80 B` to **`24 B`** (`-70%`); 3-field records shrunk from `160 B` to **`32 B`** (`-80%`) with interned field keys (`cmpq` pointer equality instead of `streq`).
+4. **Level 3 — Cold Arena Demand-Paged `LZ1` Compactor (`mem_pack`, `arena_freeze`, `.lcaps`/`.lumb`):** Compresses cold arenas and bytecode/capsule blobs at **`~355 MB/s` pack / `~975 MB/s` unpack** with a 64-bit integrity checksum (verified against `1,500` corrupted fuzz blobs), **transparent lazy page thaw on first touch (`PROT_NONE` + `SIGSEGV` page restoration)**, and fail-closed rejection on `@secret` data (`[C0009]` *Decomp+Time* defense) and `@bound` WCET functions (`[V0002]`).
+
+### Complete 3-Generation Benchmark Evolution Matrix (Intel Core Ultra 5 135U, WSL2 x86-64)
+
+| Workload / Benchmark | Gen 1: Baseline (Pre-R5) | Gen 2: Round 5 (Mark-Sweep GC + Ownership v2) | **Gen 3: Round 6 (4-Tier Atomic Compactor)** | Speedup & Allocation Collapse | Total RAM Reduction |
+| :--- | :---: | :---: | :---: | :--- | :--- |
+| **Integer Loop (`b_loop`, 100M iters)** | `~4,800 MB` (unbounded) | `2,796 ms` · `68 MB` (`200M` allocs) | **`88 ms` · `0.39 MB` (`1` alloc!)** | **`31.8×` faster · `200,000,000×` fewer allocs** | **`174×` less RAM vs. R5 (`-99.4%`)** |
+| **Full Bootstrap from C Seed** | `194.8 s` · `12,700 MB` | `200.0 s` · `2,500 MB` | **`22.0 s` · `537 MB`** | **`9.0×` faster full chain** | **`23.6×` less RAM (`-95.8%`)** |
+| **Stage-0 C Seed $\rightarrow$ `lumec.src`** | `102.0 s` · `12,500 MB` | `5.5 s` · `472 MB` | **`5.5 s` · `472 MB`** | **`18.5×` faster** | **`26.5×` less RAM (`-96.2%`)** |
+| **`lumec` Self-Compile (`stage2 == stage3`)** | `1,820 ms` · `1,165 MB` | `1,908 ms` · `228 MB` | **`445 ms` · `115 MB`** | **`4.3×` faster · ELF `-34%` (`1.01 MB`)** | **`10.1×` less RAM (`-90.1%`)** |
+| **Records (`b_rec`, 20M 3-field recs)** | `~6,000 MB` (unbounded) | `3,270 ms` · `67 MB` (`240M` allocs) | **`429 ms` · `66 MB` (`20M` allocs)** | **`7.6×` faster · `12×` fewer allocs** | **Bounded by 64 MiB GC pacing** |
+| **ADT Pattern Match (`b_match`, 20M)** | Unbounded | `1,617 ms` · `72 MB` (`80M` allocs) | **`235 ms` · `68 MB` (`20M` allocs)** | **`6.9×` faster · `4×` fewer allocs** | **Bounded by 64 MiB GC pacing** |
+| **Linked Lists (`b_list`, 30 × 1M `Cons`)** | Unbounded | `2,747 ms` · `239 MB` (`180M` allocs) | **`480 ms` · `67 MB` (`30M` allocs)** | **`5.7×` faster · `6×` fewer allocs** | **`3.6×` less RAM vs. R5 (`-72%`)** |
+| **String Workload (`b_str`)** | `5,090 ms` · `6,013 MB` | `679 ms` · `74 MB` (`42.6M` allocs) | **`131 ms` · `2.2 MB` (`17` allocs!)** | **`5.2×` faster vs. R5 (`38.8×` vs. Gen 1)** | **`2,733×` less RAM (`-99.96%`)** |
+| **Recursive `fib(38)` (`b_fib`)** | `1,190 ms` | `1,042 ms` | **`273 ms`** | **`3.8×` faster vs. R5 (`4.4×` vs. Gen 1)** | **`0 B` heap** |
+| **Full 410-Test Verification Suite** | `> 600 s` · `12,700 MB` | `529 s` · `2,490 MB` (`404` tests) | **`136 s` · `537 MB` (`410/410` pass)** | **`3.9×` faster (`410/410`, `0` fail)** | **`23.6×` less RAM (`-95.8%`)** |
 
 ---
 
