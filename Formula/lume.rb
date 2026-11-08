@@ -7,20 +7,20 @@ class Lume < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-aarch64.tar.gz"
-      sha256 "dac9b2ca3c4600ddf8038ce58d3be6738bf43224ec25d0799a2d2cc24cf52690"
+      sha256 "f29c4c9db512edf2c1cdafd7a9bcc785e4117284b58935d3a23cfea26fbf7467"
     else
       url "https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-x86_64.tar.gz"
-      sha256 "4ed9a6735a44cd27d5265bc6ab03c89e73ebc43157681e6b3daa16cf10f79850"
+      sha256 "403e38ef2061cd79a51872bc14c8705a517a981f50f9f73a7f61ac75608f817f"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-aarch64.tar.gz"
-      sha256 "c51837604c80146be173051858ad7a718c1c2d2ffba9c8f70e058ffa88df14e6"
+      sha256 "3373aeb0a1b85a0c321a581b319e5693285c702b26dcd5547ec22d95a7a6ee98"
     else
       url "https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-x86_64.tar.gz"
-      sha256 "2eb32f51438b1b71acc8ee5377b760a5296ecd6aaabbf53e929e7e151805b759"
+      sha256 "c94ecff85c995343b7a436e3970fb54abfd502539f0e39af5f870debe0c4749b"
     end
   end
 
