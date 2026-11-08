@@ -1,7 +1,16 @@
-# Contributing to Lume
+<h1>
+  <img src="docs/assets/lume-mascot-badge.svg" alt="Lumi — Official Lume Chameleon Mascot" width="72" height="72" align="left" />
+  Contributing to Lume
+</h1>
+
+<br clear="left"/>
 
 Thank you for helping build Lume. Contributions of code, tests, documentation,
-bug reports, and design proposals are welcome.
+bug reports, and [LumeLabs design proposals (`LUMELABS.md`)](LUMELABS.md) are welcome.
+
+- **Community Hub & Working Groups:** [`COMMUNITY.md`](COMMUNITY.md) · [GitHub Discussions](https://github.com/OmegaSoftDLL/lume/discussions)
+- **Projects & Roadmap Board:** [`PROJECTS.md`](PROJECTS.md)
+- **Support & Compiler Oracle:** [`SUPPORT.md`](SUPPORT.md)
 
 ## Before you start
 

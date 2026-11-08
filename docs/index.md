@@ -1,6 +1,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="512x512" href="favicon.png" />
 <link rel="alternate icon" type="image/x-icon" href="favicon.ico" />
-<link rel="apple-touch-icon" href="assets/lume-icon.jpg" />
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
 
 <h1>
   <img src="assets/lume-mascot-badge.svg" alt="Lumi — Official Lume Chameleon Mascot" width="84" height="84" align="left" />
@@ -10,6 +11,8 @@
 **Written by AI &amp; Humans · Mathematically Proven by Compiler (`QF_LIA` / `QF_NIA` / `lcert`) · 9-Ecosystem Chameleon Polyglot FFI · 100% Self-Hosted Zero-C Steady State (`stage2 == stage3`)**
 
 <br clear="left"/>
+
+[**Install**](#official-installation-v110--linux-macos--windows) · [**Quickstart**](#30-second-quickstart--built-in-manual) · [**LumeLabs (`LUMELABS.md`)**](LUMELABS.md) · [**Projects & Roadmap (`PROJECTS.md`)**](PROJECTS.md) · [**Community (`COMMUNITY.md`)**](COMMUNITY.md) · [**Wiki**](https://github.com/OmegaSoftDLL/lume/wiki) · [**GitHub Discussions**](https://github.com/OmegaSoftDLL/lume/discussions) · [**Manual (`EN`)**](LUME_MANUAL_EN.md) · [**Manual (`PT-BR`)**](LUME_MANUAL_PT_BR.md) · [**Audit Report (`85/85`)**](LUME_REMEDIATION_AND_REDTEAM_REPORT.md)
 
 ![Lume v1.1.0 Live Programming, Formal Verification & 27-Target Native Compilation](assets/lume-hero-animated.svg)
 

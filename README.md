@@ -15,10 +15,13 @@
 [![Acceptance Matrix](https://img.shields.io/badge/acceptance%20matrix-24%2F24%20PASS-brightgreen)](docs/acceptance-matrix.md)
 [![Red Team & Claude Audit](https://img.shields.io/badge/Claude%20%2B%20Red%20Team%20Audit-85%2F85%20Remediated-brightgreen)](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md)
 [![Chameleon Polyglot](https://img.shields.io/badge/chameleon%20polyglot-9%20ecosystems%20%5BI0003%5D-00d2ff)](#universal-chameleon-polyglot-interop-engine-9-ecosystems)
+[![LumeLabs R&D](https://img.shields.io/badge/LumeLabs-7%20R%26D%20Divisions-8b5cf6)](LUMELABS.md)
+[![Projects & Roadmap](https://img.shields.io/badge/projects-v1.1.0%20Board-10b981)](PROJECTS.md)
+[![Community & Discussions](https://img.shields.io/badge/community-EN%20%26%20PT--BR-38bdf8)](COMMUNITY.md)
 [![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](docs/26-targets.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
-[**Installation**](#installation--terminal-setup-lume-command) · [**Quickstart**](#quickstart) · [**Chameleon Polyglot (`9` Ecosystems)**](#universal-chameleon-polyglot-interop-engine-9-ecosystems) · [**Claude & Red Team Audit (`EN` / `PT-BR`)**](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md) · [**Memory Saga (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.1.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
+[**Installation**](#installation--terminal-setup-lume-command) · [**Quickstart**](#quickstart) · [**LumeLabs (`LUMELABS.md`)**](LUMELABS.md) · [**Projects & Roadmap (`PROJECTS.md`)**](PROJECTS.md) · [**Community (`COMMUNITY.md`)**](COMMUNITY.md) · [**Wiki**](https://github.com/OmegaSoftDLL/lume/wiki) · [**Discussions**](https://github.com/OmegaSoftDLL/lume/discussions) · [**Chameleon Polyglot (`9` Ecosystems)**](#universal-chameleon-polyglot-interop-engine-9-ecosystems) · [**Claude & Red Team Audit (`EN` / `PT-BR`)**](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md) · [**Memory Saga (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.1.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
 
 <br/>
 
