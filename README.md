@@ -1,25 +1,28 @@
+<h1>
+  <img src="docs/assets/lume-mascot-badge.svg" alt="Lumi — Official Lume Chameleon Mascot" width="84" height="84" align="left" />
+  Lume — Sovereign Systems, AI &amp; Quantum Programming Language
+</h1>
+
+**Mathematically Proven by Compiler (`QF_LIA` / `QF_NIA` / `lcert`) · Self-Hosted Zero-C Steady State (`stage2 == stage3`) · 9-Ecosystem Chameleon Polyglot FFI · 27 Target Architectures**
+
+<br clear="left"/>
+
 <div align="center">
-
-# Lume
-
-### **Self-Hosted, Formally Verified Systems, AI, and Quantum Programming Language**
-*Mathematically Proven by Compiler · Self-Hosted Zero-C Steady State (`stage2 == stage3`) · 27 Target Architectures*
 
 [![CI](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml/badge.svg)](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/release-v1.1.0-blue)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0)
 [![Zero-C Steady State](https://img.shields.io/badge/steady--state-100%25%20Lume%20%28Zero--C%29-success)](docs/PROJECT_STATE.md)
 [![Acceptance Matrix](https://img.shields.io/badge/acceptance%20matrix-24%2F24%20PASS-brightgreen)](docs/acceptance-matrix.md)
 [![Red Team & Claude Audit](https://img.shields.io/badge/Claude%20%2B%20Red%20Team%20Audit-85%2F85%20Remediated-brightgreen)](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md)
+[![Chameleon Polyglot](https://img.shields.io/badge/chameleon%20polyglot-9%20ecosystems%20%5BI0003%5D-00d2ff)](#universal-chameleon-polyglot-interop-engine-9-ecosystems)
 [![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](docs/26-targets.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
-[**Installation**](#installation--terminal-setup-lume-command) · [**Quickstart**](#quickstart) · [**Claude & Red Team Audit (`EN` / `PT-BR`)**](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md) · [**Memory Saga (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.1.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
+[**Installation**](#installation--terminal-setup-lume-command) · [**Quickstart**](#quickstart) · [**Chameleon Polyglot (`9` Ecosystems)**](#universal-chameleon-polyglot-interop-engine-9-ecosystems) · [**Claude & Red Team Audit (`EN` / `PT-BR`)**](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md) · [**Memory Saga (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.1.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Language Ergonomics**](#language-ergonomics--core-syntax) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**Architecture & Verification**](#architecture--verification-matrix) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
 
 <br/>
 
 ![Lume v1.1.0 Live Programming, Formal Verification & 27-Target Native Compilation](docs/assets/lume-hero-animated.svg)
-
-<p align="center"><img src="docs/assets/lume-mascot.jpg" alt="Lumi — Official Lume Sovereign Mascot" width="420"></p>
 
 </div>
 
@@ -228,7 +231,9 @@ lume manual --pt                 # Indice completo em Portugues (pt-BR)
 lume manual syntax               # Chapter 2: Syntax & Language Ergonomics
 lume manual --pt sintaxe         # Capitulo 2: Sintaxe e Ergonomia
 lume manual contracts            # Chapter 4: Formal Verification (QF_LIA / QF_NIA)
-lume manual stdlib               # Chapter 6: Standard Library & Domain Engines
+lume manual stdlib               # Chapter 6: Standard Library & Domain Engines (including 6.2.1 Chameleon)
+lume manual chameleon            # Jump directly to Universal Chameleon Polyglot Interop Engine (EN)
+lume manual --pt camaleao        # Ir direto ao Motor Universal Camaleao Poliglota (pt-BR)
 lume manual targets              # Chapter 7: 27 Universal Targets & Packagers
 lume manual commands             # Chapter 8: Complete CLI Reference
 lume manual all                  # Full 10-chapter manual
@@ -238,6 +243,41 @@ lume manual --export MANUAL.md   # Export full Markdown manual to disk
 Pre-exported manuals in the repository:
 - **English Manual:** [`docs/LUME_MANUAL_EN.md`](docs/LUME_MANUAL_EN.md)
 - **Portuguese Manual (`pt-BR`):** [`docs/LUME_MANUAL_PT_BR.md`](docs/LUME_MANUAL_PT_BR.md)
+
+---
+
+## Universal Chameleon Polyglot Interop Engine (9 Ecosystems)
+
+<div align="center">
+
+![Lume Universal Chameleon Polyglot Interop Engine — 9 Verified Ecosystems](docs/assets/lume-chameleon-showcase.svg)
+
+</div>
+
+Just as **Lumi (Lume's Bioluminescent Crystal Chameleon mascot)** adapts to any environment while preserving its mathematical core, **`compiler/stage1/lchameleon.src`** (`28/28` proven `QF_LIA` obligations, `8/8` unit tests, `Lume Verified ✓`) allows Lume to interoperate with, wrap, or transpile from **9 major language ecosystems** without sacrificing memory safety or proof soundness. Every foreign value enters Lume as an untrusted `unverified[T]` handle inside the `/ {ffi}` capability effect and must pass a fail-closed **`[I0003]` `QF_LIA` refinement guard** before promotion to `verified[T]`:
+
+| Ecosystem ID | Target Language & Runtime ABI | `[I0003]` Formal Boundary Guard & Zero-Copy Mechanism | CLI Command |
+| :--- | :--- | :--- | :--- |
+| **`c_abi`** | **C / C++ (`System V AMD64` / `Win64` / `AAPCS64`)** | `@repr(c)` layout + `ptr != 0`, `align_ok == 1`, `len >= 0 && len <= cap` | `lume adapt c <header.h>` |
+| **`rust_cdylib`** | **Rust (`Cargo cdylib` / `#[repr(C)]` / `extern "C"`)** | Affine `own` / `&T` Perceus lifetime parity (`panic = "abort"` boundary) | `lume adapt rust <lib.rs>` |
+| **`python_capi`** | **Python 3.12+ (`PyObject*` / `ctypes` / `DLPack`)** | `Py_IncRef`/`Py_DecRef` balance + **DLPack zero-copy `NDArray` tensor bridge** (`shape_dim >= 1`) | `lume adapt python <mod.py>` |
+| **`node_napi_wasm`** | **Node.js / TypeScript (`N-API v9` & `WASM32`)** | Linear memory page guard (`offset + len <= wasm_pages * 65536`, `[I0275]`) | `lume adapt js <index.d.ts>` |
+| **`go_cshared`** | **Go (`-buildmode=c-shared` / `cgo`)** | `runtime.Pinner` verification (no unpinned Go heap pointers across FFI) | `lume adapt go <pkg.go>` |
+| **`java_jni`** | **Java / Kotlin (`JNIEnv*` & `JDK 22+ Panama FFM`)** | `PushLocalFrame`/`PopLocalFrame` capacity guard + `MemorySegment` bounds | `lume adapt java <Api.java>` |
+| **`dotnet_pinvoke`** | **C# / .NET 8+ (`P/Invoke` & `NativeAOT`)** | `fixed` / `GCHandle.Alloc(Pinned)` blittable struct layout verification | `lume adapt dotnet <Api.cs>` |
+| **`sql_relational`** | **SQL (`PostgreSQL` / `SQLite` / `DuckDB` DDL & DML)** | Schema-to-`table[T]` lifting with `decimal` precision & ACID WAL invariants | `lume adapt sql <schema.sql>` |
+| **`openapi_rpc`** | **OpenAPI 3.1 / JSON-Schema / gRPC Protobuf** | RFC 8446 TLS 1.3 transport + bounded payload length (`0 < body <= max_bytes`) | `lume adapt openapi <api.yaml>` |
+
+```sh
+lume chameleon                         # List all 9 verified polyglot ecosystems & [I0003] status
+lume chameleon python                  # Inspect Python C-API + DLPack zero-copy tensor bridge
+lume camaleao rust                     # Alias in Portuguese (pt-BR) for Rust cdylib bridge
+lume polyglot                          # Alias for lume chameleon
+lume ffi-bridge                        # Alias for lume chameleon
+lume adapt <eco> [file]                # Generate [I0003] fail-closed Lume-Core adapter for <c|rust|python|js|go|java|dotnet|sql|openapi>
+lume morph <legacy_file>               # Transpile C/Python/JS/Rust/Go/SQL into verified Lume-Core (.src)
+lume repl                              # Interactive REPL (:chameleon and :camaleao commands)
+```
 
 ---
 

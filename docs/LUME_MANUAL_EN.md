@@ -23,10 +23,10 @@ hardware/OS targets without a C toolchain, and inspected interactively.
   3. types      (tipos)        Primitives, Records, ADTs, Ownership, Decimal, Money, Tensor
   4. contracts  (contratos)    Formal Verification (requires, ensures, law, QF_LIA, WCET)
   5. effects    (efeitos)      Algebraic Effects (/ pure), Scoped Arenas & E-Capsules
-  6. stdlib     (biblioteca)   Standard Library & Sovereign Modules (fs, db, net, gui, nn...)
+  6. stdlib     (biblioteca)   Standard Library & Sovereign Modules (`lume manual chameleon`)
   7. targets    (alvos)        27 Universal Targets, MIR SSA, APK/IPA/ISO/UEFI & Silicon RTL
-  8. commands   (comandos)     Full CLI Reference across Phases 1-5 & Waves 1-10
-  9. examples   (exemplos)     6 Copy-Paste Working Programs for Humans & AI
+  8. commands   (comandos)     Full CLI Reference across Phases 1-5 & Waves 1-10 (`lume chameleon`)
+  9. examples   (exemplos)     6 Copy-Paste Working Programs + Example 7 (`chameleon_demo.src`)
  10. errors     (erros)        Diagnostic Error Codes ([P0002]..[W0002]) & How to Fix Them
 
 # CHAPTER 1: OVERVIEW & QUICKSTART (ARCHITECTURE & WORKFLOW)
@@ -363,8 +363,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        `Google Stim` Gottesman-Knill $O(n^2)$ Stabilizer Tableau Simulator (`GHZ_8`), Rotated
                        Surface Code `[[9, 1, 3]]` Topological QEC (`27/27` Pauli errors corrected), and
                        `PennyLane/Catalyst` Exact Parameter-Shift VQE
-- `use lchameleon`     Universal Chameleon Polyglot Interop Engine v1.0 (`17/17` `QF_LIA` proofs,
-                       `6/6` unit tests): Fail-closed `[I0003]` (`unverified[T] -> verified[T]`
+- `use lchameleon`     Universal Chameleon Polyglot Interop Engine v1.0 (`28/28` `QF_LIA` proofs,
+                       `8/8` unit tests): Fail-closed `[I0003]` (`unverified[T] -> verified[T]`
                        under `/ {ffi}`) across all 9 ecosystems: `c_abi` (C/C++ `.h`/`.dll`/`.so`
                        Win64/SysV shadow-space & alignment), `rust_cdylib` (Cargo `extern "C"`
                        Perceus borrow exclusivity & unwind guard), `python_capi` (`PyObject*`
@@ -374,6 +374,23 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        `dotnet_pinvoke` (`P/Invoke` & NativeAOT blittable layout), `sql_relational`
                        (`DDL`/`DML` -> `table[T]` row invariants), and `openapi_rpc` (HTTP/1.1,
                        TLS 1.3 & gRPC bounded payloads)
+
+## 6.2.1 Universal Chameleon Polyglot Interop Engine (`use lchameleon` — 9 Ecosystems)
+- **9 Verified Foreign Ecosystems:** `c_abi` (C/C++ `.h`/`.dll`/`.so` Win64 32-byte shadow space & SysV ABI),
+  `rust_cdylib` (Rust `cdylib` Perceus ownership transfer & unwind guard), `python_capi` (CPython
+  `PyObject*` refcount conservation & zero-copy DLPack tensors), `node_napi_wasm` (Node-API & WASM
+  64 KiB linear memory bounds), `go_cshared` (Go `-buildmode=c-shared` pointer-pinning guard),
+  `java_jni` (Java JNI local frame capacity & Project Panama `MemorySegment`), `dotnet_pinvoke`
+  (C#/.NET P/Invoke & NativeAOT blittable layout), `sql_relational` (PostgreSQL/SQLite/DuckDB
+  `DDL`/`DML` -> `table[T]` row invariants), and `openapi_rpc` (OpenAPI 3.1 / JSON Schema / gRPC).
+- **Fail-Closed `[I0003]` Boundary Contracts:** Foreign inputs enter as `unverified[T]` under the
+  `/ {ffi}` capability and are promoted to `verified[T]` only after `chameleon_verify_boundary`
+  proves non-null pointers, alignment, and `QF_LIA` range bounds (`28/28` proven obligations).
+- **CLI, REPL & LSP Integration:** Run `lume chameleon [eco]`, `lume camaleao [eco]`, `lume polyglot`,
+  `lume ffi-bridge`, `lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file]`, or
+  `lume morph <legacy_file>`; inside `lume repl`, use `:chameleon [eco]` or `:camaleao [eco]`.
+- **Official Mascot (Lumi — The Bioluminescent Crystal Chameleon):** Embedded natively as `16x16` 32-bit
+  BGRA `RT_ICON` (`Type=3, ID=1`) + `RT_GROUP_ICON` (`Type=14, ID=1`) in `--target x86_64-windows-gui`.
 
 ## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.
@@ -563,6 +580,18 @@ fn rtc_bcd_to_bin(bcd: int) -> int
 = ((bcd / 16) * 10) + (bcd % 16)
 
 print str(rtc_bcd_to_bin(35))
+```
+
+## Example 7: Universal Chameleon Polyglot Interop (`chameleon_demo.src`)
+```lume
+use lchameleon
+
+fn run_chameleon_demo() =
+    let ok = chameleon_verify_boundary(1, 1, 1, 64, 4096) in
+    let r = chameleon_adapt_ecosystem("rust") in
+    str(ok) + ":" + r.id
+
+print run_chameleon_demo()
 ```
 
 # CHAPTER 10: COMPILER DIAGNOSTIC CODES & HOW TO FIX THEM

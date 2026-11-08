@@ -30,6 +30,14 @@ lume check app.src
 # Query Lume's Sovereign Memory & Compiler-as-Oracle before coding
 lume consult "implement bounded rate limiter with mathematical proof"
 
+# Universal Chameleon Polyglot Interop Engine (9 verified ecosystems)
+lume chameleon
+lume camaleao rust
+lume polyglot
+lume ffi-bridge
+lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file]
+lume morph <legacy_file>
+
 # Built-in full language manual (English or Brazilian Portuguese)
 lume manual en
 lume manual pt-br
@@ -121,6 +129,10 @@ print f"Verified fee: {clamp_fee(250, 10, 100)}"
 ### 3.2 IDE Integrations (`editors/`)
 - **VS Code (`editors/vscode-lume/`):** `extension.js` + `lsp_bridge.src` (`7/7` `QF_LIA` proofs) with real-time diagnostics and `QF_LIA` proof code lenses.
 - **OpenIDEA / JetBrains (`editors/openidea-lume/plugin.toml`):** Declarative Lume language plugin manifest.
+
+### 3.3 Official Brand Identity, Lumi Mascot & Visual Architecture Assets (`docs/assets/`)
+- **Lumi — Bioluminescent Crystal Chameleon Mascot:** `docs/assets/lume-mascot.jpg`, `docs/assets/lume-icon.jpg`, and `docs/assets/lume.ico`.
+- **Animated SVG Showcases:** `docs/assets/lume-hero-animated.svg` (IDE + `QF_LIA` prover + 27-target compiler), `docs/assets/lume-chameleon-showcase.svg` (`lchameleon.src` 9-ecosystem `[I0003]` fail-closed polyglot bridge), and `docs/assets/lume-memory-evolution-animated.svg` (4-Tier Atomic Memory Compactor).
 
 ---
 

@@ -23,10 +23,10 @@ seguranca matematica e controle total da maquina.
   3. tipos       (types)      Tipos Primitivos, Registros, ADTs, Ownership, Decimal, Tensor
   4. contratos   (contracts)  Verificacao Formal (requires, ensures, law, QF_LIA, WCET)
   5. efeitos     (effects)    Efeitos Algebricos (/ pure), Arenas de Memoria e E-Capsules
-  6. biblioteca  (stdlib)     Biblioteca Padrao e Modulos Soberanos (fs, db, net, gui, nn...)
+  6. biblioteca  (stdlib)     Biblioteca Padrao e Modulos Soberanos (`lume manual --pt camaleao`)
   7. alvos       (targets)    27 Alvos Universais, MIR SSA, APK/IPA/ISO/UEFI e RTL
-  8. comandos    (commands)   Guia Completo de Comandos CLI (Fases 1-5 e Ondas 1-10)
-  9. exemplos    (examples)   6 Programas Completos Prontos para Copiar e Rodar
+  8. comandos    (commands)   Guia Completo de Comandos CLI (`lume chameleon` / `lume camaleao`)
+  9. exemplos    (examples)   6 Programas Completos + Exemplo 7 (`chameleon_demo.src`)
  10. erros       (errors)     Tabela de Codigos de Erro ([P0002]..[W0002]) e Solucoes
 
 # CAPITULO 1: VISAO GERAL E INICIO RAPIDO PARA HUMANOS
@@ -359,8 +359,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                        Gottesman-Knill $O(n^2)$ (`GHZ_8`), Codigo Topologico de Superficie `[[9, 1, 3]]` QEC
                        (`27/27` erros de Pauli corrigidos) e VQE Diferenciavel por Parameter-Shift Exato
                        (`PennyLane/Catalyst`) + sintetizador de pulsos `.qbin`
-- `use lchameleon`     Motor Universal Camaleao de Interoperabilidade Poliglota v1.0 (`17/17` provas
-                       `QF_LIA`, `6/6` testes): Fronteira fail-closed `[I0003]` (`unverified[T] ->
+- `use lchameleon`     Motor Universal Camaleao de Interoperabilidade Poliglota v1.0 (`28/28` provas
+                       `QF_LIA`, `8/8` testes): Fronteira fail-closed `[I0003]` (`unverified[T] ->
                        verified[T]` sob `/ {ffi}`) nos 9 ecossistemas: `c_abi` (C/C++ `.h`/`.dll`/`.so`
                        Win64/SysV shadow-space e alinhamento), `rust_cdylib` (Cargo `extern "C"`
                        exclusividade de borrow Perceus e unwind guard), `python_capi` (`PyObject*`
@@ -369,6 +369,23 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                        `java_jni` (`JNIEnv*` frame local e Panama FFM), `dotnet_pinvoke` (`P/Invoke` e
                        layout blittable NativeAOT), `sql_relational` (`DDL`/`DML` -> `table[T]`) e
                        `openapi_rpc` (HTTP/1.1, TLS 1.3 e gRPC com payload limitado)
+
+## 6.2.1 Motor Universal Camaleao de Interoperabilidade Poliglota (`use lchameleon` — 9 Ecossistemas)
+- **9 Ecossistemas Estrangeiros Verificados:** `c_abi` (C/C++ `.h`/`.dll`/`.so` Win64 shadow space de 32 bytes e SysV ABI),
+  `rust_cdylib` (Rust `cdylib` transferencia linear Perceus e guarda de unwind), `python_capi` (CPython
+  `PyObject*` conservacao de refcount e tensores DLPack zero-copy), `node_napi_wasm` (Node-API e limites
+  de memoria linear WASM de 64 KiB), `go_cshared` (Go `-buildmode=c-shared` guarda de pointer-pinning),
+  `java_jni` (Java JNI capacidade de frame local e Project Panama `MemorySegment`), `dotnet_pinvoke`
+  (C#/.NET P/Invoke e layout blittable NativeAOT), `sql_relational` (PostgreSQL/SQLite/DuckDB
+  `DDL`/`DML` -> invariantes de linha `table[T]`) e `openapi_rpc` (OpenAPI 3.1 / JSON Schema / gRPC).
+- **Contratos de Fronteira Fail-Closed `[I0003]`:** Entradas externas ingressam como `unverified[T]` sob a
+  capacidade `/ {ffi}` e so sao promovidas a `verified[T]` apos `chameleon_verify_boundary` provar
+  ponteiros nao-nulos, alinhamento e limites `QF_LIA` (`28/28` obrigacoes formais provadas).
+- **Integracao CLI, REPL e LSP:** Execute `lume chameleon [eco]`, `lume camaleao [eco]`, `lume polyglot`,
+  `lume ffi-bridge`, `lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file]` ou
+  `lume morph <legacy_file>`; dentro do `lume repl`, use `:chameleon [eco]` ou `:camaleao [eco]`.
+- **Mascote Oficial (Lumi — O Camaleao Bioluminescente de Cristal):** Embutido nativamente como icone
+  `16x16` 32-bit BGRA `RT_ICON` (`Type=3, ID=1`) + `RT_GROUP_ICON` (`Type=14, ID=1`) em `--target x86_64-windows-gui`.
 
 ## 6.3 Todos os 8 Capstones Soberanos e Brasileiros Verificados (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` provas `QF_LIA`): Rastreamento de fraude e taint em grafos Pix em tempo real.
@@ -545,6 +562,18 @@ fn bcd_para_binario(bcd: int) -> int
 = ((bcd / 16) * 10) + (bcd % 16)
 
 print str(bcd_para_binario(35))
+```
+
+## Exemplo 7: Interoperabilidade Poliglota Camaleao (`chameleon_demo.src`)
+```lume
+use lchameleon
+
+fn run_chameleon_demo() =
+    let ok = chameleon_verify_boundary(1, 1, 1, 64, 4096) in
+    let r = chameleon_adapt_ecosystem("rust") in
+    str(ok) + ":" + r.id
+
+print run_chameleon_demo()
 ```
 
 # CAPITULO 10: TABELA DE CODIGOS DE ERRO E COMO CORRIGIR
