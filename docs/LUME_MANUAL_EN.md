@@ -1,5 +1,5 @@
 # ============================================================================
-# LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v0.3.0-rc.3 / Wave 10)
+# LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v1.1.0 / Wave 10)
 # Edition 2026 | Zero-C Self-Hosted Steady State | "Lume gera Lume"
 # ============================================================================
 
@@ -73,7 +73,6 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
 - `const NAME: T = expr`       Module-level constant (inlined into functions & contracts).
-- `let name = expr`            Module value. A pure constant is inlined; anything else runs once, in source order.
 - `law name(a: int) = expr`    Universal mathematical law proven across all inputs.
 - `print <expr>`               Top-level program entrypoint expression.
 
@@ -83,27 +82,26 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - Record destructure: `let {x, y} = point in x + y`
 - Pipe operator:      `x |> step1(5) |> step2`
 - Record update:      `{ state with count: state.count + 1 }`
-- Conditional:        `if a > b then a else b`
-- Logical (short-circuit): `a == 1 and b == 2`, `x < 0 or x > 10`, `not flag`
+- Conditional:        `if a > b then a else b` or braced `if a > b { a } else { b }`
+- Logical (short-circuit): `a == 1 and b == 2`, `x < 0 or x > 10`, `not (a == b)` (`not` binds looser than `==`/`<`)
 - Arithmetic:         `+`, `-`, `*`, `/`, `%`
-                      Overflow of `+`, `-`, `*` stops the program, exit 3. `+%`, `-%`, `*%` wrap on request and are never proven by the verifier.
-- Comparison:         `==`, `!=`, `<`, `<=`, `>`, `>=`
-- String concat/interp: `f"val={x}"`, `"val=${x}"`, or `"hello " + str(42)`
-                        (split `"{" + s + "}"` when building raw brace templates)
+- Comparison:         `==`, `!=` (constant-stack `O(1)` worklist structural equality on deep lists/ADTs/records), `<`, `<=`, `>`, `>=`
+- String concat/interp: `f"val={x}"`, `"val=${x}"`, or `"val={x}"`
+                        (raw JSON `"{\"a\":{\"b\":1}}"` is preserved; escape literal braces with `"\{x}"`,
+                        `"{{x}}"`, or `"cost: \${x}"`; escapes `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`)
 - Record literal:     `{id: 1, name: "alice"}` (field access: `r.id`, `r.name`)
-- List constructors:  `Nil`, `Cons(head, tail)`
-- List literal/index: `[1, 2, 3]` is a `Cons` list; `xs[i]` walks it, and on a string it reads a byte. Past the end stops the program, exit 3. `at(s, i)` reads the same byte and gives `""` past the end, for scanning.
+- List literals & ADTs: `[]` (`Nil`), `[1, 2, 3]` (`Cons(1, Cons(2, Cons(3, Nil)))`), `count([1, 2, 3]) == 3`
 - Comments:           `## Double hash starts a comment line`
 
 ## 2.3 Pattern Matching (`match` — 10/10 DX)
-Lume supports three `match` forms everywhere:
+Lume supports `match` everywhere (top-level bodies, `let ... in`, `if`, call arguments, record fields, and `match` arms):
 1. Top-level function body `match`:
    ```lume
    fn sum_list(xs) = match xs
        Nil        => 0
        Cons(h, t) => h + sum_list(t)
    ```
-2. Nested indentation-sensitive `match` inside `let ... in` or `if ... then ... else`:
+2. Nested indentation-sensitive `match` inside `let ... in`, `if`, call arguments, or `match` arms:
    ```lume
    fn head_or_zero(xs) =
        let y = match xs
@@ -119,11 +117,11 @@ Lume supports three `match` forms everywhere:
 ## 2.4 Essential Technical Rules for Humans & AI
 1. Pure LF (`\n`) Line Endings: Always save `.src` and `.lume` files with Unix LF (`\n`),
    never Windows CRLF (`\r\n`).
-2. 6-Parameter Register Invariant: Native SysV AMD64 codegen (`05_codegen.src`) passes
-   the first 6 parameters in `%rdi, %rsi, %rdx, %rcx, %r8, %r9` (Stage-1 `.src` compiler
-   modules keep `<= 6` parameters per function or group extra fields into a record).
-3. Top-Level `match` Invariant in Stage-1 `.src`: Keep `match` at the top level of a
-   helper function body (`fn f(x) = match x ...`) in Stage-1 `.src` compiler modules.
+2. Arbitrary Function Arity & TCO: Native SysV AMD64 codegen (`05_codegen.src`) passes
+   the first 6 parameters in `%rdi, %rsi, %rdx, %rcx, %r8, %r9` and parameters 7+ on the
+   stack with full swap-safe self-tail-call optimization (`jmp`).
+3. Fail-Closed Patterns & Bindings: Duplicate parameter/pattern/destructuring names,
+   float patterns (`1.5 =>`), and unbraced same-line nested `match` fail closed with `[P0002]`.
 4. Never edit `compiler/stage1/lumec.src` directly: edit `compiler/stage1/lume/NN_*.src`
    and run `scripts/amalgamate.sh`.
 
@@ -212,42 +210,34 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Custom effects are declared with `effect Name { fn op(...) -> T }` and handled via
   `handle expr with { ... }`.
 
-## 5.2 Automatic Memory, 4-Tier Atomic Compactor, Zero-Heap SRA & Scoped Arenas (`std.arena`)
-Lume reclaims memory automatically: the native runtime has a non-moving mark-sweep collector that returns
-memory to the OS. The pause is proportional to the live heap, not to the garbage, and a program below 64 MiB
-never collects. `own`, borrows and `resource type` are compile-time rules and do not depend on the collector
-(`docs/38-memory-management.md`, `docs/39-memory-saga-and-atomic-compactor-dossier.md`). On top of that:
-- The compiler avoids heap work where it can prove it safe: Perceus reuse for provably unique values,
+## 5.2 Automatic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)
+- Lume collects garbage (a mark-sweep pause proportional to the live heap) and avoids heap work
+  where it can prove it safe: Perceus reuse for provably unique values,
   Escape Analysis & Scalar Replacement of Aggregates (`lsra_expr`: non-escaping
   `let r = {k1: v1, ...} in body` records are lowered directly into `%rbp` stack
-  slots `_sra_<r>_<k>` with 0 heap `mkrec`/`recget` allocations), self-tail-call `jmp`, and O(1) bump arenas.
-- **4-Tier Atomic Memory Compactor**:
-  - **Stage 0 (`.rodata` Static Unification):** String literals, constructor descriptors, record shapes, and zero-arity constructors (`Nil`, `None`) live in `.rodata` (`0 B` heap).
-  - **Level 1 (64-bit Tagged Register Word):** 63-bit signed integers (`...iiii1`) and `0..7`-byte inline SSO strings (`...ss|lll|010`) live inside a single 64-bit CPU register word (`0 B` heap); full 64-bit `int` semantics are preserved via a 16-byte overflow cell `[3][value]` for the 64th bit.
-  - **Level 2 (Compact Cells):** `Cons(h, t)` takes `24 B` (`8 B` descriptor + 2 words, down from `80 B`); a 3-field record takes `32 B` (`8 B` shape + 3 words, down from `160 B`).
-  - **Level 3 (Cold Arena Demand-Paged `LZ1` Compactor):** Cold arenas and `.lcaps`/`.lumb` artifacts compress with `LZ1` (`~355 MB/s` pack, `~975 MB/s` unpack) and thaw lazily per 4 KB page via `PROT_NONE` + `SIGSEGV` on first touch.
+  slots `_sra_<r>_<k>` with 0 heap allocations), self-tail-call `jmp`, and O(1) arenas.
+- Value words: an integer of 63 bits and a string of at most 7 bytes live in one machine word and
+  never reach the heap; `int` still holds the full 64-bit range. A constructor costs 8 bytes plus its
+  fields, a record 8 bytes plus its values, and a constructor without fields is one static cell.
 - Builtins & `use arena`:
   - `let a = arena_new(65536)`   Create a scoped region arena
-  - `mem_pack(s)` / `mem_unpack(b)`   Compress/decompress cold data (`LZ1` block format with 64-bit checksum; corrupt input fails closed)
-  - `arena_freeze(a)` / `arena_thaw(a)` / `arena_compact(a)`   Compress an arena (`MADV_DONTNEED`); a frozen page thaws on first touch
-  - `arena_mark_secret(a)`, `@secret fn`   Secrets never reach the compactor (`[C0009]`); `@bound` rejects compaction (`[V0002]`)
+  - `mem_pack(s)` / `mem_unpack(b)`   Compress cold data (LZ4 block format, corrupt input stops)
+  - `arena_freeze(a)` / `arena_thaw(a)`   Compress an arena; a frozen page returns on first touch
+  - `arena_mark_secret(a)`, `@secret fn`   Secrets never reach the compactor ([C0009])
   - `arena_reset(a)` / `arena_destroy(a)`
-  - `heap_stats()` / `gc_collect()` / `gc_count()`   Query live heap stats and control GC
+  - `heap_stats()`               Query live heap allocations and bytes
   - `lume run --memory <file.src>` Measure peak RSS memory in KB
-  - `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>`, `LUME_ARENA_COLD=<n>` Control heap & cold-arena compaction
 
 ## 5.3 Tamper-Evident E-Capsules (`std.capsule` & `lume capsule`)
-- Seal execution traces, inputs, outputs, and SHA-256 digests into reproducible capsules (compressed with `LZ1`):
+- Seal execution traces, inputs, outputs, and SHA-256 digests into reproducible capsules:
   - `lume capsule seal <source.src> -o <out.lcaps>`
   - `lume capsule replay <out.lcaps>`
-  - `lume pack <in> -o <out>` / `lume unpack <in> -o <out>`
 
 # CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULES
 
 ## 6.1 Core Builtin Functions (Always Available in `.src`)
 - Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, n, start, end)`,
             `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`
-            `toint(s)` reads an optional `-` and the digits after it: `toint("12x")` is 12 and `toint("x")` is 0.
 - I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,
             `fs_path_exists(path)`, `fs_read_byte(path, offset)`
 - Process:  `os_arg_count()`, `os_arg_at(i)`,
@@ -373,6 +363,17 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
                        `Google Stim` Gottesman-Knill $O(n^2)$ Stabilizer Tableau Simulator (`GHZ_8`), Rotated
                        Surface Code `[[9, 1, 3]]` Topological QEC (`27/27` Pauli errors corrected), and
                        `PennyLane/Catalyst` Exact Parameter-Shift VQE
+- `use lchameleon`     Universal Chameleon Polyglot Interop Engine v1.0 (`17/17` `QF_LIA` proofs,
+                       `6/6` unit tests): Fail-closed `[I0003]` (`unverified[T] -> verified[T]`
+                       under `/ {ffi}`) across all 9 ecosystems: `c_abi` (C/C++ `.h`/`.dll`/`.so`
+                       Win64/SysV shadow-space & alignment), `rust_cdylib` (Cargo `extern "C"`
+                       Perceus borrow exclusivity & unwind guard), `python_capi` (`PyObject*`
+                       refcount conservation & zero-copy DLPack tensors), `node_napi_wasm`
+                       (Node-API & WASM 64 KiB page bounds), `go_cshared` (`cgo` pointer-pinning
+                       & stack-split guard), `java_jni` (`JNIEnv*` local frame & Panama FFM),
+                       `dotnet_pinvoke` (`P/Invoke` & NativeAOT blittable layout), `sql_relational`
+                       (`DDL`/`DML` -> `table[T]` row invariants), and `openapi_rpc` (HTTP/1.1,
+                       TLS 1.3 & gRPC bounded payloads)
 
 ## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.
@@ -441,7 +442,8 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   lume genesis <app_name> [domain]       Full-stack + 8-target autonomous app synthesizer
   lume heal <src.src>                    Counterexample-driven contract self-healer
   lume equiv <spec.src> <fast.src>       Formal algorithmic equivalence prover
-  lume morph <legacy_file>               Transmute SQL/Python/C/OpenAPI to proven Lume
+  lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file] Generate `[I0003]` fail-closed polyglot FFI adapters
+  lume morph <file>                      Transmute legacy SQL/Python/C/OpenAPI to proven Lume (`lume morph <legacy_file>`)
   lume neural-kernel <src.src>           GPU/NPU/FPGA RTL differentiable synthesizer
   lume evolve list|goals|budgets|propose|verify|apply|grow|approve [id|dir|bundle] Cryptographically governed self-evolution
 
@@ -465,6 +467,7 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
+  lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (or `lume chameleon`) Universal Chameleon Polyglot Interop Engine across 9 ecosystems (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
   lume run compiler/stage1/lume_llm_core.src         Sovereign 1-Bit/Ternary LLM Core, Liquid LFM3 Audio, Colibri MoE Guard & 3-Tier Router (`21/21` proofs)
   lume run examples/apps/sovereign_llm_router/main.src Sovereign Edge/Local/Cloud LLM Router & Anti-Hallucination Price Oracle (`20/20` proofs)
   lume os-control / bios-core / web-research / crypto-engine
@@ -482,13 +485,13 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 14 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  all 15 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
   the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
-  `lume_quantum_nexus_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 396 formal obligations +
-  134 unit tests + 98 verified toolchain artifacts).
+  `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 413 formal obligations +
+  141 unit tests + 99 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
@@ -569,23 +572,12 @@ print str(rtc_bcd_to_bin(35))
 | `[P0002]` | Parser / Syntax      | Unexpected token or nested unbraced `match`. Move `match` to top-level helper `fn f(x) = match x ...` or wrap in braces `match x { ... }`, and verify pure LF (`\n`) line endings. |
 | `[R0200]` | Name Resolution      | Call to undefined function or variable. Check spelling or add `use <module>` at top of file. |
 | `[R0201]` | Name Resolution      | A function reuses the name of a runtime routine (`count`, `at`, ...) or a prefix reserved for it (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Rename it. |
-| `[R0202]` | Name Resolution      | A call to a function or builtin passes the wrong number of arguments. |
-| `[R0203]` | Name Resolution      | A call to an internal routine of the runtime, such as `strlen`. Use the public builtins. |
-| `[R0204]` | Name Resolution      | `f[i]` where `f` is a function, which includes `id[int](x)`. Call the function, and pass a generic its type as the first argument. |
-| `[R0205]` | Name Resolution      | A call whose name is both a local and a builtin or compiler intrinsic. The call would ignore the local, so rename it. |
-| `[C0002]` | Code Generation      | A name has no value here, such as a builtin used as a value. |
-| `[R0300]` | Modules              | `lume agent`: a `use` names a module that cannot be found. |
-| `[D0002]` | Duplicate Definition | A function is defined twice in the bundle. Keep one or rename it. |
-| `[D0003]` | Duplicate Definition | A type is defined twice in the bundle. Keep one or rename it. |
-| `[L0003]` | Lexer                | An integer literal does not fit in 64 bits. |
-| `[D0004]` | Duplicate Definition | A record literal gives the same field twice. |
-| `[T1002]` | Types                | A `match` on a declared enum leaves out a variant and has no `_` arm. |
 | `[T0300]` | Type / Tensor Shape  | Type mismatch, currency mismatch (`money[BRL]` vs `money[USD]`), or tensor shape mismatch. |
 | `[E0200]` | Algebraic Effects    | Impure operation (`io`, `fs`, `net`, `arena_new`, `embed`) called inside a `/ pure` function. Remove `/ pure` or add the required effect to the function signature. |
 | `[O0001]` | Ownership / Borrow   | Use-after-move, double-close of file handle, or conflicting mutable borrow (`mut`). Clone or restructure ownership scope. |
 | `[V0001]` | Contract / Law Proof | `requires`/`ensures` contract or `law` refuted by `QF_LIA` solver. Inspect the printed counterexample or run `lume heal <file.src>`. |
 | `[V0002]` | WCET Cycle Bound     | Function exceeds `@bound(cycles: N)` budget or uses unbounded recursion in `@interrupt`. |
-| `[I0003]` | C ABI Interop        | Unsafe or unsupported C declaration in `lume adapt c`. Add explicit bounds or `@repr(c)`. |
+| `[I0003]` | Polyglot / C Interop | Unsafe or unsupported foreign declaration in `lume adapt c` or `lchameleon` (`unverified[T] -> verified[T]`). Add explicit `QF_LIA` bounds or `@repr(c)`. |
 | `[I0275]` | WASM Sandbox         | Disallowed host import (`env.*`, `proc_exit`) in `@wasm-sandbox` module. |
 | `[C0271]` | Comptime Embed       | `comptime embed("...")` path escapes project root (`..`) or file is missing. |
 | `[D0273]` | Table Schema         | `comptime table_schema(T)` called on a non-record type. |
@@ -596,4 +588,5 @@ print str(rtc_bcd_to_bin(35))
 | `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\dagger$ (`q_silq_qfree_verify`) before returning. |
 | `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
 | `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
+| `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |

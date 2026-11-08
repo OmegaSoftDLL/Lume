@@ -1,5 +1,5 @@
 # ============================================================================
-# LINGUAGEM LUME — MANUAL INTERNO PARA HUMANOS E IA (v0.3.0-rc.3 / Onda 10)
+# LINGUAGEM LUME — MANUAL INTERNO PARA HUMANOS E IA (v1.1.0 / Onda 10)
 # Edicao 2026 | Zero-C Self-Hosted | "Lume gera Lume"
 # ============================================================================
 
@@ -71,7 +71,6 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - `fn nome(a, b) = expr`       Define uma funcao.
 - `pub fn nome(a, b) = expr`   Define uma funcao publica exportada.
 - `const NOME: T = expr`       Define uma constante de modulo (disponivel em funcoes e contratos).
-- `let nome = expr`            Valor de modulo. Constante pura e embutida; o resto roda uma vez, na ordem do arquivo.
 - `law nome(a: int) = expr`    Define uma lei matematica universal provada pelo compilador.
 - `print <expr>`               Ponto de entrada executavel do programa.
 
@@ -81,27 +80,26 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - Desestruturacao de record:  `let {x, y} = ponto in x + y`
 - Operador Pipe (`|>`):       `x |> etapa1(5) |> etapa2`
 - Record Update (`with`):     `{ estado with contador: estado.contador + 1 }`
-- Interpolacao de Strings:    `f"valor={x}"` ou `"valor=${x}"`
-- Condicional (`if..then..else`): `if x > 0 then "positivo" else "zero ou negativo"`
-- Operadores logicos (curto-circuito): `a == 1 and b == 2`, `x < 0 or x > 10`, `not ativo`
-- Aritmetica: `+`, `-`, `*`, `/`, `%`. Estouro de `+`, `-`, `*` interrompe o programa (saida 3). `+%`, `-%`, `*%` dao a volta quando voce pede, e o verificador nunca os prova.
-- Comparacao: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- Concatenacao/interpolacao: `"Valor = " + str(100)` (nota: `{ident}` dentro de strings
-                             faz interpolacao automatica; separe `"{" + s + "}"` para chave literal)
+- Interpolacao de Strings:    `f"valor={x}"`, `"valor=${x}"` ou `"valor={x}"`
+                              (JSON bruto `"{\"a\":{\"b\":1}}"` preserva todas as chaves; escape chaves
+                              literais com `"\{x}"`, `"{{x}}"` ou `"custo: \${x}"`; escapes `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`)
+- Condicional (`if..then..else` ou chaves): `if x > 0 then 1 else 0` ou `if x > 0 { 1 } else { 0 }`
+- Operadores logicos (curto-circuito): `a == 1 and b == 2`, `x < 0 or x > 10`, `not (a == b)` (`not` tem precedencia menor que `==`/`<`)
+- Aritmetica: `+`, `-`, `*`, `/`, `%`
+- Comparacao: `==`, `!=` (igualdade estrutural em pilha `O(1)` para listas/ADTs/records profundos), `<`, `<=`, `>`, `>=`
 - Registros (Structs): `let p = {x: 10, y: 20} in p.x + p.y`
-- Listas encadeadas: `Nil` (lista vazia) e `Cons(cabeca, cauda)`
-- Literal e indice: `[1, 2, 3]` e uma lista `Cons`; `xs[i]` percorre a lista (em string equivale a `at(s, i)`). Indice alem do fim interrompe o programa (saida 3).
+- Literais de lista e ADTs: `[]` (`Nil`), `[1, 2, 3]` (`Cons(1, Cons(2, Cons(3, Nil)))`), `count([1, 2, 3]) == 3`
 - Comentarios: `## Comentarios comecam com dois sustenidos`
 
 ## 2.3 Reconhecimento de Padroes (`match` — DX 10/10)
-Voce pode usar `match` de tres formas em qualquer lugar:
+Voce pode usar `match` em qualquer lugar (corpo de funcao, `let ... in`, `if`, argumentos de chamada, campos de record e bracos de `match`):
 1. No topo do corpo de uma funcao:
    ```lume
    fn soma_lista(xs) = match xs
        Nil        => 0
        Cons(h, t) => h + soma_lista(t)
    ```
-2. Aninhado por indentacao dentro de `let ... in` ou `if ... then ... else`:
+2. Aninhado por indentacao dentro de `let ... in`, `if`, argumentos de funcao ou bracos de `match`:
    ```lume
    fn cabeca_ou_zero(xs) =
        let y = match xs
@@ -115,11 +113,12 @@ Voce pode usar `match` de tres formas em qualquer lugar:
    ```
 REGRA DE OURO:
 1. Salve sempre seus arquivos com quebra de linha LF (`\n`), nunca CRLF (`\r\n`).
-2. Limite de 6 Parametros em Modulos `.src` do Compilador: A convencao SysV AMD64
-   (`05_codegen.src`) passa ate 6 parametros em `%rdi, %rsi, %rdx, %rcx, %r8, %r9`
-   (agrupe parametros extras em um registro).
-3. `match` no Topo em Modulos `.src` do Compilador: Mantenha `match` no topo do corpo
-   de funcoes auxiliares (`fn f(x) = match x ...`) ao editar `compiler/stage1/*.src`.
+2. Qualquer Aridade de Parametros + TCO: O codegen nativo SysV AMD64 (`05_codegen.src`)
+   passa os primeiros 6 parametros em `%rdi, %rsi, %rdx, %rcx, %r8, %r9` e parametros 7+
+   na pilha com otimizacao de tail-call (`jmp`) segura para trocas de argumentos.
+3. Validacao Fail-Closed de Patterns e Bindings: Nomes duplicados em parametros/patterns/
+   desestruturacao, patterns decimais (`1.5 =>`) e `match` aninhado sem chaves na mesma linha
+   falham fechado com `[P0002]`.
 4. Nunca edite `compiler/stage1/lumec.src` diretamente: edite `compiler/stage1/lume/NN_*.src`
    e execute `scripts/amalgamate.sh`.
 
@@ -203,36 +202,35 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 - Funcoes marcadas com `/ pure` sao matematicamente puras: nao podem acessar disco,
   rede, processos ou mutar estado externo. Qualquer violacao gera `[E0200]`.
 
-## 5.2 Memoria Automatica, Compactador Atomico em 4 Niveis, SRA Zero-Heap e Arenas (`std.arena`)
+## 5.2 Memoria Automatica, SRA Zero-Heap e Arenas (`std.arena`)
 A Lume recupera memoria sozinha: o runtime nativo tem um coletor mark-sweep nao movel que
 devolve memoria ao sistema. A pausa e proporcional ao heap vivo, nao ao lixo; um programa
 abaixo de 64 MiB nunca coleta. `own`, borrows e `resource type` sao regras de compilacao e nao
-dependem do coletor (`docs/38-memory-management.md`, `docs/LUME_MEMORY_SAGA_DOSSIER_PT_BR.md`). Ele nao substitui as otimizacoes abaixo:
+dependem do coletor (`docs/38-memory-management.md`). Ele nao substitui as otimizacoes abaixo:
 reuso estatico Perceus onde a unicidade e provada + Escape Analysis / Scalar Replacement of
 Aggregates (`lsra_expr`: registros locais `let r = {k1: v1, ...} in corpo` que nao escapam sao
 alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de heap) +
-**Compactador Atomico de Memoria em 4 Niveis** (Estagio 0: descritores e singletons `Nil`/`None` em `.rodata` com `0 B` de heap; Nivel 1: inteiros de 63 bits `...iiii1` e strings SSO de `0..7` bytes `...ss|lll|010` dentro da palavra de 64 bits do registrador com `0 B` de heap, preservando `int` de 64 bits; Nivel 2: celula `Cons` de `24 B` e registro de 3 campos de `32 B`; Nivel 3: arenas frias comprimidas com `LZ1` a `~355 MB/s` / `~975 MB/s` e descongelamento paginado sob demanda via `PROT_NONE` + `SIGSEGV`) + tail-call `jmp` + arenas regionais `O(1)`:
+palavras de valor (inteiro de 63 bits e string de ate 7 bytes dentro da palavra, sem heap; `int`
+continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - `let a = arena_new(65536)`   Cria uma arena de 64 KB
-- `mem_pack(s)` / `mem_unpack(b)`   Comprime/descomprime dados frios (`LZ1` com checksum de 64 bits; falha fechada se corrompido)
-- `arena_freeze(a)` / `arena_thaw(a)` / `arena_compact(a)`   Comprime arena (`MADV_DONTNEED`); pagina descongelada no primeiro toque
-- `arena_mark_secret(a)`, `@secret fn`   Segredos nunca chegam ao compactador (`[C0009]`); `@bound` rejeita compactacao (`[V0002]`)
+- `mem_pack(s)` / `mem_unpack(b)`   Comprime dados frios (formato de bloco LZ4; dado corrompido para)
+- `arena_freeze(a)` / `arena_thaw(a)`   Comprime uma arena; a pagina volta no primeiro toque
+- `arena_mark_secret(a)`, `@secret fn`   Segredos nunca chegam ao compactador ([C0009])
 - `arena_reset(a)` / `arena_destroy(a)`
 - `heap_stats()`               Retorna estatisticas do heap em tempo real
 - `gc_collect()` / `gc_count()` Forca uma coleta / conta as coletas
 - `lume run --memory <arq.src>` Mede o pico de memoria fisica (RSS em KB)
-- `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>`, `LUME_ARENA_COLD=<n>` Controlam o heap e compactacao de arenas
+- `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>` Controlam o heap
 
 ## 5.3 E-Capsules Reprodutiveis (`std.capsule`)
-- `lume capsule seal <arq.src> -o <saida.lcaps>` Sela codigo, entradas, saidas e SHA-256 (comprimido com `LZ1`).
+- `lume capsule seal <arq.src> -o <saida.lcaps>` Sela codigo, entradas, saidas e SHA-256.
 - `lume capsule replay <saida.lcaps>`            Reproduz e audita a execucao selada.
-- `lume pack <in> -o <out>` / `lume unpack <in> -o <out>` Comprime/descomprime blocos `LZ1` pela CLI.
 
 # CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME
 
 ## 6.1 Funcoes Nativas (Sempre Disponiveis sem `use`)
 - Texto (`str`): `count(s)`, `at(s, i)`, `slice(s, ini, fim)`, `slicen(s, n, start, end)`,
                  `ord(c)`, `chr(cod)`, `str(n)`, `toint(s)`
-                 `toint(s)` le um `-` opcional e os digitos seguintes: `toint("12x")` da 12 e `toint("x")` da 0.
 - Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`,
                    `fs_write_sync(caminho, texto)`, `fs_path_exists(caminho)`,
                    `fs_read_byte(caminho, offset)`
@@ -361,6 +359,16 @@ alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de 
                        Gottesman-Knill $O(n^2)$ (`GHZ_8`), Codigo Topologico de Superficie `[[9, 1, 3]]` QEC
                        (`27/27` erros de Pauli corrigidos) e VQE Diferenciavel por Parameter-Shift Exato
                        (`PennyLane/Catalyst`) + sintetizador de pulsos `.qbin`
+- `use lchameleon`     Motor Universal Camaleao de Interoperabilidade Poliglota v1.0 (`17/17` provas
+                       `QF_LIA`, `6/6` testes): Fronteira fail-closed `[I0003]` (`unverified[T] ->
+                       verified[T]` sob `/ {ffi}`) nos 9 ecossistemas: `c_abi` (C/C++ `.h`/`.dll`/`.so`
+                       Win64/SysV shadow-space e alinhamento), `rust_cdylib` (Cargo `extern "C"`
+                       exclusividade de borrow Perceus e unwind guard), `python_capi` (`PyObject*`
+                       conservacao de refcount e tensores DLPack zero-copy), `node_napi_wasm`
+                       (Node-API e limites de pagina WASM 64 KiB), `go_cshared` (`cgo` pointer-pinning),
+                       `java_jni` (`JNIEnv*` frame local e Panama FFM), `dotnet_pinvoke` (`P/Invoke` e
+                       layout blittable NativeAOT), `sql_relational` (`DDL`/`DML` -> `table[T]`) e
+                       `openapi_rpc` (HTTP/1.1, TLS 1.3 e gRPC com payload limitado)
 
 ## 6.3 Todos os 8 Capstones Soberanos e Brasileiros Verificados (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` provas `QF_LIA`): Rastreamento de fraude e taint em grafos Pix em tempo real.
@@ -426,7 +434,8 @@ alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de 
   lume genesis <nome_app> [dominio]      Sintetiza sistema full-stack para 8 alvos
   lume heal <src.src>                    Autocura contratos violados usando contraexemplos
   lume equiv <spec.src> <fast.src>       Prova equivalencia algoritmica e superotimiza
-  lume morph <arquivo_legado>            Transmuta SQL, Python, C ou OpenAPI para Lume
+  lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file] Gera adaptadores poliglotas FFI fail-closed `[I0003]`
+  lume morph <file>                      Transmuta SQL, Python, C ou OpenAPI para Lume (`lume morph <arquivo_legado>`)
   lume neural-kernel <src.src>           Sintetiza kernels GPU/FPGA diferenciaveis
   lume evolve list|goals|budgets|propose|verify|apply|grow|approve [id|pasta|bundle] Auto-evolucao governada por assinatura Ed25519
 
@@ -440,6 +449,7 @@ alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de 
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [alvo] Acelerador Sistolico de IA e Compilador ISA OpenTPU-Lume
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [alvo] Motor Lume Continuum Nexus v1.0 (7 Motores de Referencia)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [alvo] Motor Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
+  lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (ou `lume chameleon`) Motor Universal Camaleao de Interop Poliglota nos 9 ecossistemas (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
   lume run compiler/stage1/lume_llm_core.src         Nucleo Soberano LLM 1-Bit/Ternario, Audio LFM3 LiquidCodec, Guarda MoE Colibri e Roteador 3-Tier (`21/21` provas)
   lume run examples/apps/sovereign_llm_router/main.src Roteador LLM Hibrido Edge/Local/Cloud e Oraculo Anti-Alucinacao de Precos (`20/20` provas)
   lume os-control / bios-core / web-research / crypto-engine
@@ -457,13 +467,13 @@ alocados diretamente em slots de pilha `%rbp` `_sra_<r>_<k>` com 0 alocacoes de 
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 14 Baterias Soberanas de Provas
+  nativamente dentro do proprio compilador todas as 15 Baterias Soberanas de Provas
   (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
-  `lume_quantum_nexus_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 396 obrigacoes formais +
-  134 testes unitarios + 98 artefatos verificados).
+  `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 413 obrigacoes formais +
+  141 testes unitarios + 99 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
@@ -541,26 +551,15 @@ print str(bcd_para_binario(35))
 
 | Codigo    | Categoria            | Causa e Como Resolver |
 |-----------|----------------------|-----------------------|
-| `[P0002]` | Sintaxe / Parser     | Token inesperado ou `match` sem chaves aninhado. Mova o `match` para `fn aux(x) = match x ...` ou use `match x { ... }`, e garanta quebras de linha LF (`\n`). |
+| `[P0002]` | Sintaxe / Parser     | Token inesperado, `let` solto no topo de `.src`, ou `match` sem chaves aninhado. Mova o `match` para `fn aux(x) = match x ...` ou use `match x { ... }`, e garanta quebras de linha LF (`\n`). |
 | `[R0200]` | Escopo / Nomes       | Funcao ou variavel nao declarada. Verifique a grafia ou adicione `use <modulo>` no topo do arquivo. |
 | `[R0201]` | Escopo / Nomes       | Funcao com o nome de uma rotina do runtime (`count`, `at`, ...) ou com um prefixo reservado a ele (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Renomeie. |
-| `[R0202]` | Escopo / Nomes       | Chamada de funcao ou builtin com numero errado de argumentos. |
-| `[R0203]` | Escopo / Nomes       | Chamada a uma rotina interna do runtime, como `strlen`. Use os builtins publicos. |
-| `[R0204]` | Escopo / Nomes       | `f[i]` em que `f` e uma funcao, o que inclui `id[int](x)`. Chame a funcao e passe o tipo de um generico como primeiro argumento. |
-| `[R0205]` | Escopo / Nomes       | Chamada cujo nome e ao mesmo tempo um local e um builtin ou intrinseco do compilador. A chamada ignoraria o local, entao renomeie-o. |
-| `[C0002]` | Geracao de Codigo    | Um nome sem valor neste ponto, como um builtin usado como valor. |
-| `[R0300]` | Modulos              | `lume agent`: um `use` aponta para um modulo que nao foi encontrado. |
-| `[D0002]` | Definicao Duplicada  | Funcao definida duas vezes no bundle. Mantenha uma ou renomeie. |
-| `[D0003]` | Definicao Duplicada  | Tipo definido duas vezes no bundle. Mantenha um ou renomeie. |
-| `[L0003]` | Lexico               | Literal inteiro nao cabe em 64 bits. |
-| `[D0004]` | Definicao Duplicada  | Record com o mesmo campo duas vezes. |
-| `[T1002]` | Tipos                | `match` em enum declarado sem uma das variantes e sem braco `_`. |
 | `[T0300]` | Tipos / Tensores     | Tipos incompativeis, soma de moedas distintas (`money[BRL]` + `money[USD]`) ou dimensoes invalidas em `tensor[...]`. |
 | `[E0200]` | Efeitos Algebricos   | Funcao marcada com `/ pure` tentou fazer I/O, rede, `arena_new` ou `embed`. Remova `/ pure` ou declare o efeito. |
 | `[O0001]` | Ownership / Borrow   | Uso de valor apos transferencia de posse (`move`) ou uso de arquivo ja fechado. |
 | `[V0001]` | Prova de Contrato    | Contrato `requires`/`ensures` ou `law` refutado pelo solver `QF_LIA`. Veja o contraexemplo impresso ou rode `lume heal <arq.src>`. |
 | `[V0002]` | Limite de Ciclos     | Funcao excedeu o orcamento `@bound(cycles: N)` ou possui recursao ilimitada em `@interrupt`. |
-| `[I0003]` | Interop C (`adapt c`)| Declaracao C insegura sem tamanho explicito. Adicione anotacoes de tamanho ou `@repr(c)`. |
+| `[I0003]` | Interop Poliglota/C  | Declaracao C/poliglota insegura sem guarda explicita (`lume adapt c` / `lchameleon`). Promova `unverified[T] -> verified[T]` com limites `QF_LIA` ou `@repr(c)`. |
 | `[I0275]` | Sandbox WASM         | Importacao de host proibida dentro de modulo `@wasm-sandbox`. |
 | `[C0271]` | Comptime Embed       | Caminho em `comptime embed("...")` tenta sair da raiz do projeto (`..`) ou nao existe. |
 | `[D0273]` | Esquema de Tabela    | `comptime table_schema(T)` chamado sobre um tipo que nao e registro. |
@@ -571,4 +570,5 @@ print str(bcd_para_binario(35))
 | `[Q0002]` | Uncompute `qfree`    | Fio ancilla nao descomputado em funcao `qfree` (`anc_leaked > 0`). Aplique o adjunto $U^\dagger$ (`q_silq_qfree_verify`) antes de retornar. |
 | `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |
 | `[L0010]` | Ligacao              | Um simbolo definido duas vezes na mesma imagem, o que mandaria chamadas para a rotina errada. |
+| `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |

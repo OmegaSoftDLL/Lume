@@ -30,7 +30,7 @@
 - **Self-Hosted Fixpoint (`stage2 == stage3`):** The compiler (`lumec`), machine-code assembler and binary linker (`lasm`), module bundler (`lmod`), theorem prover (`lcaas`), independent proof certificate kernel (`lcert`), formatter (`lfmt`), test runner (`ltest`), and unified CLI driver (`lume_driver` + `lcli`) compile themselves bit-for-bit (`0 diff`) in **~3.8 seconds** without any external C compiler, assembler (`as`), or linker (`ld`).
 - **Sound Compile-Time Verification (`QF_LIA`, `QF_NIA`, `QF_BV`, Separation Logic):** Built-in Fourier-Motzkin linear integer arithmetic solver with cutting-plane tightening, nonlinear Positivstellensatz and shifted bilinear monotonicity, bitvector verification, Separation Logic heap frame reasoning, `[K0005]` W^X DMA protection, `[K0006]` kernel stack bounds, `[C0009]` constant-time cryptographic side-channel analysis, and standalone certificate checking via `lcert`.
 - **Expressive Functional & Systems Ergonomics:** Combines affine ownership (`own`, `mut`, region-tracked borrows, Perceus in-place reuse, and scoped bump arenas) with layout-sensitive or braced pattern matching, `f"...{expr}..."` string interpolation, left-associative `|>` pipe operators, `{ record with field: value }` functional updates, top-level `const` declarations, and tuple/record/ADT destructuring.
-- **24/24 Acceptance Matrix (`0 UNKNOWN`, `0 FAIL`) & 14 Embedded Verification Batteries (`lume self-prove`):** Every subsystem — including B+Tree ACID WAL storage, RFC 8446 TLS 1.3, X11/Web GUI, industrial telemetry (`Modbus`, `DNP3`, `IEC 60870-5-104`, `IEC 61850`, `ANSI` protection relays), 2D/3D software rendering, differentiable tensor/GPU kernels, quantum circuit synthesis (`OpenQASM 3.0`, `QIR`, `Quil`, `IQM`, `Stim`), and the freestanding `lume-os` microkernel — is verified continuously in CI.
+- **24/24 Acceptance Matrix (`0 UNKNOWN`, `0 FAIL`) & 15 Embedded Verification Batteries (`lume self-prove`):** Every subsystem — including B+Tree ACID WAL storage, RFC 8446 TLS 1.3, X11/Web/Win64 GUI, Universal Chameleon 9-ecosystem polyglot FFI (`lchameleon.src`), industrial telemetry (`Modbus`, `DNP3`, `IEC 60870-5-104`, `IEC 61850`, `ANSI` protection relays), 2D/3D software rendering, differentiable tensor/GPU kernels, quantum circuit synthesis (`OpenQASM 3.0`, `QIR`, `Quil`, `IQM`, `Stim`), and the freestanding `lume-os` microkernel — is verified continuously in CI (`413` formal obligations, `141` unit tests, `99` verified manifest files).
 
 ---
 
@@ -205,7 +205,7 @@ Lume pairs formal verification with concise functional and systems syntax:
 
 | Feature | Syntax in `.src` (Lume-Core) | Compiler & Prover Support |
 | :--- | :--- | :--- |
-| **String Interpolation** | `f"total={x + y}"` or `"total=${x + y}"` | Desugared in `01_lexer.src` and `02_parser.src` with automatic `str(...)` conversion |
+| **String Interpolation** | `f"total={x + y}"`, `"total=${x + y}"`, `"{x:04x}"` | Hardened `02_parser.src`/`lcaas.src`/`lfmt.src` (`isbadholech`, `isjsblock`, `/ {ffi}` literal brace guard, $O(1)$ `strplainchunk` scanner, `win64_gui_and_interp_regression_ok.src` `8/8`) |
 | **Pipe Operator (`\|>`)** | `x \|> scale(10) \|> encode` | Left-associative binary operator lowered to direct calls |
 | **Functional Record Update** | `{ st with count: st.count + 1 }` | Preserves unmodified fields; reduced symbolically in `lcaas` and `lcert` |
 | **Nested & Braced `match`** | `let y = match xs ...` or `match x { ... }` | Indentation-aware `ispipe` + `arm_dedent` and braced arms |
@@ -292,6 +292,8 @@ Lume includes self-hosted, formally verified domain engines in `compiler/stage1/
     - Formally verified mobile/endpoint spyware triage oracle (`Pegasus`, `Predator`, `Candiru`, `Graphite` IOCs) enforcing zero-network isolation (`zbt_netguard_isolated`), fail-closed `PARTIAL_UNKNOWN` verdicts on incomplete checks (`zbt_fail_closed_never_clean_law`), strict non-escalation of heuristic leads (`zbt_heuristics_alone_never_compromised_law`), and STIX 2.1 indicator revocation safety (`zbt_withdrawn_stix_never_active_law`).
 16. **Sovereign 1-Bit/Ternary LLM Core & 3-Tier Hybrid Router (`compiler/stage1/lume_llm_core.src` — `21/21` proofs & `examples/apps/sovereign_llm_router/main.src` — `20/20` proofs, `Lume Verified ✓`):**
     - Zero-float 1-bit (`{-1, +1}`, PrismML Bonsai) and 1.58-bit ternary (`{-1, 0, +1}`, BitNet b1.58) integer MAC engine with 5-trit byte packing, Liquid AI `LFM3` $O(1)$ state-space recurrence and `LiquidCodec` 24 kHz audio frame budgeting, `DSpark` speculative decoding verifier, fail-closed MoE SSD admission guard (`llm_moe_admission_guard`), and 3-tier hybrid routing (`Tier 0` Pure Lume Core -> `Tier 1` Local `Gemma4-E2B`/`Ministral-3B-Q4`/`Bonsai-1bit` -> `Tier 2` Cloud API Key) with `QF_LIA` anti-hallucination price/contract repair.
+17. **Universal Chameleon Polyglot Interop Engine (`compiler/stage1/lchameleon.src` — `28/28` proven obligations, `8/8` unit tests, `Lume Verified ✓`):**
+    - Commands `lume chameleon [eco]`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file]`, and `lume morph <file>` across 9 verified ecosystems (`c_abi`, `rust_cdylib`, `python_capi` with DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`) with `[I0003]` fail-closed `QF_LIA` boundary contracts (`unverified[T] -> verified[T]` under `/ {ffi}`).
 
 ---
 
@@ -303,6 +305,7 @@ Lume compiles directly from `.src` to **27 target triples** (`ISA ⊥ Container 
 lume targets                                              # List all 27 target triples
 lume build --target x86_64-linux-elf app.src -o app       # Native Linux ELF64
 lume build --target x86_64-windows-pe app.src -o app.exe  # Native Windows PE32+ (kernel32.dll IAT)
+lume build --target x86_64-windows-gui app.src -o gui.exe # Clean Generic Win64 Native GUI (Subsystem 2, zero Notepad++ strings, hMenu=0, Segoe UI -12, wide buttons, 4 WS_THICKFRAME | WS_HSCROLL | WS_VSCROLL panes with LB_SETHORIZONTALEXTENT = 560)
 lume build --target aarch64-macos-macho app.src -o app    # Native Apple Silicon Mach-O 64 (16 KB aligned)
 lume build --target x86_64-macos-macho app.src -o app     # Native macOS Intel Mach-O 64
 lume build --target aarch64-linux-elf app.src -o app      # Native ARM64 ELF64
@@ -355,7 +358,7 @@ lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE3
 │                                       #            pix_fraud_trace, sentry_uav_guard, verified_accounting,
 │                                       #            dfe_pix_bacen, omniroute_guard, brasil_public_id,
 │                                       #            zero_breach_forensics, sovereign_llm_router
-├── tests/harness/claude_audit_gate.src # 100% pure-Lume Claude Opus 5.5 + Red Team (R1 & R2) audit & 4-way fuzzer
+├── tests/harness/claude_audit_gate.src # 100% pure-Lume Claude Opus 5.5 + Red Team (R1, R2 & R3) audit & 4-way fuzzer
 ├── acceptance/matrix.json              # Track A/L Acceptance Matrix (24/24 PASS, 0 UNKNOWN, 0 FAIL)
 ├── formal/lean/LumeCore.lean           # Mechanized Lean 4 formalization of Lume-Core soundness
 ├── grammar/lume.ebnf                   # Complete formal grammar
@@ -369,7 +372,9 @@ lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE3
 Run the complete self-hosted verification and adversarial Red Team suite locally (zero Python or external test runners):
 
 ```sh
-./lume self-prove                                         # 14 batteries, live K0005/K0006/C0009/SRA probes & SHA-256 verification
+./lume self-prove                                         # LumeCompiler-Embedded-OmniProof-v3: 15 batteries, 413 formal obligations, 141 unit tests, 99 verified manifest files
+./lume test compiler/stage1/lchameleon.src                # Universal Chameleon 9-ecosystem polyglot FFI suite (8/8 tests, 28/28 proven obligations)
+./lume test compiler/stage1/win64_gui_and_interp_regression_ok.src # Win64 GUI & O(1) string interpolation regression suite (8/8)
 ./lume test compiler/stage1/lume_quantum_nexus_engine.src # Quantum Nexus unit & proof suite (15/15)
 ./lume test compiler/stage1/ltarget.src                   # 27 universal targets & quantum emitters (16/16)
 ./lume test compiler/stage1/lmanual.src                   # Bilingual manual suite (3/3)

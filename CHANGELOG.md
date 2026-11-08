@@ -106,9 +106,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Protected builds are never served from the binary cache,** so `--profile=release` always emits its `.lsym` sidecar.
 - **`.gitattributes`:** restored the Linguist and binary rules alongside the repo-wide LF default. **`docs/install.sh`** defaults to `v1.1.0`.
 
-## [1.1.0] - 2026-11-06
+## [1.1.0] - 2026-11-08
 
 ### Added
+- **Universal Chameleon Polyglot Interop Engine (`compiler/stage1/lchameleon.src`, `28/28` proven obligations, `8/8` unit tests, `Lume Verified ✓`):**
+  - Native self-hosted polyglot bridge (`lume chameleon [eco]`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file]`, and `lume morph <file>`) across 9 verified ecosystems (`c_abi`, `rust_cdylib`, `python_capi` with DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`) enforcing Principle P30 and `[I0003]` fail-closed `QF_LIA` boundary contracts (`unverified[T] -> verified[T]` under capability `/ {ffi}`).
+- **Clean Generic Win64 Native GUI Backend (`--target x86_64-windows-gui` in `compiler/stage1/ltarget.src`):**
+  - Emits 33,792-byte native PE32+ GUI (`Subsystem 2`) with zero hardcoded Notepad++ strings, `hMenu=0` (`wgui_rsp_imm(72, 0)`), `Segoe UI -12` font (`4220992`), `1400x780` window, wide buttons (`116px-142px`), and 4 resizable/scrollable `WS_THICKFRAME | WS_HSCROLL | WS_VSCROLL` panes with `LB_SETHORIZONTALEXTENT = 560`.
+- **Hardened String Interpolation & $O(1)$ Plain-Chunk Scanner (`02_parser.src`, `lcaas.src`, `lfmt.src`, `compiler/stage1/win64_gui_and_interp_regression_ok.src`, `8/8` tests):**
+  - Rejects `;`, `'`, `#`, `$`, `@`, and `` ` `` in `isbadholech`, rejects JS blocks (`return `, `var `, `const `, `function`, `if(`, `for(`, `while(`) in `isjsblock`, treats `/ {ffi}` effect annotations inside strings as literal `{`, supports format specifiers (`{x:04x}`), and scans plain string chunks via `strplainchunk`/`cs_strplainchunk` in $O(1)$ without per-character `Cons` heap pressure.
+- **Expanded `lume self-prove` & Red Team Round 3 (`compiler/stage1/lume_driver.src`, `tests/harness/claude_audit_gate.src`):**
+  - `LumeCompiler-Embedded-OmniProof-v3` expanded to `15` Sovereign Proof Batteries (`413` formal obligations, `141` unit tests, `99` verified manifest files) and Round 3 verification (`win64_gui_and_interp_regression_ok.src` + `lchameleon.src`) in `tests/harness/claude_audit_gate.src`.
 - **Sovereign Local LLM Hybrid Router & Liquid Audio Voice Engine (`compiler/stage1/lume_llm_core.src`, `7/7` tests, `QF_LIA` proven):**
   - Native 1.58-bit Ternary (`{-1, 0, +1}`) matrix-vector inference (`llm_ternary_matvec_dot`, `llm_bonsai_1bit_profile`), zero-copy MoE SSD page-cache expert streaming (`llm_moe_ssd_bandwidth_audit`, flagging `12.6 GB/tok` bandwidth traps on 8 GB edge nodes), deterministic `QF_LIA` Financial Scraping Guard (`llm_verify_scraped_offer`, rejecting `Q3` comma-shift price corruption and unavailable items), and Liquid AI `LFM3-Audio-2B` (`LiquidCodec` 12 tokens/80 ms @ 24 kHz, 50 ms TTFT, `pt-BR` ASR/TTS prompt locking, `<|mixed_start|>` spoken `<tool_call>` dispatch).
 - **COSMIC 1.11 Wayland Compositor & Reactive Desktop (`compiler/stage1/gui.src`, `compiler/stage1/los.src`, `9/9` + `11/11` tests):**
