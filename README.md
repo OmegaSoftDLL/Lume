@@ -19,6 +19,8 @@
 
 ![Lume v1.1.0 Live Programming, Formal Verification & 27-Target Native Compilation](docs/assets/lume-hero-animated.svg)
 
+<p align="center"><img src="docs/assets/lume-mascot.jpg" alt="Lumi — Official Lume Sovereign Mascot" width="420"></p>
+
 </div>
 
 ---
