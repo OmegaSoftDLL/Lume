@@ -32,14 +32,24 @@
 
 ---
 
-## Overview
+## About Lume — Sovereign Architecture at a Glance
 
-**Lume (`v1.1.0`, Edition 2026)** is a statically typed, formally verified systems, artificial intelligence, and quantum programming language. Its entire production toolchain is written in Lume itself and operates in a verified **Zero-C steady state**:
+<img src="docs/assets/lume-mascot.jpg" alt="Lumi — Official Lume Bioluminescent Chameleon Mascot" width="240" align="right" />
 
-- **Self-Hosted Fixpoint (`stage2 == stage3`):** The compiler (`lumec`), machine-code assembler and binary linker (`lasm`), module bundler (`lmod`), theorem prover (`lcaas`), independent proof certificate kernel (`lcert`), formatter (`lfmt`), test runner (`ltest`), and unified CLI driver (`lume_driver` + `lcli`) compile themselves bit-for-bit (`0 diff`) in **~3.8 seconds** without any external C compiler, assembler (`as`), or linker (`ld`).
-- **Sound Compile-Time Verification (`QF_LIA`, `QF_NIA`, `QF_BV`, Separation Logic):** Built-in Fourier-Motzkin linear integer arithmetic solver with cutting-plane tightening, nonlinear Positivstellensatz and shifted bilinear monotonicity, bitvector verification, Separation Logic heap frame reasoning, `[K0005]` W^X DMA protection, `[K0006]` kernel stack bounds, `[C0009]` constant-time cryptographic side-channel analysis, and standalone certificate checking via `lcert`.
-- **Expressive Functional & Systems Ergonomics:** Combines affine ownership (`own`, `mut`, region-tracked borrows, Perceus in-place reuse, and scoped bump arenas) with layout-sensitive or braced pattern matching, `f"...{expr}..."` string interpolation, left-associative `|>` pipe operators, `{ record with field: value }` functional updates, top-level `const` declarations, and tuple/record/ADT destructuring.
-- **24/24 Acceptance Matrix (`0 UNKNOWN`, `0 FAIL`) & 15 Embedded Verification Batteries (`lume self-prove`):** Every subsystem — including B+Tree ACID WAL storage, RFC 8446 TLS 1.3, X11/Web/Win64 GUI, Universal Chameleon 9-ecosystem polyglot FFI (`lchameleon.src`), industrial telemetry (`Modbus`, `DNP3`, `IEC 60870-5-104`, `IEC 61850`, `ANSI` protection relays), 2D/3D software rendering, differentiable tensor/GPU kernels, quantum circuit synthesis (`OpenQASM 3.0`, `QIR`, `Quil`, `IQM`, `Stim`), and the freestanding `lume-os` microkernel — is verified continuously in CI (`413` formal obligations, `141` unit tests, `99` verified manifest files).
+**Lume (`v1.1.0`, Edition 2026)** is a statically typed, formally verified **systems, artificial intelligence, and quantum programming language** created by **Ricardo Bueno ([`@OmegaSoftDLL`](https://github.com/OmegaSoftDLL))**. Its entire production toolchain is written 100% in Lume itself and operates in a mathematically proven **Zero-C steady state (`stage2 == stage3`)**.
+
+> 🇧🇷 **Em Português (`pt-BR`):** A **Lume (`v1.1.0`)** é uma linguagem de programação soberana para **sistemas críticos, inteligência artificial e computação quântica**, 100% auto-hospedada em código nativo (**Zero-C**, `stage2 == stage3` bit a bit em `~3,8s`), com provador de teoremas embutido (`QF_LIA`, `QF_NIA`, Lógica de Separação e kernel independente `lcert`), compactador atômico de memória de 4 níveis (**`31,8×` mais rápido** e **`2.733×` menos RAM**), motor **Camaleão Poliglota para 9 ecossistemas (`[I0003]`)** e compilação direta para **27 arquiteturas nativas**.
+
+<br clear="right"/>
+
+| Sovereign Pillar | Core Engine (`compiler/stage1/`) | Verified Guarantee & Production Evidence |
+| :--- | :--- | :--- |
+| **1. Zero-C Self-Hosted Fixpoint** | `lumec`, `lasm`, `lmod`, `lfmt`, `ltest`, `lume_driver`, `lcli` | Compiles itself bit-for-bit (`stage2 == stage3`, `0 diff`) in **`~3.8s`** with C compilers blocked (`lume zero-c`) |
+| **2. Embedded `OmniProof v3` Prover** | `lcaas.src` + standalone `lcert.src` + `formal/lean/LumeCore.lean` | `QF_LIA` Fourier-Motzkin + cutting planes, `QF_NIA`, `QF_BV`, Separation Logic, `@bound` WCET `[V0002]`, `@secret` `[C0009]` (`413` proven obligations) |
+| **3. 4-Tier Atomic Memory Compactor** | `runtime_core.lume` + `own_flow.src` (Perceus + 43-class GC) | `0 B` 63-bit tagged ints & 7-byte inline SSO, `24 B` `Cons`, `32 B` records, `LZ1` cold-arena compactor (**`31.8×` faster**, **`2,733×` less heap**) |
+| **4. Universal Chameleon Polyglot FFI** | `lchameleon.src` (`lume chameleon` / `camaleao` / `adapt` / `morph`) | **9 ecosystems** (`C/C++`, `Rust`, `Python DLPack`, `Node/WASM`, `Go`, `Java`, `.NET`, `SQL`, `OpenAPI`) with `[I0003]` `unverified[T] -> verified[T]` proofs |
+| **5. 27 Universal Compilation Targets** | `ltarget.src` + `lasm.src` (`ISA ⊥ Container ⊥ OS/ABI`) | Native `ELF64`, `PE32+`, Clean **Win64 Native GUI** (`33,792 B` with Lumi icon), `Mach-O 64`, `RISC-V`, `WASM32`, `CUDA PTX`, `SPIR-V`, `Verilog/VHDL`, `6 Quantum`, `APK/IPA/ISO/UEFI` |
+| **6. 85/85 Audit Gate & LumeLabs R&D** | `tests/harness/claude_audit_gate.src` + [`LUMELABS.md`](LUMELABS.md) | **21/21** Claude Opus 5.5 Audit + **64/64** Red Team (R1, R2 & R3) + 4-way differential fuzzer (`0 FAIL`), plus **7 LumeLabs R&D Divisions** |
 
 ---
 
