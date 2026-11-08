@@ -305,7 +305,7 @@ Lume compiles directly from `.src` to **27 target triples** (`ISA ⊥ Container 
 lume targets                                              # List all 27 target triples
 lume build --target x86_64-linux-elf app.src -o app       # Native Linux ELF64
 lume build --target x86_64-windows-pe app.src -o app.exe  # Native Windows PE32+ (kernel32.dll IAT)
-lume build --target x86_64-windows-gui app.src -o gui.exe # Clean Generic Win64 Native GUI (Subsystem 2, zero Notepad++ strings, hMenu=0, Segoe UI -12, wide buttons, 4 WS_THICKFRAME | WS_HSCROLL | WS_VSCROLL panes with LB_SETHORIZONTALEXTENT = 560)
+lume build --target x86_64-windows-gui app.src -o gui.exe # Clean Generic Win64 Native GUI (Subsystem 2, zero Notepad++ strings, hMenu=0, Segoe UI -12, wide buttons, 4 WS_CLIPSIBLINGS | WS_THICKFRAME | WS_HSCROLL | WS_VSCROLL panes with LB_SETHORIZONTALEXTENT = 680)
 lume build --target aarch64-macos-macho app.src -o app    # Native Apple Silicon Mach-O 64 (16 KB aligned)
 lume build --target x86_64-macos-macho app.src -o app     # Native macOS Intel Mach-O 64
 lume build --target aarch64-linux-elf app.src -o app      # Native ARM64 ELF64
