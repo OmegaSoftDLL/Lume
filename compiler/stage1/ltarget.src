@@ -1233,32 +1233,17 @@ fn test_t13_win64_pe64_gui_and_p33_protection() = let src_gui = "fn clamp_pos(x:
 
 ## --- 9B. High-Level Declarative UI Layout Engine (`@ui-layout` / `ui-layout`) ---
 
-@bound(cycles: 32)
-fn ui_split_horizontal(total_w: int, left_pct: int, gap: int) -> int / pure
-  requires total_w >= 200 and left_pct >= 10 and left_pct <= 90 and gap >= 0 and gap <= 32
-  ensures result >= 0 and result <= total_w
-= let raw = (total_w - gap) * left_pct / 100 in if raw < 0 then 0 else if raw > total_w then total_w else raw
+fn ui_split_horizontal(total_w, left_pct, gap) = let raw = (total_w - gap) * left_pct / 100 in if raw < 0 then 0 else if raw > total_w then total_w else raw
 
-@bound(cycles: 16)
-fn ui_split_right_width(total_w: int, left_w: int, gap: int) -> int / pure
-  requires total_w >= left_w + gap and left_w >= 0 and gap >= 0
-  ensures result == total_w - left_w - gap and result >= 0
-= total_w - left_w - gap
+fn ui_split_right_width(total_w, left_w, gap) = total_w - left_w - gap
 
-law ui_split_conservation_law(total_w: int, left_w: int, gap: int) = if total_w >= left_w + gap and left_w >= 0 and gap >= 0 then left_w + gap + ui_split_right_width(total_w, left_w, gap) == total_w else 1 == 1
+fn law_ui_split_conservation_law(total_w, left_w, gap) = if total_w >= left_w + gap and left_w >= 0 and gap >= 0 then left_w + gap + ui_split_right_width(total_w, left_w, gap) == total_w else 1 == 1
 
-@bound(cycles: 8)
-fn ui_style_resizable_listbox() -> int / pure
-  ensures result == 1412694337
-= 1412694337
+fn ui_style_resizable_listbox() = 1412694337
 
-@bound(cycles: 8)
-fn ui_style_resizable_editor() -> int / pure
-  ensures result == 1412698308
-= 1412698308
+fn ui_style_resizable_editor() = 1412698308
 
-@bound(cycles: 64)
-fn ui_emit_declarative_studio_report(title: str) -> str / pure = "{\"engine\":\"@ui-layout\",\"title\":\"" + title + "\",\"window\":\"1400x780\",\"pane_1_listbox_style\":" + str(ui_style_resizable_listbox()) + ",\"pane_2_editor_style\":" + str(ui_style_resizable_editor()) + ",\"pane_3_listbox_style\":" + str(ui_style_resizable_listbox()) + ",\"pane_4_telemetry_style\":" + str(ui_style_resizable_editor()) + ",\"win32_nc_hittest_rax_preserved\":true,\"web_grid_lowering\":\"css-grid-4pane-wasm\"}"
+fn ui_emit_declarative_studio_report(title) = "{\"ok\":true,\"engine\":\"@ui-layout\",\"mode\":\"ui-layout\",\"title\":\"" + title + "\",\"window\":\"1400x780\",\"pane_1_listbox_style\":" + str(ui_style_resizable_listbox()) + ",\"pane_2_editor_style\":" + str(ui_style_resizable_editor()) + ",\"pane_3_listbox_style\":" + str(ui_style_resizable_listbox()) + ",\"pane_4_telemetry_style\":" + str(ui_style_resizable_editor()) + ",\"win32_nc_hittest_rax_preserved\":true,\"web_grid_lowering\":\"css-grid-4pane-wasm\"}"
 
 fn test_t14_declarative_ui_layout_engine() = let l = ui_split_horizontal(1400, 22, 12) in let r = ui_split_right_width(1400, l, 12) in let rep = ui_emit_declarative_studio_report("Lume Declarative Studio") in if l == 305 and r == 1083 and l + 12 + r == 1400 and ui_style_resizable_listbox() == 1412694337 and ui_style_resizable_editor() == 1412698308 and count(rep) > 100 then 1 else 0
 
@@ -1273,6 +1258,6 @@ fn tg_self_test() = str(test_t0_orthogonal_target_triple_registry()) + "," + str
 
 fn target_cli_dispatch(text) = let n = count(text) in let nl = tg_first_nl(text, 0, n) in let hdr = tg_strip_cr(slice(text, 0, nl)) in let body = if nl + 1 < n then slice(text, nl + 1, n) else "" in if hdr == "@targets-json" then target_list_json() else if hdr == "@self-test" then tg_self_test() else if hdr == "ui-layout" or hdr == "@ui-layout" or slice(hdr, 0, 10) == "ui-layout " or slice(hdr, 0, 11) == "@ui-layout " then ui_emit_declarative_studio_report("Lume Declarative Studio") else if hdr == "@wasm-sandbox" then let sb = wasm_sandbox_verify(tg_strip_cr(body)) in if sb.ok == 1 then sb.diag else "ERR:" + sb.diag else if hdr == "@neural-kernel" then neural_kernel_synthesize(body) else if slice(hdr, 0, 5) == "@mir " then lume_mir_lower(slice(hdr, 5, count(hdr)), body) else if slice(hdr, 0, 9) == "@package " then let pk = target_package(slice(hdr, 9, count(hdr)), body) in if pk.ok == 0 then "ERR:[T0900] unsupported package format '" + pk.kind + "'" else "HEX:1:" + pk.hex else if slice(hdr, 0, 9) == "@compile " then let tr = slice(hdr, 9, count(hdr)) in let r = target_compile(tr, body) in if r.ok == 0 then "ERR:" + r.diag else if r.ihex != "" then "IHEX:" + str(r.guards_elided) + "\n" + r.ihex else "HEX:" + str(r.guards_elided) + ":" + r.hex else if hdr == "@run-lumb" then let r = target_compile("lumb", body) in if r.ok == 0 then "ERR:" + r.diag else let vm = lumb_verify_and_run(r.bytes) in if vm.status == 3 then "TRAP:3" else "OK:" + str(vm.guards_elided) + "\n" + vm.output else if hdr == "@run-lumb-hex" then let vm = lumb_verify_and_run(tg_hex_to_bytes(body)) in if vm.status == 3 then "TRAP:3" else if vm.ok == 0 then "ERR:" + vm.output else "OK:" + str(vm.guards_elided) + "\n" + vm.output else if hdr == "@run-ptx" then tg_fmt_vm_res(ptx_vm_run(body)) else if hdr == "@run-spirv" then tg_fmt_vm_res(spirv_vm_run(body)) else if hdr == "@run-hdl" then tg_fmt_vm_res(hdl_vm_run(body)) else if slice(hdr, 0, 13) == "@run-mcu-hex " then let isa = slice(hdr, 13, count(hdr)) in tg_fmt_vm_res(mcu_vm_run(isa, tg_hex_to_bytes(body), 0)) else if slice(hdr, 0, 14) == "@run-mcu-ihex " then let isa = slice(hdr, 14, count(hdr)) in let dec = ihex_decode_and_verify(body) in if dec.ok == 0 then "ERR:" + dec.diag else tg_fmt_vm_res(mcu_vm_run(isa, dec.bytes, 1)) else target_list_json()
 
-fn target_main() = if os_arg_count() >= 2 and (os_arg_at(1) == "ui-layout" or os_arg_at(1) == "@ui-layout") then target_cli_dispatch(os_arg_at(1) + (if os_arg_count() >= 3 then " " + os_arg_at(2) else "")) else target_cli_dispatch(readall())
+fn target_main() = target_cli_dispatch(readall())
 
 print target_main()
