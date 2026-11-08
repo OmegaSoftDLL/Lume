@@ -34,7 +34,7 @@ Unlike traditional language incubators where experimental libraries rely on unve
 
 1. **100% Native Lume (`.src`) Implementation:** Zero Python scripts, zero Rust dependencies, and zero C seed expansion (`"Lume gera Lume 100%"`).
 2. **Compile-Time Mathematical Proof (`QF_LIA` / `QF_NIA` / `QF_BV` / Separation Logic):** Every subsystem must state its safety invariants via `requires`, `ensures`, and universal `law` theorems verified by `lcaas` and certified by the standalone `lcert` kernel (`Lume Verified ✓`).
-3. **Self-Hosted Fixpoint Preservation (`stage2 == stage3`):** Graduating a LumeLabs module into `compiler/stage1/` requires passing the bit-identical triple bootstrap, the **85/85 Claude Opus 5.5 + Red Team (R1, R2 & R3) Audit Gate** (`tests/harness/claude_audit_gate.src`), and the **15/15 Embedded Compiler Proof Batteries** (`lume self-prove`, `413` obligations).
+3. **Self-Hosted Fixpoint Preservation (`stage2 == stage3`):** Graduating a LumeLabs module into `compiler/stage1/` requires passing the bit-identical triple bootstrap, the **85/85 Claude Opus 5.5 + Red Team (R1, R2 & R3) Audit Gate** (`tests/harness/claude_audit_gate.src`), and the **15/15 Embedded Compiler Proof Batteries** (`lume self-prove`, `482` obligations, `150` unit tests).
 
 > 🇧🇷 **Comunidade em Português (`pt-BR`):** Pesquisadores e desenvolvedores podem submeter propostas do LumeLabs, abrir discussões técnicas e consultar o manual nativo em português (`lume manual --pt` ou [`LUME_MANUAL_PT_BR.md`](LUME_MANUAL_PT_BR.md)).
 
@@ -44,23 +44,23 @@ Unlike traditional language incubators where experimental libraries rely on unve
 
 ## 2. The 7 LumeLabs Research Divisions
 
-### Lab 01 Spotlight — Universal Chameleon Polyglot & Zero-Copy FFI (`lchameleon.src`)
+### Lab 01 Spotlight — Universal Chameleon Polyglot & Singularity Boundary $\Omega$ (`lchameleon.src`)
 
 <img src="assets/lume-chameleon-emblem.jpg" alt="Lume Chameleon Polyglot Lambda Emblem" width="240" align="right" />
 
-**Lab 01 (`compiler/stage1/lchameleon.src`)** embodies Lumi's adaptive nature: it synthesizes fail-closed **`[I0003]` `QF_LIA` refinement adapters** (`unverified[T] -> verified[T]` under `/ {ffi}`, `28/28` proven obligations, `8/8` unit tests) across **9 foreign ecosystems** (`c_abi`, `rust_cdylib`, `python_capi` DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`).
+**Lab 01 (`compiler/stage1/lchameleon.src`)** embodies Lumi's adaptive nature: it synthesizes fail-closed **`[I0003]` `QF_LIA` refinement adapters** (`unverified[T] -> verified[T]` under `/ {ffi}`, `63/63` proven obligations, `12/12` unit tests) across **9 foreign ecosystems** (`c_abi`, `rust_cdylib`, `python_capi` DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`), paired with the **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$** (`lume singularity` / `lume ote`: counter-phase theorem $\tau_{\max}=T_m/4$, Operational Power Triangle $S, P, Q, \cos\Phi$, Nyquist guard, and 9 physical-leverage-ordered normative prescriptions).
 
 <br clear="right"/>
 
 | Division | Core Engine & Source | Verified Obligations & Key Capabilities | CLI Entrypoint |
 | :--- | :--- | :--- | :--- |
-| **Lab 01 · Chameleon Polyglot & Zero-Copy FFI** | `compiler/stage1/lchameleon.src` | **`28/28` proven obligations (`8/8` tests)** · Bridges `c_abi`, `rust_cdylib`, `python_capi` (DLPack zero-copy tensors), `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc` via fail-closed `[I0003]` `unverified[T] -> verified[T]` contracts | `lume chameleon [eco]` / `lume adapt <eco>` / `lume morph <file>` |
+| **Lab 01 · Chameleon Polyglot & Singularity $\Omega$** | `compiler/stage1/lchameleon.src` | **`63/63` proven obligations (`12/12` tests)** · Bridges 9 foreign ecosystems via fail-closed `[I0003]` `unverified[T] -> verified[T]` contracts + **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$** ($\tau_{\max}=T_m/4$, Power Triangle, 9 leverage prescriptions) | `lume chameleon [eco]` / `lume singularity` / `lume adapt <eco>` / `lume morph <file>` |
 | **Lab 02 · Sovereign 1-Bit/Ternary Edge AI & Liquid Audio** | `compiler/stage1/lume_llm_core.src` | **`21/21` proven obligations** · Bonsai 1-bit & BitNet 1.58-bit ternary MAC (`{-1, 0, +1}`), 5-trit byte packing, Liquid AI `LFM3` $O(1)$ state-space recurrence, `LiquidCodec` 24 kHz audio frame bounds, `DSpark` speculative decoding, `Colibri` MoE SSD streaming guard (`8 GB` RAM cap) | `lume test compiler/stage1/lume_llm_core.src` |
 | **Lab 03 · Quantum Nexus & Fault-Tolerant QEC** | `compiler/stage1/lume_quantum_nexus_engine.src` | **Linear Qubits (`[Q0001]` No-Cloning)** · `[Q0002]` Measurement Collapse, `[Q0003]` Uncomputation, `[Q0004]` Connectivity Routing, ZX-Calculus spider fusion, Rotated Surface Code `[[9,1,3]]` QEC, and 6 targets (`OpenQASM 3.0`, `QIR`, `Quil`, `IQM`, `Stim`, `QEC`) | `lume build <q.lume> --target openqasm3` |
 | **Lab 04 · KerneLume Ring-0 Bare-Metal OS & Hardware Synthesis** | `apps/lume_os/` · `compiler/stage1/ltarget.src` | **`@freestanding` Zero-GC Ring-0 OS** · Bootable MBR -> 64-bit Long Mode `.kernel`, `[K0005]` W^X DMA protection, `[K0006]` interrupt stack bounds, `[V0002]` WCET cycle bounds, plus synthesizable `Verilog-2005`, `VHDL-2008`, and `openTPU` systolic array ISA | `lume build <k.lume> --target x86_64-kernel` |
-| **Lab 05 · Mechanized Soundness & Proof Certificates** | `compiler/stage1/lcaas.src` · `compiler/stage1/lcert.src` · `formal/lean/LumeCore.lean` | **`413/413` compiler obligations** · Fourier-Motzkin `QF_LIA` with cutting planes, degree-2 Positivstellensatz `QF_NIA`, `QF_BV` bitvector bounds, Separation Logic frame rules, `[C0009]` `@secret` constant-time taint proofs, and FIPS 180-4 SHA-256 `.cert` artifacts | `lume prove <file.src>` / `lume certify <file.src>` / `lume self-prove` |
-| **Lab 06 · Native Desktop GUI, WebAssembly & 3D Graphics** | `compiler/stage1/ltarget.src` · `compiler/stage1/gui.src` · `compiler/stage1/gfx.src` | **33,792-byte Win64 Native GUI (`PE32+`)** · Clean Generic `x86_64-windows-gui` cockpit (`WS_CLIPSIBLINGS \| LBS_DISABLENOSCROLL`, `1366px` full-width bottom panes), Wayland `xdg-dialog-v1` (`4/4` proofs), and Perceus allocation-free Virtual DOM | `lume build <app.src> --target x86_64-windows-gui` |
-| **Lab 07 · Applied Sovereign FinTech, Pix/SEFAZ & Cyber Forensics** | `examples/apps/` | **`81/81` capstone proofs across 8 production apps** · `dfe_pix_bacen` (`11/11`), `pix_fraud_trace` (`9/9`), `brasil_public_id` (`9/9` July 2026 Alphanumeric CNPJ), `zero_breach_forensics` (`8/8` Pegasus/Predator/Candiru STIX 2.1), `sentry_uav_guard` (`9/9`), `verified_accounting` (`7/7`), `omniroute_guard` (`8/8`), `sovereign_llm_router` (`20/20`) | `lume prove examples/apps/<app>/main.src` |
+| **Lab 05 · Mechanized Soundness & Proof Certificates** | `compiler/stage1/lcaas.src` · `compiler/stage1/lcert.src` · `formal/lean/LumeCore.lean` | **`482/482` compiler obligations (`150` tests)** · Fourier-Motzkin `QF_LIA` with cutting planes, degree-2 Positivstellensatz `QF_NIA`, `QF_BV` bitvector bounds, Separation Logic frame rules, `[C0009]` `@secret` constant-time taint proofs, and FIPS 180-4 SHA-256 `.cert` artifacts | `lume prove <file.src>` / `lume certify <file.src>` / `lume self-prove` |
+| **Lab 06 · Native Desktop GUI, Cyber-Physical UFE & 3D Graphics** | `compiler/stage1/ltarget.src` · `compiler/stage1/gui.src` · `compiler/stage1/gfx.src` | **33,792-byte Win64 Native GUI (`PE32+`) & Unified Field Engine (`35/35` proofs)** · Declarative `@ui-layout` (`1412694337` / `1412698308`, `ui_split_conservation_law`), 7-DOF DLS kinematics, 3D Laplace SOR, $5\sigma$ + Joseph EKF, IAPWS-IF97 + Carnot, 1 kHz `LatencyMonitor`, and Wayland `xdg-dialog-v1` | `lume build <app.src> --target x86_64-windows-gui` / `lume unified-field` |
+| **Lab 07 · Applied Sovereign FinTech, IEC 62443 OT & Cyber Forensics** | `compiler/stage1/net.src` · `examples/apps/` | **`38/38` NetSentinel IEC 62443 OT proofs + `81/81` capstone proofs across 8 apps** · Purdue `L0..L4`/`L3.5` DMZ conduit guard, read-only DCS guard (`lume iec62443`), `dfe_pix_bacen` (`11/11`), `pix_fraud_trace` (`9/9`), `brasil_public_id` (`9/9`), `zero_breach_forensics` (`8/8`), `sentry_uav_guard` (`9/9`), `verified_accounting` (`7/7`), `omniroute_guard` (`8/8`), `sovereign_llm_router` (`20/20`) | `lume net-sentinel` / `lume prove examples/apps/<app>/main.src` |
 
 ---
 
@@ -90,7 +90,10 @@ lume evolve examples/verified_showcase.src
 lume neural-kernel
 lume genesis "bounded ring buffer with QF_LIA head/tail invariants"
 
-# 5. Execute the Full Embedded Compiler Self-Proof Suite (15 Batteries, 413 Obligations)
+# 5. Execute the Full Embedded Compiler Self-Proof Suite (15 Batteries, 482 Obligations, 150 Tests)
+lume unified-field
+lume singularity
+lume net-sentinel
 lume self-prove
 ```
 

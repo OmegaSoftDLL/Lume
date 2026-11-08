@@ -17,7 +17,7 @@
 ![Lume v1.1.0 Live Programming, Formal Verification & 27-Target Native Compilation](assets/lume-hero-animated.svg)
 
 > **Official Production Status (`v1.1.0` — Edition 2026): 100% Complete & Verified.**
-> All language phases (**Phases 0–5**), **Inflection Stages A–D**, **Waves 1–12**, **10/10 Developer Ergonomics**, **Universal Chameleon Polyglot Interop Engine (`9` Ecosystems, `[I0003]`)**, **27 Universal Targets**, the **Sovereign Quantum Nexus Engine**, **KerneLume Bare-Metal OS**, and **17 Verified Domain Engines** are implemented in 100% self-hosted Lume (`stage2 == stage3` bit-identical in ~3.8s), passing **24/24 Acceptance Matrix claims (`0 UNKNOWN`, `0 FAIL`)**, **85/85 Claude Opus 5.5 + Red Team (R1, R2 & R3) Audit Checks**, and **15/15 Embedded Compiler Proof Batteries (`413` formal obligations, `141` unit tests, `99` SHA-256 verified files)**.
+> All language phases (**Phases 0–5**), **Inflection Stages A–D**, **Waves 1–12**, **10/10 Developer Ergonomics**, **Universal Chameleon Polyglot Interop Engine (`9` Ecosystems, `[I0003]`)**, **Sovereign Cyber-Physical Unified Field Engine (`UFE`), Singularity Transition Engine (`OTE` / Boundary $\Omega$), & NetSentinel IEC 62443 OT Guard**, **27 Universal Targets**, the **Sovereign Quantum Nexus Engine**, **KerneLume Bare-Metal OS**, and **20 Verified Domain Engines** are implemented in 100% self-hosted Lume (`stage2 == stage3` bit-identical in ~3.8s), passing **24/24 Acceptance Matrix claims (`0 UNKNOWN`, `0 FAIL`)**, **85/85 Claude Opus 5.5 + Red Team (R1, R2 & R3) Audit Checks**, and **15/15 Embedded Compiler Proof Batteries (`482` formal obligations, `150` unit tests, `99` SHA-256 verified files)**.
 
 ---
 
@@ -25,11 +25,21 @@
 
 <img src="assets/lume-chameleon-emblem.jpg" alt="Lumi — Universal Chameleon Polyglot Lambda Emblem" width="220" align="right" />
 
-Lume's **Universal Chameleon Polyglot Interop Engine** (`lume chameleon`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <eco>`, `lume morph <file>`) bridges **9 verified ecosystems** (`c_abi`, `rust_cdylib`, `python_capi` with DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`) through fail-closed **`[I0003]` `QF_LIA` refinement contracts** (`unverified[T] -> verified[T]` under `/ {ffi}`, `28/28` proven obligations, `8/8` unit tests).
+Lume's **Universal Chameleon Polyglot Interop Engine** (`lume chameleon`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <eco>`, `lume morph <file>`) bridges **9 verified ecosystems** (`c_abi`, `rust_cdylib`, `python_capi` with DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`) through fail-closed **`[I0003]` `QF_LIA` refinement contracts** (`unverified[T] -> verified[T]` under `/ {ffi}`, `63/63` proven obligations and `12/12` unit tests in `lchameleon.src` including Singularity $\Omega$).
 
 <br clear="right"/>
 
 ![Lume Universal Chameleon Polyglot Interop Engine — 9 Verified Ecosystems](assets/lume-chameleon-showcase.svg)
+
+---
+
+## Sovereign Cyber-Physical, 7-DOF Robotics, Singularity Boundary Ω & IEC 62443 Engines
+
+Lume `v1.1.0` embeds a formally verified **Cyber-Physical Control, 7-DOF Robotics, Dynamical Singularity ($\Omega$), and IEC 62443 OT Security** stack directly in its self-hosted standard library (`std.gfx`, `lchameleon.src`, and `std.net`):
+
+- **Pillar 1 — Unified Field Engine (`lume unified-field` / `lume ufe` in `std.gfx`, `35/35` proofs, `12/12` tests):** 7-DOF DLS singularity-free kinematics (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`), 3D Harmonic Laplace Red-Black SOR solver (`ufe_laplace_sor_step_milli`, `ufe_harmonic_maximum_principle_law`), GNRON swirl attenuation (`ufe_gnron_swirl_scale_milli`), capsule self-collision (`ufe_self_collision_capsule_ok`), bare-metal IEEE-754 finite guard (`ufe_ieee754_f32_finite_guard`), dual EKF $5\sigma$ Mahalanobis gate + Joseph covariance positivity + valve stiction + RUL (`ufe_ekf_mahalanobis_5sigma_ok`, `ufe_ekf_joseph_cov_pos_milli`, `ufe_actuator_stiction_detect`, `ufe_actuator_rul_hours`), multi-robot swarm separation (`ufe_swarm_separation_ok`), IAPWS-IF97 steam regions + wet-steam guard + Carnot bound (`ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_carnot_efficiency_bound_ok`), and 1 kHz `LatencyMonitor` with 100-cycle hysteresis (`ufe_latency_shedder_step`).
+- **Pillar 2 — 2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$ (`lume singularity` / `lume ote` / `lume transition-engine` in `lchameleon.src`, `63/63` proofs, `12/12` tests):** Counter-phase theorem $\tau_{\max} = T_m/4$ (`ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_singularity_margin_zone`), Nyquist aliasing guard (`ote_nyquist_status_code`), dual underdamped ($0<\zeta<1$) / overdamped ($1\le\zeta\le 100$ via $t_{80}/t_{20}$) regime selector & quantitative $\zeta$ estimator (`ote_select_damping_regime`, `ote_estimate_zeta_milli`), Operational Power Triangle ($S, P, Q, \cos\Phi$) conservation & phase coherence (`ote_power_factor_milli`, `ote_reactive_waste_ratio_milli`, `ote_phase_coherence_ok`), cascade $3\times$ bandwidth decoupling (`ote_cascade_bandwidth_decoupled_ok`), quantitative gain retuning (`ote_retune_kp_scale_milli`), and 9 physical-leverage-ordered normative prescriptions (`ote_diagnose_primary_code`).
+- **Pillar 3 — NetSentinel IEC 62443 & Read-Only OT Telemetry (`lume net-sentinel` / `lume iec62443` in `std.net`, `38/38` proofs, `12/12` tests):** Purdue `L0..L4` & DMZ `L3.5` conduit enforcement (`iec62443_purdue_conduit_ok`), OT firewall policy audit (`netsentinel_fw_policy_audit_ok`), structural read-only DCS guard (`ot_readonly_dcs_guard`), tri-state quality (`ot_tristate_quality_code`), and finite `1e12` sentinel (`ot_finite_sentinel_clamp`).
 
 ---
 
@@ -97,11 +107,14 @@ lume manual --pt                 # Manual Interno Completo em Portugues (pt-BR)
 lume manual chameleon            # Universal Chameleon Polyglot Interop Engine (EN)
 lume manual --pt camaleao        # Motor Universal Camaleao Poliglota (pt-BR)
 lume chameleon                   # Inspect all 9 verified polyglot ecosystems & [I0003] status
+lume unified-field               # Run Sovereign Unified Field Engine (7-DOF DLS, Laplace SOR, 5-sigma/Joseph EKF, IAPWS-IF97)
+lume singularity                 # Run 2nd-Order Dynamical Transition Engine & Singularity Boundary Omega (tau_max = Tm/4)
+lume net-sentinel                # Run NetSentinel IEC 62443 Purdue L0..L4/L3.5 DMZ conduit guard & read-only OT telemetry
 lume run examples/01_hello.lume  # Run a program
 lume prove <file.src>            # Prove requires/ensures/law contracts (QF_LIA + QF_NIA)
 lume certify <file.src>          # Emit standalone Lume Verified proof certificate
 lume build <file.src> -o app     # Compile standalone native binary (Zero-C)
-lume self-prove                  # Run all 15 embedded compiler proof batteries (413 obligations)
+lume self-prove                  # Run all 15 embedded compiler proof batteries (482 obligations, 150 unit tests)
 ```
 
 ---

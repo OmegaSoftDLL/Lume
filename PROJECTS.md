@@ -52,10 +52,13 @@ Bem-vindo ao **Quadro Oficial de Projetos e Engenharia da Linguagem Lume**. Cada
   - [#27 — `[v1.1.0 Certified] 4-Tier Atomic Memory Compactor (31.8x Reduction) & 85/85 Audit Gate`](https://github.com/OmegaSoftDLL/lume/issues/27)
   - [#28 — `[v1.1.0 Certified] Universal Chameleon Polyglot Interop (9 Ecosystems) & Clean Win64 PE32+ GUI (Lumi Icon)`](https://github.com/OmegaSoftDLL/lume/issues/28)
 - **Key Deliverables:**
-  - **Universal Chameleon Polyglot Interop Engine (`compiler/stage1/lchameleon.src`):**
+  - **Universal Chameleon Polyglot Interop & Singularity Transition Engine (`compiler/stage1/lchameleon.src`):**
     - Bridges **9 foreign ecosystems** (`c_abi`, `rust_cdylib`, `python_capi` with zero-copy DLPack tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`).
-    - Enforces fail-closed `[I0003]` boundary contracts (`unverified[T] -> verified[T]` under `/ {ffi}`) with **`28/28` proven `QF_LIA` obligations** and **`8/8` unit tests**.
-    - Full CLI (`lume chameleon`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <eco>`, `lume morph <file>`), REPL (`:chameleon`, `:camaleao`), and LSP hover/completion support.
+    - Enforces fail-closed `[I0003]` boundary contracts (`unverified[T] -> verified[T]` under `/ {ffi}`) and embeds the **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$** (`lume singularity` / `lume ote`: counter-phase theorem $\tau_{\max}=T_m/4$, Operational Power Triangle $S, P, Q, \cos\Phi$, Nyquist aliasing guard, cascade $3\times$ bandwidth decoupling, quantitative $\zeta$ & $K_p$ retuning, and 9 physical-leverage-ordered prescriptions) with **`63/63` proven `QF_LIA` obligations** and **`12/12` unit tests**.
+    - Full CLI (`lume chameleon`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume singularity`, `lume ote`, `lume adapt <eco>`, `lume morph <file>`), REPL (`:chameleon`, `:camaleao`, `:ufe`, `:singularity`, `:iec62443`), and LSP hover/completion support.
+  - **Sovereign Cyber-Physical Unified Field Engine (`std.gfx`) & NetSentinel IEC 62443 OT Guard (`std.net`):**
+    - **Unified Field Engine (`lume unified-field` / `lume ufe` — `35/35` proofs, `12/12` tests):** 7-DOF DLS singularity-free kinematics, 3D Harmonic Laplace Red-Black SOR solver & maximum principle, GNRON swirl attenuation, capsule self-collision, IEEE-754 finite register guard, $5\sigma$ Mahalanobis + Joseph EKF, valve stiction + RUL prognostics, multi-robot swarm separation, IAPWS-IF97 steam regions + Carnot bound, and 1 kHz `LatencyMonitor` with 100-cycle hysteresis.
+    - **NetSentinel IEC 62443 (`lume net-sentinel` / `lume iec62443` — `38/38` proofs, `12/12` tests):** Purdue `L0..L4` & DMZ `L3.5` conduit enforcement, OT default-drop firewall audit, structural read-only DCS guard (`ot_readonly_dcs_guard`), tri-state telemetry quality, and finite `1e12` sentinel clamping.
   - **4-Tier Atomic Memory Compactor (`31.8×` Peak RAM Reduction):**
     - Stage 0 `.rodata` content-addressed deduplication, Level 1 64-bit NaN-boxed register words, Level 2 16-byte micro-cells & 8-byte string slices, and Level 3 `LZ1` cold-arena freeze/thaw (`421.4 MB -> 13.2 MB` peak RSS).
   - **Clean Generic Win64 Native PE32+ GUI & Official Lumi Mascot Icon (`compiler/stage1/ltarget.src`):**
@@ -87,7 +90,7 @@ Every card moved to **Shipped & Certified** on the Lume Project Board must pass 
 |---|---|---|---|
 | **1. Self-Hosted Bootstrap Fixpoint** | `scripts/bootstrap.src` & `scripts/zero_c.src` | `stage2 == stage3` (`0` byte diff, Zero-C) | **PASS ✓** |
 | **2. Claude Opus & Red Team R1/R2/R3 Gate** | `tests/harness/claude_audit_gate.src` | `21` Audit + `64` Red Team + 4-Way Fuzzer | **PASS ✓** |
-| **3. Universal Chameleon Polyglot Engine** | `compiler/stage1/lchameleon.src` | `28/28` `QF_LIA`/`WCET` proofs · `8/8` tests | **PASS ✓** |
+| **3. Universal Chameleon & Singularity $\Omega$** | `compiler/stage1/lchameleon.src` | `63/63` `QF_LIA`/`WCET` proofs · `12/12` tests | **PASS ✓** |
 | **4. Sovereign 1-Bit/Ternary LLM Core** | `compiler/stage1/lume_llm_core.src` | `21/21` `QF_LIA` proofs · `7/7` tests | **PASS ✓** |
 | **5. Sovereign Quantum Nexus Engine** | `compiler/stage1/lume_quantum_nexus_engine.src` | `30/30` `QF_LIA` proofs · `6/6` tests | **PASS ✓** |
 | **6. Continuum Nexus (7 Engines)** | `compiler/stage1/lume_continuum_nexus_engine.src` | `28/28` `QF_LIA` proofs · `7/7` tests | **PASS ✓** |
@@ -96,7 +99,7 @@ Every card moved to **Shipped & Certified** on the Lume Project Board must pass 
 | **9. EGM Elephant-Goldfish SDD Engine** | `compiler/stage1/lume_egm_engine.src` | `23/23` `QF_LIA` proofs · `6/6` tests | **PASS ✓** |
 | **10. Pingora Edge Proxy & TLS 1.3** | `compiler/stage1/lume_pingora_proxy_engine.src` | `25/25` `QF_LIA` proofs · `6/6` tests | **PASS ✓** |
 | **11. Reversa SDD & Binary Decompiler** | `compiler/stage1/lume_reversa_engine.src` | `15/15` `QF_LIA` proofs · `5/5` tests | **PASS ✓** |
-| **12. Industrial SCADA, IEC 61850 & Net** | `compiler/stage1/net.src` | `23/23` `QF_LIA` proofs · `10/10` tests | **PASS ✓** |
-| **13. 2D/3D Graphics, COSMIC GUI & Hybrid GPU** | `compiler/stage1/gfx.src`, `gui.src`, `los.src` | `31/31` `QF_LIA` proofs · `18/18` tests | **PASS ✓** |
+| **12. Industrial SCADA, IEC 61850 & IEC 62443** | `compiler/stage1/net.src` | `38/38` `QF_LIA` proofs · `12/12` tests | **PASS ✓** |
+| **13. 2D/3D Graphics, Cyber-Physical UFE & GUI** | `compiler/stage1/gfx.src`, `gui.src`, `los.src` | `50/50` `QF_LIA` proofs · `29/29` tests | **PASS ✓** |
 | **14. Crypto, Blockchain & Constant-Time `[C0009]`** | `compiler/stage1/lume_crypto_blockchain_engine.src` | `19/19` `QF_LIA` proofs · `6/6` tests | **PASS ✓** |
-| **15. 27 Targets, Win64 GUI & Toolchain Manifest** | `compiler/stage1/ltarget.src` & `MANIFEST.sha256` | `12/12` target tests · `8/8` GUI/interp · `99` SHA-256 files | **PASS ✓** |
+| **15. 27 Targets, Win64 GUI & Toolchain Manifest** | `compiler/stage1/ltarget.src` & `MANIFEST.sha256` | `482` total proofs · `150` unit tests · `99` SHA-256 files | **PASS ✓** |

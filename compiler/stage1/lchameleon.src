@@ -166,6 +166,51 @@ law ote_nyquist_aliasing_law(tm_ms: int, ts_ms: int) =
     ote_nyquist_status_code(tm_ms, ts_ms) == 2
   else 1 == 1
 
+@bound(cycles: 36)
+fn ote_power_factor_milli(p_active_milli: int, s_apparent_milli: int) -> int / pure
+  requires p_active_milli >= 0 and s_apparent_milli >= 1 and p_active_milli <= s_apparent_milli
+  ensures result >= 0 and result <= 1000
+= if p_active_milli == s_apparent_milli then 1000 else if p_active_milli == 0 then 0 else let pf = (p_active_milli * 1000) / s_apparent_milli in if pf < 0 then 0 else if pf > 1000 then 1000 else pf
+
+@bound(cycles: 36)
+fn ote_reactive_waste_ratio_milli(q_reactive_milli: int, s_apparent_milli: int) -> int / pure
+  requires q_reactive_milli >= 0 and s_apparent_milli >= 1 and q_reactive_milli <= s_apparent_milli
+  ensures result >= 0 and result <= 1000
+= if q_reactive_milli == s_apparent_milli then 1000 else if q_reactive_milli == 0 then 0 else let qf = (q_reactive_milli * 1000) / s_apparent_milli in if qf < 0 then 0 else if qf > 1000 then 1000 else qf
+
+law ote_power_triangle_conservation_law(s_app: int) =
+  if s_app >= 1 and s_app <= 1000000 then
+    ote_power_factor_milli(s_app, s_app) == 1000 and ote_reactive_waste_ratio_milli(0, s_app) == 0
+  else 1 == 1
+
+@bound(cycles: 24)
+fn ote_singularity_margin_zone(tau_ms: int, tm_ms: int) -> int / pure
+  requires tau_ms >= 0 and tm_ms >= 20
+  ensures result == 0 or result == 1 or result == 2
+= if 4 * tau_ms > tm_ms then 2 else if 5 * tau_ms >= tm_ms then 1 else 0
+
+@bound(cycles: 24)
+fn ote_cascade_bandwidth_decoupled_ok(tm_inner_ms: int, tm_outer_ms: int) -> int / pure
+  requires tm_inner_ms >= 1 and tm_outer_ms >= 1
+  ensures result == 0 or result == 1
+= if tm_outer_ms >= 3 * tm_inner_ms then 1 else 0
+
+law ote_cascade_resonance_law(tm_in: int, tm_out: int) =
+  if tm_in >= 1 and tm_out >= 1 and tm_out < 3 * tm_in then
+    ote_cascade_bandwidth_decoupled_ok(tm_in, tm_out) == 0
+  else 1 == 1
+
+@bound(cycles: 32)
+fn ote_estimate_zeta_milli(regime: int, mp_permille: int, rise_ratio_milli: int) -> int / pure
+  requires regime >= 1 and regime <= 3 and mp_permille >= 0 and mp_permille <= 1000 and rise_ratio_milli >= 1000
+  ensures result >= 50 and result <= 100000
+= if regime == 1 then (if mp_permille >= 800 then 50 else if mp_permille >= 500 then 215 else if mp_permille >= 250 then 404 else if mp_permille >= 100 then 591 else 707) else if regime == 2 then 1000 else if rise_ratio_milli <= 2200 then 1200 else if rise_ratio_milli >= 9000 then 100000 else 2000
+
+@bound(cycles: 24)
+fn ote_retune_kp_scale_milli(omega_crossed: int, zeta_low: int, zeta_high: int) -> int / pure
+  ensures result >= 650 and result <= 1250
+= if omega_crossed == 1 then 650 else if zeta_low == 1 then 750 else if zeta_high == 1 then 1250 else 1000
+
 ## ============================================================================
 ## 2. STRING & PARSING HELPERS FOR POLYGLOT SIGNATURES & HEADERS
 ## ============================================================================
@@ -230,4 +275,6 @@ fn test_ote_singularity_boundary_omega_and_nyquist() = let tmax = ote_singularit
 
 fn test_ote_dual_regime_and_9_normative_prescriptions() = let r_under = ote_select_damping_regime(3, 1800) in let r_crit = ote_select_damping_regime(0, 3632) in let r_over = ote_select_damping_regime(0, 5200) in let ph_ok = ote_phase_coherence_ok(42, 48) in let ph_bad = ote_phase_coherence_ok(20, 65) in let c1 = ote_diagnose_primary_code(2, 0, 900, 60, 40, 700, 1000) in let c2 = ote_diagnose_primary_code(1, 0, 900, 60, 40, 700, 1000) in let c3 = ote_diagnose_primary_code(0, 1, 900, 60, 40, 700, 1000) in let c4 = ote_diagnose_primary_code(0, 0, 650, 60, 40, 700, 1000) in let c5 = ote_diagnose_primary_code(0, 0, 900, 30, 40, 700, 1000) in let c6 = ote_diagnose_primary_code(0, 0, 900, 60, 140, 700, 1000) in let c7 = ote_diagnose_primary_code(0, 0, 900, 60, 40, 300, 1000) in let c8 = ote_diagnose_primary_code(0, 0, 900, 60, 40, 1300, 1000) in let c9 = ote_diagnose_primary_code(0, 0, 900, 60, 40, 700, 2500) in let c_ok = ote_diagnose_primary_code(0, 0, 900, 60, 40, 700, 1000) in if r_under == 1 and r_crit == 2 and r_over == 3 and ph_ok == 1 and ph_bad == 0 and c1 == "NYQ-ALIAS" and c2 == "NYQ-LIMIT" and c3 == "OMEGA-CROSS" and c4 == "PF-LOW" and c5 == "MF-LOW" and c6 == "CASCADE-DEEP" and c7 == "ZETA-LOW" and c8 == "ZETA-HIGH" and c9 == "QAMP-HIGH" and c_ok == "TUNED" then 1 else 0
 
-print test_chameleon_c_cpp_abi_and_fail_closed_guard() + test_chameleon_rust_ownership_and_unwind_guard() + test_chameleon_python_refcount_and_dlpack_tensor() + test_chameleon_js_wasm_go_java_dotnet_guards() + test_chameleon_sql_and_openapi_guards() + test_chameleon_ecosystem_detection_and_synthesis() + test_ote_singularity_boundary_omega_and_nyquist() + test_ote_dual_regime_and_9_normative_prescriptions()
+fn test_ote_wave2_power_triangle_margin_cascade_zeta_and_retune() = let pf_u = ote_power_factor_milli(1000, 1000) in let pf_800 = ote_power_factor_milli(800, 1000) in let qw_0 = ote_reactive_waste_ratio_milli(0, 1000) in let qw_600 = ote_reactive_waste_ratio_milli(600, 1000) in let mz_safe = ote_singularity_margin_zone(150, 1000) in let mz_warn = ote_singularity_margin_zone(220, 1000) in let mz_cross = ote_singularity_margin_zone(300, 1000) in let casc_ok = ote_cascade_bandwidth_decoupled_ok(100, 350) in let casc_bad = ote_cascade_bandwidth_decoupled_ok(100, 200) in let z_u = ote_estimate_zeta_milli(1, 250, 1800) in let z_c = ote_estimate_zeta_milli(2, 0, 3632) in let z_o = ote_estimate_zeta_milli(3, 0, 5200) in let kp_om = ote_retune_kp_scale_milli(1, 0, 0) in let kp_zl = ote_retune_kp_scale_milli(0, 1, 0) in let kp_zh = ote_retune_kp_scale_milli(0, 0, 1) in let kp_ok = ote_retune_kp_scale_milli(0, 0, 0) in if pf_u == 1000 and pf_800 == 800 and qw_0 == 0 and qw_600 == 600 and mz_safe == 0 and mz_warn == 1 and mz_cross == 2 and casc_ok == 1 and casc_bad == 0 and z_u == 404 and z_c == 1000 and z_o == 2000 and kp_om == 650 and kp_zl == 750 and kp_zh == 1250 and kp_ok == 1000 then 1 else 0
+
+print test_chameleon_c_cpp_abi_and_fail_closed_guard() + test_chameleon_rust_ownership_and_unwind_guard() + test_chameleon_python_refcount_and_dlpack_tensor() + test_chameleon_js_wasm_go_java_dotnet_guards() + test_chameleon_sql_and_openapi_guards() + test_chameleon_ecosystem_detection_and_synthesis() + test_ote_singularity_boundary_omega_and_nyquist() + test_ote_dual_regime_and_9_normative_prescriptions() + test_ote_wave2_power_triangle_margin_cascade_zeta_and_retune()

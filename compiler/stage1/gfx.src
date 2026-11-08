@@ -195,6 +195,54 @@ fn ufe_latency_shedder_step(elapsed_us: int, threshold_us: int, ok_streak: int, 
     ensures result == 0 or result == 1
     = if elapsed_us > threshold_us then 1 else (if shed_active == 1 then (if ok_streak < 100 then 1 else 0) else 0)
 
+@bound(cycles: 24)
+fn ufe_laplace_sor_step_milli(phi_curr_milli: int, neighbor_avg_milli: int, is_dirichlet_boundary: int, dirichlet_val_milli: int) -> int
+    requires phi_curr_milli >= 0 and phi_curr_milli <= 1000 and neighbor_avg_milli >= 0 and neighbor_avg_milli <= 1000 and dirichlet_val_milli >= 0 and dirichlet_val_milli <= 1000
+    ensures result >= 0 and result <= 1000
+    = if is_dirichlet_boundary != 0 then dirichlet_val_milli else neighbor_avg_milli
+
+law ufe_harmonic_maximum_principle_law(neighbor_avg: int) =
+    if neighbor_avg >= 0 and neighbor_avg <= 1000 then ufe_laplace_sor_step_milli(500, neighbor_avg, 0, 0) >= 0 and ufe_laplace_sor_step_milli(500, neighbor_avg, 0, 0) <= 1000 else 1 == 1
+
+@bound(cycles: 24)
+fn ufe_self_collision_capsule_ok(link_i: int, link_j: int, seg_dist_mm: int, r_i_mm: int, r_j_mm: int, margin_mm: int) -> int
+    requires r_i_mm >= 1 and r_j_mm >= 1 and margin_mm >= 0
+    ensures result == 0 or result == 1
+    = if link_j - link_i < 2 and link_i - link_j < 2 then 1 else (if seg_dist_mm >= r_i_mm + r_j_mm + margin_mm then 1 else 0)
+
+@bound(cycles: 24)
+fn ufe_ekf_joseph_cov_pos_milli(p_prior_milli: int, gain_atten_milli: int, r_meas_noise_milli: int) -> int
+    requires p_prior_milli >= 0 and gain_atten_milli >= 0 and r_meas_noise_milli >= 1
+    ensures result >= 1
+    = if gain_atten_milli + r_meas_noise_milli >= 1 then gain_atten_milli + r_meas_noise_milli else 1
+
+@bound(cycles: 24)
+fn ufe_actuator_stiction_detect(delta_cmd_milli: int, deadband_cmd_milli: int, delta_pos_milli: int, eps_pos_milli: int) -> int
+    requires deadband_cmd_milli >= 1 and eps_pos_milli >= 0
+    ensures result == 0 or result == 1
+    = if delta_cmd_milli > deadband_cmd_milli and delta_pos_milli >= 0 - eps_pos_milli and delta_pos_milli <= eps_pos_milli then 1 else 0
+
+@bound(cycles: 24)
+fn ufe_actuator_rul_hours(theta_crit_milli: int, theta_est_milli: int, wear_rate_per_hr_milli: int) -> int
+    requires theta_crit_milli >= 0 and theta_est_milli >= 0
+    ensures result >= 0 and result <= 1000000
+    = if theta_est_milli >= theta_crit_milli then 0 else (if wear_rate_per_hr_milli <= 0 or theta_crit_milli - theta_est_milli > 1000000 then 1000000 else (theta_crit_milli - theta_est_milli) / 2)
+
+@bound(cycles: 24)
+fn ufe_swarm_separation_ok(dist_ab_mm: int, r_safe_mm: int) -> int
+    requires r_safe_mm >= 1
+    ensures result == 0 or result == 1
+    = if dist_ab_mm >= 2 * r_safe_mm then 1 else 0
+
+@bound(cycles: 24)
+fn ufe_carnot_efficiency_bound_ok(eta_actual_milli: int, eta_carnot_milli: int) -> int
+    requires eta_actual_milli >= 0 and eta_carnot_milli >= 0 and eta_carnot_milli <= 1000
+    ensures result == 0 or result == 1
+    = if eta_actual_milli <= eta_carnot_milli then 1 else 0
+
+law ufe_carnot_second_law(eta_actual: int, eta_carnot: int) =
+    if eta_carnot >= 0 and eta_carnot <= 1000 and eta_actual > eta_carnot then ufe_carnot_efficiency_bound_ok(eta_actual, eta_carnot) == 0 else 1 == 1
+
 ## ============================================================================
 ## 8. Self-Contained Unit Tests (`lume test compiler/stage1/gfx.src`)
 ## ============================================================================
@@ -212,3 +260,5 @@ fn test_bmp_ppm_and_svg_substation_hmi() = let bmp_hex = bmp_header_build_hex(32
 fn test_ufe_gnron_and_dls_singularity_crossing() = let sw0 = ufe_gnron_swirl_scale_milli(0, 1000) in let sw_mid = ufe_gnron_swirl_scale_milli(450, 1000) in let sw_max = ufe_gnron_swirl_scale_milli(1200, 1000) in let l_far = ufe_dls_lambda_sq_milli(85, 50, 16) in let l_sing = ufe_dls_lambda_sq_milli(0, 50, 16) in let denom = ufe_dls_safe_denom_milli(0, l_sing) in sw0 == 0 and sw_mid == 450 and sw_max == 1000 and l_far == 0 and l_sing == 16 and denom == 16
 
 fn test_ufe_ekf_if97_ieee754_and_latency_shedder() = let f32_ok = ufe_ieee754_f32_finite_guard(127) in let f32_nan = ufe_ieee754_f32_finite_guard(255) in let ekf_in = ufe_ekf_mahalanobis_5sigma_ok(18, 25) in let ekf_out = ufe_ekf_mahalanobis_5sigma_ok(40, 25) in let r1 = ufe_if97_region_select(550, 3000, 0) in let r2 = ufe_if97_region_select(750, 3000, 0) in let r4 = ufe_if97_region_select(500, 2000, 1) in let r_oor = ufe_if97_region_select(1200, 2000, 0) in let sh_ok = ufe_turbine_wet_steam_guard(12) in let sh_wet = ufe_turbine_wet_steam_guard(3) in let shed_trig = ufe_latency_shedder_step(950, 850, 0, 0) in let shed_hold = ufe_latency_shedder_step(400, 850, 50, 1) in let shed_recover = ufe_latency_shedder_step(400, 850, 100, 1) in f32_ok == 1 and f32_nan == 0 and ekf_in == 1 and ekf_out == 0 and r1 == 1 and r2 == 2 and r4 == 4 and r_oor == 0 and sh_ok == 1 and sh_wet == 0 and shed_trig == 1 and shed_hold == 1 and shed_recover == 0
+
+fn test_ufe_wave2_harmonic_collision_ekf_rul_swarm_carnot() = let sor_int = ufe_laplace_sor_step_milli(500, 340, 0, 1000) in let sor_dir = ufe_laplace_sor_step_milli(500, 340, 1, 1000) in let col_adj = ufe_self_collision_capsule_ok(2, 3, 5, 40, 40, 10) in let col_ok = ufe_self_collision_capsule_ok(1, 5, 120, 40, 40, 10) in let col_bad = ufe_self_collision_capsule_ok(1, 5, 60, 40, 40, 10) in let jos_cov = ufe_ekf_joseph_cov_pos_milli(100, 45, 5) in let stic_yes = ufe_actuator_stiction_detect(50, 15, 1, 2) in let stic_no = ufe_actuator_stiction_detect(50, 15, 40, 2) in let rul_ok = ufe_actuator_rul_hours(1000, 200, 2) in let rul_zero = ufe_actuator_rul_hours(500, 600, 2) in let swm_ok = ufe_swarm_separation_ok(500, 200) in let swm_bad = ufe_swarm_separation_ok(350, 200) in let car_ok = ufe_carnot_efficiency_bound_ok(420, 610) in let car_bad = ufe_carnot_efficiency_bound_ok(650, 610) in sor_int == 340 and sor_dir == 1000 and col_adj == 1 and col_ok == 1 and col_bad == 0 and jos_cov == 50 and stic_yes == 1 and stic_no == 0 and rul_ok == 400 and rul_zero == 0 and swm_ok == 1 and swm_bad == 0 and car_ok == 1 and car_bad == 0

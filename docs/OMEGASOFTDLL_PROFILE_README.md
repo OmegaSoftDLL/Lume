@@ -43,10 +43,10 @@
 | Pillar / Pilar | Key Engineering Breakthrough / Inovacao Tecnica | Verified Metrics / Metricas Verificadas |
 | :--- | :--- | :--- |
 | **1. Zero-C Self-Hosted Fixpoint** | `lumec` compiler + `lasm` native assembler emit ELF64, PE32+ & Mach-O 64 directly from Lume source (`.src`) | `stage2 == stage3` bit-identical (`PATH=""`) |
-| **2. Embedded OmniProof v3 Prover** | In-compiler `QF_LIA` (Fourier-Motzkin + cutting planes), `QF_NIA`, `QF_BV`, Separation Logic, `@bound` WCET & `@secret` `[C0009]` | `413` formal obligations · `141` unit tests · `.lcert` (`ML-DSA-65`) |
+| **2. Embedded OmniProof v3 Prover** | In-compiler `QF_LIA` (Fourier-Motzkin + cutting planes), `QF_NIA`, `QF_BV`, Separation Logic, `@bound` WCET & `@secret` `[C0009]` | `482` formal obligations · `150` unit tests · `.lcert` (`ML-DSA-65`) |
 | **3. 4-Tier Atomic Memory Compactor** | `.rodata` interning + 63-bit tagged int + 7B inline SSO + `24B` `Cons` + `SRA` + `LZ1` cold-arena compactor | **`31.8x` faster** (`4.46s`) · **`2,733x` less heap** (`36.9 KB` peak) |
-| **4. Universal Chameleon Engine** | Bidirectional zero-copy FFI & schema synthesis across **9 ecosystems** under `[I0003]` `unverified[T] -> verified[T]` proofs | `C/C++`, `Rust`, `Python DLPack`, `Node/WASM`, `Go`, `Java/JVM`, `C#/.NET`, `SQL`, `OpenAPI` |
-| **5. 27 Universal Compilation Targets** | Native x86-64/ARM64/RISC-V, **Clean Win64 Native GUI (`33,792B` PE32+)**, WASM, CUDA PTX 8.0, SPIR-V 1.6, Verilog/VHDL, 6 Quantum targets & DNA | `27/27` targets proof-gated before codegen (`[V0001]`) |
+| **4. Universal Chameleon & Singularity $\Omega$** | Bidirectional zero-copy FFI across **9 ecosystems** (`[I0003]`) + **2nd-Order Dynamical Transition Engine** ($\tau_{\max}=T_m/4$, Power Triangle, 9 leverage prescriptions) | `63/63` proofs · `12/12` tests (`C/C++`, `Rust`, `Python DLPack`, `Node/WASM`, `Go`, `Java`, `.NET`, `SQL`, `OpenAPI`) |
+| **5. Cyber-Physical UFE, IEC 62443 & 27 Targets** | **7-DOF DLS robotics**, 3D Laplace SOR, $5\sigma$/Joseph EKF, IAPWS-IF97 (`35/35` proofs), **Purdue `L0..L4`/`L3.5` DMZ OT guard** (`38/38` proofs), and **Clean Win64 Native GUI (`@ui-layout`)** | `27/27` targets proof-gated before codegen (`[V0001]`) |
 | **6. Claude Opus 5.5 + Red Team Gate** | Self-hosted adversarial audit harness (`claude_audit_gate.src`) + 4-way differential fuzzer (`lumec` vs `GC_STRESS` vs `lume0` vs `lcaas`) | **`85/85` audit & Red-Team R1/R2/R3 checks green** |
 
 ---

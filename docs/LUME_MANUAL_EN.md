@@ -411,37 +411,50 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   `map_checked_slot`, and `decimal_clamp`.
 
 ## 6.2.3 Unified Field Engine (`lume unified-field` / `lume ufe`), Singularity Transition Engine (`lume singularity` / `lume ote`) & NetSentinel IEC 62443 (`lume net-sentinel` / `lume iec62443`)
-- **Unified Field Engine (`lume unified-field` / `lume ufe` in `std.gfx`):**
+- **Unified Field Engine (`lume unified-field` / `lume ufe` in `std.gfx`, `35/35` `QF_LIA` proofs, `12/12` tests):**
   - **7-DOF Singularity-Free Damped Least-Squares (DLS):** `ufe_dls_lambda_sq_milli` and
     `ufe_dls_safe_denom_milli` guarantee strictly positive inverse-kinematics denominators
     (`sigma_sq + lambda_sq >= 1`) near kinematic singularities.
-  - **GNRON Swirl Attenuation & IEEE-754 Finite Register Guard:** `ufe_gnron_swirl_scale_milli`
-    attenuates non-conservative rotational swirl, and `ufe_ieee754_f32_finite_guard` rejects
-    `NaN`/`Inf` exponent `255` before hardware actuator registers are written.
-  - **Dual-State Actuator EKF & $5\sigma$ Mahalanobis Gate:** `ufe_ekf_mahalanobis_5sigma_ok`
-    enforces `innov_sq <= 25 * S` (`5-sigma` gate) before state-covariance updates.
-  - **IAPWS-IF97 Steam Regions & Wet-Steam Guard:** `ufe_if97_region_select` classifies
-    thermodynamic steam regions (`1..4`) and `ufe_turbine_wet_steam_guard` prevents blade
-    erosion when dryness fraction falls below safe bounds.
+  - **3D Harmonic Laplace Red-Black SOR Solver & Maximum Principle:** `ufe_laplace_sor_step_milli`
+    and `ufe_harmonic_maximum_principle_law` solve $\nabla^2 \phi = 0$ on 3D voxel grids with
+    provably zero local minima outside the target sink.
+  - **GNRON Swirl Attenuation, Capsule Self-Collision & IEEE-754 Finite Register Guard:**
+    `ufe_gnron_swirl_scale_milli` attenuates non-conservative rotational swirl,
+    `ufe_self_collision_capsule_ok` enforces 7-DOF link-pair capsule clearance, and
+    `ufe_ieee754_f32_finite_guard` rejects `NaN`/`Inf` exponent `255` before hardware actuator
+    registers are written.
+  - **Dual-State Actuator EKF ($5\sigma$ Mahalanobis + Joseph Covariance), Stiction & RUL:**
+    `ufe_ekf_mahalanobis_5sigma_ok` enforces `innov_sq <= 25 * S` (`5-sigma` gate),
+    `ufe_ekf_joseph_cov_pos_milli` guarantees positive-definite covariance updates,
+    `ufe_actuator_stiction_detect` isolates control valve stiction/deadband, and
+    `ufe_actuator_rul_hours` estimates Remaining Useful Life (`RUL`).
+  - **Multi-Robot Swarm Separation, IAPWS-IF97 Steam Regions, Wet-Steam & Carnot Bound:**
+    `ufe_swarm_separation_ok` proves inter-agent collision clearance, `ufe_if97_region_select`
+    classifies thermodynamic steam regions (`1..4`), `ufe_turbine_wet_steam_guard` prevents blade
+    erosion, and `ufe_carnot_efficiency_bound_ok` enforces 2nd-law Carnot efficiency bounds.
   - **Deterministic 1 kHz `LatencyMonitor` with 100-Cycle Hysteresis:** `ufe_latency_shedder_step`
     sheds non-critical load immediately on budget overrun and requires 100 consecutive clean
     1 kHz cycles before restoring full load.
-- **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$ (`lume singularity` / `lume ote` / `lume transition-engine` in `lchameleon.src`):**
-  - **Dual-Regime Step Identification:** `ote_select_damping_regime` dispatches underdamped
-    ($0 < \zeta < 1$ via overshoot $M_p$ and peak period $T_d$) vs. critically/overdamped
-    ($1 \le \zeta \le 100$ via dimensionless rise-time ratio `t_80 / t_20`).
-  - **Operational Power Triangle & Phase Coherence:** `ote_phase_coherence_ok` verifies
-    energetic vs. delay phase coherence ($|\Phi - \Phi_\tau| \le 10^\circ$) to distinguish
-    decision delay $\tau$ from internal rework dissipation.
-  - **Singularity Boundary $\Omega$ (`tau_max = T_m / 4`) & Nyquist Guard:**
-    `ote_singularity_tau_max_ms` and `ote_omega_boundary_crossed` detect counter-phase
-    delivery across $\Omega$ (`omega_env * tau > pi / 2`), while `ote_nyquist_status_code`
-    enforces $N_y = T_m / (2 T_s)$ (`NYQ-ALIAS` $< 1.0$, `NYQ-LIMIT` $< 2.0$).
-  - **9 Normative Prescriptions Ordered by Physical Leverage (`ote_diagnose_primary_code`):**
-    Evaluates in immutable leverage order (Sampling $\to$ Delay/Boundary $\to$ Gain $\to$ Inertia):
+- **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$ (`lume singularity` / `lume ote` / `lume transition-engine` in `lchameleon.src`, `63/63` `QF_LIA` proofs, `12/12` tests):**
+  - **Dual-Regime Step Identification & Quantitative $\zeta$ Estimator:** `ote_select_damping_regime`
+    and `ote_estimate_zeta_milli` dispatch underdamped ($0 < \zeta < 1$ via overshoot $M_p$ and
+    peak period $T_d$) vs. critically/overdamped ($1 \le \zeta \le 100$ via dimensionless rise-time
+    ratio `t_80 / t_20`).
+  - **Operational Power Triangle (`S, P, Q, cosPhi`) & Phase Coherence:** `ote_power_factor_milli`,
+    `ote_reactive_waste_ratio_milli`, and `ote_phase_coherence_ok` quantify useful power vs.
+    reactive rework and verify energetic vs. delay phase coherence (`|Phi - Phi_tau| <= 10 deg`).
+  - **Singularity Boundary $\Omega$ (`tau_max = T_m / 4`), Margin Zones & Nyquist Guard:**
+    `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, and `ote_singularity_margin_zone`
+    detect counter-phase delivery across $\Omega$ (`omega_env * tau > pi / 2`), while
+    `ote_nyquist_status_code` enforces $N_y = T_m / (2 T_s)$ (`NYQ-ALIAS` $< 1.0$, `NYQ-LIMIT` $< 2.0$).
+  - **Cascade Bandwidth Decoupling, Gain Retuning & 9 Normative Prescriptions:**
+    `ote_cascade_bandwidth_decoupled_ok` enforces $3\times$ inner/outer loop timescale separation,
+    `ote_retune_kp_scale_milli` computes safe proportional gain scaling, and
+    `ote_diagnose_primary_code` evaluates in immutable physical leverage order
+    (Sampling $\to$ Delay/Boundary $\to$ Gain $\to$ Inertia):
     `NYQ-ALIAS` $\to$ `NYQ-LIMIT` $\to$ `OMEGA-CROSS` $\to$ `PF-LOW` $\to$ `MF-LOW` $\to$
     `CASCADE-DEEP` $\to$ `ZETA-LOW` $\to$ `ZETA-HIGH` $\to$ `QAMP-HIGH` / `TUNED`.
-- **NetSentinel IEC 62443 & Read-Only OT Telemetry (`lume net-sentinel` / `lume iec62443` in `std.net`):**
+- **NetSentinel IEC 62443 & Read-Only OT Telemetry (`lume net-sentinel` / `lume iec62443` in `std.net`, `38/38` `QF_LIA` proofs, `12/12` tests):**
   - **Purdue Model (`L0..L4`) & DMZ (`L3.5`) Conduit Guard:** `iec62443_purdue_conduit_ok`
     enforces strict zone-conduit traversal and forbids direct enterprise-to-control bridging.
   - **OT Firewall Policy Audit & Structural Read-Only DCS Guard:** `netsentinel_fw_policy_audit_ok`
@@ -550,8 +563,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (or `lume chameleon`) Universal Chameleon Polyglot Interop Engine across 9 ecosystems (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
-  lume unified-field|ufe [target]                    Unified Field Engine in `std.gfx` (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`, `ufe_gnron_swirl_scale_milli`, `ufe_ieee754_f32_finite_guard`, `ufe_ekf_mahalanobis_5sigma_ok`, `ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_latency_shedder_step`)
-  lume singularity|ote|transition-engine [target]    2nd-Order Dynamical Transition Engine & Singularity Boundary Omega in `lchameleon.src` (`ote_select_damping_regime`, `ote_phase_coherence_ok`, `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_nyquist_status_code`, `ote_diagnose_primary_code`)
+  lume unified-field|ufe [target]                    Unified Field Engine in `std.gfx` (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`, `ufe_laplace_sor_step_milli`, `ufe_harmonic_maximum_principle_law`, `ufe_gnron_swirl_scale_milli`, `ufe_self_collision_capsule_ok`, `ufe_ieee754_f32_finite_guard`, `ufe_ekf_mahalanobis_5sigma_ok`, `ufe_ekf_joseph_cov_pos_milli`, `ufe_actuator_stiction_detect`, `ufe_actuator_rul_hours`, `ufe_swarm_separation_ok`, `ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_carnot_efficiency_bound_ok`, `ufe_latency_shedder_step`)
+  lume singularity|ote|transition-engine [target]    2nd-Order Dynamical Transition Engine & Singularity Boundary Omega in `lchameleon.src` (`ote_select_damping_regime`, `ote_estimate_zeta_milli`, `ote_power_factor_milli`, `ote_reactive_waste_ratio_milli`, `ote_phase_coherence_ok`, `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_singularity_margin_zone`, `ote_nyquist_status_code`, `ote_cascade_bandwidth_decoupled_ok`, `ote_retune_kp_scale_milli`, `ote_diagnose_primary_code`)
   lume net-sentinel|iec62443 [target]                NetSentinel IEC 62443 & Read-Only OT Telemetry in `std.net` (`iec62443_purdue_conduit_ok`, `netsentinel_fw_policy_audit_ok`, `ot_readonly_dcs_guard`, `ot_tristate_quality_code`, `ot_finite_sentinel_clamp`)
   lume run compiler/stage1/lume_llm_core.src         Sovereign 1-Bit/Ternary LLM Core, Liquid LFM3 Audio, Colibri MoE Guard & 3-Tier Router (`21/21` proofs)
   lume run examples/apps/sovereign_llm_router/main.src Sovereign Edge/Local/Cloud LLM Router & Anti-Hallucination Price Oracle (`20/20` proofs)
@@ -575,8 +588,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
   `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 413 formal obligations +
-  141 unit tests + 99 verified toolchain artifacts).
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 482 formal obligations +
+  150 unit tests + 99 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 

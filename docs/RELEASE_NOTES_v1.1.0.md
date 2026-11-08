@@ -6,7 +6,8 @@
 
 [![Release v1.1.0](https://img.shields.io/badge/release-v1.1.0-00e5ff?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/releases/tag/v1.1.0)
 [![Zero-C Fixpoint](https://img.shields.io/badge/bootstrap-stage2_%3D%3D_stage3-00e676?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/blob/main/README.md)
-[![OmniProof v3](https://img.shields.io/badge/OmniProof_v3-413_QF__LIA%2FNIA_Proofs-10b981?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/blob/main/PROJECTS.md)
+[![OmniProof v3](https://img.shields.io/badge/OmniProof_v3-482_QF__LIA%2FNIA_Proofs-10b981?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/blob/main/PROJECTS.md)
+[![Cyber-Physical UFE + Singularity Ω + IEC 62443](https://img.shields.io/badge/Cyber--Physical_UFE_%2B_Singularity_%CE%A9_%2B_IEC_62443-Verified-00b4d8?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/blob/main/README.md)
 [![Claude + Red Team Audit](https://img.shields.io/badge/Audit_Gate-85%2F85_PASS-7c4dff?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/blob/main/tests/harness/claude_audit_gate.src)
 [![Chameleon Polyglot](https://img.shields.io/badge/Chameleon_FFI-9_Ecosystems_%5BI0003%5D-ff9100?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/blob/main/compiler/stage1/lchameleon.src)
 [![27 Universal Targets](https://img.shields.io/badge/Targets-27_Architectures-f59e0b?style=flat-square)](https://github.com/OmegaSoftDLL/Lume/blob/main/compiler/stage1/ltarget.src)
@@ -99,13 +100,17 @@ lume morph legacy_service.h         # Auto-detect foreign interface & emit verif
 
 ---
 
-### 4. `85/85` Claude Opus 5.5 + Red Team (Rounds 1, 2 & 3) Audit & `413` Formal Proofs
+### 4. `85/85` Claude Opus 5.5 + Red Team Audit, Cyber-Physical UFE / Singularity $\Omega$ / IEC 62443 & `482` Formal Proofs
 
+- **Sovereign Cyber-Physical Unified Field Engine (`std.gfx`), Singularity Transition Engine (`lchameleon.src`) & NetSentinel IEC 62443 (`std.net`):**
+  - **Unified Field Engine (`lume unified-field` / `lume ufe` — `35/35` proofs, `12/12` tests):** 7-DOF DLS singularity-free kinematics (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`), 3D Harmonic Laplace Red-Black SOR solver (`ufe_laplace_sor_step_milli`, `ufe_harmonic_maximum_principle_law`), GNRON swirl attenuation, capsule self-collision, IEEE-754 finite guard, $5\sigma$ Mahalanobis + Joseph EKF, valve stiction + RUL, swarm separation, IAPWS-IF97 steam regions + Carnot bound, and 1 kHz `LatencyMonitor`.
+  - **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$ (`lume singularity` / `lume ote` — `63/63` proofs, `12/12` tests):** Counter-phase theorem $\tau_{\max}=T_m/4$ (`ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_singularity_margin_zone`), Nyquist aliasing guard, dual underdamped/overdamped regime selector & $\zeta$ estimator, Operational Power Triangle ($S, P, Q, \cos\Phi$), cascade $3\times$ bandwidth decoupling, quantitative $K_p$ retuning, and 9 physical-leverage-ordered normative prescriptions (`ote_diagnose_primary_code`).
+  - **NetSentinel IEC 62443 (`lume net-sentinel` / `lume iec62443` — `38/38` proofs, `12/12` tests):** Purdue `L0..L4` & DMZ `L3.5` conduit enforcement, OT default-drop firewall audit, structural read-only DCS guard, tri-state telemetry quality, and finite `1e12` sentinel.
 - **`tests/harness/claude_audit_gate.src` (`85/85` Security & Soundness Checks):**
   - **21/21 Claude Opus 5.5 Audit Findings (`#1`–`#21`)** + **64/64 Red-Team Round 1, Round 2 & Round 3 Checks** + **100%-Lume 4-Way Differential Fuzzer** (`lumec` ELF64 vs `LUME_GC_STRESS=1` vs Stage-0 `lume0` vs `lcaas`).
   - Enforces sound negative modulo bounds (`-k+1 <= x%k <= k-1`), wrapping `+%`/`-%`/`*%` opacity, 64-bit `QF_LIA` coefficient overflow guards (`|c| <= 10^9`), `QF_NIA` square overflow guards (`<= 3037000499`), fail-closed contract parsing (`[V0001]`), Perceus alias safety (`pat_scrutinee_safe`), `/ pure` capability isolation (`[E0200]`), and `@secret` constant-time taint tracking (`[C0009]`).
 - **`./lume self-prove` (`LumeCompiler-Embedded-OmniProof-v3`):**
-  - Verifies **15 formal proof batteries**, **413 `QF_LIA` / `QF_NIA` / `WCET` / Separation-Logic obligations**, **141 unit tests**, and **99 SHA-256 manifest files** (`Lume Verified ✓`).
+  - Verifies **15 formal proof batteries**, **482 `QF_LIA` / `QF_NIA` / `WCET` / Separation-Logic obligations**, **150 unit tests**, and **99 SHA-256 manifest files** (`Lume Verified ✓`).
 
 ---
 
@@ -156,7 +161,7 @@ brew install --Formula https://raw.githubusercontent.com/OmegaSoftDLL/Lume/main/
 | **Windows x64 (NSIS Installer)** | `lume-1.1.0-windows-x86_64-setup.exe` | Automated Windows setup executable with `PATH` registration |
 | **Universal Source & Bootstrap** | `lume-1.1.0-universal-bootstrap.tar.gz` | Complete `stage1` source + zero-dependency bootstrap bundle |
 | **VS Code Extension (`.vsix`)** | `lume-vscode-1.1.0.vsix` | Official Lume LSP, syntax highlighting, proof lens & Chameleon snippets |
-| **Formal Proof Certificate** | `lume-1.1.0-omniproof-v3.lcert` | Signed `OmniProof-v3` certificate (`413` obligations, `99` manifest hashes) |
+| **Formal Proof Certificate** | `lume-1.1.0-omniproof-v3.lcert` | Signed `OmniProof-v3` certificate (`482` obligations, `150` unit tests, `99` manifest hashes) |
 | **Cryptographic Checksums** | `SHA256SUMS` | SHA-256 digests for all release artifacts |
 
 ---
@@ -165,11 +170,11 @@ brew install --Formula https://raw.githubusercontent.com/OmegaSoftDLL/Lume/main/
 
 1. **Compactador Atomico de Memoria em 4 Camadas (`31,8x` mais rapido e `2.733x` menos RAM):**
    - Inteiros imediatos de 63 bits (`0 B` no heap), strings curtas inline de 7 bytes (`SSO` em registrador de 64 bits), contagem de referencias **Perceus** com reuso in-place (`rc_Unique`) e arenas lexicais `O(1)` (`mem_arena_mark` / `mem_arena_release`).
-2. **Motor Poliglota Camaleao Universal (`compiler/stage1/lchameleon.src` — `9` Ecossistemas Verificados):**
-   - Interoperabilidade nativa sem codigo de cola com **C/C++ ABI, Rust (`cdylib`), Python 3.12+ (`Py_LIMITED_API` + tensores zero-copy DLPack), Node.js/WASM, Go (`c-shared`), Java (`JNI`/Panama), .NET (`P/Invoke`), SQL (`SQLite`/`Postgres`) e OpenAPI/gRPC**, protegida por contratos `QF_LIA` fail-closed (`[I0003]`, `28/28` provas formais).
-3. **Backend Nativo Win64 GUI Limpo (`--target x86_64-windows-gui`) com Icone da Mascote Lumi & Interpolacao `$O(1)$` Blindada:**
-   - Gera executaveis nativos PE32+ GUI de `38.912` bytes para Windows 11 com diretorio `.rsrc` completo (`RT_ICON` + `RT_GROUP_ICON` + `RT_MANIFEST` HiDPI) exibindo a mascote oficial **Lumi** na barra de titulo e na barra de tarefas, alem de 4 paineis redimensionaveis com rolagem horizontal/vertical.
+2. **Motor Poliglota Camaleao Universal (`compiler/stage1/lchameleon.src` — `9` Ecossistemas Verificados) & Fronteira de Singularidade $\Omega$ (`OTE`):**
+   - Interoperabilidade nativa sem codigo de cola com **C/C++ ABI, Rust (`cdylib`), Python 3.12+ (`Py_LIMITED_API` + tensores zero-copy DLPack), Node.js/WASM, Go (`c-shared`), Java (`JNI`/Panama), .NET (`P/Invoke`), SQL (`SQLite`/`Postgres`) e OpenAPI/gRPC**, protegida por contratos `QF_LIA` fail-closed (`[I0003]`), integrada ao **Motor Dinamico de Transicao de 2a Ordem e Fronteira $\Omega$** (`lume singularity` / `lume ote`: $\tau_{\max}=T_m/4$, Triangulo de Potencias $S, P, Q, \cos\Phi$ e 9 prescricoes por alavancagem fisica; `63/63` provas formais, `12/12` testes).
+3. **Motor de Campo Unificado (`lume ufe` — `35/35` provas), NetSentinel IEC 62443 (`lume iec62443` — `38/38` provas) & Backend Win64 GUI (`@ui-layout`):**
+   - Cinematica 7-DOF DLS, solver harmonico 3D Laplace SOR, EKF $5\sigma$ + Joseph, IAPWS-IF97 + Carnot, `LatencyMonitor` 1 kHz, guarda de conduite Purdue `L0..L4`/`L3.5` DMZ e executaveis nativos PE32+ GUI com a mascote oficial **Lumi** e layout declarativo `@ui-layout` (`ui_split_conservation_law`).
 4. **Auditoria Completa `85/85` (Claude Opus 5.5 `#1`–`#21` + Red Team Rondas 1, 2 e 3 + Fuzzer Diferencial 4-Vias):**
-   - Validada 100% em Lume nativo via `tests/harness/claude_audit_gate.src` e `./lume self-prove` (`15/15` baterias, `413` obrigacoes formais, `141` testes unitarios e `99` arquivos no manifesto SHA-256).
+   - Validada 100% em Lume nativo via `tests/harness/claude_audit_gate.src` e `./lume self-prove` (`15/15` baterias, `482` obrigacoes formais, `150` testes unitarios e `99` arquivos no manifesto SHA-256).
 5. **Ecossistema Sovereign Completo no GitHub:**
    - Quadro oficial **[GitHub Project V2 (#5)](https://github.com/OmegaSoftDLL/Lume/projects)**, incubadora **[LumeLabs (`7` divisoes de P&D)](https://github.com/OmegaSoftDLL/Lume/blob/main/LUMELABS.md)**, **[Wiki Oficial de 11 Paginas](https://github.com/OmegaSoftDLL/Lume/wiki)** e **[Forum de Discussao Bilingue](https://github.com/OmegaSoftDLL/Lume/discussions)**.
