@@ -405,6 +405,48 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   Funcoes de indexacao, fatia e clamp verificadas por `QF_LIA`: `vec_clamp_index`, `vec_checked_slice_len`,
   `map_checked_slot` e `decimal_clamp`.
 
+## 6.2.3 Motor de Campo Unificado (`lume unified-field` / `lume ufe`), Motor Dinamico de Transicao e Singularidade (`lume singularity` / `lume ote`) e NetSentinel IEC 62443 (`lume net-sentinel` / `lume iec62443`)
+- **Motor de Campo Unificado (`lume unified-field` / `lume ufe` em `std.gfx`):**
+  - **Cinematica 7-DOF Damped Least-Squares (DLS) Livre de Singularidade:** `ufe_dls_lambda_sq_milli` e
+    `ufe_dls_safe_denom_milli` garantem denominador estritamente positivo (`sigma_sq + lambda_sq >= 1`)
+    proximo a singularidades cinematicas.
+  - **Atenuacao de Vortice GNRON e Guarda de Registrador Finito IEEE-754:** `ufe_gnron_swirl_scale_milli`
+    atenua rotacao nao-conservativa e `ufe_ieee754_f32_finite_guard` bloqueia expoente `255` (`NaN`/`Inf`)
+    antes da escrita em registradores fisicos de atuadores.
+  - **EKF Dual-State de Atuador com Portao de Mahalanobis $5\sigma$:** `ufe_ekf_mahalanobis_5sigma_ok`
+    impõe `innov_sq <= 25 * S` (`5-sigma`) antes de atualizar a covariancia de estado.
+  - **Regioes de Vapor IAPWS-IF97 e Guarda de Vapor Umido:** `ufe_if97_region_select` classifica
+    as regioes termodinamicas (`1..4`) e `ufe_turbine_wet_steam_guard` protege contra erosao de
+    palhetas quando o titulo do vapor cai abaixo do limite seguro.
+  - **`LatencyMonitor` Deterministico de 1 kHz com Histerese de 100 Ciclos:** `ufe_latency_shedder_step`
+    descarta carga nao-critica imediatamente em caso de estouro de janela e exige 100 ciclos
+    consecutivos limpos a 1 kHz antes de restaurar a carga.
+- **Motor Dinamico de Transicao de 2a Ordem e Fronteira de Singularidade $\Omega$ (`lume singularity` / `lume ote` / `lume transition-engine` em `lchameleon.src`):**
+  - **Identificacao de Resposta ao Degrau em Dois Regimes:** `ote_select_damping_regime` despacha
+    entre o regime subamortecido ($0 < \zeta < 1$ via sobressinal $M_p$ e periodo entre picos $T_d$)
+    e o regime criticamente amortecido / superamortecido ($1 \le \zeta \le 100$ via razao adimensional
+    de tempos de subida `t_80 / t_20`).
+  - **Triangulo de Potencias Operacional e Coerencia de Fase:** `ote_phase_coherence_ok` verifica
+    a coerencia entre a fase energetica e a fase por atraso ($|\Phi - \Phi_\tau| \le 10^\circ$) para
+    separar atraso de decisao $\tau$ de retrabalho dissipativo interno.
+  - **Fronteira de Singularidade $\Omega$ (`tau_max = T_m / 4`) e Guarda de Nyquist:**
+    `ote_singularity_tau_max_ms` e `ote_omega_boundary_crossed` detectam entrega em contrafase
+    alem de $\Omega$ (`omega_env * tau > pi / 2`), enquanto `ote_nyquist_status_code` verifica
+    $N_y = T_m / (2 T_s)$ (`NYQ-ALIAS` $< 1.0$, `NYQ-LIMIT` $< 2.0$).
+  - **9 Prescricoes Normativas Ordenadas por Alavancagem Fisica (`ote_diagnose_primary_code`):**
+    Avalia na ordem imutavel de alavancagem (Amostragem $\to$ Atraso/Fronteira $\to$ Ganho $\to$ Inercia):
+    `NYQ-ALIAS` $\to$ `NYQ-LIMIT` $\to$ `OMEGA-CROSS` $\to$ `PF-LOW` $\to$ `MF-LOW` $\to$
+    `CASCADE-DEEP` $\to$ `ZETA-LOW` $\to$ `ZETA-HIGH` $\to$ `QAMP-HIGH` / `TUNED`.
+- **NetSentinel IEC 62443 e Telemetria OT Somente-Leitura (`lume net-sentinel` / `lume iec62443` em `std.net`):**
+  - **Modelo Purdue (`L0..L4`) e Guarda de Conduite DMZ (`L3.5`):** `iec62443_purdue_conduit_ok`
+    impõe isolamento estrito entre zonas e proibe travessia direta entre rede corporativa e controle.
+  - **Auditoria de Politica de Firewall OT e Guarda Estrutural DCS Somente-Leitura:**
+    `netsentinel_fw_policy_audit_ok` valida regras default-drop e `ot_readonly_dcs_guard` recusa
+    estruturalmente qualquer permissao de escrita (`CurrentWrite` / `HistoryWrite`) ou nivel Purdue `< 3`.
+  - **Qualidade Tri-State e Sentinela Finito `1e12`:** `ot_tristate_quality_code` classifica amostras
+    `Good`/`Uncertain`/`Bad` sem interpolacao artificial, e `ot_finite_sentinel_clamp` limita telemetria
+    ao intervalo finito `+/- 10^12`.
+
 ## 6.3 Todos os 8 Capstones Soberanos e Brasileiros Verificados (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` provas `QF_LIA`): Rastreamento de fraude e taint em grafos Pix em tempo real.
 - `sentry_uav_guard` (`9/9` provas `QF_LIA`): Guarda autonomo de geofence, bateria e atitude para VANT/UAV.
@@ -491,6 +533,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [alvo] Motor Lume Continuum Nexus v1.0 (7 Motores de Referencia)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [alvo] Motor Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (ou `lume chameleon`) Motor Universal Camaleao de Interop Poliglota nos 9 ecossistemas (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
+  lume unified-field|ufe [alvo]                      Motor de Campo Unificado em `std.gfx` (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`, `ufe_gnron_swirl_scale_milli`, `ufe_ieee754_f32_finite_guard`, `ufe_ekf_mahalanobis_5sigma_ok`, `ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_latency_shedder_step`)
+  lume singularity|ote|transition-engine [alvo]      Motor Dinamico de Transicao de 2a Ordem e Fronteira Omega em `lchameleon.src` (`ote_select_damping_regime`, `ote_phase_coherence_ok`, `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_nyquist_status_code`, `ote_diagnose_primary_code`)
+  lume net-sentinel|iec62443 [alvo]                  NetSentinel IEC 62443 e Telemetria OT Somente-Leitura em `std.net` (`iec62443_purdue_conduit_ok`, `netsentinel_fw_policy_audit_ok`, `ot_readonly_dcs_guard`, `ot_tristate_quality_code`, `ot_finite_sentinel_clamp`)
   lume run compiler/stage1/lume_llm_core.src         Nucleo Soberano LLM 1-Bit/Ternario, Audio LFM3 LiquidCodec, Guarda MoE Colibri e Roteador 3-Tier (`21/21` provas)
   lume run examples/apps/sovereign_llm_router/main.src Roteador LLM Hibrido Edge/Local/Cloud e Oraculo Anti-Alucinacao de Precos (`20/20` provas)
   lume os-control / bios-core / web-research / crypto-engine

@@ -410,6 +410,47 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   Machine-checked `QF_LIA` bounds and clamping helpers: `vec_clamp_index`, `vec_checked_slice_len`,
   `map_checked_slot`, and `decimal_clamp`.
 
+## 6.2.3 Unified Field Engine (`lume unified-field` / `lume ufe`), Singularity Transition Engine (`lume singularity` / `lume ote`) & NetSentinel IEC 62443 (`lume net-sentinel` / `lume iec62443`)
+- **Unified Field Engine (`lume unified-field` / `lume ufe` in `std.gfx`):**
+  - **7-DOF Singularity-Free Damped Least-Squares (DLS):** `ufe_dls_lambda_sq_milli` and
+    `ufe_dls_safe_denom_milli` guarantee strictly positive inverse-kinematics denominators
+    (`sigma_sq + lambda_sq >= 1`) near kinematic singularities.
+  - **GNRON Swirl Attenuation & IEEE-754 Finite Register Guard:** `ufe_gnron_swirl_scale_milli`
+    attenuates non-conservative rotational swirl, and `ufe_ieee754_f32_finite_guard` rejects
+    `NaN`/`Inf` exponent `255` before hardware actuator registers are written.
+  - **Dual-State Actuator EKF & $5\sigma$ Mahalanobis Gate:** `ufe_ekf_mahalanobis_5sigma_ok`
+    enforces `innov_sq <= 25 * S` (`5-sigma` gate) before state-covariance updates.
+  - **IAPWS-IF97 Steam Regions & Wet-Steam Guard:** `ufe_if97_region_select` classifies
+    thermodynamic steam regions (`1..4`) and `ufe_turbine_wet_steam_guard` prevents blade
+    erosion when dryness fraction falls below safe bounds.
+  - **Deterministic 1 kHz `LatencyMonitor` with 100-Cycle Hysteresis:** `ufe_latency_shedder_step`
+    sheds non-critical load immediately on budget overrun and requires 100 consecutive clean
+    1 kHz cycles before restoring full load.
+- **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$ (`lume singularity` / `lume ote` / `lume transition-engine` in `lchameleon.src`):**
+  - **Dual-Regime Step Identification:** `ote_select_damping_regime` dispatches underdamped
+    ($0 < \zeta < 1$ via overshoot $M_p$ and peak period $T_d$) vs. critically/overdamped
+    ($1 \le \zeta \le 100$ via dimensionless rise-time ratio `t_80 / t_20`).
+  - **Operational Power Triangle & Phase Coherence:** `ote_phase_coherence_ok` verifies
+    energetic vs. delay phase coherence ($|\Phi - \Phi_\tau| \le 10^\circ$) to distinguish
+    decision delay $\tau$ from internal rework dissipation.
+  - **Singularity Boundary $\Omega$ (`tau_max = T_m / 4`) & Nyquist Guard:**
+    `ote_singularity_tau_max_ms` and `ote_omega_boundary_crossed` detect counter-phase
+    delivery across $\Omega$ (`omega_env * tau > pi / 2`), while `ote_nyquist_status_code`
+    enforces $N_y = T_m / (2 T_s)$ (`NYQ-ALIAS` $< 1.0$, `NYQ-LIMIT` $< 2.0$).
+  - **9 Normative Prescriptions Ordered by Physical Leverage (`ote_diagnose_primary_code`):**
+    Evaluates in immutable leverage order (Sampling $\to$ Delay/Boundary $\to$ Gain $\to$ Inertia):
+    `NYQ-ALIAS` $\to$ `NYQ-LIMIT` $\to$ `OMEGA-CROSS` $\to$ `PF-LOW` $\to$ `MF-LOW` $\to$
+    `CASCADE-DEEP` $\to$ `ZETA-LOW` $\to$ `ZETA-HIGH` $\to$ `QAMP-HIGH` / `TUNED`.
+- **NetSentinel IEC 62443 & Read-Only OT Telemetry (`lume net-sentinel` / `lume iec62443` in `std.net`):**
+  - **Purdue Model (`L0..L4`) & DMZ (`L3.5`) Conduit Guard:** `iec62443_purdue_conduit_ok`
+    enforces strict zone-conduit traversal and forbids direct enterprise-to-control bridging.
+  - **OT Firewall Policy Audit & Structural Read-Only DCS Guard:** `netsentinel_fw_policy_audit_ok`
+    verifies default-drop rules, and `ot_readonly_dcs_guard` structurally rejects any write
+    mask (`CurrentWrite` / `HistoryWrite`) or Purdue level `< 3`.
+  - **Tri-State Telemetry Quality & Finite `1e12` Sentinel:** `ot_tristate_quality_code`
+    classifies `Good`/`Uncertain`/`Bad` samples without synthetic interpolation, and
+    `ot_finite_sentinel_clamp` clamps out-of-range telemetry to `+/- 10^12`.
+
 ## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.
 - `sentry_uav_guard` (`9/9` `QF_LIA` proofs): Autonomous UAV geofence, battery & attitude safety guard.
@@ -509,6 +550,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (or `lume chameleon`) Universal Chameleon Polyglot Interop Engine across 9 ecosystems (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
+  lume unified-field|ufe [target]                    Unified Field Engine in `std.gfx` (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`, `ufe_gnron_swirl_scale_milli`, `ufe_ieee754_f32_finite_guard`, `ufe_ekf_mahalanobis_5sigma_ok`, `ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_latency_shedder_step`)
+  lume singularity|ote|transition-engine [target]    2nd-Order Dynamical Transition Engine & Singularity Boundary Omega in `lchameleon.src` (`ote_select_damping_regime`, `ote_phase_coherence_ok`, `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_nyquist_status_code`, `ote_diagnose_primary_code`)
+  lume net-sentinel|iec62443 [target]                NetSentinel IEC 62443 & Read-Only OT Telemetry in `std.net` (`iec62443_purdue_conduit_ok`, `netsentinel_fw_policy_audit_ok`, `ot_readonly_dcs_guard`, `ot_tristate_quality_code`, `ot_finite_sentinel_clamp`)
   lume run compiler/stage1/lume_llm_core.src         Sovereign 1-Bit/Ternary LLM Core, Liquid LFM3 Audio, Colibri MoE Guard & 3-Tier Router (`21/21` proofs)
   lume run examples/apps/sovereign_llm_router/main.src Sovereign Edge/Local/Cloud LLM Router & Anti-Hallucination Price Oracle (`20/20` proofs)
   lume os-control / bios-core / web-research / crypto-engine

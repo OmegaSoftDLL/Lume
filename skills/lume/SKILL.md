@@ -30,13 +30,16 @@ lume check app.src
 # Query Lume's Sovereign Memory & Compiler-as-Oracle before coding
 lume consult "implement bounded rate limiter with mathematical proof"
 
-# Universal Chameleon Polyglot Interop Engine (9 verified ecosystems)
+# Universal Chameleon Polyglot Interop Engine (9 verified ecosystems) & Cyber-Physical Engines
 lume chameleon
 lume camaleao rust
 lume polyglot
 lume ffi-bridge
 lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file]
 lume morph <legacy_file>
+lume unified-field
+lume singularity
+lume net-sentinel
 
 # Built-in full language manual (English or Brazilian Portuguese)
 lume manual en
@@ -111,6 +114,7 @@ print f"Verified fee: {clamp_fee(250, 10, 100)}"
 | **CLI, Self-Evolution & Sovereign Sentience** | `lume consult`, `lume self-prove` (`LumeCompiler-Embedded-OmniProof-v3`: `15` batteries, `413` obligations, `141` tests, `99` manifest files), `lume self-build`, `lume daemon-triad`, `lume hot-evolve`, `lume live-cockpit`, `lume swarm-evolve`, `lume evolve`, `lume reveng`, `lume neural-kernel`, `lume ui-layout`, `lume mesh` | Read [`references/cli-and-sentience-toolchain.md`](references/cli-and-sentience-toolchain.md) |
 | **Universal Chameleon Polyglot Interop & Win64 Native GUI (`@ui-layout`)** | `compiler/stage1/lchameleon.src` (`lume chameleon [eco]`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <c\|rust\|python\|js\|go\|java\|dotnet\|sql\|openapi> [file]`, `lume morph <file>` across 9 ecosystems: `c_abi`, `rust_cdylib`, `python_capi` DLPack, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc` with `[I0003]` fail-closed `QF_LIA` contracts, `28/28` proven obligations, `8/8` tests), `--target x86_64-windows-gui` (`ltarget.src`: 33,792B PE32+ GUI, zero Notepad++ strings, `hMenu=0`, `Segoe UI -12`, wide buttons, 4 `WS_CLIPSIBLINGS \| WS_THICKFRAME \| WS_HSCROLL \| WS_VSCROLL` panes with `LB_SETHORIZONTALEXTENT = 680`), and declarative `lume ui-layout` / `@ui-layout` (`1412694337` / `0x54340141` Listbox + `1412698308` / `0x543410C4` Edit styles, `ui_split_conservation_law`) | `lume test compiler/stage1/lchameleon.src` |
 | **Formally Verified Generic Collection Invariants** | `compiler/stage1/vec.src`, `compiler/stage1/decimal.src`, `stdlib/std.lume` (`vec_clamp_index`, `vec_checked_slice_len`, `map_checked_slot`, `decimal_clamp`) | `lume test compiler/stage1/decimal.src` |
+| **Cyber-Physical Unified Field (`UFE`), Singularity Transition Engine (`OTE`) & NetSentinel IEC 62443** | `std.gfx` (`lume unified-field` / `lume ufe`: 7-DOF DLS `ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`, GNRON swirl `ufe_gnron_swirl_scale_milli`, `ufe_ieee754_f32_finite_guard`, $5\sigma$ EKF `ufe_ekf_mahalanobis_5sigma_ok`, IAPWS-IF97 `ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, 1 kHz `ufe_latency_shedder_step`), `lchameleon.src` (`lume singularity` / `lume ote`: dual-regime step ID `ote_select_damping_regime`, `ote_phase_coherence_ok`, Singularity Boundary $\Omega$ $\tau_{\max} = T_m/4$ `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_nyquist_status_code`, and 9 leverage-ordered prescriptions `ote_diagnose_primary_code`), and `std.net` (`lume net-sentinel` / `lume iec62443`: Purdue `L0..L4` + `L3.5` DMZ `iec62443_purdue_conduit_ok`, `netsentinel_fw_policy_audit_ok`, `ot_readonly_dcs_guard`, `ot_tristate_quality_code`, `ot_finite_sentinel_clamp`) | `lume test compiler/stage1/lchameleon.src` |
 | **Sovereign 1-Bit/Ternary LLM Core & COSMIC 1.11** | `compiler/stage1/lume_llm_core.src` (`21/21` `QF_LIA` proofs: Bonsai 1-bit & BitNet 1.58-bit MAC, 5-trit byte packing, Liquid AI `LFM3` $O(1)$ recurrence & `LiquidCodec` 24 kHz audio, `DSpark` speculative verifier, `Colibri` MoE SSD guard, 3-tier router), `gui.src` (`4/4` proofs: Wayland `xdg-dialog-v1` modal z-index/click-block), `los.src` (`11/11` proofs: hybrid `iGPU`/`dGPU` PCI selection) | `lume test compiler/stage1/lume_llm_core.src` |
 | **Verified Executable Showcase** | Ready-to-run verified example (`lume run`, `lume test`, `lume prove`, `lume certify`) | Read [`examples/verified_showcase.src`](examples/verified_showcase.src) |
 
