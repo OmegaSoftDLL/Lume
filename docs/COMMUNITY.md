@@ -16,6 +16,10 @@
 
 [**Home (`index.md`)**](index.md) · [**LumeLabs (`LUMELABS.md`)**](LUMELABS.md) · [**Projects & Roadmap (`PROJECTS.md`)**](PROJECTS.md) · [**Wiki**](https://github.com/OmegaSoftDLL/lume/wiki) · [**GitHub Discussions**](https://github.com/OmegaSoftDLL/lume/discussions) · [**Manual (`EN`)**](LUME_MANUAL_EN.md) · [**Manual (`PT-BR`)**](LUME_MANUAL_PT_BR.md)
 
+<br/>
+
+![Lume Sovereign Community & Official Social Banner](assets/lume-social-banner.jpg)
+
 </div>
 
 ---
@@ -68,3 +72,12 @@ Every contribution to Lume — whether a bug report with a minimal `.src` reprod
 2. **Verified Contributor:** Merges a PR with 100% pure-Lume (`.src`, pure LF `\n`) code, `QF_LIA` proofs (`lume prove` + `lume certify`), and regression tests.
 3. **LumeLabs Fellow:** Authors or co-maintains a LumeLabs Research Division module or verified capstone application (`examples/apps/*`).
 4. **Core Maintainer:** Stewards the Stage-1 compiler pipeline (`compiler/stage1/lume/01_lexer.src` .. `07_driver.src`), self-hosted fixpoint (`stage2 == stage3`), and release engineering.
+
+---
+
+## 5. Official Brand & Mascot Kit ("Lumi — The Bioluminescent Crystal Chameleon")
+
+| **Lumi Mascot Illustration** (`lume-mascot.jpg`) | **Chameleon Lambda Emblem** (`lume-chameleon-emblem.jpg`) | **App & IDE Icon** (`lume-icon.jpg` / `lume.ico`) | **Harmonized Vector Badge** (`lume-mascot-badge.svg`) |
+| :---: | :---: | :---: | :---: |
+| <img src="assets/lume-mascot.jpg" alt="Lumi Mascot" width="180" /> | <img src="assets/lume-chameleon-emblem.jpg" alt="Lume Chameleon Emblem" width="180" /> | <img src="assets/lume-icon.jpg" alt="Lume Icon" width="180" /> | <img src="assets/lume-mascot-badge.svg" alt="Lumi Vector Badge" width="160" /> |
+| Full-body crystal chameleon mascot | Prismatic chameleon + $\lambda$ emblem | Official desktop & IDE icon | Transparent vector crest |

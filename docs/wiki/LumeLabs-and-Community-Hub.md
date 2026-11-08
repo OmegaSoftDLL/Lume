@@ -4,13 +4,23 @@
 </h1>
 <br clear="left"/>
 
-Welcome to **LumeLabs** and the official **Lume Open-Source Community**! Lume is built transparently in the open under the **Apache-2.0 License**, where every feature, compiler pass, theorem-prover rule, and target backend is written **100% in native Lume (`.src` / `.lume`)**.
+<div align="center">
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-social-banner.jpg" alt="Official Lume v1.1.0 Social & Architecture Banner" width="100%" />
+  <br />
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lumelabs-hero-animated.svg" alt="LumeLabs 7 Sovereign R&D Divisions Banner" width="100%" />
+</div>
 
 ---
 
 ## 1. LumeLabs — The 7 Sovereign Research Divisions
 
-[**LumeLabs (`LUMELABS.md`)**](https://github.com/OmegaSoftDLL/lume/blob/main/LUMELABS.md) is our advanced applied research incubator inside the `OmegaSoftDLL/lume` ecosystem:
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot.jpg" alt="Lumi — Official 3D Bioluminescent Chameleon Mascot" width="320" align="right" />
+
+Welcome to **LumeLabs** and the official **Lume Open-Source Community**! Lume is built transparently in the open under the **Apache-2.0 License**, where every feature, compiler pass, theorem-prover rule, and target backend is written **100% in native Lume (`.src` / `.lume`)**.
+
+[**LumeLabs (`LUMELABS.md`)**](https://github.com/OmegaSoftDLL/lume/blob/main/LUMELABS.md) is our advanced applied research incubator inside the `OmegaSoftDLL/lume` ecosystem, guided by **Lumi**, our sovereign chameleon mascot.
+
+<br clear="right"/>
 
 | Lab ID | Research Division | Core Engine | Active Focus |
 | :--- | :--- | :--- | :--- |
@@ -25,6 +35,10 @@ Welcome to **LumeLabs** and the official **Lume Open-Source Community**! Lume is
 ---
 
 ## 2. Official Project Boards & Roadmaps (`PROJECTS.md`)
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-projects-board.svg" alt="Lume v1.1.0 Sovereign Engineering Projects Board" width="100%" />
+</div>
 
 Explore our active engineering milestones, KPI scorecards, and release tracks in [**`PROJECTS.md`**](https://github.com/OmegaSoftDLL/lume/blob/main/PROJECTS.md):
 

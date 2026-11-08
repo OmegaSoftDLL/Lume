@@ -251,13 +251,17 @@ Pre-exported manuals in the repository:
 
 ## Universal Chameleon Polyglot Interop Engine (9 Ecosystems)
 
+<img src="docs/assets/lume-chameleon-emblem.jpg" alt="Lumi — Universal Chameleon Polyglot Lambda Emblem" width="220" align="right" />
+
+Just as **Lumi (Lume's Bioluminescent Crystal Chameleon mascot)** adapts to any environment while preserving its mathematical core, **`compiler/stage1/lchameleon.src`** (`28/28` proven `QF_LIA` obligations, `8/8` unit tests, `Lume Verified ✓`) allows Lume to interoperate with, wrap, or transpile from **9 major language ecosystems** without sacrificing memory safety or proof soundness. Every foreign value enters Lume as an untrusted `unverified[T]` handle inside the `/ {ffi}` capability effect and must pass a fail-closed **`[I0003]` `QF_LIA` refinement guard** before promotion to `verified[T]`.
+
+<br clear="right"/>
+
 <div align="center">
 
 ![Lume Universal Chameleon Polyglot Interop Engine — 9 Verified Ecosystems](docs/assets/lume-chameleon-showcase.svg)
 
 </div>
-
-Just as **Lumi (Lume's Bioluminescent Crystal Chameleon mascot)** adapts to any environment while preserving its mathematical core, **`compiler/stage1/lchameleon.src`** (`28/28` proven `QF_LIA` obligations, `8/8` unit tests, `Lume Verified ✓`) allows Lume to interoperate with, wrap, or transpile from **9 major language ecosystems** without sacrificing memory safety or proof soundness. Every foreign value enters Lume as an untrusted `unverified[T]` handle inside the `/ {ffi}` capability effect and must pass a fail-closed **`[I0003]` `QF_LIA` refinement guard** before promotion to `verified[T]`:
 
 | Ecosystem ID | Target Language & Runtime ABI | `[I0003]` Formal Boundary Guard & Zero-Copy Mechanism | CLI Command |
 | :--- | :--- | :--- | :--- |
@@ -433,6 +437,22 @@ build/bin/lume_make asan                                  # Stage-0 under Addres
 📄 **Bilingual Audit & Red Team Reports:**
 - **English:** [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md)
 - **Português (`pt-BR`):** [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md)
+
+---
+
+## LumeLabs, Community & Official Lumi Mascot Gallery
+
+<div align="center">
+
+![Lume Sovereign Community & Official Social Banner](docs/assets/lume-social-banner.jpg)
+
+[**LumeLabs R&D Incubator (`LUMELABS.md`)**](LUMELABS.md) · [**Project Board & Roadmap (`PROJECTS.md`)**](PROJECTS.md) · [**Sovereign Community (`COMMUNITY.md`)**](COMMUNITY.md) · [**Official Wiki**](https://github.com/OmegaSoftDLL/lume/wiki) · [**GitHub Discussions (`EN` / `PT-BR`)**](https://github.com/OmegaSoftDLL/lume/discussions)
+
+</div>
+
+| **Lumi Mascot Illustration** (`lume-mascot.jpg`) | **Chameleon Lambda Emblem** (`lume-chameleon-emblem.jpg`) | **App & IDE Icon** (`lume-icon.jpg` / `lume.ico`) | **Harmonized Vector Badge** (`lume-mascot-badge.svg`) |
+| :---: | :---: | :---: | :---: |
+| <img src="docs/assets/lume-mascot.jpg" alt="Lumi Mascot" width="180" /> | <img src="docs/assets/lume-chameleon-emblem.jpg" alt="Lume Chameleon Emblem" width="180" /> | <img src="docs/assets/lume-icon.jpg" alt="Lume Icon" width="180" /> | <img src="docs/assets/lume-mascot-badge.svg" alt="Lumi Vector Badge" width="160" /> |
 
 ---
 

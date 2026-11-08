@@ -26,6 +26,8 @@
 
 ## 1. Mission & Sovereign Charter
 
+<img src="docs/assets/lume-mascot.jpg" alt="Lumi — Bioluminescent Crystal Chameleon Mascot" width="260" align="right" />
+
 **LumeLabs** is the official research, incubation, and advanced systems engineering arm of the **Lume Programming Language (`v1.1.0`, Edition 2026)**.
 
 Unlike traditional language incubators where experimental libraries rely on unverified C/C++/Python glue or unstable compiler plugins, every LumeLabs project adheres to three non-negotiable rules:
@@ -36,9 +38,19 @@ Unlike traditional language incubators where experimental libraries rely on unve
 
 > 🇧🇷 **Comunidade em Português (`pt-BR`):** Pesquisadores e desenvolvedores podem submeter propostas do LumeLabs, abrir discussões técnicas e consultar o manual nativo em português (`lume manual --pt` ou [`docs/LUME_MANUAL_PT_BR.md`](docs/LUME_MANUAL_PT_BR.md)).
 
+<br clear="right"/>
+
 ---
 
 ## 2. The 7 LumeLabs Research Divisions
+
+### Lab 01 Spotlight — Universal Chameleon Polyglot & Zero-Copy FFI (`lchameleon.src`)
+
+<img src="docs/assets/lume-chameleon-emblem.jpg" alt="Lume Chameleon Polyglot Lambda Emblem" width="240" align="right" />
+
+**Lab 01 (`compiler/stage1/lchameleon.src`)** embodies Lumi's adaptive nature: it synthesizes fail-closed **`[I0003]` `QF_LIA` refinement adapters** (`unverified[T] -> verified[T]` under `/ {ffi}`, `28/28` proven obligations, `8/8` unit tests) across **9 foreign ecosystems** (`c_abi`, `rust_cdylib`, `python_capi` DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`).
+
+<br clear="right"/>
 
 | Division | Core Engine & Source | Verified Obligations & Key Capabilities | CLI Entrypoint |
 | :--- | :--- | :--- | :--- |

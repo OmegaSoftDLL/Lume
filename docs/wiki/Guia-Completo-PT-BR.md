@@ -5,16 +5,22 @@
 <br clear="left"/>
 
 <div align="center">
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-social-banner.jpg" alt="Banner Oficial Social e Arquitetura da Linguagem Lume v1.1.0" width="100%" />
+  <br />
   <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-hero-animated.svg" alt="Banner Animado da Arquitetura Soberana Lume v1.1.0" width="100%" />
 </div>
 
 ---
 
-## 1. O Que e a Lume?
+## 1. O Que e a Lume &amp; o Motor Camaleao Poliglota?
+
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-emblem.jpg" alt="Emblema Oficial do Motor Camaleao Poliglota 9 Ecossistemas" width="320" align="right" />
 
 A **Lume (`v1.1.0`, Edicao 2026)** e uma linguagem de programacao de sistemas, interoperabilidade poliglota, verificacao formal matematica, inteligencia artificial e computacao quantica **100% auto-hospedada (`stage2 == stage3`, Zero-C)**.
 
 Conheca a **Lumi**, nossa camaleoa mascote oficial! Assim como o camaleao se adapta instantaneamente a qualquer ecossistema com visao de 360 graus, o **Motor Camaleao Poliglota Universal (`lchameleon.src`)** da Lume conecta **9 ecossistemas** (`C/C++`, `Rust`, `Python DLPack`, `Node.js/WASM`, `Go`, `Java/JVM`, `C#/.NET`, `SQL` e `OpenAPI/gRPC`) com provas formais `QF_LIA` nas fronteiras (`[I0003]: unverified[T] -> verified[T]`).
+
+<br clear="right"/>
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-showcase.svg" alt="Motor Camaleao Poliglota Universal Lume — 9 Ecossistemas" width="100%" />
@@ -22,7 +28,17 @@ Conheca a **Lumi**, nossa camaleoa mascote oficial! Assim como o camaleao se ada
 
 ---
 
-## 2. Instalacao em 1 Comando
+## 2. Mascote Oficial Lumi &amp; Aplicacoes Desktop GUI Nativas Win64
+
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot.jpg" alt="Mascote Oficial Lumi 3D" width="280" align="right" />
+
+Com o alvo `--target x86_64-windows-gui`, a Lume compila codigo `.lume` / `.src` diretamente para um executavel **Windows 64-bit PE32+ GUI nativo (`33.792` bytes, `Subsystem 2`, Zero C/C++/Rust/.NET)** que ja traz embutido na secao `.rsrc` o icone oficial da **Lumi** (`RT_ICON` + `RT_GROUP_ICON` + `LoadIconA(hInstance, 1)`), fonte **Segoe UI `-12`** nos botoes da barra de ferramentas e **4 paineis internos independentemente redimensionaveis e com barras de rolagem horizontais e verticais ativas** (`WS_CLIPSIBLINGS | WS_THICKFRAME | WS_HSCROLL | WS_VSCROLL | LBS_DISABLENOSCROLL`).
+
+<br clear="right"/>
+
+---
+
+## 3. Instalacao em 1 Comando
 
 ### Windows (PowerShell)
 ```powershell
@@ -44,7 +60,7 @@ lume camaleao
 
 ---
 
-## 3. Os 6 Pilares Soberanos da Lume
+## 4. Os 6 Pilares Soberanos da Lume
 
 1. **Auto-Hospedagem Pura (`Zero-C`, `stage2 == stage3`):** O compilador `lumec` e o montador nativo `lasm` geram executaveis ELF64, PE32+ (`.exe`) e Mach-O 64 diretamente em codigo de maquina, sem depender de `gcc`, `clang` ou `ld`.
 2. **Provador de Teoremas Embutido (`OmniProof v3`):** Verifica contratos `requires`, `ensures`, `invariant`, leis algebricas (`law`), orcamento de ciclos de hardware (`@bound(cycles: N)` `[V0002]`) e tempo constante criptografico (`@secret` `[C0009]`) em milissegundos, sem precisar do Z3 externo.
@@ -59,7 +75,7 @@ lume camaleao
 
 ---
 
-## 4. Comandos Essenciais da CLI (`lume --help`)
+## 5. Comandos Essenciais da CLI (`lume --help`)
 
 | Comando | Descricao |
 | :--- | :--- |

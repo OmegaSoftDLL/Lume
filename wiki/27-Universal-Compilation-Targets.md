@@ -25,6 +25,10 @@ Lume's orthogonal target engine (`compiler/stage1/ltarget.src` + `lasm.src`) low
 
 ### Building a Standalone Windows 64-Bit Native GUI App (`x86_64-windows-gui`)
 
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-icon.jpg" alt="Official Lumi 3D App & Desktop GUI Icon (RT_ICON / RT_GROUP_ICON)" width="180" align="right" />
+
+Every binary compiled with `--target x86_64-windows-gui` or `--target x86_64-windows-gui-protected` automatically embeds the official **Lumi 3D App Icon (`RT_ICON` + `RT_GROUP_ICON` + `LoadIconA(hInstance, 1)`)** directly inside the PE32+ `.rsrc` section so the window title bar, Alt+Tab switcher, and Windows taskbar display Lumi out of the box!
+
 ```bash
 # Emit a standalone 33,792-byte Windows x64 GUI executable (.exe)
 lume build app.lume --target x86_64-windows-gui -o MyStudio.exe
@@ -34,6 +38,8 @@ lume build app.lume --target x86_64-windows-gui-protected -o MyStudio_P33.exe
 ```
 
 You can customize the native Win64 GUI window title, status bar, initial code editor buffer, executive report, and tree items simply by defining pure Lume functions (`app_window_title`, `app_status_bar`, `app_editor_initial_buffer`, `app_secondary_buffer`, `app_tree_item_1`..`7`).
+
+<br clear="right"/>
 
 ---
 

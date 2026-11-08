@@ -23,9 +23,13 @@
 
 ## Universal Chameleon Polyglot Interop Engine (`lchameleon.src` — 9 Ecosystems)
 
-![Lume Universal Chameleon Polyglot Interop Engine — 9 Verified Ecosystems](assets/lume-chameleon-showcase.svg)
+<img src="assets/lume-chameleon-emblem.jpg" alt="Lumi — Universal Chameleon Polyglot Lambda Emblem" width="220" align="right" />
 
 Lume's **Universal Chameleon Polyglot Interop Engine** (`lume chameleon`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <eco>`, `lume morph <file>`) bridges **9 verified ecosystems** (`c_abi`, `rust_cdylib`, `python_capi` with DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`) through fail-closed **`[I0003]` `QF_LIA` refinement contracts** (`unverified[T] -> verified[T]` under `/ {ffi}`, `28/28` proven obligations, `8/8` unit tests).
+
+<br clear="right"/>
+
+![Lume Universal Chameleon Polyglot Interop Engine — 9 Verified Ecosystems](assets/lume-chameleon-showcase.svg)
 
 ---
 
@@ -133,6 +137,16 @@ lume self-prove                  # Run all 15 embedded compiler proof batteries 
 
 ### Reference Surveys
 - [00 — Catalog of ~260 Languages](00-catalog.md) · [01 — Language Survey](01-survey.md) · [07 — Competitive Scan](07-competitive.md)
+
+---
+
+## LumeLabs, Community & Official Lumi Mascot Gallery
+
+![Lume Sovereign Community & Official Social Banner](assets/lume-social-banner.jpg)
+
+| **Lumi Mascot Illustration** (`lume-mascot.jpg`) | **Chameleon Lambda Emblem** (`lume-chameleon-emblem.jpg`) | **App & IDE Icon** (`lume-icon.jpg` / `lume.ico`) | **Harmonized Vector Badge** (`lume-mascot-badge.svg`) |
+| :---: | :---: | :---: | :---: |
+| <img src="assets/lume-mascot.jpg" alt="Lumi Mascot" width="180" /> | <img src="assets/lume-chameleon-emblem.jpg" alt="Lume Chameleon Emblem" width="180" /> | <img src="assets/lume-icon.jpg" alt="Lume Icon" width="180" /> | <img src="assets/lume-mascot-badge.svg" alt="Lumi Vector Badge" width="160" /> |
 
 ---
 

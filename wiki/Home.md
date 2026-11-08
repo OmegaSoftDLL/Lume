@@ -1,12 +1,10 @@
 <h1>
   <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Lumi — Lume Mascot" width="76" height="76" align="left" />
-  Lume v1.1.0 (2026 Edition) — Official Language Wiki
+  Lume v1.1.0 — Official Sovereign Wiki &amp; Architecture Encyclopedia
 </h1>
 <br clear="left"/>
 
 <div align="center">
-
-<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-hero-animated.svg" alt="Lume v1.1.0 Animated Sovereign Architecture Banner" width="100%" />
 
 **The Self-Hosted, Formally Verified, Zero-C Systems, Polyglot, AI & Quantum Programming Language**
 
@@ -14,6 +12,14 @@
 [![Self-Hosted Fixpoint](https://img.shields.io/badge/bootstrap-stage2_%3D%3D_stage3_(Zero--C)-38bdf8?style=for-the-badge)](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml)
 [![Claude Opus 5.5 Audit](https://img.shields.io/badge/Claude_Opus_5.5_+_Red_Team-85%2F85_Passed-a855f7?style=for-the-badge)](https://github.com/OmegaSoftDLL/lume/blob/main/tests/harness/claude_audit_gate.src)
 [![Chameleon Polyglot](https://img.shields.io/badge/Chameleon_Interop-9_Ecosystems_%5BI0003%5D-f59e0b?style=for-the-badge)](Universal-Chameleon-Polyglot-Engine)
+
+<br />
+
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-social-banner.jpg" alt="Official Lume v1.1.0 Social & Architecture Hero Banner" width="100%" />
+
+<br />
+
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-hero-animated.svg" alt="Lume v1.1.0 Animated Sovereign Architecture Banner" width="100%" />
 
 </div>
 
@@ -29,6 +35,19 @@ Meet **Lumi**, our official sovereign chameleon mascot! Just as a chameleon adap
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-showcase.svg" alt="Lume Universal Chameleon 9-Ecosystem Polyglot Interop Engine" width="100%" />
+</div>
+
+---
+
+## Official Lumi Mascot, Brand Identity &amp; App Icon Gallery
+
+<div align="center">
+
+| Lumi — 3D Bioluminescent Chameleon Mascot | 9-Ecosystem Chameleon Polyglot Emblem | Official 3D App &amp; Desktop GUI Icon | Vector Crest &amp; Favicon |
+| :---: | :---: | :---: | :---: |
+| <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot.jpg" alt="Lumi — 3D Bioluminescent Chameleon Mascot" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-emblem.jpg" alt="9-Ecosystem Chameleon Polyglot Emblem" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-icon.jpg" alt="Official 3D App & Desktop GUI Icon" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Vector Crest & Favicon" width="150" /> |
+| `docs/assets/lume-mascot.jpg` | `docs/assets/lume-chameleon-emblem.jpg` | `docs/assets/lume-icon.jpg` (`lume.ico`) | `docs/assets/lume-mascot-badge.svg` |
+
 </div>
 
 ---

@@ -1,8 +1,16 @@
 <h3>
-  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Lumi" width="36" height="36" align="left" />
-  &nbsp;Lume v1.1.0 Wiki
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-icon.jpg" alt="Lumi App Icon" width="64" height="64" align="left" />
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Lumi Crest" width="28" height="28" align="right" />
+  &nbsp;Lume v1.1.0<br />
+  &nbsp;<sub>Sovereign Wiki</sub>
 </h3>
-<br clear="left"/>
+<br clear="all"/>
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-social-banner.jpg" alt="Lume v1.1.0 Banner" width="220" />
+</div>
+
+---
 
 * **[Home](Home)**
 * **Getting Started**

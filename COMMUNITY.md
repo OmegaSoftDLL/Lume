@@ -16,6 +16,10 @@
 
 [**Home (`README.md`)**](README.md) · [**LumeLabs (`LUMELABS.md`)**](LUMELABS.md) · [**Projects & Roadmap (`PROJECTS.md`)**](PROJECTS.md) · [**Wiki**](https://github.com/OmegaSoftDLL/lume/wiki) · [**GitHub Discussions**](https://github.com/OmegaSoftDLL/lume/discussions) · [**Contributing (`CONTRIBUTING.md`)**](CONTRIBUTING.md) · [**Support (`SUPPORT.md`)**](SUPPORT.md)
 
+<br/>
+
+![Lume Sovereign Community & Official Social Banner](docs/assets/lume-social-banner.jpg)
+
 </div>
 
 ---
@@ -71,7 +75,18 @@ Every contribution to Lume — whether a bug report with a minimal `.src` reprod
 
 ---
 
-## 5. Code of Conduct & Security
+## 5. Official Brand & Mascot Kit ("Lumi — The Bioluminescent Crystal Chameleon")
+
+All official Lume visual identity assets are available in the root project folder, `assets/`, and `docs/assets/`:
+
+| **Lumi Mascot Illustration** (`lume-mascot.jpg`) | **Chameleon Lambda Emblem** (`lume-chameleon-emblem.jpg`) | **App & IDE Icon** (`lume-icon.jpg` / `lume.ico`) | **Harmonized Vector Badge** (`lume-mascot-badge.svg`) |
+| :---: | :---: | :---: | :---: |
+| <img src="docs/assets/lume-mascot.jpg" alt="Lumi Mascot" width="180" /> | <img src="docs/assets/lume-chameleon-emblem.jpg" alt="Lume Chameleon Emblem" width="180" /> | <img src="docs/assets/lume-icon.jpg" alt="Lume Icon" width="180" /> | <img src="docs/assets/lume-mascot-badge.svg" alt="Lumi Vector Badge" width="160" /> |
+| Full-body crystal chameleon mascot | Prismatic chameleon + $\lambda$ emblem | Official desktop & IDE icon | Transparent vector crest |
+
+---
+
+## 6. Code of Conduct & Security
 
 - All community spaces are governed by our [**Contributor Covenant Code of Conduct (`CODE_OF_CONDUCT.md`)**](CODE_OF_CONDUCT.md).
 - Security vulnerabilities must be reported privately via [**GitHub Security Advisories (`SECURITY.md`)**](SECURITY.md).

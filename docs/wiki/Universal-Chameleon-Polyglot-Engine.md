@@ -4,17 +4,21 @@
 </h1>
 <br clear="left"/>
 
-<div align="center">
-  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-showcase.svg" alt="Universal Chameleon 9-Ecosystem Polyglot Interop Engine" width="100%" />
-</div>
-
----
-
 ## 1. Why the Chameleon Engine Exists
+
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-emblem.jpg" alt="Lume 9-Ecosystem Chameleon Polyglot Emblem" width="340" align="right" />
 
 In traditional languages, every Foreign Function Interface (`extern "C"`, JNI, Python C-API, N-API, P/Invoke) is a **verification black hole**: memory safety, null-pointer invariants, tensor strides, and integer bounds vanish the moment execution crosses a language boundary.
 
 Lume's **Universal Chameleon Polyglot Engine** (`compiler/stage1/lchameleon.src`) eliminates this boundary gap. Every foreign payload enters Lume as an untrusted type `unverified[T]` and **cannot be dereferenced or passed to pure Lume code** until it passes an explicit `[I0003]` `QF_LIA`-verified refinement contract that promotes it to `verified[T]`.
+
+Like **Lumi**, our bioluminescent chameleon mascot on the emblem to the right, Lume's polyglot engine adapts to any target runtime while maintaining formal mathematical invariants across all 9 ecosystems.
+
+<br clear="right"/>
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-showcase.svg" alt="Universal Chameleon 9-Ecosystem Polyglot Interop Engine" width="100%" />
+</div>
 
 ---
 
