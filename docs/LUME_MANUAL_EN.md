@@ -265,7 +265,11 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 ## 6.2 Standard Library Modules (`use <module>`)
 - `use fs`             Safe file handles (`sfile_with` close-on-all-paths, `[O0001]` safety)
 - `use bytes`          Bounds-checked byte buffers (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
-- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`)
+- `use vec`            Formally verified generic collection & numeric invariants (`vec.src`, `decimal.src`,
+                       `stdlib/std.lume`: `vec_clamp_index`, `vec_checked_slice_len`, `map_checked_slot`,
+                       `decimal_clamp`)
+- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`,
+                       `map_checked_slot`)
 - `use arena`          Scoped O(1) memory arenas (`arena_new`, `arena_alloc`, `arena_reset`, `heap_stats`)
 - `use capsule`        Tamper-evident execution capsules (`capsule_seal`, `capsule_verify`)
 - `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`, `fs_file_size(path, i)`)
@@ -287,9 +291,13 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                        Porter-Duff RGBA Alpha Blending, Bresenham/Circle/Bezier 2D Rasterizer,
                        3D Pinhole Perspective Projection, Binary 54-Byte BMP, PPM & SCADA HMI SVG
 - `use gui`            X11 wire-protocol client (`0x42` MSB handshake, `CreateWindow`), Web DOM,
-                       and System76 COSMIC 1.11 Wayland `xdg-dialog-v1` modal dialog z-index
-                       stacking & background click blocking (`ui_modal_blocks_parent`,
-                       `ui_modal_z_index`, `4/4` `QF_LIA` proofs)
+                       Declarative 4-Pane UI Layout (`lume ui-layout` / `@ui-layout`) for Win64 PE32+
+                       & Web/WASM lowering with simultaneous `WS_THICKFRAME` border resizing and
+                       `LBS_NOTIFY | LBS_HASSTRINGS` mouse selection (`1412694337` / `0x54340141` and
+                       `1412698308` / `0x543410C4`) + `QF_LIA` split-pane geometry conservation
+                       (`ui_split_conservation_law`), and System76 COSMIC 1.11 Wayland `xdg-dialog-v1`
+                       modal dialog z-index stacking & background click blocking
+                       (`ui_modal_blocks_parent`, `ui_modal_z_index`, `QF_LIA` proven)
 - `use los`            Track O General-Purpose OS layer + System76 COSMIC 1.11 deterministic
                        hybrid GPU (`iGPU` vs `dGPU`) PCI selection policy (`os_select_hybrid_gpu`,
                        `11/11` `QF_LIA` proofs)
@@ -392,6 +400,16 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - **Official Mascot (Lumi — The Bioluminescent Crystal Chameleon):** Embedded natively as `16x16` 32-bit
   BGRA `RT_ICON` (`Type=3, ID=1`) + `RT_GROUP_ICON` (`Type=14, ID=1`) in `--target x86_64-windows-gui`.
 
+## 6.2.2 Declarative UI Layout (`@ui-layout`) & Verified Collection Invariants (`vec.src`, `decimal.src`, `stdlib/std.lume`)
+- **Declarative UI Layout (`lume ui-layout` / `@ui-layout`):** Lowers declarative 4-pane workspace layouts
+  to native Win64 PE32+ (`--target x86_64-windows-gui`) and Web/WASM DOM trees with simultaneous
+  `WS_THICKFRAME` live border resizing and `LBS_NOTIFY | LBS_HASSTRINGS` mouse selection (`1412694337` /
+  `0x54340141` for Listbox panes and `1412698308` / `0x543410C4` for multiline Edit panes), guarded by
+  `QF_LIA` split-pane geometry conservation (`ui_split_conservation_law`).
+- **Formally Verified Generic Collection Invariants (`vec.src`, `decimal.src`, `stdlib/std.lume`):**
+  Machine-checked `QF_LIA` bounds and clamping helpers: `vec_clamp_index`, `vec_checked_slice_len`,
+  `map_checked_slot`, and `decimal_clamp`.
+
 ## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.
 - `sentry_uav_guard` (`9/9` `QF_LIA` proofs): Autonomous UAV geofence, battery & attitude safety guard.
@@ -414,6 +432,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                   `x86_64-windows-pe` (native `kernel32.dll` IAT), `aarch64-macos-macho`
 - Windows Native GUI: `x86_64-windows-gui` and `x86_64-windows-gui-protected` (`PE32+` Win32 GUI
                   with `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll` IAT,
+                  declarative `@ui-layout` 4-pane lowering with `WS_THICKFRAME` + `LBS_NOTIFY | LBS_HASSTRINGS`
+                  styles `1412694337` / `0x54340141` & `1412698308` / `0x543410C4`, `ui_split_conservation_law`,
                   `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, `PYXH` MBA prologue, and `.lsym` vault)
 - Mobile/Store:   `aarch64-android-elf`, `aarch64-ios-macho`
 - Bare-Metal/OS:  `x86_64-uefi-pe`, `x86_64-none-raw`, `x86_64-none-mbr`, `x86_64-none-ihex`
@@ -477,6 +497,10 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume consult [src]       Living self-consultation & evolutionary agenda
   lume laws / memory       8 Constitutional Laws + 4-vault indestructible episodic memory
   lume replicate / hive / daemon-triad / hot-evolve / live-cockpit Triad swarm self-replication & zero-downtime hot-swap
+    - `lume daemon-triad [src]`: Always-on P2P sub-100ms swarm gossip sentinel across Primary PC + Dell G3 + Acer
+    - `lume hot-evolve [src]`:   Zero-downtime autonomous E-Graph self-recompilation & atomic binary hot-swap
+    - `lume live-cockpit [src]`: Real-time continuous 22050 Hz voice + DEQ vision + network/Ring-0 telemetry loop
+  lume ui-layout [src]     Declarative `@ui-layout` 4-pane Win64 PE32+ (`1412694337` / `1412698308`) & Web/WASM lowering (`ui_split_conservation_law`)
   lume reversa / reverse-engineer / reveng / decompile <target> Unified binary & 7-phase SDD reverse engineering
   lume pingora / proxy / cdn / load-balancer [target] Pingora-Lume Edge Proxy (TinyUFO, Ketama+P2C, TLS 1.3, 7-phase ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [target] EGM-Lume Spec-Driven Development & Drift Engine

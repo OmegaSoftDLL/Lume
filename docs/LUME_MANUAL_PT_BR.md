@@ -260,7 +260,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 ## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)
 - `use fs`             Arquivos seguros com `sfile_with` (fechamento garantido)
 - `use bytes`          Buffers binarios verificados (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
-- `use map`            Dicionario hash de 256 buckets (`map_new`, `map_put`, `map_get`, `map_get_or`)
+- `use vec`            Invariantes genericos de colecoes e decimais provados por `QF_LIA` (`vec.src`,
+                       `decimal.src`, `stdlib/std.lume`: `vec_clamp_index`, `vec_checked_slice_len`,
+                       `map_checked_slot`, `decimal_clamp`)
+- `use map`            Dicionario hash de 256 buckets (`map_new`, `map_put`, `map_get`, `map_get_or`,
+                       `map_checked_slot`)
 - `use arena`          Arenas de memoria de alta velocidade (`arena_new`, `arena_alloc`, `arena_reset`)
 - `use capsule`        Capsulas de auditoria e replay deterministico
 - `use fs_sha256_file` Hash criptografico FIPS 180-4 (`lc_sha256(s)`, `fs_sha256_file(p)`, `fs_file_size(p, i)`)
@@ -280,7 +284,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - `use gfx`            Motor Grafico 2D/3D, Matematica de Ponto Fixo (`fx_sqrt`, `fx_sin_deg`,
                        `fx_cos_deg`), Blending RGBA Porter-Duff, Rasterizador 2D Bresenham/Circulo/
                        Bezier, Projecao de Perspectiva 3D, BMP Binario (54B), PPM e Sinoptico SVG HMI
-- `use gui`            Cliente grafico binario X11 (`0x42` MSB), arvore reativa Web e System76 COSMIC
+- `use gui`            Cliente grafico binario X11 (`0x42` MSB), arvore reativa Web, Layout Declarativo
+                       de 4 Paineis (`lume ui-layout` / `@ui-layout`) para Win64 PE32+ e Web/WASM com
+                       redimensionamento `WS_THICKFRAME` e selecao de mouse `LBS_NOTIFY | LBS_HASSTRINGS`
+                       simultaneos (`1412694337` / `0x54340141` e `1412698308` / `0x543410C4`) +
+                       conservacao de geometria `QF_LIA` (`ui_split_conservation_law`), e System76 COSMIC
                        1.11 Wayland `xdg-dialog-v1` com empilhamento modal z-index e bloqueio de clique
                        no pai (`ui_modal_blocks_parent`, `ui_modal_z_index`, `4/4` provas `QF_LIA`)
 - `use los`            Camada de Sistema Operacional Track O + politica deterministica de selecao
@@ -387,6 +395,16 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - **Mascote Oficial (Lumi — O Camaleao Bioluminescente de Cristal):** Embutido nativamente como icone
   `16x16` 32-bit BGRA `RT_ICON` (`Type=3, ID=1`) + `RT_GROUP_ICON` (`Type=14, ID=1`) em `--target x86_64-windows-gui`.
 
+## 6.2.2 Layout Declarativo de UI (`@ui-layout`) e Invariantes Verificados de Colecoes (`vec.src`, `decimal.src`, `stdlib/std.lume`)
+- **Layout Declarativo de UI (`lume ui-layout` / `@ui-layout`):** Compila layouts declarativos de 4 paineis
+  para Win64 PE32+ nativo (`--target x86_64-windows-gui`) e arvores DOM Web/WASM com redimensionamento de
+  borda `WS_THICKFRAME` e selecao de mouse `LBS_NOTIFY | LBS_HASSTRINGS` simultaneos (`1412694337` /
+  `0x54340141` para paineis Listbox e `1412698308` / `0x543410C4` para paineis Edit multilinhas), protegidos
+  pela lei de conservacao geometrica `QF_LIA` (`ui_split_conservation_law`).
+- **Invariantes Genericos de Colecoes Provados Formalmente (`vec.src`, `decimal.src`, `stdlib/std.lume`):**
+  Funcoes de indexacao, fatia e clamp verificadas por `QF_LIA`: `vec_clamp_index`, `vec_checked_slice_len`,
+  `map_checked_slot` e `decimal_clamp`.
+
 ## 6.3 Todos os 8 Capstones Soberanos e Brasileiros Verificados (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` provas `QF_LIA`): Rastreamento de fraude e taint em grafos Pix em tempo real.
 - `sentry_uav_guard` (`9/9` provas `QF_LIA`): Guarda autonomo de geofence, bateria e atitude para VANT/UAV.
@@ -409,6 +427,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                     `x86_64-windows-pe` (PE64 nativo com IAT `kernel32.dll`), `aarch64-macos-macho`
 - Windows GUI Nativo: `x86_64-windows-gui` e `x86_64-windows-gui-protected` (`PE32+` Win32 GUI nativo
                     com IAT `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll`,
+                    lowering declarativo `@ui-layout` de 4 paineis com `WS_THICKFRAME` + `LBS_NOTIFY | LBS_HASSTRINGS`
+                    estilos `1412694337` / `0x54340141` e `1412698308` / `0x543410C4`, `ui_split_conservation_law`,
                     `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, prologo `PYXH` MBA e cofre `.lsym`)
 - Mobile (Lojas):   `aarch64-android-elf`, `aarch64-ios-macho`
 - Bare-Metal / SO:  `x86_64-uefi-pe`, `x86_64-none-raw`, `x86_64-none-mbr`, `x86_64-none-ihex`
@@ -459,6 +479,10 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 ## 8.3 Comandos Transcendentes e Soberanos (Ondas 9 e 10)
   lume morph-ast / awaken / quantum / bio-dna / cosmic-tmr / hologram / chronos
   lume omega-net / llm-forge / consult / laws / memory / replicate / hive / daemon-triad / hot-evolve / live-cockpit
+    - `lume daemon-triad [src]`: Sentinela P2P sempre-ativa sincronizando a Triade (Este PC + Dell G3 + Acer) em <100ms
+    - `lume hot-evolve [src]`:   Auto-recompilacao E-Graph e hot-swap binario atomico zero-downtime
+    - `lume live-cockpit [src]`: Loop multimodal ao vivo (voz 22050 Hz + visao DEQ + telemetria de rede/Ring-0)
+  lume ui-layout [src]     Lowering declarativo `@ui-layout` de 4 paineis Win64 PE32+ (`1412694337` / `1412698308`) e Web/WASM (`ui_split_conservation_law`)
   lume reversa / reverse-engineer / reveng / decompile <alvo> Engenharia reversa unificada binaria + SDD
   lume pingora / proxy / cdn / load-balancer [alvo] Proxy de borda e CDN Pingora-Lume (TinyUFO, Ketama+P2C, TLS 1.3, ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [alvo] Modelo Elefante-Peixe-Dourado (EGM SDD + Deriva Zero)
