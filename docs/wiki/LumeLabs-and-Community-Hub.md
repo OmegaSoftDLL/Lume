@@ -24,11 +24,11 @@ Welcome to **LumeLabs** and the official **Lume Open-Source Community**! Lume is
 
 | Lab ID | Research Division | Core Engine | Active Focus |
 | :--- | :--- | :--- | :--- |
-| **LAB-01** | **OmniProof & Automated Deduction Lab** | `03_prover.src` + `lcert.src` | `QF_LIA` cutting planes, `QF_NIA` witnesses, Separation Logic, hybrid `ML-DSA-65` certificates |
-| **LAB-02** | **Universal Chameleon Polyglot Lab** | `lchameleon.src` | Zero-copy FFI & `[I0003]` boundary contracts across C, Rust, Python DLPack, Node/WASM, Go, JVM, .NET, SQL, OpenAPI |
+| **LAB-01** | **OmniProof & Automated Deduction Lab** | `03_prover.src` + `lcert.src` | `557` formal obligations (`154` tests), `QF_LIA` cutting planes, `QF_NIA` witnesses, Separation Logic, hybrid `ML-DSA-65` certificates |
+| **LAB-02** | **Universal Chameleon, Singularity $\Omega$ & Bayesian SPC Lab** | `lchameleon.src` | `68/68` obligations: Zero-copy FFI across 9 ecosystems (`[I0003]`), `OTE` Singularity $\tau_{\max}=T_m/4$, Empirical-Bayes Beta-Binomial SPC, CUSUM, CPM Float & $k$-Anonymous PAVA |
 | **LAB-03** | **Atomic Memory & Perceus Systems Lab** | `04_perceus.src` + `05_codegen.src` | 4-Tier Atomic Memory Compactor (`36.9 KB` peak heap), 7B SSO, `24B` `Cons`, `LZ1` cold arenas |
-| **LAB-04** | **Universal Silicon, Win64 GUI & GPU Lab** | `ltarget.src` + `lasm.src` | 27 targets, Clean Generic Win64 Native GUI (`x86_64-windows-gui`), CUDA PTX 8.0, SPIR-V 1.6, Verilog/VHDL RTL |
-| **LAB-05** | **Kernelume & Sovereign OS Lab** | `lsentience.src` | Formally verified capability microkernel (`[K0005]` symbolic DMA `W^X`, `[K0006]` bounded stack) |
+| **LAB-04** | **Universal Silicon, Win64 GUI, Cyber-Physical UFE & Subsea Lab** | `ltarget.src` + `gfx.src` + `lasm.src` | 27 targets, Clean Generic Win64 Native GUI (`x86_64-windows-gui`), 7-Layer `UFE` & Subsea/Marine Physics (`77/77` obligations: Catenary, VIV, Miner, DNV DAF, Bühlmann ZH-L16C, Well Kill, ASME B31G) |
+| **LAB-05** | **Kernelume, NetSentinel IEC 62443, Conduíte HA & Sovereign Mesh Lab** | `lsentience.src` + `net.src` | Formally verified microkernel (`140/140` obligations) + OT/HA Firewall & Sovereign Mesh/Raft/DHT/TOFU/ChannelMux (`68/68` obligations) |
 | **LAB-06** | **OpenTPU, Differentiable Silicon & Sentience Lab** | `lsentience.src` + `ltarget.src` | `256x256` systolic array ISA, reverse-mode autodiff kernels, self-evolving verified code synthesis |
 | **LAB-07** | **Post-Quantum & Fault-Tolerant QPU Lab** | `ltarget.src` + `lsentience.src` | Surface-code logical qubits (`d=3..17`), `[Q0001]` No-Cloning checker, `ML-KEM-1024` / `ML-DSA-65` |
 
@@ -43,10 +43,10 @@ Welcome to **LumeLabs** and the official **Lume Open-Source Community**! Lume is
 Explore our active engineering milestones, KPI scorecards, and release tracks in [**`PROJECTS.md`**](https://github.com/OmegaSoftDLL/lume/blob/main/PROJECTS.md):
 
 - **Project 1:** Core Compiler, `stage2 == stage3` Zero-C Bootstrap & 4-Tier Memory Compactor
-- **Project 2:** OmniProof v3 (`QF_LIA` / `QF_NIA` / `QF_BV` / `@bound` WCET / `@secret` `[C0009]`) & Claude Opus 5.5 Audit Gate (`85/85`)
-- **Project 3:** Universal Chameleon 9-Ecosystem Polyglot Interop Engine (`[I0003]`)
-- **Project 4:** 27 Compilation Targets & Clean Generic Win64 Native GUI Studio (`x86_64-windows-gui`)
-- **Project 5:** LumeLabs Frontier Domains (Kernelume OS, OpenTPU, Quantum Nexus, Pingora Edge Proxy, Reversa SDD)
+- **Project 2:** OmniProof v3 (`557` obligations / `154` tests) & Claude Opus 5.5 + Red Team + Waves 1–3 Gate (`143/143`)
+- **Project 3:** Universal Chameleon 9-Ecosystem Polyglot Interop, Singularity $\Omega$ (`OTE`) & Bayesian SPC Engine (`68/68`)
+- **Project 4:** 27 Compilation Targets, Clean Generic Win64 Native GUI Studio (`x86_64-windows-gui`), Cyber-Physical `UFE` & Subsea Physics (`77/77`)
+- **Project 5:** LumeLabs Frontier Domains (Kernelume OS `140/140`, NetSentinel/Conduíte/Omega-Mesh `68/68`, OpenTPU, Quantum Nexus, Pingora, Reversa SDD)
 
 ---
 

@@ -410,8 +410,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   Machine-checked `QF_LIA` bounds and clamping helpers: `vec_clamp_index`, `vec_checked_slice_len`,
   `map_checked_slot`, and `decimal_clamp`.
 
-## 6.2.3 Unified Field Engine (`lume unified-field` / `lume ufe`), Singularity Transition Engine (`lume singularity` / `lume ote`) & NetSentinel IEC 62443 (`lume net-sentinel` / `lume iec62443`)
-- **Unified Field Engine (`lume unified-field` / `lume ufe` in `std.gfx`, `35/35` `QF_LIA` proofs, `12/12` tests):**
+## 6.2.3 Unified Field & Subsea Engine (`lume unified-field` / `lume ufe` / `lume subsea`), Singularity Transition & Bayes-SPC Engine (`lume singularity` / `lume ote`) & NetSentinel IEC 62443 / Conduite HA / Sovereign Mesh (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh`)
+- **Unified Field & Subsea/Offshore Engine (`lume unified-field` / `lume ufe` / `lume subsea` in `std.gfx`, `77/77` `QF_LIA` & WCET obligations, `9/9` tests):**
   - **7-DOF Singularity-Free Damped Least-Squares (DLS):** `ufe_dls_lambda_sq_milli` and
     `ufe_dls_safe_denom_milli` guarantee strictly positive inverse-kinematics denominators
     (`sigma_sq + lambda_sq >= 1`) near kinematic singularities.
@@ -435,7 +435,14 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   - **Deterministic 1 kHz `LatencyMonitor` with 100-Cycle Hysteresis:** `ufe_latency_shedder_step`
     sheds non-critical load immediately on budget overrun and requires 100 consecutive clean
     1 kHz cycles before restoring full load.
-- **2nd-Order Dynamical Transition Engine & Singularity Boundary $\Omega$ (`lume singularity` / `lume ote` / `lume transition-engine` in `lchameleon.src`, `63/63` `QF_LIA` proofs, `12/12` tests):**
+  - **Subsea Catenary, VIV, Heavy-Lift DAF, Hyperbaric ZH-L16C, Well Control & ASME B31G (Wave 3):**
+    `subsea_catenary_top_tension_n`, `subsea_catenary_tdp_bend_ok`,
+    `subsea_combined_longitudinal_stress_ok` (`DNV-OS-F101`), `subsea_viv_screening_ok` (`DNV-RP-F105`),
+    `subsea_miner_fatigue_safe_ok` (`DNV-RP-C203`), `marine_dnv_daf_floor_milli` &
+    `marine_heavy_lift_feasible_ok` (`DNV-ST-N001`), `subsea_hyperbaric_decompression_safe_ok`
+    (`Buhlmann ZH-L16C` $p_O2 \in [16, 160]$ cbar), `subsea_well_kill_icp_kpa` &
+    `subsea_well_kill_mud_sg_milli` (*Wait & Weight* kill sheet), and `subsea_b31g_corroded_pipe_safe_ok`.
+- **2nd-Order Dynamical Transition Engine, Singularity Boundary $\Omega$ & Empirical-Bayes SPC/CPM/k-Anonymity (`lume singularity` / `lume ote` / `lume transition-engine` in `lchameleon.src`, `68/68` `QF_LIA` & WCET obligations, `12/12` tests):**
   - **Dual-Regime Step Identification & Quantitative $\zeta$ Estimator:** `ote_select_damping_regime`
     and `ote_estimate_zeta_milli` dispatch underdamped ($0 < \zeta < 1$ via overshoot $M_p$ and
     peak period $T_d$) vs. critically/overdamped ($1 \le \zeta \le 100$ via dimensionless rise-time
@@ -454,7 +461,10 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
     (Sampling $\to$ Delay/Boundary $\to$ Gain $\to$ Inertia):
     `NYQ-ALIAS` $\to$ `NYQ-LIMIT` $\to$ `OMEGA-CROSS` $\to$ `PF-LOW` $\to$ `MF-LOW` $\to$
     `CASCADE-DEEP` $\to$ `ZETA-LOW` $\to$ `ZETA-HIGH` $\to$ `QAMP-HIGH` / `TUNED`.
-- **NetSentinel IEC 62443 & Read-Only OT Telemetry (`lume net-sentinel` / `lume iec62443` in `std.net`, `38/38` `QF_LIA` proofs, `12/12` tests):**
+  - **Empirical-Bayes Beta-Binomial SPC, Bilateral CUSUM, CPM Float & $k$-Anonymous PAVA (Wave 3):**
+    `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`,
+    `analytics_k_anonymity_release_ok` ($k \ge 5$ privacy gate), and `analytics_pava_monotonic_pair_hi`.
+- **NetSentinel IEC 62443, Conduite HA & Sovereign Mesh/Raft/DHT/TOFU (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` in `std.net`, `68/68` `QF_LIA` & WCET obligations, `15/15` tests):**
   - **Purdue Model (`L0..L4`) & DMZ (`L3.5`) Conduit Guard:** `iec62443_purdue_conduit_ok`
     enforces strict zone-conduit traversal and forbids direct enterprise-to-control bridging.
   - **OT Firewall Policy Audit & Structural Read-Only DCS Guard:** `netsentinel_fw_policy_audit_ok`
@@ -463,6 +473,15 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   - **Tri-State Telemetry Quality & Finite `1e12` Sentinel:** `ot_tristate_quality_code`
     classifies `Good`/`Uncertain`/`Bad` samples without synthetic interpolation, and
     `ot_finite_sentinel_clamp` clamps out-of-range telemetry to `+/- 10^12`.
+  - **Conduite HA ACL Parity, GOOSE Anti-Replay & Posture-Traffic Correlator (Wave 3):**
+    `conduit_admin_timeout_ok` (rejects infinite `<= 0` and `> 15` min), `conduit_ha_failover_parity_ok`
+    (order-sensitive ACL digest + `hold >= 3 * hello`), `conduit_severity_escalate_rank`,
+    `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, and
+    `netsentinel_broadcast_storm_code`.
+  - **Sovereign Mesh Framing, Atomic NAT Dual TokenBucket, Kademlia Tiered DHT, Raft & TOFU (Wave 3):**
+    `mesh_frame_bounds_ok`, `mesh_atomic_dual_rate_deduct` (zero token leak under shared NAT),
+    `mesh_dht_healing_rank` (`Hub < Relay < Agent`), `mesh_raft_quorum_ok` & `mesh_raft_backtrack_index`,
+    `mesh_tofu_verify_code`, and `mesh_channel_mux_quota_ok`.
 
 ## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.
@@ -563,9 +582,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (or `lume chameleon`) Universal Chameleon Polyglot Interop Engine across 9 ecosystems (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
-  lume unified-field|ufe [target]                    Unified Field Engine in `std.gfx` (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`, `ufe_laplace_sor_step_milli`, `ufe_harmonic_maximum_principle_law`, `ufe_gnron_swirl_scale_milli`, `ufe_self_collision_capsule_ok`, `ufe_ieee754_f32_finite_guard`, `ufe_ekf_mahalanobis_5sigma_ok`, `ufe_ekf_joseph_cov_pos_milli`, `ufe_actuator_stiction_detect`, `ufe_actuator_rul_hours`, `ufe_swarm_separation_ok`, `ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_carnot_efficiency_bound_ok`, `ufe_latency_shedder_step`)
-  lume singularity|ote|transition-engine [target]    2nd-Order Dynamical Transition Engine & Singularity Boundary Omega in `lchameleon.src` (`ote_select_damping_regime`, `ote_estimate_zeta_milli`, `ote_power_factor_milli`, `ote_reactive_waste_ratio_milli`, `ote_phase_coherence_ok`, `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_singularity_margin_zone`, `ote_nyquist_status_code`, `ote_cascade_bandwidth_decoupled_ok`, `ote_retune_kp_scale_milli`, `ote_diagnose_primary_code`)
-  lume net-sentinel|iec62443 [target]                NetSentinel IEC 62443 & Read-Only OT Telemetry in `std.net` (`iec62443_purdue_conduit_ok`, `netsentinel_fw_policy_audit_ok`, `ot_readonly_dcs_guard`, `ot_tristate_quality_code`, `ot_finite_sentinel_clamp`)
+  lume unified-field|ufe|subsea [target]             Unified Field & Subsea/Offshore Engine in `std.gfx` (`ufe_dls_lambda_sq_milli`..`ufe_latency_shedder_step`, `subsea_catenary_top_tension_n`, `subsea_viv_screening_ok`, `subsea_miner_fatigue_safe_ok`, `marine_dnv_daf_floor_milli`, `marine_heavy_lift_feasible_ok`, `subsea_hyperbaric_decompression_safe_ok`, `subsea_well_kill_icp_kpa`, `subsea_b31g_corroded_pipe_safe_ok`)
+  lume singularity|ote|transition-engine [target]    2nd-Order Dynamical Transition Engine, Singularity Boundary Omega & Bayes-SPC/CPM/k-Anonymity in `lchameleon.src` (`ote_select_damping_regime`..`ote_diagnose_primary_code`, `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`, `analytics_k_anonymity_release_ok`, `analytics_pava_monotonic_pair_hi`)
+  lume net-sentinel|iec62443|conduite|omega-mesh [t] NetSentinel IEC 62443, Conduite HA & Sovereign Mesh/Raft/DHT/TOFU in `std.net` (`iec62443_purdue_conduit_ok`..`ot_finite_sentinel_clamp`, `conduit_admin_timeout_ok`, `conduit_ha_failover_parity_ok`, `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, `mesh_atomic_dual_rate_deduct`, `mesh_dht_healing_rank`, `mesh_raft_quorum_ok`, `mesh_tofu_verify_code`, `mesh_channel_mux_quota_ok`)
   lume run compiler/stage1/lume_llm_core.src         Sovereign 1-Bit/Ternary LLM Core, Liquid LFM3 Audio, Colibri MoE Guard & 3-Tier Router (`21/21` proofs)
   lume run examples/apps/sovereign_llm_router/main.src Sovereign Edge/Local/Cloud LLM Router & Anti-Hallucination Price Oracle (`20/20` proofs)
   lume os-control / bios-core / web-research / crypto-engine
@@ -588,8 +607,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
   `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 482 formal obligations +
-  150 unit tests + 99 verified toolchain artifacts).
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 557 formal obligations +
+  154 unit tests + 99 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 

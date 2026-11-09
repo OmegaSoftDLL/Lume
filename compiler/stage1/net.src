@@ -461,3 +461,109 @@ law ot_readonly_dcs_never_writes_law(write_op: int) =
 fn test_iec62443_purdue_conduit_and_fw_audit() = let l4_l2_direct = iec62443_purdue_conduit_ok(40, 20, 0) in let l4_l2_dmz = iec62443_purdue_conduit_ok(40, 20, 1) in let l2_l4_direct = iec62443_purdue_conduit_ok(10, 40, 0) in let l3_l2_ok = iec62443_purdue_conduit_ok(30, 20, 0) in let fw_ok = netsentinel_fw_policy_audit_ok(100, 96, 95, 0) in let fw_snmp_bad = netsentinel_fw_policy_audit_ok(100, 96, 95, 1) in let fw_utm_bad = netsentinel_fw_policy_audit_ok(100, 80, 95, 0) in l4_l2_direct == 0 and l4_l2_dmz == 1 and l2_l4_direct == 0 and l3_l2_ok == 1 and fw_ok == 1 and fw_snmp_bad == 0 and fw_utm_bad == 0
 
 fn test_ot_readonly_dcs_tristate_quality_and_sentinel() = let ro_ok = ot_readonly_dcs_guard(0) in let ro_blk = ot_readonly_dcs_guard(1) in let q_init = ot_tristate_quality_code(1, 0, 0) in let q_good = ot_tristate_quality_code(1, 1, 0) in let q_bad_fail = ot_tristate_quality_code(1, 1, 3) in let q_bad_disc = ot_tristate_quality_code(0, 1, 0) in let s_inf = ot_finite_sentinel_clamp(42, 1) in let s_fin = ot_finite_sentinel_clamp(365, 0) in ro_ok == 1 and ro_blk == 0 and q_init == 1 and q_good == 0 and q_bad_fail == 2 and q_bad_disc == 2 and s_inf == 1000000000000 and s_fin == 365
+
+## ============================================================================
+## 9. Wave 3 — Conduite HA, IEC 61850 GOOSE State Machine, Posture-Traffic Correlator & Sovereign Mesh/DHT/Raft/QoS
+## ============================================================================
+
+@bound(cycles: 24)
+fn conduit_admin_timeout_ok(timeout_min: int) -> int
+    ensures result == 0 or result == 1
+    = if timeout_min >= 1 then (if timeout_min <= 15 then 1 else 0) else 0
+
+@bound(cycles: 24)
+fn conduit_ha_failover_parity_ok(seq_hash_a: int, seq_hash_b: int, rule_count_a: int, rule_count_b: int, hello_ms: int, hold_ms: int) -> int
+    requires rule_count_a >= 0 and rule_count_b >= 0 and hello_ms >= 1 and hold_ms >= 1
+    ensures result == 0 or result == 1
+    = if seq_hash_a == seq_hash_b then (if rule_count_a == rule_count_b then (if hold_ms >= 3 * hello_ms then 1 else 0) else 0) else 0
+
+@bound(cycles: 24)
+fn conduit_severity_escalate_rank(base_rank: int, exposed_boundary: int, exposure_sensitive: int) -> int
+    requires base_rank >= 0 and base_rank <= 4 and exposed_boundary >= 0 and exposed_boundary <= 1 and exposure_sensitive >= 0 and exposure_sensitive <= 1
+    ensures result >= base_rank and result <= 4
+    = if exposed_boundary == 1 then (if exposure_sensitive == 1 then (if base_rank < 4 then base_rank + 1 else 4) else base_rank) else base_rank
+
+@bound(cycles: 32)
+fn ot_goose_state_transition_code(st_prev: int, st_cur: int, sq_prev: int, sq_cur: int, cos_prio: int) -> int
+    requires st_prev >= 0 and st_cur >= 0 and sq_prev >= 0 and sq_cur >= 0 and cos_prio >= 0 and cos_prio <= 7
+    ensures result >= 0 and result <= 3
+    = if cos_prio < 4 then 3 else (if st_cur == st_prev then (if sq_cur == sq_prev + 1 then 0 else (if sq_cur == 0 then 2 else 3)) else (if st_cur == st_prev + 1 then (if sq_cur == 0 then 1 else 3) else 3))
+
+@bound(cycles: 24)
+fn netsentinel_posture_traffic_confirmed(manifest_ok: int, audit_partial: int, age_days: int, flow_matches_signal: int) -> int
+    requires manifest_ok >= 0 and manifest_ok <= 1 and audit_partial >= 0 and audit_partial <= 1 and flow_matches_signal >= 0 and flow_matches_signal <= 1
+    ensures result == 0 or result == 1
+    = if manifest_ok == 1 and audit_partial == 0 and age_days >= 0 and age_days <= 30 and flow_matches_signal == 1 then 1 else 0
+
+@bound(cycles: 24)
+fn netsentinel_broadcast_storm_code(bcast_permille: int) -> int
+    requires bcast_permille >= 0 and bcast_permille <= 1000
+    ensures result == 0 or result == 1 or result == 2
+    = if bcast_permille <= 50 then 0 else (if bcast_permille <= 200 then 1 else 2)
+
+@bound(cycles: 24)
+fn mesh_frame_bounds_ok(payload_len: int, buf_len: int) -> int
+    requires buf_len >= 0
+    ensures result == 0 or result == 1
+    = if payload_len >= 0 then (if payload_len <= 67108864 then (if 17 + payload_len <= buf_len then 1 else 0) else 0) else 0
+
+@bound(cycles: 24)
+fn mesh_atomic_dual_rate_deduct(ip_tokens: int, node_tokens: int, cost: int, circuit_open: int) -> int
+    requires ip_tokens >= 0 and node_tokens >= 0 and cost >= 1 and circuit_open >= 0 and circuit_open <= 1
+    ensures result >= 0 and result <= ip_tokens
+    = if circuit_open == 0 then (if node_tokens >= cost then (if ip_tokens >= cost then ip_tokens - cost else ip_tokens) else ip_tokens) else ip_tokens
+
+@bound(cycles: 24)
+fn mesh_dht_healing_rank(role_tier: int, rtt_score: int) -> int
+    requires role_tier >= 0 and role_tier <= 2 and rtt_score >= 0 and rtt_score <= 999999
+    ensures result >= 0 and result < 3000000
+    = role_tier * 1000000 + rtt_score
+
+@bound(cycles: 24)
+fn mesh_raft_quorum_ok(votes: int, cluster_size: int) -> int
+    requires cluster_size >= 1 and votes >= 0 and votes <= cluster_size
+    ensures result == 0 or result == 1
+    = if 2 * votes > cluster_size then 1 else 0
+
+@bound(cycles: 24)
+fn mesh_raft_backtrack_index(conflict_idx: int) -> int
+    requires conflict_idx >= 0
+    ensures result >= 1
+    = if conflict_idx > 1 then conflict_idx - 1 else 1
+
+@bound(cycles: 24)
+fn mesh_tofu_verify_code(known_fp: int, presented_fp: int, msg_ts: int, last_ts: int) -> int
+    requires known_fp >= 0 and presented_fp >= 1
+    ensures result >= 0 and result <= 3
+    = if msg_ts <= last_ts then 0 else (if known_fp == 0 then 1 else (if known_fp == presented_fp then 2 else 3))
+
+@bound(cycles: 24)
+fn mesh_channel_mux_quota_ok(prio_class: int, channel_inflight_bytes: int, msg_bytes: int) -> int
+    requires prio_class >= 0 and prio_class <= 3 and channel_inflight_bytes >= 0 and msg_bytes >= 1
+    ensures result == 0 or result == 1
+    = if channel_inflight_bytes + msg_bytes <= 65536 then (if prio_class <= 1 then 1 else (if channel_inflight_bytes + msg_bytes <= 49152 then 1 else 0)) else 0
+
+law conduit_infinite_session_rejected_law(timeout_min: int) =
+    if timeout_min <= 0 or timeout_min > 15 then conduit_admin_timeout_ok(timeout_min) == 0 else 1 == 1
+
+law conduit_ha_order_mismatch_rejected_law(seq_a: int, seq_b: int, cnt: int, hello_ms: int, hold_ms: int) =
+    if cnt >= 0 and hello_ms >= 1 and hold_ms >= 1 and (seq_a < seq_b or seq_a > seq_b) then conduit_ha_failover_parity_ok(seq_a, seq_b, cnt, cnt, hello_ms, hold_ms) == 0 else 1 == 1
+
+law conduit_severity_monotonic_law(base_rank: int, exp_b: int, exp_s: int) =
+    if base_rank >= 0 and base_rank <= 4 and exp_b >= 0 and exp_b <= 1 and exp_s >= 0 and exp_s <= 1 then conduit_severity_escalate_rank(base_rank, exp_b, exp_s) >= base_rank and conduit_severity_escalate_rank(base_rank, exp_b, exp_s) <= 4 else 1 == 1
+
+law ot_goose_replay_reset_detected_law(st: int, sq_prev: int) =
+    if st >= 0 and sq_prev >= 1 then ot_goose_state_transition_code(st, st, sq_prev, 0, 4) == 2 else 1 == 1
+
+law mesh_nat_token_preservation_law(ip_tokens: int, node_tokens: int, cost: int) =
+    if ip_tokens >= 0 and node_tokens >= 0 and cost >= 1 and node_tokens < cost then mesh_atomic_dual_rate_deduct(ip_tokens, node_tokens, cost, 0) == ip_tokens else 1 == 1
+
+law mesh_dht_hierarchy_law(hub_rtt: int, agent_rtt: int) =
+    if hub_rtt >= 0 and hub_rtt <= 999999 and agent_rtt >= 0 and agent_rtt <= 999999 then mesh_dht_healing_rank(0, hub_rtt) < mesh_dht_healing_rank(1, agent_rtt) and mesh_dht_healing_rank(1, hub_rtt) < mesh_dht_healing_rank(2, agent_rtt) else 1 == 1
+
+law mesh_raft_quorum_intersection_law(votes_a: int, votes_b: int, n: int) =
+    if n >= 1 and votes_a >= 0 and votes_b >= 0 and 2 * votes_a > n and 2 * votes_b > n then votes_a + votes_b > n else 1 == 1
+
+fn test_wave3_conduit_ha_goose_posture_and_storm() = let t_inf = conduit_admin_timeout_ok(0) in let t_ok = conduit_admin_timeout_ok(10) in let t_hi = conduit_admin_timeout_ok(30) in let ha_ok = conduit_ha_failover_parity_ok(991, 991, 42, 42, 50, 150) in let ha_seq_bad = conduit_ha_failover_parity_ok(991, 992, 42, 42, 50, 150) in let ha_hold_bad = conduit_ha_failover_parity_ok(991, 991, 42, 42, 50, 100) in let sev_esc = conduit_severity_escalate_rank(2, 1, 1) in let sev_cap = conduit_severity_escalate_rank(4, 1, 1) in let sev_no = conduit_severity_escalate_rank(2, 1, 0) in let g_hb = ot_goose_state_transition_code(5, 5, 10, 11, 4) in let g_ev = ot_goose_state_transition_code(5, 6, 11, 0, 6) in let g_rep = ot_goose_state_transition_code(5, 5, 11, 0, 4) in let g_cos_bad = ot_goose_state_transition_code(5, 5, 10, 11, 2) in let p_conf = netsentinel_posture_traffic_confirmed(1, 0, 7, 1) in let p_part = netsentinel_posture_traffic_confirmed(1, 1, 7, 1) in let p_stale = netsentinel_posture_traffic_confirmed(1, 0, 45, 1) in let st_nom = netsentinel_broadcast_storm_code(20) in let st_el = netsentinel_broadcast_storm_code(120) in let st_crit = netsentinel_broadcast_storm_code(450) in t_inf == 0 and t_ok == 1 and t_hi == 0 and ha_ok == 1 and ha_seq_bad == 0 and ha_hold_bad == 0 and sev_esc == 3 and sev_cap == 4 and sev_no == 2 and g_hb == 0 and g_ev == 1 and g_rep == 2 and g_cos_bad == 3 and p_conf == 1 and p_part == 0 and p_stale == 0 and st_nom == 0 and st_el == 1 and st_crit == 2
+
+fn test_wave3_mesh_frame_nat_dht_raft_tofu_and_mux() = let fb_ok = mesh_frame_bounds_ok(1024, 1041) in let fb_short = mesh_frame_bounds_ok(1024, 1040) in let fb_huge = mesh_frame_bounds_ok(70000000, 80000000) in let nat_ok = mesh_atomic_dual_rate_deduct(100, 50, 10, 0) in let nat_node_low = mesh_atomic_dual_rate_deduct(100, 5, 10, 0) in let nat_cb_open = mesh_atomic_dual_rate_deduct(100, 50, 10, 1) in let r_hub = mesh_dht_healing_rank(0, 850000) in let r_rel = mesh_dht_healing_rank(1, 10) in let r_ag = mesh_dht_healing_rank(2, 5) in let q_ok = mesh_raft_quorum_ok(3, 5) in let q_no = mesh_raft_quorum_ok(2, 5) in let bt_mid = mesh_raft_backtrack_index(5) in let bt_floor = mesh_raft_backtrack_index(1) in let tf_rep = mesh_tofu_verify_code(123, 123, 100, 100) in let tf_enroll = mesh_tofu_verify_code(0, 777, 105, 100) in let tf_match = mesh_tofu_verify_code(777, 777, 105, 100) in let tf_mitm = mesh_tofu_verify_code(777, 888, 105, 100) in let mux_hi_ok = mesh_channel_mux_quota_ok(0, 60000, 4096) in let mux_bulk_blk = mesh_channel_mux_quota_ok(3, 48000, 2048) in let mux_bulk_ok = mesh_channel_mux_quota_ok(2, 40000, 4096) in fb_ok == 1 and fb_short == 0 and fb_huge == 0 and nat_ok == 90 and nat_node_low == 100 and nat_cb_open == 100 and r_hub < r_rel and r_rel < r_ag and q_ok == 1 and q_no == 0 and bt_mid == 4 and bt_floor == 1 and tf_rep == 0 and tf_enroll == 1 and tf_match == 2 and tf_mitm == 3 and mux_hi_ok == 1 and mux_bulk_blk == 0 and mux_bulk_ok == 1

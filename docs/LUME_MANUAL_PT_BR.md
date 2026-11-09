@@ -405,8 +405,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   Funcoes de indexacao, fatia e clamp verificadas por `QF_LIA`: `vec_clamp_index`, `vec_checked_slice_len`,
   `map_checked_slot` e `decimal_clamp`.
 
-## 6.2.3 Motor de Campo Unificado (`lume unified-field` / `lume ufe`), Motor Dinamico de Transicao e Singularidade (`lume singularity` / `lume ote`) e NetSentinel IEC 62443 (`lume net-sentinel` / `lume iec62443`)
-- **Motor de Campo Unificado (`lume unified-field` / `lume ufe` em `std.gfx`, `35/35` provas `QF_LIA`, `12/12` testes):**
+## 6.2.3 Motor de Campo Unificado e Engenharia Submarina (`lume unified-field` / `lume ufe` / `lume subsea`), Motor Dinamico de Transicao e Bayes-SPC (`lume singularity` / `lume ote`) e NetSentinel IEC 62443 / Conduite HA / Sovereign Mesh (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh`)
+- **Motor de Campo Unificado e Engenharia Submarina/Offshore (`lume unified-field` / `lume ufe` / `lume subsea` em `std.gfx`, `77/77` obrigacoes `QF_LIA` & WCET, `9/9` testes):**
   - **Cinematica 7-DOF Damped Least-Squares (DLS) Livre de Singularidade:** `ufe_dls_lambda_sq_milli` e
     `ufe_dls_safe_denom_milli` garantem denominador estritamente positivo (`sigma_sq + lambda_sq >= 1`)
     proximo a singularidades cinematicas.
@@ -429,7 +429,14 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   - **`LatencyMonitor` Deterministico de 1 kHz com Histerese de 100 Ciclos:** `ufe_latency_shedder_step`
     descarta carga nao-critica imediatamente em caso de estouro de janela e exige 100 ciclos
     consecutivos limpos a 1 kHz antes de restaurar a carga.
-- **Motor Dinamico de Transicao de 2a Ordem e Fronteira de Singularidade $\Omega$ (`lume singularity` / `lume ote` / `lume transition-engine` em `lchameleon.src`, `63/63` provas `QF_LIA`, `12/12` testes):**
+  - **Catenaria Submarina, VIV, Heavy-Lift DAF, Buhlmann ZH-L16C, Controle de Poco e ASME B31G (Onda 3):**
+    `subsea_catenary_top_tension_n`, `subsea_catenary_tdp_bend_ok`,
+    `subsea_combined_longitudinal_stress_ok` (`DNV-OS-F101`), `subsea_viv_screening_ok` (`DNV-RP-F105`),
+    `subsea_miner_fatigue_safe_ok` (`DNV-RP-C203`), `marine_dnv_daf_floor_milli` &
+    `marine_heavy_lift_feasible_ok` (`DNV-ST-N001`), `subsea_hyperbaric_decompression_safe_ok`
+    (`Buhlmann ZH-L16C` $p_O2 \in [16, 160]$ cbar), `subsea_well_kill_icp_kpa` &
+    `subsea_well_kill_mud_sg_milli` (*Wait & Weight* kill sheet), e `subsea_b31g_corroded_pipe_safe_ok`.
+- **Motor Dinamico de Transicao de 2a Ordem, Fronteira de Singularidade $\Omega$ e Bayes-SPC/CPM/k-Anonymity (`lume singularity` / `lume ote` / `lume transition-engine` em `lchameleon.src`, `68/68` obrigacoes `QF_LIA` & WCET, `12/12` testes):**
   - **Identificacao em Dois Regimes e Estimador Quantitativo de $\zeta$:** `ote_select_damping_regime`
     e `ote_estimate_zeta_milli` despacham entre o regime subamortecido ($0 < \zeta < 1$ via sobressinal
     $M_p$ e periodo $T_d$) e o regime criticamente amortecido / superamortecido ($1 \le \zeta \le 100$
@@ -448,7 +455,10 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
     (Amostragem $\to$ Atraso/Fronteira $\to$ Ganho $\to$ Inercia):
     `NYQ-ALIAS` $\to$ `NYQ-LIMIT` $\to$ `OMEGA-CROSS` $\to$ `PF-LOW` $\to$ `MF-LOW` $\to$
     `CASCADE-DEEP` $\to$ `ZETA-LOW` $\to$ `ZETA-HIGH` $\to$ `QAMP-HIGH` / `TUNED`.
-- **NetSentinel IEC 62443 e Telemetria OT Somente-Leitura (`lume net-sentinel` / `lume iec62443` em `std.net`, `38/38` provas `QF_LIA`, `12/12` testes):**
+  - **SPC Empirical-Bayes Beta-Binomial, CUSUM Bilateral, Folga CPM e PAVA $k$-Anonymous (Onda 3):**
+    `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`,
+    `analytics_k_anonymity_release_ok` ($k \ge 5$), e `analytics_pava_monotonic_pair_hi`.
+- **NetSentinel IEC 62443, Conduite HA e Sovereign Mesh/Raft/DHT/TOFU (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` em `std.net`, `68/68` obrigacoes `QF_LIA` & WCET, `15/15` testes):**
   - **Modelo Purdue (`L0..L4`) e Guarda de Conduite DMZ (`L3.5`):** `iec62443_purdue_conduit_ok`
     impõe isolamento estrito entre zonas e proibe travessia direta entre rede corporativa e controle.
   - **Auditoria de Politica de Firewall OT e Guarda Estrutural DCS Somente-Leitura:**
@@ -457,6 +467,15 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   - **Qualidade Tri-State e Sentinela Finito `1e12`:** `ot_tristate_quality_code` classifica amostras
     `Good`/`Uncertain`/`Bad` sem interpolacao artificial, e `ot_finite_sentinel_clamp` limita telemetria
     ao intervalo finito `+/- 10^12`.
+  - **Paridade HA Conduite, Anti-Replay GOOSE e Correlacao Postura x Trafego (Onda 3):**
+    `conduit_admin_timeout_ok` (rejeita sessao infinita `<= 0` e `> 15` min), `conduit_ha_failover_parity_ok`
+    (digest sensivel a ordem + `hold >= 3 * hello`), `conduit_severity_escalate_rank`,
+    `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed` e
+    `netsentinel_broadcast_storm_code`.
+  - **Framing Sovereign Mesh, Dual TokenBucket Atomico sob NAT, Kademlia DHT, Raft e TOFU (Onda 3):**
+    `mesh_frame_bounds_ok`, `mesh_atomic_dual_rate_deduct` (zero vazamento de tokens sob NAT),
+    `mesh_dht_healing_rank` (`Hub < Relay < Agent`), `mesh_raft_quorum_ok` & `mesh_raft_backtrack_index`,
+    `mesh_tofu_verify_code` e `mesh_channel_mux_quota_ok`.
 
 ## 6.3 Todos os 8 Capstones Soberanos e Brasileiros Verificados (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` provas `QF_LIA`): Rastreamento de fraude e taint em grafos Pix em tempo real.
@@ -544,9 +563,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [alvo] Motor Lume Continuum Nexus v1.0 (7 Motores de Referencia)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [alvo] Motor Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (ou `lume chameleon`) Motor Universal Camaleao de Interop Poliglota nos 9 ecossistemas (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
-  lume unified-field|ufe [alvo]                      Motor de Campo Unificado em `std.gfx` (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`, `ufe_laplace_sor_step_milli`, `ufe_harmonic_maximum_principle_law`, `ufe_gnron_swirl_scale_milli`, `ufe_self_collision_capsule_ok`, `ufe_ieee754_f32_finite_guard`, `ufe_ekf_mahalanobis_5sigma_ok`, `ufe_ekf_joseph_cov_pos_milli`, `ufe_actuator_stiction_detect`, `ufe_actuator_rul_hours`, `ufe_swarm_separation_ok`, `ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_carnot_efficiency_bound_ok`, `ufe_latency_shedder_step`)
-  lume singularity|ote|transition-engine [alvo]      Motor Dinamico de Transicao de 2a Ordem e Fronteira Omega em `lchameleon.src` (`ote_select_damping_regime`, `ote_estimate_zeta_milli`, `ote_power_factor_milli`, `ote_reactive_waste_ratio_milli`, `ote_phase_coherence_ok`, `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_singularity_margin_zone`, `ote_nyquist_status_code`, `ote_cascade_bandwidth_decoupled_ok`, `ote_retune_kp_scale_milli`, `ote_diagnose_primary_code`)
-  lume net-sentinel|iec62443 [alvo]                  NetSentinel IEC 62443 e Telemetria OT Somente-Leitura em `std.net` (`iec62443_purdue_conduit_ok`, `netsentinel_fw_policy_audit_ok`, `ot_readonly_dcs_guard`, `ot_tristate_quality_code`, `ot_finite_sentinel_clamp`)
+  lume unified-field|ufe|subsea [alvo]               Motor de Campo Unificado e Submarino/Offshore em `std.gfx` (`ufe_dls_lambda_sq_milli`..`ufe_latency_shedder_step`, `subsea_catenary_top_tension_n`, `subsea_viv_screening_ok`, `subsea_miner_fatigue_safe_ok`, `marine_dnv_daf_floor_milli`, `marine_heavy_lift_feasible_ok`, `subsea_hyperbaric_decompression_safe_ok`, `subsea_well_kill_icp_kpa`, `subsea_b31g_corroded_pipe_safe_ok`)
+  lume singularity|ote|transition-engine [alvo]      Motor Dinamico de Transicao de 2a Ordem, Fronteira Omega e Bayes-SPC/CPM/k-Anonymity em `lchameleon.src` (`ote_select_damping_regime`..`ote_diagnose_primary_code`, `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`, `analytics_k_anonymity_release_ok`, `analytics_pava_monotonic_pair_hi`)
+  lume net-sentinel|iec62443|conduite|omega-mesh [a] NetSentinel IEC 62443, Conduite HA e Sovereign Mesh/Raft/DHT/TOFU em `std.net` (`iec62443_purdue_conduit_ok`..`ot_finite_sentinel_clamp`, `conduit_admin_timeout_ok`, `conduit_ha_failover_parity_ok`, `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, `mesh_atomic_dual_rate_deduct`, `mesh_dht_healing_rank`, `mesh_raft_quorum_ok`, `mesh_tofu_verify_code`, `mesh_channel_mux_quota_ok`)
   lume run compiler/stage1/lume_llm_core.src         Nucleo Soberano LLM 1-Bit/Ternario, Audio LFM3 LiquidCodec, Guarda MoE Colibri e Roteador 3-Tier (`21/21` provas)
   lume run examples/apps/sovereign_llm_router/main.src Roteador LLM Hibrido Edge/Local/Cloud e Oraculo Anti-Alucinacao de Precos (`20/20` provas)
   lume os-control / bios-core / web-research / crypto-engine
@@ -569,8 +588,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
   `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 482 obrigacoes formais +
-  150 testes unitarios + 99 artefatos verificados).
+  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 557 obrigacoes formais +
+  154 testes unitarios + 99 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 

@@ -22,7 +22,7 @@ Like **Lumi**, our bioluminescent chameleon mascot on the emblem to the right, L
 
 ---
 
-## 2. The 9 Verified Ecosystems (`28/28` Proven Obligations)
+## 2. The 9 Verified Ecosystems + Singularity $\Omega$ (`OTE`) + Bayesian SPC (`68/68` Proven Obligations)
 
 | # | Ecosystem ID | Target Language / Runtime | ABI & Bridge Protocol | Zero-Copy & Safety Contract (`[I0003]`) |
 | :-: | :--- | :--- | :--- | :--- |
@@ -41,13 +41,15 @@ Like **Lumi**, our bioluminescent chameleon mascot on the emblem to the right, L
 ## 3. CLI Commands (`lume chameleon` / `lume camaleao`)
 
 ```bash
-# Inspect all 9 verified ecosystems and their 28 formal QF_LIA obligations
+# Inspect all 9 verified ecosystems and their 68 formal QF_LIA + WCET obligations (Chameleon + OTE + Bayesian SPC)
 lume chameleon
 
 # Aliases in English and Portuguese
 lume camaleao
 lume polyglot
 lume ffi-bridge
+lume singularity
+lume ote
 
 # Synthesize a complete verified bridge for a specific ecosystem
 lume adapt rust_cdylib

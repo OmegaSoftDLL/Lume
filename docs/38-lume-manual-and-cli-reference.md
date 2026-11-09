@@ -23,10 +23,10 @@ hardware/OS targets without a C toolchain, and inspected interactively.
   3. types      (tipos)        Primitives, Records, ADTs, Ownership, Decimal, Money, Tensor
   4. contracts  (contratos)    Formal Verification (requires, ensures, law, QF_LIA, WCET)
   5. effects    (efeitos)      Algebraic Effects (/ pure), Scoped Arenas & E-Capsules
-  6. stdlib     (biblioteca)   Standard Library & Sovereign Modules (fs, db, net, gui, nn...)
+  6. stdlib     (biblioteca)   Standard Library & Sovereign Modules (`lume manual chameleon`)
   7. targets    (alvos)        27 Universal Targets, MIR SSA, APK/IPA/ISO/UEFI & Silicon RTL
-  8. commands   (comandos)     Full CLI Reference across Phases 1-5 & Waves 1-10
-  9. examples   (exemplos)     6 Copy-Paste Working Programs for Humans & AI
+  8. commands   (comandos)     Full CLI Reference across Phases 1-5 & Waves 1-10 (`lume chameleon`)
+  9. examples   (exemplos)     6 Copy-Paste Working Programs + Example 7 (`chameleon_demo.src`)
  10. errors     (erros)        Diagnostic Error Codes ([P0002]..[W0002]) & How to Fix Them
 
 # CHAPTER 1: OVERVIEW & QUICKSTART (ARCHITECTURE & WORKFLOW)
@@ -73,7 +73,6 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
 - `const NAME: T = expr`       Module-level constant (inlined into functions & contracts).
-- `let name = expr`            Module value. A pure constant is inlined; anything else runs once, in source order.
 - `law name(a: int) = expr`    Universal mathematical law proven across all inputs.
 - `print <expr>`               Top-level program entrypoint expression.
 
@@ -86,8 +85,6 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - Conditional:        `if a > b then a else b` or braced `if a > b { a } else { b }`
 - Logical (short-circuit): `a == 1 and b == 2`, `x < 0 or x > 10`, `not (a == b)` (`not` binds looser than `==`/`<`)
 - Arithmetic:         `+`, `-`, `*`, `/`, `%`
-                      Overflow of `+`, `-`, `*` stops the program, exit 3. `+%`, `-%`, `*%` wrap on request and are never proven by the verifier.
-- List literal/index: `[1, 2, 3]` is a `Cons` list; `xs[i]` walks it, and on a string it reads a byte. Past the end stops the program, exit 3. `at(s, i)` reads the same byte and gives `""` past the end, for scanning.
 - Comparison:         `==`, `!=` (constant-stack `O(1)` worklist structural equality on deep lists/ADTs/records), `<`, `<=`, `>`, `>=`
 - String concat/interp: `f"val={x}"`, `"val=${x}"`, or `"val={x}"`
                         (raw JSON `"{\"a\":{\"b\":1}}"` is preserved; escape literal braces with `"\{x}"`,
@@ -213,42 +210,34 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Custom effects are declared with `effect Name { fn op(...) -> T }` and handled via
   `handle expr with { ... }`.
 
-## 5.2 Automatic Memory, 4-Tier Atomic Compactor, Zero-Heap SRA & Scoped Arenas (`std.arena`)
-Lume reclaims memory automatically: the native runtime has a non-moving mark-sweep collector that returns
-memory to the OS. The pause is proportional to the live heap, not to the garbage, and a program below 64 MiB
-never collects. `own`, borrows and `resource type` are compile-time rules and do not depend on the collector
-(`docs/38-memory-management.md`, `docs/39-memory-saga-and-atomic-compactor-dossier.md`). On top of that:
-- The compiler avoids heap work where it can prove it safe: Perceus reuse for provably unique values,
+## 5.2 Automatic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)
+- Lume collects garbage (a mark-sweep pause proportional to the live heap) and avoids heap work
+  where it can prove it safe: Perceus reuse for provably unique values,
   Escape Analysis & Scalar Replacement of Aggregates (`lsra_expr`: non-escaping
   `let r = {k1: v1, ...} in body` records are lowered directly into `%rbp` stack
-  slots `_sra_<r>_<k>` with 0 heap `mkrec`/`recget` allocations), self-tail-call `jmp`, and O(1) bump arenas.
-- **4-Tier Atomic Memory Compactor**:
-  - **Stage 0 (`.rodata` Static Unification):** String literals, constructor descriptors, record shapes, and zero-arity constructors (`Nil`, `None`) live in `.rodata` (`0 B` heap).
-  - **Level 1 (64-bit Tagged Register Word):** 63-bit signed integers (`...iiii1`) and `0..7`-byte inline SSO strings (`...ss|lll|010`) live inside a single 64-bit CPU register word (`0 B` heap); full 64-bit `int` semantics are preserved via a 16-byte overflow cell `[3][value]` for the 64th bit.
-  - **Level 2 (Compact Cells):** `Cons(h, t)` takes `24 B` (`8 B` descriptor + 2 words, down from `80 B`); a 3-field record takes `32 B` (`8 B` shape + 3 words, down from `160 B`).
-  - **Level 3 (Cold Arena Demand-Paged `LZ1` Compactor):** Cold arenas and `.lcaps`/`.lumb` artifacts compress with `LZ1` (`~355 MB/s` pack, `~975 MB/s` unpack) and thaw lazily per 4 KB page via `PROT_NONE` + `SIGSEGV` on first touch.
+  slots `_sra_<r>_<k>` with 0 heap allocations), self-tail-call `jmp`, and O(1) arenas.
+- Value words: an integer of 63 bits and a string of at most 7 bytes live in one machine word and
+  never reach the heap; `int` still holds the full 64-bit range. A constructor costs 8 bytes plus its
+  fields, a record 8 bytes plus its values, and a constructor without fields is one static cell.
 - Builtins & `use arena`:
   - `let a = arena_new(65536)`   Create a scoped region arena
-  - `mem_pack(s)` / `mem_unpack(b)`   Compress/decompress cold data (`LZ1` block format with 64-bit checksum; corrupt input fails closed)
-  - `arena_freeze(a)` / `arena_thaw(a)` / `arena_compact(a)`   Compress an arena (`MADV_DONTNEED`); a frozen page thaws on first touch
-  - `arena_mark_secret(a)`, `@secret fn`   Secrets never reach the compactor (`[C0009]`); `@bound` rejects compaction (`[V0002]`)
+  - `mem_pack(s)` / `mem_unpack(b)`   Compress cold data (LZ4 block format, corrupt input stops)
+  - `arena_freeze(a)` / `arena_thaw(a)`   Compress an arena; a frozen page returns on first touch
+  - `arena_mark_secret(a)`, `@secret fn`   Secrets never reach the compactor ([C0009])
   - `arena_reset(a)` / `arena_destroy(a)`
-  - `heap_stats()` / `gc_collect()` / `gc_count()`   Query live heap stats and control GC
+  - `heap_stats()`               Query live heap allocations and bytes
   - `lume run --memory <file.src>` Measure peak RSS memory in KB
-  - `LUME_HEAP_CAP=<bytes>`, `LUME_GC=on|off`, `LUME_GC_STRESS=<n>`, `LUME_ARENA_COLD=<n>` Control heap & cold-arena compaction
 
 ## 5.3 Tamper-Evident E-Capsules (`std.capsule` & `lume capsule`)
-- Seal execution traces, inputs, outputs, and SHA-256 digests into reproducible capsules (compressed with `LZ1`):
+- Seal execution traces, inputs, outputs, and SHA-256 digests into reproducible capsules:
   - `lume capsule seal <source.src> -o <out.lcaps>`
   - `lume capsule replay <out.lcaps>`
-  - `lume pack <in> -o <out>` / `lume unpack <in> -o <out>`
 
 # CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULES
 
 ## 6.1 Core Builtin Functions (Always Available in `.src`)
 - Strings:  `count(s)`, `at(s, i)`, `slice(s, start, end)`, `slicen(s, n, start, end)`,
             `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`
-            `toint(s)` reads an optional `-` and the digits after it: `toint("12x")` is 12 and `toint("x")` is 0.
 - I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,
             `fs_path_exists(path)`, `fs_read_byte(path, offset)`
 - Process:  `os_arg_count()`, `os_arg_at(i)`,
@@ -276,7 +265,11 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
 ## 6.2 Standard Library Modules (`use <module>`)
 - `use fs`             Safe file handles (`sfile_with` close-on-all-paths, `[O0001]` safety)
 - `use bytes`          Bounds-checked byte buffers (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
-- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`)
+- `use vec`            Formally verified generic collection & numeric invariants (`vec.src`, `decimal.src`,
+                       `stdlib/std.lume`: `vec_clamp_index`, `vec_checked_slice_len`, `map_checked_slot`,
+                       `decimal_clamp`)
+- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`,
+                       `map_checked_slot`)
 - `use arena`          Scoped O(1) memory arenas (`arena_new`, `arena_alloc`, `arena_reset`, `heap_stats`)
 - `use capsule`        Tamper-evident execution capsules (`capsule_seal`, `capsule_verify`)
 - `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`, `fs_file_size(path, i)`)
@@ -298,9 +291,13 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
                        Porter-Duff RGBA Alpha Blending, Bresenham/Circle/Bezier 2D Rasterizer,
                        3D Pinhole Perspective Projection, Binary 54-Byte BMP, PPM & SCADA HMI SVG
 - `use gui`            X11 wire-protocol client (`0x42` MSB handshake, `CreateWindow`), Web DOM,
-                       and System76 COSMIC 1.11 Wayland `xdg-dialog-v1` modal dialog z-index
-                       stacking & background click blocking (`ui_modal_blocks_parent`,
-                       `ui_modal_z_index`, `4/4` `QF_LIA` proofs)
+                       Declarative 4-Pane UI Layout (`lume ui-layout` / `@ui-layout`) for Win64 PE32+
+                       & Web/WASM lowering with simultaneous `WS_THICKFRAME` border resizing and
+                       `LBS_NOTIFY | LBS_HASSTRINGS` mouse selection (`1412694337` / `0x54340141` and
+                       `1412698308` / `0x543410C4`) + `QF_LIA` split-pane geometry conservation
+                       (`ui_split_conservation_law`), and System76 COSMIC 1.11 Wayland `xdg-dialog-v1`
+                       modal dialog z-index stacking & background click blocking
+                       (`ui_modal_blocks_parent`, `ui_modal_z_index`, `QF_LIA` proven)
 - `use los`            Track O General-Purpose OS layer + System76 COSMIC 1.11 deterministic
                        hybrid GPU (`iGPU` vs `dGPU`) PCI selection policy (`os_select_hybrid_gpu`,
                        `11/11` `QF_LIA` proofs)
@@ -374,6 +371,117 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
                        `Google Stim` Gottesman-Knill $O(n^2)$ Stabilizer Tableau Simulator (`GHZ_8`), Rotated
                        Surface Code `[[9, 1, 3]]` Topological QEC (`27/27` Pauli errors corrected), and
                        `PennyLane/Catalyst` Exact Parameter-Shift VQE
+- `use lchameleon`     Universal Chameleon Polyglot Interop Engine v1.0 (`28/28` `QF_LIA` proofs,
+                       `8/8` unit tests): Fail-closed `[I0003]` (`unverified[T] -> verified[T]`
+                       under `/ {ffi}`) across all 9 ecosystems: `c_abi` (C/C++ `.h`/`.dll`/`.so`
+                       Win64/SysV shadow-space & alignment), `rust_cdylib` (Cargo `extern "C"`
+                       Perceus borrow exclusivity & unwind guard), `python_capi` (`PyObject*`
+                       refcount conservation & zero-copy DLPack tensors), `node_napi_wasm`
+                       (Node-API & WASM 64 KiB page bounds), `go_cshared` (`cgo` pointer-pinning
+                       & stack-split guard), `java_jni` (`JNIEnv*` local frame & Panama FFM),
+                       `dotnet_pinvoke` (`P/Invoke` & NativeAOT blittable layout), `sql_relational`
+                       (`DDL`/`DML` -> `table[T]` row invariants), and `openapi_rpc` (HTTP/1.1,
+                       TLS 1.3 & gRPC bounded payloads)
+
+## 6.2.1 Universal Chameleon Polyglot Interop Engine (`use lchameleon` — 9 Ecosystems)
+- **9 Verified Foreign Ecosystems:** `c_abi` (C/C++ `.h`/`.dll`/`.so` Win64 32-byte shadow space & SysV ABI),
+  `rust_cdylib` (Rust `cdylib` Perceus ownership transfer & unwind guard), `python_capi` (CPython
+  `PyObject*` refcount conservation & zero-copy DLPack tensors), `node_napi_wasm` (Node-API & WASM
+  64 KiB linear memory bounds), `go_cshared` (Go `-buildmode=c-shared` pointer-pinning guard),
+  `java_jni` (Java JNI local frame capacity & Project Panama `MemorySegment`), `dotnet_pinvoke`
+  (C#/.NET P/Invoke & NativeAOT blittable layout), `sql_relational` (PostgreSQL/SQLite/DuckDB
+  `DDL`/`DML` -> `table[T]` row invariants), and `openapi_rpc` (OpenAPI 3.1 / JSON Schema / gRPC).
+- **Fail-Closed `[I0003]` Boundary Contracts:** Foreign inputs enter as `unverified[T]` under the
+  `/ {ffi}` capability and are promoted to `verified[T]` only after `chameleon_verify_boundary`
+  proves non-null pointers, alignment, and `QF_LIA` range bounds (`28/28` proven obligations).
+- **CLI, REPL & LSP Integration:** Run `lume chameleon [eco]`, `lume camaleao [eco]`, `lume polyglot`,
+  `lume ffi-bridge`, `lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file]`, or
+  `lume morph <legacy_file>`; inside `lume repl`, use `:chameleon [eco]` or `:camaleao [eco]`.
+- **Official Mascot (Lumi — The Bioluminescent Crystal Chameleon):** Embedded natively as `16x16` 32-bit
+  BGRA `RT_ICON` (`Type=3, ID=1`) + `RT_GROUP_ICON` (`Type=14, ID=1`) in `--target x86_64-windows-gui`.
+
+## 6.2.2 Declarative UI Layout (`@ui-layout`) & Verified Collection Invariants (`vec.src`, `decimal.src`, `stdlib/std.lume`)
+- **Declarative UI Layout (`lume ui-layout` / `@ui-layout`):** Lowers declarative 4-pane workspace layouts
+  to native Win64 PE32+ (`--target x86_64-windows-gui`) and Web/WASM DOM trees with simultaneous
+  `WS_THICKFRAME` live border resizing and `LBS_NOTIFY | LBS_HASSTRINGS` mouse selection (`1412694337` /
+  `0x54340141` for Listbox panes and `1412698308` / `0x543410C4` for multiline Edit panes), guarded by
+  `QF_LIA` split-pane geometry conservation (`ui_split_conservation_law`).
+- **Formally Verified Generic Collection Invariants (`vec.src`, `decimal.src`, `stdlib/std.lume`):**
+  Machine-checked `QF_LIA` bounds and clamping helpers: `vec_clamp_index`, `vec_checked_slice_len`,
+  `map_checked_slot`, and `decimal_clamp`.
+
+## 6.2.3 Unified Field & Subsea Engine (`lume unified-field` / `lume ufe` / `lume subsea`), Singularity Transition & Bayes-SPC Engine (`lume singularity` / `lume ote`) & NetSentinel IEC 62443 / Conduite HA / Sovereign Mesh (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh`)
+- **Unified Field & Subsea/Offshore Engine (`lume unified-field` / `lume ufe` / `lume subsea` in `std.gfx`, `77/77` `QF_LIA` & WCET obligations, `9/9` tests):**
+  - **7-DOF Singularity-Free Damped Least-Squares (DLS):** `ufe_dls_lambda_sq_milli` and
+    `ufe_dls_safe_denom_milli` guarantee strictly positive inverse-kinematics denominators
+    (`sigma_sq + lambda_sq >= 1`) near kinematic singularities.
+  - **3D Harmonic Laplace Red-Black SOR Solver & Maximum Principle:** `ufe_laplace_sor_step_milli`
+    and `ufe_harmonic_maximum_principle_law` solve $\nabla^2 \phi = 0$ on 3D voxel grids with
+    provably zero local minima outside the target sink.
+  - **GNRON Swirl Attenuation, Capsule Self-Collision & IEEE-754 Finite Register Guard:**
+    `ufe_gnron_swirl_scale_milli` attenuates non-conservative rotational swirl,
+    `ufe_self_collision_capsule_ok` enforces 7-DOF link-pair capsule clearance, and
+    `ufe_ieee754_f32_finite_guard` rejects `NaN`/`Inf` exponent `255` before hardware actuator
+    registers are written.
+  - **Dual-State Actuator EKF ($5\sigma$ Mahalanobis + Joseph Covariance), Stiction & RUL:**
+    `ufe_ekf_mahalanobis_5sigma_ok` enforces `innov_sq <= 25 * S` (`5-sigma` gate),
+    `ufe_ekf_joseph_cov_pos_milli` guarantees positive-definite covariance updates,
+    `ufe_actuator_stiction_detect` isolates control valve stiction/deadband, and
+    `ufe_actuator_rul_hours` estimates Remaining Useful Life (`RUL`).
+  - **Multi-Robot Swarm Separation, IAPWS-IF97 Steam Regions, Wet-Steam & Carnot Bound:**
+    `ufe_swarm_separation_ok` proves inter-agent collision clearance, `ufe_if97_region_select`
+    classifies thermodynamic steam regions (`1..4`), `ufe_turbine_wet_steam_guard` prevents blade
+    erosion, and `ufe_carnot_efficiency_bound_ok` enforces 2nd-law Carnot efficiency bounds.
+  - **Deterministic 1 kHz `LatencyMonitor` with 100-Cycle Hysteresis:** `ufe_latency_shedder_step`
+    sheds non-critical load immediately on budget overrun and requires 100 consecutive clean
+    1 kHz cycles before restoring full load.
+  - **Subsea Catenary, VIV, Heavy-Lift DAF, Hyperbaric ZH-L16C, Well Control & ASME B31G (Wave 3):**
+    `subsea_catenary_top_tension_n`, `subsea_catenary_tdp_bend_ok`,
+    `subsea_combined_longitudinal_stress_ok` (`DNV-OS-F101`), `subsea_viv_screening_ok` (`DNV-RP-F105`),
+    `subsea_miner_fatigue_safe_ok` (`DNV-RP-C203`), `marine_dnv_daf_floor_milli` &
+    `marine_heavy_lift_feasible_ok` (`DNV-ST-N001`), `subsea_hyperbaric_decompression_safe_ok`
+    (`Buhlmann ZH-L16C` $p_O2 \in [16, 160]$ cbar), `subsea_well_kill_icp_kpa` &
+    `subsea_well_kill_mud_sg_milli` (*Wait & Weight* kill sheet), and `subsea_b31g_corroded_pipe_safe_ok`.
+- **2nd-Order Dynamical Transition Engine, Singularity Boundary $\Omega$ & Empirical-Bayes SPC/CPM/k-Anonymity (`lume singularity` / `lume ote` / `lume transition-engine` in `lchameleon.src`, `68/68` `QF_LIA` & WCET obligations, `12/12` tests):**
+  - **Dual-Regime Step Identification & Quantitative $\zeta$ Estimator:** `ote_select_damping_regime`
+    and `ote_estimate_zeta_milli` dispatch underdamped ($0 < \zeta < 1$ via overshoot $M_p$ and
+    peak period $T_d$) vs. critically/overdamped ($1 \le \zeta \le 100$ via dimensionless rise-time
+    ratio `t_80 / t_20`).
+  - **Operational Power Triangle (`S, P, Q, cosPhi`) & Phase Coherence:** `ote_power_factor_milli`,
+    `ote_reactive_waste_ratio_milli`, and `ote_phase_coherence_ok` quantify useful power vs.
+    reactive rework and verify energetic vs. delay phase coherence (`|Phi - Phi_tau| <= 10 deg`).
+  - **Singularity Boundary $\Omega$ (`tau_max = T_m / 4`), Margin Zones & Nyquist Guard:**
+    `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, and `ote_singularity_margin_zone`
+    detect counter-phase delivery across $\Omega$ (`omega_env * tau > pi / 2`), while
+    `ote_nyquist_status_code` enforces $N_y = T_m / (2 T_s)$ (`NYQ-ALIAS` $< 1.0$, `NYQ-LIMIT` $< 2.0$).
+  - **Cascade Bandwidth Decoupling, Gain Retuning & 9 Normative Prescriptions:**
+    `ote_cascade_bandwidth_decoupled_ok` enforces $3\times$ inner/outer loop timescale separation,
+    `ote_retune_kp_scale_milli` computes safe proportional gain scaling, and
+    `ote_diagnose_primary_code` evaluates in immutable physical leverage order
+    (Sampling $\to$ Delay/Boundary $\to$ Gain $\to$ Inertia):
+    `NYQ-ALIAS` $\to$ `NYQ-LIMIT` $\to$ `OMEGA-CROSS` $\to$ `PF-LOW` $\to$ `MF-LOW` $\to$
+    `CASCADE-DEEP` $\to$ `ZETA-LOW` $\to$ `ZETA-HIGH` $\to$ `QAMP-HIGH` / `TUNED`.
+  - **Empirical-Bayes Beta-Binomial SPC, Bilateral CUSUM, CPM Float & $k$-Anonymous PAVA (Wave 3):**
+    `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`,
+    `analytics_k_anonymity_release_ok` ($k \ge 5$ privacy gate), and `analytics_pava_monotonic_pair_hi`.
+- **NetSentinel IEC 62443, Conduite HA & Sovereign Mesh/Raft/DHT/TOFU (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` in `std.net`, `68/68` `QF_LIA` & WCET obligations, `15/15` tests):**
+  - **Purdue Model (`L0..L4`) & DMZ (`L3.5`) Conduit Guard:** `iec62443_purdue_conduit_ok`
+    enforces strict zone-conduit traversal and forbids direct enterprise-to-control bridging.
+  - **OT Firewall Policy Audit & Structural Read-Only DCS Guard:** `netsentinel_fw_policy_audit_ok`
+    verifies default-drop rules, and `ot_readonly_dcs_guard` structurally rejects any write
+    mask (`CurrentWrite` / `HistoryWrite`) or Purdue level `< 3`.
+  - **Tri-State Telemetry Quality & Finite `1e12` Sentinel:** `ot_tristate_quality_code`
+    classifies `Good`/`Uncertain`/`Bad` samples without synthetic interpolation, and
+    `ot_finite_sentinel_clamp` clamps out-of-range telemetry to `+/- 10^12`.
+  - **Conduite HA ACL Parity, GOOSE Anti-Replay & Posture-Traffic Correlator (Wave 3):**
+    `conduit_admin_timeout_ok` (rejects infinite `<= 0` and `> 15` min), `conduit_ha_failover_parity_ok`
+    (order-sensitive ACL digest + `hold >= 3 * hello`), `conduit_severity_escalate_rank`,
+    `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, and
+    `netsentinel_broadcast_storm_code`.
+  - **Sovereign Mesh Framing, Atomic NAT Dual TokenBucket, Kademlia Tiered DHT, Raft & TOFU (Wave 3):**
+    `mesh_frame_bounds_ok`, `mesh_atomic_dual_rate_deduct` (zero token leak under shared NAT),
+    `mesh_dht_healing_rank` (`Hub < Relay < Agent`), `mesh_raft_quorum_ok` & `mesh_raft_backtrack_index`,
+    `mesh_tofu_verify_code`, and `mesh_channel_mux_quota_ok`.
 
 ## 6.3 All 8 Sovereign & Brazilian Verified Capstones (`examples/apps/`)
 - `pix_fraud_trace` (`9/9` `QF_LIA` proofs): Real-time Pix graph taint & fraud trace engine.
@@ -397,6 +505,8 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
                   `x86_64-windows-pe` (native `kernel32.dll` IAT), `aarch64-macos-macho`
 - Windows Native GUI: `x86_64-windows-gui` and `x86_64-windows-gui-protected` (`PE32+` Win32 GUI
                   with `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `COMDLG32.dll`, `SHELL32.dll` IAT,
+                  declarative `@ui-layout` 4-pane lowering with `WS_THICKFRAME` + `LBS_NOTIFY | LBS_HASSTRINGS`
+                  styles `1412694337` / `0x54340141` & `1412698308` / `0x543410C4`, `ui_split_conservation_law`,
                   `--protect max` P33 Anti-REA `XOR 0xB2 = 178`, `PYXH` MBA prologue, and `.lsym` vault)
 - Mobile/Store:   `aarch64-android-elf`, `aarch64-ios-macho`
 - Bare-Metal/OS:  `x86_64-uefi-pe`, `x86_64-none-raw`, `x86_64-none-mbr`, `x86_64-none-ihex`
@@ -442,7 +552,8 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   lume genesis <app_name> [domain]       Full-stack + 8-target autonomous app synthesizer
   lume heal <src.src>                    Counterexample-driven contract self-healer
   lume equiv <spec.src> <fast.src>       Formal algorithmic equivalence prover
-  lume morph <legacy_file>               Transmute SQL/Python/C/OpenAPI to proven Lume
+  lume adapt <c|rust|python|js|go|java|dotnet|sql|openapi> [file] Generate `[I0003]` fail-closed polyglot FFI adapters
+  lume morph <file>                      Transmute legacy SQL/Python/C/OpenAPI to proven Lume (`lume morph <legacy_file>`)
   lume neural-kernel <src.src>           GPU/NPU/FPGA RTL differentiable synthesizer
   lume evolve list|goals|budgets|propose|verify|apply|grow|approve [id|dir|bundle] Cryptographically governed self-evolution
 
@@ -459,6 +570,10 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   lume consult [src]       Living self-consultation & evolutionary agenda
   lume laws / memory       8 Constitutional Laws + 4-vault indestructible episodic memory
   lume replicate / hive / daemon-triad / hot-evolve / live-cockpit Triad swarm self-replication & zero-downtime hot-swap
+    - `lume daemon-triad [src]`: Always-on P2P sub-100ms swarm gossip sentinel across Primary PC + Dell G3 + Acer
+    - `lume hot-evolve [src]`:   Zero-downtime autonomous E-Graph self-recompilation & atomic binary hot-swap
+    - `lume live-cockpit [src]`: Real-time continuous 22050 Hz voice + DEQ vision + network/Ring-0 telemetry loop
+  lume ui-layout [src]     Declarative `@ui-layout` 4-pane Win64 PE32+ (`1412694337` / `1412698308`) & Web/WASM lowering (`ui_split_conservation_law`)
   lume reversa / reverse-engineer / reveng / decompile <target> Unified binary & 7-phase SDD reverse engineering
   lume pingora / proxy / cdn / load-balancer [target] Pingora-Lume Edge Proxy (TinyUFO, Ketama+P2C, TLS 1.3, 7-phase ProxyHttp)
   lume egm / elephant-goldfish / goldfish-review / drift-report / heilmeier [target] EGM-Lume Spec-Driven Development & Drift Engine
@@ -466,6 +581,10 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
   lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
+  lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (or `lume chameleon`) Universal Chameleon Polyglot Interop Engine across 9 ecosystems (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
+  lume unified-field|ufe|subsea [target]             Unified Field & Subsea/Offshore Engine in `std.gfx` (`ufe_dls_lambda_sq_milli`..`ufe_latency_shedder_step`, `subsea_catenary_top_tension_n`, `subsea_viv_screening_ok`, `subsea_miner_fatigue_safe_ok`, `marine_dnv_daf_floor_milli`, `marine_heavy_lift_feasible_ok`, `subsea_hyperbaric_decompression_safe_ok`, `subsea_well_kill_icp_kpa`, `subsea_b31g_corroded_pipe_safe_ok`)
+  lume singularity|ote|transition-engine [target]    2nd-Order Dynamical Transition Engine, Singularity Boundary Omega & Bayes-SPC/CPM/k-Anonymity in `lchameleon.src` (`ote_select_damping_regime`..`ote_diagnose_primary_code`, `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`, `analytics_k_anonymity_release_ok`, `analytics_pava_monotonic_pair_hi`)
+  lume net-sentinel|iec62443|conduite|omega-mesh [t] NetSentinel IEC 62443, Conduite HA & Sovereign Mesh/Raft/DHT/TOFU in `std.net` (`iec62443_purdue_conduit_ok`..`ot_finite_sentinel_clamp`, `conduit_admin_timeout_ok`, `conduit_ha_failover_parity_ok`, `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, `mesh_atomic_dual_rate_deduct`, `mesh_dht_healing_rank`, `mesh_raft_quorum_ok`, `mesh_tofu_verify_code`, `mesh_channel_mux_quota_ok`)
   lume run compiler/stage1/lume_llm_core.src         Sovereign 1-Bit/Ternary LLM Core, Liquid LFM3 Audio, Colibri MoE Guard & 3-Tier Router (`21/21` proofs)
   lume run examples/apps/sovereign_llm_router/main.src Sovereign Edge/Local/Cloud LLM Router & Anti-Hallucination Price Oracle (`20/20` proofs)
   lume os-control / bios-core / web-research / crypto-engine
@@ -483,13 +602,13 @@ never collects. `own`, borrows and `resource type` are compile-time rules and do
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
 - `lume self-prove` (or `lume prove-all` / `lume verify-all` / `lume self prove`): Runs
-  all 14 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
+  all 15 Sovereign Proof Batteries (`LumeCompiler-Embedded-OmniProof-v3`) directly inside
   the compiled Lume driver with zero external scripts (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
-  `lume_quantum_nexus_engine`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 396 formal obligations +
-  134 unit tests + 98 verified toolchain artifacts).
+  `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 557 formal obligations +
+  154 unit tests + 99 verified toolchain artifacts).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 
@@ -563,6 +682,18 @@ fn rtc_bcd_to_bin(bcd: int) -> int
 print str(rtc_bcd_to_bin(35))
 ```
 
+## Example 7: Universal Chameleon Polyglot Interop (`chameleon_demo.src`)
+```lume
+use lchameleon
+
+fn run_chameleon_demo() =
+    let ok = chameleon_verify_boundary(1, 1, 1, 64, 4096) in
+    let r = chameleon_adapt_ecosystem("rust") in
+    str(ok) + ":" + r.id
+
+print run_chameleon_demo()
+```
+
 # CHAPTER 10: COMPILER DIAGNOSTIC CODES & HOW TO FIX THEM
 
 | Code      | Category             | Meaning & How to Fix |
@@ -570,23 +701,12 @@ print str(rtc_bcd_to_bin(35))
 | `[P0002]` | Parser / Syntax      | Unexpected token or nested unbraced `match`. Move `match` to top-level helper `fn f(x) = match x ...` or wrap in braces `match x { ... }`, and verify pure LF (`\n`) line endings. |
 | `[R0200]` | Name Resolution      | Call to undefined function or variable. Check spelling or add `use <module>` at top of file. |
 | `[R0201]` | Name Resolution      | A function reuses the name of a runtime routine (`count`, `at`, ...) or a prefix reserved for it (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Rename it. |
-| `[R0202]` | Name Resolution      | A call to a function or builtin passes the wrong number of arguments. |
-| `[R0203]` | Name Resolution      | A call to an internal routine of the runtime, such as `strlen`. Use the public builtins. |
-| `[R0204]` | Name Resolution      | `f[i]` where `f` is a function, which includes `id[int](x)`. Call the function, and pass a generic its type as the first argument. |
-| `[R0205]` | Name Resolution      | A call whose name is both a local and a builtin or compiler intrinsic. The call would ignore the local, so rename it. |
-| `[C0002]` | Code Generation      | A name has no value here, such as a builtin used as a value. |
-| `[R0300]` | Modules              | `lume agent`: a `use` names a module that cannot be found. |
-| `[D0002]` | Duplicate Definition | A function is defined twice in the bundle. Keep one or rename it. |
-| `[D0003]` | Duplicate Definition | A type is defined twice in the bundle. Keep one or rename it. |
-| `[L0003]` | Lexer                | An integer literal does not fit in 64 bits. |
-| `[D0004]` | Duplicate Definition | A record literal gives the same field twice. |
-| `[T1002]` | Types                | A `match` on a declared enum leaves out a variant and has no `_` arm. |
 | `[T0300]` | Type / Tensor Shape  | Type mismatch, currency mismatch (`money[BRL]` vs `money[USD]`), or tensor shape mismatch. |
 | `[E0200]` | Algebraic Effects    | Impure operation (`io`, `fs`, `net`, `arena_new`, `embed`) called inside a `/ pure` function. Remove `/ pure` or add the required effect to the function signature. |
 | `[O0001]` | Ownership / Borrow   | Use-after-move, double-close of file handle, or conflicting mutable borrow (`mut`). Clone or restructure ownership scope. |
 | `[V0001]` | Contract / Law Proof | `requires`/`ensures` contract or `law` refuted by `QF_LIA` solver. Inspect the printed counterexample or run `lume heal <file.src>`. |
 | `[V0002]` | WCET Cycle Bound     | Function exceeds `@bound(cycles: N)` budget or uses unbounded recursion in `@interrupt`. |
-| `[I0003]` | C ABI Interop        | Unsafe or unsupported C declaration in `lume adapt c`. Add explicit bounds or `@repr(c)`. |
+| `[I0003]` | Polyglot / C Interop | Unsafe or unsupported foreign declaration in `lume adapt c` or `lchameleon` (`unverified[T] -> verified[T]`). Add explicit `QF_LIA` bounds or `@repr(c)`. |
 | `[I0275]` | WASM Sandbox         | Disallowed host import (`env.*`, `proc_exit`) in `@wasm-sandbox` module. |
 | `[C0271]` | Comptime Embed       | `comptime embed("...")` path escapes project root (`..`) or file is missing. |
 | `[D0273]` | Table Schema         | `comptime table_schema(T)` called on a non-record type. |

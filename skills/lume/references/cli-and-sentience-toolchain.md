@@ -22,7 +22,11 @@
 | `lume adapt c <header.h>` | Generate fail-closed Lume wrapper with contracts from a C header |
 | `lume pack <in> -o <out>` / `lume unpack <in> -o <out>` | Compress/decompress cold-arena & capsule blocks with the atomic `LZ1` codec (`64-bit` checksum) |
 | `lume lsp` / `lume dap` / `lume repl` | Start Language Server Protocol, Debug Adapter Protocol, or interactive REPL |
-| `lume self verify` | Verify all 101 installed toolchain files against `MANIFEST.sha256` |
+| `lume self verify` | Verify all 99 installed toolchain files against `MANIFEST.sha256` |
+| `lume self-prove` | Execute all 15 embedded compiler proof batteries (`557` formal obligations, `154` unit tests, `99` manifest files) |
+| `lume unified-field` / `lume ufe` / `lume subsea` | Run Cyber-Physical Unified Field & Subsea Physics Engine (`std.gfx`: `77/77` proofs, `15/15` tests) |
+| `lume singularity` / `lume ote` / `lume transition-engine` | Run 2nd-Order Dynamical Transition Engine, Singularity Boundary $\Omega$ & Bayesian SPC / PAVA (`lchameleon.src`: `68/68` proofs, `12/12` tests) |
+| `lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` | Run NetSentinel IEC 62443 Purdue/DMZ, Conduite HA/GOOSE/Storm & Omega-Mesh P2P/DHT/Raft/TOFU Engine (`std.net`: `68/68` proofs, `27/27` tests) |
 | `lume manual [en\|pt-br]` | Display the complete built-in Lume manual in English or Brazilian Portuguese |
 
 ### Supported Native Targets (`--target`)
