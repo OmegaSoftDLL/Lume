@@ -10,7 +10,7 @@
 
 [![Release v1.1.0](https://img.shields.io/badge/release-v1.1.0_(2026_Edition)-10b981?style=for-the-badge&logo=github)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0)
 [![Self-Hosted Fixpoint](https://img.shields.io/badge/bootstrap-stage2_%3D%3D_stage3_(Zero--C)-38bdf8?style=for-the-badge)](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml)
-[![OmniProof v3](https://img.shields.io/badge/OmniProof_v3-557_Obligations_%2F_154_Tests-a855f7?style=for-the-badge)](https://github.com/OmegaSoftDLL/lume/blob/main/tests/harness/claude_audit_gate.src)
+[![OmniProof v3](https://img.shields.io/badge/OmniProof_v3-582_Obligations_%2F_155_Tests-a855f7?style=for-the-badge)](https://github.com/OmegaSoftDLL/lume/blob/main/tests/harness/claude_audit_gate.src)
 [![Chameleon Polyglot](https://img.shields.io/badge/Chameleon_%2B_OTE_%2B_SPC-68%2F68_Verified_%5BI0003%5D-f59e0b?style=for-the-badge)](Universal-Chameleon-Polyglot-Engine)
 
 <br />

@@ -62,7 +62,7 @@ cd lume
 # 2. Verify Zero-C steady state (compiles and assembles with PATH="" and no C toolchain)
 ./lume zero-c
 
-# 3. Run the embedded OmniProof v3 formal verification suite (557 obligations, 154 unit tests)
+# 3. Run the embedded OmniProof v3 formal verification suite (582 obligations, 155 unit tests)
 ./lume self-prove
 
 # 4. Install locally into ~/.lume
@@ -107,7 +107,7 @@ Expected output from `lume self-prove`:
   "command": "self-prove",
   "engine": "LumeCompiler-Embedded-OmniProof-v3",
   "zero_external_scripts": true,
-  "total_formal_obligations_verified": 557,
+  "total_formal_obligations_verified": 582,
   "total_unit_tests_passed": 154
 }
 ```

@@ -436,7 +436,7 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
     `marine_heavy_lift_feasible_ok` (`DNV-ST-N001`), `subsea_hyperbaric_decompression_safe_ok`
     (`Buhlmann ZH-L16C` $p_O2 \in [16, 160]$ cbar), `subsea_well_kill_icp_kpa` &
     `subsea_well_kill_mud_sg_milli` (*Wait & Weight* kill sheet), e `subsea_b31g_corroded_pipe_safe_ok`.
-- **Motor Dinamico de Transicao de 2a Ordem, Fronteira de Singularidade $\Omega$ e Bayes-SPC/CPM/k-Anonymity (`lume singularity` / `lume ote` / `lume transition-engine` em `lchameleon.src`, `68/68` obrigacoes `QF_LIA` & WCET, `12/12` testes):**
+- **Motor Dinamico de Transicao de 2a Ordem, Fronteira de Singularidade $\Omega$, Bayes-SPC e Tensor/Quire/Assimilator Zero-Limitacoes (`lume singularity` / `lume ote` / `lume transition-engine` em `lchameleon.src`, `93/93` obrigacoes `QF_LIA` & WCET, `13/13` testes):**
   - **Identificacao em Dois Regimes e Estimador Quantitativo de $\zeta$:** `ote_select_damping_regime`
     e `ote_estimate_zeta_milli` despacham entre o regime subamortecido ($0 < \zeta < 1$ via sobressinal
     $M_p$ e periodo $T_d$) e o regime criticamente amortecido / superamortecido ($1 \le \zeta \le 100$
@@ -458,6 +458,12 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   - **SPC Empirical-Bayes Beta-Binomial, CUSUM Bilateral, Folga CPM e PAVA $k$-Anonymous (Onda 3):**
     `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`,
     `analytics_k_anonymity_release_ok` ($k \ge 5$), e `analytics_pava_monotonic_pair_hi`.
+  - **Motor Tensorial Ponto-Flutuante / Posit-Quire, `QF_FP_Interval` e Assimilador Autonomo de Ecossistemas (Onda 4):**
+    `fp_bf16_is_finite_ok`, `fp_fp16_is_finite_ok`, `fp_quire_exact_dot_accum` (lei de associatividade `Posit-Quire`),
+    `fp_interval_add_lo` & `fp_interval_add_hi` (lei de envolvimento `QF_FP_Interval`),
+    `fp_tensor_core_mma_m16n8k16_waves` & `fp_flash_attention_o1_sram_tiles` (Tensor Cores GPU PTX/SPIR-V),
+    `pkg_assimilate_purity_gate_ok` (bloqueio de backdoor de supply-chain), e
+    `pkg_omni_stdlib_btree_split_mid` & `pkg_omni_stdlib_mvcc_visibility_ok` (`Omni-Stdlib` ACID B+Tree/MVCC).
 - **NetSentinel IEC 62443, Conduite HA e Sovereign Mesh/Raft/DHT/TOFU (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` em `std.net`, `68/68` obrigacoes `QF_LIA` & WCET, `15/15` testes):**
   - **Modelo Purdue (`L0..L4`) e Guarda de Conduite DMZ (`L3.5`):** `iec62443_purdue_conduit_ok`
     impõe isolamento estrito entre zonas e proibe travessia direta entre rede corporativa e controle.
@@ -588,8 +594,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
   `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 557 obrigacoes formais +
-  154 testes unitarios + 99 artefatos verificados).
+  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 582 obrigacoes formais +
+  155 testes unitarios + 99 artefatos verificados).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
