@@ -340,10 +340,10 @@ lume ui-layout                         # Inspect declarative @ui-layout 4-pane W
 Lume includes self-hosted, formally verified domain engines in `compiler/stage1/`:
 
 1. **Quantum Nexus Engine (`compiler/stage1/lume_quantum_nexus_engine.src` — `15/15` tests, `Lume Verified ✓`):**
-   - **Linear `Qubit` Type Checker & Automatic $U^\dagger$ Uncomputation (`[Q0001]` / `[Q0002]`):** Enforces Quantum No-Cloning and No-Measurement-Reuse, and verifies automatic adjoint uncomputation of ancilla wires (`qfree_safe == 1`).
+   - **Linear `Qubit` Type Checker & Automatic $U^\dagger$ Uncomputation:** Enforces Quantum No-Cloning and No-Measurement-Reuse, and verifies automatic adjoint uncomputation of ancilla wires (`qfree_safe == 1`).
    - **Graphical ZX-Calculus & Clifford+T Optimizer:** Performs spider fusion ($Z(\alpha) \circ Z(\beta) \to Z(\alpha + \beta)$), phase teleportation, and non-Clifford $T$-gate reduction.
    - **Stabilizer Tableau Simulator & Surface Code `[[9, 1, 3]]` QEC Decoder:** Simulates Clifford stabilizer tableaux in $O(n^2)$ and decodes all `27/27` single-qubit Pauli $X, Y, Z$ errors ($d = 2t + 1$).
-   - **Variational Quantum Algorithms & Neutral-Atom FPQA Routing:** Parameter-shift VQE, QAOA MaxCut, Neutral-Atom 2D Acousto-Optic Deflector (`AOD`) monotone row/column routing, and 6 quantum compilation targets (`qasm3-quantum`, `qir-llvm`, `quil-rigetti`, `iqm-json`, `stim-qec`).
+   - **Variational Quantum Algorithms & Neutral-Atom FPQA Routing:** Parameter-shift VQE, QAOA MaxCut, Neutral-Atom 2D Acousto-Optic Deflector (`AOD`) monotone row/column routing, and the `qasm3-quantum` compilation target.
 2. **Cryptographic & Quantitative Ledger Engine (`compiler/stage1/lume_crypto_blockchain_engine.src` — `10/10` tests, `Lume Verified ✓`):**
    - FIPS 180-4 SHA-256, Ed25519, Secp256k1, BIP-32/39/44 HD Wallets, UTXO Merkle ledger, CEI reentrancy analysis, Constant-Product AMM ($x \cdot y = k$), and Kelly Criterion risk sizing.
 3. **Binary Dissection & Specification Recovery Engine (`compiler/stage1/lume_reversa_engine.src` — `4/4` tests, `13/13` proofs, `Lume Verified ✓`):**
@@ -404,10 +404,6 @@ lume build --target spirv64-vulkan-compute k.src -o k.spv # Vulkan SPIR-V 1.6
 lume build --target verilog-rtl k.src -o k.v              # IEEE 1364-2005 Synthesizable Verilog RTL
 lume build --target vhdl-rtl k.src -o k.vhd               # IEEE 1076-2008 Synthesizable VHDL RTL
 lume build --target qasm3-quantum q.src -o q.qasm         # OpenQASM 3.0 Quantum Circuit
-lume build --target qir-llvm q.src -o q.ll                # Microsoft/Quantinuum QIR LLVM IR Profile
-lume build --target quil-rigetti q.src -o q.quil          # Rigetti Quil 2.0 Instruction Set
-lume build --target iqm-json q.src -o q.iqm.json          # IQM / EuroHPC Native JSON Schedule
-lume build --target stim-qec q.src -o q.stim              # Google Stim Stabilizer QEC Circuit
 lume build --target dna-quaternary d.src -o d.dna         # Homopolymer-Free Quaternary DNA (A,C,G,T)
 lume package apk app.src -o app.apk                       # One-command Android APK package
 lume package ipa app.src -o app.ipa                       # One-command iOS IPA package
