@@ -127,8 +127,11 @@ fn ldec_tail(op) = if op == "+" then "    call decimal_add\n" else if op == "-" 
 ## The threaded state is the record {nl, ns, dt}: nl = next free code label, ns = next free string label,
 ## dt = rodata chunks emitted so far (newest first). Every result is {code, nl, ns, dt}, so a result IS the
 ## next state and is passed straight to the following sibling; lres copies the state fields into a result.
-fn lres(code, s) = {code: code, nl: s.nl, ns: s.ns, dt: s.dt, pfx: s.pfx}
-fn lnext(s) = {nl: s.nl + 1, ns: s.ns, dt: s.dt, pfx: s.pfx}
+## `cts` is the list of constant-time kernels of the program (functions that carry both `@secret` and `@no_alloc`,
+## see lct_* below); it never changes during a compilation and rides along in every state so that a call site can
+## tell whether its callee is a kernel.
+fn lres(code, s) = {code: code, nl: s.nl, ns: s.ns, dt: s.dt, pfx: s.pfx, cts: s.cts}
+fn lnext(s) = {nl: s.nl + 1, ns: s.ns, dt: s.dt, pfx: s.pfx, cts: s.cts}
 
 ## --- constructors (ML-core convention: a capitalised identifier is a constructor) ---
 fn isctor(name) = let c = at(name, 0) in c >= "A" and c <= "Z"
@@ -151,7 +154,7 @@ fn lsso_word(s, n) = let k = if n > 6 then 6 else n in let low = lsso_bytes(s, k
 ## --- rodata: every entry is one {l: label, t: text}; a label is a pure function of the content, so a literal, a
 ## descriptor or a key used a thousand times (or by several modules) is stored once. Two different texts under the
 ## same label stop the compilation: a hash collision must never become wrong data. ---
-fn lentry(lab, txt, s) = {lab: lab, nl: s.nl, ns: s.ns, dt: Cons({l: lab, t: txt}, s.dt), pfx: s.pfx}
+fn lentry(lab, txt, s) = {lab: lab, nl: s.nl, ns: s.ns, dt: Cons({l: lab, t: txt}, s.dt), pfx: s.pfx, cts: s.cts}
 fn lhash1(s, i, n, h) = if i >= n then h else lhash1(s, i + 1, n, (h * 131 + ord(at(s, i))) % 2147483647)
 fn lhash2(s, i, n, h) = if i >= n then h else lhash2(s, i + 1, n, (h * 137 + ord(at(s, i))) % 2147483629)
 fn lhashlab(s) = let n = count(s) in str(n) + "_" + str(lhash1(s, 0, n, 7)) + "_" + str(lhash2(s, 0, n, 11))
@@ -411,7 +414,7 @@ fn lord_at_inner(e) = match e
     _            => {ok: 0, s: Num(0), i: Num(0)}
 fn lord_at(s_e, i_e, ctx, s) = let a = lbinargs(s_e, i_e, ctx, s) in lres(a.code + "    call ord_at\n", a)
 fn lis_err_call(arg, ctx, s) = let d1 = lctordesc("Err", 1, s) in let d0 = lctordesc("Err", 0, d1) in let lab = d0.pfx + str(d0.nl) in let a = lax(arg, ctx, lnext(d0)) in let neg_chk = if ctx.fnm == "run_errdefer" then "    testb $1, %cl\n    jz .Lerr_n" + lab + "\n    testq %rcx, %rcx\n    js .Lerr_y" + lab + "\n    jmp .Lerr_n" + lab + "\n" else "    jmp .Lerr_n" + lab + "\n" in lres(a.code + "    movq %rax, %rcx\n    movq $1, %rax\n    testb $7, %cl\n    jz .Lerr_p" + lab + "\n" + neg_chk + ".Lerr_p" + lab + ":\n    testq %rcx, %rcx\n    jz .Lerr_n" + lab + "\n    leaq " + d1.lab + "(%rip), %rdx\n    cmpq %rdx, (%rcx)\n    je .Lerr_y" + lab + "\n    leaq " + d0.lab + "(%rip), %rdx\n    cmpq %rdx, %rcx\n    jne .Lerr_n" + lab + "\n.Lerr_y" + lab + ":\n    movq $3, %rax\n.Lerr_n" + lab + ":\n", a)
-fn lcallx(nm, args, ctx, s) = if isctor(nm) then lctor(nm, args, ctx, s) else if nm == "__lume_is_err" and len(args) == 1 then lis_err_call(lqhead(args), ctx, s) else if nm == "__perceus_reuse_2" then lreuse2(args, ctx, s) else if nm == "__perceus_reuse_1" then lreuse1(args, ctx, s) else if nm == "ord" and len(args) == 1 then (let oa = lord_at_args(args) in if oa.ok == 1 then lord_at(oa.s, oa.i, ctx, s) else lcall(nm, args, ctx, s)) else if lis_bv2_call(nm) and len(args) == 2 then lbv2(nm, args, ctx, s) else if lis_bv1_call(nm) and len(args) == 1 then lbv1(nm, args, ctx, s) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lquant(nm, args, ctx, s) else lcall(nm, args, ctx, s)
+fn lcallx(nm, args, ctx, s) = if isctor(nm) then lctor(nm, args, ctx, s) else if nm == "__lume_is_err" and len(args) == 1 then lis_err_call(lqhead(args), ctx, s) else if nm == "__perceus_reuse_2" then lreuse2(args, ctx, s) else if nm == "__perceus_reuse_1" then lreuse1(args, ctx, s) else if nm == "ord" and len(args) == 1 then (let oa = lord_at_args(args) in if oa.ok == 1 then lord_at(oa.s, oa.i, ctx, s) else lcall(nm, args, ctx, s)) else if lis_bv2_call(nm) and len(args) == 2 then lbv2(nm, args, ctx, s) else if lis_bv1_call(nm) and len(args) == 1 then lbv1(nm, args, ctx, s) else if nm == "ct_eq" and len(args) == 2 then lcteq_o(args, ctx, s) else if nm == "ct_select" and len(args) == 3 then lctsel_o(args, ctx, s) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lquant(nm, args, ctx, s) else lcall(nm, args, ctx, s)
 ## constant-string folding: a chain of `+` over string literals is one .rodata literal, so a long runtime
 ## fragment costs nothing at run time. A chain is only walked when its leftmost leaf is a literal.
 fn lstr_chain_head(e) = match e
@@ -599,12 +602,115 @@ fn lalpha_e(e, st) = match e
     _               => {node: e, k: st.k}
 fn lalpha(e, params) = (lalpha_e(e, {bound: params, env: Nil, k: 0})).node
 
+## --- Wave 14: the constant-time intrinsics in ordinary code. Operands may be boxed 64-bit integers, so both go
+## through the unboxing helpers and the result through mkint, exactly like the bit_* operations of lbv2.
+##   ct_eq(a, b):         x = a ^ b;  nz = (x | -x) >>logical 63  (1 exactly when x != 0);  result = nz ^ 1
+##   ct_select(m, a, b):  b ^ ((a ^ b) & m)  -- bit i of the result is bit i of a where bit i of m is set, else of b
+fn lcteq_o(args, ctx, s) = let ar = lstackargs(args, ctx, s) in lres(ar.code + "    popq %rcx\n    popq %rax\n    call __rt_un2\n    xorq %rcx, %rax\n    movq %rax, %rcx\n    negq %rcx\n    orq %rcx, %rax\n    shrq $63, %rax\n    xorq $1, %rax\n    movq %rax, %rdi\n    call mkint\n", ar)
+fn lctsel_o(args, ctx, s) = let ar = lstackargs(args, ctx, s) in lres(ar.code + "    popq %rcx\n    popq %rax\n    call __rt_un2\n    call __rt_ustk\n    popq %rdx\n    xorq %rcx, %rax\n    andq %rdx, %rax\n    xorq %rax, %rcx\n    movq %rcx, %rdi\n    call mkint\n", ar)
+
+## --- Wave 14: constant-time kernels ("ct mode"). A function that carries BOTH `@secret` and `@no_alloc` is lowered
+## to straight-line code that works directly on immediate words (the word of the integer n is w = 2n + 1): no tag
+## test, no overflow test, no runtime call, no conditional jump. That is only correct because
+##   (1) the entry guard below faults unless EVERY parameter is an immediate word, and
+##   (2) the checker (06b_phase3.src, ct_chk_fn / na_e) has PROVEN that every `+ - * +% -% *%` and every literal
+##       bit_shl stays inside [-2^62, 2^62) for all immediate parameters, so the result word never leaves 64 bits and
+##       wrapping and checked arithmetic coincide; and it rejected ([C0011]) every construct that is not listed here.
+## The validator (ltv.src) re-derives both facts from the emitted text and trusts neither.
+##   entry guard   AND of all parameter words; `andq $1` (1 when all are odd); `decq` (0, or -1 when one is even);
+##                 `orq %rsp`; `movq (%rax), %rax`: a harmless load of the stack top, or a load from address
+##                 0xFFFFFFFFFFFFFFFF, which faults (SIGSEGV). Fail-closed and branch-free.
+##   a + b         (wa - 1) + wb                      a - b    wa - wb + 1
+##   a * b         (wa >> 1) * (wb - 1) + 1
+##   bit_and / or  the instruction on the two words   bit_xor  xorq, then `orq $1` restores the tag
+##   bit_not(a)    negq: -(2a + 1) = 2(-a - 1) + 1
+##   bit_shr(a, K) `sarq $K; orq $1`: floor((2a + 1) / 2^K) = a >> (K - 1), and x | 1 = 2 * (x >> 1) + 1
+##   bit_shl(a, K) `decq; salq $K; incq`
+##   ct_eq(a, b)   x = wa ^ wb (zero exactly when a == b); (x | -x) >>logical 63; `xorq $1`; retag
+##   ct_select     wb ^ ((wa ^ wb) & wm): the tag bits cancel, bit i + 1 of a word is bit i of its value
+##   call          only another kernel (it carries the same guard, so the guarantee is closed under calls)
+fn lct_has(xs, nm) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else lct_has(t, nm)
+fn lct_names(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => lct_names1(h, lct_names(t))
+fn lct_names1(s0, rest) = match s0
+    OSig(nm, pubf, freef, pl, rty, fromp) => if (freef / 128) % 2 == 1 and (freef / 512) % 2 == 1 then Cons(nm, rest) else rest
+    _                                     => rest
+## the checker reports these first, with a fix-it; reaching one here means a path around the checker, and the
+## kernel must not be emitted as anything else
+fn lct_fail(fnm, what) = ctfail("lume: constant-time error [C0011]: " + what + " cannot be lowered inside constant-time kernel '" + fnm + "' (`@secret` + `@no_alloc`); the code generator emits nothing rather than code with a branch\n")
+fn lct_leaf(e) = match e
+    Num(n) => lfits63(n)
+    Var(v) => 1
+    _      => 0
+fn lct_load(e, reg, c, s) = match e
+    Num(n)  => lres("    movq $" + str(lintword(n)) + ", " + reg + "\n", s)
+    Var(nm) => let k = lidxof(c.locals, nm) in if k >= 0 then lres("    movq " + lslot(k) + "(%rbp), " + reg + "\n", s) else lres(lct_fail(c.fnm, "the name '" + nm + "' (neither a parameter nor a let-bound integer)"), s)
+    _       => lres(lct_fail(c.fnm, "a non-leaf operand"), s)
+fn lct_push(r) = lres(r.code + "    pushq %rax\n", r)
+## two operands: left in %rax, right in %rcx
+fn lct_two(l, r, c, s) = if lct_leaf(r) == 1 then lct_two_r(lct_e(l, c, s), r, c) else if lct_leaf(l) == 1 then lct_two_l(lct_e(r, c, s), l, c) else lct_two_2(lct_e(l, c, s), r, c)
+fn lct_two_r(a, r, c) = let b = lct_load(r, "%rcx", c, a) in lres(a.code + b.code, b)
+fn lct_two_l(a, l, c) = let b = lct_load(l, "%rax", c, a) in lres(a.code + "    movq %rax, %rcx\n" + b.code, b)
+fn lct_two_2(a, r, c) = let b = lct_e(r, c, a) in lres(a.code + "    pushq %rax\n" + b.code + "    movq %rax, %rcx\n    popq %rax\n", b)
+fn lct_is_arith(op) = if op == "+" or op == "-" or op == "*" or op == "+%" or op == "-%" or op == "*%" then 1 else 0
+fn lct_arith(op) = if op == "+" or op == "+%" then "    decq %rax\n    addq %rcx, %rax\n" else if op == "-" or op == "-%" then "    subq %rcx, %rax\n    incq %rax\n" else "    sarq $1, %rax\n    decq %rcx\n    imulq %rcx, %rax\n    incq %rax\n"
+fn lct_tail(a, code) = lres(a.code + code, a)
+fn lct_bit2(nm) = if nm == "bit_and" or nm == "bv_and" then "    andq %rcx, %rax\n" else if nm == "bit_or" or nm == "bv_or" then "    orq %rcx, %rax\n" else if nm == "bit_xor" or nm == "bv_xor" then "    xorq %rcx, %rax\n    orq $1, %rax\n" else ""
+fn lct_shift_k(e) = match e
+    Num(n) => n
+    _      => 0 - 1
+fn lct_shr(a, k, c) = if k < 0 or k > 62 then lres(lct_fail(c.fnm, "bit_shr with a shift amount that is not an integer literal in 0..62"), a) else if k == 0 then a else lct_tail(a, "    sarq $" + str(k) + ", %rax\n    orq $1, %rax\n")
+fn lct_shl(a, k, c) = if k < 0 or k > 61 then lres(lct_fail(c.fnm, "bit_shl with a shift amount that is not an integer literal in 0..61"), a) else if k == 0 then a else lct_tail(a, "    decq %rax\n    salq $" + str(k) + ", %rax\n    incq %rax\n")
+## ct_select(m, a, b): a in %rcx, b in %rax, m in %rdx
+fn lct_sel(m, a, b, c, s) = let r1 = if lct_leaf(m) == 1 then lres("", s) else lct_push(lct_e(m, c, s)) in let r2 = if lct_leaf(a) == 1 then lres("", r1) else lct_push(lct_e(a, c, r1)) in let r3 = lct_e(b, c, r2) in let r4 = if lct_leaf(a) == 1 then lct_load(a, "%rcx", c, r3) else lres("    popq %rcx\n", r3) in let r5 = if lct_leaf(m) == 1 then lct_load(m, "%rdx", c, r4) else lres("    popq %rdx\n", r4) in lres(r1.code + r2.code + r3.code + r4.code + r5.code + "    xorq %rax, %rcx\n    andq %rdx, %rcx\n    xorq %rcx, %rax\n", r5)
+## a call of another kernel: computed arguments are pushed in order and popped into their registers, leaves are
+## loaded last; arguments past the sixth go to the outgoing area the caller reserves (same layout as lcall)
+fn lct_args_eval(xs, c, s) = match xs
+    Nil        => lres("", s)
+    Cons(h, t) => if lct_leaf(h) == 1 then lct_args_eval(t, c, s) else lct_args_ev2(lct_push(lct_e(h, c, s)), t, c)
+fn lct_args_ev2(a, t, c) = let rest = lct_args_eval(t, c, a) in lres(a.code + rest.code, rest)
+fn lct_args_pop(xs, i) = match xs
+    Nil        => ""
+    Cons(h, t) => lct_args_pop(t, i + 1) + (if lct_leaf(h) == 1 then "" else "    popq " + areg(i) + "\n")
+fn lct_args_leaf(xs, i, c, s) = match xs
+    Nil        => lres("", s)
+    Cons(h, t) => if lct_leaf(h) == 1 then lct_args_lf2(lct_load(h, areg(i), c, s), t, i, c) else lct_args_leaf(t, i + 1, c, s)
+fn lct_args_lf2(a, t, i, c) = let rest = lct_args_leaf(t, i + 1, c, a) in lres(a.code + rest.code, rest)
+fn lct_args_push(xs, q, m, c, s) = if q >= m then lres("", s) else lct_args_push2(xs, q, m, c, s)
+fn lct_args_push2(xs, q, m, c, s) = match xs
+    Nil        => lres("", s)
+    Cons(h, t) => lct_args_push3(lct_push(lct_e(h, c, s)), t, q, m, c)
+fn lct_args_push3(a, t, q, m, c) = let rest = lct_args_push(t, q + 1, m, c, a) in lres(a.code + rest.code, rest)
+fn lct_args_stk(xs, k, c, s) = match xs
+    Nil        => lres("", s)
+    Cons(h, t) => lct_args_stk2(lct_e(h, c, s), t, k, c)
+fn lct_args_stk2(a, t, k, c) = let rest = lct_args_stk(t, k + 1, c, a) in lres(a.code + "    movq %rax, " + str(48 + k * 8) + "(%rsp)\n" + rest.code, rest)
+fn lct_call(nm, args, c, s) = if nm == c.fnm then lres(lct_fail(c.fnm, "the recursive call '" + nm + "(...)'"), s) else if lct_has(s.cts, nm) == 0 then lres(lct_fail(c.fnm, "the call of '" + nm + "', which is not a constant-time kernel,"), s) else if len(args) <= 6 then lct_call_reg(nm, args, c, lct_args_eval(args, c, s)) else lct_call_stk(nm, args, len(args) - 6, c, s)
+fn lct_call_reg(nm, args, c, ev) = let lf = lct_args_leaf(args, 0, c, ev) in lres(ev.code + lct_args_pop(args, 0) + lf.code + "    call " + nm + "\n", lf)
+fn lct_call_stk(nm, args, nst, c, s) = let spad = if nst % 2 == 1 then (nst + 1) * 8 else nst * 8 in let rg = lct_args_push(args, 0, 6, c, s) in let st = lct_args_stk(drop(args, 6), 0, c, rg) in lres("    subq $" + str(spad) + ", %rsp\n" + rg.code + st.code + lpops(5) + "    call " + nm + "\n    addq $" + str(spad) + ", %rsp\n", st)
+fn lct_callx(nm, args, c, s) = let n = len(args) in if n == 2 and lct_bit2(nm) != "" then lct_tail(lct_two(lqhead(args), lqhead(lqrest(args)), c, s), lct_bit2(nm)) else if nm == "bit_not" and n == 1 then lct_tail(lct_e(lqhead(args), c, s), "    negq %rax\n") else if (nm == "bit_shr" or nm == "bv_shr") and n == 2 then lct_shr(lct_e(lqhead(args), c, s), lct_shift_k(lqhead(lqrest(args))), c) else if (nm == "bit_shl" or nm == "bv_shl") and n == 2 then lct_shl(lct_e(lqhead(args), c, s), lct_shift_k(lqhead(lqrest(args))), c) else if nm == "ct_eq" and n == 2 then lct_tail(lct_two(lqhead(args), lqhead(lqrest(args)), c, s), "    xorq %rcx, %rax\n    movq %rax, %rcx\n    negq %rcx\n    orq %rcx, %rax\n    shrq $63, %rax\n    xorq $1, %rax\n    leaq 1(%rax,%rax), %rax\n") else if nm == "ct_select" and n == 3 then lct_sel(lqhead(args), lqhead(lqrest(args)), lqhead(lqrest(lqrest(args))), c, s) else if isctor(nm) or nf_rt(nm) == 1 or nf_special(nm) == 1 then lres(lct_fail(c.fnm, "the call of '" + nm + "'"), s) else lct_call(nm, args, c, s)
+fn lct_let(nm, vr, b, c) = let br = lct_e(b, c, vr) in lres(vr.code + "    movq %rax, " + lslot(lidxof(c.locals, nm)) + "(%rbp)\n" + br.code, br)
+fn lct_e(e, c, s) = match e
+    Num(n)          => if lfits63(n) then lct_load(e, "%rax", c, s) else lres(lct_fail(c.fnm, "the integer literal " + str(n) + " (outside the 63-bit immediate range)"), s)
+    Var(nm)         => lct_load(e, "%rax", c, s)
+    Bin(op, l, r)   => if lct_is_arith(op) == 1 then lct_tail(lct_two(l, r, c, s), lct_arith(op)) else lres(lct_fail(c.fnm, "the operator '" + op + "'"), s)
+    LetIn(nm, v, b) => lct_let(nm, lct_e(v, c, s), b, c)
+    Call(nm, args)  => lct_callx(nm, args, c, s)
+    _               => lres(lct_fail(c.fnm, "a construct outside the constant-time subset (conditional, match, record, string, ...)"), s)
+fn lct_guard_and(i, n) = if i >= n then "" else "    movq " + lslot(i) + "(%rbp), %rcx\n    andq %rcx, %rax\n" + lct_guard_and(i + 1, n)
+fn lct_guard(n) = if n <= 0 then "" else "    movq " + lslot(0) + "(%rbp), %rax\n" + lct_guard_and(1, n) + "    andq $1, %rax\n    decq %rax\n    orq %rsp, %rax\n    movq (%rax), %rax\n"
+fn lct_fn(nm, params, body0, s) = let body = lalpha(lcf(body0), params) in let locals = app(params, lcollect(body)) in let frame = lframe(len(locals)) in let br = lct_e(body, {locals: locals, fnm: nm}, s) in lres(nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n" + (if frame > 0 then "    subq $" + str(frame) + ", %rsp\n" else "") + lparams(params, 0) + lct_guard(len(params)) + br.code + "    movq %rbp, %rsp\n    popq %rbp\n    ret\n", br)
+
 ## --- functions ---
 fn lparams(ps, i) = match ps
     Nil        => ""
     Cons(h, t) => if i < 6 then "    movq " + areg(i) + ", " + lslot(i) + "(%rbp)\n" + lparams(t, i + 1) else "    movq " + str(16 + 8 * (i - 6)) + "(%rbp), %rax\n    movq %rax, " + lslot(i) + "(%rbp)\n" + lparams(t, i + 1)
 fn lafn(nm, params, body, s) = lafn_typed(nm, params, body, Nil, s)
-fn lafn_typed(nm, params, body0, dvars, s) = let body = lsra_expr(lalpha(lcf(body0), params)) in let locals = app(params, app(lcollect(body), lsds(0, lmdepth(body)))) in let frame = lframe(len(locals)) in let tlbl = s.pfx + ".Ltail_" + nm in let br = laexpr_tail(body, {locals: locals, bound: params, dvars: dvars, depth: 0, fnm: nm, nparams: len(params), tlbl: tlbl}, s) in let sub = if frame > 0 then "    subq $" + str(frame) + ", %rsp\n" else "" in let pentry = if len(params) <= 6 then tlbl + ":\n" + lparams(params, 0) else lparams(params, 0) + tlbl + ":\n" in lres(nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n" + sub + pentry + br.code + "    movq %rbp, %rsp\n    popq %rbp\n    ret\n", br)
+fn lafn_typed(nm, params, body0, dvars, s) = if lct_has(s.cts, nm) == 1 then lct_fn(nm, params, body0, s) else lafn_ord(nm, params, body0, dvars, s)
+fn lafn_ord(nm, params, body0, dvars, s) = let body = lsra_expr(lalpha(lcf(body0), params)) in let locals = app(params, app(lcollect(body), lsds(0, lmdepth(body)))) in let frame = lframe(len(locals)) in let tlbl = s.pfx + ".Ltail_" + nm in let br = laexpr_tail(body, {locals: locals, bound: params, dvars: dvars, depth: 0, fnm: nm, nparams: len(params), tlbl: tlbl}, s) in let sub = if frame > 0 then "    subq $" + str(frame) + ", %rsp\n" else "" in let pentry = if len(params) <= 6 then tlbl + ":\n" + lparams(params, 0) else lparams(params, 0) + tlbl + ":\n" in lres(nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n" + sub + pentry + br.code + "    movq %rbp, %rsp\n    popq %rbp\n    ret\n", br)
 
 ## --- statements: one pass in source order threading the state ---
 fn lmlocals(prog) = match prog
@@ -848,7 +954,7 @@ fn runtime_krn_tail() = rt_krn_head() + rt_idiv() + rt_rec_update() + rt_boxes()
 ## assembles the final assembly from those pieces. The single-unit driver `lgen` is exactly
 ## `lgen_emit(lgen_analysis(prog0, ""))` — an empty label prefix reproduces the historical output
 ## byte-for-byte. Module mode runs `lgen_analysis(prog, "<module>-scoped prefix")` and caches the pieces.
-fn lgen_analysis(prog0, pfx) = let ffi_osigs = lcollect_ffi_osigs(prog0, prog0) in let ffi_links = lcollect_ffi_links(prog0) in let is_krn = lhas_free_osig(prog0) in let isr_fn = lfind_isr_fn(prog0) in let prog = if isnil(ffi_osigs) == 1 then prog0 else lffi_rw_prog(prog0, ffi_osigs) in let has_sys = if is_krn == 1 or isr_fn != "" or luses_sys_prog(prog) == 1 then 1 else 0 in let has_tier = luses_tier_prog(prog) in let has_mem = if is_krn == 1 then 0 else luses_mem_prog(prog) in let uses_fs = luses_fs_prog(prog) in let mlocals = app(lmlocals(prog), lsds(0, lmdprog(prog))) in let s0 = {nl: 0, ns: 0, dt: Nil, pfx: pfx} in let gs = lstmts(prog, mlocals, if has_mem == 1 then lhs_seed(s0) else s0) in let funcs_l = gs.funcs in let mains_l = gs.mains in {prog: prog, ffi_osigs: ffi_osigs, ffi_links: ffi_links, is_krn: is_krn, isr_fn: isr_fn, has_sys: has_sys, has_tier: has_tier, has_mem: has_mem, uses_fs: uses_fs, mframe: lframe(len(mlocals)), dt_s: ldt_text(gs.dt), relink: 0, funcs_raw: joinall(own funcs_l), mains_s: joinall(own mains_l)}
+fn lgen_analysis(prog0, pfx) = let ffi_osigs = lcollect_ffi_osigs(prog0, prog0) in let ffi_links = lcollect_ffi_links(prog0) in let is_krn = lhas_free_osig(prog0) in let isr_fn = lfind_isr_fn(prog0) in let prog = if isnil(ffi_osigs) == 1 then prog0 else lffi_rw_prog(prog0, ffi_osigs) in let has_sys = if is_krn == 1 or isr_fn != "" or luses_sys_prog(prog) == 1 then 1 else 0 in let has_tier = luses_tier_prog(prog) in let has_mem = if is_krn == 1 then 0 else luses_mem_prog(prog) in let uses_fs = luses_fs_prog(prog) in let mlocals = app(lmlocals(prog), lsds(0, lmdprog(prog))) in let s0 = {nl: 0, ns: 0, dt: Nil, pfx: pfx, cts: lct_names(prog0)} in let gs = lstmts(prog, mlocals, if has_mem == 1 then lhs_seed(s0) else s0) in let funcs_l = gs.funcs in let mains_l = gs.mains in {prog: prog, ffi_osigs: ffi_osigs, ffi_links: ffi_links, is_krn: is_krn, isr_fn: isr_fn, has_sys: has_sys, has_tier: has_tier, has_mem: has_mem, uses_fs: uses_fs, mframe: lframe(len(mlocals)), dt_s: ldt_text(gs.dt), relink: 0, funcs_raw: joinall(own funcs_l), mains_s: joinall(own mains_l)}
 fn lgen_emit(a) = let funcs_s = (if a.is_krn == 1 then "    .kernel\n" else "") + a.ffi_links + a.funcs_raw + lffi_stubs(a.ffi_osigs) in let mprol = "    movq %rsp, %rbp\n" + (if a.mframe > 0 then "    subq $" + str(a.mframe) + ", %rsp\n" else "") in let bss = runtime_bss_head() + (if a.has_mem == 1 or a.is_krn == 0 then "    .lcomm .Lrt_ar_table, 96\n" else "") + (if a.has_sys == 1 then "    .lcomm .Lrt_irq32_cnt, 8\n    .lcomm .Lrt_pf14_cnt, 8\n    .lcomm .Lrt_pf14_addr, 8\n    .lcomm .Lrt_ctx_sp_a, 8\n    .lcomm .Lrt_ctx_sp_b, 8\n    .lcomm .Lrt_ctx_sw_cnt, 8\n    .lcomm .Lrt_hw_scratch, 8192\n    .lcomm .Lrt_static_arena, 65536\n" else "") + (if a.is_krn == 1 then "" else runtime_bss_gc()) in let rodata = runtime_rodata_head() + (if a.is_krn == 1 then "" else runtime_rodata_gc()) + (if a.has_mem == 1 then ".Lrt_ar_msg_secret:\n    .asciz \"lume: arena error: a secret arena is never compressed (decompression timing leaks it, [C0009])\\n\"\n.Lrt_ar_msg_many:\n    .asciz \"lume: arena error: too many live arenas (the runtime supports 4)\\n\"\n.Lrt_ar_msg_dead:\n    .asciz \"lume: arena error: no live arena at this handle (arena_new first)\\n\"\n.Lrt_ar_msg_handle:\n    .asciz \"lume: arena error: invalid arena handle\\n\"\n.Lrt_ar_msg_budget:\n    .asciz \"lume: arena error: arena capacity exceeded (arena_new cap_hint is a hard budget)\\n\"\n.Lrt_ar_msg_size:\n    .asciz \"lume: arena error: arena_alloc size must be positive\\n\"\n" else "") + (if a.has_tier == 1 then ".Lrt_uaf_msg:\n    .asciz \"lume: ownership error [O0001]: use of dropped rc/arc reference\\n\"\n" else "") + (if a.has_sys == 1 then ".Lrt_idt_ptr:\n    .byte 255, 15, 0, 80, 0, 0, 0, 0, 0, 0\n.Lrt_ap_tramp:\n    .byte 250, 49, 192, 142, 216, 142, 192, 142, 208, 188, 0, 112, 15, 32, 224, 12, 32, 15, 34, 224, 102, 184, 0, 16, 0, 0, 15, 34, 216, 102, 185, 128, 0, 0, 192, 15, 50, 128, 204, 1, 15, 48, 15, 1, 22, 216, 124, 15, 32, 192, 102, 13, 1, 0, 0, 128, 15, 34, 192, 234, 64, 112, 8, 0, 102, 184, 16, 0, 142, 216, 142, 192, 142, 208, 72, 199, 196, 0, 240, 7, 0, 72, 199, 193, 0, 88, 0, 0, 72, 199, 192, 1, 0, 0, 0, 72, 135, 1, 72, 133, 192, 117, 241, 72, 139, 65, 8, 72, 1, 192, 72, 131, 192, 12, 72, 137, 65, 16, 72, 199, 1, 0, 0, 0, 0, 72, 199, 192, 1, 0, 0, 0, 240, 72, 15, 193, 65, 24, 15, 174, 240, 250, 244, 235, 252\n" else "") in let heapinit = if a.is_krn == 1 then "    movq $1017, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    movq $1019, %rdx\n    movq $128, %rax\n    outb %al, %dx\n    movq $1016, %rdx\n    movq $3, %rax\n    outb %al, %dx\n    movq $1017, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    movq $1019, %rdx\n    movq $3, %rax\n    outb %al, %dx\n    movq $2097152, %rax\n    movq %rax, .Lrt_heap_cur(%rip)\n    movq $4128768, %rax\n    movq %rax, .Lrt_heap_end(%rip)\n" else runtime_hosted_init() in let base_rt0 = if a.is_krn == 1 then runtime_krn_tail() else if a.uses_fs == 1 then runtime_tail() + runtime_argv_tail() + runtime_fs_tail() else runtime_tail() + runtime_argv_tail() in let base_rt = if a.has_tier == 1 then base_rt0 + runtime_tier_tail() else base_rt0 in let base_rtm = if a.has_mem == 1 then base_rt + runtime_mem_tail() else base_rt in let rtail = if a.has_sys == 1 then base_rtm + runtime_sys_tail(a.isr_fn, a.is_krn) else base_rtm in let exittail = if a.is_krn == 1 then "    movq $244, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    cli\n    hlt\n" else "    movq $60, %rax\n    xorq %rdi, %rdi\n    syscall\n" in joinall(own Cons(bss, Cons(rodata, Cons(if a.relink == 1 then ldt_relink(a.dt_s) else a.dt_s, Cons("    .section .text\n", Cons(funcs_s, Cons(rtail, Cons("    .globl _start\n_start:\n", Cons(heapinit, Cons(mprol, Cons(a.mains_s, Cons(exittail, Nil))))))))))))
 fn lgen(prog0) = lgen_emit(lgen_analysis(prog0, ""))
 

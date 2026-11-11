@@ -71,7 +71,13 @@ Rules that the Wave 12-13 checks enforce (write code that satisfies them the fir
   stays inside 63 bits, no record, list, string or allocating builtin, callees `@no_alloc` too, recursion only in
   tail position. Anything else is `[E0210]`.
 - `@secret fn`: no branch, division or table index on a secret (`[C0009]` at source level; `lume tv` adds `[C0010]`
-  on the emitted code, so even `+` is refused there: use `bit_xor` / `bit_and` / `bit_or` selections).
+  on the emitted code AND on every routine it calls, so a plain `@secret fn` that uses `+` or a bit operation is
+  refused there: its runtime helpers branch).
+- Constant-time kernel = `@secret` + `@no_alloc` on the same function: `int` parameters and result, no `requires`,
+  `ensures` only if proven, body of `+ - * +% -% *%`, `bit_and` / `bit_or` / `bit_xor` / `bit_not`, `bit_shl` /
+  `bit_shr` by a literal, `ct_select(mask, a, b)`, `ct_eq(a, b)` and calls of other kernels; no `if` / `match` /
+  comparison / `/` / `%` / recursion (`[C0011]`); mask operands with `bit_and` until every sum and product is
+  proven inside 63 bits (`[E0210]`). It compiles to branch-free code that `lume tv` validates.
 - A value passed to `chan_send_linear` is gone (`[E0305]`); take locks in ascending rank and release them (`[E0306]`).
 - The AArch64 / RISC-V targets accept the integer kernel fragment only (`[T0901]`) and only sources `lumec` accepts
   (`[T0902]`).

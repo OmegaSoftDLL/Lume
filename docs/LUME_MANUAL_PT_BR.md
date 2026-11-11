@@ -252,6 +252,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                     `cpu_write_cr3(v)`, `cpu_invlpg(va)`, `cpu_idt_init()`, `cpu_smp_boot_ap(v)`
   - Bitwise de 64 bits em Hardware: `bit_and(a, b)`, `bit_or(a, b)`, `bit_xor(a, b)`,
                                     `bit_not(a)`, `bit_shl(a, n)`, `bit_shr(a, n)`
+  - Intrinsecos Constant-Time: `ct_select(mask, a, b)` (bit a bit: `a` onde o bit da mascara esta ligado, senao `b`),
+                               `ct_eq(a, b)` (1 se iguais, senao 0); sem desvio em um kernel constant-time
   - Bloco de Memoria, Integridade e Estado O(1): `mem_copy(dst, src, len)`, `mem_set(dst, b, len)`,
     `mem_crc64(addr, len)` (auditoria anti-rootkit FNV-1a de 64 bits), `krn_slot_write(idx, val)`,
     `krn_slot_read(idx)` (tabela de estado de kernel de 1024 slots com zero alocacoes de heap)
@@ -675,6 +677,16 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   imediata de 63 bits, nenhum record, construtor com campos, string ou builtin que aloca, recursao so em posicao de
   cauda. O `realtime_gate` mede o resultado com `heap_stats()`: zero alocacoes nos kernels aceitos. Limites: nao se
   calcula profundidade maxima de pilha em bytes e nada e cronometrado; `@bound` e o orcamento de ciclos.
+- **Kernels constant-time (`@secret` + `@no_alloc`, `[C0011]`)**: uma funcao com os dois atributos e baixada para
+  codigo em linha reta sobre inteiros imediatos: sem teste de tag, sem teste de overflow, sem chamada de runtime,
+  sem salto. O `[C0011]` rejeita o resto: parametros e resultado `int`; sem `requires` (mascare com `bit_and`; o
+  kernel e total sobre imediatos); `ensures` so quando provado (nunca e checado em execucao, nem com
+  `--keep-proven-checks`); o corpo usa `+ - * +% -% *%`, `bit_and` / `bit_or` / `bit_xor` / `bit_not`, `bit_shl` /
+  `bit_shr` por literal inteiro, `ct_select`, `ct_eq` e chamadas de outros kernels; sem `if`, `match`, comparacao,
+  `and` / `or`, `/`, `%`, recursao. Todo resultado aritmetico precisa ser provado dentro da faixa imediata de 63
+  bits para todo argumento imediato (`[E0210]`). Uma guarda de entrada falha (fault) se um argumento nao e
+  imediato. O `ltv` rederiva as faixas e valida o codigo de maquina; o `tv_gate` o muta. Limites: "constant time"
+  e a ausencia de desvios, divisoes e acessos a memoria dependentes de segredo; nenhum tempo e medido.
 - **Back ends multi-ISA (Dominio `#117`)**: `larm64.src` e `lriscv.src` compilam o fragmento de kernel inteiro
   (funcoes `int`, `+ - * / %`, comparacoes, `and`/`or`, `if`, `let`, chamadas, `print`) para imagens AArch64, RV64 e
   RV32; o `ltv_multiarch.src` valida cada imagem de funcao contra o fonte. Nenhuma imagem sai antes de o front-end
@@ -687,9 +699,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - **Criptografia e TLS 1.3 (Dominio `#119`, `use lcrypto_tls`)**: SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305,
   Ed25519, X25519, o key schedule, a camada de registros e a maquina de estados do handshake do TLS 1.3, tudo em
   Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. O `ltv` acrescenta o `[C0010]`: o codigo
-  emitido de uma funcao `@secret` nao pode ter desvio condicional, divisao nem acesso a memoria fora do frame.
-  Limites: testado, nao verificado formalmente; o `[C0010]` nao olha dentro dos helpers de runtime alcancados por
-  `call`; sem validacao de cadeia X.509.
+  emitido de uma funcao `@secret` nao pode ter desvio condicional, divisao nem acesso a memoria fora do frame, e
+  o mesmo vale para toda rotina que ela alcanca por `call` (a varredura e transitiva e nomeia a cadeia).
+  Limites: testado, nao verificado formalmente; uma funcao `@secret` comum que usa `+` ou operacao de bit e
+  rejeitada pelo `[C0010]` (os helpers dela desviam): escreva-a como kernel constant-time;
+  sem validacao de cadeia X.509.
 - **Cache incremental de provas (Dominio `#120`)**: um registro selado por funcao, indexado pelo SHA-256 do corpo,
   dos contratos, das interfaces dos chamados e da versao do provador. Registro adulterado e recusado (`[PC0002]`),
   modulo refutado pelo provador nunca e gravado (`[PC0003]`), `--require-all-hits` transforma miss em erro (`[PC0005]`).
@@ -839,6 +853,8 @@ print run_lumeputer_demo()
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy` ou `mem_set` aponta para `.text`/`.rodata` (`[0x8000..0x3FFFF]`), inclusive `base + off` simbolico. Use endereco seguro de RAM (`>= 0x40000`). |
 | `[K0006]` | Pilha de Kernel      | Ciclo de recursao mutua ilimitada (`f -> g -> f`) em modulo `@freestanding` / `kernel_boot_entry`. Use loop tail-call ou iteracao limitada. |
 | `[C0009]` | Cripto Constant-Time | Branch `if`/`match`, divisao `/` ou `%` ou curto-circuito `and`/`or` dependente de segredo (`secret_*` ou funcao `ct_*`). Use acumulacao bitwise XOR/OR em tempo constante. |
+| `[C0010]` | Constant-Time de Maquina | `lume tv`: o codigo emitido de uma `@secret fn`, ou de uma rotina que ela alcanca por `call`, tem desvio condicional, divisao ou acesso a memoria fora de frame e pilha. Escreva a funcao como kernel constant-time (`@secret` + `@no_alloc`). |
+| `[C0011]` | Kernel Constant-Time | Funcao `@secret` + `@no_alloc` com `requires`, `ensures` nao provado, condicional, comparacao, `/` ou `%`, shift por nao-literal, recursao, tipo que nao e `int` ou chamada de funcao que nao e kernel. Use mascaras, `ct_select(mask, a, b)` e `ct_eq(a, b)`. |
 | `[Q0001]` | Linearidade Quantica | Violacao de `No-Cloning` (duplicacao de `Qubit`) ou reuso de qubit medido. Consuma cada fio `Qubit` linearmente. |
 | `[Q0002]` | Uncompute `qfree`    | Fio ancilla nao descomputado em funcao `qfree` (`anc_leaked > 0`). Aplique o adjunto $U^\dagger$ (`q_silq_qfree_verify`) antes de retornar. |
 | `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |
