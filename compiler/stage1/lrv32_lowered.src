@@ -1,0 +1,132 @@
+## lrv32_lowered.src -- RV32IM code generator over lumec's LOWERED AST (`nf_late(lumec_expand(src))`), for the LumePuter.
+##
+## This is the former section 3 of compiler/stage1/lsafety_envelope.src (`rc_*` and `se_b_run`), moved here unchanged
+## when the safety envelope got its own clean-room front end for channel B: the envelope must not link the compiler,
+## and this code generator takes the compiler's AST (Num / Var / Bin / If / LetIn / Call), so the two cannot live in
+## one module. It is NOT part of the safety envelope any more. Its user is compiler/stage1/lneural_cartridge.src, which
+## compiles a pure integer function to an RV32IM ROM image for the LumePuter (`rv_*` of lsafety_envelope.src).
+##
+## Registers: x1 ra, x2 sp, x8 fp, x10 a0 (every expression leaves its value here), x5-x7 t0-t2, x17 a7.
+## Frame: the caller pushes the arguments left to right and does `jal ra, f`; the callee pushes ra and the caller's
+## fp and sets fp = sp, so parameter i of n lives at fp + 8 + 4*(n-1-i) and the k-th word pushed below fp (operand
+## temporaries and `let` slots) at fp - 4*k. A conditional branch only ever skips the following `jal`, so every
+## long transfer is a JAL (+-1 MiB) patched by rc_res.
+use lumec
+use lsafety_envelope
+
+fn rc_st0(lbl) = {code: Nil, n: 0, lbl: lbl, defs: Nil, err: ""}
+fn rc_w(st, w) = {code: Cons(RvW(w), st.code), n: st.n + 1, lbl: st.lbl, defs: st.defs, err: st.err}
+fn rc_j(st, rd, l) = {code: Cons(RvJ(rd, l), st.code), n: st.n + 1, lbl: st.lbl, defs: st.defs, err: st.err}
+fn rc_def(st, l) = {code: st.code, n: st.n, lbl: st.lbl, defs: Cons({id: l, idx: st.n}, st.defs), err: st.err}
+fn rc_bump(st, k) = {code: st.code, n: st.n, lbl: st.lbl + k, defs: st.defs, err: st.err}
+fn rc_err(st, msg) = if st.err != "" then st else {code: st.code, n: st.n, lbl: st.lbl, defs: st.defs, err: msg}
+fn rc_w2(st, a, b) = rc_w(rc_w(st, a), b)
+fn rc_w3(st, a, b, c) = rc_w(rc_w2(st, a, b), c)
+fn rc_w4(st, a, b, c, d) = rc_w(rc_w3(st, a, b, c), d)
+
+## load a 32-bit constant: always LUI + ADDI (two words, value-independent timing)
+fn rc_li2(st, rd, v) = let lo = rv_sx(rv_w32(v) % 4096, 4096) in rc_w2(st, rv_lui(rd, rv_w32(v - lo) / 4096), rv_addi(rd, rd, lo))
+fn rc_li(st, rd, v) = if v < 0 - 2147483648 or v > 2147483647 then rc_err(st, "constant outside the i32 monitor domain: " + str(v)) else if v >= 0 - 2048 and v <= 2047 then rc_w(st, rv_addi(rd, 0, v)) else rc_li2(st, rd, v)
+fn rc_push(st, d) = if d >= 480 then rc_err(st, "frame deeper than 480 words") else rc_w2(st, rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0))
+fn rc_pop_t0(st) = rc_w2(st, rv_lw(5, 2, 0), rv_addi(2, 2, 4))
+
+fn rc_var_at(st, env, nm) = match env
+    Nil        => rc_err(st, "unbound variable: " + nm)
+    Cons(h, t) => if h.name == nm then rc_w(st, rv_lw(10, 8, h.off)) else rc_var_at(st, t, nm)
+fn rc_var(st, env, nm) = if nm == "true" then rc_w(st, rv_addi(10, 0, 1)) else if nm == "false" then rc_w(st, rv_addi(10, 0, 0)) else rc_var_at(st, env, nm)
+
+fn rc_fn_none() = {name: "", id: 0 - 1, arity: 0, params: Nil, body: Num(0)}
+fn rc_fn_find(tab, nm) = match tab
+    Nil        => rc_fn_none()
+    Cons(h, t) => if h.name == nm then h else rc_fn_find(t, nm)
+
+## t0 = left operand, a0 = right operand -> a0. Signed overflow of + - * and x/0, INT_MIN/-1 jump to the trap stubs:
+##   add: overflow iff (b < 0) != (a + b < a)        sub: overflow iff (b < 0) != (a < a - b)
+##   mul: overflow iff mulh(a, b) != (mul(a, b) >> 31 arithmetic)
+fn rc_arith(st, cx, op) = if op == "+" then rc_w(rc_j(rc_w4(st, rv_add(6, 5, 10), rv_slti(7, 10, 0), rv_slt(5, 6, 5), rv_beq(7, 5, 8)), 0, cx.lo), rv_addi(10, 6, 0)) else if op == "-" then rc_w(rc_j(rc_w4(st, rv_sub(6, 5, 10), rv_slti(7, 10, 0), rv_slt(5, 5, 6), rv_beq(7, 5, 8)), 0, cx.lo), rv_addi(10, 6, 0)) else if op == "*" then rc_w(rc_j(rc_w4(st, rv_mul(6, 5, 10), rv_mulh(7, 5, 10), rv_srai(5, 6, 31), rv_beq(7, 5, 8)), 0, cx.lo), rv_addi(10, 6, 0)) else if op == "/" then rc_w(rc_j(rc_w4(rc_j(rc_w(st, rv_bne(10, 0, 8)), 0, cx.ld), rv_addi(6, 0, 0 - 1), rv_bne(10, 6, 16), rv_lui(6, 524288), rv_bne(5, 6, 8)), 0, cx.lo), rv_div(10, 5, 10)) else if op == "%" then rc_w(rc_j(rc_w(st, rv_bne(10, 0, 8)), 0, cx.ld), rv_rem(10, 5, 10)) else if op == "==" then rc_w2(st, rv_xor(6, 5, 10), rv_sltiu(10, 6, 1)) else if op == "!=" then rc_w2(st, rv_xor(6, 5, 10), rv_sltu(10, 0, 6)) else if op == "<" then rc_w(st, rv_slt(10, 5, 10)) else if op == ">" then rc_w(st, rv_slt(10, 10, 5)) else if op == "<=" then rc_w2(st, rv_slt(10, 10, 5), rv_xori(10, 10, 1)) else if op == ">=" then rc_w2(st, rv_slt(10, 5, 10), rv_xori(10, 10, 1)) else if op == "bit_and" then rc_w(st, rv_and(10, 5, 10)) else if op == "bit_or" then rc_w(st, rv_or(10, 5, 10)) else if op == "bit_xor" then rc_w(st, rv_xor(10, 5, 10)) else rc_err(st, "unsupported operator: " + op)
+
+fn rc_x(st, cx, env, d, e) = match e
+    Num(v)          => rc_li(st, 10, v)
+    Var(nm)         => rc_var(st, env, nm)
+    Bin(op, l, r)   => rc_bin(st, cx, env, d, op, l, r)
+    If(c, t, f)     => rc_if(st, cx, env, d, c, t, f)
+    LetIn(nm, v, b) => rc_let(st, cx, env, d, nm, v, b)
+    Call(nm, args)  => rc_call(st, cx, env, d, nm, args)
+    _               => rc_err(st, "expression outside the monitor fragment: " + lcs_e(e))
+fn rc_binop(st, cx, env, d, op, l, r) = rc_arith(rc_pop_t0(rc_x(rc_push(rc_x(st, cx, env, d, l), d), cx, env, d + 1, r)), cx, op)
+## short-circuit and / or with a 0/1 result
+fn rc_and(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = rc_x(rc_bump(st, 1), cx, env, d, l) in let s2 = rc_x(rc_j(rc_w(s1, rv_bne(10, 0, 8)), 0, lb), cx, env, d, r) in rc_def(rc_w(s2, rv_sltu(10, 0, 10)), lb)
+fn rc_or(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = rc_x(rc_bump(st, 2), cx, env, d, l) in let s2 = rc_j(rc_w(rc_j(rc_w(s1, rv_bne(10, 0, 8)), 0, lb), rv_addi(10, 0, 1)), 0, lb + 1) in let s3 = rc_x(rc_def(s2, lb), cx, env, d, r) in rc_def(rc_w(s3, rv_sltu(10, 0, 10)), lb + 1)
+fn rc_bin(st, cx, env, d, op, l, r) = if op == "and" then rc_and(st, cx, env, d, l, r) else if op == "or" then rc_or(st, cx, env, d, l, r) else rc_binop(st, cx, env, d, op, l, r)
+fn rc_if(st, cx, env, d, c, t, f) = let lb = st.lbl in let s1 = rc_x(rc_bump(st, 2), cx, env, d, c) in let s2 = rc_x(rc_j(rc_w(s1, rv_bne(10, 0, 8)), 0, lb), cx, env, d, t) in let s3 = rc_x(rc_def(rc_j(s2, 0, lb + 1), lb), cx, env, d, f) in rc_def(s3, lb + 1)
+fn rc_let(st, cx, env, d, nm, v, b) = let s1 = rc_push(rc_x(st, cx, env, d, v), d) in rc_w(rc_x(s1, cx, Cons({name: nm, off: 0 - 4 * (d + 1)}, env), d + 1, b), rv_addi(2, 2, 4))
+fn rc_args(st, cx, env, d, args) = match args
+    Nil        => st
+    Cons(h, t) => rc_args(rc_push(rc_x(st, cx, env, d, h), d), cx, env, d + 1, t)
+fn rc_bit2(st, cx, env, d, nm, a, rest) = match rest
+    Cons(b, r2) => rc_binop(st, cx, env, d, nm, a, b)
+    Nil         => rc_err(st, nm + " needs two arguments")
+fn rc_bit(st, cx, env, d, nm, args) = match args
+    Cons(a, rest) => rc_bit2(st, cx, env, d, nm, a, rest)
+    Nil           => rc_err(st, nm + " needs two arguments")
+fn rc_user_call(st, cx, env, d, nm, args, f) = if f.id < 0 then rc_err(st, "call to a function outside the monitor fragment: " + nm) else if f.arity != rv_len(args) then rc_err(st, "wrong argument count in call to " + nm) else if f.arity > 64 then rc_err(st, "more than 64 parameters: " + nm) else rc_w(rc_j(rc_args(st, cx, env, d, args), 1, f.id), rv_addi(2, 2, 4 * f.arity))
+fn rc_call(st, cx, env, d, nm, args) = if nm == "ctfail" then rc_j(st, 0, cx.lc) else if nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" then (if rv_len(args) == 2 then rc_bit(st, cx, env, d, nm, args) else rc_err(st, nm + " needs two arguments")) else rc_user_call(st, cx, env, d, nm, args, rc_fn_find(cx.fns, nm))
+
+fn rc_penv(ps, n, i) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons({name: h, off: 8 + 4 * (n - 1 - i)}, rc_penv(t, n, i + 1))
+fn rc_fn(st, cx, f) = let s1 = rc_w4(rc_def(st, f.id), rv_addi(2, 2, 0 - 8), rv_sw(1, 2, 4), rv_sw(8, 2, 0), rv_addi(8, 2, 0)) in let s2 = rc_x(s1, cx, rc_penv(f.params, f.arity, 0), 0, f.body) in rc_w(rc_w4(s2, rv_addi(2, 8, 0), rv_lw(1, 2, 4), rv_lw(8, 2, 0), rv_addi(2, 2, 8)), rv_jalr(0, 1, 0))
+fn rc_fns(st, cx, tab) = match tab
+    Nil        => st
+    Cons(h, t) => rc_fns(rc_fn(st, cx, h), cx, t)
+
+## the functions reachable from the kernel, each with a label id
+fn rc_prog_find_s(s0, t, nm) = match s0
+    Fn(n2, ps, b) => if n2 == nm then {ok: 1, params: ps, body: b} else rc_prog_find(t, nm)
+    _             => rc_prog_find(t, nm)
+fn rc_prog_find(prog, nm) = match prog
+    Nil        => {ok: 0, params: Nil, body: Num(0)}
+    Cons(h, t) => rc_prog_find_s(h, t, nm)
+fn rc_calls_l(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rc_calls_l(t, rc_calls(h, acc))
+fn rc_calls(e, acc) = match e
+    Bin(op, l, r)   => rc_calls(r, rc_calls(l, acc))
+    If(c, t, f)     => rc_calls(f, rc_calls(t, rc_calls(c, acc)))
+    LetIn(nm, v, b) => rc_calls(b, rc_calls(v, acc))
+    Call(nm, args)  => rc_calls_l(args, Cons(nm, acc))
+    _               => acc
+fn rc_table_add(prog, nm, rest, tab, nid, f) = if f.ok == 0 then rc_table(prog, rest, tab, nid) else rc_table(prog, rc_calls(f.body, rest), Cons({name: nm, id: nid, arity: rv_len(f.params), params: f.params, body: f.body}, tab), nid + 1)
+fn rc_table(prog, todo, tab, nid) = match todo
+    Nil           => tab
+    Cons(nm, rest) => if (rc_fn_find(tab, nm)).id >= 0 then rc_table(prog, rest, tab, nid) else rc_table_add(prog, nm, rest, tab, nid, rc_prog_find(prog, nm))
+
+fn rc_lbl_idx(defs, l) = match defs
+    Nil        => 0 - 1
+    Cons(h, t) => if h.id == l then h.idx else rc_lbl_idx(t, l)
+fn rc_res_jal(rd, tgt, i, rest) = if tgt < 0 then {err: "internal: undefined label", rom: Nil} else if (tgt - i) * 4 < 0 - 1048576 or (tgt - i) * 4 > 1048574 then {err: "jump outside the JAL range", rom: Nil} else {err: "", rom: Cons(rv_enc_j((tgt - i) * 4, rd), rest)}
+fn rc_res_item(it, defs, i, rest) = match it
+    RvW(w)     => {err: "", rom: Cons(w, rest)}
+    RvJ(rd, l) => rc_res_jal(rd, rc_lbl_idx(defs, l), i, rest)
+fn rc_res_next(h, defs, i, r) = if r.err != "" then r else rc_res_item(h, defs, i, r.rom)
+fn rc_res(items, defs, i) = match items
+    Nil        => {err: "", rom: Nil}
+    Cons(h, t) => rc_res_next(h, defs, i, rc_res(t, defs, i + 1))
+fn rc_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rc_rev(t, Cons(h, acc))
+
+fn rc_stub_args(st, args) = match args
+    Nil        => st
+    Cons(h, t) => if h < 0 - 2147483648 or h > 2147483647 then rc_err(st, "argument outside the i32 monitor domain: " + str(h)) else rc_stub_args(rc_w2(rc_li2(st, 10, h), rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0)), t)
+fn rc_rom_err(msg) = {err: msg, rom: Nil}
+## ROM image: reset stub at word 0 (sp = top of RAM, push the arguments, call the kernel, a7 = 93, ECALL), then the
+## three trap stubs (a7 = cause, EBREAK), then the functions
+fn rc_rom_build(tab, k, args) = let nf = rv_len(tab) in let cx = {fns: tab, lc: nf, lo: nf + 1, ld: nf + 2} in let s1 = rc_stub_args(rc_li2(rc_st0(nf + 3), 2, 524288 + 16384), args) in let s2 = rc_w3(rc_j(s1, 1, k.id), rv_addi(2, 2, 4 * k.arity), rv_addi(17, 0, 93), rv_ecall()) in let s3 = rc_w2(rc_def(rc_w2(rc_def(rc_w2(rc_def(s2, cx.lc), rv_addi(17, 0, 1), rv_ebreak()), cx.lo), rv_addi(17, 0, 2), rv_ebreak()), cx.ld), rv_addi(17, 0, 3), rv_ebreak()) in let s4 = rc_fns(s3, cx, tab) in if s4.err != "" then rc_rom_err(s4.err) else rc_res(rc_rev(s4.code, Nil), s4.defs, 0)
+fn rc_rom_k(tab, k, fname, args) = if k.id < 0 then rc_rom_err("kernel function not found: " + fname) else if k.arity != rv_len(args) then rc_rom_err("kernel " + fname + " takes " + str(k.arity) + " arguments") else if k.arity > 64 then rc_rom_err("more than 64 parameters") else rc_rom_build(tab, k, args)
+fn rc_rom(prog, fname, args) = let tab = rc_table(prog, Cons(fname, Nil), Nil, 0) in rc_rom_k(tab, rc_fn_find(tab, fname), fname, args)
+
+## one vector on the monitor machine: {ok, v, cycles, cause, detail}
+fn se_b_run(prog, fname, args, budget, inj) = let r = rc_rom(prog, fname, args) in if r.err != "" then {ok: 0, v: 0, cycles: 0, cause: se_b_cause(r.err), detail: r.err} else se_b_exec(r.rom, budget, inj)
+## the ROM bit flip of the monitor (tests/harness/safetensors_gate.src uses it under its former name)
+fn rc_rom_flip(rom, idx, bit) = se_rom_flip(rom, idx, bit)
