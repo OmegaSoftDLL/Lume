@@ -17,7 +17,22 @@
 ##     Finished, CertificateVerify under another key, messages and records out of order, unoffered cipher suite,
 ##     missing / all-zero / low-order key_share, downgraded supported_versions, ...), each of which must end in the
 ##     error state with the expected alert and no secret or key left in the state;
-##   * throughput: SHA-256, ChaCha20-Poly1305 seal + open, Ed25519 sign and verify.
+##   * throughput: SHA-256, ChaCha20-Poly1305 seal + open, Ed25519 sign and verify;
+##   * OS entropy: /dev/urandom reads, the fail-closed health check against synthetic dead sources (all zero, stuck,
+##     long runs, one value dominating, a repeated read, a short read), key generation, and the TLS constructors
+##     refusing degenerate caller-supplied randoms and private keys;
+##   * X.509 (Ed25519 only): the RFC 8410 section 10.2 certificate, chains made with the system OpenSSL (root ->
+##     intermediate -> leaf; the vectors and the commands are in lcrypto_tls.src), every forged / unfit chain with its
+##     exact error (flipped bits, expiry, name mismatch, wrong key, cA FALSE, missing basicConstraints, pathLen,
+##     unknown critical extension, wrong algorithm, non-minimal / indefinite DER, trailing bytes, every truncation,
+##     untrusted or expired anchors, ...), a corruption fuzz of 6,000 mutated chains (5,000 from a fixed seed, 1,000
+##     from an OS seed) none of which may be accepted, the civil-date conversion against a calendar walk of every
+##     day of years 1 .. 9999, and the X.509 mode of the TLS 1.3 handshake with its certificate alerts;
+##   * an EMPIRICAL constant-time gate (dudect: fixed-vs-random classes, Welch's t-test on cycle counts) over the
+##     comparison, ChaCha20, Poly1305, the field select, scalar handling, ladder steps, SHA-256 / SHA-512 and a whole
+##     X25519, with two deliberately leaky functions that the same harness must detect (the dudect section below
+##     states the method, the arithmetic and the bounded retry policy).
+## Output: one line per dudect attempt, then the final `OK:` line.
 ## The first mismatch aborts with the vector's name, the value computed and the value expected.
 use lcrypto_tls
 
@@ -53,8 +68,191 @@ fn cg_handshake() = let seed = lct_sha256(lct_str_to_bytes("crypto_tls_gate: ser
 ") else if cs.ok != 1 or ss.ok != 1 or lct_len(cs.c_ap) != 32 or lct_ct_eq(cs.c_ap, ss.c_ap) != 1 or lct_ct_eq(cs.s_ap, ss.s_ap) != 1 or lct_ct_eq(cs.exp_master, ss.exp_master) != 1 or lct_ct_eq(cs.c_ap, cs.s_ap) == 1 then ctfail("crypto/TLS gate failed: client and server do not hold the same application traffic secrets after the handshake
 ") else if (lct_kat_hs_reject(lct_kat_new(), "self-check", c7, 51)).err == "" then ctfail("crypto/TLS gate failed: the rejection checker accepted a CONNECTED state as fail-closed
 ") else {steps: c7.steps + s2.steps, hs_us: hs_us, hs_wire: lct_len(lct_concat(c1.out)) + lct_len(lct_concat(s1.out)) + lct_len(lct_concat(c7.out)), app_wire: cg_hs_ping(c7, s2, 0, 16, 0)}
+## --- wave 14: OS entropy, X.509 path validation ---------------------------------------------------------------------------
+fn cg_kats_w14(s0) = let s1 = cg_group(s0, "entropy", lct_kat_entropy()) in let s2 = cg_group(s1, "x509", lct_kat_x509()) in let s3 = cg_group(s2, "x509_dates", lct_kat_x509_dates()) in cg_group(s3, "x509_tls", lct_kat_x509_tls())
+## corruption fuzz of a valid chain (see lct_kat_x509_fuzz): no mutant may be accepted, and the campaign must have
+## reached both the parser and the signature check
+fn cg_x509_fuzz_part(name, seed, n) = let r = lct_kat_x509_fuzz(seed, n) in if r.accepted != 0 then ctfail("crypto/TLS gate failed: X.509 fuzz (" + name + ", seed " + lct_bytes_to_hex(seed) + "): " + str(r.accepted) + " corrupted chain(s) ACCEPTED out of " + str(r.n) + "\n") else if r.n != n or r.same != 0 or r.e_parse == 0 or r.e_sig == 0 or r.e_parse + r.e_sig + r.e_other != n then ctfail("crypto/TLS gate failed: X.509 fuzz (" + name + ") did not exercise both the parser and the signature check: " + str(r.e_parse) + " / " + str(r.e_sig) + " of " + str(r.n) + "\n") else r
+## 5,000 cases from a fixed seed (a regression set) and 1,000 from an OS seed (new ground on every run): {n, e_parse, e_sig, e_other, same, ms}
+fn cg_x509_fuzz() = let t0 = os_monotonic_ns() in let os = lct_random_bytes_checked(16) in if os.ok == 0 then ctfail("crypto/TLS gate failed: the OS entropy source failed its health check (" + lct_entropy_err_name(os.err) + ")\n") else let a = cg_x509_fuzz_part("fixed seed", lct_str_to_bytes("crypto_tls_gate: x509 fuzz"), 5000) in let b = cg_x509_fuzz_part("OS seed", os.bytes, 1000) in {n: a.n + b.n, e_parse: a.e_parse + b.e_parse, e_sig: a.e_sig + b.e_sig, e_other: a.e_other + b.e_other, same: a.same + b.same, ms: cg_ms(t0)}
+## the civil-date conversion against a day-by-day walk of every day of years 1 .. 9999: {days, ms}
+fn cg_calendar() = let t0 = os_monotonic_ns() in if lct_kat_cal_walk(1, 1, 1, 0 - 719162, 10000, 0) != 0 or lct_days_from_civil(9999, 12, 31) != 2932896 or lct_days_from_civil(1970, 1, 1) != 0 then ctfail("crypto/TLS gate failed: lct_days_from_civil disagrees with the calendar walk over years 1 .. 9999\n") else {days: 3652059, ms: cg_ms(t0)}
+## an X.509 handshake with everything random drawn from the OS on both sides, application data, and the same server
+## against a client whose clock says 2029: {hs_us, hs_wire, app_wire}; 8 checks
+fn cg_handshake_x509() = let chain = [lct_x509v_leaf(), lct_x509v_inter()] in let anchors = [lct_x509_anchor_cert(lct_x509v_root())] in let t0 = os_monotonic_ns() in let c1 = lct_tls13_client_start(lct_tls13_client_config_x509_os(Nil, anchors, lct_kx_now())) in let s1 = lct_tls13_feed_all(lct_tls13_server_start(lct_tls13_server_config_x509_os(lct_kat_hs_seed(), chain, 0)), c1.out) in let c7 = lct_tls13_feed_all(c1, s1.out) in let s2 = lct_tls13_feed_all(s1, c7.out) in let hs_us = cg_us(t0) in let cs = lct_tls13_secrets(c7) in let ss = lct_tls13_secrets(s2) in let l1 = lct_tls13_client_start(lct_tls13_client_config_x509_os(Nil, anchors, 1861920000)) in let l7 = lct_tls13_feed_all(l1, (lct_tls13_feed_all(lct_tls13_server_start(lct_tls13_server_config_x509_os(lct_kat_hs_seed(), chain, 0)), l1.out)).out) in if c7.state != 7 or s2.state != 16 then ctfail("crypto/TLS gate failed: X.509 handshake ended in client state " + lct_tls13_state_name(c7.state) + " (alert " + str(c7.alert) + "), server state " + lct_tls13_state_name(s2.state) + " (alert " + str(s2.alert) + ")\n") else if cs.ok != 1 or ss.ok != 1 or lct_ct_eq(cs.c_ap, ss.c_ap) != 1 or lct_ct_eq(cs.s_ap, ss.s_ap) != 1 or lct_ct_eq(cs.exp_master, ss.exp_master) != 1 then ctfail("crypto/TLS gate failed: X.509 handshake: client and server secrets differ\n") else if lct_bytes_to_hex(lct_tls13_peer_key(c7)) != "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a" then ctfail("crypto/TLS gate failed: X.509 handshake: the authenticated key is not the leaf key of the chain\n") else if l7.state != 99 or l7.alert != 45 or lct_tls13_holds_nothing(l7) != 1 or (lct_tls13_secrets(l7)).ok != 0 then ctfail("crypto/TLS gate failed: X.509 handshake with the client clock in 2029 ended in state " + lct_tls13_state_name(l7.state) + ", alert " + str(l7.alert) + "; expected certificate_expired and nothing held\n") else {hs_us: hs_us, hs_wire: lct_len(lct_concat(c1.out)) + lct_len(lct_concat(s1.out)) + lct_len(lct_concat(c7.out)), app_wire: cg_hs_ping(c7, s2, 0, 4, 0)}
+
+## --- wave 14: empirical constant-time gate, the dudect method (Reparaz, Balasch, Verbauwhede, "Dude, is my code constant
+## time?", DATE 2017) --------------------------------------------------------------------------------------------------
+## For every target, measurements are taken one call at a time. Before each one a PRNG (xorshift32, seeded once per run
+## from the OS through lct_random_bytes_checked) picks the class: 0 = the FIXED input, 1 = a fresh RANDOM input, so the
+## two classes are interleaved at random and see the same machine. The input of BOTH classes is built freshly, by the
+## same code and with the same number of PRNG steps (dd_mix selects fixed or random bytes with a mask), outside the
+## timed region; the timed region is exactly `run(input)` between two cpu_rdtsc() readings (the time-stamp counter:
+## about 15 ns per reading and no system call; os_monotonic_ns costs a system call of ~170 ns here, too coarse).
+## Robustness on a shared host, by design and not by loosening the bound:
+##   * the collector: __lume_gc_count() is read before and after the call and a measurement during which a collection
+##     ran is DISCARDED (class-blind: it is the allocation volume that triggers a collection). The one target whose
+##     single call always spans collections (full X25519, `gcmode` 1) instead forces a collection before every
+##     measurement, so every call starts from the same heap and does the same collector work;
+##   * calibration: the first `cal` valid measurements of a target (both classes mixed) are sorted; their median is
+##     the centre and the dudect percentiles 1 - 0.5^(10 (i + 1) / 8), i = 0 .. 5 (58.0, 82.3, 92.6, 96.9, 98.7,
+##     99.5 %) give six crop thresholds. They are then thrown away;
+##   * cropping: a later measurement above the top threshold is in no test (and is not counted towards the sample
+##     size: the widest crop holds at least `n` measurements of each class); test i uses those at or below threshold i. The thresholds are fixed before the tested measurements exist and do not depend on the class;
+##   * the statistic is Welch's t between the two classes, for each of the six crops; the verdict uses the crop with
+##     the LARGEST |t| (crops with fewer than 100 measurements in a class are not counted). Second-order tests
+##     (dudect's centred-product test) are NOT implemented.
+## Arithmetic (64-bit integers, `+ - *` trap on overflow, so a wrong bound would abort, not corrupt): a measurement
+## enters as d = (cycles - centre) >> sh, where sh is the smallest shift that keeps |d| < 2^15 over the calibrated
+## range (anything outside is dropped and counted). Per crop and class the running sums n, S = sum d, Q = sum d^2
+## are exact: with n <= 2^20, |S| < 2^35 and Q < 2^50. At the end, with mi = S / n and r = S - mi n:
+##   mean * 2^24 = mi 2^24 + r 2^24 / n;  sum (d - mi)^2 = Q - 2 mi S + n mi^2 (exact);
+##   variance * 2^12 = (that * 2^12 - r^2 2^12 / n) / (n - 1);  A * 2^32 = variance 2^12 * 2^20 / n, added over the classes;
+##   t * 1000 = (mean0 - mean1) 2^24 * 1000 / (2^8 sqrt(A 2^32)), the square root being an integer Newton iteration
+##   (on A 2^48 when A 2^32 < 2^46, for precision). cg_dd_selftest checks all of it against hand-computed and
+##   independently computed values (exact rational arithmetic and a 60-digit square root, python3 used as a calculator).
+## Verdict: a constant-time target passes when |t| < 4.5 (the dudect bound). Retry policy, bounded and printed: when
+## the first attempt is not below 4.5 the target is measured twice more, from scratch, and passes only if BOTH new
+## attempts are below 4.5 (2 of 3); every attempt's t is printed. A real leak grows with the sample count and fails
+## all three. The two NEGATIVE CONTROLS (an early-exit comparison, a square-and-multiply that branches on the secret
+## bit) run in the same harness with the same statistic and must give |t| > 10 at the first attempt: a harness that
+## cannot see them fails the gate.
+## To add a target: ONE line in dd_targets() -- dd_t(name, samples per class, calibration count, 0, gcmode, input
+## builder, fn(a) => the call) -- with one of the input builders below (or a new one of the same shape).
+fn dd_rng(x) = let a = bit_and(bit_xor(x, bit_shl(x, 13)), 4294967295) in let b = bit_xor(a, bit_shr(a, 17)) in bit_and(bit_xor(b, bit_shl(b, 5)), 4294967295)
+fn dd_abs(v) = if v < 0 then 0 - v else v
+## one fresh list per call: element i is fs[i] under mask m == 0 and a random value (bits sh.. of the PRNG, masked by
+## vm) under m == -1; the list comes out reversed, which does not matter for a fixed or a random input. {b, x}
+fn dd_mix(fs, m, sh, vm, x, acc) = match fs
+    Nil        => {b: acc, x: x}
+    Cons(f, r) => let y = dd_rng(x) in dd_mix(r, m, sh, vm, y, Cons(bit_xor(f, bit_and(m, bit_xor(f, bit_and(bit_shr(y, sh), vm)))), acc))
+fn dd_xor_at(bs, pos, v, acc) = match bs
+    Nil        => acc
+    Cons(h, t) => dd_xor_at(t, pos - 1, v, Cons(if pos == 0 then bit_xor(h, v) else h, acc))
+## the fixed inputs, built once
+fn dd_fx() = {f32: lct_sha256(lct_str_to_bytes("dudect fixed input a")), f16: lct_take(lct_sha256(lct_str_to_bytes("dudect fixed input c")), 16), nonce: lct_hex_to_bytes("000000090000004a00000000"), l24: lct_ed_l24(), fe: lct_fe_unpack(lct_sha256(lct_str_to_bytes("dudect fixed input d"))), sc: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], nine: Cons(9, lct_zeros(31)), f64: lct_sha512(lct_str_to_bytes("dudect fixed input e"))}
+## input builders: (class, PRNG state, fixed inputs) -> {inp, x}
+## two 32-byte strings: class 0 equal (the fixed string twice), class 1 a random string and a copy differing in one random byte
+fn dd_in_eq(cls, x, fx) = let m = 0 - cls in let a = dd_mix(fx.f32, m, 11, 255, x, Nil) in let y = dd_rng(a.x) in {inp: {a: a.b, b: lct_rev(dd_xor_at(a.b, bit_and(bit_shr(y, 9), 31), bit_and(m, bit_or(bit_and(bit_shr(y, 17), 255), 1)), Nil)), c: 0}, x: y}
+## a: 32 bytes, fixed or random; b: a fixed 12-byte nonce
+fn dd_in_key(cls, x, fx) = let a = dd_mix(fx.f32, 0 - cls, 11, 255, x, Nil) in {inp: {a: a.b, b: fx.nonce, c: 0}, x: a.x}
+## a: 32 bytes and b: 16 bytes, both fixed or both random
+fn dd_in_key_msg(cls, x, fx) = let a = dd_mix(fx.f32, 0 - cls, 11, 255, x, Nil) in let b = dd_mix(fx.f16, 0 - cls, 11, 255, a.x, Nil) in {inp: {a: a.b, b: b.b, c: 0}, x: b.x}
+## a, b: sixteen random 16-bit limbs in both classes; c: the mask, 0 in class 0 and -1 in class 1
+fn dd_in_sel(cls, x, fx) = let a = dd_mix(fx.fe, 0 - 1, 8, 65535, x, Nil) in let b = dd_mix(fx.fe, 0 - 1, 8, 65535, a.x, Nil) in {inp: {a: a.b, b: b.b, c: 0 - cls}, x: b.x}
+## a: eleven limbs below 2^12 (so the value is below L), fixed or random; b: L; c: the incoming bit, 0 or random
+fn dd_in_sc(cls, x, fx) = let a = dd_mix(fx.sc, 0 - cls, 8, 4095, x, Nil) in let y = dd_rng(a.x) in {inp: {a: a.b, b: fx.l24, c: bit_and(cls, bit_shr(y, 20))}, x: y}
+## five random field elements in both classes; bits: the one secret ladder bit, 0 in class 0 and 1 in class 1
+fn dd_in_ladder(cls, x, fx) = let a = dd_mix(fx.fe, 0 - 1, 8, 65535, x, Nil) in let b = dd_mix(fx.fe, 0 - 1, 8, 65535, a.x, Nil) in let c = dd_mix(fx.fe, 0 - 1, 8, 65535, b.x, Nil) in let d = dd_mix(fx.fe, 0 - 1, 8, 65535, c.x, Nil) in let e = dd_mix(fx.fe, 0 - 1, 8, 65535, d.x, Nil) in {inp: {a: a.b, b: b.b, c: c.b, d: d.b, e: e.b, bits: Cons(cls, Nil)}, x: e.x}
+## two random extended points (eight random field elements) in both classes; bits: the secret bit, 0 or 1
+fn dd_in_points(cls, x, fx) = let a = dd_in_ladder(cls, x, fx) in let b = dd_in_ladder(cls, a.x, fx) in let p = a.inp in let q = b.inp in {inp: {a: {x: p.a, y: p.b, z: p.c, t: p.d}, b: {x: q.a, y: q.b, z: q.c, t: q.d}, bits: p.bits}, x: b.x}
+## a: a 32-byte scalar, fixed or random; b: the base point u = 9
+fn dd_in_scalar(cls, x, fx) = let a = dd_mix(fx.f32, 0 - cls, 11, 255, x, Nil) in {inp: {a: a.b, b: fx.nine, c: 0}, x: a.x}
+## a: 64 bytes, fixed or random
+fn dd_in_msg64(cls, x, fx) = let a = dd_mix(fx.f64, 0 - cls, 11, 255, x, Nil) in {inp: {a: a.b, b: Nil, c: 0}, x: a.x}
+## c, d: two 32-bit words, 0 in class 0 and random in class 1; m: the mask 0 / -1 (for scalar kernels)
+fn dd_in_words(cls, x, fx) = let y = dd_rng(x) in let z = dd_rng(y) in {inp: {a: Nil, b: Nil, c: bit_and(0 - cls, y), d: bit_and(0 - cls, z), m: 0 - cls}, x: z}
+## NEGATIVE CONTROL 1: a comparison that returns at the first differing byte
+fn dd_leaky_eq(a, b) = match a
+    Nil        => 1
+    Cons(h, t) => if h != lct_hd(b) then 0 else dd_leaky_eq(t, lct_tl(b))
+## NEGATIVE CONTROL 2: square-and-multiply that multiplies only when the secret exponent bit is set
+fn dd_sqmul(e, i, r) = if i <= 0 then r else let r2 = r * r % 1000003 in dd_sqmul(bit_shr(e, 1), i - 1, if bit_and(e, 1) == 1 then r2 * 7919 % 1000003 else r2)
+## {name, n: measurements per class that must lie inside the widest crop, cal: calibration measurements, ctl: 1 for a negative control, gcmode, prep, run}
+fn dd_t(name, n, cal, ctl, gcmode, prep, run) = {name: name, n: n, cal: cal, ctl: ctl, gcmode: gcmode, prep: prep, run: run}
+fn dd_targets() = [
+    dd_t("lct_ct_eq, 32 bytes (equal vs one differing byte)", 100000, 4000, 0, 0, dd_in_eq, fn(a) => lct_ct_eq(a.a, a.b)),
+    dd_t("ChaCha20 block (fixed vs random key)", 100000, 4000, 0, 0, dd_in_key, fn(a) => lct_chacha20_block(a.a, 1, a.b)),
+    dd_t("Poly1305 one-block MAC (fixed vs random key and message)", 100000, 4000, 0, 0, dd_in_key_msg, fn(a) => lct_poly1305(a.a, a.b)),
+    dd_t("lct_fe_sel (mask 0 vs -1, random limbs)", 100000, 4000, 0, 0, dd_in_sel, fn(a) => lct_fe_sel(a.a, a.b, a.c)),
+    dd_t("lct_sc_step, scalar reduction step mod L (fixed vs random scalar and bit)", 100000, 4000, 0, 0, dd_in_sc, fn(a) => lct_sc_step(a.a, a.c, a.b)),
+    dd_t("scalar clamp + bit expansion (fixed vs random scalar)", 100000, 4000, 0, 0, dd_in_scalar, fn(a) => lct_bits_msb(lct_ed_clamp_l(a.a, 0), Nil)),
+    dd_t("X25519 ladder step (secret bit 0 vs 1, random field elements)", 100000, 4000, 0, 0, dd_in_ladder, fn(a) => lct_x25519_loop(a.bits, a.e, a.a, a.b, a.c, a.d)),
+    dd_t("Ed25519 ladder step (secret bit 0 vs 1, random points)", 100000, 4000, 0, 0, dd_in_points, fn(a) => lct_pt_mul_loop(a.bits, a.a, a.b)),
+    dd_t("SHA-256, 64 bytes (fixed vs random)", 25000, 4000, 0, 0, dd_in_msg64, fn(a) => lct_sha256(a.a)),
+    dd_t("SHA-512, 64 bytes (fixed vs random)", 25000, 4000, 0, 0, dd_in_msg64, fn(a) => lct_sha512(a.a)),
+    dd_t("lct_x25519, whole scalar multiplication (fixed vs random scalar)", 1000, 400, 0, 1, dd_in_scalar, fn(a) => lct_x25519(a.a, a.b)),
+    dd_t("NEGATIVE CONTROL early-exit compare", 100000, 4000, 1, 0, dd_in_eq, fn(a) => dd_leaky_eq(a.a, a.b)),
+    dd_t("NEGATIVE CONTROL secret-branching square-and-multiply", 100000, 4000, 1, 0, dd_in_words, fn(a) => dd_sqmul(bit_and(a.c, 16777215), 24, 3))]
+## one measurement: {cls, dt: cycles, gc: collections during the call, x}
+fn dd_measure(prep, run, gcmode, fx, x) = let y = dd_rng(x) in let cls = bit_and(bit_shr(y, 16), 1) in let p = prep(cls, y, fx) in let z = if gcmode == 1 then __lume_gc_collect() else 0 in let g0 = __lume_gc_count() in let t0 = cpu_rdtsc() in let r = run(p.inp) in let t1 = cpu_rdtsc() in let g1 = __lume_gc_count() in {cls: cls, dt: t1 - t0, gc: if gcmode == 1 then 0 else g1 - g0, x: p.x}
+fn dd_merge1(x, r, b, acc) = match b
+    Nil        => lct_rev_acc(acc, Cons(x, r))
+    Cons(y, s) => if x <= y then dd_merge(r, b, Cons(x, acc)) else dd_merge1(x, r, s, Cons(y, acc))
+fn dd_merge(a, b, acc) = match a
+    Nil        => lct_rev_acc(acc, b)
+    Cons(x, r) => dd_merge1(x, r, b, acc)
+fn dd_sort(xs, n) = if n <= 1 then xs else let h = n / 2 in let s = lct_split(xs, h) in dd_merge(dd_sort(s.a, h), dd_sort(s.b, n - h), Nil)
+## calibration: k valid measurements (no collection inside, positive duration)
+fn dd_cal(t, fx, x, k, acc, tries) = if k <= 0 or tries <= 0 then {xs: acc, x: x} else let m = dd_measure(t.prep, t.run, t.gcmode, fx, x) in if m.gc != 0 or m.dt <= 0 then dd_cal(t, fx, m.x, k, acc, tries - 1) else dd_cal(t, fx, m.x, k - 1, Cons(m.dt, acc), tries - 1)
+## the crop percentiles, per mille: 1 - 0.5^(10 (i + 1) / 8) for i = 0 .. 5
+fn dd_pcts() = [580, 823, 926, 969, 987, 995]
+fn dd_thrs(sorted, n, ps) = match ps
+    Nil        => Nil
+    Cons(p, r) => Cons(lct_nth(sorted, p * n / 1000), dd_thrs(sorted, n, r))
+fn dd_last(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if lct_isnil(t) == 1 then h else dd_last(t)
+fn dd_shift(span, sh) = if bit_shr(span, sh) < 32768 then sh else dd_shift(span, sh + 1)
+## running sums of one bin: class 0 (n0, s0, q0) and class 1 (n1, s1, q1)
+fn dd_bin0() = {n0: 0, s0: 0, q0: 0, n1: 0, s1: 0, q1: 0}
+fn dd_bin_add(b, d, cls) = if cls == 0 then {n0: b.n0 + 1, s0: b.s0 + d, q0: b.q0 + d * d, n1: b.n1, s1: b.s1, q1: b.q1} else {n0: b.n0, s0: b.s0, q0: b.q0, n1: b.n1 + 1, s1: b.s1 + d, q1: b.q1 + d * d}
+## bin i holds the measurements in (threshold i-1, threshold i]; crop i is the sum of bins 0 .. i (dd_cum)
+fn dd_bins_add(bins, thrs, dt, d, cls) = match bins
+    Nil        => Nil
+    Cons(b, r) => if dt <= lct_hd(thrs) then Cons(dd_bin_add(b, d, cls), r) else Cons(b, dd_bins_add(r, lct_tl(thrs), dt, d, cls))
+fn dd_cum(bins, acc, out) = match bins
+    Nil        => lct_rev(out)
+    Cons(b, r) => let c = {n0: acc.n0 + b.n0, s0: acc.s0 + b.s0, q0: acc.q0 + b.q0, n1: acc.n1 + b.n1, s1: acc.s1 + b.s1, q1: acc.q1 + b.q1} in dd_cum(r, c, Cons(c, out))
+fn dd_isqrt_it(n, x) = let y = (x + n / x) / 2 in if y >= x then x else dd_isqrt_it(n, y)
+## floor(sqrt(n)) for 0 <= n < 2^63 (Newton from above)
+fn dd_isqrt(n) = if n <= 0 then 0 else dd_isqrt_it(n, 3037000500)
+## {mf: mean * 2^24, af: variance / n * 2^32} of n >= 2 values with sum s and sum of squares q
+fn dd_moments(n, s, q) = let mi = s / n in let r = s - mi * n in let q2 = q - 2 * mi * s + n * mi * mi in let vf = q2 * 4096 - r * r * 4096 / n in let varf = vf / (n - 1) in {mf: mi * 16777216 + r * 16777216 / n, af: varf * 1048576 / n}
+fn dd_t_milli2(df, af) = if af <= 0 then (if df == 0 then 0 else if df > 0 then 999999999 else 0 - 999999999) else if af < 70368744177664 then df * 1000 / dd_isqrt(af * 65536) else df * 1000 / (256 * dd_isqrt(af))
+## Welch's t * 1000 (truncated) between the two classes of one crop; 0 when a class has fewer than 2 values
+fn dd_t_milli(b) = if b.n0 < 2 or b.n1 < 2 then 0 else let a = dd_moments(b.n0, b.s0, b.q0) in let c = dd_moments(b.n1, b.s1, b.q1) in dd_t_milli2(a.mf - c.mf, a.af + c.af)
+## the t of the crop with the largest |t| among the crops with at least 100 values per class: {t, used}
+fn dd_maxt(cs, best, used) = match cs
+    Nil        => {t: best, used: used}
+    Cons(c, r) => if c.n0 < 100 or c.n1 < 100 then dd_maxt(r, best, used) else let tm = dd_t_milli(c) in dd_maxt(r, if dd_abs(tm) > dd_abs(best) then tm else best, used + 1)
+fn dd_fmt(tm) = let a = dd_abs(tm) in (if tm < 0 then "-" else "") + str(a / 1000) + "." + str(a / 100 % 10) + str(a / 10 % 10) + str(a % 10)
+fn dd_show(cs) = match cs
+    Nil        => ""
+    Cons(c, r) => " " + dd_fmt(dd_t_milli(c)) + dd_show(r)
+fn dd_st0(x) = {x: x, bins: [dd_bin0(), dd_bin0(), dd_bin0(), dd_bin0(), dd_bin0(), dd_bin0()], c0: 0, c1: 0, gcd: 0, out: 0, left: 0}
+## until both classes have t.n measurements inside the widest crop (or the budget of 40 t.n measurements runs out)
+fn dd_loop(t, fx, st, thrs, center, top, sh, left) = if (st.c0 >= t.n and st.c1 >= t.n) or left <= 0 then {st with left: left} else let m = dd_measure(t.prep, t.run, t.gcmode, fx, st.x) in let d = bit_shr(m.dt - center, sh) in if m.gc != 0 or m.dt <= 0 then dd_loop(t, fx, {st with x: m.x, gcd: st.gcd + 1}, thrs, center, top, sh, left - 1) else if m.dt > top or d <= 0 - 32768 or d >= 32768 then dd_loop(t, fx, {st with x: m.x, out: st.out + 1}, thrs, center, top, sh, left - 1) else dd_loop(t, fx, {st with x: m.x, bins: dd_bins_add(st.bins, thrs, m.dt, d, m.cls), c0: st.c0 + 1 - m.cls, c1: st.c1 + m.cls}, thrs, center, top, sh, left - 1)
+fn dd_attempt3(t, st, cs, mt, center, top, sh, ms) = if st.left <= 0 or mt.used == 0 then ctfail("crypto/TLS gate failed: dudect '" + t.name + "': could not collect " + str(t.n) + " measurements per class inside the crops (" + str(st.c0) + " / " + str(st.c1) + ", " + str(st.gcd) + " discarded for a collection)\n") else {x: st.x, t: mt.t, c0: st.c0, c1: st.c1, info: str(st.c0) + "/" + str(st.c1) + " measurements per class in the widest crop, t = " + dd_fmt(mt.t) + " (per crop:" + dd_show(cs) + "); median " + str(center) + " cycles, top crop " + str(top) + ", unit 2^" + str(sh) + " cycles; discarded: " + str(st.gcd) + " for a collection, " + str(st.out) + " above the top crop; " + str(ms) + " ms"}
+fn dd_attempt2(t, fx, x, sorted, n, t0) = let thrs = dd_thrs(sorted, n, dd_pcts()) in let center = lct_nth(sorted, n / 2) in let lo = lct_hd(sorted) in let top = dd_last(thrs) in let sh = dd_shift(top - lo + center - lo, 0) in let st = dd_loop(t, fx, dd_st0(x), thrs, center, top, sh, t.n * 40) in let cs = dd_cum(st.bins, dd_bin0(), Nil) in dd_attempt3(t, st, cs, dd_maxt(cs, 0, 0), center, top, sh, cg_ms(t0))
+## calibrate, measure, test: {x, t, c0, c1, info}
+fn dd_attempt(t, fx, x) = let t0 = os_monotonic_ns() in let cal = dd_cal(t, fx, x, t.cal, Nil, t.cal * 40) in let n = lct_len(cal.xs) in if n < t.cal or t.n > 900000 then ctfail("crypto/TLS gate failed: dudect '" + t.name + "': calibration collected " + str(n) + " of " + str(t.cal) + " measurements\n") else dd_attempt2(t, fx, cal.x, dd_sort(cal.xs, n), n, t0)
+fn dd_res(x, log, sum, t, ctl) = {x: x, log: log, sum: sum, t: t, ctl: ctl}
+fn dd_judge2(t, fx, a1, l1) = let a2 = dd_attempt(t, fx, a1.x) in let l2 = l1 + "dudect: " + t.name + ": attempt 2: " + a2.info + "\n" in let a3 = dd_attempt(t, fx, a2.x) in let l3 = l2 + "dudect: " + t.name + ": attempt 3: " + a3.info + "\n" in if dd_abs(a2.t) < 4500 and dd_abs(a3.t) < 4500 then dd_res(a3.x, l3, t.name + ": " + str(a3.c0) + "/" + str(a3.c1) + " t=" + dd_fmt(a1.t) + "," + dd_fmt(a2.t) + "," + dd_fmt(a3.t) + " (2 of 3 attempts below 4.5)", a3.t, 0) else ctfail(l3 + "crypto/TLS gate failed: dudect: '" + t.name + "' is NOT constant time at this resolution: t = " + dd_fmt(a1.t) + ", " + dd_fmt(a2.t) + ", " + dd_fmt(a3.t) + " over three attempts (|t| < 4.5 required in the first, or in both of the two others)\n")
+fn dd_judge1(t, fx, a1, l1) = if t.ctl == 1 then (if dd_abs(a1.t) > 10000 then dd_res(a1.x, l1, t.name + ": " + str(a1.c0) + "/" + str(a1.c1) + " t=" + dd_fmt(a1.t), a1.t, 1) else ctfail(l1 + "crypto/TLS gate failed: dudect: the negative control '" + t.name + "' was NOT detected: |t| = " + dd_fmt(dd_abs(a1.t)) + ", more than 10 required. A harness that cannot see a known leak proves nothing.\n")) else if dd_abs(a1.t) < 4500 then dd_res(a1.x, l1, t.name + ": " + str(a1.c0) + "/" + str(a1.c1) + " t=" + dd_fmt(a1.t), a1.t, 0) else dd_judge2(t, fx, a1, l1)
+fn dd_judge(t, fx, x, log) = let a1 = dd_attempt(t, fx, x) in dd_judge1(t, fx, a1, log + "dudect: " + t.name + ": attempt 1: " + a1.info + "\n")
+## every target in turn: {log, sums, n, nctl}
+fn dd_all(ts, fx, x, log, sums, n, nctl) = match ts
+    Nil        => {log: log, sums: sums, n: n, nctl: nctl}
+    Cons(t, r) => let o = dd_judge(t, fx, x, log) in dd_all(r, fx, o.x, o.log, sums + (if sums == "" then "" else "; ") + o.sum, n + 1, nctl + o.ctl)
+fn dd_seed() = let r = lct_random_bytes_checked(4) in let v = lct_nth(r.bytes, 0) + lct_nth(r.bytes, 1) * 256 + lct_nth(r.bytes, 2) * 65536 + lct_nth(r.bytes, 3) * 16777216 in if r.ok == 0 then ctfail("crypto/TLS gate failed: the OS entropy source failed its health check (" + lct_entropy_err_name(r.err) + ")\n") else if v == 0 then 1 else v
+## the statistic against known values: {n: checks}
+fn dd_acc(xs, cls, b) = match xs
+    Nil        => b
+    Cons(h, t) => dd_acc(t, cls, dd_bin_add(b, h, cls))
+fn dd_tm(c0, c1) = dd_t_milli(dd_acc(c1, 1, dd_acc(c0, 0, dd_bin0())))
+fn dd_gen_q(i, n, a, b, m, off, acc) = if i >= n then acc else dd_gen_q(i + 1, n, a, b, m, off, Cons((i * i * a + b * i) % m + off, acc))
+fn dd_gen_alt(i, n, k, acc) = if i >= n then acc else dd_gen_alt(i + 1, n, k, Cons(if i % k == 0 then 32767 else 0 - 32767, acc))
+fn dd_near(k, name, got, want, tol) = if dd_abs(got - want) <= tol then k + 1 else ctfail("crypto/TLS gate failed: dudect statistic self-test '" + name + "': got " + str(got) + ", expected " + str(want) + " (tolerance " + str(tol) + ")\n")
+fn dd_feed(bins, thrs, xs) = match xs
+    Nil        => bins
+    Cons(m, r) => dd_feed(dd_bins_add(bins, thrs, m.dt, m.dt, m.cls), thrs, r)
+fn cg_dd_selftest() = let k1 = dd_near(0, "hand-computed: (1,2,3,4,5) vs (2,4,6,8,10): means 3 and 6, variances 2.5 and 10, t = -3 / sqrt(2.5) = -1.8974", dd_tm([1, 2, 3, 4, 5], [2, 4, 6, 8, 10]), 0 - 1897, 1) in let k2 = dd_near(k1, "negative values, (-5,-3,-4,-6) vs (-1,-2,-1,-3): t = -3.4219", dd_tm([0 - 5, 0 - 3, 0 - 4, 0 - 6], [0 - 1, 0 - 2, 0 - 1, 0 - 3]), 0 - 3421, 1) in let k3 = dd_near(k2, "1000 + 1000 quadratic-residue values: t = -2.5952", dd_tm(dd_gen_q(0, 1000, 7, 13, 1000, 0 - 500, Nil), dd_gen_q(0, 1000, 11, 5, 1003, 0 - 480, Nil)), 0 - 2595, 1) in let k4 = dd_near(k3, "100000 + 100000 values of +-32767 (the extreme magnitude): t = 76.6929", dd_tm(dd_gen_alt(0, 100000, 2, Nil), dd_gen_alt(0, 100000, 3, Nil)), 76692, 8) in let k5 = dd_near(k4, "unequal sizes, 7 vs 3 values: t = -4.1100", dd_tm([10, 12, 9, 11, 13, 10, 8], [14, 15, 13]), 0 - 4109, 1) in let k6 = dd_near(k5, "5000 vs 4000 values: t = -1.6587", dd_tm(dd_gen_q(0, 5000, 0, 37, 101, 0, Nil), dd_gen_q(0, 4000, 0, 41, 103, 0, Nil)), 0 - 1658, 1) in let k7 = dd_near(k6, "identical classes: t = 0", dd_tm([5, 6, 7, 8], [8, 7, 6, 5]), 0, 0) in let k8 = dd_near(k7, "zero variance, equal means: t = 0", dd_tm([5, 5, 5], [5, 5, 5]), 0, 0) in let k9 = dd_near(k8, "zero variance, different means: saturated", dd_tm([5, 5, 5], [6, 6, 6]), 0 - 999999999, 0) in let k10 = dd_near(k9, "a class with one value gives no statistic", dd_tm([5], [6, 7, 8]), 0, 0) in let k11 = dd_near(k10, "isqrt", dd_isqrt(0) + dd_isqrt(1) * 10 + dd_isqrt(15) * 100 + dd_isqrt(16) * 1000 + dd_isqrt(4611686018427387904) + dd_isqrt(4611686022722355199), 4310 + 2147483648 + 2147483648, 0) in let cs = dd_cum(dd_feed([dd_bin0(), dd_bin0(), dd_bin0()], [10, 20, 30], [{dt: 5, cls: 0}, {dt: 15, cls: 1}, {dt: 25, cls: 0}, {dt: 35, cls: 1}, {dt: 10, cls: 1}]), dd_bin0(), Nil) in let k12 = dd_near(k11, "crops are cumulative and the tail above the top threshold is dropped", (lct_hd(cs)).n0 * 100000 + (lct_hd(cs)).n1 * 10000 + (lct_nth(cs, 1)).n0 * 1000 + (lct_nth(cs, 1)).n1 * 100 + (lct_nth(cs, 2)).n0 * 10 + (lct_nth(cs, 2)).n1, 111222, 0) in let k13 = dd_near(k12, "crop sums", (lct_nth(cs, 2)).s0 * 1000 + (lct_nth(cs, 2)).s1, 30025, 0) in let srt = dd_sort(dd_gen_q(0, 1000, 0, 7, 1000, 0, Nil), 1000) in let th = dd_thrs(srt, 1000, dd_pcts()) in let k14 = dd_near(k13, "sort and percentile thresholds of a permutation of 0 .. 999", lct_hd(srt) + lct_nth(srt, 999) * 1000 + lct_hd(th) * 1000000 + dd_last(th) * 1000000000, 995580999000, 0) in let k15 = dd_near(k14, "the PRNG is the xorshift32 of Marsaglia (13, 17, 5): 1 -> 270369 -> 67634689", dd_rng(1) + dd_rng(dd_rng(1)), 270369 + 67634689, 0) in dd_near(k15, "the largest |t| over the crops, crops with fewer than 100 values ignored", (dd_maxt([{n0: 5, s0: 0, q0: 0, n1: 5, s1: 500, q1: 60000}, dd_acc(dd_gen_q(0, 200, 0, 7, 50, 0, Nil), 1, dd_acc(dd_gen_q(0, 200, 0, 7, 50, 1, Nil), 0, dd_bin0()))], 0, 0)).used, 1, 0)
+## {log, sums, n, nctl, self, ms}
+fn cg_dudect() = let t0 = os_monotonic_ns() in let self = cg_dd_selftest() in let r = dd_all(dd_targets(), dd_fx(), dd_seed(), "", "", 0, 0) in if r.nctl != 2 or r.n < 13 then ctfail(r.log + "crypto/TLS gate failed: dudect ran " + str(r.n) + " targets with " + str(r.nctl) + " negative controls; 13 and 2 expected\n") else {log: r.log, sums: r.sums, n: r.n, nctl: r.nctl, self: self, ms: cg_ms(t0)}
+
 fn cg_rate(bytes, us) = if us <= 0 then "inf" else let r = bytes * 100000000 / us / 1048576 in str(r / 100) + "." + str(r / 10 % 10) + str(r % 10)
 fn cg_msf(us) = str(us / 1000) + "." + str(us / 100 % 10)
-fn cg_main(input) = let root = cg_get_at(input, "root", 0) in if root == "" then ctfail("crypto/TLS gate requires @root\n") else let t0 = os_monotonic_ns() in let z = cg_self_check() in let sa = cg_kats_hs(cg_kats()) in let kat_ms = cg_ms(t0) in let st = cg_x25519_1000(sa) in let hs = cg_handshake() in let sha_us = cg_sha_million() in let ae = cg_aead_bulk() in let ed = cg_ed_bench() in let t1 = os_monotonic_ns() in let wire = cg_tls_session() in let tls_ms = cg_ms(t1) in "OK: crypto/TLS gate: " + str(st.checks + 299) + " checks passed (" + str(st.checks) + " official-vector and rejection checks in " + str(st.groups) + " groups, " + str(kat_ms) + " ms + " + str(st.ms) + " ms for the X25519 1,000-iteration vector; 299 bulk, handshake, timing and self checks) [SHA-256/512 FIPS 180-4, HMAC RFC 4231, HKDF RFC 5869, ChaCha20-Poly1305 RFC 8439, Ed25519 RFC 8032, X25519 RFC 7748, TLS 1.3 RFC 8448]; TLS 1.3 handshake state machine: " + str(hs.steps) + " transitions, " + str(sa.rej) + " fail-closed rejections; 1-RTT x25519 + Ed25519 (pinned raw public key, no X.509) handshake " + str(hs.hs_wire) + " wire bytes in " + cg_msf(hs.hs_us) + " ms, then 32 application records / " + str(hs.app_wire) + " wire bytes through the connected states; SHA-256 1 MB in " + cg_msf(sha_us) + " ms = " + cg_rate(1000000, sha_us) + " MiB/s; ChaCha20-Poly1305 256 KiB seal " + cg_msf(ae.seal_us) + " ms = " + cg_rate(262144, ae.seal_us) + " MiB/s, open " + cg_msf(ae.open_us) + " ms = " + cg_rate(262144, ae.open_us) + " MiB/s; Ed25519 sign " + cg_msf(ed.sign_us) + " ms, verify " + cg_msf(ed.verify_us) + " ms; TLS 1.3 session 128 records / " + str(wire) + " wire bytes both directions in " + str(tls_ms) + " ms; total " + str(cg_ms(t0)) + " ms; zero C, zero OpenSSL"
+fn cg_main(input) = let root = cg_get_at(input, "root", 0) in if root == "" then ctfail("crypto/TLS gate requires @root\n") else let t0 = os_monotonic_ns() in let z = cg_self_check() in let sa = cg_kats_hs(cg_kats()) in let sb = cg_kats_w14(sa) in let kat_ms = cg_ms(t0) in let st = cg_x25519_1000(sb) in let hs = cg_handshake() in let hx = cg_handshake_x509() in let xf = cg_x509_fuzz() in let cal = cg_calendar() in let sha_us = cg_sha_million() in let ae = cg_aead_bulk() in let ed = cg_ed_bench() in let t1 = os_monotonic_ns() in let wire = cg_tls_session() in let tls_ms = cg_ms(t1) in let dd = cg_dudect() in let extra = 299 + 8 + xf.n + 1 + dd.n + dd.self in dd.log + "OK: crypto/TLS gate: " + str(st.checks + extra) + " checks passed (" + str(st.checks) + " official-vector and rejection checks in " + str(st.groups) + " groups, " + str(kat_ms) + " ms + " + str(st.ms) + " ms for the X25519 1,000-iteration vector; " + str(extra) + " bulk, handshake, fuzz, timing and self checks) [SHA-256/512 FIPS 180-4, HMAC RFC 4231, HKDF RFC 5869, ChaCha20-Poly1305 RFC 8439, Ed25519 RFC 8032, X25519 RFC 7748, TLS 1.3 RFC 8448, X.509 RFC 5280 / RFC 8410]; entropy: /dev/urandom with a fail-closed health check (SP 800-90B 4.4.1 / 4.4.2 cutoffs; it detects a dead source, it does not certify entropy), weak caller-supplied randoms and keys refused; X.509 Ed25519 path validation: RFC 8410 10.2 and OpenSSL-made chains, " + str(xf.n) + " corrupted chains all refused (" + str(xf.e_parse) + " by the DER parser, " + str(xf.e_sig) + " by a signature, " + str(xf.e_other) + " by a path rule) in " + str(xf.ms) + " ms, civil dates equal to a day-by-day calendar walk on all " + str(cal.days) + " days of years 1..9999 (" + str(cal.ms) + " ms), X.509 1-RTT handshake with OS-drawn randoms " + str(hx.hs_wire) + " wire bytes in " + cg_msf(hx.hs_us) + " ms and refused with certificate_expired by a client in 2029; TLS 1.3 handshake state machine: " + str(hs.steps) + " transitions, " + str(sa.rej) + " fail-closed rejections; 1-RTT x25519 + Ed25519 (pinned raw public key, no X.509) handshake " + str(hs.hs_wire) + " wire bytes in " + cg_msf(hs.hs_us) + " ms, then 32 application records / " + str(hs.app_wire) + " wire bytes through the connected states; SHA-256 1 MB in " + cg_msf(sha_us) + " ms = " + cg_rate(1000000, sha_us) + " MiB/s; ChaCha20-Poly1305 256 KiB seal " + cg_msf(ae.seal_us) + " ms = " + cg_rate(262144, ae.seal_us) + " MiB/s, open " + cg_msf(ae.open_us) + " ms = " + cg_rate(262144, ae.open_us) + " MiB/s; Ed25519 sign " + cg_msf(ed.sign_us) + " ms, verify " + cg_msf(ed.verify_us) + " ms; TLS 1.3 session 128 records / " + str(wire) + " wire bytes both directions in " + str(tls_ms) + " ms; dudect constant-time gate (Welch t on cycle counts, " + str(dd.n - dd.nctl) + " targets must stay below |t| = 4.5, " + str(dd.nctl) + " negative controls must exceed 10, " + str(dd.self) + " statistic self-tests; samples per class fixed/random, " + str(dd.ms) + " ms): " + dd.sums + "; total " + str(cg_ms(t0)) + " ms; zero C, zero OpenSSL at run time (OpenSSL only produced the X.509 test vectors, offline)"
 
 print cg_main(readall())
