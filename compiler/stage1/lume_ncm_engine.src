@@ -214,11 +214,21 @@ law ncm_sudoku4_unit_sum_invariant(c1: int, c2: int, c3: int) =
     (c1 + c2 + c3 + ncm_sudoku4_solve_cell(c1, c2, c3)) == 10
   else 1 == 1
 
+## Four pairwise distinct values of `1..4` are a permutation of `{1, 2, 3, 4}`, so their sum is 10
+## (`law ncm_sudoku4_valid_unit_sums_to_10`). The earlier form also tested `(a + b + c + d) == 10` in the same
+## conjunction; on the `requires` domain (which traps first outside it) that made every one of the seven conditions
+## implied by the other six, so none could ever decide the outcome (seven dead MC/DC outcomes). The six disequalities
+## alone give the same result on all 256 inputs of the domain, and each of them can decide.
 @bound(cycles: 48)
 fn ncm_sudoku4_unit_valid(a: int, b: int, c: int, d: int) -> int
   requires a >= 1 and a <= 4 and b >= 1 and b <= 4 and c >= 1 and c <= 4 and d >= 1 and d <= 4
   ensures result >= 0 and result <= 1
-= if (a + b + c + d) == 10 and a != b and a != c and a != d and b != c and b != d and c != d then 1 else 0
+= if a != b and a != c and a != d and b != c and b != d and c != d then 1 else 0
+
+law ncm_sudoku4_valid_unit_sums_to_10(a: int, b: int, c: int, d: int) =
+  if a >= 1 and a <= 4 and b >= 1 and b <= 4 and c >= 1 and c <= 4 and d >= 1 and d <= 4 then
+    (a + b + c + d) * ncm_sudoku4_unit_valid(a, b, c, d) == 10 * ncm_sudoku4_unit_valid(a, b, c, d)
+  else 1 == 1
 
 fn ncm_sudoku4_coarse_to_fine_solve() =
     ## Partial board with global row/col/2x2 box constraints:
@@ -247,5 +257,16 @@ fn test_ncm_msrvq_multiscale_residual_quantization() = let enc = ncm_msrvq_encod
 fn test_ncm_tied_codebook_head_and_block_diagonal_mask() = let l_opt = ncm_tied_codebook_logit_2d(10, 20, 10, 20) in let l_sub = ncm_tied_codebook_logit_2d(10, 20, 8, 17) in let m_pref_ok = ncm_attn_mask_allow(1, 1, 0, 0, 5, 3) in let m_pref_blk = ncm_attn_mask_allow(1, 1, 0, 0, 3, 5) in let m_same_bidir1 = ncm_attn_mask_allow(0, 0, 2, 2, 1, 7) in let m_same_bidir2 = ncm_attn_mask_allow(0, 0, 2, 2, 7, 1) in let m_coarse_ok = ncm_attn_mask_allow(0, 0, 3, 1, 2, 6) in let m_future_blk = ncm_attn_mask_allow(0, 0, 1, 3, 2, 6) in let rope0 = ncm_level_reset_rope_pos(12, 12) in let rope3 = ncm_level_reset_rope_pos(15, 12) in l_opt == 500 and l_opt > l_sub and m_pref_ok == 1 and m_pref_blk == 0 and m_same_bidir1 == 1 and m_same_bidir2 == 1 and m_coarse_ok == 1 and m_future_blk == 0 and rope0 == 0 and rope3 == 3
 
 fn test_ncm_cfg_blending_and_global_sudoku_solver() = let cfg_10 = ncm_cfg_blend_logit(100, 140, 10) in let cfg_15 = ncm_cfg_blend_logit(100, 140, 15) in let saved = ncm_parallel_tokens_saved(64, 5) in let sud = ncm_sudoku4_coarse_to_fine_solve() in cfg_10 == 1400 and cfg_15 == 1600 and saved == 59 and sud.solved_r0c3 == 4 and sud.solved_r1c3 == 2 and sud.solved_r2c3 == 3 and sud.all_constraints_satisfied == 1
+
+## `ncm_sudoku4_unit_valid`: permutations are valid; one test per pair with exactly that pair equal (each disequality
+## decides alone); and the multisets that sum to 10 without being a permutation, which the removed sum test accepted
+## on its own, are still rejected.
+fn test_ncm_sudoku4_unit_valid_each_pair_and_sum10_non_permutations() = ncm_sudoku4_unit_valid(1, 2, 3, 4) == 1 and ncm_sudoku4_unit_valid(4, 3, 2, 1) == 1 and ncm_sudoku4_unit_valid(2, 4, 1, 3) == 1 and ncm_sudoku4_unit_valid(1, 1, 2, 3) == 0 and ncm_sudoku4_unit_valid(1, 2, 1, 3) == 0 and ncm_sudoku4_unit_valid(1, 2, 3, 1) == 0 and ncm_sudoku4_unit_valid(2, 1, 1, 3) == 0 and ncm_sudoku4_unit_valid(2, 1, 3, 1) == 0 and ncm_sudoku4_unit_valid(2, 3, 1, 1) == 0 and ncm_sudoku4_unit_valid(2, 2, 3, 3) == 0 and ncm_sudoku4_unit_valid(1, 4, 1, 4) == 0 and ncm_sudoku4_unit_valid(4, 4, 1, 1) == 0 and ncm_sudoku4_unit_valid(3, 3, 3, 1) == 0 and ncm_sudoku4_unit_valid(1, 1, 1, 1) == 0
+
+## Untyped test helper (not a kernel): on all 256 inputs of the `requires` domain (`i` enumerates them in base 4)
+## `ncm_sudoku4_unit_valid` equals its former definition, which also tested the sum.
+fn ncm_sudoku4_equiv_sweep(i) = if i >= 256 then 1 else let a = i % 4 + 1 in let b = i / 4 % 4 + 1 in let c = i / 16 % 4 + 1 in let d = i / 64 % 4 + 1 in if ncm_sudoku4_unit_valid(a, b, c, d) == (if (a + b + c + d) == 10 and a != b and a != c and a != d and b != c and b != d and c != d then 1 else 0) then ncm_sudoku4_equiv_sweep(i + 1) else 0
+
+fn test_ncm_sudoku4_unit_valid_equals_former_definition_on_whole_domain() = ncm_sudoku4_equiv_sweep(0) == 1
 
 fn test_ncm_full_pipeline_bridge_egm_and_reversa() = let rep = ncm_run_full_pipeline("compiler/stage1/lume_egm_engine.src", "") in egm_count_substr(rep, "\"engine\":\"NCM-Lume-Next-Concept-Modeling-v1.0\"") >= 1 and egm_count_substr(rep, "\"integrated_with_llm_forge_egm_reversa\":true") >= 1 and egm_count_substr(rep, "\"lumeputer_lumepu_in_weights_bridge\":true") >= 1 and egm_count_substr(rep, "\"exact_reconstruction\":true") >= 1 and egm_count_substr(rep, "\"all_global_constraints_satisfied\":true") >= 1 and ncm_lumepu_vx_in_weights_layer_count(24, 1) == 37 and ncm_lumepu_vx_in_weights_layer_count(24, 0) == 35
