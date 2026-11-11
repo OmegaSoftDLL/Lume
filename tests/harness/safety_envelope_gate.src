@@ -1,6 +1,10 @@
 ## safety_envelope_gate.src -- gate for compiler/stage1/lsafety_envelope.src (the dissimilar-redundancy lockstep envelope).
 ##   printf '@root %s\n' "$PWD" | build/bin/safety_envelope_gate
-## Needs build/bin/lumec, build/bin/lasm and build/bin/lsafety_envelope. Scratch: <root>/build/safety-envelope-gate.
+## Optional: `@campaign_batches <n>` (default 12) and `@campaign_kernels <n>` (default 100) size the differential
+## campaign (2 seeds x batches x kernels random kernels, 5 vectors each).
+## Needs build/bin/lumec, build/bin/lasm, build/bin/lume_driver and build/bin/lsafety_envelope (built by `./lume build`,
+## which leaves the bundle the binary was compiled from beside it). Scratch: <root>/build/safety-envelope-gate.
+## No emulator is started here (the QEMU runs of the split bundle are in tests/harness/multi_arch_gate.src).
 ##
 ## What is tested, and how it would fail if the envelope were theater:
 ##   1. The RV32IM interpreter runs hand-written programs whose instruction words were produced by an independent
@@ -8,16 +12,33 @@
 ##      were derived by hand from the RISC-V specification -- including x0, PC alignment, ROM/RAM bounds, illegal
 ##      instructions, the DIV/REM/MULH corner cases and the cycle watchdog. The channel-B compiler's encoders are
 ##      compared against the same assembler's output.
-##   2. Positive lockstep through the real CLI: kernels written here (if/else, let, nested and recursive calls, division,
-##      contracts, bit operations) and every self-contained `-> int / pure` kernel with a `@bound` that can be extracted
-##      textually from compiler/stage1/lchameleon.src. Every vector must commit and the committed value must equal a
-##      third evaluation of the lowered AST done by this gate (sg_ev), so two channels agreeing on a wrong value fail.
-##   3. Fault injection. A fault is counted as a trip, as masked-benign (the run committed the CORRECT value: the flipped
-##      bit was dead) or as a false negative (a WRONG value was committed). One false negative fails the gate.
+##   2. Independence (section 6): the tool's bundle defines no function of the compiler; the scanner is shown to
+##      find the compiler in this gate's own bundle. The event-log hash is checked against FIPS 180-4 vectors.
+##   3. Conformance (section 7): the clean-room front end accepts every `-> int / pure` kernel of critical_kernels,
+##      lchameleon and lstd (one named exception that calls a SIMD builtin).
+##   4. Positive lockstep through the real CLI: the critical kernels, kernels written here (if/else, let, nested and
+##      recursive calls, division, contracts, bit operations) and every self-contained `-> int / pure` kernel with a
+##      `@bound` of compiler/stage1/lchameleon.src. Every vector must commit and the committed value must equal a
+##      third evaluation done by this gate over lumec's lowered AST (sg_ev; this gate links the compiler for that
+##      reference only), so two channels agreeing on a wrong value fail.
+##   5. Fault injection. A fault is counted as a trip, as masked-benign (the run committed the CORRECT value: the
+##      fault was dead on the vector set) or as a false negative (a WRONG value was committed). One false negative
+##      fails the gate.
+##   6. Differential campaign (section 8): random kernels generated as trees, evaluated on the tree, rendered to text;
+##      channel A (real lumec + lasm) and channel B (clean room) must both agree with the tree, value or trap.
+##   7. Cross-detection matrix (section 9): source mutants on either side and code-generator corruptions of channel B
+##      must be caught by the other side; per class injected / tripped / masked-benign / false-negative.
+##   8. Split bundle (section 11): the exported x86-64 program and the bare RV32IM image on the in-tool interpreter,
+##      voted over frames; every frame fault must trip, a sequence number cannot be used twice.
+##   9. Decisions of the clean-room front end (section 12): kernels with hand-derived values for every reading the
+##      hostile review probed, and the texts channel B must refuse.
+## The exact totals are printed in the final `OK:` line and written to
+## build/certification/safety_envelope_gate_summary.json.
 ## The validator used for the lockstep runs is a stand-in built here that always answers "validated" (it is a test
 ## double for the build/bin/ltv protocol, not a validator); the rejecting / lying / slow / missing variants prove the
 ## envelope fails closed. When the real build/bin/ltv exists it is exercised too and the outcome is reported.
 use lsafety_envelope
+use lumec
 
 fn sg_prng(s) = (s * 1103515245 + 12345) % 2147483648
 fn sg_pick(s, n) = s / 65536 % n
@@ -83,7 +104,12 @@ fn sg_kat_run(a) = let a1 = sg_k(a, sg_halt("arith", sg_p_arith(), 7, "1=5 2=7 3
 fn sg_kat_trap(a) = let a1 = sg_k(a, sg_trap("pc misaligned by jalr", "2097299 32871", 100, "pc_misaligned")) in let a2 = sg_k(a1, sg_trap("pc misaligned by jal", "2097263", 100, "pc_misaligned")) in let a3 = sg_k(a2, sg_trap("run off the ROM", "5243027", 100, "pc_out_of_rom")) in let a4 = sg_k(a3, sg_trap("jump to 0", "32871", 100, "pc_out_of_rom")) in let a5 = sg_k(a4, sg_trap("load below RAM", "8323", 100, "ram_out_of_bounds")) in let a6 = sg_k(a5, sg_trap("store past RAM", "540983 1122339", 100, "ram_out_of_bounds")) in let a7 = sg_k(a6, sg_trap("load just below RAM", "524599 4290846851", 100, "ram_out_of_bounds")) in let a8 = sg_k(a7, sg_trap("lw misaligned", "524599 2171011", 100, "ram_misaligned")) in let a9 = sg_k(a8, sg_trap("lh misaligned", "524599 1118339", 100, "ram_misaligned")) in let b1 = sg_k(a9, sg_trap("sh misaligned", "524599 1118627", 100, "ram_misaligned")) in let b2 = sg_k(b1, sg_trap("store to ROM", "262583 1155107", 100, "ram_out_of_bounds")) in let b3 = sg_k(b2, sg_trap("data load from ROM", "262583 106627", 100, "ram_out_of_bounds")) in let b4 = sg_k(b3, sg_trap("word 0", "0", 100, "illegal_instruction")) in let b5 = sg_k(b4, sg_trap("word ffffffff", "4294967295", 100, "illegal_instruction")) in let b6 = sg_k(b5, sg_trap("csrrw", "810717299", 100, "illegal_instruction")) in let b7 = sg_k(b6, sg_trap("funct7 = 2", "67108915", 100, "illegal_instruction")) in let b8 = sg_k(b7, sg_trap("ebreak", "1048691", 100, "ebreak")) in let b9 = sg_k(b8, sg_trap("ebreak a7=1", "1050771 1048691", 100, "ebreak_contract_violation")) in let c1 = sg_k(b9, sg_trap("ebreak a7=2", "2099347 1048691", 100, "ebreak_integer_overflow")) in let c2 = sg_k(c1, sg_trap("ebreak a7=3", "3147923 1048691", 100, "ebreak_division_by_zero")) in let c3 = sg_k(c2, sg_trap("ecall a7=0", "115", 100, "ecall_unsupported")) in let c4 = sg_k(c3, sg_trap_cyc("endless loop", "111", 1000, "watchdog_cycle_budget", 1000)) in let c5 = sg_k(c4, sg_halt("fence is a no-op", "267386895 97519763 115", 3, "17=93")) in let c6 = sg_k(c5, sg_trap_cyc("budget one short", sg_p_arith(), 6, "watchdog_cycle_budget", 6)) in sg_k(c6, if (sg_run(sg_p_arith(), 7)).st == 1 then "" else "exact budget must halt; ")
 ## the channel-B compiler's encoders against the same assembler (the words of build-time file enc.s)
 fn sg_kat_enc(a) = let a1 = sg_k(a, sg_eq("addi sp,sp,-4", rv_addi(2, 2, 0 - 4), 4290838803) + sg_eq("sw a0,0(sp)", rv_sw(10, 2, 0), 10559523) + sg_eq("lw t0,0(sp)", rv_lw(5, 2, 0), 74371) + sg_eq("addi sp,sp,4", rv_addi(2, 2, 4), 4260115)) in let a2 = sg_k(a1, sg_eq("add", rv_add(6, 5, 10), 10650419) + sg_eq("slti", rv_slti(7, 10, 0), 336787) + sg_eq("slt", rv_slt(5, 6, 5), 5448371) + sg_eq("beq +8", rv_beq(7, 5, 8), 5473379) + sg_eq("sub", rv_sub(6, 5, 10), 1084392243)) in let a3 = sg_k(a2, sg_eq("mul", rv_mul(6, 5, 10), 44204851) + sg_eq("mulh", rv_mulh(7, 5, 10), 44209075) + sg_eq("srai", rv_srai(5, 6, 31), 1106465427) + sg_eq("div", rv_div(10, 5, 10), 44221747) + sg_eq("rem", rv_rem(10, 5, 10), 44229939)) in let a4 = sg_k(a3, sg_eq("bne +8", rv_bne(10, 0, 8), 332899) + sg_eq("bne +16", rv_bne(10, 6, 16), 6625379) + sg_eq("lui 0x80000", rv_lui(6, 524288), 2147484471) + sg_eq("lui sp,0x84", rv_lui(2, 132), 540983)) in let a5 = sg_k(a4, sg_eq("xor", rv_xor(6, 5, 10), 10666803) + sg_eq("sltiu", rv_sltiu(10, 6, 1), 1258771) + sg_eq("sltu", rv_sltu(10, 0, 6), 6305075) + sg_eq("xori", rv_xori(10, 10, 1), 1393939) + sg_eq("and", rv_and(10, 5, 10), 10679603) + sg_eq("or", rv_or(10, 5, 10), 10675507)) in let a6 = sg_k(a5, sg_eq("ret", rv_jalr(0, 1, 0), 32871) + sg_eq("lw a0,-12(fp)", rv_lw(10, 8, 0 - 12), 4282656003) + sg_eq("lw a0,24(fp)", rv_lw(10, 8, 24), 25437443) + sg_eq("sw ra,4(sp)", rv_sw(1, 2, 4), 1122851) + sg_eq("sw fp,0(sp)", rv_sw(8, 2, 0), 8462371)) in sg_k(a6, sg_eq("jal ra,+2048", rv_enc_j(2048, 1), 1048815) + sg_eq("jal x0,-64", rv_enc_j(0 - 64, 0), 4229951599) + sg_eq("addi a0,a0,-1", rv_addi(10, 10, 0 - 1), 4294247699) + sg_eq("addi a7,x0,93", rv_addi(17, 0, 93), 97519763) + sg_eq("ecall", rv_ecall(), 115) + sg_eq("ebreak", rv_ebreak(), 1048691))
-fn sg_kats() = sg_kat_enc(sg_kat_trap(sg_kat_run({n: 0, err: ""})))
+## the encoders the bare-metal frame shell adds (clang --target=riscv32 -march=rv32im_zicsr):
+## 00137313 andi t1,t1,1 | 02037313 andi t1,t1,32 | 00499993 slli s3,s3,4 | 01c9d913 srli s2,s3,28 | 0052c303 lbu t1,5(t0)
+## | 0002c903 lbu s2,0(t0) | 01228023 sb s2,0(t0) | 019c6463 bltu s8,s9,+8 | 01916463 bltu sp,s9,+8
+## | 30529073 csrrw zero,mtvec,t0 | 80030137 lui sp,0x80030 | 800204b7 lui s1,0x80020
+fn sg_kat_enc2(a) = sg_k(a, sg_eq("andi 1", rv_andi(6, 6, 1), 1274643) + sg_eq("andi 32", rv_andi(6, 6, 32), 33780499) + sg_eq("slli", rv_slli(19, 19, 4), 4823443) + sg_eq("srli", rv_srli(18, 19, 28), 30005523) + sg_eq("lbu 5(t0)", rv_lbu(6, 5, 5), 5423875) + sg_eq("lbu 0(t0)", rv_lbu(18, 5, 0), 182531) + sg_eq("sb", rv_sb(18, 5, 0), 19038243) + sg_eq("bltu s8,s9", rv_bltu(24, 25, 8), 27026531) + sg_eq("bltu sp,s9", rv_bltu(2, 25, 8), 26305635) + sg_eq("lui sp,0x80030", rv_lui(2, 524336), 2147680567) + sg_eq("lui s1,0x80020", rv_lui(9, 524320), 2147615927))
+fn sg_kats() = sg_kat_enc2(sg_kat_enc(sg_kat_trap(sg_kat_run({n: 0, err: ""}))))
 
 ## ====================================================================================================================
 ## 2. The gate's own evaluation of the lowered AST (third opinion). st: 1 value, 2 contract violation,
@@ -118,7 +144,7 @@ fn sg_ev_bit(prog, env, nm, args) = match args
 fn sg_ev_bit2(prog, env, nm, a, t) = match t
     Nil         => sg_bad(5)
     Cons(h2, r) => if a.st != 1 then a else sg_ev_op(nm, a.v, sg_ev(prog, env, h2))
-fn sg_ev_call(prog, env, nm, args) = if nm == "ctfail" then sg_bad(2) else if nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" then sg_ev_bit(prog, env, nm, args) else sg_ev_user(prog, rc_prog_find(prog, nm), sg_ev_args(prog, env, args))
+fn sg_ev_call(prog, env, nm, args) = if nm == "ctfail" then sg_bad(2) else if nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" then sg_ev_bit(prog, env, nm, args) else sg_ev_user(prog, sg_prog_find(prog, nm), sg_ev_args(prog, env, args))
 fn sg_ev(prog, env, e) = match e
     Num(v)          => if v < 0 - 2147483648 or v > 2147483647 then sg_bad(5) else sg_v(v)
     Var(nm)         => if nm == "true" then sg_v(1) else if nm == "false" then sg_v(0) else sg_env_get(env, nm)
@@ -127,10 +153,16 @@ fn sg_ev(prog, env, e) = match e
     LetIn(nm, v, b) => sg_ev_let(prog, env, nm, sg_ev(prog, env, v), b)
     Call(nm, args)  => sg_ev_call(prog, env, nm, args)
     _               => sg_bad(5)
+fn sg_prog_find_s(s0, t, nm) = match s0
+    Fn(n2, ps, b) => if n2 == nm then {ok: 1, params: ps, body: b} else sg_prog_find(t, nm)
+    _             => sg_prog_find(t, nm)
+fn sg_prog_find(prog, nm) = match prog
+    Nil        => {ok: 0, params: Nil, body: Num(0)}
+    Cons(h, t) => sg_prog_find_s(h, t, nm)
 fn sg_all_i32(xs) = match xs
     Nil        => 1
     Cons(h, t) => if h < 0 - 2147483648 or h > 2147483647 then 0 else sg_all_i32(t)
-fn sg_ref(prog, fname, xs) = if sg_all_i32(xs) != 1 then sg_bad(5) else sg_ev_user(prog, rc_prog_find(prog, fname), {st: 1, vs: xs})
+fn sg_ref(prog, fname, xs) = if sg_all_i32(xs) != 1 then sg_bad(5) else sg_ev_user(prog, sg_prog_find(prog, fname), {st: 1, vs: xs})
 
 ## vector sampler: values come from the kernel's own literals (+-1), a few small constants and a uniform range
 fn sg_nums_l(xs, acc) = match xs
@@ -143,7 +175,7 @@ fn sg_nums(e, acc) = match e
     LetIn(nm, v, b) => sg_nums(b, sg_nums(v, acc))
     Call(nm, args)  => sg_nums_l(args, acc)
     _               => acc
-fn sg_pool(prog, fname) = sg_nums((rc_prog_find(prog, fname)).body, Cons(0, Cons(1, Cons(2, Cons(3, Cons(5, Cons(10, Cons(100, Nil))))))))
+fn sg_pool(prog, fname) = sg_nums((sg_prog_find(prog, fname)).body, Cons(0, Cons(1, Cons(2, Cons(3, Cons(5, Cons(10, Cons(100, Nil))))))))
 fn sg_nth_i(xs, i) = match xs
     Nil        => 0
     Cons(h, t) => if i == 0 then h else sg_nth_i(t, i - 1)
@@ -153,7 +185,7 @@ fn sg_seen(xs, key) = match xs
     Nil        => 0
     Cons(h, t) => if h == key then 1 else sg_seen(t, key)
 fn sg_sample(prog, fname, k, pool, pn, rng, s, tries, want, acc, seen) = if tries == 0 or want == 0 then acc else let gv = sg_gen_vec(s, k, pool, pn, rng) in let key = se_join_ints(gv.xs) in if sg_seen(seen, key) == 1 or (sg_ref(prog, fname, gv.xs)).st != 1 then sg_sample(prog, fname, k, pool, pn, rng, gv.s, tries - 1, want, acc, seen) else sg_sample(prog, fname, k, pool, pn, rng, gv.s, tries - 1, want - 1, Cons(gv.xs, acc), Cons(key, seen))
-fn sg_vectors(prog, fname, rng, seed, tries, want) = let pool = sg_pool(prog, fname) in sg_sample(prog, fname, rv_len((rc_prog_find(prog, fname)).params), pool, rv_len(pool), rng, seed, tries, want, Nil, Nil)
+fn sg_vectors(prog, fname, rng, seed, tries, want) = let pool = sg_pool(prog, fname) in sg_sample(prog, fname, rv_len((sg_prog_find(prog, fname)).params), pool, rv_len(pool), rng, seed, tries, want, Nil, Nil)
 
 ## ====================================================================================================================
 ## 3. Driving the real CLI
@@ -205,7 +237,7 @@ fn sg_sig_s(s0, t, nm) = match s0
 fn sg_sig_ok(prog, nm) = match prog
     Nil        => 0
     Cons(h, t) => sg_sig_s(h, t, nm)
-fn sg_corp_prog(g, acc, name, bound, path, prog) = let k = rv_len((rc_prog_find(prog, name)).params) in if k < 1 or sg_sig_ok(prog, name) != 1 or (rc_rom(prog, name, sg_zeros(k))).err != "" then sg_cadd(acc, "", 0, 0, 0, 1, 0, 0, 0, 0, 0) else sg_corp_run(g, acc, name, bound, path, prog, sg_vectors(prog, name, 20, 977 + acc.ok * 131, 1500, 4))
+fn sg_corp_prog(g, acc, name, bound, path, prog) = let k = rv_len((sg_prog_find(prog, name)).params) in if k < 1 or sg_sig_ok(prog, name) != 1 or (cb_rom(cb_prog(fs_read_file(path), name), sg_zeros(k))).err != "" then sg_cadd(acc, "", 0, 0, 0, 1, 0, 0, 0, 0, 0) else sg_corp_run(g, acc, name, bound, path, prog, sg_vectors(prog, name, 20, 977 + acc.ok * 131, 1500, 4))
 ## a kernel that calls helpers outside its own block cannot be compiled alone: lumec says so and it is skipped
 fn sg_corp_one(g, acc, block, name) = let bound = se_bound(block, name) in if bound < 1 then sg_cadd(acc, "", 0, 0, 0, 0, 0, 1, 0, 0, 0) else let path = g.tmp + "/corpus_" + name + ".src" in let w = fs_write_sync(path, block) in let c = os_run_input_capture_timeout(g.lumec, Nil, path, path + ".s", path + ".cerr", 60000) in if se_wait_exit(c) != 0 then sg_cadd(acc, "", 0, 0, 1, 0, 0, 0, 0, 0, 0) else sg_corp_prog(g, acc, name, bound, path, nf_late(lumec_expand(block)))
 fn sg_corp_scan(g, s, n, i, ps, acc) = if i >= n or acc.err != "" then acc else let e = se_line_end(s, n, i) in if e - i > 20 and slicen(s, n, i, i + 3) == "fn " and se_has(slicen(s, n, i, e), "-> int / pure") == 1 and slicen(s, n, ps, ps + 7) == "@bound(" then (let be = sg_block_end(s, n, e + 1) in sg_corp_scan(g, s, n, be, be, sg_corp_one(g, acc, slicen(s, n, ps, be), sg_fn_name(slicen(s, n, i, e))))) else sg_corp_scan(g, s, n, e + 1, i, acc)
@@ -229,7 +261,7 @@ fn sg_a_rec(g, tag, xs) = se_a_run(g.tmp + "/" + tag, xs, 5000)
 fn sg_abit_ip_bits(acc, a, b, bit) = if bit > 62 or acc.err != "" then acc else let v = se_vote(se_a_flip(a, {kind: 4, cyc: 0, target: 0, bit: bit, akind: "", text: "", bad: 0}), b, 1, "validated") in sg_abit_ip_bits(if v.commit == 0 and v.reason == "lockstep_mismatch" then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE: voter accepted a channel-A result with bit " + str(bit) + " flipped", 0, 0), a, b, bit + 1)
 fn sg_abit_ip(g, acc, fname, vecs) = match vecs
     Nil        => acc
-    Cons(h, t) => let a = sg_a_rec(g, "ipa", h) in let b = se_b_run(g.prog, fname, h, 100000, rv_no_inj()) in if a.ok != 1 or b.ok != 1 or a.v != b.v then sg_f(acc, "in-process channels disagree on " + fname + "(" + se_join_ints(h) + ")", 0, 0) else sg_abit_ip(g, sg_abit_ip_bits(acc, a, b, 0), fname, t)
+    Cons(h, t) => let a = sg_a_rec(g, "ipa", h) in let b = se_b_go(cb_prog(g.gsrc, fname), h, 100000, rv_no_inj()) in if a.ok != 1 or b.ok != 1 or a.v != b.v then sg_f(acc, "in-process channels disagree on " + fname + "(" + se_join_ints(h) + ")", 0, 0) else sg_abit_ip(g, sg_abit_ip_bits(acc, a, b, 0), fname, t)
 
 ## (1b) real corrupted native execution: one instruction of the kernel's own machine code is changed before lasm
 fn sg_asm_class(acc, r, xs, rv, what) = if r.status == 0 and se_has(r.out, sg_commit_str(xs, rv)) == 1 then sg_f(acc, "", 0, 1) else if r.status == 2 and se_has(r.out, sg_trip_str(xs)) == 1 and se_has(r.out, "VerifiedActuatorCommit") == 0 and (se_has(r.out, "\"reason\":\"lockstep_mismatch\"") == 1 or se_has(r.out, "\"reason\":\"a_trap\"") == 1 or se_has(r.out, "\"reason\":\"a_watchdog_timeout\"") == 1 or se_has(r.out, "\"reason\":\"a_unparsable_output\"") == 1) then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE or wrong diagnosis: " + what + ": " + sg_short(r.out), 0, 0)
@@ -248,7 +280,7 @@ fn sg_seu_bits(c, budget, a, rv, kind, cyc, target, bit, acc) = if bit > 31 then
 fn sg_seu_tg(c, budget, a, rv, kind, cyc, target, thi, acc) = if target > thi then acc else sg_seu_tg(c, budget, a, rv, kind, cyc, target + 1, thi, sg_seu_bits(c, budget, a, rv, kind, cyc, target, 0, acc))
 fn sg_seu_cyc(c, budget, a, rv, kind, cyc, cmax, step, tlo, thi, acc) = if cyc >= cmax then acc else sg_seu_cyc(c, budget, a, rv, kind, cyc + step, cmax, step, tlo, thi, sg_seu_tg(c, budget, a, rv, kind, cyc, tlo, thi, acc))
 ## the sweep for one kernel and vector: {err, s (counters), cycles}
-fn sg_seu(g, atag, fname, xs, kind, step, tlo, thi) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = rc_rom(g.prog, fname, xs) in let c = rv_machine(rom.rom, 12) in let budget = se_bound(g.gsrc, fname) * se_bound_scale() in let base = se_b_rec(rv_boot(c, budget, rv_no_inj())) in let a = sg_a_rec(g, atag, xs) in if rom.err != "" or base.ok != 1 or base.v != rv or a.ok != 1 or a.v != rv then {err: "fault-free baseline of " + fname + "(" + se_join_ints(xs) + ") is not the reference value", s: sg_s0(), cycles: 0} else {err: "", s: sg_seu_cyc(c, budget, {ok: 1, v: a.v, reason: "", detail: ""}, rv, kind, 0, base.cycles, step, tlo, thi, sg_s0()), cycles: base.cycles}
+fn sg_seu(g, atag, fname, xs, kind, step, tlo, thi) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = cb_rom(cb_prog(g.gsrc, fname), xs) in let c = rv_machine(rom.rom, 12) in let budget = se_bound(g.gsrc, fname) * se_bound_scale() in let base = se_b_rec(rv_boot(c, budget, rv_no_inj())) in let a = sg_a_rec(g, atag, xs) in if rom.err != "" or base.ok != 1 or base.v != rv or a.ok != 1 or a.v != rv then {err: "fault-free baseline of " + fname + "(" + se_join_ints(xs) + ") is not the reference value", s: sg_s0(), cycles: 0} else {err: "", s: sg_seu_cyc(c, budget, {ok: 1, v: a.v, reason: "", detail: ""}, rv, kind, 0, base.cycles, step, tlo, thi, sg_s0()), cycles: base.cycles}
 fn sg_seu_spot(g, fname, xs, what, cyc, target, bit) = sg_cli_fresh(g, "bseu", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@inject " + what + ":" + str(cyc) + ":" + str(target) + ":" + str(bit) + "\n")
 ## the sweep must find real detections, no false negative, and the CLI must reproduce one detection and one masked flip
 fn sg_seu_check(g, acc, fname, xs, what, sw) = if sw.err != "" then sg_f(acc, sw.err, 0, 0) else if sw.s.fneg != 0 then sg_f(acc, "FALSE NEGATIVE: " + str(sw.s.fneg) + " " + what + " flips of " + fname + " committed a wrong value", 0, 0) else if sw.s.cmp < 1 or sw.s.dc < 0 or sw.s.mc < 0 then sg_f(acc, what + " sweep of " + fname + " is vacuous: " + str(sw.s.cmp) + " comparator trips, " + str(sw.s.masked) + " masked", 0, 0) else if sg_is_trip(sg_seu_spot(g, fname, xs, what, sw.s.dc, sw.s.dt, sw.s.db), xs, "lockstep_mismatch") != 1 then sg_f(acc, "the CLI did not trip on " + what + ":" + str(sw.s.dc) + ":" + str(sw.s.dt) + ":" + str(sw.s.db) + " of " + fname, 0, 0) else if se_has((sg_seu_spot(g, fname, xs, what, sw.s.mc, sw.s.mt, sw.s.mb)).out, sg_commit_str(xs, (sg_ref(g.prog, fname, xs)).v)) != 1 then sg_f(acc, "the CLI did not commit the correct value under the masked flip " + what + ":" + str(sw.s.mc) + ":" + str(sw.s.mt) + ":" + str(sw.s.mb) + " of " + fname, 0, 0) else sg_f(sg_f(acc, "", sw.s.cmp + sw.s.trap, sw.s.masked), "", 1, 1)
@@ -257,12 +289,12 @@ fn sg_seu_check(g, acc, fname, xs, what, sw) = if sw.err != "" then sg_f(acc, sw
 fn sg_rom_code(rom, budget, a, rv, idx, bit) = let b = se_b_exec(rom, budget, {kind: 3, cyc: 0, target: idx, bit: bit}) in let v = se_vote(a, b, se_cert_ok(budget, b, 1), "validated") in {code: if v.commit == 1 then (if v.value == rv then 0 else 2) else if v.reason == "lockstep_mismatch" then 1 else 3, cycles: b.cycles}
 fn sg_rom_bits(rom, budget, a, rv, idx, bit, acc) = if bit > 31 then acc else sg_rom_bits(rom, budget, a, rv, idx, bit + 1, sg_s(acc, sg_rom_code(rom, budget, a, rv, idx, bit), 0, idx, bit))
 fn sg_rom_idx(rom, budget, a, rv, idx, n, acc) = if idx >= n then acc else sg_rom_idx(rom, budget, a, rv, idx + 1, n, sg_rom_bits(rom, budget, a, rv, idx, 0, acc))
-fn sg_rom(g, atag, fname, xs) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = rc_rom(g.prog, fname, xs) in let budget = se_bound(g.gsrc, fname) * se_bound_scale() in let a = sg_a_rec(g, atag, xs) in if rom.err != "" or a.ok != 1 or a.v != rv then {err: "fault-free baseline of " + fname + " is not the reference value", s: sg_s0(), cycles: 0} else {err: "", s: sg_rom_idx(rom.rom, budget, {ok: 1, v: a.v, reason: "", detail: ""}, rv, 0, rv_len(rom.rom), sg_s0()), cycles: rv_len(rom.rom)}
+fn sg_rom(g, atag, fname, xs) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = cb_rom(cb_prog(g.gsrc, fname), xs) in let budget = se_bound(g.gsrc, fname) * se_bound_scale() in let a = sg_a_rec(g, atag, xs) in if rom.err != "" or a.ok != 1 or a.v != rv then {err: "fault-free baseline of " + fname + " is not the reference value", s: sg_s0(), cycles: 0} else {err: "", s: sg_rom_idx(rom.rom, budget, {ok: 1, v: a.v, reason: "", detail: ""}, rv, 0, rv_len(rom.rom), sg_s0()), cycles: rv_len(rom.rom)}
 fn sg_rom_check(g, acc, fname, xs, sw) = if sw.err != "" then sg_f(acc, sw.err, 0, 0) else if sw.s.fneg != 0 then sg_f(acc, "FALSE NEGATIVE: " + str(sw.s.fneg) + " ROM flips of " + fname + " committed a wrong value", 0, 0) else if sw.s.cmp < 1 or sw.s.trap < 1 or sw.s.dc < 0 then sg_f(acc, "ROM sweep of " + fname + " is vacuous", 0, 0) else if sg_is_trip(sg_cli_fresh(g, "brom", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@inject b_rom:" + str(sw.s.dt) + ":" + str(sw.s.db) + "\n"), xs, "lockstep_mismatch") != 1 then sg_f(acc, "the CLI did not trip on b_rom:" + str(sw.s.dt) + ":" + str(sw.s.db) + " of " + fname, 0, 0) else sg_f(sg_f(acc, "", sw.s.cmp + sw.s.trap, sw.s.masked), "", 1, 0)
 
 ## (4) WCET: every budget below the real cycle count trips the cycle watchdog, the exact count commits
 fn sg_wcet_ip(c, need, budget, acc) = if budget >= need or acc.err != "" then acc else let m = rv_boot(c, budget, rv_no_inj()) in sg_wcet_ip(c, need, budget + 1, if m.st == 2 and m.cause == "watchdog_cycle_budget" and m.cyc == budget then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE: budget " + str(budget) + " of " + str(need) + " cycles did not trip the watchdog", 0, 0))
-fn sg_wcet(g, acc, fname, xs) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = rc_rom(g.prog, fname, xs) in let c = rv_machine(rom.rom, 12) in let base = se_b_rec(rv_boot(c, 100000, rv_no_inj())) in if rom.err != "" or base.ok != 1 or base.v != rv then sg_f(acc, "WCET baseline of " + fname + " failed", 0, 0) else let a1 = sg_wcet_ip(c, base.cycles, 1, acc) in let lo = sg_cli_fresh(g, "wcet", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@budget " + str(base.cycles - 1) + "\n") in let hi = sg_cli_fresh(g, "wcet", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@budget " + str(base.cycles) + "\n") in if sg_is_trip(lo, xs, "b_watchdog_cycle_budget") != 1 then sg_f(a1, "FALSE NEGATIVE: the CLI did not trip with @budget " + str(base.cycles - 1) + " on " + fname + ": " + sg_short(lo.out), 0, 0) else if hi.status != 0 or se_has(hi.out, sg_commit_str(xs, rv) + str(base.cycles) + ",\"budget\":" + str(base.cycles) + ",") != 1 then sg_f(a1, "the exact budget " + str(base.cycles) + " must commit " + fname + ": " + sg_short(hi.out), 0, 0) else sg_f(a1, "", 1, 0)
+fn sg_wcet(g, acc, fname, xs) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = cb_rom(cb_prog(g.gsrc, fname), xs) in let c = rv_machine(rom.rom, 12) in let base = se_b_rec(rv_boot(c, 100000, rv_no_inj())) in if rom.err != "" or base.ok != 1 or base.v != rv then sg_f(acc, "WCET baseline of " + fname + " failed", 0, 0) else let a1 = sg_wcet_ip(c, base.cycles, 1, acc) in let lo = sg_cli_fresh(g, "wcet", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@budget " + str(base.cycles - 1) + "\n") in let hi = sg_cli_fresh(g, "wcet", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@budget " + str(base.cycles) + "\n") in if sg_is_trip(lo, xs, "b_watchdog_cycle_budget") != 1 then sg_f(a1, "FALSE NEGATIVE: the CLI did not trip with @budget " + str(base.cycles - 1) + " on " + fname + ": " + sg_short(lo.out), 0, 0) else if hi.status != 0 or se_has(hi.out, sg_commit_str(xs, rv) + str(base.cycles) + ",\"budget\":" + str(base.cycles) + ",") != 1 then sg_f(a1, "the exact budget " + str(base.cycles) + " must commit " + fname + ": " + sg_short(hi.out), 0, 0) else sg_f(a1, "", 1, 0)
 fn sg_expect_trip(g, acc, tag, fname, ltv, xs, extra, reason, also) = let r = sg_cli_fresh(g, tag, g.gk, fname, ltv, "@args " + se_join_ints(xs) + "\n" + extra) in if sg_is_trip(r, xs, reason) == 1 and (also == "" or se_has(r.out, also) == 1) then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE or wrong diagnosis: " + fname + "(" + se_join_ints(xs) + ") " + extra + "expected SAFE_STATE_TRIP " + reason + " " + also + ": " + sg_short(r.out), 0, 0)
 fn sg_expect_commit(g, acc, tag, fname, ltv, xs, extra, v) = let r = sg_cli_fresh(g, tag, g.gk, fname, ltv, "@args " + se_join_ints(xs) + "\n" + extra) in if r.status == 0 and se_has(r.out, sg_commit_str(xs, v)) == 1 then acc else sg_f(acc, "control " + fname + "(" + se_join_ints(xs) + ") must commit " + str(v) + ": " + sg_short(r.out), 0, 0)
 fn sg_l1(a) = Cons(a, Nil)
@@ -281,7 +313,7 @@ fn sg_cert(g, acc) = let e = sg_cert_guard() + sg_cert_same_text(g) in if e != "
 ## (6) division by zero, i32 overflow, values outside the monitor domain, code outside the fragment
 fn sg_raw(g, acc, a, b, m, st, reason, also) = let xs = sg_l3(a, b, m) in if (sg_ref(g.prog, "gk_raw", xs)).st != st then sg_f(acc, "the reference evaluator disagrees with the expected state " + str(st) + " for gk_raw(" + se_join_ints(xs) + ")", 0, 0) else sg_expect_trip(g, acc, "arith", "gk_raw", g.ltv_ok, xs, "", reason, also)
 fn sg_raw_ok(g, acc, a, b, m, v) = let xs = sg_l3(a, b, m) in if (sg_ref(g.prog, "gk_raw", xs)).v != v then sg_f(acc, "reference value of gk_raw(" + se_join_ints(xs) + ") is not " + str(v), 0, 0) else sg_expect_commit(g, acc, "arith", "gk_raw", g.ltv_ok, xs, "", v)
-fn sg_b_cause(g, fname, xs) = (se_b_run(g.prog, fname, xs, 100000, rv_no_inj())).cause
+fn sg_b_cause(g, fname, xs) = (se_b_go(cb_prog(g.gsrc, fname), xs, 100000, rv_no_inj())).cause
 fn sg_arith(g, acc) = let imin = 0 - 2147483648 in let a1 = sg_raw(g, acc, 7, 0, 0, 4, "a_trap", "division by zero") in let a2 = sg_raw(g, a1, 7, 0, 1, 4, "a_trap", "division by zero") in let a3 = sg_raw(g, a2, imin, 0 - 1, 0, 3, "b_ebreak_integer_overflow", "\"out_a\":2147483648,\"out_b\":null,") in let a4 = sg_raw(g, a3, 65536, 65536, 2, 3, "b_ebreak_integer_overflow", "\"out_a\":4294967296,\"out_b\":null,") in let a5 = sg_raw(g, a4, 46341, 46341, 2, 3, "b_ebreak_integer_overflow", "\"out_a\":2147488281,") in let a6 = sg_raw(g, a5, 0 - 46341, 46341, 2, 3, "b_ebreak_integer_overflow", "\"out_a\":-2147488281,") in let a7 = sg_raw(g, a6, 2147483647, 1, 3, 3, "b_ebreak_integer_overflow", "\"out_a\":2147483648,") in let a8 = sg_raw(g, a7, imin, 0 - 1, 3, 3, "b_ebreak_integer_overflow", "\"out_a\":-2147483649,") in let a9 = sg_raw(g, a8, imin, 1, 4, 3, "b_ebreak_integer_overflow", "\"out_a\":-2147483649,") in let b1 = sg_raw(g, a9, 0, imin, 4, 3, "b_ebreak_integer_overflow", "\"out_a\":2147483648,") in let b2 = sg_raw(g, b1, 2147483648, 1, 3, 5, "b_arg_outside_i32", "\"out_a\":2147483649,\"out_b\":null,") in let b3 = sg_expect_trip(g, b2, "arith", "gk_big", g.ltv_ok, sg_l1(41), "", "b_const_outside_i32", "\"out_a\":41,\"out_b\":null,") in let b4 = sg_expect_trip(g, b3, "arith", "gk_str", g.ltv_ok, sg_l1(41), "", "b_compile_unsupported", "\"out_a\":43,\"out_b\":null,") in let b5 = sg_expect_trip(g, b4, "arith", "gk_divmod", g.ltv_ok, sg_l2(9, 0), "", "a_trap", "contract violation") in let b6 = sg_expect_trip(g, b5, "arith", "gk_clamp", g.ltv_ok, sg_l3(1, 9, 2), "", "a_trap", "contract violation") in let e = if sg_b_cause(g, "gk_raw", sg_l3(7, 0, 0)) != "ebreak_division_by_zero" or sg_b_cause(g, "gk_raw", sg_l3(7, 0, 1)) != "ebreak_division_by_zero" or sg_b_cause(g, "gk_divmod", sg_l2(9, 0)) != "ebreak_contract_violation" or sg_b_cause(g, "gk_clamp", sg_l3(1, 9, 2)) != "ebreak_contract_violation" then "channel B alone does not name the division by zero / contract violation" else "" in let c1 = sg_raw_ok(g, sg_f(b6, e, 0, 0), 46340, 46340, 2, 2147395600) in let c2 = sg_raw_ok(g, c1, 2147483647, 0, 3, 2147483647) in let c3 = sg_raw_ok(g, c2, imin, 0, 4, imin) in let c4 = sg_raw_ok(g, c3, imin, 0 - 1, 1, 0) in sg_raw_ok(g, c4, 0 - 7, 2, 0, 0 - 3)
 
 ## (7) latch stickiness and event-log tamper detection (one log across several invocations)
@@ -298,7 +330,7 @@ fn sg_latch_tamper(g, acc, good) = let n = count(good) in let a1 = sg_tamper(g, 
 fn sg_ltv_src(pre, suffix, status, code) = "fn le(s, n, i) = if i >= n or at(s, i) == \"\\n\" then i else le(s, n, i + 1)\nfn g(s, n, i) = if i >= n then \"\" else let e = le(s, n, i) in if e - i > 4 and slice(s, i, i + 4) == \"@fn \" then slice(s, i + 4, e) else g(s, n, e + 1)\nfn m(s) = let z = " + pre + " in let w = fs_write_sync(\"/dev/stdout\", \"{\\\"tool\\\":\\\"ltv-stand-in (test double)\\\",\\\"functions\\\":[{\\\"name\\\":\\\"\" + g(s, count(s), 0) + \"" + suffix + "\\\",\\\"status\\\":\\\"" + status + "\\\"}]}\\n\") in os_exit(" + str(code) + ")\nprint m(readall())\n"
 fn sg_build(g, name, src) = let p = g.tmp + "/" + name in let w = fs_write_sync(p + ".src", src) in let c = os_run_input_capture_timeout(g.lumec, Nil, p + ".src", p + ".s", p + ".cerr", 120000) in if se_wait_exit(c) != 0 then name + ": lumec failed: " + se_first_line(fs_read_file(p + ".cerr")) + "; " else let a = os_run_capture_timeout(g.lasm, Cons("--strict", Cons(p + ".s", Nil)), p, p + ".aerr", 120000) in if se_wait_exit(a) != 0 then name + ": lasm failed; " else let m = os_run("/bin/chmod", Cons("+x", Cons(p, Nil))) in ""
 fn sg_setup_bins(g) = let e1 = sg_build(g, "ltv_ok", sg_ltv_src("0", "", "validated", 0)) + sg_build(g, "ltv_reject", sg_ltv_src("0", "", "rejected", 1)) + sg_build(g, "ltv_wrongname", sg_ltv_src("0", "_other", "validated", 0)) + sg_build(g, "ltv_liar", sg_ltv_src("0", "", "validated", 3)) + sg_build(g, "ltv_unsupported", sg_ltv_src("0", "", "unsupported", 0)) + sg_build(g, "ltv_slow", sg_ltv_src("os_sleep_ms(5000)", "", "validated", 0)) in let w = fs_write_sync(g.tmp + "/ltv_garbage", "this is not an executable\n") in let m = os_run("/bin/chmod", Cons("+x", Cons(g.tmp + "/ltv_garbage", Nil))) in let z = sg_rm(g.tmp + "/ltv_does_not_exist") in let a = se_a_build({lumec: g.lumec, lasm: g.lasm}, g.gsrc, "gk_mix", 3, g.tmp + "/ipa", se_inj_none()) in let a2 = se_a_build({lumec: g.lumec, lasm: g.lasm}, g.gsrc, "gk_dist", 3, g.tmp + "/ipd", se_inj_none()) in e1 + (if a.ok == 1 and a2.ok == 1 then "" else "in-process channel-A build failed: " + a.reason + " " + a.detail + a2.detail)
-fn sg_g(root, tmp, gsrc) = {root: root, tmp: tmp, bin: root + "/build/bin/lsafety_envelope", lumec: root + "/build/bin/lumec", lasm: root + "/build/bin/lasm", ltv_ok: tmp + "/ltv_ok", ltv_real: root + "/build/bin/ltv", gk: tmp + "/gk.src", gsrc: gsrc, prog: nf_late(lumec_expand(gsrc))}
+fn sg_g(root, tmp, gsrc, dq_batches, dq_per) = {dq_batches: dq_batches, dq_per: dq_per, root: root, tmp: tmp, bin: root + "/build/bin/lsafety_envelope", lumec: root + "/build/bin/lumec", lasm: root + "/build/bin/lasm", ltv_ok: tmp + "/ltv_ok", ltv_real: root + "/build/bin/ltv", gk: tmp + "/gk.src", gsrc: gsrc, prog: nf_late(lumec_expand(gsrc))}
 
 ## the real Translation Validator, when it exists: either it validates and the vector commits the reference value, or
 ## it does not and the envelope stays in the safe state with a cert_ltv_* reason. Both are counted; neither is assumed.
@@ -315,8 +347,507 @@ fn sg_nth_v(vs) = match vs
 fn sg_frac(x100) = str(x100 / 100) + "." + (if x100 % 100 < 10 then "0" else "") + str(x100 % 100)
 fn sg_fstr(f) = str(f.inj) + " injected / " + str(f.trips) + " trips / " + str(f.masked) + " masked-benign"
 fn sg_sstr(s) = str(s.n) + " flips: " + str(s.cmp) + " comparator trips + " + str(s.trap) + " monitor traps + " + str(s.masked) + " masked-benign"
-fn sg_faults(g, t0, kats, pos, corp) = let v1 = sg_l2(7, 2) in let v2 = sg_l2(0 - 4, 5) in let v3 = sg_l2(1, 1) in let m1 = sg_l3(37, 11, 5) in let d1 = sg_l3(40, 0 - 7, 12) in let fa = sg_abit_ip(g, sg_abit_cli(g, sg_f0(), sg_l2(v1, v3)), "gk_mix", sg_l3(m1, sg_l3(0 - 9, 4, 7), sg_l3(100, 100, 3))) in if fa.err != "" then ctfail("safety envelope gate failed: " + fa.err + "\n") else let fm = sg_asm(g, sg_asm(g, sg_f0(), "gk_poly", sg_l3(v1, v2, v3)), "gk_mix", sg_l1(m1)) in if fm.err != "" then ctfail("safety envelope gate failed: " + fm.err + "\n") else if fm.trips < 6 or fm.inj < 12 then ctfail("safety envelope gate failed: the machine-code mutation sweep is vacuous (" + sg_fstr(fm) + ")\n") else let ts = os_monotonic_ns() in let ram1 = sg_seu(g, "ipa", "gk_mix", m1, 1, 3, 4080, 4095) in let ram2 = sg_seu(g, "ipd", "gk_dist", d1, 1, 5, 4080, 4095) in let reg1 = sg_seu(g, "ipa", "gk_mix", m1, 2, 5, 1, 31) in let reg2 = sg_seu(g, "ipd", "gk_dist", d1, 2, 9, 1, 31) in let te = os_monotonic_ns() in let rom1 = sg_rom(g, "ipa", "gk_mix", m1) in let fo = sg_rom_check(g, sg_f0(), "gk_mix", m1, rom1) in if fo.err != "" then ctfail("safety envelope gate failed: " + fo.err + "\n") else let fr = sg_seu_check(g, sg_seu_check(g, sg_f0(), "gk_mix", m1, "b_ram", ram1), "gk_dist", d1, "b_ram", ram2) in let fg = sg_seu_check(g, sg_seu_check(g, sg_f0(), "gk_mix", m1, "b_reg", reg1), "gk_dist", d1, "b_reg", reg2) in if fr.err != "" or fg.err != "" then ctfail("safety envelope gate failed: " + fr.err + " " + fg.err + "\n") else let fw = sg_watchdogs(g, sg_wcet(g, sg_wcet(g, sg_f0(), "gk_mix", m1), "gk_dist", d1)) in if fw.err != "" then ctfail("safety envelope gate failed: " + fw.err + "\n") else let fc = sg_cert(g, sg_f0()) in if fc.err != "" then ctfail("safety envelope gate failed: " + fc.err + "\n") else let fx = sg_arith(g, sg_f0()) in if fx.err != "" then ctfail("safety envelope gate failed: " + fx.err + "\n") else let fl = sg_latch(g, sg_f0()) in if fl.err != "" then ctfail("safety envelope gate failed: " + fl.err + "\n") else let real = if fs_path_exists(g.ltv_real) == 1 then sg_real_all(g) else {err: "", validated: 0, refused: 0, names: ""} in if real.err != "" then ctfail("safety envelope gate failed: " + real.err + "\n") else let icyc = ram1.s.cyc + ram2.s.cyc + reg1.s.cyc + reg2.s.cyc in let inj = fa.inj + fm.inj + fo.inj + fr.inj + fg.inj + fw.inj + fc.inj + fx.inj + fl.inj in let trips = fa.trips + fm.trips + fo.trips + fr.trips + fg.trips + fw.trips + fc.trips + fx.trips + fl.trips in let masked = fa.masked + fm.masked + fo.masked + fr.masked + fg.masked + fw.masked + fc.masked + fx.masked + fl.masked in "OK: safety envelope: " + str(kats.n) + " RV32IM known-answer checks; lockstep " + str(pos.kernels) + " gate kernels / " + str(pos.vecs) + " vectors + " + str(corp.ok) + " lchameleon kernels / " + str(corp.vecs) + " vectors all committed the reference value (lchameleon skipped: " + str(corp.nsc) + " not self-contained, " + str(corp.unsup) + " outside the fragment, " + str(corp.novec) + " without a sampled vector); max RV32 cycles per @bound cycle " + sg_frac(sg_max(pos.maxr, corp.maxr)) + " (budget scale " + str(se_bound_scale()) + "), mean " + str((pos.sumc + corp.sumc) / (pos.vecs + corp.vecs)) + " cycles per vector; faults injected " + str(inj) + " -> " + str(trips) + " SAFE_STATE_TRIP, " + str(masked) + " masked-benign (correct value committed), 0 false negatives [A result bit: " + sg_fstr(fa) + "; A machine code: " + sg_fstr(fm) + "; B RAM: " + sg_sstr(ram1.s) + " and " + sg_sstr(ram2.s) + "; B register: " + sg_sstr(reg1.s) + " and " + sg_sstr(reg2.s) + "; B ROM (" + str(rom1.cycles) + " words): " + sg_sstr(rom1.s) + "; WCET/watchdog: " + sg_fstr(fw) + "; certificate: " + sg_fstr(fc) + "; arithmetic/domain: " + sg_fstr(fx) + "; latch/log: " + sg_fstr(fl) + "]; interpreter " + str(icyc * 1000 / ((te - ts) / 1000000 + 1)) + " instructions/s over " + str(icyc) + " instructions; real ltv: " + (if fs_path_exists(g.ltv_real) == 1 then str(real.validated) + " kernels validated and committed, " + str(real.refused) + " not validated and held in the safe state (" + real.names + " )" else "absent, stand-in validator only") + "; " + str((os_monotonic_ns() - t0) / 1000000) + " ms"
-fn sg_go(g, t0) = let w = fs_write_sync(g.gk, g.gsrc) in let e = sg_setup_bins(g) in if e != "" then ctfail("safety envelope gate failed: setup: " + e + "\n") else if fs_path_exists(g.bin) != 1 then ctfail("safety envelope gate failed: build/bin/lsafety_envelope is missing\n") else let kats = sg_kats() in if kats.err != "" then ctfail("safety envelope gate failed: RV32IM known-answer tests: " + kats.err + "\n") else let pos = sg_positive(g, sg_gk_list(), {err: "", kernels: 0, vecs: 0, maxr: 0, sumc: 0}) in if pos.err != "" then ctfail("safety envelope gate failed: lockstep: " + pos.err + "\n") else let corp = sg_corpus(g) in if corp.err != "" then ctfail("safety envelope gate failed: lockstep: " + corp.err + "\n") else if corp.ok < 3 or corp.named < 3 then ctfail("safety envelope gate failed: only " + str(corp.ok) + " lchameleon kernels ran in lockstep (" + str(corp.named) + " of the named ones)\n") else if sg_max(pos.maxr, corp.maxr) >= se_bound_scale() * 100 then ctfail("safety envelope gate failed: cycles per @bound cycle reached the budget scale\n") else sg_faults(g, t0, kats, pos, corp)
-fn sg_main(input) = let root = se_get(input, "root") in if root == "" then ctfail("safety envelope gate requires @root\n") else let t0 = os_monotonic_ns() in let tmp = root + "/build/safety-envelope-gate" in let rm = os_run("/bin/rm", Cons("-rf", Cons(tmp, Nil))) in let mk = os_run("/bin/mkdir", Cons("-p", Cons(tmp + "/work", Nil))) in sg_go(sg_g(root, tmp, sg_gk_src()), t0)
+fn sg_faults(g, t0, kats, pos, corp, pre) = let v1 = sg_l2(7, 2) in let v2 = sg_l2(0 - 4, 5) in let v3 = sg_l2(1, 1) in let m1 = sg_l3(37, 11, 5) in let d1 = sg_l3(40, 0 - 7, 12) in let fa = sg_abit_ip(g, sg_abit_cli(g, sg_f0(), sg_l2(v1, v3)), "gk_mix", sg_l3(m1, sg_l3(0 - 9, 4, 7), sg_l3(100, 100, 3))) in if fa.err != "" then ctfail("safety envelope gate failed: " + fa.err + "\n") else let fm = sg_asm(g, sg_asm(g, sg_f0(), "gk_poly", sg_l3(v1, v2, v3)), "gk_mix", sg_l1(m1)) in if fm.err != "" then ctfail("safety envelope gate failed: " + fm.err + "\n") else if fm.trips < 6 or fm.inj < 12 then ctfail("safety envelope gate failed: the machine-code mutation sweep is vacuous (" + sg_fstr(fm) + ")\n") else let ts = os_monotonic_ns() in let ram1 = sg_seu(g, "ipa", "gk_mix", m1, 1, 3, 4080, 4095) in let ram2 = sg_seu(g, "ipd", "gk_dist", d1, 1, 5, 4080, 4095) in let reg1 = sg_seu(g, "ipa", "gk_mix", m1, 2, 5, 1, 31) in let reg2 = sg_seu(g, "ipd", "gk_dist", d1, 2, 9, 1, 31) in let te = os_monotonic_ns() in let rom1 = sg_rom(g, "ipa", "gk_mix", m1) in let fo = sg_rom_check(g, sg_f0(), "gk_mix", m1, rom1) in if fo.err != "" then ctfail("safety envelope gate failed: " + fo.err + "\n") else let fr = sg_seu_check(g, sg_seu_check(g, sg_f0(), "gk_mix", m1, "b_ram", ram1), "gk_dist", d1, "b_ram", ram2) in let fg = sg_seu_check(g, sg_seu_check(g, sg_f0(), "gk_mix", m1, "b_reg", reg1), "gk_dist", d1, "b_reg", reg2) in if fr.err != "" or fg.err != "" then ctfail("safety envelope gate failed: " + fr.err + " " + fg.err + "\n") else let fw = sg_watchdogs(g, sg_wcet(g, sg_wcet(g, sg_f0(), "gk_mix", m1), "gk_dist", d1)) in if fw.err != "" then ctfail("safety envelope gate failed: " + fw.err + "\n") else let fc = sg_cert(g, sg_f0()) in if fc.err != "" then ctfail("safety envelope gate failed: " + fc.err + "\n") else let fx = sg_arith(g, sg_f0()) in if fx.err != "" then ctfail("safety envelope gate failed: " + fx.err + "\n") else let fl = sg_latch(g, sg_f0()) in if fl.err != "" then ctfail("safety envelope gate failed: " + fl.err + "\n") else let real = if fs_path_exists(g.ltv_real) == 1 then sg_real_all(g) else {err: "", validated: 0, refused: 0, names: ""} in if real.err != "" then ctfail("safety envelope gate failed: " + real.err + "\n") else sg_more(g, t0, kats, pos, corp, pre, {fa: fa, fm: fm, fr: fr, fg: fg, fo: fo, fw: fw, fc: fc, fx: fx, fl: fl}, {ram1: ram1.s, ram2: ram2.s, reg1: reg1.s, reg2: reg2.s, rom1: rom1.s, romw: rom1.cycles}, real, te - ts)
+
+## ====================================================================================================================
+## 6. Independence of channel B, checked mechanically on every run. The tool must not link the compiler: its `use`
+##    lines, the modules of its bundle and every function its bundle defines are compared with the compiler's own
+##    function names (compiler/stage1/lumec.src). The same scan applied to this gate's bundle (which does `use lumec`
+##    for its third evaluator) must find the compiler: that is the negative control of the scanner.
+## ====================================================================================================================
+fn sg_name_end(s, n, i) = if i < n and at(s, i) != "(" and at(s, i) != " " and at(s, i) != "\n" then sg_name_end(s, n, i + 1) else i
+fn sg_defs_at(s, n, i, acc) = if i >= n then acc else let e = se_line_end(s, n, i) in sg_defs_at(s, n, e + 1, if e - i > 4 and slicen(s, n, i, i + 3) == "fn " then Cons(slicen(s, n, i + 3, sg_name_end(s, n, i + 3)), acc) else acc)
+fn sg_defs(s) = sg_defs_at(s, count(s), 0, Nil)
+## lines `<prefix><name><suffix>`: the names
+fn sg_tagged_at(s, n, i, pre, pn, acc) = if i >= n then acc else let e = se_line_end(s, n, i) in sg_tagged_at(s, n, e + 1, pre, pn, if e - i > pn and slicen(s, n, i, i + pn) == pre then Cons(slicen(s, n, i + pn, sg_name_end(s, n, i + pn)), acc) else acc)
+fn sg_uses(s) = sg_tagged_at(s, count(s), 0, "use ", 4, Nil)
+fn sg_mods(s) = sg_tagged_at(s, count(s), 0, "## --- module ", 14, Nil)
+fn sg_ms_split(xs, a, b) = match xs
+    Nil        => {a: a, b: b}
+    Cons(h, t) => sg_ms_split(t, b, Cons(h, a))
+fn sg_ms_merge2(x, ar, a, b, acc) = match b
+    Nil         => cb_rev(acc, a)
+    Cons(y, br) => if x <= y then sg_ms_merge(ar, b, Cons(x, acc)) else sg_ms_merge(a, br, Cons(y, acc))
+fn sg_ms_merge(a, b, acc) = match a
+    Nil         => cb_rev(acc, b)
+    Cons(x, ar) => sg_ms_merge2(x, ar, a, b, acc)
+fn sg_msort2(p) = sg_ms_merge(sg_msort(p.a), sg_msort(p.b), Nil)
+fn sg_msort1(xs, t) = match t
+    Nil         => xs
+    Cons(h2, r) => sg_msort2(sg_ms_split(xs, Nil, Nil))
+fn sg_msort(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => sg_msort1(xs, t)
+## two sorted lists: {n: common names, first}
+fn sg_common2(x, ar, a, b, n, first) = match b
+    Nil         => {n: n, first: first}
+    Cons(y, br) => if x == y then sg_common(ar, br, n + 1, if first == "" then x else first) else if x < y then sg_common(ar, b, n, first) else sg_common(a, br, n, first)
+fn sg_common(a, b, n, first) = match a
+    Nil         => {n: n, first: first}
+    Cons(x, ar) => sg_common2(x, ar, a, b, n, first)
+fn sg_all_in(xs, allowed) = match xs
+    Nil        => ""
+    Cons(h, t) => if sg_seen(allowed, h) == 1 then sg_all_in(t, allowed) else h
+## a line that defines a channel-B function (`fn cb...`) and names the third reader (lkir.src / larm64.src)
+fn sg_cb_leak_at(s, n, i) = if i >= n then "" else let e = se_line_end(s, n, i) in if e - i > 6 and slicen(s, n, i, i + 5) == "fn cb" and (se_find(s, e, "kir_", 4, i) >= 0 or se_find(s, e, "la64_", 5, i) >= 0) then slicen(s, n, i + 3, sg_name_end(s, n, i + 3)) else sg_cb_leak_at(s, n, e + 1)
+fn sg_chomp(s) = let n = count(s) in if n > 0 and (at(s, n - 1) == "\n" or at(s, n - 1) == "\r") then sg_chomp(slicen(s, n, 0, n - 1)) else s
+## the bundle `lume bundle <rel>` writes (the text lumec compiles for that entry file); "" when the driver fails
+fn sg_bundle(g, rel) = let o = g.tmp + "/bundle.out" in let z = fs_write_sync(o, "") in let r = os_run_capture_timeout("/bin/sh", Cons("-c", Cons("cd '" + g.root + "' && exec build/bin/lume_driver bundle " + rel, Nil)), o, o + ".err", 120000) in let p = sg_chomp(fs_read_file(o)) in if se_wait_exit(r) != 0 or p == "" then "" else fs_read_file(if se_starts(p, "/") == 1 then p else g.root + "/" + p)
+fn sg_indep_allowed() = Cons("larm64", Cons("lriscv", Cons("lkir", Nil)))
+fn sg_indep_res(err, tool_fns, comp_fns, gate_common, mods, fresh) = {err: err, tool_fns: tool_fns, comp_fns: comp_fns, gate_common: gate_common, mods: mods, fresh: fresh}
+fn sg_indep_chk(g, tsrc, b, gb, cdefs, tdefs, c1, c2, built) = let u = sg_all_in(sg_uses(tsrc), sg_indep_allowed()) in let m = sg_all_in(sg_mods(b), sg_indep_allowed()) in let leak = sg_cb_leak_at(b, count(b), 0) in let fresh = if built == "" then 0 - 1 else if built == b then 1 else 0 in let r0 = sg_indep_res("", cb_len(tdefs), cb_len(cdefs), c2.n, cb_len(sg_mods(b)), fresh) in if b == "" or gb == "" then sg_indep_res("`lume bundle` did not produce the bundle of the tool / of this gate", 0, 0, 0, 0, fresh) else if cb_len(cdefs) < 1000 then sg_indep_res("compiler/stage1/lumec.src defines only " + str(cb_len(cdefs)) + " functions: the scan would be vacuous", 0, 0, 0, 0, fresh) else if cb_len(tdefs) < 300 then sg_indep_res("the bundle of the tool defines only " + str(cb_len(tdefs)) + " functions", 0, 0, 0, 0, fresh) else if u != "" then sg_indep_res("lsafety_envelope.src has `use " + u + "`: only larm64 and lriscv are allowed", 0, 0, 0, 0, fresh) else if m != "" then sg_indep_res("the bundle of lsafety_envelope contains module " + m, 0, 0, 0, 0, fresh) else if c1.n != 0 then sg_indep_res("the bundle of lsafety_envelope defines " + str(c1.n) + " function(s) of the compiler, e.g. " + c1.first, 0, 0, 0, 0, fresh) else if leak != "" then sg_indep_res("channel-B function " + leak + " refers to lkir.src / larm64.src", 0, 0, 0, 0, fresh) else if c2.n < 1000 or sg_seen(sg_mods(gb), "lumec") != 1 then sg_indep_res("negative control: the scan did not find the compiler in this gate's own bundle (" + str(c2.n) + " common functions)", 0, 0, 0, 0, fresh) else if fresh == 0 then sg_indep_res("build/bin/lsafety_envelope.bundled.src is not the bundle of the current lsafety_envelope.src: rebuild the tool", 0, 0, 0, 0, fresh) else r0
+fn sg_indep(g) = let tsrc = fs_read_file(g.root + "/compiler/stage1/lsafety_envelope.src") in let b = sg_bundle(g, "compiler/stage1/lsafety_envelope.src") in let gb = sg_bundle(g, "tests/harness/safety_envelope_gate.src") in let cdefs = sg_msort(sg_defs(fs_read_file(g.root + "/compiler/stage1/lumec.src"))) in let tdefs = sg_msort(sg_defs(b)) in sg_indep_chk(g, tsrc, b, gb, cdefs, tdefs, sg_common(tdefs, cdefs, 0, ""), sg_common(sg_msort(sg_defs(gb)), cdefs, 0, ""), fs_read_file(g.root + "/build/bin/lsafety_envelope.bundled.src"))
+## the event log, the kernel id and the manifest are hashed with the tool's own SHA-256 (se_sha256, s2_*): FIPS 180-4
+## vectors, and the same digests as the compiler's lsh256
+fn sg_sha() = if se_sha256("abc") != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" or se_sha256("") != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" or se_sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") != "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1" then "lc_sha256 fails the FIPS 180-4 vectors" else if se_sha256(sg_gk_src()) != lsh256(sg_gk_src()) then "lc_sha256 and lsh256 disagree" else ""
+
+## ====================================================================================================================
+## 7. Independent-parser conformance: the clean-room front end must accept every kernel of
+##    examples/safety_envelope/critical_kernels.src and every `-> int / pure` function of lchameleon.src and lstd.src
+##    (the one exception is named: it calls a SIMD builtin, which is outside the fragment for both channels B and the
+##    reference), and its results must be those of channel A on the sampled vectors.
+## ====================================================================================================================
+## the signature itself says `-> int / pure` (not a string literal further down the line)
+fn sg_int_pure(l) = let n = count(l) in let p = se_find(l, n, ") -> int / pure", 15, 0) in let q = se_find(l, n, "\"", 1, 0) in if p >= 0 and (q < 0 or p < q) then 1 else 0
+fn sg_conf_file(g, acc, rel, s, n, i) = if i >= n or acc.err != "" then acc else let e = se_line_end(s, n, i) in if e - i > 20 and (slicen(s, n, i, i + 3) == "fn " or slicen(s, n, i, i + 7) == "pub fn ") and sg_int_pure(slicen(s, n, i, e)) == 1 then sg_conf_file(g, sg_conf_fn(acc, rel, cb_front(g.cbf, sg_fn_name(if slicen(s, n, i, i + 3) == "fn " then slicen(s, n, i, e) else slicen(s, n, i + 4, e))), sg_fn_name(if slicen(s, n, i, i + 3) == "fn " then slicen(s, n, i, e) else slicen(s, n, i + 4, e))), rel, s, n, e + 1) else sg_conf_file(g, acc, rel, s, n, e + 1)
+fn sg_conf_fn(acc, rel, fr, name) = if fr.err == "" then {err: "", ok: acc.ok + 1, exc: acc.exc} else if name == "vex_simd_hardware_add4_sum" and se_has(fr.err, "call of 'simd_add4_i64'") == 1 then {err: "", ok: acc.ok, exc: acc.exc + 1} else {err: "the clean-room front end refuses `" + name + "` of " + rel + ": " + fr.err, ok: acc.ok, exc: acc.exc}
+fn sg_conf_one(g, acc, rel) = let s = fs_read_file(g.root + "/" + rel) in if s == "" then {err: "cannot read " + rel, ok: acc.ok, exc: acc.exc} else sg_conf_file({root: g.root, cbf: cb_parse(s)}, acc, rel, s, count(s), 0)
+fn sg_conf(g) = sg_conf_one(g, sg_conf_one(g, sg_conf_one(g, {err: "", ok: 0, exc: 0}, "examples/safety_envelope/critical_kernels.src"), "compiler/stage1/lchameleon.src"), "compiler/stage1/lstd.src")
+## the critical kernels through the real CLI (channel A = lumec + lasm, channel B = clean room), sampled vectors
+fn sg_crit_list() = Cons({name: "actuator_rate_limit", rng: 200, extra: ""}, Cons({name: "infusion_dose_clamp", rng: 600, extra: ""}, Cons({name: "sensor_mid_value_select", rng: 1000, extra: ""}, Cons({name: "braking_margin_mm", rng: 100000, extra: ""}, Cons({name: "lumeputer_rv32im_pc_step", rng: 60, extra: ""}, Nil)))))
+fn sg_crit_one(g, acc, k, path, src, prog, vecs) = if rv_len(vecs) < 6 then {err: k.name + ": the sampler found only " + str(rv_len(vecs)) + " committable vectors", kernels: acc.kernels, vecs: acc.vecs, maxr: acc.maxr, sumc: acc.sumc} else sg_pos_acc(acc, sg_lockstep(g, "crit", path, prog, k.name, vecs, g.ltv_ok, k.extra), se_bound(src, k.name))
+fn sg_crit_go(g, ks, acc, path, src, prog) = match ks
+    Nil        => acc
+    Cons(h, t) => if acc.err != "" then acc else sg_crit_go(g, t, sg_crit_one(g, acc, h, path, src, prog, sg_vectors(prog, h.name, h.rng, 5501 + acc.kernels * 97, 6000, 10)), path, src, prog)
+fn sg_crit(g) = let path = g.root + "/examples/safety_envelope/critical_kernels.src" in let src = fs_read_file(path) in sg_crit_go(g, sg_crit_list(), {err: "", kernels: 0, vecs: 0, maxr: 0, sumc: 0}, path, src, nf_late(lumec_expand(src)))
+
+## ====================================================================================================================
+## 8. Differential campaign. The gate generates random typed kernels of the fragment as TREES (private constructors
+##    G*), renders each tree to text with the precedence and associativity of the specification, and evaluates the
+##    tree itself (de_*, a fourth opinion that never sees a parser). Channel A = the batch compiled by the real lumec
+##    + lasm and run natively; channel B = the clean-room compile of the same text on the LumePuter. Expected:
+##      * the tree evaluates to v inside i32          -> A prints v and B halts with v;
+##      * it traps (contract, ctfail, division by 0)  -> A exits non-zero and B traps with that cause;
+##      * it leaves i32 on the way                    -> B traps `integer_overflow`; A follows the 64-bit evaluation.
+##    A kernel whose random contract lumec refutes at compile time ([V0001]) is replaced by a stub on the A side only,
+##    after the counterexample lumec printed was checked on the tree (it must violate the contract).
+## ====================================================================================================================
+fn dg_r(s, x) = {s: s, x: x}
+fn dg_lit(s) = let k = sg_pick(s, 20) in let s2 = sg_prng(s) in if k < 12 then sg_pick(s2, 10) else if k < 16 then sg_pick(s2, 1000) else if k == 16 then 46341 else if k == 17 then 65536 else if k == 18 then 2147483647 else sg_pick(s2, 30000)
+fn dg_nth_s(xs, i) = match xs
+    Nil        => ""
+    Cons(h, t) => if i == 0 then h else dg_nth_s(t, i - 1)
+fn dg_leaf_i(s, cx) = let nv = cb_len(cx.vi) in let s1 = sg_prng(s) in if nv > 0 and sg_pick(s, 3) != 0 then dg_r(sg_prng(s1), GV(dg_nth_s(cx.vi, sg_pick(s1, nv)))) else dg_r(sg_prng(sg_prng(s1)), GN(dg_lit(s1)))
+fn dg_bin2(l, r, op) = dg_r(sg_prng(r.s), GB(op, l.x, r.x, sg_pick(r.s, 6)))
+fn dg_cmp_leaf(s, cx) = let l = dg_leaf_i(s, cx) in dg_bin2(l, dg_leaf_i(l.s, cx), 6 + sg_pick(s, 6))
+fn dg_leaf_b(s, cx) = let nv = cb_len(cx.vb) in let s1 = sg_prng(s) in let k = sg_pick(s, 6) in if nv > 0 and k < 2 then dg_r(sg_prng(s1), GV(dg_nth_s(cx.vb, sg_pick(s1, nv)))) else if k == 2 then dg_r(sg_prng(s1), GT(sg_pick(s1, 2))) else dg_cmp_leaf(s1, cx)
+fn dg_ty(s, cx, d, ty) = if ty == 1 then dg_int(s, cx, d) else dg_bool(s, cx, d)
+fn dg_bin(s, cx, d, op, ty) = let l = dg_ty(s, cx, d - 1, ty) in dg_bin2(l, dg_ty(l.s, cx, d - 1, ty), op)
+fn dg_un(r, op) = dg_r(r.s, GU(op, r.x))
+fn dg_par(r) = dg_r(r.s, GP(r.x))
+fn dg_if3(c, t, f) = dg_r(sg_prng(f.s), GI(c.x, t.x, f.x, sg_pick(f.s, 4)))
+fn dg_if2(c, t, cx, d, ty) = dg_if3(c, t, dg_ty(t.s, cx, d - 1, ty))
+fn dg_if(s, cx, d, ty) = let c = dg_bool(s, cx, d - 1) in dg_if2(c, dg_ty(c.s, cx, d - 1, ty), cx, d, ty)
+fn dg_rm(xs, nm) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h == nm then dg_rm(t, nm) else Cons(h, dg_rm(t, nm))
+fn dg_let3(nm, v, b) = dg_r(b.s, GL(nm, v.x, b.x))
+fn dg_let2(nm, vt, v, cx, d, ty) = dg_let3(nm, v, dg_ty(v.s, if vt == 1 then {vi: Cons(nm, dg_rm(cx.vi, nm)), vb: dg_rm(cx.vb, nm), cal: cx.cal} else {vi: dg_rm(cx.vi, nm), vb: Cons(nm, dg_rm(cx.vb, nm)), cal: cx.cal}, d - 1, ty))
+fn dg_let(s, cx, d, ty) = let nm = "x" + str(sg_pick(s, 4)) in let s1 = sg_prng(s) in let vt = if sg_pick(s1, 4) == 0 then 2 else 1 in dg_let2(nm, vt, dg_ty(sg_prng(s1), cx, d - 1, vt), cx, d, ty)
+fn dg_args(s, cx, d, n, acc) = if n <= 0 then {s: s, xs: cb_rev(acc, Nil)} else let a = dg_int(s, cx, d) in dg_args(a.s, cx, d, n - 1, Cons(a.x, acc))
+fn dg_nth_c(xs, i) = match xs
+    Nil        => {name: "", n: 0}
+    Cons(h, t) => if i == 0 then h else dg_nth_c(t, i - 1)
+fn dg_call2(c, a) = dg_r(a.s, GC(c.name, a.xs))
+fn dg_call(s, cx, d) = let nc = cb_len(cx.cal) in if nc == 0 then dg_leaf_i(s, cx) else let c = dg_nth_c(cx.cal, sg_pick(s, nc)) in dg_call2(c, dg_args(sg_prng(s), cx, if d > 2 then 1 else d - 1, c.n, Nil))
+fn dg_bit2(l, r, op) = dg_r(r.s, GX(op, l.x, r.x))
+fn dg_bit(s, cx, d) = let l = dg_int(sg_prng(s), cx, d - 1) in dg_bit2(l, dg_int(l.s, cx, d - 1), 14 + sg_pick(s, 3))
+fn dg_failif2(c, e, side) = dg_r(sg_prng(e.s), if side == 0 then GI(c.x, GF(0), e.x, 0) else GI(c.x, e.x, GF(0), 0))
+fn dg_failif(s, cx, d) = let c = dg_bool(sg_prng(s), cx, d - 1) in dg_failif2(c, dg_int(c.s, cx, d - 1), sg_pick(s, 2))
+fn dg_int(s, cx, d) = if d <= 0 then dg_leaf_i(s, cx) else let k = sg_pick(s, 100) in let s1 = sg_prng(s) in if k < 12 then dg_leaf_i(s1, cx) else if k < 50 then dg_bin(sg_prng(s1), cx, d, 1 + sg_pick(s1, 3), 1) else if k < 58 then dg_bin(sg_prng(s1), cx, d, 4 + sg_pick(s1, 2), 1) else if k < 63 then dg_un(dg_int(s1, cx, d - 1), 1) else if k < 80 then dg_if(s1, cx, d, 1) else if k < 88 then dg_let(s1, cx, d, 1) else if k < 93 then dg_call(s1, cx, d) else if k < 96 then dg_bit(s1, cx, d) else if k < 99 then dg_par(dg_int(s1, cx, d - 1)) else dg_failif(s1, cx, d)
+fn dg_cmp(s, cx, d, op) = let l = dg_int(s, cx, d - 1) in dg_bin2(l, dg_int(l.s, cx, d - 1), op)
+fn dg_bool(s, cx, d) = if d <= 0 then dg_leaf_b(s, cx) else let k = sg_pick(s, 100) in let s1 = sg_prng(s) in if k < 45 then dg_cmp(sg_prng(s1), cx, d, 6 + sg_pick(s1, 6)) else if k < 70 then dg_bin(sg_prng(s1), cx, d, 12 + sg_pick(s1, 2), 2) else if k < 80 then dg_un(dg_bool(s1, cx, d - 1), 2) else if k < 85 then dg_leaf_b(s1, cx) else if k < 90 then dg_if(s1, cx, d, 2) else if k < 94 then dg_bin(sg_prng(s1), cx, d, 6 + sg_pick(s1, 2), 2) else if k < 97 then dg_par(dg_bool(s1, cx, d - 1)) else dg_let(s1, cx, d, 2)
+## the same tree with every operator node in parentheses
+fn dg_full_l(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(dg_full(h), dg_full_l(t))
+fn dg_full(e) = match e
+    GP(x)           => dg_full(x)
+    GU(op, x)       => GP(GU(op, dg_full(x)))
+    GB(op, l, r, f) => GP(GB(op, dg_full(l), dg_full(r), 0))
+    GX(op, l, r)    => GX(op, dg_full(l), dg_full(r))
+    GI(c, t, f, fm) => GP(GI(dg_full(c), dg_full(t), dg_full(f), 0))
+    GL(nm, v, b)    => GP(GL(nm, dg_full(v), dg_full(b)))
+    GC(nm, args)    => GC(nm, dg_full_l(args))
+    _               => e
+
+## --- rendering by the precedence of the specification: or 1 < and 2 < comparison 3 (no chaining) < + - 5 < * / % 6
+## < unary 7. `if` and `let` extend to the end of their context, so they are written bare only in tail position.
+fn dr_op(op) = if op == 1 then "+" else if op == 2 then "-" else if op == 3 then "*" else if op == 4 then "/" else if op == 5 then "%" else if op == 6 then "==" else if op == 7 then "!=" else if op == 8 then "<" else if op == 9 then "<=" else if op == 10 then ">" else if op == 11 then ">=" else if op == 12 then "and" else "or"
+fn dr_prec(op) = if op <= 2 then 5 else if op <= 5 then 6 else if op <= 11 then 3 else if op == 12 then 2 else 1
+fn dr_sep(op, fmt) = if fmt == 1 then " " + dr_op(op) + "\n      " else if fmt == 2 and op != 2 and op < 12 then dr_op(op) else if fmt == 3 then " " + dr_op(op) + " ## c\n      " else if fmt == 4 then "  " + dr_op(op) + "  " else " " + dr_op(op) + " "
+fn dr_is_if(e) = match e
+    GI(c, t, f, fm) => 1
+    _               => 0
+fn dr_args(args) = match args
+    Nil        => ""
+    Cons(h, t) => dr(h, 0, 1) + (if cb_len(t) > 0 then ", " else "") + dr_args(t)
+fn dr_neg(t) = if count(t) > 0 and at(t, 0) == "-" then "- " + t else "-" + t
+fn dr_bin(op, l, r, fmt, minp, tail) = let p = dr_prec(op) in if p < minp then "(" + dr(l, if p == 3 then 4 else p, 0) + dr_sep(op, fmt) + dr(r, p + 1, 1) + ")" else dr(l, if p == 3 then 4 else p, 0) + dr_sep(op, fmt) + dr(r, p + 1, tail)
+fn dr_if_t(c, t, f, fm) = (if fm == 1 then "if " + dr(c, 0, 1) + "\n      then " + dr(t, 0, 1) else "if " + dr(c, 0, 1) + " then " + dr(t, 0, 1)) + (if fm == 2 and dr_is_if(f) == 1 then " el" + dr(f, 0, 1) else if fm == 1 then "\n      else " + dr(f, 0, 1) else " else " + dr(f, 0, 1))
+fn dr_bit(op) = if op == 14 then "bit_and" else if op == 15 then "bit_or" else "bit_xor"
+fn dr(e, minp, tail) = match e
+    GN(v)           => str(v)
+    GT(v)           => if v == 1 then "true" else "false"
+    GV(nm)          => nm
+    GP(x)           => "(" + dr(x, 0, 1) + ")"
+    GF(z)           => "ctfail(\"dk\")"
+    GU(op, x)       => if op == 1 then dr_neg(dr(x, 7, tail)) else "not " + dr(x, 7, tail)
+    GB(op, l, r, f) => dr_bin(op, l, r, f, minp, tail)
+    GX(op, l, r)    => dr_bit(op) + "(" + dr(l, 0, 1) + ", " + dr(r, 0, 1) + ")"
+    GI(c, t, f, fm) => if tail == 1 then dr_if_t(c, t, f, fm) else "(" + dr_if_t(c, t, f, fm) + ")"
+    GL(nm, v, b)    => if tail == 1 then "let " + nm + " = " + dr(v, 0, 1) + " in " + dr(b, 0, 1) else "(let " + nm + " = " + dr(v, 0, 1) + " in " + dr(b, 0, 1) + ")"
+    GC(nm, args)    => nm + "(" + dr_args(args) + ")"
+    _               => "?"
+
+## --- evaluation of the tree at `bits` = 32 or 64. {st, v}: st 0 value, 1 contract / ctfail, 2 overflow, 3 division by 0
+fn de_v(v) = {st: 0, v: v}
+fn de_t(k) = {st: k, v: 0}
+fn de_max(bits) = if bits == 32 then 2147483647 else 9223372036854775807
+fn de_min(bits) = 0 - de_max(bits) - 1
+fn de_rng(v, bits) = if bits == 32 and (v < 0 - 2147483648 or v > 2147483647) then de_t(2) else de_v(v)
+fn de_add(a, b, bits) = if (b > 0 and a > de_max(64) - b) or (b < 0 and a < de_min(64) - b) then de_t(2) else de_rng(a + b, bits)
+fn de_sub(a, b, bits) = if (b < 0 and a > de_max(64) + b) or (b > 0 and a < de_min(64) + b) then de_t(2) else de_rng(a - b, bits)
+fn de_mul_ovf(a, b) = if a == 0 or b == 0 then 0 else if a == 0 - 1 then (if b == de_min(64) then 1 else 0) else if b == 0 - 1 then (if a == de_min(64) then 1 else 0) else if a > 0 and b > 0 then (if a > de_max(64) / b then 1 else 0) else if a < 0 and b < 0 then (if a < de_max(64) / b then 1 else 0) else if a > 0 then (if b < de_min(64) / a then 1 else 0) else if a < de_min(64) / b then 1 else 0
+fn de_mul(a, b, bits) = if de_mul_ovf(a, b) == 1 then de_t(2) else de_rng(a * b, bits)
+fn de_div(a, b, bits) = if b == 0 then de_t(3) else if a == de_min(bits) and b == 0 - 1 then de_t(2) else de_v(a / b)
+fn de_rem(a, b, bits) = if b == 0 then de_t(3) else if b == 0 - 1 then (if bits == 64 and a == de_min(64) then de_t(2) else de_v(0)) else de_v(a % b)
+fn de_b01(c) = de_v(if c then 1 else 0)
+fn de_arith(op, a, b, bits) = if op == 1 then de_add(a, b, bits) else if op == 2 then de_sub(a, b, bits) else if op == 3 then de_mul(a, b, bits) else if op == 4 then de_div(a, b, bits) else if op == 5 then de_rem(a, b, bits) else if op == 6 then de_b01(a == b) else if op == 7 then de_b01(a != b) else if op == 8 then de_b01(a < b) else if op == 9 then de_b01(a <= b) else if op == 10 then de_b01(a > b) else de_b01(a >= b)
+fn de_un(op, a, bits) = if a.st != 0 then a else if op == 1 then (if a.v == de_min(bits) then de_t(2) else de_v(0 - a.v)) else de_v(1 - a.v)
+fn de_bin2(op, a, b, bits) = if b.st != 0 then b else de_arith(op, a, b.v, bits)
+fn de_bin(fs, env, op, a, r, bits) = if a.st != 0 then a else if op == 12 then (if a.v == 0 then de_v(0) else de(fs, env, r, bits)) else if op == 13 then (if a.v != 0 then de_v(1) else de(fs, env, r, bits)) else de_bin2(op, a.v, de(fs, env, r, bits), bits)
+fn de_bit2(op, a, b) = if b.st != 0 then b else de_v(if op == 14 then bit_and(a, b.v) else if op == 15 then bit_or(a, b.v) else bit_xor(a, b.v))
+fn de_bit(fs, env, op, a, r, bits) = if a.st != 0 then a else de_bit2(op, a.v, de(fs, env, r, bits))
+fn de_if(fs, env, c, t, f, bits) = if c.st != 0 then c else if c.v != 0 then de(fs, env, t, bits) else de(fs, env, f, bits)
+fn de_let(fs, env, nm, v, b, bits) = if v.st != 0 then v else de(fs, Cons({n: nm, v: v.v}, env), b, bits)
+fn de_get(env, nm) = match env
+    Nil        => 0
+    Cons(h, t) => if h.n == nm then h.v else de_get(t, nm)
+fn de_args(fs, env, args, bits, acc) = match args
+    Nil        => {st: 0, vs: cb_rev(acc, Nil)}
+    Cons(h, t) => let a = de(fs, env, h, bits) in if a.st != 0 then {st: a.st, vs: Nil} else de_args(fs, env, t, bits, Cons(a.v, acc))
+fn de_bind2(p, pr, vs) = match vs
+    Nil         => Nil
+    Cons(v, vr) => Cons({n: p.n, v: v}, de_bind(pr, vr))
+fn de_bind(ps, vs) = match ps
+    Nil         => Nil
+    Cons(p, pr) => de_bind2(p, pr, vs)
+fn de_clauses(fs, env, cs, bits) = match cs
+    Nil        => de_v(1)
+    Cons(h, t) => let r = de(fs, env, h, bits) in if r.st != 0 then r else if r.v == 0 then de_t(1) else de_clauses(fs, env, t, bits)
+fn de_post(fs, env, k, b, bits) = if b.st != 0 then b else let en = de_clauses(fs, Cons({n: "result", v: b.v}, env), k.enss, bits) in if en.st != 0 then en else b
+fn de_kernel(fs, k, vs, bits) = let env = de_bind(k.ps, vs) in let rq = de_clauses(fs, env, k.reqs, bits) in if rq.st != 0 then rq else de_post(fs, env, k, de(fs, env, k.body, bits), bits)
+fn de_call(fs, k, a, bits) = if a.st != 0 then de_t(a.st) else de_kernel(fs, k, a.vs, bits)
+fn dk_find(fs, nm) = match fs
+    Nil        => {name: "", ps: Nil, rt: 1, reqs: Nil, enss: Nil, body: GN(0), risky: 0, fmt: 0, attr: 0, pure: 0}
+    Cons(h, t) => if h.name == nm then h else dk_find(t, nm)
+fn de(fs, env, e, bits) = match e
+    GN(v)           => de_v(v)
+    GT(v)           => de_v(v)
+    GV(nm)          => de_v(de_get(env, nm))
+    GP(x)           => de(fs, env, x, bits)
+    GF(z)           => de_t(1)
+    GU(op, x)       => de_un(op, de(fs, env, x, bits), bits)
+    GB(op, l, r, f) => de_bin(fs, env, op, de(fs, env, l, bits), r, bits)
+    GX(op, l, r)    => de_bit(fs, env, op, de(fs, env, l, bits), r, bits)
+    GI(c, t, f, fm) => de_if(fs, env, de(fs, env, c, bits), t, f, bits)
+    GL(nm, v, b)    => de_let(fs, env, nm, de(fs, env, v, bits), b, bits)
+    GC(nm, args)    => de_call(fs, dk_find(fs, nm), de_args(fs, env, args, bits, Nil), bits)
+    _               => de_t(9)
+
+## --- kernels: {name, ps: [{n, t}], rt, reqs, enss, body, risky, fmt, attr, pure}
+fn dk_params(s, n, i, acc) = if i >= n then {s: s, ps: cb_rev(acc, Nil)} else dk_params(sg_prng(s), n, i + 1, Cons({n: "p" + str(i), t: if sg_pick(s, 8) == 0 then 2 else 1}, acc))
+fn dk_names(ps, ty) = match ps
+    Nil        => Nil
+    Cons(h, t) => if h.t == ty then Cons(h.n, dk_names(t, ty)) else dk_names(t, ty)
+fn dk_all_int(ps) = match ps
+    Nil        => 1
+    Cons(h, t) => if h.t == 1 then dk_all_int(t) else 0
+fn dk_range(p, lo, hi) = GB(12, GB(11, GV(p), GU(1, GN(lo)), 0), GB(9, GV(p), GN(hi), 0), 0)
+fn dk_mk(name, ps, rt, reqs, enss, body, risky, s) = {s: sg_prng(sg_prng(sg_prng(s))), k: {name: name, ps: ps, rt: rt, reqs: reqs, enss: enss, body: body, risky: risky, fmt: sg_pick(s, 3), attr: sg_pick(sg_prng(s), 3), pure: sg_pick(sg_prng(sg_prng(s)), 2)}}
+fn dk_con(name, ps, rt, cx, b, ck, ints) = let s = b.s in if ck < 4 then dk_mk(name, ps, rt, Nil, Nil, b.x, 0, s) else if ck < 6 then dk_mk(name, ps, rt, Nil, Cons(GB(6, GV("result"), dg_full(b.x), 0), Nil), b.x, 0, s) else if ck < 8 and cb_len(ints) > 0 then dk_mk(name, ps, rt, Cons(dk_range(dg_nth_s(ints, 0), sg_pick(s, 8), sg_pick(sg_prng(s), 8)), Nil), Nil, b.x, 1, sg_prng(sg_prng(s))) else if ck == 8 then (let r = dg_bool(s, cx, 1) in dk_mk(name, ps, rt, Cons(r.x, Nil), Nil, b.x, 1, r.s)) else if ck == 9 then (let r = dg_bool(s, {vi: if rt == 1 then Cons("result", cx.vi) else cx.vi, vb: if rt == 2 then Cons("result", cx.vb) else cx.vb, cal: Nil}, 1) in dk_mk(name, ps, rt, Nil, Cons(r.x, Nil), b.x, 1, r.s)) else dk_mk(name, ps, rt, Nil, Nil, b.x, 0, s)
+fn dk_gen2(s, name, p, rt, cal) = let cx = {vi: dk_names(p.ps, 1), vb: dk_names(p.ps, 2), cal: cal} in dk_con(name, p.ps, rt, cx, dg_ty(sg_prng(p.s), cx, 2 + sg_pick(p.s, 3), rt), sg_pick(s, 10), cx.vi)
+fn dk_gen(s, name, cal) = dk_gen2(sg_prng(s), name, dk_params(sg_prng(sg_prng(s)), 1 + sg_pick(s, 4), 0, Nil), if sg_pick(sg_prng(sg_prng(sg_prng(s))), 10) == 0 then 2 else 1, cal)
+## half of the kernels are leaves (no calls) and may be called by the other half: call depth 1 keeps lumec's structural
+## cost of a caller (callee bodies included) far below the `@bound` the campaign writes
+fn dk_batch(s, n, i, tag, cal, acc) = if i >= n then {s: s, ks: cb_rev(acc, Nil)} else let leaf = sg_pick(s, 2) in let g = dk_gen(sg_prng(s), "dk" + tag + "_" + str(i), if leaf == 1 then Nil else cal) in dk_batch(g.s, n, i + 1, tag, if leaf == 1 and g.k.risky == 0 and g.k.rt == 1 and dk_all_int(g.k.ps) == 1 then Cons({name: g.k.name, n: cb_len(g.k.ps)}, cal) else cal, Cons(g.k, acc))
+fn dk_ps_text(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => h.n + ": " + (if h.t == 1 then "int" else "bool") + (if cb_len(t) > 0 then ", " else "") + dk_ps_text(t)
+fn dk_cl_text(cs, kw, sep) = match cs
+    Nil        => ""
+    Cons(h, t) => sep + kw + " " + dr(h, 0, 1) + dk_cl_text(t, kw, sep)
+fn dk_head(k) = "fn " + k.name + "(" + dk_ps_text(k.ps) + ") -> " + (if k.rt == 1 then "int" else "bool")
+fn dk_text(k) = (if k.attr == 1 then "@bound(cycles: 100000)\n" else if k.attr == 2 then "@bound(100000)\n" else "") + dk_head(k) + (if k.pure == 1 then " / pure" else "") + (if k.fmt == 1 then dk_cl_text(k.reqs, "requires", "\n  ") + dk_cl_text(k.enss, "ensures", "\n  ") + "\n= " else dk_cl_text(k.reqs, "requires", " ") + dk_cl_text(k.enss, "ensures", " ") + " = ") + dr(k.body, 0, 1) + "\n"
+fn dk_stub(k) = dk_head(k) + " = " + (if k.rt == 1 then "0" else "false") + "\n"
+fn dk_texts(ks, dropped, forA) = match ks
+    Nil        => Nil
+    Cons(h, t) => Cons(if forA == 1 and sg_seen(dropped, h.name) == 1 then dk_stub(h) else dk_text(h), dk_texts(t, dropped, forA))
+
+## --- the channel-A harness appended to the batch: reads lines `k a b c d` and appends one result line per call
+fn dkh_arg(p, i) = let l = at("abcd", i) in if p.t == 1 then l else "(" + l + " == 1)"
+fn dkh_args(ps, i) = match ps
+    Nil        => ""
+    Cons(h, t) => dkh_arg(h, i) + (if cb_len(t) > 0 then ", " else "") + dkh_args(t, i + 1)
+fn dkh_chain(ks, i) = match ks
+    Nil        => Nil
+    Cons(h, t) => Cons("if k == " + str(i) + " then " + (if h.rt == 1 then h.name + "(" + dkh_args(h.ps, 0) + ")" else "(if " + h.name + "(" + dkh_args(h.ps, 0) + ") then 1 else 0)") + " else ", dkh_chain(t, i + 1))
+fn dkh_text(ks) = "fn dkh_int(s, n, i, acc, neg, any) = if i < n and at(s, i) == \"-\" and any == 0 then dkh_int(s, n, i + 1, acc, 1, 1) else if i < n and at(s, i) >= \"0\" and at(s, i) <= \"9\" then dkh_int(s, n, i + 1, acc * 10 + toint(at(s, i)), neg, 1) else {v: if neg == 1 then 0 - acc else acc, i: i}\nfn dkh_run(k, a, b, c, d) = " + dk_join(dkh_chain(ks, 0)) + "0 - 1\nfn dkh_loop(s, n, i) = if i >= n then os_exit(0) else let k = dkh_int(s, n, i, 0, 0, 0) in let a = dkh_int(s, n, k.i + 1, 0, 0, 0) in let b = dkh_int(s, n, a.i + 1, 0, 0, 0) in let c = dkh_int(s, n, b.i + 1, 0, 0, 0) in let d = dkh_int(s, n, c.i + 1, 0, 0, 0) in let w = fs_append_sync(\"/dev/stdout\", str(dkh_run(k.v, a.v, b.v, c.v, d.v)) + \"\\n\") in dkh_loop(s, n, d.i + 1)\nfn dkh_main(s) = dkh_loop(s, count(s), 0)\nprint dkh_main(readall())\n"
+
+## --- vectors and the channel-B side (in process, through the real compiler and interpreter of the tool)
+fn dv_val(s) = let k = sg_pick(s, 20) in let s2 = sg_prng(s) in if k < 12 then sg_pick(s2, 25) - 12 else if k < 16 then sg_pick(s2, 2001) - 1000 else if k == 16 then 2147483647 else if k == 17 then 0 - 2147483648 else if k == 18 then 46341 else 65536
+fn dv_vec(s, ps) = match ps
+    Nil        => {s: s, xs: Nil}
+    Cons(h, t) => let r = dv_vec(sg_prng(sg_prng(s)), t) in {s: r.s, xs: Cons(if h.t == 2 then sg_pick(s, 2) else dv_val(s), r.xs)}
+fn dv_pad(xs, n) = if n <= 0 then "" else " " + str(sg_nth_i(xs, 4 - n)) + dv_pad(xs, n - 1)
+fn dq_b_want(st) = if st == 1 then "ebreak_contract_violation" else if st == 2 then "ebreak_integer_overflow" else if st == 3 then "ebreak_division_by_zero" else "?"
+fn dq_b_bad(k, xs, r32, b) = "channel B disagrees with the tree on " + k.name + "(" + se_join_ints(xs) + "): the tree gives " + (if r32.st == 0 then str(r32.v) else "trap " + dq_b_want(r32.st)) + ", channel B " + (if b.ok == 1 then str(b.v) else "trap " + b.cause + " " + b.detail) + "; kernel:\n" + dk_text(k)
+## counters: {err, kernels, vecs, val, trap, dom, refuted, bonly, lines (A batch input, reversed), want (expected A output, reversed), traps (A trap lines, reversed)}
+fn dq_acc0() = {err: "", kernels: 0, vecs: 0, val: 0, trap: 0, dom: 0, refuted: 0, bonly: 0, lines: Nil, want: Nil, traps: Nil}
+fn dq_vec_acc(acc, k, ki, xs, r32, r64, isdrop) = let line = str(ki) + dv_pad(xs, 4) + "\n" in {err: "", kernels: acc.kernels, vecs: acc.vecs + 1, val: acc.val + (if r32.st == 0 then 1 else 0), trap: acc.trap + (if r32.st != 0 and r64.st != 0 then 1 else 0), dom: acc.dom + (if r32.st != 0 and r64.st == 0 then 1 else 0), refuted: acc.refuted, bonly: acc.bonly + isdrop, lines: if isdrop == 0 and r64.st == 0 then Cons(line, acc.lines) else acc.lines, want: if isdrop == 0 and r64.st == 0 then Cons(str(r64.v) + "\n", acc.want) else acc.want, traps: if isdrop == 0 and r64.st != 0 then Cons({line: line, k: k, xs: xs}, acc.traps) else acc.traps}
+fn dq_err(acc, msg) = {err: msg, kernels: acc.kernels, vecs: acc.vecs, val: acc.val, trap: acc.trap, dom: acc.dom, refuted: acc.refuted, bonly: acc.bonly, lines: acc.lines, want: acc.want, traps: acc.traps}
+fn dq_vec(acc, ks, k, ki, bp, xs, isdrop) = let r32 = de_kernel(ks, k, xs, 32) in let r64 = de_kernel(ks, k, xs, 64) in let b = se_b_go(bp, xs, 200000, rv_no_inj()) in if (r32.st == 0 and (b.ok != 1 or b.v != r32.v)) or (r32.st != 0 and (b.ok == 1 or b.cause != dq_b_want(r32.st))) then dq_err(acc, dq_b_bad(k, xs, r32, b)) else dq_vec_acc(acc, k, ki, xs, r32, r64, isdrop)
+fn dq_vecs(acc, ks, k, ki, bp, s, n, isdrop) = if n <= 0 or acc.err != "" then {s: s, acc: acc} else let v = dv_vec(s, k.ps) in dq_vecs(dq_vec(acc, ks, k, ki, bp, v.xs, isdrop), ks, k, ki, bp, v.s, n - 1, isdrop)
+fn dq_kernel(acc, ks, k, ki, fns, s, dropped) = let bp = cb_prog_fr(cb_front(fns, k.name)) in if bp.err != "" then {s: s, acc: dq_err(acc, "channel B refuses a generated kernel of the fragment: " + bp.err + "; kernel:\n" + dk_text(k))} else dq_vecs({err: "", kernels: acc.kernels + 1, vecs: acc.vecs, val: acc.val, trap: acc.trap, dom: acc.dom, refuted: acc.refuted, bonly: acc.bonly, lines: acc.lines, want: acc.want, traps: acc.traps}, ks, k, ki, bp, s, 5, sg_seen(dropped, k.name))
+fn dq_kernels(acc, ks, todo, ki, fns, s, dropped) = match todo
+    Nil        => {s: s, acc: acc}
+    Cons(h, t) => if acc.err != "" then {s: s, acc: acc} else let r = dq_kernel(acc, ks, h, ki, fns, s, dropped) in dq_kernels(r.acc, ks, t, ki + 1, fns, r.s, dropped)
+
+## --- the channel-A side: compile the batch with the real lumec + lasm; a kernel lumec refutes is checked and stubbed
+fn dq_quoted_at(s, n, i) = let p = se_find(s, n, "'dk", 3, i) in if p < 0 then "" else slicen(s, n, p + 1, sg_qend(s, n, p + 1))
+fn sg_qend(s, n, i) = if i < n and at(s, i) != "'" then sg_qend(s, n, i + 1) else i
+## lumec prints counterexamples up to the ends of the 64-bit range (`p0 = 9223372036854775807`, 19 digits): the digits
+## are accumulated here and saturate at 2^63 - 1 (a value read as 0 made the gate reject a correct refutation)
+fn dq_cex_digs(msg, e, i, acc) = if i >= e then acc else let d = se_dig(at(msg, i)) in if acc > 922337203685477580 or (acc == 922337203685477580 and d > 7) then 9223372036854775807 else dq_cex_digs(msg, e, i + 1, acc * 10 + d)
+fn dq_cex_val(msg, n, p) = if p < 0 then 0 else let neg = if p < n and at(msg, p) == "-" then 1 else 0 in let e = se_digits_end(msg, n, p + neg) in if e == p + neg then 0 else if neg == 1 then 0 - dq_cex_digs(msg, e, p + 1, 0) else dq_cex_digs(msg, e, p, 0)
+fn dq_cex_one(msg, n, c0, nm) = let p1 = se_find(msg, n, " " + nm + " = ", count(nm) + 4, c0) in let p2 = se_find(msg, n, "," + nm + " = ", count(nm) + 4, c0) in dq_cex_val(msg, n, if p1 >= 0 then p1 + count(nm) + 4 else if p2 >= 0 then p2 + count(nm) + 4 else 0 - 1)
+fn dq_cex(msg, n, c0, ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons(dq_cex_one(msg, n, c0, h.n), dq_cex(msg, n, c0, t))
+## lumec's counterexample must violate the contract on the tree; else a bounded search must find a violation
+fn dq_search(ks, k, s, tries) = if tries <= 0 then 0 else let v = dv_vec(s, k.ps) in if (de_kernel(ks, k, v.xs, 64)).st == 1 then 1 else dq_search(ks, k, v.s, tries - 1)
+fn dq_refute_ok(ks, k, msg) = let n = count(msg) in let c0 = se_find(msg, n, "counterexample:", 15, 0) in if k.risky != 1 or se_has(msg, "[V0001]") != 1 then 0 else if c0 >= 0 and (de_kernel(ks, k, dq_cex(msg, n, c0 + 14, k.ps), 64)).st == 1 then 1 else dq_search(ks, k, 777 + n, 4000)
+fn dq_a_build(g, tag, ks, dropped, tries) = let p = g.tmp + "/" + tag in let w = fs_write_sync(p + ".src", dk_join(dk_texts(ks, dropped, 1)) + dkh_text(ks)) in let c = os_run_input_capture_timeout(g.lumec, Nil, p + ".src", p + ".s", p + ".cerr", 300000) in if se_wait_exit(c) == 0 then dq_a_link(g, p, dropped) else dq_a_rej(g, tag, ks, dropped, tries, se_first_line(fs_read_file(p + ".cerr")))
+fn dq_a_rej(g, tag, ks, dropped, tries, msg) = let nm = dq_quoted_at(msg, count(msg), 0) in let k = dk_find(ks, nm) in if k.name == "" or tries <= 0 or sg_seen(dropped, nm) == 1 or se_has(msg, "[V0001]") != 1 then {err: "lumec rejected a generated kernel of the fragment: " + msg + (if k.name == "" then "" else "; kernel:\n" + dk_text(k)), dropped: dropped} else if dq_refute_ok(ks, k, msg) != 1 then {err: "lumec refuted a contract that the tree evaluation cannot violate: " + msg + "; kernel:\n" + dk_text(k), dropped: dropped} else dq_a_build(g, tag, ks, Cons(nm, dropped), tries - 1)
+fn dq_a_link(g, p, dropped) = let a = os_run_capture_timeout(g.lasm, Cons("--strict", Cons(p + ".s", Nil)), p + ".elf", p + ".aerr", 300000) in if se_wait_exit(a) != 0 then {err: "lasm rejected the code of a generated batch: " + se_first_line(fs_read_file(p + ".aerr")), dropped: dropped} else let m = os_run("/bin/chmod", Cons("+x", Cons(p + ".elf", Nil))) in {err: "", dropped: dropped}
+fn dq_first_diff(lines, want, got, n, i, k) = match want
+    Nil        => "extra output"
+    Cons(h, t) => let e = se_line_end(got, n, i) in if i < n and slicen(got, n, i, e) + "\n" == h then dq_first_diff(sg_tl(lines), t, got, n, e + 1, k + 1) else "call `" + sg_chomp(sg_hd_s(lines)) + "` (kernel index and arguments): expected " + sg_chomp(h) + ", channel A printed " + (if i < n then slicen(got, n, i, e) else "nothing (the process stopped)")
+fn sg_tl(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn sg_hd_s(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn dq_a_vals(g, tag, ks, acc) = let p = g.tmp + "/" + tag in let lines = cb_rev(acc.lines, Nil) in let want = cb_rev(acc.want, Nil) in let w = fs_write_sync(p + ".in", dk_join(lines)) in let z = fs_write_sync(p + ".out", "") in let raw = os_run_input_capture_timeout(p + ".elf", Nil, p + ".in", p + ".out", p + ".err", 120000) in let got = fs_read_file(p + ".out") in if got == dk_join(want) and se_wait_exit(raw) == 0 then "" else "channel A (lumec + lasm) disagrees with the tree: " + dq_first_diff(lines, want, got, count(got), 0, 0) + "; exit " + str(se_wait_exit(raw)) + " " + se_first_line(fs_read_file(p + ".err")) + "; batch source: " + p + ".src"
+fn dq_a_traps(g, tag, traps) = match traps
+    Nil        => ""
+    Cons(h, t) => let p = g.tmp + "/" + tag in let w = fs_write_sync(p + ".tin", h.line) in let z = fs_write_sync(p + ".tout", "") in let raw = os_run_input_capture_timeout(p + ".elf", Nil, p + ".tin", p + ".tout", p + ".terr", 20000) in if se_wait_exit(raw) != 0 and fs_read_file(p + ".tout") == "" then dq_a_traps(g, tag, t) else "channel A (lumec + lasm) did not trap where the tree traps: " + h.k.name + "(" + se_join_ints(h.xs) + ") printed " + sg_chomp(fs_read_file(p + ".tout")) + " (exit " + str(se_wait_exit(raw)) + "); kernel:\n" + dk_text(h.k)
+fn dq_batch_run(g, tag, ks, acc, a, vs) = if a.err != "" then dq_err(acc, a.err) else let r = dq_kernels(acc, ks, ks, 0, cb_parse(dk_join(dk_texts(ks, Nil, 0))), vs, a.dropped) in if r.acc.err != "" then r.acc else let e1 = dq_a_vals(g, tag, ks, r.acc) in if e1 != "" then dq_err(r.acc, e1) else let e2 = dq_a_traps(g, tag, r.acc.traps) in if e2 != "" then dq_err(r.acc, e2) else {err: "", kernels: r.acc.kernels, vecs: r.acc.vecs, val: r.acc.val, trap: r.acc.trap, dom: r.acc.dom, refuted: r.acc.refuted + cb_len(a.dropped), bonly: r.acc.bonly, lines: Nil, want: Nil, traps: Nil}
+fn dq_batch(g, tag, acc, gen) = dq_batch_run(g, tag, gen.ks, acc, dq_a_build(g, tag, gen.ks, Nil, 60), sg_prng(gen.s + 17))
+## `batches` batches of `per` kernels from seed s
+fn dq_run(g, tag, s, batches, per, i, acc) = if i >= batches or acc.err != "" then acc else let gen = dk_batch(s, per, 0, tag + str(i), Nil, Nil) in dq_run(g, tag, gen.s, batches, per, i + 1, dq_batch(g, tag + str(i), acc, gen))
+fn sg_urandom_seed() = let b0 = fs_read_byte("/dev/urandom", 0) in let b1 = fs_read_byte("/dev/urandom", 1) in let b2 = fs_read_byte("/dev/urandom", 2) in let b3 = fs_read_byte("/dev/urandom", 3) in if b0 < 0 or b1 < 0 or b2 < 0 or b3 < 0 then 1 + os_monotonic_ns() % 2147483646 else 1 + (b0 + b1 * 256 + b2 * 65536 + (b3 % 127) * 16777216) % 2147483646
+fn dk_pairs2(a, r) = match r
+    Nil         => Cons(a, Nil)
+    Cons(b, r2) => Cons(a + b, dk_pairs(r2))
+fn dk_pairs(xs) = match xs
+    Nil        => Nil
+    Cons(a, r) => dk_pairs2(a, r)
+fn dk_join1(a, r, xs) = match r
+    Nil        => a
+    Cons(b, t) => dk_join(dk_pairs(xs))
+## pieces are collected in a list and joined pairwise (linear in the text size)
+fn dk_join(xs) = match xs
+    Nil        => ""
+    Cons(a, r) => dk_join1(a, r, xs)
+
+## ====================================================================================================================
+## 9. Cross-detection matrix: a defect injected on ONE side must be caught by the other side.
+##    a_src:<class>:<n>  channel A (lumec) compiles the n-th mutant of the class, channel B the original text
+##    b_src:<class>:<n>  the converse                b_cg:<kind>:<n>  channel B's code generator output is corrupted
+##    Every mutant is run through the real CLI over the directed committable vectors of the ORIGINAL kernel:
+##      tripped        SAFE_STATE_TRIP on some vector, every vector before it committed the original reference value;
+##      masked-benign  every vector committed the reference value of the original kernel (the mutant is equivalent
+##                     on the vector set); such a mutant is then run on the trap vectors (contract violation,
+##                     i32 overflow, division by zero): none may commit, and when the reason differs from the
+##                     unmutated run the mutant is counted as tripped (the other channel caught what this one lost);
+##      FALSE NEGATIVE a value other than the reference was committed -> the gate fails.
+## ====================================================================================================================
+fn xm_src() = "@bound(cycles: 400)\nfn xk_ctl(a: int, b: int, c: int) -> int\n  requires c >= 1 and c <= 50\n  requires a >= 0 - 1000 and a <= 1000 and b >= 0 - 1000 and b <= 1000\n  ensures result != 163863\n  ensures result >= 0 - 9100000 and result <= 9100000\n= let d = a - b * 2 in let q = (a * 3 + 7) / c in let r = (b + 100) % c in if d > 10 and q != 4 or r == 0 then d * q - r else if d <= 0 - 5 then q + r * 2 - a / c else d + q\n\n@bound(cycles: 200)\nfn xk_raw(a: int, b: int) -> int\n  requires b != 7\n= (a * b + a) / (b - 3) - a % (b + 2)\n"
+fn xm_reason_at(out, n, p) = if p < 0 then "" else let q = se_find(out, n, "\"reason\":\"", 10, p) in if q < 0 then "" else slicen(out, n, q + 10, sg_dqend(out, n, q + 10))
+fn sg_dqend(s, n, i) = if i < n and at(s, i) != "\"" then sg_dqend(s, n, i + 1) else i
+fn xm_reason(out, xs) = let t = sg_trip_str(xs) in let n = count(out) in xm_reason_at(out, n, se_find(out, n, t, count(t), 0))
+## the signature of a trip: its reason and which channel produced a value (`A+` / `A-`, `B+` / `B-`)
+fn xm_sig_at(out, n, p, why) = if p < 0 or why == "" then "" else let q = se_find(out, n, "\"out_b\":", 8, p) in why + "|" + (if slicen(out, n, p, p + 13) == "\"out_a\":null," then "A-" else "A+") + (if q >= 0 and slicen(out, n, q + 8, q + 12) == "null" then "B-" else "B+")
+fn xm_sig(out, xs) = let t = sg_trip_str(xs) in let n = count(out) in let p = se_find(out, n, t, count(t), 0) in xm_sig_at(out, n, if p < 0 then p else p + count(t), xm_reason(out, xs))
+fn xm_sig_why(sig) = let n = count(sig) in let p = se_find(sig, n, "|", 1, 0) in if p < 0 then sig else slicen(sig, n, 0, p)
+## {code, n, reason}: code 0 = every vector committed the reference, 1 = tripped after n commits, 2 = FALSE NEGATIVE
+fn xm_scan(out, prog, fname, vecs, n) = match vecs
+    Nil        => {code: 0, n: n, reason: ""}
+    Cons(h, t) => if se_has(out, sg_commit_str(h, (sg_ref(prog, fname, h)).v)) == 1 then xm_scan(out, prog, fname, t, n + 1) else if se_has(out, sg_trip_str(h)) == 1 then {code: 1, n: n, reason: xm_reason(out, h)} else {code: 2, n: n, reason: ""}
+fn xm_cli(x, inject, lines) = sg_cli_fresh(x.g, "xm", x.path, x.fname, x.g.ltv_ok, lines + "@timeout_ms 3000\n" + (if inject == "" then "" else "@inject " + inject + "\n"))
+## counters per class: {err, inj, trip, masked, fneg, cmp, bt, at, rej, stop}
+fn xm_c0() = {err: "", inj: 0, trip: 0, masked: 0, fneg: 0, cmp: 0, bt: 0, at: 0, rej: 0, stop: 0}
+fn xm_trip(c, reason) = {err: c.err, inj: c.inj + 1, trip: c.trip + 1, masked: c.masked, fneg: c.fneg, cmp: c.cmp + (if reason == "lockstep_mismatch" then 1 else 0), bt: c.bt + (if se_starts(reason, "b_e") == 1 or se_starts(reason, "b_w") == 1 or se_starts(reason, "b_r") == 1 or se_starts(reason, "b_p") == 1 or se_starts(reason, "b_i") == 1 then 1 else 0), at: c.at + (if reason == "a_trap" or reason == "a_watchdog_timeout" or reason == "a_unparsable_output" then 1 else 0), rej: c.rej + (if reason == "a_compile_failed" or reason == "a_assemble_failed" or reason == "b_compile_unsupported" or reason == "b_const_outside_i32" then 1 else 0), stop: 0}
+fn xm_masked(c) = {err: c.err, inj: c.inj + 1, trip: c.trip, masked: c.masked + 1, fneg: c.fneg, cmp: c.cmp, bt: c.bt, at: c.at, rej: c.rej, stop: 0}
+fn xm_fail(c, msg) = {err: if c.err != "" then c.err else msg, inj: c.inj, trip: c.trip, masked: c.masked, fneg: c.fneg + 1, cmp: c.cmp, bt: c.bt, at: c.at, rej: c.rej, stop: 1}
+fn xm_stop(c) = {err: c.err, inj: c.inj, trip: c.trip, masked: c.masked, fneg: c.fneg, cmp: c.cmp, bt: c.bt, at: c.at, rej: c.rej, stop: 1}
+## a mutant that is equivalent on the committable vectors, on the trap vectors: "" = same reasons as the unmutated
+## run, a reason = the first different one, "!" = something committed
+fn xm_traps(x, inject, tvs, base) = match tvs
+    Nil        => ""
+    Cons(h, t) => let r = xm_cli(x, inject, "@args " + se_join_ints(h) + "\n") in let why = xm_sig(r.out, h) in if r.status != 2 or se_has(r.out, "VerifiedActuatorCommit") == 1 or why == "" then "!" else if why != sg_hd_s(base) then why else xm_traps(x, inject, t, sg_tl(base))
+fn xm_base(x, tvs) = match tvs
+    Nil        => Nil
+    Cons(h, t) => let r = xm_cli(x, "", "@args " + se_join_ints(h) + "\n") in Cons(if r.status == 2 and se_has(r.out, "VerifiedActuatorCommit") == 0 then xm_sig(r.out, h) else "", xm_base(x, t))
+fn xm_masked_or(x, c, inject, tr) = if tr == "!" then xm_fail(c, "FALSE NEGATIVE: " + inject + " on " + x.fname + " committed a value on a vector whose original run traps") else if tr == "" then xm_masked(c) else xm_trip(c, xm_sig_why(tr))
+fn xm_one(x, c, inject) = let r = xm_cli(x, inject, sg_args_lines(x.vecs)) in if se_has(r.out, "\"reason\":\"inject_site_not_found\"") == 1 then xm_stop(c) else let sc = xm_scan(r.out, x.prog, x.fname, x.vecs, 0) in if sc.code == 2 or se_has(r.out, "\"committed\":" + str(sc.n) + ",") != 1 then xm_fail(c, "FALSE NEGATIVE: " + inject + " on " + x.fname + " committed a value that is not the reference of the original kernel: " + sg_short(r.out)) else if sc.code == 1 then (if r.status == 2 then xm_trip(c, sc.reason) else xm_fail(c, "wrong exit status under " + inject)) else if r.status != 0 then xm_fail(c, "wrong exit status under " + inject) else xm_masked_or(x, c, inject, xm_traps(x, inject, x.tvs, x.base))
+fn xm_sites(x, c, fam, cls, n, cap) = if n >= cap or c.err != "" then c else let c2 = xm_one(x, c, fam + ":" + cls + ":" + str(n)) in if c2.stop == 1 then c2 else xm_sites(x, c2, fam, cls, n + 1, cap)
+fn xm_x(g, path, prog, fname, vecs, tvs) = let x0 = {g: g, path: path, prog: prog, fname: fname, vecs: vecs, tvs: tvs, base: Nil} in {g: g, path: path, prog: prog, fname: fname, vecs: vecs, tvs: tvs, base: xm_base(x0, tvs)}
+fn xm_add(a, b) = {err: if a.err != "" then a.err else b.err, inj: a.inj + b.inj, trip: a.trip + b.trip, masked: a.masked + b.masked, fneg: a.fneg + b.fneg, cmp: a.cmp + b.cmp, bt: a.bt + b.bt, at: a.at + b.at, rej: a.rej + b.rej, stop: 0}
+fn xm_cstr(c) = str(c.inj) + "/" + str(c.trip) + "/" + str(c.masked) + "/" + str(c.fneg)
+fn xm_cjson(c) = "{\"injected\":" + str(c.inj) + ",\"tripped\":" + str(c.trip) + ",\"masked_benign\":" + str(c.masked) + ",\"false_negative\":" + str(c.fneg) + ",\"trip_by_comparator\":" + str(c.cmp) + ",\"trip_by_channel_b_trap\":" + str(c.bt) + ",\"trip_by_channel_a_trap\":" + str(c.at) + ",\"trip_by_compile_refusal\":" + str(c.rej) + "}"
+## every class of one family over the kernels xs: {err, tot, txt, json}; a class that never trips is an error
+fn xm_class(xs, fam, cls, cap, c) = match xs
+    Nil        => c
+    Cons(h, t) => xm_class(t, fam, cls, cap, xm_add(c, xm_sites(h, xm_c0(), fam, cls, 0, cap)))
+fn xm_family(xs, fam, classes, cap, acc) = match classes
+    Nil        => acc
+    Cons(h, t) => if acc.err != "" then acc else let c = xm_class(xs, fam, h, cap, xm_c0()) in xm_family(xs, fam, t, cap, {err: if c.err != "" then c.err else if c.inj < 2 then fam + ":" + h + " has fewer than 2 sites in the directed kernels" else if c.trip < 1 then fam + ":" + h + " was never detected (" + xm_cstr(c) + " injected/tripped/masked/false-negative)" else "", tot: xm_add(acc.tot, c), txt: acc.txt + (if acc.txt == "" then "" else ", ") + h + " " + xm_cstr(c), json: acc.json + (if acc.json == "" then "" else ",") + "\"" + h + "\":" + xm_cjson(c)})
+fn xm_src_classes() = Cons("arith", Cons("cmpflip", Cons("cmpoff", Cons("constp", Cons("constm", Cons("branch", Cons("swap", Cons("regroup", Cons("andor", Cons("dropreq", Cons("dropens", Nil)))))))))))
+fn xm_cg_classes() = Cons("opcode", Cons("reg", Cons("polarity", Cons("droptrap", Nil))))
+fn xm_f0() = {err: "", tot: xm_c0(), txt: "", json: ""}
+## hand-directed boundary vectors (kept when the original kernel commits on them): the edges of the contracts, the two
+## sides of every comparison of the body, a zero remainder, q == 4
+fn xm_keep(prog, fname, vs) = match vs
+    Nil        => Nil
+    Cons(h, t) => if (sg_ref(prog, fname, h)).st == 1 then Cons(h, xm_keep(prog, fname, t)) else xm_keep(prog, fname, t)
+fn xm_dir_ctl() = Cons(sg_l3(15, 2, 1), Cons(sg_l3(0, 0, 50), Cons(sg_l3(1000, 5, 7), Cons(sg_l3(0 - 1000, 5, 7), Cons(sg_l3(5, 1000, 9), Cons(sg_l3(5, 0 - 1000, 9), Cons(sg_l3(12, 1, 3), Cons(sg_l3(13, 1, 3), Cons(sg_l3(0 - 3, 1, 3), Cons(sg_l3(0 - 2, 1, 3), Cons(sg_l3(3, 0 - 5, 4), Cons(sg_l3(3, 0 - 4, 4), Cons(sg_l3(40, 7, 6), Cons(sg_l3(0 - 40, 7, 6), Nil))))))))))))))
+fn xm_dir_raw() = Cons(sg_l2(10, 5), Cons(sg_l2(0 - 10, 5), Cons(sg_l2(7, 0 - 9), Cons(sg_l2(0, 4), Cons(sg_l2(100, 2), Cons(sg_l2(0 - 37, 8), Cons(sg_l2(9, 6), Nil)))))))
+fn xm_all(g) = let path = g.tmp + "/xk.src" in let w = fs_write_sync(path, xm_src()) in let prog = nf_late(lumec_expand(xm_src())) in let v1 = cb_app(xm_keep(prog, "xk_ctl", xm_dir_ctl()), sg_vectors(prog, "xk_ctl", 60, 31337, 20000, 8)) in let v2 = cb_app(xm_keep(prog, "xk_raw", xm_dir_raw()), sg_vectors(prog, "xk_raw", 40, 4242, 8000, 6)) in if rv_len(v1) < 14 or rv_len(v2) < 10 then {err: "the cross-detection kernels have too few committable vectors", a: xm_f0(), b: xm_f0(), c: xm_f0()} else let x1 = xm_x(g, path, prog, "xk_ctl", v1, sg_l2(sg_l3(0, 0, 0), sg_l3(637, 0 - 413, 17))) in let x2 = xm_x(g, path, prog, "xk_raw", v2, sg_l3(sg_l2(65536, 65536), sg_l2(5, 3), sg_l2(5, 7))) in let xs = sg_l2(x1, x2) in if se_starts(sg_hd_s(x1.base), "a_trap|") != 1 or se_starts(sg_hd_s(x2.base), "b_ebreak_integer_overflow|") != 1 then {err: "the trap vectors of the cross-detection kernels do not trip as expected: " + sg_hd_s(x1.base) + " / " + sg_hd_s(x2.base), a: xm_f0(), b: xm_f0(), c: xm_f0()} else let fa = xm_family(xs, "a_src", xm_src_classes(), 12, xm_f0()) in if fa.err != "" then {err: fa.err, a: fa, b: xm_f0(), c: xm_f0()} else let fb = xm_family(xs, "b_src", xm_src_classes(), 12, xm_f0()) in if fb.err != "" then {err: fb.err, a: fa, b: fb, c: xm_f0()} else let fc = xm_family(xs, "b_cg", xm_cg_classes(), 16, xm_f0()) in {err: fc.err, a: fa, b: fb, c: fc}
+
+
+## ====================================================================================================================
+## 11. Split bundle without an emulator: `@split` exports the channel programs of two kernels; channel A is the native
+##     x86-64 program, channel B the bare RV32IM image on the in-tool LumePuter (`lumeputer:<image>`); the voter is
+##     `@mode split-run`. (The same images under qemu-system-riscv32 / qemu-aarch64: tests/harness/multi_arch_gate.src.)
+##     Commit vectors, traps, and every frame fault: bit flip, replay, wrong sequence, truncation, wrong kernel id,
+##     crossed channels, a silent channel, forged frames with a valid CRC. All faults must trip; none may commit.
+## ====================================================================================================================
+fn sp_run(g, tag, dir, seq, args, cmd_a, cmd_b, extra) = sg_cli(g, tag, "@mode split-run\n@manifest " + dir + "/manifest.json\n@seq " + str(seq) + "\n@args " + se_join_ints(args) + "\n@cmd_a " + cmd_a + "\n@cmd_b " + cmd_b + "\n@log " + g.tmp + "/" + tag + ".jsonl\n" + extra)
+fn sp_commit(r, v) = if r.status == 0 and se_has(r.out, "\"state\":\"VerifiedActuatorCommit\",\"value\":" + str(v) + ",\"reason\":\"ok\"") == 1 then 1 else 0
+fn sp_trip(r, reason) = if r.status == 2 and se_has(r.out, "\"state\":\"SAFE_STATE_TRIP\",\"value\":null,\"reason\":\"" + reason + "\"") == 1 and se_has(r.out, "VerifiedActuatorCommit") == 0 then 1 else 0
+## the response frame of one channel as the voter saw it (the JSON carries it with an escaped line feed)
+fn sp_frame(out, chan) = let n = count(out) in let p = se_find(out, n, "\"" + chan + "\":{", count(chan) + 4, 0) in if p < 0 then "" else let q = se_find(out, n, "\"frame\":\"", 9, p) in if q < 0 or q + 9 + 160 > n then "" else slicen(out, n, q + 9, q + 9 + 160) + "\n"
+fn sp_body(w, i, idx, val) = if i >= 19 then "" else sf_hex8(if i == idx then val else sf_nth(w, i)) + sp_body(w, i + 1, idx, val)
+## a frame with one word replaced and a VALID CRC (what a faulty channel, not a noisy wire, would send)
+fn sp_forge(frame, idx, val) = sf_frame(sp_body((sf_parse(frame)).w, 0, idx, val))
+fn sp_cat(g, name, text) = let p = g.tmp + "/" + name in let w = fs_write_sync(p, text) in "cat " + p
+fn sp_flip(frame, pos) = let n = count(frame) in slicen(frame, n, 0, pos) + (if at(frame, pos) == "0" then "1" else "0") + slicen(frame, n, pos + 1, n)
+fn sp_exp(g, dir, fname) = let r = sg_cli(g, "spx", "@src " + g.gk + "\n@fn " + fname + "\n@split " + dir + "\n") in if r.status == 0 and se_has(r.out, "\"mode\":\"split-export\",\"ok\":true") == 1 then "" else "split export of " + fname + " failed: " + sg_short(r.out)
+fn sp_fault(g, acc, name, dir, seq, xs, cmd_a, cmd_b, extra, reason) = if acc.err != "" then acc else let z = sg_rm(g.tmp + "/spf.jsonl") in let r = sp_run(g, "spf", dir, seq, xs, cmd_a, cmd_b, "@reset 1\n" + extra) in if sp_trip(r, reason) == 1 then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE or wrong diagnosis: split frame fault `" + name + "` expected SAFE_STATE_TRIP " + reason + ": " + sg_short(r.out), 0, 0)
+## commit vectors: the voted value is the reference, and the cycle count in channel B's frame is the monitor's count
+## of the same call minus the reset stub
+fn sp_commits(g, dir, a, b, fname, vecs, seq, n) = match vecs
+    Nil        => {err: "", n: n}
+    Cons(h, t) => let r = sp_run(g, "spc", dir, seq, h, a, b, "@reset 1\n") in let fb = sf_parse(sp_frame(r.out, "channel_b")) in let lk = se_b_go(cb_prog(g.gsrc, fname), h, 100000, rv_no_inj()) in if sp_commit(r, (sg_ref(g.prog, fname, h)).v) != 1 then {err: "split-run of " + fname + "(" + se_join_ints(h) + ") did not commit the reference value: " + sg_short(r.out), n: n} else if fb.ok != 1 or lk.ok != 1 or sf_nth(fb.w, 18) != lk.cycles - cbg_stub_cycles(rv_len(h)) then {err: "the cycle count of the bare image's frame for " + fname + "(" + se_join_ints(h) + ") is not the monitor's count minus the reset stub", n: n} else sp_commits(g, dir, a, b, fname, t, seq + 1, n + 1)
+## requests corrupted on the way to the bare image, run in process on the LumePuter: the image must answer status 2
+## with the cause, or stay silent when the line never ends
+fn sp_req_one(rom, req, cause) = let r = sb_exec(rom, req, if cause < 0 then 300000 else 4000000) in let f = sf_parse(r.out) in if cause < 0 then (if r.st == 2 and r.cause == "watchdog_cycle_budget" and r.out == "" then "" else "an unterminated request must leave the image waiting; ") else if r.st == 1 and f.ok == 1 and sf_nth(f.w, 15) == 2 and sf_nth(f.w, 16) == cause and sf_nth(f.w, 5) == 2952790017 then "" else "the bare image did not refuse a bad request with cause " + str(cause) + " (state " + str(r.st) + " " + r.cause + ", frame " + sg_chomp(r.out) + "); "
+fn sp_reqs(g, dir, kid, xs) = let rom = ss_img_words(dir + "/channel_b_riscv_bare.bin", 0, Nil) in let good = sf_request(kid, 5, xs) in let n = count(good) in let ok = sb_exec(rom, good, 4000000) in if ok.st != 1 or (sf_parse(ok.out)).ok != 1 or sf_nth((sf_parse(ok.out)).w, 15) != 0 then "the bare image does not answer a good request on the LumePuter; " else sp_req_one(rom, sp_flip(good, 30), 5) + sp_req_one(rom, slicen(good, n, 0, 40) + "g" + slicen(good, n, 41, n), 6) + sp_req_one(rom, slicen(good, n, 0, 40) + "a" + slicen(good, n, 41, n), 6) + sp_req_one(rom, slicen(good, n, 0, 120) + "X", 6) + sp_req_one(rom, slicen(good, n, 0, 60), 0 - 1) + sp_req_one(rom, sf_frame("4C535250" + slicen(good, n, 8, 112)), 1) + sp_req_one(rom, sf_frame("4C53525100000002" + slicen(good, n, 16, 112)), 2) + sp_req_one(rom, sf_frame(slicen(good, n, 0, 24) + "0123456789ABCDEF" + slicen(good, n, 40, 112)), 3) + sp_req_one(rom, sf_frame(slicen(good, n, 0, 40) + "00000007" + slicen(good, n, 48, 112)), 4)
+fn sp_verify(g, dir) = sg_cli(g, "spv", "@mode split-verify\n@manifest " + dir + "/manifest.json\n")
+fn sp_tamper_bin(path) = let b = fs_read_byte(path, 40) in fs_write_hex_file(path + ".x", kir_hex(sp_bytes(path, 0, 40, b)))
+fn sp_bytes(path, i, pos, b) = let v = fs_read_byte(path, i) in if v < 0 then Nil else Cons(if i == pos then (b + 1) % 256 else v, sp_bytes(path, i + 1, pos, b))
+fn sp_faults(g, d1, d2, a1, b1, xs, fa, fb, fo) = let w1 = sf_parse(fa) in let slow = "@frame_timeout_ms 400\n" in let c1 = sp_fault(g, sg_f0(), "bit flip in channel A's frame", d1, 31, xs, sp_cat(g, "fa_flip", sp_flip(fa, 133)), b1, "", "a_frame_crc") in let c2 = sp_fault(g, c1, "bit flip in channel B's frame", d1, 31, xs, a1, sp_cat(g, "fb_flip", sp_flip(fb, 140)), "", "b_frame_crc") in let c3 = sp_fault(g, c2, "replayed frames (sequence 31 answered to 32)", d1, 32, xs, sp_cat(g, "fa_old", fa), sp_cat(g, "fb_old", fb), "", "a_frame_sequence") in let c4 = sp_fault(g, c3, "replayed channel B frame", d1, 32, xs, a1, sp_cat(g, "fb_old", fb), "", "b_frame_sequence") in let c5 = sp_fault(g, c4, "truncated channel A frame", d1, 31, xs, sp_cat(g, "fa_cut", slicen(fa, 161, 0, 100)), b1, "", "a_frame_malformed") in let c6 = sp_fault(g, c5, "truncated channel B frame", d1, 31, xs, a1, sp_cat(g, "fb_cut", slicen(fb, 161, 0, 159)), "", "b_frame_malformed") in let c7 = sp_fault(g, c6, "channel B is the image of another kernel", d1, 31, xs, a1, "lumeputer:" + d2 + "/channel_b_riscv_bare.bin", "", "b_frame_kernel_id") in let c8 = sp_fault(g, c7, "channel A is the program of another kernel", d1, 31, xs, d2 + "/channel_a_x86_64.elf", b1, "", "a_frame_kernel_id") in let c9 = sp_fault(g, c8, "a frame of another kernel with a valid CRC", d1, 31, xs, sp_cat(g, "fa_other", fo), b1, "", "a_frame_kernel_id") in let d0 = sp_fault(g, c9, "channel A silent", d1, 31, xs, "sleep 5", b1, slow, "a_frame_timeout") in let d3 = sp_fault(g, d0, "channel B silent", d1, 31, xs, a1, "sleep 5", slow, "b_frame_timeout") in let d4 = sp_fault(g, d3, "channel B ends without a frame", d1, 31, xs, a1, "true", "", "b_frame_missing") in let d5 = sp_fault(g, d4, "channels crossed", d1, 31, xs, sp_cat(g, "fb_as_a", fb), b1, "", "a_frame_channel") in let d6 = sp_fault(g, d5, "wrong result with a valid CRC", d1, 31, xs, sp_cat(g, "fa_res", sp_forge(fa, 17, sf_nth(w1.w, 17) + 1)), b1, "", "lockstep_mismatch") in let d7 = sp_fault(g, d6, "wrong argument echo with a valid CRC", d1, 31, xs, a1, sp_cat(g, "fb_arg", sp_forge(fb, 8, 99)), "", "b_frame_args") in let d8 = sp_fault(g, d7, "cycle count above the limit with a valid CRC", d1, 31, xs, a1, sp_cat(g, "fb_cyc", sp_forge(fb, 18, 100000)), "", "b_cycle_budget") in let d9 = sp_fault(g, d8, "garbage instead of a frame", d1, 31, xs, "echo hello", b1, "", "a_frame_malformed") in let e1 = sp_fault(g, d9, "request corrupted on the way to channel A", d1, 31, xs, "tr 3 4 | " + a1, b1, "", "a_request_refused_5") in let e2 = sp_fault(g, e1, "wrong protocol version with a valid CRC", d1, 31, xs, sp_cat(g, "fa_ver", sp_forge(fa, 1, 2)), b1, "", "a_frame_version") in let e3 = sp_fault(g, e2, "status trap claimed with a valid CRC", d1, 31, xs, a1, sp_cat(g, "fb_st", sp_forge(sp_forge(fb, 15, 1), 16, 2)), "", "b_trap_overflow") in let e4 = sp_fault(g, e3, "third channel (@cmd_c) with another result", d1, 31, xs, a1, b1, "@cmd_c " + sp_cat(g, "fc_res", sp_forge(fa, 17, sf_nth(w1.w, 17) + 1)) + "\n", "lockstep_mismatch_c") in let e5 = sp_fault(g, e4, "third channel silent", d1, 31, xs, a1, b1, "@cmd_c sleep 5\n" + slow, "c_frame_timeout") in sp_fault(g, e5, "third channel sends a channel-B frame", d1, 31, xs, a1, b1, "@cmd_c " + sp_cat(g, "fc_b", fb) + "\n", "c_frame_channel")
+## a trip latches across invocations until `@reset 1`; the run after the reset also votes a third frame (`@cmd_c`)
+fn sp_latch(g, d1, a1, b1, xs, v) = let z = sg_rm(g.tmp + "/spl.jsonl") in let r1 = sp_run(g, "spl", d1, 40, xs, a1, "true", "") in let r2 = sp_run(g, "spl", d1, 41, xs, a1, b1, "") in let r3 = sp_run(g, "spl", d1, 42, xs, a1, b1, "@reset 1\n@cmd_c " + a1 + "\n") in if sp_trip(r1, "b_frame_missing") == 1 and sp_trip(r2, "latched") == 1 and se_has(r2.out, "\"how\":\"not run\"") == 1 and sp_commit(r3, v) == 1 and (se_log_check(g.tmp + "/spl.jsonl")).n == 3 then "" else "split-run: a trip must latch across invocations until @reset 1: " + sg_short(r2.out)
+## a sequence number is used once: the frames recorded for sequence 50 pass every frame check (the control with an
+## empty log commits them), so the voter must refuse to run sequence 50 again, or 49, against the same event log
+fn sp_seq(g, d1, a1, b1, xs, v) = let z = sg_rm(g.tmp + "/spq.jsonl") in let r1 = sp_run(g, "spq", d1, 50, xs, a1, b1, "") in let ra = sp_cat(g, "fa_50", sp_frame(r1.out, "channel_a")) in let rb = sp_cat(g, "fb_50", sp_frame(r1.out, "channel_b")) in let r2 = sp_run(g, "spq", d1, 50, xs, ra, rb, "") in let r3 = sp_run(g, "spq", d1, 49, xs, a1, b1, "@reset 1\n") in let r4 = sp_run(g, "spq", d1, 51, xs, a1, b1, "@reset 1\n") in let z2 = sg_rm(g.tmp + "/spq2.jsonl") in let r5 = sp_run(g, "spq2", d1, 50, xs, ra, rb, "") in if sp_commit(r1, v) != 1 then "split-run sequence 50 did not commit: " + sg_short(r1.out) else if sp_trip(r2, "sequence_not_fresh") != 1 or se_has(r2.out, "\"how\":\"not run\"") != 1 then "FALSE NEGATIVE: the recorded frames of sequence 50 were accepted for a second request with sequence 50: " + sg_short(r2.out) else if sp_trip(r3, "sequence_not_fresh") != 1 then "FALSE NEGATIVE: sequence 49 was accepted after sequence 50: " + sg_short(r3.out) else if sp_commit(r4, v) != 1 then "split-run sequence 51 after a reset did not commit: " + sg_short(r4.out) else if sp_commit(r5, v) != 1 then "control: the recorded frames must pass every frame check against an empty log (otherwise the freshness test proves nothing): " + sg_short(r5.out) else ""
+## a bool parameter takes 0 or 1 and nothing else (lumec accepts any integer there): channel B refuses 2 in the
+## lockstep, and in the split bundle both channel programs answer the request with status 2, cause 8
+fn sb_bool2(g, src, path, d3, a, b, b2, b1, b0, c2, c1, ex) = let z = sg_rm(g.tmp + "/spb.jsonl") in let r1 = sp_run(g, "spb", d3, 60, sg_l2(1, 3), a, b, "") in let r2 = sp_run(g, "spb", d3, 61, sg_l2(2, 3), a, b, "") in let rq = sp_req_one(ss_img_words(d3 + "/channel_b_riscv_bare.bin", 0, Nil), sf_request(sf_kid(src, "bk_sel"), 5, sg_l2(2, 3)), 8) in if b2.ok != 0 or b2.cause != "arg_outside_bool" or b1.ok != 1 or b1.v != 3 or b0.ok != 1 or b0.v != 0 - 3 then "channel B must refuse 2 as a bool argument and compute bk_sel(1, 3) = 3 and bk_sel(0, 3) = -3; " else if sg_is_trip(c2, sg_l2(2, 3), "b_arg_outside_bool") != 1 then "FALSE NEGATIVE: the lockstep must trip with b_arg_outside_bool on bk_sel(2, 3): " + sg_short(c2.out) else if c1.status != 0 or se_has(c1.out, sg_commit_str(sg_l2(1, 3), 3)) != 1 then "control: bk_sel(1, 3) must commit 3: " + sg_short(c1.out) else if ex.status != 0 or se_has(ex.out, "\"mode\":\"split-export\",\"ok\":true") != 1 then "split export of bk_sel failed: " + sg_short(ex.out) else if sp_commit(r1, 3) != 1 then "split-run of bk_sel(1, 3) did not commit 3: " + sg_short(r1.out) else if sp_trip(r2, "a_request_refused_8") != 1 then "FALSE NEGATIVE: the split voter must trip with a_request_refused_8 on the bool argument 2: " + sg_short(r2.out) else rq
+fn sb_bool(g) = let src = "@bound(cycles: 30)\nfn bk_sel(p: bool, v: int) -> int = if p then v else 0 - v\n" in let path = g.tmp + "/bk.src" in let w = fs_write_sync(path, src) in let d3 = g.tmp + "/split_bool" in let bp = cb_prog(src, "bk_sel") in sb_bool2(g, src, path, d3, d3 + "/channel_a_x86_64.elf", "lumeputer:" + d3 + "/channel_b_riscv_bare.bin", se_b_go(bp, sg_l2(2, 3), 100000, rv_no_inj()), se_b_go(bp, sg_l2(1, 3), 100000, rv_no_inj()), se_b_go(bp, sg_l2(0, 3), 100000, rv_no_inj()), sg_cli_fresh(g, "bk", path, "bk_sel", g.ltv_ok, "@args 2,3\n"), sg_cli_fresh(g, "bk", path, "bk_sel", g.ltv_ok, "@args 1,3\n"), sg_cli(g, "spx", "@src " + path + "\n@fn bk_sel\n@split " + d3 + "\n"))
+fn sp_go(g, d1, d2, m1) = let a1 = d1 + "/channel_a_x86_64.elf" in let b1 = "lumeputer:" + d1 + "/channel_b_riscv_bare.bin" in let kid = sf_kid(g.gsrc, "gk_mix") in let cm = sp_commits(g, d1, a1, b1, "gk_mix", sg_l3(m1, sg_l3(0 - 9, 4, 7), sg_l3(100, 100, 3)), 21, 0) in if cm.err != "" then {err: cm.err, f: sg_f0(), commits: 0} else let good = sp_run(g, "spg", d1, 31, m1, a1, b1, "@reset 1\n") in let other = sp_run(g, "spo", d2, 31, sg_l3(5, 0 - 3, 9), d2 + "/channel_a_x86_64.elf", "lumeputer:" + d2 + "/channel_b_riscv_bare.bin", "@reset 1\n") in let fa = sp_frame(good.out, "channel_a") in let fb = sp_frame(good.out, "channel_b") in let fo = sp_frame(other.out, "channel_a") in if sp_commit(good, (sg_ref(g.prog, "gk_mix", m1)).v) != 1 or sp_commit(other, 5) != 1 or (sf_parse(fa)).ok != 1 or (sf_parse(fb)).ok != 1 or (sf_parse(fo)).ok != 1 then {err: "split-run baseline did not commit: " + sg_short(good.out) + sg_short(other.out), f: sg_f0(), commits: 0} else let t1 = sp_fault(g, sg_f0(), "contract violation (channel A stops, channel B sends a trap frame)", d2, 33, sg_l3(1, 9, 2), d2 + "/channel_a_x86_64.elf", "lumeputer:" + d2 + "/channel_b_riscv_bare.bin", "", "a_frame_missing") in let t1b = sp_run(g, "spt", d2, 33, sg_l3(1, 9, 2), d2 + "/channel_a_x86_64.elf", "lumeputer:" + d2 + "/channel_b_riscv_bare.bin", "@reset 1\n") in let ft = sf_parse(sp_frame(t1b.out, "channel_b")) in let t2 = sp_fault(g, t1, "i32 overflow inside the kernel (channel B sends a trap frame)", d1, 34, sg_l3(65536, 65536, 65536), a1, b1, "", "b_trap_overflow") in let ff = sp_faults(g, d1, d2, a1, b1, m1, fa, fb, fo) in let er = sp_reqs(g, d1, kid, m1) in let el = sp_latch(g, d1, a1, b1, m1, (sg_ref(g.prog, "gk_mix", m1)).v) in let eq = sp_seq(g, d1, a1, b1, m1, (sg_ref(g.prog, "gk_mix", m1)).v) + sb_bool(g) in let v1 = sp_verify(g, d1) in let tb = sp_tamper_bin(d1 + "/channel_b_riscv_bare.bin") in let mv = os_run("/bin/cp", Cons(d1 + "/channel_b_riscv_bare.bin.x", Cons(d1 + "/channel_b_riscv_bare.bin", Nil))) in let v2 = sp_verify(g, d1) in if t2.err != "" or ff.err != "" then {err: t2.err + ff.err, f: sg_f0(), commits: 0} else if ft.ok != 1 or sf_nth(ft.w, 15) != 1 or sf_nth(ft.w, 16) != 1 then {err: "the bare image did not send a trap frame with cause 1 for a contract violation", f: sg_f0(), commits: 0} else if er != "" or el != "" or eq != "" then {err: er + el + eq, f: sg_f0(), commits: 0} else if v1.status != 0 or se_has(v1.out, "\"ok\":true") != 1 or v2.status != 2 or se_has(v2.out, "channel_b_riscv_bare") != 1 then {err: "split-verify must accept the exported bundle and refuse a changed image: " + sg_short(v1.out) + sg_short(v2.out), f: sg_f0(), commits: 0} else {err: "", f: sg_f(sg_f(ff, "", t2.trips, 0), "", 9 + 2 + 2 + 2, 0), commits: cm.n + 5}
+## {err, f (frame / request faults, all tripped), commits}
+fn sp_all(g) = let d1 = g.tmp + "/split_mix" in let d2 = g.tmp + "/split_clamp" in let e = sp_exp(g, d1, "gk_mix") + sp_exp(g, d2, "gk_clamp") + (if se_sha256_file(g.gk) == lsh256(g.gsrc) then "" else "se_sha256_file disagrees with lsh256 on the kernel file; ") in if e != "" then {err: e, f: sg_f0(), commits: 0} else sp_go(g, d1, d2, sg_l3(37, 11, 5))
+## ====================================================================================================================
+## 12. Decisions of the clean-room front end, one by one (regression cases of the hostile review). Every kernel of
+##     sd_src has vectors whose value was derived BY HAND from docs/03-specification.md (precedence, associativity,
+##     truncating division, unary minus, `not`, `elif`, the extent of `else` / `let`, shadowing, comments, strings,
+##     literals at the i32 boundary, short-circuit, contracts on several lines, `@no_alloc`). Channel B in process,
+##     the gate's reference evaluator and the real CLI lockstep (channel A = lumec + lasm) must all give that value.
+##     Then the texts channel B must REFUSE, each with its reason: a wrong reading there would be a silent
+##     common-mode risk, a refusal is a trip.
+## ====================================================================================================================
+fn sd_src() = "fn sd_prec(a: int, b: int) -> int = a - b * 2 + a / b\nfn sd_lassoc(a: int, b: int) -> int = a - b - 3 + a / b / 2 + a % b % 3\nfn sd_negdiv(a: int, b: int) -> int = a / b * 1000 + a % b\nfn sd_unary(a: int, b: int) -> int = -a * b - -b\nfn sd_unsub(a: int, b: int) -> int = -a - b\nfn sd_cmp(a: int, b: int) -> int = if a + 1 < b * 2 then 1 else 0\nfn sd_andor(a: int, b: int) -> int = if a > 0 or b > 0 and a < 0 - 5 then 1 else 0\nfn sd_not(a: int, b: int) -> int = if not (a > 0) and b > 0 then 1 else 0\nfn sd_elif(a: int, b: int) -> int = if a > 0 then 1 elif b > 0 then 2 elif a < b then 3 else 4\nfn sd_else_ext(a: int, b: int) -> int = if a > b then 1 else 2 + 3\nfn sd_if_mid(a: int, b: int) -> int = 10 * if a > b then 2 else 3 + 4\nfn sd_dangling(a: int, b: int) -> int = if a > 0 then if b > 0 then 1 else 2 else 3\nfn sd_let_shadow(a: int, b: int) -> int = let a = a + 1 in let a = a * 2 in a + b\nfn sd_let_scope(a: int, b: int) -> int = (let a = 5 in a) + a\nfn sd_let_ext(a: int, b: int) -> int = a + let a = 5 in a + a\nfn sd_h(x: int, y: int) -> int = x - y\nfn sd_let_arg(a: int, b: int) -> int = sd_h(let a = b in a + 1, let b = a in b + 2) + sd_h(b, a)\nfn sd_ens(a: int, b: int) -> int ensures result == a + 10 = let a = a + 10 in a\n# fn sd_cmt(a: int, b: int) -> int = 99\nfn sd_cmt(a: int, b: int) -> int = (a +\n    # fn sd_cmt(a: int, b: int) -> int = 99\n    b) # - 1000\nfn sd_str(a: int, b: int) -> int = if a > 0 then a else ctfail(\"neg # \\\" fn sd_str(a: int, b: int) -> int = 5\")\nfn sd_lit(a: int, b: int) -> int = 0x7fffffff - a + 0b101 + 0o17 + 1_000 + 007\nfn sd_imin(a: int, b: int) -> int = if a == -2147483648 then 1 else a - -2147483648\nfn sd_sc(a: int, b: int) -> int = if b != 0 and a / b > 1 then 1 else if b == 0 or a / b > 1 then 2 else 3\nfn sd_beq(a: int, b: int) -> int = if (a < b) == (b < 10) then 1 else 0\nfn sd_req(a: int, b: int) -> int\n    requires a > 0\n    requires b > 0\n    ensures result > a\n    = a + b\nfn sd_mut(a: int, b: int) -> int = sd_od(a) * 100 + sd_ev(b)\nfn sd_od(n: int) -> int = if n <= 0 then 0 else sd_ev(n - 1) + 1\nfn sd_ev(n: int) -> int = if n <= 0 then 0 else sd_od(n - 1) + 1\n@no_alloc\n@bound(cycles: 40)\nfn sd_na(a: int, b: int) -> int / pure requires 0 <= a and a <= 1000 requires 0 <= b and b <= 1000 ensures result >= 0 = if a > b then a - b else b - a\nfn sd_tight(a: int, b: int) -> int = a-1-b + a*-b\nfn sd_ifc(a: int, b: int) -> int = if if a > b then a > 0 else b > 0 then 1 else 2\n"
+fn sd_v(a, b, v) = {a: sg_l2(a, b), v: v}
+fn sd_1(x) = Cons(x, Nil)
+fn sd_2(x, y) = Cons(x, sd_1(y))
+fn sd_3(x, y, z) = Cons(x, sd_2(y, z))
+fn sd_4(x, y, z, w) = Cons(x, sd_3(y, z, w))
+fn sd_args(vs) = match vs
+    Nil        => Nil
+    Cons(h, t) => Cons(h.a, sd_args(t))
+fn sd_show(b) = if b.ok == 1 then str(b.v) else "trap " + b.cause + " " + b.detail
+fn sd_chk_vs(bp, prog, f, vs) = match vs
+    Nil        => ""
+    Cons(h, t) => let b = se_b_go(bp, h.a, 100000, rv_no_inj()) in let r = sg_ref(prog, f, h.a) in if b.ok != 1 or b.v != h.v then "channel B computes " + f + "(" + se_join_ints(h.a) + ") = " + sd_show(b) + ", the specification says " + str(h.v) else if r.st != 1 or r.v != h.v then "the reference evaluator gives state " + str(r.st) + " value " + str(r.v) + " for " + f + "(" + se_join_ints(h.a) + "), the specification says " + str(h.v) else sd_chk_vs(bp, prog, f, t)
+fn sd_st(s, err, n, nv, nt, nr) = {g: s.g, path: s.path, src: s.src, prog: s.prog, err: err, n: s.n + n, nv: s.nv + nv, nt: s.nt + nt, nr: s.nr + nr}
+fn sd_ok2(s, f, vs, e) = sd_st(s, if e != "" then e else (sg_lockstep(s.g, "sem", s.path, s.prog, f, sd_args(vs), s.g.ltv_ok, "@budget 20000\n")).err, 1, rv_len(vs), 0, 0)
+## a kernel of sd_src: hand-derived values on channel B, on the reference, and committed by the CLI lockstep
+fn sd_ok(s, f, vs) = if s.err != "" then s else sd_ok2(s, f, vs, sd_chk_vs(cb_prog(s.src, f), s.prog, f, vs))
+## the same without the reference evaluator, which has no opinion (state 5) on a kernel that writes the literal
+## -2147483648 (lumec lowers it to 0 - 2147483648 and the reference refuses the constant 2147483648): channel B in
+## process and the value committed by the CLI lockstep (channel A = lumec + lasm) must both be the hand-derived one
+fn sd_chk_b(bp, f, vs) = match vs
+    Nil        => ""
+    Cons(h, t) => let b = se_b_go(bp, h.a, 100000, rv_no_inj()) in if b.ok != 1 or b.v != h.v then "channel B computes " + f + "(" + se_join_ints(h.a) + ") = " + sd_show(b) + ", the specification says " + str(h.v) else sd_chk_b(bp, f, t)
+fn sd_cli_vs(out, f, vs) = match vs
+    Nil        => ""
+    Cons(h, t) => if se_has(out, sg_commit_str(h.a, h.v)) == 1 then sd_cli_vs(out, f, t) else "the CLI lockstep did not commit " + f + "(" + se_join_ints(h.a) + ") = " + str(h.v) + ": " + sg_short(out)
+fn sd_okx2(s, f, vs, e, r) = sd_st(s, if e != "" then e else if r.status != 0 then f + ": lockstep batch exited " + str(r.status) + ": " + sg_short(r.out) else sd_cli_vs(r.out, f, vs), 1, rv_len(vs), 0, 0)
+fn sd_okx(s, f, vs) = if s.err != "" then s else if (sg_ref(s.prog, f, (sd_hd(vs)).a)).st != 5 then sd_st(s, f + ": the reference evaluator has an opinion, use sd_ok", 0, 0, 0, 0) else sd_okx2(s, f, vs, sd_chk_b(cb_prog(s.src, f), f, vs), sg_cli_fresh(s.g, "sem", s.path, f, s.g.ltv_ok, "@budget 20000
+" + sg_args_lines(sd_args(vs))))
+fn sd_hd(vs) = match vs
+    Nil        => sd_v(0, 0, 0)
+    Cons(h, t) => h
+## a vector on which channel B alone must trap with the named cause
+fn sd_tr(s, f, a, b, cause) = if s.err != "" then s else let r = se_b_go(cb_prog(s.src, f), sg_l2(a, b), 100000, rv_no_inj()) in sd_st(s, if r.ok == 0 and r.cause == cause then "" else "channel B must trap with " + cause + " on " + f + "(" + str(a) + ", " + str(b) + "), it gives " + sd_show(r), 0, 0, 1, 0)
+## a text channel B must refuse, with the reason
+fn sd_rf(s, text, sub) = if s.err != "" then s else let bp = cb_prog(text, "k") in sd_st(s, if bp.err != "" and se_has(bp.err, sub) == 1 then "" else "channel B must refuse `" + text + "` saying `" + sub + "`; it says `" + bp.err + "`", 0, 0, 0, 1)
+fn sd_k(body) = "fn k(a: int, b: int) -> int = " + body + "\n"
+fn sd_accept(s0) = let imin = 0 - 2147483648 in let s1 = sd_ok(s0, "sd_prec", sd_2(sd_v(7, 2, 6), sd_v(0 - 7, 2, 0 - 14))) in let s2 = sd_ok(s1, "sd_lassoc", sd_2(sd_v(100, 7, 99), sd_v(0 - 100, 7, 0 - 119))) in let s3 = sd_ok(s2, "sd_negdiv", sd_4(sd_v(0 - 7, 2, 0 - 3001), sd_v(7, 0 - 2, 0 - 2999), sd_v(0 - 7, 0 - 2, 2999), sd_v(7, 2, 3001))) in let s4 = sd_ok(s3, "sd_unary", sd_2(sd_v(3, 4, 0 - 8), sd_v(0 - 3, 4, 16))) in let s5 = sd_ok(s4, "sd_unsub", sd_2(sd_v(3, 4, 0 - 7), sd_v(0 - 3, 0 - 4, 7))) in let s6 = sd_ok(s5, "sd_cmp", sd_2(sd_v(3, 3, 1), sd_v(5, 3, 0))) in let s7 = sd_ok(s6, "sd_andor", sd_3(sd_v(1, 0, 1), sd_v(0, 1, 0), sd_v(0 - 9, 1, 1))) in let s8 = sd_ok(s7, "sd_not", sd_3(sd_v(0, 0, 0), sd_v(0, 1, 1), sd_v(1, 1, 0))) in let s9 = sd_ok(s8, "sd_elif", sd_4(sd_v(1, 0, 1), sd_v(0, 1, 2), sd_v(0 - 1, 0, 3), sd_v(0, 0, 4))) in let t1 = sd_ok(s9, "sd_else_ext", sd_2(sd_v(5, 3, 1), sd_v(3, 5, 5))) in let t2 = sd_ok(t1, "sd_if_mid", sd_2(sd_v(5, 3, 20), sd_v(3, 5, 70))) in let t3 = sd_ok(t2, "sd_dangling", sd_3(sd_v(1, 1, 1), sd_v(1, 0, 2), sd_v(0, 1, 3))) in let t4 = sd_ok(t3, "sd_let_shadow", sd_1(sd_v(5, 3, 15))) in let t5 = sd_ok(t4, "sd_let_scope", sd_1(sd_v(7, 0, 12))) in let t6 = sd_ok(t5, "sd_let_ext", sd_1(sd_v(7, 0, 17))) in let t7 = sd_ok(t6, "sd_let_arg", sd_1(sd_v(5, 3, 0 - 5))) in let t8 = sd_ok(t7, "sd_ens", sd_1(sd_v(5, 0, 15))) in let t9 = sd_ok(t8, "sd_cmt", sd_1(sd_v(5, 3, 8))) in let u1 = sd_ok(t9, "sd_str", sd_1(sd_v(5, 0, 5))) in let u2 = sd_ok(u1, "sd_lit", sd_2(sd_v(2147483647, 0, 1027), sd_v(2147483000, 0, 1674))) in let u3 = sd_okx(u2, "sd_imin", sd_2(sd_v(imin, 0, 1), sd_v(0 - 1, 0, 2147483647))) in let u4 = sd_ok(u3, "sd_sc", sd_3(sd_v(5, 0, 2), sd_v(5, 2, 1), sd_v(1, 2, 3))) in let u5 = sd_ok(u4, "sd_beq", sd_2(sd_v(1, 2, 1), sd_v(1, 20, 0))) in let u6 = sd_ok(u5, "sd_req", sd_1(sd_v(5, 3, 8))) in let u7 = sd_ok(u6, "sd_mut", sd_1(sd_v(3, 4, 304))) in let u8 = sd_ok(u7, "sd_na", sd_2(sd_v(7, 900, 893), sd_v(900, 7, 893))) in let u9 = sd_ok(u8, "sd_tight", sd_1(sd_v(5, 3, 0 - 14))) in let v1 = sd_ok(u9, "sd_ifc", sd_3(sd_v(5, 3, 1), sd_v(0 - 5, 0 - 3, 2), sd_v(3, 5, 1))) in let v2 = sd_tr(v1, "sd_str", 0 - 1, 0, "ebreak_contract_violation") in let v3 = sd_tr(v2, "sd_req", 0, 3, "ebreak_contract_violation") in let v4 = sd_tr(v3, "sd_negdiv", 1, 0, "ebreak_division_by_zero") in let v5 = sd_tr(v4, "sd_imin", 2147483647, 0, "ebreak_integer_overflow") in let v6 = sd_tr(v5, "sd_unsub", imin, 0, "ebreak_integer_overflow") in let v7 = sd_tr(v6, "sd_na", 1001, 0, "ebreak_contract_violation") in sd_tr(v7, "sd_ens", 2147483640, 0, "ebreak_integer_overflow")
+fn sd_refuse(s0) = let h1 = "fn h(x: int) -> int = x\n" in let s1 = sd_rf(s0, sd_k("if not a < b then 1 else 0"), "'not' applied to int") in let s2 = sd_rf(s1, sd_k("a\n    + b"), "line break before a binary operator") in let s3 = sd_rf(s2, sd_k("a + b\n    - a"), "line break before a binary operator") in let s4 = sd_rf(s3, h1 + sd_k("h\n    (a)"), "line break before '('") in let s5 = sd_rf(s4, sd_k("a #[ + b ]#"), "block comment") in let s6 = sd_rf(s5, sd_k("12abc + a"), "malformed integer literal") in let s7 = sd_rf(s6, sd_k("1__0 + a"), "malformed integer literal") in let s8 = sd_rf(s7, sd_k("1_ + a"), "malformed integer literal") in let s9 = sd_rf(s8, sd_k("0X1F + a"), "malformed integer literal") in let t1 = sd_rf(s9, sd_k("0x + a"), "malformed integer literal") in let t2 = sd_rf(t1, sd_k("1e3 + a"), "malformed integer literal") in let t3 = sd_rf(t2, sd_k("2147483648 - a"), "constant outside the i32") in let t4 = sd_rf(t3, sd_k("-(2147483648) + a"), "constant outside the i32") in let t5 = sd_rf(t4, sd_k("0xFFFFFFFF + a"), "constant outside the i32") in let t6 = sd_rf(t5, sd_k("99999999999999999999 * 0 + a"), "constant outside the i32") in let t7 = sd_rf(t6, sd_k("if a then b else 0"), "the condition of an 'if' is int") in let t8 = sd_rf(t7, sd_k("a < b"), "the body is bool") in let t9 = sd_rf(t8, sd_k("(a < b) + 1"), "arithmetic operator applied to bool") in let u1 = sd_rf(t9, sd_k("if a < b < 3 then 1 else 0"), "comparisons do not chain") in let u2 = sd_rf(u1, sd_k("let result = 3 in result + a"), "'result' names") in let u3 = sd_rf(u2, sd_k("let k = 3 in k + a"), "is also a function") in let u4 = sd_rf(u3, sd_k("a") + sd_k("b"), "defined more than once") in let u5 = sd_rf(u4, "fn h(x, y) = x - y\n" + sd_k("h(a, b)"), "whose signature is outside the fragment") in let u6 = sd_rf(u5, "let c = 7\n" + sd_k("a + c"), "unbound name 'c'") in let u7 = sd_rf(u6, sd_k("a + count(str(a))"), "not a function of this kernel file") in let u8 = sd_rf(u7, "@frobnicate\n" + sd_k("a"), "attribute '@frobnicate' is outside") in let u9 = sd_rf(u8, "@no_alloc(1)\n" + sd_k("a"), "attribute '@no_alloc' is outside") in let v1 = sd_rf(u9, "fn k(a: int, b: int) -> int requires a > 0, b > 0 = a\n", "expected 'requires', 'ensures' or '='") in let v2 = sd_rf(v1, sd_k("a" + chr(9) + "- b"), "(code 9)") in let v3 = sd_rf(v2, "fn k(a: int, b: int) -> int / io = a\n", "the only effect annotation") in let v4 = sd_rf(v3, "fn k(a: int, a: int) -> int = a\n", "declared twice") in let v5 = sd_rf(v4, h1 + sd_k("h(a, b)"), "too many arguments") in let v6 = sd_rf(v5, sd_k("let loop = 1 in loop"), "reserved word 'loop'") in let v7 = sd_rf(v6, sd_k("a ; 99"), "(code 59)") in let v8 = sd_rf(v7, sd_k("true + a"), "arithmetic operator applied to bool") in let v9 = sd_rf(v8, "fn bit_and(x: int, y: int) -> int = x - y\n" + sd_k("bit_and(a, b)"), "named like a builtin") in let w1 = sd_rf(v9, sd_k("a - b\n    99"), "unexpected token after the body") in let w2 = sd_rf(w1, "@bound(x)\n" + sd_k("a"), "@bound takes") in let w3 = sd_rf(w2, sd_k("ctfail(a)"), "ctfail takes one string literal") in let w4 = sd_rf(w3, sd_k("if a == true then 1 else 0"), "applied to int and bool") in sd_rf(w4, sd_k("if a > 0 then 1"), "expected 'else' or 'elif'")
+## {err, n (kernels), nv (value vectors), nt (trap vectors), nr (refusals)}
+fn sd_all(g) = let src = sd_src() in let path = g.tmp + "/sd.src" in let w = fs_write_sync(path, src) in sd_refuse(sd_accept({g: g, path: path, src: src, prog: nf_late(lumec_expand(src)), err: "", n: 0, nv: 0, nt: 0, nr: 0}))
+## ====================================================================================================================
+## 10. Totals: the final line and build/certification/safety_envelope_gate_summary.json
+## ====================================================================================================================
+fn sg_fj(inj, trip, masked, fneg) = "{\"injected\":" + str(inj) + ",\"tripped\":" + str(trip) + ",\"masked_benign\":" + str(masked) + ",\"false_negative\":" + str(fneg) + "}"
+fn sg_ffj(f) = sg_fj(f.inj, f.trips, f.masked, 0)
+fn sg_ft(name, inj, trip, masked, fneg) = name + " " + str(inj) + "/" + str(trip) + "/" + str(masked) + "/" + str(fneg)
+fn sg_fft(name, f) = sg_ft(name, f.inj, f.trips, f.masked, 0)
+fn sg_xj(x) = "{\"injected\":" + str(x.tot.inj) + ",\"tripped\":" + str(x.tot.trip) + ",\"masked_benign\":" + str(x.tot.masked) + ",\"false_negative\":" + str(x.tot.fneg) + ",\"trip_by_comparator\":" + str(x.tot.cmp) + ",\"trip_by_channel_b_trap\":" + str(x.tot.bt) + ",\"trip_by_channel_a_trap\":" + str(x.tot.at) + ",\"trip_by_compile_refusal\":" + str(x.tot.rej) + ",\"classes\":{" + x.json + "}}"
+fn sg_dj(d) = "{\"kernels\":" + str(d.kernels) + ",\"vectors\":" + str(d.vecs) + ",\"agree_value\":" + str(d.val) + ",\"agree_trap\":" + str(d.trap) + ",\"i32_domain_trips\":" + str(d.dom) + ",\"kernels_refuted_by_lumec_at_compile_time\":" + str(d.refuted) + ",\"channel_b_only_vectors\":" + str(d.bonly) + ",\"disagreements\":0}"
+fn sg_dadd(a, b) = {err: "", kernels: a.kernels + b.kernels, vecs: a.vecs + b.vecs, val: a.val + b.val, trap: a.trap + b.trap, dom: a.dom + b.dom, refuted: a.refuted + b.refuted, bonly: a.bonly + b.bonly, lines: Nil, want: Nil, traps: Nil}
+fn sg_final(g, t0, kats, pos, corp, pre, f, s, real, seu_ns, seed, d1, d2, xm, sp) = let d = sg_dadd(d1, d2) in let inj = sp.f.inj + f.fa.inj + f.fm.inj + f.fo.inj + f.fr.inj + f.fg.inj + f.fw.inj + f.fc.inj + f.fx.inj + f.fl.inj + xm.a.tot.inj + xm.b.tot.inj + xm.c.tot.inj in let trips = sp.f.trips + f.fa.trips + f.fm.trips + f.fo.trips + f.fr.trips + f.fg.trips + f.fw.trips + f.fc.trips + f.fx.trips + f.fl.trips + xm.a.tot.trip + xm.b.tot.trip + xm.c.tot.trip in let masked = f.fa.masked + f.fm.masked + f.fo.masked + f.fr.masked + f.fg.masked + f.fw.masked + f.fc.masked + f.fx.masked + f.fl.masked + xm.a.tot.masked + xm.b.tot.masked + xm.c.tot.masked in let icyc = s.ram1.cyc + s.ram2.cyc + s.reg1.cyc + s.reg2.cyc in let ms = (os_monotonic_ns() - t0) / 1000000 in let maxr = sg_max(sg_max(pos.maxr, corp.maxr), pre.crit.maxr) in let json = "{\"gate\":\"safety_envelope_gate\",\"ok\":true,\"elapsed_ms\":" + str(ms) + ",\"independence\":{\"ok\":true,\"tool_use_lines_allowed\":\"larm64, lriscv\",\"tool_bundle_functions\":" + str(pre.ind.tool_fns) + ",\"compiler_functions\":" + str(pre.ind.comp_fns) + ",\"compiler_functions_in_tool_bundle\":0,\"negative_control_compiler_functions_in_gate_bundle\":" + str(pre.ind.gate_common) + ",\"tool_bundle_modules\":" + str(pre.ind.mods) + ",\"binary_bundle_is_current_source\":" + str(pre.ind.fresh) + "},\"conformance\":{\"int_pure_kernels_accepted\":" + str(pre.conf.ok) + ",\"named_exceptions\":" + str(pre.conf.exc) + ",\"exception\":\"vex_simd_hardware_add4_sum (calls the SIMD builtin simd_add4_i64)\",\"critical_kernels_lockstep\":" + str(pre.crit.kernels) + ",\"critical_vectors_committed\":" + str(pre.crit.vecs) + ",\"specification_decisions\":{\"kernels\":" + str(pre.sem.n) + ",\"value_vectors\":" + str(pre.sem.nv) + ",\"trap_vectors\":" + str(pre.sem.nt) + ",\"refused_texts\":" + str(pre.sem.nr) + "}},\"lockstep\":{\"gate_kernels\":" + str(pos.kernels) + ",\"gate_vectors\":" + str(pos.vecs) + ",\"lchameleon_kernels\":" + str(corp.ok) + ",\"lchameleon_vectors\":" + str(corp.vecs) + ",\"max_rv32_cycles_per_bound_cycle_x100\":" + str(maxr) + ",\"budget_scale\":" + str(se_bound_scale()) + "},\"differential\":{\"seed_fixed\":20261111,\"seed_urandom\":" + str(seed) + ",\"total\":" + sg_dj(d) + ",\"fixed\":" + sg_dj(d1) + ",\"urandom\":" + sg_dj(d2) + "},\"injections\":{\"a_bit\":" + sg_ffj(f.fa) + ",\"a_asm\":" + sg_ffj(f.fm) + ",\"a_src\":" + sg_xj(xm.a) + ",\"b_ram\":" + sg_ffj(f.fr) + ",\"b_reg\":" + sg_ffj(f.fg) + ",\"b_rom\":" + sg_ffj(f.fo) + ",\"b_src\":" + sg_xj(xm.b) + ",\"b_cg\":" + sg_xj(xm.c) + ",\"validator\":" + sg_ffj(f.fc) + ",\"wcet_watchdog\":" + sg_ffj(f.fw) + ",\"arithmetic_domain\":" + sg_ffj(f.fx) + ",\"latch_log\":" + sg_ffj(f.fl) + ",\"split_frames\":" + sg_ffj(sp.f) + "},\"totals\":" + sg_fj(inj, trips, masked, 0) + "}\n" in let mk = os_run("/bin/mkdir", Cons("-p", Cons(g.root + "/build/certification", Nil))) in let w = fs_write_sync(g.root + "/build/certification/safety_envelope_gate_summary.json", json) in "OK: safety envelope: " + str(kats.n) + " RV32IM known-answer checks; channel B independence: lsafety_envelope.src uses only larm64 / lriscv (the AArch64 / RV64 back ends of the split bundle), its bundle (" + str(pre.ind.tool_fns) + " functions) defines 0 of the " + str(pre.ind.comp_fns) + " functions of the compiler (negative control: this gate's bundle defines " + str(pre.ind.gate_common) + " of them); clean-room front end accepted " + str(pre.conf.ok) + " `-> int / pure` kernels of critical_kernels / lchameleon / lstd (" + str(pre.conf.exc) + " named exception: SIMD builtin); specification decisions: " + str(pre.sem.n) + " kernels / " + str(pre.sem.nv) + " vectors with hand-derived values (channel B, reference, CLI lockstep), " + str(pre.sem.nt) + " trap vectors, " + str(pre.sem.nr) + " texts refused with the named reason; lockstep " + str(pre.crit.kernels) + " critical kernels / " + str(pre.crit.vecs) + " vectors + " + str(pos.kernels) + " gate kernels / " + str(pos.vecs) + " vectors + " + str(corp.ok) + " lchameleon kernels / " + str(corp.vecs) + " vectors all committed the reference value (lchameleon skipped: " + str(corp.nsc) + " not self-contained, " + str(corp.unsup) + " outside the fragment, " + str(corp.novec) + " without a sampled vector); max RV32 cycles per @bound cycle " + sg_frac(maxr) + " (budget scale " + str(se_bound_scale()) + "), mean " + str((pos.sumc + corp.sumc) / (pos.vecs + corp.vecs)) + " cycles per vector; differential campaign A (lumec + lasm) vs B (clean room): " + str(d.kernels) + " random kernels / " + str(d.vecs) + " vectors, " + str(d.val) + " value agreements, " + str(d.trap) + " trap agreements, " + str(d.dom) + " i32-domain trips (B traps, A follows the 64-bit evaluation), " + str(d.refuted) + " kernels refuted by lumec at compile time with a verified counterexample (" + str(d.bonly) + " vectors checked on B only), 0 disagreements (seeds 20261111 and " + str(seed) + "); FAULT INJECTION TOTALS injected/tripped/masked-benign/false-negative: " + sg_fft("a_bit", f.fa) + ", " + sg_fft("a_asm", f.fm) + ", " + sg_ft("a_src", xm.a.tot.inj, xm.a.tot.trip, xm.a.tot.masked, xm.a.tot.fneg) + ", " + sg_fft("b_ram", f.fr) + ", " + sg_fft("b_reg", f.fg) + ", " + sg_fft("b_rom", f.fo) + ", " + sg_ft("b_src", xm.b.tot.inj, xm.b.tot.trip, xm.b.tot.masked, xm.b.tot.fneg) + ", " + sg_ft("b_cg", xm.c.tot.inj, xm.c.tot.trip, xm.c.tot.masked, xm.c.tot.fneg) + ", " + sg_fft("validator", f.fc) + ", " + sg_fft("wcet_watchdog", f.fw) + ", " + sg_fft("arithmetic_domain", f.fx) + ", " + sg_fft("latch_log", f.fl) + ", " + sg_fft("split_frames", sp.f) + "; split bundle (x86-64 native + bare RV32IM image on the LumePuter, voted over frames): " + str(sp.commits) + " commits; TOTAL " + str(inj) + " injected -> " + str(trips) + " SAFE_STATE_TRIP, " + str(masked) + " masked-benign (correct value committed), 0 false negatives [a_src per class: " + xm.a.txt + "; b_src per class: " + xm.b.txt + "; b_cg per kind: " + xm.c.txt + "; B RAM: " + sg_sstr(s.ram1) + " and " + sg_sstr(s.ram2) + "; B register: " + sg_sstr(s.reg1) + " and " + sg_sstr(s.reg2) + "; B ROM (" + str(s.romw) + " words): " + sg_sstr(s.rom1) + "]; interpreter " + str(icyc * 1000 / (seu_ns / 1000000 + 1)) + " instructions/s over " + str(icyc) + " instructions; real ltv: " + (if fs_path_exists(g.ltv_real) == 1 then str(real.validated) + " kernels validated and committed, " + str(real.refused) + " not validated and held in the safe state (" + real.names + " )" else "absent, stand-in validator only") + "; summary: build/certification/safety_envelope_gate_summary.json; " + str((os_monotonic_ns() - t0) / 1000000) + " ms"
+fn sg_more(g, t0, kats, pos, corp, pre, f, s, real, seu_ns) = let seed = sg_urandom_seed() in let d1 = dq_run(g, "f", 20261111, g.dq_batches, g.dq_per, 0, dq_acc0()) in if d1.err != "" then ctfail("safety envelope gate failed: differential campaign (seed 20261111): " + d1.err + "\n") else let d2 = dq_run(g, "u", seed, g.dq_batches, g.dq_per, 0, dq_acc0()) in if d2.err != "" then ctfail("safety envelope gate failed: differential campaign (seed " + str(seed) + " from /dev/urandom): " + d2.err + "\n") else let xm = xm_all(g) in if xm.err != "" then ctfail("safety envelope gate failed: cross-detection matrix: " + xm.err + "\n") else let sp = sp_all(g) in if sp.err != "" then ctfail("safety envelope gate failed: split bundle: " + sp.err + "\n") else sg_final(g, t0, kats, pos, corp, pre, f, s, real, seu_ns, seed, d1, d2, xm, sp)
+fn sg_pre(g) = let ind = sg_indep(g) in if ind.err != "" then ctfail("safety envelope gate failed: independence of channel B: " + ind.err + "\n") else if sg_sha() != "" then ctfail("safety envelope gate failed: " + sg_sha() + "\n") else let conf = sg_conf(g) in if conf.err != "" then ctfail("safety envelope gate failed: conformance: " + conf.err + "\n") else if conf.ok < 140 or conf.exc != 2 then ctfail("safety envelope gate failed: conformance: " + str(conf.ok) + " kernels accepted, " + str(conf.exc) + " exceptions (expected at least 140 and the SIMD kernel in both files)\n") else let crit = sg_crit(g) in if crit.err != "" then ctfail("safety envelope gate failed: critical kernels: " + crit.err + "\n") else let sem = sd_all(g) in if sem.err != "" then ctfail("safety envelope gate failed: decisions of the clean-room front end: " + sem.err + "\n") else {ind: ind, conf: conf, crit: crit, sem: sem}
+fn sg_go(g, t0) = let w = fs_write_sync(g.gk, g.gsrc) in let e = sg_setup_bins(g) in if e != "" then ctfail("safety envelope gate failed: setup: " + e + "\n") else if fs_path_exists(g.bin) != 1 then ctfail("safety envelope gate failed: build/bin/lsafety_envelope is missing\n") else let kats = sg_kats() in if kats.err != "" then ctfail("safety envelope gate failed: RV32IM known-answer tests: " + kats.err + "\n") else let pre = sg_pre(g) in let pos = sg_positive(g, sg_gk_list(), {err: "", kernels: 0, vecs: 0, maxr: 0, sumc: 0}) in if pos.err != "" then ctfail("safety envelope gate failed: lockstep: " + pos.err + "\n") else let corp = sg_corpus(g) in if corp.err != "" then ctfail("safety envelope gate failed: lockstep: " + corp.err + "\n") else if corp.ok < 3 or corp.named < 3 then ctfail("safety envelope gate failed: only " + str(corp.ok) + " lchameleon kernels ran in lockstep (" + str(corp.named) + " of the named ones)\n") else if sg_max(sg_max(pos.maxr, corp.maxr), pre.crit.maxr) >= se_bound_scale() * 100 then ctfail("safety envelope gate failed: cycles per @bound cycle reached the budget scale\n") else sg_faults(g, t0, kats, pos, corp, pre)
+fn sg_cfg_n(input, key, dflt, lo, hi) = let p = se_pint(se_get(input, key)) in if p.ok == 1 and p.v >= lo and p.v <= hi then p.v else dflt
+fn sg_main(input) = let root = se_get(input, "root") in if root == "" then ctfail("safety envelope gate requires @root\n") else let t0 = os_monotonic_ns() in let tmp = root + "/build/safety-envelope-gate" in let rm = os_run("/bin/rm", Cons("-rf", Cons(tmp, Nil))) in let mk = os_run("/bin/mkdir", Cons("-p", Cons(tmp + "/work", Nil))) in sg_go(sg_g(root, tmp, sg_gk_src(), sg_cfg_n(input, "campaign_batches", 12, 1, 500), sg_cfg_n(input, "campaign_kernels", 100, 5, 400)), t0)
 
 print sg_main(readall())

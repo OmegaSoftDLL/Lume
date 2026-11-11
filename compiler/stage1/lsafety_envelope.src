@@ -1,16 +1,24 @@
 ## lsafety_envelope.src -- dissimilar-redundancy lockstep safety envelope (command/monitor, 2oo2 with diagnostics, fail-closed).
 ##
 ## A "critical kernel" is a pure integer Lume function. Two channels compute it and a voter releases the value only when
-## they agree exactly:
+## they agree exactly. The two channels share NO compiler code, front end included:
 ##   * Channel A (command): the kernel source plus `print <fn>(toint(os_arg_at(1)), ...)` is compiled by the real
-##     build/bin/lumec, assembled by build/bin/lasm --strict and run as a native x86-64 process under a wall-clock
-##     watchdog. Trap / non-zero exit / timeout / anything but one integer on stdout is a channel fault.
-##   * Channel B (monitor): the kernel's lowered AST (the same front end as channel A, see "common mode" below) is
-##     compiled HERE by `rc_*` to RV32IM machine words and executed HERE by `rv_*`, a deterministic RV32IM interpreter
-##     (the LumePuter): x0..x31 with x0 hard-wired to zero, PC from ROM base 0x40000, read-only instruction ROM, 16 KiB of
-##     bounds-checked RAM at 0x80000, exact 32-bit two's-complement ALU, RISC-V DIV/REM corner cases, illegal-instruction
-##     trap and a strict cycle budget (one cycle per executed instruction). Neither `rc_*` nor `rv_*` shares code with
-##     the x86-64 code generator, the assembler or the native runtime.
+##     build/bin/lumec (its lexer, parser, checker, prover, lowering, x86-64 code generator), assembled by build/bin/lasm
+##     --strict and run as a native x86-64 process under a wall-clock watchdog. Trap / non-zero exit / timeout /
+##     anything but one integer on stdout is a channel fault.
+##   * Channel B (monitor): the RAW TEXT of the same kernel file is lexed, parsed, checked and compiled HERE by a
+##     clean-room pipeline written from the language definition only (docs/03-specification.md, grammar/lume.ebnf):
+##     `cbl_*` lexer, `cbp_*` precedence-climbing parser with its own AST (`Cb*`), `cbt_*` typed checker, `cbg_*`
+##     direct AST -> RV32IM code generator. The words are executed HERE by `rv_*`, a deterministic RV32IM interpreter
+##     (the LumePuter): x0..x31 with x0 hard-wired to zero, PC from ROM base 0x40000, read-only instruction ROM, 16 KiB
+##     of bounds-checked RAM at 0x80000, exact 32-bit two's-complement ALU, RISC-V DIV/REM corner cases,
+##     illegal-instruction trap and a strict cycle budget (one cycle per executed instruction).
+##     This file does not `use lumec` nor any module that links the compiler (its only imports: larm64 / lriscv, and
+##     through them lkir, for the AArch64 / RV64 channel-A programs of the split bundle; channel B does not call
+##     them, and SHA-256 is implemented here, `s2_*`). tests/harness/safety_envelope_gate.src checks
+##     that mechanically on every run: no function of compiler/stage1/lumec.src is defined in this tool's bundle.
+##   * Contracts: channel B compiles every `requires` (on entry) and every `ensures` (on exit, over `result`) of every
+##     function it reaches into a run-time check that traps, whatever lumec proved and elided on the channel-A side.
 ##   * Certificate guard: cert_ok = lumeputer_inweights_lcert_check(budget - cycles_b, sig) where sig = 1 only when the
 ##     Translation Validator (build/bin/ltv, `@ltv` overrides the path) exited 0 and reported
 ##     "name":"<fn>","status":"validated" for this kernel. Missing / failing / timing-out ltv => cert_ok = 0.
@@ -18,35 +26,65 @@
 ##     out_a == out_b. Anything else is SAFE_STATE_TRIP with a reason code. The trip is latched in a hash-chained
 ##     JSON-lines event log; later vectors and later invocations are refused (`latched`) until `@reset 1`.
 ##
+## The kernel fragment channel B reads (anything else is `b_compile_unsupported` => safe state):
+##   file      : functions; other top-level items are skipped (a kernel cannot refer to them). `#` starts a comment.
+##   function  : {`@bound(N)` | `@bound(cycles: N)` | `@no_alloc` | `@secret`} [`pub`] `fn` name `(` name `:` type {`,` ...} `)` `->` type
+##               [`/ pure`] {`requires` expr | `ensures` expr} `=` expr          type = `int` | `bool`
+##               (the cycle budget is taken from a `@bound` on the line immediately before `fn`: write `@no_alloc` /
+##               `@secret` above it, otherwise the envelope trips with `no_cycle_budget`)
+##   expr      : or < and < comparison (== != < <= > >=, does not chain) < + - < * / % < unary `-` / `not` < primary
+##   primary   : integer literal (decimal, `_` separators, 0x / 0b / 0o), `true`, `false`, name, call, `(` expr `)`,
+##               `if c then a {elif c then a} else b`, `let x = v in b`, `ctfail("...")`,
+##               `bit_and(a, b)`, `bit_or(a, b)`, `bit_xor(a, b)`
+##   types     : operators take ints, `and` / `or` / `not` and conditions take bools, `==` / `!=` two ints or two bools;
+##               nothing converts implicitly. `/` truncates toward zero and `%` takes the sign of the dividend.
+##   Decisions where the specification and lumec differ or the specification is silent (each is a refusal here, so
+##   the envelope trips instead of guessing):
+##     - `not`: the grammar puts it with unary minus (tighter than a comparison), lumec parses `not a == b` as
+##       `not (a == b)`. Here `not a == b` is `(not a) == b`: ill-typed for ints (refused), and for bools the two
+##       readings have the same value.
+##     - line structure: the specification ends an expression at a line end unless the line ends in an operator or
+##       a bracket is open; lumec continues over any line break. Here a binary operator or a call parenthesis that
+##       starts a line outside brackets is refused.
+##     - `#[`: a nestable block comment in the specification, a line comment for lumec; refused.
+##     - integer literals: `12abc`, `1__0`, `1_`, `0X1F` are accepted by lumec (as two tokens or loosely); refused.
+##     - lumec accepts an int where a bool is expected and the reverse (`if x then`, `-> int = a < b`, a `bool`
+##       parameter that receives 5), unknown attributes (here only `@bound` is read and `@no_alloc` / `@secret`, which
+##       do not change a value, are passed over), typed `let x: int = ..`, effect rows other than `/ pure`,
+##       `terminates`: all outside the fragment here. A bool argument must be 0 or 1 (`b_arg_outside_bool`).
+##     - a parameter or `let` named `result`, or named like a function of the file, is refused; so is a file that
+##       defines a function named like a builtin of the fragment, wherever it is (a call would mean the builtin here).
+##
 ## Real level (docs/28-delivery-rules.md) -- what this is and is not:
 ##   * The RV32IM machine is a software interpreter running on the same host CPU as channel A: it is a MODEL of an
-##     independent LumePuter monitor, not separate hardware. It gives design diversity (different code generator,
-##     different instruction set, different number representation), not physical independence.
-##   * Common mode that the voter cannot see: the lexer/parser/type checker/lowering (`lumec_expand` + `nf_late`) feed
-##     both channels, so a front-end bug that mis-lowers the kernel is computed identically twice. Both channels also
-##     run on one host, one kernel and one clock.
-##   * monitor_domain is i32. Channel B traps (=> safe state) on any signed 32-bit overflow of + - *, on division by
-##     zero and on INT_MIN / -1, and refuses arguments or constants outside i32. Values that channel A could compute in
-##     64 bits but that leave i32 on the way are therefore NOT committed.
-##   * Fragment of channel B: integer literals, parameters, `let`, `if`, + - * / %, == != < > <= >=, short-circuit
-##     and/or (0/1 valued; `true`/`false` are 1/0), bit_and/bit_or/bit_xor, calls to other fragment functions (real stack
-##     frames, no tail-call elimination: recursion depth is bounded by the 16 KiB RAM) and `ctfail` (-> trap). Anything
-##     else is `b_compile_unsupported` => safe state. The kernel file must be self-contained (no `use`, no `print`).
+##     independent LumePuter monitor, not separate hardware. It gives design diversity (different front end, different
+##     code generator, different instruction set, different number representation), not physical independence.
+##   * Common mode that remains: both channels are given the same kernel text and the same language definition (a
+##     wrong specification is implemented twice); in the lockstep mode both run on one host, one kernel, one clock;
+##     the voter and the event log are single. The clean-room front end was written by the same team as lumec.
+##   * monitor_domain is i32. Channel B traps (=> safe state) on any signed 32-bit overflow of + - * and of unary
+##     minus, on division by zero and on INT_MIN / -1, and refuses arguments or constants outside i32. Values that
+##     channel A could compute in 64 bits but that leave i32 on the way are therefore NOT committed.
+##   * Calls use real stack frames, no tail-call elimination: recursion depth is bounded by the 16 KiB RAM. The kernel
+##     file must be self-contained (no `use`, no `print`).
 ##   * The event log's hash chain detects truncation-free accidental or naive edits; it is NOT signed, so somebody who
 ##     rewrites the whole file and recomputes every hash is not detected.
 ##   * The `@inject` hooks are test instruments. A run with an injection records it in the JSON and in the event log.
 ##
 ## Cycle budget: `@budget <n>` (1 .. 10^6) or, when the kernel carries `@bound(cycles: N)` (or `@bound(N)`), N * 16 RV32
-## cycles. `@bound` is lumec's structural cost (vwcet_e in compiler/stage1/lume/06b_phase3.src: literal/variable 1,
-## binary operator 1 or 4 for * / %, `if` 2 + condition + worst branch, `let` 1, call 4 + arguments + callee body) and
-## lumec rejects a kernel whose cost exceeds N ([V0002]). This back end spends at most 9 RV32 instructions on the node
-## that costs 1 there (push and pop of the left operand plus the five-instruction checked add), and a fixed
-## 15 + 4 * arguments for the reset stub and the kernel's own frame, so cycles <= 9 * N + 15 + 4 * arguments and 16 * N
-## covers it whenever 6 * N >= 15 + 4 * arguments. That relation is a hand argument over the two cost tables, not a
-## machine-checked WCET proof. Measured by tests/harness/safety_envelope_gate.src over the gate kernels and every
-## self-contained `-> int / pure` kernel of compiler/stage1/lchameleon.src: at most 6.16 RV32 cycles per `@bound`
-## cycle. A kernel without `@bound` and without `@budget` trips (`no_cycle_budget`); recursion needs `@budget`, since
-## lumec refuses `@bound` on a self-recursive function.
+## cycles. `@bound` is lumec's structural cost of the BODY (vwcet_e in compiler/stage1/lume/06b_phase3.src:
+## literal/variable 1, binary operator 1 or 4 for * / %, `if` 2 + condition + worst branch, `let` 1, call 4 + arguments
+## + callee body) and lumec rejects a kernel whose cost exceeds N ([V0002]). This code generator spends at most 8 RV32
+## instructions on a node that costs 1 there (push and pop of the left operand around the four-instruction checked
+## add; 5 when the right operand is a literal or a variable), 10 on a division (cost 4), 3 on a `let`, 11 + 2 per
+## argument on a call (cost 4 + arguments), a fixed 9 for the kernel's frame and 6 + 4 * arguments for the reset stub.
+## The run-time contract checks (every clause, plus 3 instructions when there is an `ensures`) are executed inside the
+## same budget although the body cost does not count them. So cycles <= 8 * N + contracts + 15 + 4 * arguments: a hand
+## argument over the two cost tables, not a machine-checked WCET proof. Measured by
+## tests/harness/safety_envelope_gate.src over the critical kernels, the gate kernels and every self-contained
+## `-> int / pure` kernel of compiler/stage1/lchameleon.src: at most 4.54 RV32 cycles per `@bound` cycle (it was 6.16
+## with the previous code generator). A kernel without `@bound` and without `@budget` trips (`no_cycle_budget`). The
+## `@bound` channel B's own parser reads must be the one the budget was derived from, else it refuses the kernel.
 ##
 ## stdin protocol: `@root <repo>`, `@src <kernel.src>`, `@fn <name>`, one or more `@args a,b,c`; optional `@budget <n>`,
 ## `@timeout_ms <n>` (channel A watchdog, default 2000), `@ltv <path>`, `@ltv_timeout_ms <n>`, `@reset 1`,
@@ -54,16 +92,47 @@
 ## `@inject <kind>:<params>`:
 ##   a_bit:<k>                      flip bit k (0..62) of the channel-A result word after capture
 ##   a_asm:<addsub|imm|cmpimm|jcc>:<n>  mutate the n-th matching instruction of the kernel in the emitted .s before lasm
+##   a_src:<class>:<n>              channel A compiles the n-th source mutant of the class (a model of a front-end or
+##                                  lowering defect of lumec), channel B the original text; classes: see cbm_src
+##   b_src:<class>:<n>              the converse: channel B compiles the mutant, channel A the original
+##   b_cg:<opcode|reg|polarity|droptrap>:<n>  corrupt the n-th matching item of channel B's generated code
 ##   b_ram:<cycle>:<word>:<bit>     flip one bit of RAM word <word> just before cycle <cycle>
 ##   b_reg:<cycle>:<reg>:<bit>      flip one bit of register x<reg> just before cycle <cycle> (x0 stays zero)
 ##   b_rom:<word>:<bit>             flip one bit of ROM word <word> before reset
 ## Output: one JSON object on stdout. Exit 0 only if every vector committed; 2 otherwise.
 ##
-## `@mode monitor` (`lume lumeputer exec`): the LumePuter alone. The kernel is compiled to RV32IM and executed on the
-## monitor machine for every `@args` vector: no native channel, no vote, no certificate and no event log, and therefore
-## NO commit. It is deterministic integer computation on the monitor (same i32 domain, same traps, same cycle budget),
-## not the release of an actuator value. Exit 0 only if every vector halted without a trap inside the budget.
-use lumec
+## `@mode monitor` (`lume lumeputer exec`): the LumePuter alone. The kernel is compiled to RV32IM by the clean-room
+## pipeline and executed on the monitor machine for every `@args` vector: no native channel, no vote, no certificate
+## and no event log, and therefore NO commit. It is deterministic integer computation on the monitor (same i32 domain,
+## same traps, same cycle budget), not the release of an actuator value. Exit 0 only if every vector halted without a
+## trap inside the budget.
+##
+## Split bundle (docs/41-safety-envelope-split-bundle.md): the two channels as standalone programs for two boards.
+##   `@split <outdir>` with `@src` / `@fn` exports
+##     channel_a_x86_64.elf    channel A: the kernel and a frame shell in Lume, compiled by lumec + lasm
+##     channel_a_aarch64.elf   channel A for an AArch64 Linux board: after lumec accepted the file, lkir.src + larm64.src
+##                             compile the kernel (their own reader and code generator), the frame shell is A64 code
+##     channel_a_riscv64.elf   the same for RV64 Linux through lriscv.src (a third program, voted as `@cmd_c`)
+##     channel_b_riscv_bare.bin  channel B: a bare-metal RV32IM image from the clean-room compiler: reset stub, stack,
+##                             polled 16550 UART at 0x10000000, frame codec, the kernel with a cycle counter and a
+##                             stack-limit check, trap handler (TRAP frame, then halt), load address 0x80000000
+##     manifest.json           kernel id, budget, load addresses, size and SHA-256 of each artifact
+##   The AArch64 / RV64 programs need the whole kernel FILE inside the fragment of lkir.src (no bit_and / bit_or /
+##   bit_xor, no ctfail, no elif); otherwise the manifest records why they were not built.
+##   `@mode split-run` with `@manifest`, `@seq <n>`, `@args`, `@cmd_a <shell command>`, `@cmd_b <shell command>` (or
+##   `lumeputer:<image>` for the in-tool interpreter), optional `@cmd_c`, `@frame_timeout_ms` (default 5000): sends the
+##   request frame to each command's stdin, reads the response frames, checks CRC, magic, version, sequence, kernel
+##   id, channel code, argument echo, status, cycle limit and exact result equality, and commits or trips (latched in
+##   the same event log). A missing, late, malformed or replayed frame is a trip, and so is a `@seq` that is not
+##   larger than every sequence number already in the event log (`sequence_not_fresh`). `@mode split-verify` re-hashes the
+##   artifacts against the manifest.
+##   Real level: the images were executed on this host, on qemu-aarch64, qemu-riscv64 and qemu-system-riscv32 (`virt`).
+##   QEMU is an emulator, not silicon; two processes on one host are not two boards; stdin / stdout stand for the
+##   UART. What the bundle gives is a ready-to-flash split with a tested protocol, not a qualified dual-board system.
+##   The bare image serves one request per reset, its UART is used as the board's reset configuration left it, and its
+##   halt (the `virt` test finisher) must be replaced by the board's own.
+use larm64
+use lriscv
 
 ## ====================================================================================================================
 ## 1. RV32IM instruction encoders (RISC-V unprivileged spec, chapter "RV32/64G Instruction Set Listings")
@@ -99,11 +168,23 @@ fn rv_jalr(rd, rs1, imm) = rv_enc_i(imm, rs1, 0, rd, 103)
 fn rv_lui(rd, imm20) = rv_enc_u(imm20, rd, 55)
 fn rv_ecall() = 115
 fn rv_ebreak() = 1048691
+fn rv_andi(rd, rs1, imm) = rv_enc_i(imm, rs1, 7, rd, 19)
+fn rv_ori(rd, rs1, imm) = rv_enc_i(imm, rs1, 6, rd, 19)
+fn rv_slli(rd, rs1, sh) = rv_enc_i(sh, rs1, 1, rd, 19)
+fn rv_srli(rd, rs1, sh) = rv_enc_i(sh, rs1, 5, rd, 19)
+fn rv_lbu(rd, rs1, imm) = rv_enc_i(imm, rs1, 4, rd, 3)
+fn rv_sb(rs2, rs1, imm) = rv_enc_s(imm, rs2, rs1, 0, 35)
+fn rv_bltu(rs1, rs2, imm) = rv_enc_b(imm, rs2, rs1, 6)
+fn rv_bgeu(rs1, rs2, imm) = rv_enc_b(imm, rs2, rs1, 7)
 
 ## ====================================================================================================================
 ## 2. The LumePuter: a deterministic RV32IM interpreter
 ##    Register and memory words are kept as unsigned values 0 .. 2^32-1 in Lume's i64 integers. Every result is wrapped
 ##    explicitly; no intermediate value leaves the i64 range (see rv_mulhu and the comments at rv_alu_m).
+##    A machine is {rom, rombase, ram, rambase, mmio}. rv_machine is the monitor of the lockstep mode (ROM at 0x40000,
+##    16 KiB of RAM at 0x80000, no device). rv_machine_io is the bare-metal machine the split image runs on (image
+##    at 0x80000000, RAM at 0x80020000, a 16550 and the `virt` test finisher); only there `csrrw x0, mtvec, rs` is
+##    accepted (as a no-op: this interpreter reports its own traps instead of vectoring to a handler).
 ## ====================================================================================================================
 fn rv_w32(v) = let m = v % 4294967296 in if m < 0 then m + 4294967296 else m
 fn rv_s32(u) = if u >= 2147483648 then u - 4294967296 else u
@@ -150,9 +231,9 @@ fn rv_x_opimm(pc, x, ram, rd, f3, a, shamt, f7) = let v = rv_opimm_v(f3, a, sham
 fn rv_mem_chk(c, addr, size) = if addr < c.rambase or addr + size > c.rambase + 4 * c.ramw then "ram_out_of_bounds" else if addr % size != 0 then "ram_misaligned" else ""
 fn rv_load_size(f3) = if f3 == 2 then 4 else if f3 == 1 or f3 == 5 then 2 else if f3 == 0 or f3 == 4 then 1 else 0
 fn rv_load_v(wv, off, size, f3) = if size == 4 then wv else let part = wv / rv_p2(off % 4 * 8) % rv_p2(size * 8) in if f3 >= 4 then part else rv_w32(rv_sx(part, rv_p2(size * 8)))
-fn rv_x_load(c, pc, x, ram, rd, f3, addr) = let size = rv_load_size(f3) in if size == 0 then rv_ill(pc, x, ram) else let e = rv_mem_chk(c, addr, size) in if e != "" then rv_stop(2, e, pc, x, ram) else let off = addr - c.rambase in rv_ok(pc + 4, rv_wr(x, rd, rv_load_v(rv_tget(ram, c.ramhalf, off / 4), off, size, f3)), ram)
+fn rv_x_load(c, pc, x, ram, rd, f3, addr) = if rv_is_io(c, addr) then rv_io_load(c, pc, x, ram, rd, f3, addr) else let size = rv_load_size(f3) in if size == 0 then rv_ill(pc, x, ram) else let e = rv_mem_chk(c, addr, size) in if e != "" then rv_stop(2, e, pc, x, ram) else let off = addr - c.rambase in rv_ok(pc + 4, rv_wr(x, rd, rv_load_v(rv_tget(ram, c.ramhalf, off / 4), off, size, f3)), ram)
 fn rv_store_v(old, off, size, v) = if size == 4 then v else let sh = rv_p2(off % 4 * 8) in let m = rv_p2(size * 8) in old - old / sh % m * sh + v % m * sh
-fn rv_x_store(c, pc, x, ram, f3, addr, v) = let size = if f3 == 2 then 4 else if f3 == 1 then 2 else if f3 == 0 then 1 else 0 in if size == 0 then rv_ill(pc, x, ram) else let e = rv_mem_chk(c, addr, size) in if e != "" then rv_stop(2, e, pc, x, ram) else let off = addr - c.rambase in rv_ok(pc + 4, x, rv_tset(ram, c.ramhalf, off / 4, rv_store_v(rv_tget(ram, c.ramhalf, off / 4), off, size, v)))
+fn rv_x_store(c, pc, x, ram, f3, addr, v) = if rv_is_io(c, addr) then rv_io_store(c, pc, x, ram, f3, addr, v) else let size = if f3 == 2 then 4 else if f3 == 1 then 2 else if f3 == 0 then 1 else 0 in if size == 0 then rv_ill(pc, x, ram) else let e = rv_mem_chk(c, addr, size) in if e != "" then rv_stop(2, e, pc, x, ram) else let off = addr - c.rambase in rv_ok(pc + 4, x, rv_tset(ram, c.ramhalf, off / 4, rv_store_v(rv_tget(ram, c.ramhalf, off / 4), off, size, v)))
 
 fn rv_branch_t(f3, a, b) = if f3 == 0 then (if a == b then 1 else 0) else if f3 == 1 then (if a != b then 1 else 0) else if f3 == 4 then (if rv_s32(a) < rv_s32(b) then 1 else 0) else if f3 == 5 then (if rv_s32(a) >= rv_s32(b) then 1 else 0) else if f3 == 6 then (if a < b then 1 else 0) else if f3 == 7 then (if a >= b then 1 else 0) else 0 - 1
 fn rv_x_branch(pc, x, ram, f3, a, b, imm) = let t = rv_branch_t(f3, a, b) in if t < 0 then rv_ill(pc, x, ram) else rv_ok(if t == 1 then rv_w32(pc + imm) else pc + 4, x, ram)
@@ -162,9 +243,9 @@ fn rv_ebreak_cause(k) = if k == 1 then "ebreak_contract_violation" else if k == 
 fn rv_x_system(pc, x, ram, w) = if w == 115 then (if rv_rd(x, 17) == 93 then rv_stop(1, "halt", pc, x, ram) else rv_stop(2, "ecall_unsupported", pc, x, ram)) else if w == 1048691 then rv_stop(2, rv_ebreak_cause(rv_rd(x, 17)), pc, x, ram) else rv_ill(pc, x, ram)
 
 ## decode and execute one instruction word
-fn rv_exec(c, pc, x, ram, w) = let opc = w % 128 in let rd = w / 128 % 32 in let f3 = w / 4096 % 8 in let rs1 = w / 32768 % 32 in let rs2 = w / 1048576 % 32 in let f7 = w / 33554432 in if opc == 51 then rv_x_op(pc, x, ram, rd, f3, rv_rd(x, rs1), rv_rd(x, rs2), f7) else if opc == 19 then rv_x_opimm(pc, x, ram, rd, f3, rv_rd(x, rs1), rs2, f7) else if opc == 3 then rv_x_load(c, pc, x, ram, rd, f3, rv_w32(rv_rd(x, rs1) + rv_sx(w / 1048576, 4096))) else if opc == 35 then rv_x_store(c, pc, x, ram, f3, rv_w32(rv_rd(x, rs1) + rv_sx(f7 * 32 + rd, 4096)), rv_rd(x, rs2)) else if opc == 99 then rv_x_branch(pc, x, ram, f3, rv_rd(x, rs1), rv_rd(x, rs2), rv_sx(w / 2147483648 * 4096 + rd % 2 * 2048 + f7 % 64 * 32 + rd / 2 * 2, 8192)) else if opc == 111 then rv_ok(rv_w32(pc + rv_sx(w / 2147483648 * 1048576 + w / 4096 % 256 * 4096 + w / 1048576 % 2 * 2048 + w / 2097152 % 1024 * 2, 2097152)), rv_wr(x, rd, pc + 4), ram) else if opc == 103 then rv_x_jalr(pc, x, ram, rd, f3, rv_w32(rv_rd(x, rs1) + rv_sx(w / 1048576, 4096))) else if opc == 55 then rv_ok(pc + 4, rv_wr(x, rd, w / 4096 * 4096), ram) else if opc == 23 then rv_ok(pc + 4, rv_wr(x, rd, rv_w32(pc + w / 4096 * 4096)), ram) else if opc == 15 then (if f3 == 0 then rv_ok(pc + 4, x, ram) else rv_ill(pc, x, ram)) else if opc == 115 then rv_x_system(pc, x, ram, w) else rv_ill(pc, x, ram)
+fn rv_exec(c, pc, x, ram, w) = let opc = w % 128 in let rd = w / 128 % 32 in let f3 = w / 4096 % 8 in let rs1 = w / 32768 % 32 in let rs2 = w / 1048576 % 32 in let f7 = w / 33554432 in if opc == 51 then rv_x_op(pc, x, ram, rd, f3, rv_rd(x, rs1), rv_rd(x, rs2), f7) else if opc == 19 then rv_x_opimm(pc, x, ram, rd, f3, rv_rd(x, rs1), rs2, f7) else if opc == 3 then rv_x_load(c, pc, x, ram, rd, f3, rv_w32(rv_rd(x, rs1) + rv_sx(w / 1048576, 4096))) else if opc == 35 then rv_x_store(c, pc, x, ram, f3, rv_w32(rv_rd(x, rs1) + rv_sx(f7 * 32 + rd, 4096)), rv_rd(x, rs2)) else if opc == 99 then rv_x_branch(pc, x, ram, f3, rv_rd(x, rs1), rv_rd(x, rs2), rv_sx(w / 2147483648 * 4096 + rd % 2 * 2048 + f7 % 64 * 32 + rd / 2 * 2, 8192)) else if opc == 111 then rv_ok(rv_w32(pc + rv_sx(w / 2147483648 * 1048576 + w / 4096 % 256 * 4096 + w / 1048576 % 2 * 2048 + w / 2097152 % 1024 * 2, 2097152)), rv_wr(x, rd, pc + 4), ram) else if opc == 103 then rv_x_jalr(pc, x, ram, rd, f3, rv_w32(rv_rd(x, rs1) + rv_sx(w / 1048576, 4096))) else if opc == 55 then rv_ok(pc + 4, rv_wr(x, rd, w / 4096 * 4096), ram) else if opc == 23 then rv_ok(pc + 4, rv_wr(x, rd, rv_w32(pc + w / 4096 * 4096)), ram) else if opc == 15 then (if f3 == 0 then rv_ok(pc + 4, x, ram) else rv_ill(pc, x, ram)) else if opc == 115 then (if c.mmio == 1 and f3 == 1 and rd == 0 and w / 1048576 == 773 then rv_ok(pc + 4, x, ram) else rv_x_system(pc, x, ram, w)) else rv_ill(pc, x, ram)
 ## fetch: PC must be 4-byte aligned and inside the ROM (pc = 0x40000 + 4 * idx)
-fn rv_step(c, pc, x, ram) = if pc % 4 != 0 then rv_stop(2, "pc_misaligned", pc, x, ram) else if pc < 262144 or pc >= 262144 + 4 * c.romn then rv_stop(2, "pc_out_of_rom", pc, x, ram) else rv_exec(c, pc, x, ram, rv_tget(c.rom, c.romhalf, (pc - 262144) / 4))
+fn rv_step(c, pc, x, ram) = if pc % 4 != 0 then rv_stop(2, "pc_misaligned", pc, x, ram) else if pc < c.rombase or pc >= c.rombase + 4 * c.romn then rv_stop(2, "pc_out_of_rom", pc, x, ram) else rv_exec(c, pc, x, ram, rv_tget(c.rom, c.romhalf, (pc - c.rombase) / 4))
 
 ## fault-injection hook (test instrument): inj = {kind, cyc, target, bit}; kind 1 = RAM word, 2 = register, 0/3 = none here
 fn rv_flip(v, bit) = bit_xor(v, rv_p2(bit))
@@ -180,142 +261,480 @@ fn rv_rom_fill(t, half, ws, i) = match ws
     Cons(h, r) => rv_rom_fill(rv_tset(t, half, i, h), half, r, i + 1)
 fn rv_rom_depth(n) = let d = rv_log2c(n, 0, 1) in if d < 1 then 1 else d
 ## a machine: ROM image (list of words) + 2^ramw_log2 words of zeroed RAM at 0x80000 + a zeroed register file
-fn rv_machine(rom, ramw_log2) = let n = rv_len(rom) in let d = rv_rom_depth(n) in let half = rv_p2(d) / 2 in {rom: rv_rom_fill(rv_tz(d), half, rom, 0), romn: n, romhalf: half, ramw: rv_p2(ramw_log2), ramhalf: rv_p2(ramw_log2) / 2, rambase: 524288, ram0: rv_tz(ramw_log2), reg0: rv_tz(5)}
+fn rv_machine(rom, ramw_log2) = let n = rv_len(rom) in let d = rv_rom_depth(n) in let half = rv_p2(d) / 2 in {rom: rv_rom_fill(rv_tz(d), half, rom, 0), romn: n, romhalf: half, ramw: rv_p2(ramw_log2), ramhalf: rv_p2(ramw_log2) / 2, rambase: 524288, ram0: rv_tz(ramw_log2), reg0: rv_tz(5), rombase: 262144, mmio: 0}
 fn rv_no_inj() = {kind: 0, cyc: 0, target: 0, bit: 0}
-fn rv_boot(c, budget, inj) = rv_run(c, 262144, c.reg0, c.ram0, 0, budget, inj)
+fn rv_boot(c, budget, inj) = rv_run(c, c.rombase, c.reg0, c.ram0, 0, budget, inj)
+
+## --- memory-mapped devices of the bare-metal machine (c.mmio = 1): a 16550-style UART at 0x10000000 (RBR / THR at
+## offset 0, LSR at offset 5: bit 0 = data ready, bits 5 and 6 = transmitter empty; byte accesses only) and the test
+## finisher of the QEMU `virt` board at 0x100000 (a word store of 0x5555 powers the machine off = halt). The device
+## state lives in words the program cannot address, above the RAM in the same trie: [0] input position, [1] input
+## length, [2] output length, [16 .. 2047] input bytes, [2048 .. 4047] output bytes.
+fn rv_is_io(c, addr) = c.mmio == 1 and ((addr >= 268435456 and addr < 268435464) or addr == 1048576)
+fn rv_io_w(c, ram, i) = rv_tget(ram, c.ramhalf, c.ramw + i)
+fn rv_io_set(c, ram, i, v) = rv_tset(ram, c.ramhalf, c.ramw + i, v)
+fn rv_io_rbr(c, pc, x, ram, rd, p) = if p < rv_io_w(c, ram, 1) then rv_ok(pc + 4, rv_wr(x, rd, rv_io_w(c, ram, 16 + p)), rv_io_set(c, ram, 0, p + 1)) else rv_ok(pc + 4, rv_wr(x, rd, 0), ram)
+fn rv_io_load(c, pc, x, ram, rd, f3, addr) = if f3 != 0 and f3 != 4 then rv_stop(2, "device_access_size", pc, x, ram) else if addr == 268435461 then rv_ok(pc + 4, rv_wr(x, rd, 96 + (if rv_io_w(c, ram, 0) < rv_io_w(c, ram, 1) then 1 else 0)), ram) else if addr == 268435456 then rv_io_rbr(c, pc, x, ram, rd, rv_io_w(c, ram, 0)) else rv_ok(pc + 4, rv_wr(x, rd, 0), ram)
+fn rv_io_thr(c, pc, x, ram, v, n) = if n >= 2000 then rv_stop(2, "uart_output_overflow", pc, x, ram) else rv_ok(pc + 4, x, rv_io_set(c, rv_io_set(c, ram, 2048 + n, v % 256), 2, n + 1))
+fn rv_io_store(c, pc, x, ram, f3, addr, v) = if addr == 1048576 then (if f3 != 2 then rv_stop(2, "device_access_size", pc, x, ram) else if v == 21845 then rv_stop(1, "halt", pc, x, ram) else rv_stop(2, "test_device_fail", pc, x, ram)) else if f3 != 0 then rv_stop(2, "device_access_size", pc, x, ram) else if addr == 268435456 then rv_io_thr(c, pc, x, ram, v, rv_io_w(c, ram, 2)) else rv_ok(pc + 4, x, ram)
+fn rv_io_fill(c, ram, s, n, i) = if i >= n then ram else rv_io_fill(c, rv_io_set(c, ram, 16 + i, ord(at(s, i))), s, n, i + 1)
+fn rv_mc(romt, n, half, ramw_log2, rombase, rambase, ram0) = {rom: romt, romn: n, romhalf: half, ramw: rv_p2(ramw_log2), ramhalf: rv_p2(ramw_log2), rambase: rambase, ram0: ram0, reg0: rv_tz(5), rombase: rombase, mmio: 1}
+fn rv_mc_in(c, ramw_log2, input, ni) = rv_mc(c.rom, c.romn, c.romhalf, ramw_log2, c.rombase, c.rambase, rv_io_set(c, rv_io_fill(c, c.ram0, input, ni, 0), 1, ni))
+## the bare-metal machine: the image at rombase, 2^ramw_log2 words of RAM at rambase, the two devices, and `input`
+## (at most 2032 bytes) waiting on the UART receiver
+fn rv_machine_io(rom, ramw_log2, rombase, rambase, input) = let n = rv_len(rom) in let d = rv_rom_depth(n) in let half = rv_p2(d) / 2 in rv_mc_in(rv_mc(rv_rom_fill(rv_tz(d), half, rom, 0), n, half, ramw_log2, rombase, rambase, rv_tz(ramw_log2 + 1)), ramw_log2, input, if count(input) > 2032 then 2032 else count(input))
+## the frames of the split protocol are upper-case hex digits and a line feed; any other byte reads back as `?`
+fn rv_chr(b) = if b == 10 then "\n" else if b >= 48 and b <= 57 then at("0123456789", b - 48) else if b >= 65 and b <= 90 then at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", b - 65) else "?"
+fn rv_io_out_at(c, ram, i, n, acc) = if i >= n then acc else rv_io_out_at(c, ram, i + 1, n, acc + rv_chr(rv_io_w(c, ram, 2048 + i)))
+## everything the program wrote to the UART transmitter
+fn rv_io_out(c, ram) = rv_io_out_at(c, ram, 0, rv_io_w(c, ram, 2), "")
 
 ## ====================================================================================================================
-## 3. Channel-B compiler: lowered AST fragment -> RV32IM words
-##    Registers: x1 ra, x2 sp, x8 fp, x10 a0 (every expression leaves its value here), x5-x7 t0-t2, x17 a7.
-##    Frame: the caller pushes the arguments left to right and does `jal ra, f`; the callee pushes ra and the caller's
-##    fp and sets fp = sp, so parameter i of n lives at fp + 8 + 4*(n-1-i) and the k-th word pushed below fp (operand
-##    temporaries and `let` slots) at fp - 4*k. A conditional branch only ever skips the following `jal`, so every
-##    long transfer is a JAL (+-1 MiB) patched by rc_res.
+## 3. Channel-B front end, written from the language definition only (docs/03-specification.md, grammar/lume.ebnf and
+##    the fragment listed in the header). It reads the RAW kernel text and shares no lexer, parser, AST, checker or
+##    lowering code with lumec (nor with lkir.src): own tokens with positions (cbl_*), a precedence-climbing parser
+##    with its own AST constructors Cb* (cbp_*), a typed checker over int / bool / never (cbt_*).
 ## ====================================================================================================================
-fn rc_st0(lbl) = {code: Nil, n: 0, lbl: lbl, defs: Nil, err: ""}
-fn rc_w(st, w) = {code: Cons(RvW(w), st.code), n: st.n + 1, lbl: st.lbl, defs: st.defs, err: st.err}
-fn rc_j(st, rd, l) = {code: Cons(RvJ(rd, l), st.code), n: st.n + 1, lbl: st.lbl, defs: st.defs, err: st.err}
-fn rc_def(st, l) = {code: st.code, n: st.n, lbl: st.lbl, defs: Cons({id: l, idx: st.n}, st.defs), err: st.err}
-fn rc_bump(st, k) = {code: st.code, n: st.n, lbl: st.lbl + k, defs: st.defs, err: st.err}
-fn rc_err(st, msg) = if st.err != "" then st else {code: st.code, n: st.n, lbl: st.lbl, defs: st.defs, err: msg}
-fn rc_w2(st, a, b) = rc_w(rc_w(st, a), b)
-fn rc_w3(st, a, b, c) = rc_w(rc_w2(st, a, b), c)
-fn rc_w4(st, a, b, c, d) = rc_w(rc_w3(st, a, b, c), d)
+fn cb_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => cb_rev(t, Cons(h, acc))
+fn cb_len_at(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => cb_len_at(t, n + 1)
+fn cb_len(xs) = cb_len_at(xs, 0)
+fn cb_app(xs, ys) = cb_rev(cb_rev(xs, Nil), ys)
 
-## load a 32-bit constant: always LUI + ADDI (two words, value-independent timing)
-fn rc_li2(st, rd, v) = let lo = rv_sx(rv_w32(v) % 4096, 4096) in rc_w2(st, rv_lui(rd, rv_w32(v - lo) / 4096), rv_addi(rd, rd, lo))
-fn rc_li(st, rd, v) = if v < 0 - 2147483648 or v > 2147483647 then rc_err(st, "constant outside the i32 monitor domain: " + str(v)) else if v >= 0 - 2048 and v <= 2047 then rc_w(st, rv_addi(rd, 0, v)) else rc_li2(st, rd, v)
-fn rc_push(st, d) = if d >= 480 then rc_err(st, "frame deeper than 480 words") else rc_w2(st, rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0))
-fn rc_pop_t0(st) = rc_w2(st, rv_lw(5, 2, 0), rv_addi(2, 2, 4))
+## --- lexer. Token {k, s, v, o, e, ln, bol, col}: k 0 end, 1 integer, 2 name, 3 keyword, 4 symbol, 5 string, 9 not in
+## the fragment (s = why); o / e = byte offsets, ln = line, bol = 1 for the first token of its line, col = its column.
+fn cbl_t(k, s, v, o, e, ln, bol, col) = {k: k, s: s, v: v, o: o, e: e, ln: ln, bol: bol, col: col}
+fn cbl_isd(o) = o >= 48 and o <= 57
+fn cbl_isw(o) = (o >= 97 and o <= 122) or (o >= 65 and o <= 90) or o == 95 or (o >= 48 and o <= 57)
+fn cbl_wend(s, n, i) = if i < n and cbl_isw(ord(at(s, i))) then cbl_wend(s, n, i + 1) else i
+fn cbl_eol(s, n, i) = if i >= n or at(s, i) == "\n" then i else cbl_eol(s, n, i + 1)
+fn cbl_kw(w) = w == "fn" or w == "pub" or w == "if" or w == "then" or w == "elif" or w == "else" or w == "let" or w == "in" or w == "and" or w == "or" or w == "not" or w == "true" or w == "false" or w == "requires" or w == "ensures"
+## the other reserved words of the specification (section 1.3): never an identifier, never part of a kernel
+fn cbl_reserved() = " as async await break catch comptime continue defer distinct do dyn enum errdefer extern fail for impl import invariant is loop macro match mod mut none own record return scope select self Self spawn trait type unsafe use var where while with yield "
+fn cbl_word(s, n, i, e, ln, bol, col) = let w = slicen(s, n, i, e) in if cbl_kw(w) then cbl_t(3, w, 0, i, e, ln, bol, col) else if se_has(cbl_reserved(), " " + w + " ") == 1 then cbl_t(9, "reserved word '" + w + "' is outside the kernel fragment", 0, i, e, ln, bol, col) else cbl_t(2, w, 0, i, e, ln, bol, col)
+fn cbl_dv(o, base) = let d = if o >= 48 and o <= 57 then o - 48 else if o >= 97 and o <= 102 then o - 87 else if o >= 65 and o <= 70 then o - 55 else 99 in if d < base then d else 0 - 1
+## digits of `base` with single `_` separators between digits (specification 1.4); -1 = malformed; saturates near 2^40
+fn cbl_digs(s, i, e, base, acc, us, any) = if i >= e then (if us == 1 or any == 0 then 0 - 1 else acc) else let o = ord(at(s, i)) in if o == 95 then (if us == 1 or any == 0 then 0 - 1 else cbl_digs(s, i + 1, e, base, acc, 1, any)) else let d = cbl_dv(o, base) in if d < 0 then 0 - 1 else cbl_digs(s, i + 1, e, base, if acc > 1099511627776 then acc else acc * base + d, 0, 1)
+fn cbl_numv(s, i, e) = if e - i >= 2 and at(s, i) == "0" and at(s, i + 1) == "x" then cbl_digs(s, i + 2, e, 16, 0, 0, 0) else if e - i >= 2 and at(s, i) == "0" and at(s, i + 1) == "b" then cbl_digs(s, i + 2, e, 2, 0, 0, 0) else if e - i >= 2 and at(s, i) == "0" and at(s, i + 1) == "o" then cbl_digs(s, i + 2, e, 8, 0, 0, 0) else cbl_digs(s, i, e, 10, 0, 0, 0)
+fn cbl_num(s, n, i, e, ln, bol, col) = let v = cbl_numv(s, i, e) in if v < 0 then cbl_t(9, "malformed integer literal '" + slicen(s, n, i, e) + "'", 0, i, e, ln, bol, col) else cbl_t(1, slicen(s, n, i, e), v, i, e, ln, bol, col)
+fn cbl_strend(s, n, i) = if i >= n or at(s, i) == "\n" then 0 - 1 else if at(s, i) == "\\" then cbl_strend(s, n, i + 2) else if at(s, i) == "\"" then i + 1 else cbl_strend(s, n, i + 1)
+fn cbl_str(s, n, i, e, ln, bol, col) = if e < 0 then cbl_t(9, "unterminated string literal", 0, i, cbl_eol(s, n, i), ln, bol, col) else cbl_t(5, "string literal", 0, i, e, ln, bol, col)
+fn cbl_sym2(a, b) = (b == "=" and (a == "=" or a == "!" or a == "<" or a == ">")) or (a == "-" and b == ">")
+fn cbl_sym1(c) = c == "+" or c == "-" or c == "*" or c == "/" or c == "%" or c == "<" or c == ">" or c == "(" or c == ")" or c == "," or c == ":" or c == "=" or c == "@"
+fn cbl_push(s, n, t, ln, ls, acc) = cbl_run(s, n, t.e, ln, ls, 0, Cons(t, acc))
+## `#` starts a comment that ends with the line. `#[` is refused: the specification makes it a nestable block comment,
+## lumec reads a line comment, so the two meanings of the rest of the line differ.
+fn cbl_hash(s, n, i, e, ln, ls, bol, acc) = if i + 1 < n and at(s, i + 1) == "[" then cbl_push(s, n, cbl_t(9, "block comment `#[`: the specification nests it, lumec reads a line comment", 0, i, e, ln, bol, i - ls), ln, ls, acc) else cbl_run(s, n, e, ln, ls, bol, acc)
+fn cbl_run(s, n, i, ln, ls, bol, acc) = if i >= n then cb_rev(Cons(cbl_t(0, "end of file", 0, n, n, ln, 1, 0), acc), Nil) else let c = at(s, i) in let o = ord(c) in if o == 10 then cbl_run(s, n, i + 1, ln + 1, i + 1, 1, acc) else if o == 32 or o == 13 then cbl_run(s, n, i + 1, ln, ls, bol, acc) else if o == 35 then cbl_hash(s, n, i, cbl_eol(s, n, i), ln, ls, bol, acc) else if cbl_isd(o) then cbl_push(s, n, cbl_num(s, n, i, cbl_wend(s, n, i), ln, bol, i - ls), ln, ls, acc) else if cbl_isw(o) then cbl_push(s, n, cbl_word(s, n, i, cbl_wend(s, n, i), ln, bol, i - ls), ln, ls, acc) else if o == 34 then cbl_push(s, n, cbl_str(s, n, i, cbl_strend(s, n, i + 1), ln, bol, i - ls), ln, ls, acc) else if i + 1 < n and cbl_sym2(c, at(s, i + 1)) then cbl_push(s, n, cbl_t(4, slicen(s, n, i, i + 2), 0, i, i + 2, ln, bol, i - ls), ln, ls, acc) else if cbl_sym1(c) then cbl_push(s, n, cbl_t(4, c, 0, i, i + 1, ln, bol, i - ls), ln, ls, acc) else cbl_push(s, n, cbl_t(9, "character outside the kernel fragment (code " + str(o) + ")", 0, i, i + 1, ln, bol, i - ls), ln, ls, acc)
+fn cb_lex(src) = cbl_run(src, count(src), 0, 1, 0, 1, Nil)
 
-fn rc_var_at(st, env, nm) = match env
-    Nil        => rc_err(st, "unbound variable: " + nm)
-    Cons(h, t) => if h.name == nm then rc_w(st, rv_lw(10, 8, h.off)) else rc_var_at(st, t, nm)
-fn rc_var(st, env, nm) = if nm == "true" then rc_w(st, rv_addi(10, 0, 1)) else if nm == "false" then rc_w(st, rv_addi(10, 0, 0)) else rc_var_at(st, env, nm)
+## --- AST. Every node carries its source span [s, e): CbLit(v, s, e) integer, CbTru(v, s, e) true / false,
+## CbRef(name, s, e, ln), CbPar(x, s, e) parentheses, CbUn(op, x, s, e) with op 1 = minus, 2 = not,
+## CbBin(op, l, r, s, e, ps) with ps = offset of the operator and op 1 + 2 - 3 * 4 / 5 % 6 == 7 != 8 < 9 <= 10 > 11 >=
+## 12 and 13 or, CbIf(c, t, f, s, e), CbLet(name, v, b, s, e), CbCall(name, args, s, e, ln), CbFail(s, e) = ctfail.
+fn cb_s(x) = match x
+    CbLit(v, s, e)             => s
+    CbTru(v, s, e)             => s
+    CbRef(nm, s, e, ln)        => s
+    CbPar(y, s, e)             => s
+    CbUn(op, y, s, e)          => s
+    CbBin(op, l, r, s, e, ps)  => s
+    CbIf(c, t, f, s, e)        => s
+    CbLet(nm, v, b, s, e)      => s
+    CbCall(nm, args, s, e, ln) => s
+    CbFail(s, e)               => s
+    _                          => 0
+fn cb_e(x) = match x
+    CbLit(v, s, e)             => e
+    CbTru(v, s, e)             => e
+    CbRef(nm, s, e, ln)        => e
+    CbPar(y, s, e)             => e
+    CbUn(op, y, s, e)          => e
+    CbBin(op, l, r, s, e, ps)  => e
+    CbIf(c, t, f, s, e)        => e
+    CbLet(nm, v, b, s, e)      => e
+    CbCall(nm, args, s, e, ln) => e
+    CbFail(s, e)               => e
+    _                          => 0
 
-fn rc_fn_none() = {name: "", id: 0 - 1, arity: 0, params: Nil, body: Num(0)}
-fn rc_fn_find(tab, nm) = match tab
-    Nil        => rc_fn_none()
-    Cons(h, t) => if h.name == nm then h else rc_fn_find(t, nm)
+## --- parser. Expression results are {x, r, m}: node, remaining tokens, error ("" = none).
+## Grammar (the documented one): or < and < comparison (does not chain) < + - < * / % < unary - / not < primary;
+## `if c then a {elif c then a} else b` and `let x = v in b` are primaries whose last operand extends as far as it can.
+## d = parenthesis depth. At depth 0 an operator or a call parenthesis that starts a line is refused: the
+## specification ends the expression at the line end there, lumec continues it.
+fn cbp_hd(ts) = match ts
+    Nil        => cbl_t(0, "end of file", 0, 0, 0, 0, 1, 0)
+    Cons(h, t) => h
+fn cbp_tl(ts) = match ts
+    Nil        => Nil
+    Cons(h, t) => t
+fn cbp_is(t, k, s) = t.k == k and t.s == s
+fn cbp_ok(x, r) = {x: x, r: r, m: ""}
+fn cbp_bad(ts, msg) = let t = cbp_hd(ts) in {x: CbNone(0), r: ts, m: "line " + str(t.ln) + ": " + (if t.k == 9 then t.s else msg + " (found '" + t.s + "')")}
+fn cbp_op(t) = if t.k == 4 then (if t.s == "+" then 1 else if t.s == "-" then 2 else if t.s == "*" then 3 else if t.s == "/" then 4 else if t.s == "%" then 5 else if t.s == "==" then 6 else if t.s == "!=" then 7 else if t.s == "<" then 8 else if t.s == "<=" then 9 else if t.s == ">" then 10 else if t.s == ">=" then 11 else 0) else if t.k == 3 then (if t.s == "and" then 12 else if t.s == "or" then 13 else 0) else 0
+fn cbp_bp(op) = if op == 0 then 0 else if op <= 2 then 50 else if op <= 5 then 60 else if op <= 11 then 30 else if op == 12 then 20 else 10
+fn cbp_negx(x, o) = match x
+    CbLit(v, s, e) => CbLit(0 - v, o, e)
+    _              => CbUn(1, x, o, cb_e(x))
+fn cbp_neg(t, r) = if r.m != "" then r else cbp_ok(cbp_negx(r.x, t.o), r.r)
+fn cbp_not(t, r) = if r.m != "" then r else cbp_ok(CbUn(2, r.x, t.o, cb_e(r.x)), r.r)
+fn cbp_paren(t, r) = if r.m != "" then r else if cbp_is(cbp_hd(r.r), 4, ")") then cbp_ok(CbPar(r.x, t.o, (cbp_hd(r.r)).e), cbp_tl(r.r)) else cbp_bad(r.r, "expected ')'")
+fn cbp_fail(t, r) = let a = cbp_hd(r) in let c = cbp_hd(cbp_tl(r)) in if a.k == 5 and cbp_is(c, 4, ")") then cbp_ok(CbFail(t.o, c.e), cbp_tl(cbp_tl(r))) else cbp_bad(r, "ctfail takes one string literal")
+## the arguments after `(`: {xs, r, m, e}
+fn cbp_args(ts, d, acc) = if cbp_is(cbp_hd(ts), 4, ")") then {xs: cb_rev(acc, Nil), r: cbp_tl(ts), m: "", e: (cbp_hd(ts)).e} else let a = cbp_expr(ts, d, 0) in if a.m != "" then {xs: Nil, r: a.r, m: a.m, e: 0} else if cbp_is(cbp_hd(a.r), 4, ",") then cbp_args(cbp_tl(a.r), d, Cons(a.x, acc)) else if cbp_is(cbp_hd(a.r), 4, ")") then {xs: cb_rev(Cons(a.x, acc), Nil), r: cbp_tl(a.r), m: "", e: (cbp_hd(a.r)).e} else {xs: Nil, r: a.r, m: (cbp_bad(a.r, "expected ',' or ')' in an argument list")).m, e: 0}
+fn cbp_call(t, a) = if a.m != "" then {x: CbNone(0), r: a.r, m: a.m} else cbp_ok(CbCall(t.s, a.xs, t.o, a.e, t.ln), a.r)
+fn cbp_name(t, r, d) = let n = cbp_hd(r) in if cbp_is(n, 4, "(") then (if n.bol == 1 and d == 0 then cbp_bad(r, "line break before '(': the specification ends the expression at the line end, lumec continues it") else if t.s == "ctfail" then cbp_fail(t, cbp_tl(r)) else cbp_call(t, cbp_args(cbp_tl(r), d + 1, Nil))) else cbp_ok(CbRef(t.s, t.o, t.e, t.ln), r)
+fn cbp_if_end(t, c, a, f) = if f.m != "" then f else cbp_ok(CbIf(c, a, f.x, t.o, cb_e(f.x)), f.r)
+fn cbp_if_then(t, c, a, d) = if a.m != "" then a else let n = cbp_hd(a.r) in if cbp_is(n, 3, "elif") then cbp_if_end(t, c, a.x, cbp_if(n, cbp_tl(a.r), d)) else if cbp_is(n, 3, "else") then cbp_if_end(t, c, a.x, cbp_expr(cbp_tl(a.r), d, 0)) else cbp_bad(a.r, "expected 'else' or 'elif'")
+fn cbp_if(t, ts, d) = let c = cbp_expr(ts, d, 0) in if c.m != "" then c else if cbp_is(cbp_hd(c.r), 3, "then") then cbp_if_then(t, c.x, cbp_expr(cbp_tl(c.r), d, 0), d) else cbp_bad(c.r, "expected 'then'")
+fn cbp_let_b(t, nm, v, b) = if b.m != "" then b else cbp_ok(CbLet(nm.s, v, b.x, t.o, cb_e(b.x)), b.r)
+fn cbp_let_v(t, nm, v, d) = if v.m != "" then v else if cbp_is(cbp_hd(v.r), 3, "in") then cbp_let_b(t, nm, v.x, cbp_expr(cbp_tl(v.r), d, 0)) else cbp_bad(v.r, "expected 'in'")
+fn cbp_let(t, ts, d) = let nm = cbp_hd(ts) in if nm.k != 2 then cbp_bad(ts, "expected a name after 'let'") else if cbp_is(cbp_hd(cbp_tl(ts)), 4, "=") then cbp_let_v(t, nm, cbp_expr(cbp_tl(cbp_tl(ts)), d, 0), d) else cbp_bad(cbp_tl(ts), "expected '=' after the name of a 'let'")
+fn cbp_prefix(ts, d) = let t = cbp_hd(ts) in if t.k == 1 then cbp_ok(CbLit(t.v, t.o, t.e), cbp_tl(ts)) else if cbp_is(t, 3, "true") then cbp_ok(CbTru(1, t.o, t.e), cbp_tl(ts)) else if cbp_is(t, 3, "false") then cbp_ok(CbTru(0, t.o, t.e), cbp_tl(ts)) else if t.k == 2 then cbp_name(t, cbp_tl(ts), d) else if cbp_is(t, 4, "(") then cbp_paren(t, cbp_expr(cbp_tl(ts), d + 1, 0)) else if cbp_is(t, 4, "-") then cbp_neg(t, cbp_prefix(cbp_tl(ts), d)) else if cbp_is(t, 3, "not") then cbp_not(t, cbp_prefix(cbp_tl(ts), d)) else if cbp_is(t, 3, "if") then cbp_if(t, cbp_tl(ts), d) else if cbp_is(t, 3, "let") then cbp_let(t, cbp_tl(ts), d) else cbp_bad(ts, "expected an expression of the kernel fragment")
+fn cbp_rhs(l, d, minbp, t, op, bp, r) = if r.m != "" then r else if bp == 30 and cbp_bp(cbp_op(cbp_hd(r.r))) == 30 then cbp_bad(r.r, "comparisons do not chain") else cbp_infix(cbp_ok(CbBin(op, l.x, r.x, cb_s(l.x), cb_e(r.x), t.o), r.r), d, minbp)
+fn cbp_infix(l, d, minbp) = let t = cbp_hd(l.r) in let op = cbp_op(t) in let bp = cbp_bp(op) in if bp == 0 or bp < minbp then l else if t.bol == 1 and d == 0 then cbp_bad(l.r, "line break before a binary operator: the specification ends the expression at the line end, lumec continues it") else cbp_rhs(l, d, minbp, t, op, bp, cbp_expr(cbp_tl(l.r), d, bp + 1))
+fn cbp_expr(ts, d, minbp) = let l = cbp_prefix(ts, d) in if l.m != "" then l else cbp_infix(l, d, minbp)
 
-## t0 = left operand, a0 = right operand -> a0. Signed overflow of + - * and x/0, INT_MIN/-1 jump to the trap stubs:
+## --- items. A function record: {name, ok, msg, ps: [{n, t}], rt, reqs: [{x, o}], enss: [{x, o}], body, bound, ln, o, e}
+## with types 1 = int, 2 = bool. Anything that is not a function of the fragment is skipped up to the next line that
+## starts with `fn`, `pub` or `@` in column 0; a function that fails to parse is recorded with ok = 0 and its reason.
+fn cbp_ty(t) = if cbp_is(t, 2, "int") then 1 else if cbp_is(t, 2, "bool") then 2 else 0
+fn cbp_fn_fail(nm, ln, msg) = {name: nm, ok: 0, msg: msg, ps: Nil, rt: 0, reqs: Nil, enss: Nil, body: CbNone(0), bound: 0, ln: ln, o: 0, e: 0}
+fn cbp_ferr(nm, ln, ts, msg) = {f: cbp_fn_fail(nm, ln, (cbp_bad(ts, msg)).m), r: ts}
+fn cbp_perr(ts, msg) = {ps: Nil, r: ts, m: (cbp_bad(ts, msg)).m}
+## the parameters after `(`: {ps, r, m}
+fn cbp_params(ts, acc) = let t = cbp_hd(ts) in if cbp_is(t, 4, ")") then {ps: cb_rev(acc, Nil), r: cbp_tl(ts), m: ""} else let ty = cbp_hd(cbp_tl(cbp_tl(ts))) in let r3 = cbp_tl(cbp_tl(cbp_tl(ts))) in if t.k != 2 then cbp_perr(ts, "expected a parameter name") else if cbp_is(cbp_hd(cbp_tl(ts)), 4, ":") then (if cbp_ty(ty) == 0 then cbp_perr(cbp_tl(cbp_tl(ts)), "a kernel parameter is typed int or bool") else if cbp_is(cbp_hd(r3), 4, ",") then cbp_params(cbp_tl(r3), Cons({n: t.s, t: cbp_ty(ty)}, acc)) else if cbp_is(cbp_hd(r3), 4, ")") then {ps: cb_rev(Cons({n: t.s, t: cbp_ty(ty)}, acc), Nil), r: cbp_tl(r3), m: ""} else cbp_perr(r3, "expected ',' or ')' in a parameter list")) else cbp_perr(cbp_tl(ts), "every kernel parameter needs a type: expected ':'")
+fn cbp_fn_body(nm, bound, aerr, o0, ps, rt, reqs, enss, b) = if b.m != "" then {f: cbp_fn_fail(nm.s, nm.ln, b.m), r: b.r} else let n = cbp_hd(b.r) in if n.k != 0 and (n.col != 0 or (n.k == 4 and n.s != "@")) then cbp_ferr(nm.s, nm.ln, b.r, "unexpected token after the body") else {f: {name: nm.s, ok: if aerr == "" then 1 else 0, msg: aerr, ps: ps, rt: rt, reqs: reqs, enss: enss, body: b.x, bound: bound, ln: nm.ln, o: o0, e: cb_e(b.x)}, r: b.r}
+fn cbp_fn_con1(nm, bound, aerr, o0, ps, rt, kw, x, reqs, enss, which) = if x.m != "" then {f: cbp_fn_fail(nm.s, nm.ln, x.m), r: x.r} else if which == 1 then cbp_fn_con(nm, bound, aerr, o0, ps, rt, x.r, Cons({x: x.x, o: kw.o}, reqs), enss) else cbp_fn_con(nm, bound, aerr, o0, ps, rt, x.r, reqs, Cons({x: x.x, o: kw.o}, enss))
+fn cbp_fn_con(nm, bound, aerr, o0, ps, rt, ts, reqs, enss) = let t = cbp_hd(ts) in if cbp_is(t, 3, "requires") then cbp_fn_con1(nm, bound, aerr, o0, ps, rt, t, cbp_expr(cbp_tl(ts), 0, 0), reqs, enss, 1) else if cbp_is(t, 3, "ensures") then cbp_fn_con1(nm, bound, aerr, o0, ps, rt, t, cbp_expr(cbp_tl(ts), 0, 0), reqs, enss, 2) else if cbp_is(t, 4, "=") then cbp_fn_body(nm, bound, aerr, o0, ps, rt, cb_rev(reqs, Nil), cb_rev(enss, Nil), cbp_expr(cbp_tl(ts), 0, 0)) else cbp_ferr(nm.s, nm.ln, ts, "expected 'requires', 'ensures' or '=' and the body")
+fn cbp_fn_eff(nm, bound, aerr, o0, ps, rt, ts) = if cbp_is(cbp_hd(ts), 4, "/") then (if cbp_is(cbp_hd(cbp_tl(ts)), 2, "pure") then cbp_fn_con(nm, bound, aerr, o0, ps, rt, cbp_tl(cbp_tl(ts)), Nil, Nil) else cbp_ferr(nm.s, nm.ln, cbp_tl(ts), "the only effect annotation of a kernel is '/ pure'")) else cbp_fn_con(nm, bound, aerr, o0, ps, rt, ts, Nil, Nil)
+fn cbp_fn_sig(nm, bound, aerr, o0, p) = if p.m != "" then {f: cbp_fn_fail(nm.s, nm.ln, p.m), r: p.r} else if cbp_is(cbp_hd(p.r), 4, "->") and cbp_ty(cbp_hd(cbp_tl(p.r))) != 0 then cbp_fn_eff(nm, bound, aerr, o0, p.ps, cbp_ty(cbp_hd(cbp_tl(p.r))), cbp_tl(cbp_tl(p.r))) else cbp_ferr(nm.s, nm.ln, p.r, "the result of a kernel is declared '-> int' or '-> bool'")
+fn cbp_item_fn(ts, bound, aerr, o0) = let nm = cbp_hd(ts) in if nm.k != 2 then cbp_ferr("", nm.ln, ts, "expected a function name") else if cbp_is(cbp_hd(cbp_tl(ts)), 4, "(") then cbp_fn_sig(nm, bound, aerr, o0, cbp_params(cbp_tl(cbp_tl(ts)), Nil)) else cbp_ferr(nm.s, nm.ln, cbp_tl(ts), "expected '(' after the function name")
+fn cbp_group_end(ts, d) = let t = cbp_hd(ts) in if t.k == 0 then ts else if cbp_is(t, 4, "(") then cbp_group_end(cbp_tl(ts), d + 1) else if cbp_is(t, 4, ")") then (if d <= 1 then cbp_tl(ts) else cbp_group_end(cbp_tl(ts), d - 1)) else cbp_group_end(cbp_tl(ts), d)
+## `@bound(N)` / `@bound(cycles: N)` is read, `@no_alloc` / `@secret` are passed over; any other attribute makes the
+## function it decorates unsupported
+fn cbp_attr_bound(ts, bound, err, ln) = let a = cbp_hd(ts) in let b = cbp_hd(cbp_tl(ts)) in let c = cbp_hd(cbp_tl(cbp_tl(ts))) in let d = cbp_hd(cbp_tl(cbp_tl(cbp_tl(ts)))) in if a.k == 1 and cbp_is(b, 4, ")") then cbp_attrs(cbp_tl(cbp_tl(ts)), a.v, err) else if cbp_is(a, 2, "cycles") and cbp_is(b, 4, ":") and c.k == 1 and cbp_is(d, 4, ")") then cbp_attrs(cbp_tl(cbp_tl(cbp_tl(cbp_tl(ts)))), c.v, err) else cbp_attrs(cbp_group_end(ts, 1), bound, if err != "" then err else "line " + str(ln) + ": @bound takes (N) or (cycles: N)")
+## `@no_alloc` and `@secret` (bare, no argument list) state properties that lumec checks on the channel-A side (no heap
+## allocation, constant-time code); they do not change the value of the function, so channel B reads past them
+fn cbp_attr_neutral(nm, lp) = if cbp_is(nm, 2, "no_alloc") or cbp_is(nm, 2, "secret") then (if cbp_is(lp, 4, "(") and lp.bol == 0 then 0 else 1) else 0
+fn cbp_attr(ts, bound, err) = let nm = cbp_hd(ts) in let r1 = cbp_tl(ts) in let lp = cbp_hd(r1) in if cbp_is(nm, 2, "bound") and cbp_is(lp, 4, "(") then cbp_attr_bound(cbp_tl(r1), bound, err, nm.ln) else if cbp_attr_neutral(nm, lp) == 1 then cbp_attrs(r1, bound, err) else cbp_attrs(if cbp_is(lp, 4, "(") and lp.bol == 0 then cbp_group_end(cbp_tl(r1), 1) else r1, bound, if err != "" then err else "line " + str(nm.ln) + ": attribute '@" + nm.s + "' is outside the kernel fragment (only @bound is read)")
+fn cbp_attrs(ts, bound, err) = if cbp_is(cbp_hd(ts), 4, "@") then cbp_attr(cbp_tl(ts), bound, err) else {r: ts, bound: bound, err: err}
+fn cbp_sync(ts) = let t = cbp_hd(ts) in if t.k == 0 then ts else if t.col == 0 and (cbp_is(t, 3, "fn") or cbp_is(t, 3, "pub") or cbp_is(t, 4, "@")) then ts else cbp_sync(cbp_tl(ts))
+fn cbp_item2(acc, r) = if r.f.ok == 1 or r.f.msg != "" and r.f.rt != 0 then cbp_items(r.r, Cons(r.f, acc)) else cbp_items(cbp_sync(r.r), Cons(r.f, acc))
+fn cbp_item(ts, acc, a) = let r1 = if cbp_is(cbp_hd(a.r), 3, "pub") then cbp_tl(a.r) else a.r in if cbp_is(cbp_hd(r1), 3, "fn") then cbp_item2(acc, cbp_item_fn(cbp_tl(r1), a.bound, a.err, (cbp_hd(ts)).o)) else cbp_items(cbp_sync(cbp_tl(ts)), acc)
+fn cbp_items(ts, acc) = let t = cbp_hd(ts) in if t.k == 0 then cb_rev(acc, Nil) else if cbp_is(t, 4, "@") or cbp_is(t, 3, "pub") or cbp_is(t, 3, "fn") then cbp_item(ts, acc, cbp_attrs(ts, 0, "")) else cbp_items(cbp_sync(cbp_tl(ts)), acc)
+## every function of the file, in source order
+fn cb_parse(src) = cbp_items(cb_lex(src), Nil)
+fn cb_find(fns, nm) = match fns
+    Nil        => cbp_fn_fail("", 0, "")
+    Cons(h, t) => if h.name == nm then h else cb_find(t, nm)
+fn cb_defs(fns, nm, n) = match fns
+    Nil        => n
+    Cons(h, t) => cb_defs(t, nm, if h.name == nm then n + 1 else n)
+
+## --- checker. Types: 1 int, 2 bool, 3 never (ctfail). Results are {t, m}. Operators take ints, `and` / `or` / `not`
+## and conditions take bools, `==` / `!=` take two ints or two bools; nothing is converted implicitly (lumec accepts an
+## int where a bool is expected and the reverse in several places; such a kernel is refused here, so it trips).
+fn cbt_ok(t) = {t: t, m: ""}
+fn cbt_no(msg) = {t: 0, m: msg}
+fn cbt_fits(t, want) = t == want or t == 3
+fn cbt_tn(t) = if t == 1 then "int" else if t == 2 then "bool" else "never"
+fn cbt_builtin(nm) = nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" or nm == "ctfail"
+fn cbt_var(env, nm) = match env
+    Nil        => 0
+    Cons(h, t) => if h.n == nm then h.t else cbt_var(t, nm)
+fn cbt_un(op, a) = if a.m != "" then a else if op == 1 then (if cbt_fits(a.t, 1) then cbt_ok(1) else cbt_no("unary '-' applied to " + cbt_tn(a.t))) else if cbt_fits(a.t, 2) then cbt_ok(2) else cbt_no("'not' applied to " + cbt_tn(a.t) + " (the specification binds 'not' tighter than a comparison; lumec binds it looser)")
+fn cbt_bin(op, a, b) = if a.m != "" then a else if b.m != "" then b else if op <= 5 then (if cbt_fits(a.t, 1) and cbt_fits(b.t, 1) then cbt_ok(1) else cbt_no("arithmetic operator applied to " + cbt_tn(a.t) + " and " + cbt_tn(b.t))) else if op >= 8 and op <= 11 then (if cbt_fits(a.t, 1) and cbt_fits(b.t, 1) then cbt_ok(2) else cbt_no("ordering comparison applied to " + cbt_tn(a.t) + " and " + cbt_tn(b.t))) else if op <= 7 then (if a.t == b.t or a.t == 3 or b.t == 3 then cbt_ok(2) else cbt_no("'==' / '!=' applied to " + cbt_tn(a.t) + " and " + cbt_tn(b.t))) else if cbt_fits(a.t, 2) and cbt_fits(b.t, 2) then cbt_ok(2) else cbt_no("'and' / 'or' applied to " + cbt_tn(a.t) + " and " + cbt_tn(b.t))
+fn cbt_if(c, t, f) = if c.m != "" then c else if t.m != "" then t else if f.m != "" then f else if cbt_fits(c.t, 2) then (if t.t == 3 then cbt_ok(f.t) else if f.t == 3 or f.t == t.t then cbt_ok(t.t) else cbt_no("the branches of an 'if' are " + cbt_tn(t.t) + " and " + cbt_tn(f.t))) else cbt_no("the condition of an 'if' is " + cbt_tn(c.t) + ", not bool")
+fn cbt_binder(fns, nm) = if nm == "result" then "'result' names the value of a postcondition and cannot be bound" else if cbt_builtin(nm) or cb_defs(fns, nm, 0) > 0 then "'" + nm + "' is bound as a variable and is also a function" else ""
+fn cbt_let(fns, env, nm, v, b) = if v.m != "" then v else if cbt_binder(fns, nm) != "" then cbt_no(cbt_binder(fns, nm)) else cbt_x(fns, Cons({n: nm, t: v.t}, env), b)
+fn cbt_args_end(ps, nm) = match ps
+    Nil        => ""
+    Cons(p, r) => "too few arguments in the call of '" + nm + "'"
+fn cbt_args1(fns, env, a, r, ps, nm, i) = match ps
+    Nil         => "too many arguments in the call of '" + nm + "'"
+    Cons(p, pr) => if a.m != "" then a.m else if cbt_fits(a.t, p.t) then cbt_args(fns, env, r, pr, nm, i + 1) else "argument " + str(i) + " of '" + nm + "' is " + cbt_tn(a.t) + ", the parameter is " + cbt_tn(p.t)
+fn cbt_args(fns, env, args, ps, nm, i) = match args
+    Nil        => cbt_args_end(ps, nm)
+    Cons(a, r) => cbt_args1(fns, env, cbt_x(fns, env, a), r, ps, nm, i)
+fn cbt_ps2() = Cons({n: "a", t: 1}, Cons({n: "b", t: 1}, Nil))
+fn cbt_call_to(fns, env, nm, args, ln, f) = if f.name == "" then cbt_no("line " + str(ln) + ": call of '" + nm + "', which is not a function of this kernel file") else if cb_defs(fns, nm, 0) != 1 then cbt_no("function '" + nm + "' is defined more than once") else if f.rt == 0 then cbt_no("call of '" + nm + "', whose signature is outside the fragment: " + f.msg) else let e = cbt_args(fns, env, args, f.ps, nm, 1) in if e != "" then cbt_no(e) else cbt_ok(f.rt)
+fn cbt_call(fns, env, nm, args, ln) = if nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" then (let e = cbt_args(fns, env, args, cbt_ps2(), nm, 1) in if e != "" then cbt_no(e) else cbt_ok(1)) else cbt_call_to(fns, env, nm, args, ln, cb_find(fns, nm))
+fn cbt_x(fns, env, x) = match x
+    CbLit(v, s, e)             => if v < 0 - 2147483648 or v > 2147483647 then cbt_no("constant outside the i32 monitor domain: " + str(v)) else cbt_ok(1)
+    CbTru(v, s, e)             => cbt_ok(2)
+    CbRef(nm, s, e, ln)        => if cbt_var(env, nm) == 0 then cbt_no("line " + str(ln) + ": unbound name '" + nm + "'") else cbt_ok(cbt_var(env, nm))
+    CbPar(y, s, e)             => cbt_x(fns, env, y)
+    CbUn(op, y, s, e)          => cbt_un(op, cbt_x(fns, env, y))
+    CbBin(op, l, r, s, e, ps)  => cbt_bin(op, cbt_x(fns, env, l), cbt_x(fns, env, r))
+    CbIf(c, t, f, s, e)        => cbt_if(cbt_x(fns, env, c), cbt_x(fns, env, t), cbt_x(fns, env, f))
+    CbLet(nm, v, b, s, e)      => cbt_let(fns, env, nm, cbt_x(fns, env, v), b)
+    CbCall(nm, args, s, e, ln) => cbt_call(fns, env, nm, args, ln)
+    CbFail(s, e)               => cbt_ok(3)
+    _                          => cbt_no("internal: unknown node")
+fn cbt_seen(ps, nm) = match ps
+    Nil        => 0
+    Cons(h, t) => if h.n == nm then 1 else cbt_seen(t, nm)
+fn cbt_params(fns, ps, seen) = match ps
+    Nil        => ""
+    Cons(h, t) => if cbt_seen(seen, h.n) == 1 then "parameter '" + h.n + "' is declared twice" else if cbt_binder(fns, h.n) != "" then cbt_binder(fns, h.n) else cbt_params(fns, t, Cons(h, seen))
+fn cbt_clauses(fns, env, cs, what) = match cs
+    Nil        => ""
+    Cons(h, t) => let r = cbt_x(fns, env, h.x) in if r.m != "" then r.m else if cbt_fits(r.t, 2) then cbt_clauses(fns, env, t, what) else "a '" + what + "' clause is " + cbt_tn(r.t) + ", not bool"
+fn cbt_fn_body(fns, f, b) = if b.m != "" then b.m else if cbt_fits(b.t, f.rt) then cbt_clauses(fns, Cons({n: "result", t: f.rt}, f.ps), f.enss, "ensures") else "the body is " + cbt_tn(b.t) + ", the declared result is " + cbt_tn(f.rt)
+fn cbt_fn_e(fns, f) = if f.ok != 1 then (if f.msg == "" then "not a function of the kernel fragment" else f.msg) else if cb_defs(fns, f.name, 0) != 1 then "defined more than once" else if cbt_builtin(f.name) then "redefines a builtin" else if cb_len(f.ps) > 64 then "more than 64 parameters" else let pe = cbt_params(fns, f.ps, Nil) in if pe != "" then pe else let rq = cbt_clauses(fns, f.ps, f.reqs, "requires") in if rq != "" then rq else cbt_fn_body(fns, f, cbt_x(fns, f.ps, f.body))
+fn cbt_fn(fns, f) = let e = cbt_fn_e(fns, f) in if e == "" then "" else if se_starts(e, "constant outside the i32") == 1 then e else "in '" + f.name + "': " + e
+## the callees of an expression (builtins excluded), pushed on acc
+fn cbt_calls_l(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => cbt_calls_l(t, cbt_calls(h, acc))
+fn cbt_calls(x, acc) = match x
+    CbPar(y, s, e)             => cbt_calls(y, acc)
+    CbUn(op, y, s, e)          => cbt_calls(y, acc)
+    CbBin(op, l, r, s, e, ps)  => cbt_calls(r, cbt_calls(l, acc))
+    CbIf(c, t, f, s, e)        => cbt_calls(f, cbt_calls(t, cbt_calls(c, acc)))
+    CbLet(nm, v, b, s, e)      => cbt_calls(b, cbt_calls(v, acc))
+    CbCall(nm, args, s, e, ln) => cbt_calls_l(args, if cbt_builtin(nm) then acc else Cons(nm, acc))
+    _                          => acc
+fn cbt_calls_c(cs, acc) = match cs
+    Nil        => acc
+    Cons(h, t) => cbt_calls_c(t, cbt_calls(h.x, acc))
+fn cbt_reach(fns, todo, done) = match todo
+    Nil            => cb_rev(done, Nil)
+    Cons(nm, rest) => if (cb_find(done, nm)).name != "" then cbt_reach(fns, rest, done) else let f = cb_find(fns, nm) in if f.name == "" then cbt_reach(fns, rest, done) else cbt_reach(fns, cbt_calls(f.body, cbt_calls_c(f.enss, cbt_calls_c(f.reqs, rest))), Cons(f, done))
+fn cbt_all(fns, tab) = match tab
+    Nil        => ""
+    Cons(h, t) => let e = cbt_fn(fns, h) in if e != "" then e else cbt_all(fns, t)
+## {err, tab, k}: tab = the functions reachable from the kernel, the kernel first; all of them checked
+fn cb_front(fns, fname) = let k = cb_find(fns, fname) in if k.name == "" then {err: "kernel function not found by the channel-B parser: " + fname, tab: Nil, k: k} else if cb_defs(fns, "bit_and", 0) + cb_defs(fns, "bit_or", 0) + cb_defs(fns, "bit_xor", 0) + cb_defs(fns, "ctfail", 0) > 0 then {err: "the kernel file defines a function named like a builtin (bit_and / bit_or / bit_xor / ctfail)", tab: Nil, k: k} else let tab = cbt_reach(fns, Cons(fname, Nil), Nil) in {err: cbt_all(fns, tab), tab: tab, k: k}
+
+## ====================================================================================================================
+## 4. Channel-B code generator: Cb* AST -> RV32IM, directly (no intermediate lowering).
+##    Registers: x1 ra, x2 sp, x8 fp, x10 a0 (every expression leaves its value here; a bool is exactly 0 or 1),
+##    x5 t0 (left operand), x6 / x7 scratch, x17 a7. Frame: the caller pushes the arguments left to right and does
+##    `jal ra, f`; the callee pushes ra and the caller's fp and sets fp = sp, so parameter i of n lives at
+##    fp + 8 + 4*(n-1-i) and the k-th word pushed below fp (operand temporaries, `let` slots, `result`) at fp - 4*k.
+##    A right operand that is a literal or a variable is loaded directly (the left one waits in t0, no push / pop).
+##    Contracts are compiled here whatever lumec proved: every `requires` on entry, every `ensures` on exit, each a
+##    branch to the contract trap. Items: IW(word), IJ(rd, label) = jal, IB(f3, rs1, rs2, label, kind) = conditional
+##    branch (kind 1 = the branch is a trap check, 2 = instrumentation of the bare image), IL(label). cbg_link lays
+##    the items out with one-word branches and, when one does not reach (+-4 KiB), with `b<inverse> +8; jal`.
+## ====================================================================================================================
+fn cbg_st0(lbl) = {code: Nil, lbl: lbl, err: ""}
+fn cbg_w(st, w) = {code: Cons(IW(w), st.code), lbl: st.lbl, err: st.err}
+fn cbg_j(st, rd, l) = {code: Cons(IJ(rd, l), st.code), lbl: st.lbl, err: st.err}
+fn cbg_b(st, f3, a, b, l, k) = {code: Cons(IB(f3, a, b, l, k), st.code), lbl: st.lbl, err: st.err}
+fn cbg_l(st, l) = {code: Cons(IL(l), st.code), lbl: st.lbl, err: st.err}
+fn cbg_new(st, k) = {code: st.code, lbl: st.lbl + k, err: st.err}
+fn cbg_err(st, msg) = if st.err != "" then st else {code: st.code, lbl: st.lbl, err: msg}
+fn cbg_w2(st, a, b) = cbg_w(cbg_w(st, a), b)
+fn cbg_w3(st, a, b, c) = cbg_w(cbg_w2(st, a, b), c)
+fn cbg_w4(st, a, b, c, d) = cbg_w(cbg_w3(st, a, b, c), d)
+## load a 32-bit constant with LUI + ADDI (two words whatever the value)
+fn cbg_li2(st, rd, v) = let lo = rv_sx(rv_w32(v) % 4096, 4096) in cbg_w2(st, rv_lui(rd, rv_w32(v - lo) / 4096), rv_addi(rd, rd, lo))
+fn cbg_li(st, rd, v) = if v >= 0 - 2048 and v <= 2047 then cbg_w(st, rv_addi(rd, 0, v)) else cbg_li2(st, rd, v)
+fn cbg_push(st, d) = if d >= 480 then cbg_err(st, "frame deeper than 480 words") else cbg_w2(st, rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0))
+fn cbg_pop(st) = cbg_w2(st, rv_lw(5, 2, 0), rv_addi(2, 2, 4))
+fn cbg_ref(st, env, nm) = match env
+    Nil        => cbg_err(st, "internal: unbound name " + nm)
+    Cons(h, t) => if h.n == nm then cbg_w(st, rv_lw(10, 8, h.off)) else cbg_ref(st, t, nm)
+fn cbg_leaf(x) = match x
+    CbLit(v, s, e)      => 1
+    CbTru(v, s, e)      => 1
+    CbRef(nm, s, e, ln) => 1
+    CbPar(y, s, e)      => cbg_leaf(y)
+    _                   => 0
+fn cbg_fid(tab, nm, i) = match tab
+    Nil        => 0 - 1
+    Cons(h, t) => if h.name == nm then i else cbg_fid(t, nm, i + 1)
+## unary minus traps on INT_MIN (the only value whose negation leaves i32); `not` flips a 0 / 1 value
+fn cbg_un(st, cx, op) = if op == 1 then cbg_w(cbg_b(cbg_w(st, rv_lui(7, 524288)), 0, 10, 7, cx.lo, 1), rv_sub(10, 0, 10)) else cbg_w(st, rv_xori(10, 10, 1))
+## t0 = left operand a, a0 = right operand b -> a0. Signed overflow of + - *, x / 0 and INT_MIN / -1 branch to a trap:
 ##   add: overflow iff (b < 0) != (a + b < a)        sub: overflow iff (b < 0) != (a < a - b)
 ##   mul: overflow iff mulh(a, b) != (mul(a, b) >> 31 arithmetic)
-fn rc_arith(st, cx, op) = if op == "+" then rc_w(rc_j(rc_w4(st, rv_add(6, 5, 10), rv_slti(7, 10, 0), rv_slt(5, 6, 5), rv_beq(7, 5, 8)), 0, cx.lo), rv_addi(10, 6, 0)) else if op == "-" then rc_w(rc_j(rc_w4(st, rv_sub(6, 5, 10), rv_slti(7, 10, 0), rv_slt(5, 5, 6), rv_beq(7, 5, 8)), 0, cx.lo), rv_addi(10, 6, 0)) else if op == "*" then rc_w(rc_j(rc_w4(st, rv_mul(6, 5, 10), rv_mulh(7, 5, 10), rv_srai(5, 6, 31), rv_beq(7, 5, 8)), 0, cx.lo), rv_addi(10, 6, 0)) else if op == "/" then rc_w(rc_j(rc_w4(rc_j(rc_w(st, rv_bne(10, 0, 8)), 0, cx.ld), rv_addi(6, 0, 0 - 1), rv_bne(10, 6, 16), rv_lui(6, 524288), rv_bne(5, 6, 8)), 0, cx.lo), rv_div(10, 5, 10)) else if op == "%" then rc_w(rc_j(rc_w(st, rv_bne(10, 0, 8)), 0, cx.ld), rv_rem(10, 5, 10)) else if op == "==" then rc_w2(st, rv_xor(6, 5, 10), rv_sltiu(10, 6, 1)) else if op == "!=" then rc_w2(st, rv_xor(6, 5, 10), rv_sltu(10, 0, 6)) else if op == "<" then rc_w(st, rv_slt(10, 5, 10)) else if op == ">" then rc_w(st, rv_slt(10, 10, 5)) else if op == "<=" then rc_w2(st, rv_slt(10, 10, 5), rv_xori(10, 10, 1)) else if op == ">=" then rc_w2(st, rv_slt(10, 5, 10), rv_xori(10, 10, 1)) else if op == "bit_and" then rc_w(st, rv_and(10, 5, 10)) else if op == "bit_or" then rc_w(st, rv_or(10, 5, 10)) else if op == "bit_xor" then rc_w(st, rv_xor(10, 5, 10)) else rc_err(st, "unsupported operator: " + op)
-
-fn rc_x(st, cx, env, d, e) = match e
-    Num(v)          => rc_li(st, 10, v)
-    Var(nm)         => rc_var(st, env, nm)
-    Bin(op, l, r)   => rc_bin(st, cx, env, d, op, l, r)
-    If(c, t, f)     => rc_if(st, cx, env, d, c, t, f)
-    LetIn(nm, v, b) => rc_let(st, cx, env, d, nm, v, b)
-    Call(nm, args)  => rc_call(st, cx, env, d, nm, args)
-    _               => rc_err(st, "expression outside the monitor fragment: " + lcs_e(e))
-fn rc_binop(st, cx, env, d, op, l, r) = rc_arith(rc_pop_t0(rc_x(rc_push(rc_x(st, cx, env, d, l), d), cx, env, d + 1, r)), cx, op)
-## short-circuit and / or with a 0/1 result
-fn rc_and(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = rc_x(rc_bump(st, 1), cx, env, d, l) in let s2 = rc_x(rc_j(rc_w(s1, rv_bne(10, 0, 8)), 0, lb), cx, env, d, r) in rc_def(rc_w(s2, rv_sltu(10, 0, 10)), lb)
-fn rc_or(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = rc_x(rc_bump(st, 2), cx, env, d, l) in let s2 = rc_j(rc_w(rc_j(rc_w(s1, rv_bne(10, 0, 8)), 0, lb), rv_addi(10, 0, 1)), 0, lb + 1) in let s3 = rc_x(rc_def(s2, lb), cx, env, d, r) in rc_def(rc_w(s3, rv_sltu(10, 0, 10)), lb + 1)
-fn rc_bin(st, cx, env, d, op, l, r) = if op == "and" then rc_and(st, cx, env, d, l, r) else if op == "or" then rc_or(st, cx, env, d, l, r) else rc_binop(st, cx, env, d, op, l, r)
-fn rc_if(st, cx, env, d, c, t, f) = let lb = st.lbl in let s1 = rc_x(rc_bump(st, 2), cx, env, d, c) in let s2 = rc_x(rc_j(rc_w(s1, rv_bne(10, 0, 8)), 0, lb), cx, env, d, t) in let s3 = rc_x(rc_def(rc_j(s2, 0, lb + 1), lb), cx, env, d, f) in rc_def(s3, lb + 1)
-fn rc_let(st, cx, env, d, nm, v, b) = let s1 = rc_push(rc_x(st, cx, env, d, v), d) in rc_w(rc_x(s1, cx, Cons({name: nm, off: 0 - 4 * (d + 1)}, env), d + 1, b), rv_addi(2, 2, 4))
-fn rc_args(st, cx, env, d, args) = match args
+fn cbg_div(st, cx) = let lb = st.lbl in cbg_w(cbg_l(cbg_b(cbg_w(cbg_b(cbg_w(cbg_b(cbg_new(st, 1), 0, 10, 0, cx.ld, 1), rv_addi(6, 0, 0 - 1)), 1, 10, 6, lb, 0), rv_lui(6, 524288)), 0, 5, 6, cx.lo, 1), lb), rv_div(10, 5, 10))
+fn cbg_arith(st, cx, op) = if op == 1 then cbg_b(cbg_w3(st, rv_slti(7, 10, 0), rv_add(10, 5, 10), rv_slt(6, 10, 5)), 1, 7, 6, cx.lo, 1) else if op == 2 then cbg_b(cbg_w3(st, rv_slti(7, 10, 0), rv_sub(10, 5, 10), rv_slt(6, 5, 10)), 1, 7, 6, cx.lo, 1) else if op == 3 then cbg_b(cbg_w3(st, rv_mulh(7, 5, 10), rv_mul(10, 5, 10), rv_srai(6, 10, 31)), 1, 7, 6, cx.lo, 1) else if op == 4 then cbg_div(st, cx) else if op == 5 then cbg_w(cbg_b(st, 0, 10, 0, cx.ld, 1), rv_rem(10, 5, 10)) else if op == 6 then cbg_w2(st, rv_xor(6, 5, 10), rv_sltiu(10, 6, 1)) else if op == 7 then cbg_w2(st, rv_xor(6, 5, 10), rv_sltu(10, 0, 6)) else if op == 8 then cbg_w(st, rv_slt(10, 5, 10)) else if op == 9 then cbg_w2(st, rv_slt(10, 10, 5), rv_xori(10, 10, 1)) else if op == 10 then cbg_w(st, rv_slt(10, 10, 5)) else if op == 11 then cbg_w2(st, rv_slt(10, 5, 10), rv_xori(10, 10, 1)) else if op == 14 then cbg_w(st, rv_and(10, 5, 10)) else if op == 15 then cbg_w(st, rv_or(10, 5, 10)) else if op == 16 then cbg_w(st, rv_xor(10, 5, 10)) else cbg_err(st, "internal: unknown operator")
+fn cbg_operands(st, cx, env, d, l, r) = if cbg_leaf(r) == 1 then cbg_x(cbg_w(cbg_x(st, cx, env, d, l), rv_addi(5, 10, 0)), cx, env, d, r) else cbg_pop(cbg_x(cbg_push(cbg_x(st, cx, env, d, l), d), cx, env, d + 1, r))
+## short-circuit: `and` keeps the left 0, `or` keeps the left 1; otherwise the result is the right operand
+fn cbg_sc(st, cx, env, d, l, r, isor) = let lb = st.lbl in cbg_l(cbg_x(cbg_b(cbg_x(cbg_new(st, 1), cx, env, d, l), isor, 10, 0, lb, 0), cx, env, d, r), lb)
+fn cbg_bin(st, cx, env, d, op, l, r) = if op == 12 then cbg_sc(st, cx, env, d, l, r, 0) else if op == 13 then cbg_sc(st, cx, env, d, l, r, 1) else cbg_arith(cbg_operands(st, cx, env, d, l, r), cx, op)
+fn cbg_if(st, cx, env, d, c, t, f) = let lb = st.lbl in let s1 = cbg_b(cbg_x(cbg_new(st, 2), cx, env, d, c), 0, 10, 0, lb, 0) in let s2 = cbg_j(cbg_x(s1, cx, env, d, t), 0, lb + 1) in cbg_l(cbg_x(cbg_l(s2, lb), cx, env, d, f), lb + 1)
+fn cbg_let(st, cx, env, d, nm, v, b) = cbg_w(cbg_x(cbg_push(cbg_x(st, cx, env, d, v), d), cx, Cons({n: nm, off: 0 - 4 * (d + 1)}, env), d + 1, b), rv_addi(2, 2, 4))
+fn cbg_args(st, cx, env, d, args) = match args
     Nil        => st
-    Cons(h, t) => rc_args(rc_push(rc_x(st, cx, env, d, h), d), cx, env, d + 1, t)
-fn rc_bit2(st, cx, env, d, nm, a, rest) = match rest
-    Cons(b, r2) => rc_binop(st, cx, env, d, nm, a, b)
-    Nil         => rc_err(st, nm + " needs two arguments")
-fn rc_bit(st, cx, env, d, nm, args) = match args
-    Cons(a, rest) => rc_bit2(st, cx, env, d, nm, a, rest)
-    Nil           => rc_err(st, nm + " needs two arguments")
-fn rc_user_call(st, cx, env, d, nm, args, f) = if f.id < 0 then rc_err(st, "call to a function outside the monitor fragment: " + nm) else if f.arity != rv_len(args) then rc_err(st, "wrong argument count in call to " + nm) else if f.arity > 64 then rc_err(st, "more than 64 parameters: " + nm) else rc_w(rc_j(rc_args(st, cx, env, d, args), 1, f.id), rv_addi(2, 2, 4 * f.arity))
-fn rc_call(st, cx, env, d, nm, args) = if nm == "ctfail" then rc_j(st, 0, cx.lc) else if nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" then (if rv_len(args) == 2 then rc_bit(st, cx, env, d, nm, args) else rc_err(st, nm + " needs two arguments")) else rc_user_call(st, cx, env, d, nm, args, rc_fn_find(cx.fns, nm))
-
-fn rc_penv(ps, n, i) = match ps
+    Cons(h, t) => cbg_args(cbg_push(cbg_x(st, cx, env, d, h), d), cx, env, d + 1, t)
+fn cbg_bit2(st, cx, env, d, nm, a, r) = match r
+    Cons(b, r2) => cbg_arith(cbg_operands(st, cx, env, d, a, b), cx, if nm == "bit_and" then 14 else if nm == "bit_or" then 15 else 16)
+    Nil         => cbg_err(st, "internal: " + nm + " needs two arguments")
+fn cbg_bit(st, cx, env, d, nm, args) = match args
+    Cons(a, r) => cbg_bit2(st, cx, env, d, nm, a, r)
+    Nil        => cbg_err(st, "internal: " + nm + " needs two arguments")
+fn cbg_user(st, cx, env, d, nm, args, id, n) = if id < 0 then cbg_err(st, "internal: call of a function that was not compiled: " + nm) else if n == 0 then cbg_j(st, 1, id) else cbg_w(cbg_j(cbg_args(st, cx, env, d, args), 1, id), rv_addi(2, 2, 4 * n))
+fn cbg_call(st, cx, env, d, nm, args) = if nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" then cbg_bit(st, cx, env, d, nm, args) else cbg_user(st, cx, env, d, nm, args, cbg_fid(cx.tab, nm, 0), cb_len(args))
+fn cbg_x(st, cx, env, d, x) = match x
+    CbLit(v, s, e)             => cbg_li(st, 10, v)
+    CbTru(v, s, e)             => cbg_w(st, rv_addi(10, 0, v))
+    CbRef(nm, s, e, ln)        => cbg_ref(st, env, nm)
+    CbPar(y, s, e)             => cbg_x(st, cx, env, d, y)
+    CbUn(op, y, s, e)          => cbg_un(cbg_x(st, cx, env, d, y), cx, op)
+    CbBin(op, l, r, s, e, ps)  => cbg_bin(st, cx, env, d, op, l, r)
+    CbIf(c, t, f, s, e)        => cbg_if(st, cx, env, d, c, t, f)
+    CbLet(nm, v, b, s, e)      => cbg_let(st, cx, env, d, nm, v, b)
+    CbCall(nm, args, s, e, ln) => cbg_call(st, cx, env, d, nm, args)
+    CbFail(s, e)               => cbg_j(st, 0, cx.lc)
+    _                          => cbg_err(st, "internal: unknown node")
+fn cbg_penv(ps, n, i) = match ps
     Nil        => Nil
-    Cons(h, t) => Cons({name: h, off: 8 + 4 * (n - 1 - i)}, rc_penv(t, n, i + 1))
-fn rc_fn(st, cx, f) = let s1 = rc_w4(rc_def(st, f.id), rv_addi(2, 2, 0 - 8), rv_sw(1, 2, 4), rv_sw(8, 2, 0), rv_addi(8, 2, 0)) in let s2 = rc_x(s1, cx, rc_penv(f.params, f.arity, 0), 0, f.body) in rc_w(rc_w4(s2, rv_addi(2, 8, 0), rv_lw(1, 2, 4), rv_lw(8, 2, 0), rv_addi(2, 2, 8)), rv_jalr(0, 1, 0))
-fn rc_fns(st, cx, tab) = match tab
+    Cons(h, t) => Cons({n: h.n, off: 8 + 4 * (n - 1 - i)}, cbg_penv(t, n, i + 1))
+## a contract clause that evaluates to 0 branches to the contract trap
+fn cbg_checks(st, cx, env, d, cs) = match cs
     Nil        => st
-    Cons(h, t) => rc_fns(rc_fn(st, cx, h), cx, t)
-
-## the functions reachable from the kernel, each with a label id
-fn rc_prog_find_s(s0, t, nm) = match s0
-    Fn(n2, ps, b) => if n2 == nm then {ok: 1, params: ps, body: b} else rc_prog_find(t, nm)
-    _             => rc_prog_find(t, nm)
-fn rc_prog_find(prog, nm) = match prog
-    Nil        => {ok: 0, params: Nil, body: Num(0)}
-    Cons(h, t) => rc_prog_find_s(h, t, nm)
-fn rc_calls_l(xs, acc) = match xs
-    Nil        => acc
-    Cons(h, t) => rc_calls_l(t, rc_calls(h, acc))
-fn rc_calls(e, acc) = match e
-    Bin(op, l, r)   => rc_calls(r, rc_calls(l, acc))
-    If(c, t, f)     => rc_calls(f, rc_calls(t, rc_calls(c, acc)))
-    LetIn(nm, v, b) => rc_calls(b, rc_calls(v, acc))
-    Call(nm, args)  => rc_calls_l(args, Cons(nm, acc))
-    _               => acc
-fn rc_table_add(prog, nm, rest, tab, nid, f) = if f.ok == 0 then rc_table(prog, rest, tab, nid) else rc_table(prog, rc_calls(f.body, rest), Cons({name: nm, id: nid, arity: rv_len(f.params), params: f.params, body: f.body}, tab), nid + 1)
-fn rc_table(prog, todo, tab, nid) = match todo
-    Nil           => tab
-    Cons(nm, rest) => if (rc_fn_find(tab, nm)).id >= 0 then rc_table(prog, rest, tab, nid) else rc_table_add(prog, nm, rest, tab, nid, rc_prog_find(prog, nm))
-
-fn rc_lbl_idx(defs, l) = match defs
-    Nil        => 0 - 1
-    Cons(h, t) => if h.id == l then h.idx else rc_lbl_idx(t, l)
-fn rc_res_jal(rd, tgt, i, rest) = if tgt < 0 then {err: "internal: undefined label", rom: Nil} else if (tgt - i) * 4 < 0 - 1048576 or (tgt - i) * 4 > 1048574 then {err: "jump outside the JAL range", rom: Nil} else {err: "", rom: Cons(rv_enc_j((tgt - i) * 4, rd), rest)}
-fn rc_res_item(it, defs, i, rest) = match it
-    RvW(w)     => {err: "", rom: Cons(w, rest)}
-    RvJ(rd, l) => rc_res_jal(rd, rc_lbl_idx(defs, l), i, rest)
-fn rc_res_next(h, defs, i, r) = if r.err != "" then r else rc_res_item(h, defs, i, r.rom)
-fn rc_res(items, defs, i) = match items
-    Nil        => {err: "", rom: Nil}
-    Cons(h, t) => rc_res_next(h, defs, i, rc_res(t, defs, i + 1))
-fn rc_rev(xs, acc) = match xs
-    Nil        => acc
-    Cons(h, t) => rc_rev(t, Cons(h, acc))
-
-fn rc_stub_args(st, args) = match args
+    Cons(h, t) => cbg_checks(cbg_b(cbg_x(st, cx, env, d, h.x), 0, 10, 0, cx.lc, 1), cx, env, d, t)
+## the result is pushed as the slot `result`, every `ensures` is checked against it, then it is reloaded
+fn cbg_ens(st, cx, env, enss) = match enss
     Nil        => st
-    Cons(h, t) => if h < 0 - 2147483648 or h > 2147483647 then rc_err(st, "argument outside the i32 monitor domain: " + str(h)) else rc_stub_args(rc_w2(rc_li2(st, 10, h), rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0)), t)
-fn rc_rom_err(msg) = {err: msg, rom: Nil}
-## ROM image: reset stub at word 0 (sp = top of RAM, push the arguments, call the kernel, a7 = 93, ECALL), then the
-## three trap stubs (a7 = cause, EBREAK), then the functions
-fn rc_rom_build(tab, k, args) = let nf = rv_len(tab) in let cx = {fns: tab, lc: nf, lo: nf + 1, ld: nf + 2} in let s1 = rc_stub_args(rc_li2(rc_st0(nf + 3), 2, 524288 + 16384), args) in let s2 = rc_w3(rc_j(s1, 1, k.id), rv_addi(2, 2, 4 * k.arity), rv_addi(17, 0, 93), rv_ecall()) in let s3 = rc_w2(rc_def(rc_w2(rc_def(rc_w2(rc_def(s2, cx.lc), rv_addi(17, 0, 1), rv_ebreak()), cx.lo), rv_addi(17, 0, 2), rv_ebreak()), cx.ld), rv_addi(17, 0, 3), rv_ebreak()) in let s4 = rc_fns(s3, cx, tab) in if s4.err != "" then rc_rom_err(s4.err) else rc_res(rc_rev(s4.code, Nil), s4.defs, 0)
-fn rc_rom_k(tab, k, fname, args) = if k.id < 0 then rc_rom_err("kernel function not found: " + fname) else if k.arity != rv_len(args) then rc_rom_err("kernel " + fname + " takes " + str(k.arity) + " arguments") else if k.arity > 64 then rc_rom_err("more than 64 parameters") else rc_rom_build(tab, k, args)
-fn rc_rom(prog, fname, args) = let tab = rc_table(prog, Cons(fname, Nil), Nil, 0) in rc_rom_k(tab, rc_fn_find(tab, fname), fname, args)
+    Cons(h, t) => cbg_w(cbg_checks(cbg_push(st, 0), cx, Cons({n: "result", off: 0 - 4}, env), 1, enss), rv_lw(10, 8, 0 - 4))
+fn cbg_fn(st, cx, f, id) = let n = cb_len(f.ps) in let env = cbg_penv(f.ps, n, 0) in let s1 = cbg_w4(cbg_l(st, id), rv_addi(2, 2, 0 - 8), rv_sw(1, 2, 4), rv_sw(8, 2, 0), rv_addi(8, 2, 0)) in let s2 = cbg_ens(cbg_x(cbg_checks(s1, cx, env, 0, f.reqs), cx, env, 0, f.body), cx, env, f.enss) in cbg_w(cbg_w4(s2, rv_addi(2, 8, 0), rv_lw(1, 2, 4), rv_lw(8, 2, 0), rv_addi(2, 2, 8)), rv_jalr(0, 1, 0))
+fn cbg_fns(st, cx, tab, id) = match tab
+    Nil        => st
+    Cons(h, t) => cbg_fns(cbg_fn(st, cx, h, id), cx, t, id + 1)
+## labels: function i of the reachable set = i (the kernel = 0), then the traps: contract, overflow, division by zero,
+## and for the bare image cycle watchdog and stack limit; fresh labels start at nf + 8
+fn cbg_cx(tab) = let nf = cb_len(tab) in {tab: tab, nf: nf, lc: nf, lo: nf + 1, ld: nf + 2, lw: nf + 3, ls: nf + 4}
+## {err, items, cx, lbl}: the code of every reachable function, in table order
+fn cbg_code(tab) = let cx = cbg_cx(tab) in let st = cbg_fns(cbg_st0(cx.nf + 8), cx, tab, 0) in {err: st.err, items: cb_rev(st.code, Nil), cx: cx, lbl: st.lbl}
 
-fn rc_rom_flip(rom, idx, bit) = match rom
+## --- layout: labels -> word indices (a trie of 4096 labels, 0 = undefined), then the words
+fn cbg_isz(it, long) = match it
+    IW(w)              => 1
+    IJ(rd, l)          => 1
+    IB(f3, a, b, l, k) => 1 + long
+    _                  => 0
+fn cbg_addr_it(h, r, long, i, t) = match h
+    IL(l) => cbg_addrs(r, long, i, if l < 0 or l > 4095 then t else rv_tset(t, 2048, l, i + 1))
+    _     => cbg_addrs(r, long, i + cbg_isz(h, long), t)
+fn cbg_addrs(items, long, i, t) = match items
+    Nil        => t
+    Cons(h, r) => cbg_addr_it(h, r, long, i, t)
+fn cbg_lerr(msg) = {err: msg, rom: Nil}
+fn cbg_tgt(t, l) = if l < 0 or l > 4095 then 0 - 1 else rv_tget(t, 2048, l) - 1
+fn cbg_emit_j(r, long, t, i, acc, rd, tg) = if tg < 0 then cbg_lerr("internal: undefined label") else if (tg - i) * 4 < 0 - 1048576 or (tg - i) * 4 > 1048574 then cbg_lerr("jump outside the JAL range") else cbg_emit(r, long, t, i + 1, Cons(rv_enc_j((tg - i) * 4, rd), acc))
+fn cbg_emit_b(r, long, t, i, acc, f3, a, b, tg) = if tg < 0 then cbg_lerr("internal: undefined label") else if long == 0 then (if (tg - i) * 4 < 0 - 4096 or (tg - i) * 4 > 4094 then cbg_lerr("far") else cbg_emit(r, long, t, i + 1, Cons(rv_enc_b((tg - i) * 4, b, a, f3), acc))) else if (tg - i - 1) * 4 < 0 - 1048576 or (tg - i - 1) * 4 > 1048574 then cbg_lerr("jump outside the JAL range") else cbg_emit(r, long, t, i + 2, Cons(rv_enc_j((tg - i - 1) * 4, 0), Cons(rv_enc_b(8, b, a, bit_xor(f3, 1)), acc)))
+fn cbg_emit_it(h, r, long, t, i, acc) = match h
+    IW(w)              => cbg_emit(r, long, t, i + 1, Cons(w, acc))
+    IJ(rd, l)          => cbg_emit_j(r, long, t, i, acc, rd, cbg_tgt(t, l))
+    IB(f3, a, b, l, k) => cbg_emit_b(r, long, t, i, acc, f3, a, b, cbg_tgt(t, l))
+    _                  => cbg_emit(r, long, t, i, acc)
+fn cbg_emit(items, long, t, i, acc) = match items
+    Nil        => {err: "", rom: cb_rev(acc, Nil)}
+    Cons(h, r) => cbg_emit_it(h, r, long, t, i, acc)
+fn cbg_link_at(items, long) = cbg_emit(items, long, cbg_addrs(items, long, 0, rv_tz(12)), 0, Nil)
+## {err, rom}
+fn cbg_link(items) = let r = cbg_link_at(items, 0) in if r.err == "far" then cbg_link_at(items, 1) else r
+
+## --- the ROM image of the in-tool monitor: reset stub at word 0 (sp = top of RAM, push the arguments, call the
+## kernel, a7 = 93, ECALL), the three trap stubs (a7 = cause, EBREAK), then the functions
+fn cbg_stub_arg(st, ps, h, t) = match ps
+    Nil         => cbg_err(st, "internal: more arguments than parameters")
+    Cons(p, pr) => if h < 0 - 2147483648 or h > 2147483647 then cbg_err(st, "argument outside the i32 monitor domain: " + str(h)) else if p.t == 2 and h != 0 and h != 1 then cbg_err(st, "argument outside the bool domain (0 / 1): " + str(h)) else cbg_stub_args(cbg_w2(cbg_li2(st, 10, h), rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0)), pr, t)
+fn cbg_stub_args(st, ps, args) = match args
+    Nil        => st
+    Cons(h, t) => cbg_stub_arg(st, ps, h, t)
+fn cbg_stub(cx, k, args) = let s1 = cbg_stub_args(cbg_li2(cbg_st0(0), 2, 524288 + 16384), k.ps, args) in let s2 = cbg_w3(cbg_j(s1, 1, 0), rv_addi(2, 2, 4 * cb_len(k.ps)), rv_addi(17, 0, 93), rv_ecall()) in cbg_w2(cbg_l(cbg_w2(cbg_l(cbg_w2(cbg_l(s2, cx.lc), rv_addi(17, 0, 1), rv_ebreak()), cx.lo), rv_addi(17, 0, 2), rv_ebreak()), cx.ld), rv_addi(17, 0, 3), rv_ebreak())
+## the reset stub executes 2 + 4 * arguments + 1 instructions before the kernel's first one and 3 after its return
+fn cbg_stub_cycles(nargs) = 6 + 4 * nargs
+
+## --- channel-B program: {err, tab, k, items, cx, nfn}. Compiled once per invocation; cb_rom adds the reset stub of
+## one argument vector and links.
+fn cb_prog_cg(fr, c) = {err: c.err, tab: fr.tab, k: fr.k, items: c.items, cx: c.cx, nfn: cb_len(fr.tab), lbl: c.lbl}
+fn cb_prog_fr(fr) = if fr.err != "" then {err: fr.err, tab: Nil, k: fr.k, items: Nil, cx: cbg_cx(Nil), nfn: 0, lbl: 8} else cb_prog_cg(fr, cbg_code(fr.tab))
+fn cb_prog(src, fname) = cb_prog_fr(cb_front(cb_parse(src), fname))
+fn cb_rom_st(bp, st) = if st.err != "" then cbg_lerr(st.err) else cbg_link(cb_app(cb_rev(st.code, Nil), bp.items))
+fn cb_rom(bp, args) = if bp.err != "" then cbg_lerr(bp.err) else if cb_len(bp.k.ps) != cb_len(args) then cbg_lerr("kernel " + bp.k.name + " takes " + str(cb_len(bp.k.ps)) + " arguments") else cb_rom_st(bp, cbg_stub(bp.cx, bp.k, args))
+
+## --- test instruments -------------------------------------------------------------------------------------------------
+## b_cg: corrupt the n-th matching item of the generated functions (the instruction selection, before layout):
+##   opcode    an R-type instruction becomes its neighbour (add <-> sub, mul -> add, mulh -> mul, div <-> rem,
+##             slt <-> sltu, xor -> or, or <-> and)
+##   reg       the two source registers of an R-type instruction are exchanged
+##   polarity  a conditional branch that is not a trap check is inverted (beq <-> bne)
+##   droptrap  a trap check (overflow, division by zero, contract) is replaced by a NOP
+fn cbm_f(w, f7, f3) = w - w / 33554432 * 33554432 - w / 4096 % 8 * 4096 + f7 * 33554432 + f3 * 4096
+fn cbm_opc(w) = let f7 = w / 33554432 in let f3 = w / 4096 % 8 in if f7 == 0 and f3 == 0 then cbm_f(w, 32, 0) else if f7 == 32 and f3 == 0 then cbm_f(w, 0, 0) else if f7 == 1 and f3 == 0 then cbm_f(w, 0, 0) else if f7 == 1 and f3 == 1 then cbm_f(w, 1, 0) else if f7 == 1 and f3 == 4 then cbm_f(w, 1, 6) else if f7 == 1 and f3 == 6 then cbm_f(w, 1, 4) else if f7 == 0 and f3 == 2 then cbm_f(w, 0, 3) else if f7 == 0 and f3 == 3 then cbm_f(w, 0, 2) else if f7 == 0 and f3 == 4 then cbm_f(w, 0, 6) else if f7 == 0 and f3 == 6 then cbm_f(w, 0, 7) else cbm_f(w, 0, 6)
+fn cbm_swap(w) = let a = w / 32768 % 32 in let b = w / 1048576 % 32 in w - b * 1048576 - a * 32768 + a * 1048576 + b * 32768
+fn cbm_cg_it(h, kind) = match h
+    IW(w)              => if w % 128 == 51 and kind == "opcode" then {hit: 1, it: IW(cbm_opc(w))} else if w % 128 == 51 and kind == "reg" and w / 1048576 % 32 != w / 32768 % 32 then {hit: 1, it: IW(cbm_swap(w))} else {hit: 0, it: h}
+    IB(f3, a, b, l, k) => if kind == "polarity" and k == 0 then {hit: 1, it: IB(bit_xor(f3, 1), a, b, l, k)} else if kind == "droptrap" and k == 1 then {hit: 1, it: IW(19)} else {hit: 0, it: h}
+    _                  => {hit: 0, it: h}
+fn cbm_cg_go(items, kind, n, acc) = match items
+    Nil        => {ok: 0, items: Nil}
+    Cons(h, t) => let m = cbm_cg_it(h, kind) in if m.hit == 0 then cbm_cg_go(t, kind, n, Cons(h, acc)) else if n == 0 then {ok: 1, items: cb_rev(acc, Cons(m.it, t))} else cbm_cg_go(t, kind, n - 1, Cons(h, acc))
+## {ok, bp}: the program with one corrupted item
+fn cbm_cg(bp, kind, n) = if bp.err != "" then {ok: 0, bp: bp} else let m = cbm_cg_go(bp.items, kind, n, Nil) in if m.ok == 0 then {ok: 0, bp: bp} else {ok: 1, bp: {err: "", tab: bp.tab, k: bp.k, items: m.items, cx: bp.cx, nfn: bp.nfn, lbl: bp.lbl}}
+
+## a_src / b_src: one channel compiles a MUTATED kernel text (a model of a front-end / lowering defect of that channel)
+## while the other compiles the original. The n-th site of the class inside the kernel function (its contracts and its
+## body, in source order) is rewritten:
+##   arith    + <-> -, * -> +, / <-> %            cmpflip  a comparison becomes its negation (< -> >=, == -> != ...)
+##   cmpoff   < <-> <=, > <-> >=                  constp / constm   an integer literal + 1 / - 1
+##   branch   the two branches of an `if` are exchanged (the condition is negated)
+##   swap     the operands of - / % are exchanged regroup  a + b * c -> (a + b) * c, a - b - c -> a - (b - c)
+##   andor    and <-> or                          dropreq / dropens  a `requires` / `ensures` clause is deleted
+fn cbm_num(v) = if v < 0 then "(0 - " + str(0 - v) + ")" else str(v)
+fn cbm_e1(o, e, t) = Cons({o: o, e: e, t: t}, Nil)
+fn cbm_optext(op) = if op == 1 then "+" else if op == 2 then "-" else if op == 3 then "*" else if op == 4 then "/" else if op == 5 then "%" else if op == 6 then "==" else if op == 7 then "!=" else if op == 8 then "<" else if op == 9 then "<=" else if op == 10 then ">" else if op == 11 then ">=" else if op == 12 then "and" else "or"
+fn cbm_oplen(op) = count(cbm_optext(op))
+fn cbm_txt(src, n, x) = slicen(src, n, cb_s(x), cb_e(x))
+fn cbm_parts(x) = match x
+    CbBin(op, l, r, s, e, ps) => {is: 1, op: op, l: l, r: r}
+    _                         => {is: 0, op: 0, l: x, r: x}
+fn cbm_regroup(src, n, op, l, r, s, e, acc) = let pr = cbm_parts(r) in let pl = cbm_parts(l) in if op > 5 then acc else if pr.is == 1 and pr.op <= 5 then Cons(cbm_e1(s, e, "(" + cbm_txt(src, n, l) + " " + cbm_optext(op) + " " + cbm_txt(src, n, pr.l) + ") " + cbm_optext(pr.op) + " " + cbm_txt(src, n, pr.r)), acc) else if pl.is == 1 and pl.op <= 5 then Cons(cbm_e1(s, e, cbm_txt(src, n, pl.l) + " " + cbm_optext(pl.op) + " (" + cbm_txt(src, n, pl.r) + " " + cbm_optext(op) + " " + cbm_txt(src, n, r) + ")"), acc) else acc
+fn cbm_bin(src, n, cls, op, l, r, s, e, ps, acc) = if cls == "arith" and op <= 5 then Cons(cbm_e1(ps, ps + 1, if op == 1 then "-" else if op == 2 then "+" else if op == 3 then "+" else if op == 4 then "%" else "/"), acc) else if cls == "cmpflip" and op >= 6 and op <= 11 then Cons(cbm_e1(ps, ps + cbm_oplen(op), if op == 6 then "!=" else if op == 7 then "==" else if op == 8 then ">=" else if op == 9 then ">" else if op == 10 then "<=" else "<"), acc) else if cls == "cmpoff" and op >= 8 and op <= 11 then Cons(cbm_e1(ps, ps + cbm_oplen(op), if op == 8 then "<=" else if op == 9 then "<" else if op == 10 then ">=" else ">"), acc) else if cls == "andor" and op >= 12 then Cons(cbm_e1(ps, ps + cbm_oplen(op), if op == 12 then "or" else "and"), acc) else if cls == "swap" and (op == 2 or op == 4 or op == 5) then Cons(cbm_e1(s, e, "(" + cbm_txt(src, n, r) + ") " + cbm_optext(op) + " (" + cbm_txt(src, n, l) + ")"), acc) else if cls == "regroup" then cbm_regroup(src, n, op, l, r, s, e, acc) else acc
+fn cbm_lit(cls, v, s, e, acc) = if cls == "constp" then Cons(cbm_e1(s, e, cbm_num(v + 1)), acc) else if cls == "constm" then Cons(cbm_e1(s, e, cbm_num(v - 1)), acc) else acc
+fn cbm_if(cls, c, acc) = if cls == "branch" then Cons(Cons({o: cb_e(c), e: cb_e(c), t: ")"}, Cons({o: cb_s(c), e: cb_s(c), t: "not ("}, Nil)), acc) else acc
+fn cbm_sites_l(src, n, cls, xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => cbm_sites_l(src, n, cls, t, cbm_sites(src, n, cls, h, acc))
+## the sites of class cls in x, pushed on acc in source order (so acc ends reversed); a site is a list of edits
+fn cbm_sites(src, n, cls, x, acc) = match x
+    CbLit(v, s, e)             => cbm_lit(cls, v, s, e, acc)
+    CbPar(y, s, e)             => cbm_sites(src, n, cls, y, acc)
+    CbUn(op, y, s, e)          => cbm_sites(src, n, cls, y, acc)
+    CbBin(op, l, r, s, e, ps)  => cbm_sites(src, n, cls, r, cbm_sites(src, n, cls, l, cbm_bin(src, n, cls, op, l, r, s, e, ps, acc)))
+    CbIf(c, t, f, s, e)        => cbm_sites(src, n, cls, f, cbm_sites(src, n, cls, t, cbm_sites(src, n, cls, c, cbm_if(cls, c, acc))))
+    CbLet(nm, v, b, s, e)      => cbm_sites(src, n, cls, b, cbm_sites(src, n, cls, v, acc))
+    CbCall(nm, args, s, e, ln) => cbm_sites_l(src, n, cls, args, acc)
+    _                          => acc
+fn cbm_clauses(src, n, cls, cs, drop, acc) = match cs
+    Nil        => acc
+    Cons(h, t) => cbm_clauses(src, n, cls, t, drop, if cls == drop then Cons(cbm_e1(h.o, cb_e(h.x), ""), acc) else cbm_sites(src, n, cls, h.x, acc))
+fn cbm_fn_sites(src, n, cls, f) = cb_rev(cbm_sites(src, n, cls, f.body, cbm_clauses(src, n, cls, f.enss, "dropens", cbm_clauses(src, n, cls, f.reqs, "dropreq", Nil))), Nil)
+fn cbm_apply(src, edits) = match edits
+    Nil        => src
+    Cons(h, t) => let n = count(src) in cbm_apply(slicen(src, n, 0, h.o) + h.t + slicen(src, n, h.e, n), t)
+fn cbm_nth(src, sites, nth) = match sites
+    Nil        => {ok: 0, text: ""}
+    Cons(h, t) => if nth == 0 then {ok: 1, text: cbm_apply(src, h)} else cbm_nth(src, t, nth - 1)
+fn cbm_class(cls) = cls == "arith" or cls == "cmpflip" or cls == "cmpoff" or cls == "constp" or cls == "constm" or cls == "branch" or cls == "swap" or cls == "regroup" or cls == "andor" or cls == "dropreq" or cls == "dropens"
+## {ok, text}: the kernel file with the nth site of class cls of function fname rewritten
+fn cbm_src(src, fname, cls, nth) = let f = cb_find(cb_parse(src), fname) in if f.ok == 1 and cbm_class(cls) then cbm_nth(src, cbm_fn_sites(src, count(src), cls, f), nth) else {ok: 0, text: ""}
+
+fn se_rom_flip(rom, idx, bit) = match rom
     Nil        => Nil
-    Cons(h, t) => if idx == 0 then Cons(if bit >= 0 and bit <= 31 then rv_flip(h, bit) else h, t) else Cons(h, rc_rom_flip(t, idx - 1, bit))
+    Cons(h, t) => if idx == 0 then Cons(if bit >= 0 and bit <= 31 then rv_flip(h, bit) else h, t) else Cons(h, se_rom_flip(t, idx - 1, bit))
 
 ## channel B, one vector: {ok, v, cycles, cause, detail}
 fn se_b_rec(m) = if m.st == 1 then {ok: 1, v: rv_s32(rv_rd(m.x, 10)), cycles: m.cyc, cause: "", detail: ""} else {ok: 0, v: 0, cycles: m.cyc, cause: m.cause, detail: "pc=" + str(m.pc)}
-fn se_b_exec(rom, budget, inj) = se_b_rec(rv_boot(rv_machine(if inj.kind == 3 then rc_rom_flip(rom, inj.target, inj.bit) else rom, 12), budget, inj))
-fn se_b_cause(msg) = if se_starts(msg, "argument outside the i32") == 1 then "arg_outside_i32" else if se_starts(msg, "constant outside the i32") == 1 then "const_outside_i32" else "compile_unsupported"
-fn se_b_run(prog, fname, args, budget, inj) = let r = rc_rom(prog, fname, args) in if r.err != "" then {ok: 0, v: 0, cycles: 0, cause: se_b_cause(r.err), detail: r.err} else se_b_exec(r.rom, budget, inj)
+fn se_b_exec(rom, budget, inj) = se_b_rec(rv_boot(rv_machine(if inj.kind == 3 then se_rom_flip(rom, inj.target, inj.bit) else rom, 12), budget, inj))
+fn se_b_cause(msg) = if se_starts(msg, "argument outside the i32") == 1 then "arg_outside_i32" else if se_starts(msg, "argument outside the bool") == 1 then "arg_outside_bool" else if se_starts(msg, "constant outside the i32") == 1 then "const_outside_i32" else "compile_unsupported"
+## bp = the channel-B program of cb_prog (the clean-room compile of the raw kernel text)
+fn se_b_go(bp, args, budget, inj) = let r = cb_rom(bp, args) in if r.err != "" then {ok: 0, v: 0, cycles: 0, cause: se_b_cause(r.err), detail: r.err} else se_b_exec(r.rom, budget, inj)
 
 ## ====================================================================================================================
-## 4. Certificate guard -- the same function as compiler/stage1/lchameleon.src (the gate compares the two texts)
+## 5. Certificate guard -- the same function as compiler/stage1/lchameleon.src (the gate compares the two texts)
 ## ====================================================================================================================
 @bound(cycles: 28)
 fn lumeputer_inweights_lcert_check(obligation_slack: int, cert_sig_ok: int) -> int / pure
@@ -329,12 +748,38 @@ fn se_clamp_slack(s) = if s < 0 - 1000000 then 0 - 1000000 else if s > 1000000 t
 fn se_cert_ok(budget, b, sig_ok) = lumeputer_inweights_lcert_check(se_clamp_slack(if b.ok == 1 then budget - b.cycles else 0 - 1), if sig_ok == 1 then 1 else 0)
 
 ## ====================================================================================================================
-## 5. Voter: 2oo2 comparator. a = {ok, v, reason}, b = {ok, v, cause}, ltv_status names the validator verdict.
+## 6. Voter: 2oo2 comparator. a = {ok, v, reason}, b = {ok, v, cause}, ltv_status names the validator verdict.
 ## ====================================================================================================================
 fn se_vote(a, b, cert_ok, ltv_status) = if a.ok != 1 then {commit: 0, value: 0, reason: a.reason} else if b.ok != 1 then {commit: 0, value: 0, reason: "b_" + b.cause} else if cert_ok != 1 then {commit: 0, value: 0, reason: if ltv_status != "validated" then "cert_ltv_" + ltv_status else "cert_slack_negative"} else if a.v != b.v then {commit: 0, value: 0, reason: "lockstep_mismatch"} else {commit: 1, value: a.v, reason: "ok"}
 
+## --- SHA-256 (FIPS 180-4), local to this tool: the event log, the kernel id and the manifest must not depend on a
+## module of the compiler. A message is {k, s, n}: k = 0 the string s, k = 1 the file s; n = its length in bytes.
+fn s2_u32(x) = bit_and(x, 4294967295)
+fn s2_rotr(x, n) = bit_or(bit_shr(x, n), bit_and(bit_shl(x, 32 - n), 4294967295))
+fn s2_k() = Cons(1116352408, Cons(1899447441, Cons(3049323471, Cons(3921009573, Cons(961987163, Cons(1508970993, Cons(2453635748, Cons(2870763221, Cons(3624381080, Cons(310598401, Cons(607225278, Cons(1426881987, Cons(1925078388, Cons(2162078206, Cons(2614888103, Cons(3248222580, Cons(3835390401, Cons(4022224774, Cons(264347078, Cons(604807628, Cons(770255983, Cons(1249150122, Cons(1555081692, Cons(1996064986, Cons(2554220882, Cons(2821834349, Cons(2952996808, Cons(3210313671, Cons(3336571891, Cons(3584528711, Cons(113926993, Cons(338241895, Cons(666307205, Cons(773529912, Cons(1294757372, Cons(1396182291, Cons(1695183700, Cons(1986661051, Cons(2177026350, Cons(2456956037, Cons(2730485921, Cons(2820302411, Cons(3259730800, Cons(3345764771, Cons(3516065817, Cons(3600352804, Cons(4094571909, Cons(275423344, Cons(430227734, Cons(506948616, Cons(659060556, Cons(883997877, Cons(958139571, Cons(1322822218, Cons(1537002063, Cons(1747873779, Cons(1955562222, Cons(2024104815, Cons(2227730452, Cons(2361852424, Cons(2428436474, Cons(2756734187, Cons(3204031479, Cons(3329325298, Nil))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+fn s2_byte(m, total, i) = if i < m.n then (if m.k == 0 then ord(at(m.s, i)) else fs_read_byte(m.s, i)) else if i == m.n then 128 else if i >= total - 8 then bit_and(bit_shr(m.n * 8, 8 * (total - 1 - i)), 255) else 0
+fn s2_word(m, total, b) = s2_byte(m, total, b) * 16777216 + s2_byte(m, total, b + 1) * 65536 + s2_byte(m, total, b + 2) * 256 + s2_byte(m, total, b + 3)
+fn s2_nth(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i == 0 then h else s2_nth(t, i - 1)
+fn s2_s0(x) = bit_xor(bit_xor(s2_rotr(x, 7), s2_rotr(x, 18)), bit_shr(x, 3))
+fn s2_s1(x) = bit_xor(bit_xor(s2_rotr(x, 17), s2_rotr(x, 19)), bit_shr(x, 10))
+fn s2_step(st, w, k) = let t1 = s2_u32(st.h + bit_xor(bit_xor(s2_rotr(st.e, 6), s2_rotr(st.e, 11)), s2_rotr(st.e, 25)) + bit_xor(bit_and(st.e, st.f), bit_and(bit_xor(st.e, 4294967295), st.g)) + k + w) in let t2 = s2_u32(bit_xor(bit_xor(s2_rotr(st.a, 2), s2_rotr(st.a, 13)), s2_rotr(st.a, 22)) + bit_xor(bit_xor(bit_and(st.a, st.b), bit_and(st.a, st.c)), bit_and(st.b, st.c))) in {a: s2_u32(t1 + t2), b: st.a, c: st.b, d: st.c, e: s2_u32(st.d + t1), f: st.e, g: st.f, h: st.g}
+## ws = the schedule words so far, the latest first
+fn s2_rounds(m, total, base, t, ws, ks, st) = match ks
+    Nil        => st
+    Cons(k, r) => let w = if t < 16 then s2_word(m, total, base + 4 * t) else s2_u32(s2_s1(s2_nth(ws, 1)) + s2_nth(ws, 6) + s2_s0(s2_nth(ws, 14)) + s2_nth(ws, 15)) in s2_rounds(m, total, base, t + 1, Cons(w, ws), r, s2_step(st, w, k))
+fn s2_add(h, st) = {a: s2_u32(h.a + st.a), b: s2_u32(h.b + st.b), c: s2_u32(h.c + st.c), d: s2_u32(h.d + st.d), e: s2_u32(h.e + st.e), f: s2_u32(h.f + st.f), g: s2_u32(h.g + st.g), h: s2_u32(h.h + st.h)}
+fn s2_blocks(m, total, base, h) = if base >= total then h else s2_blocks(m, total, base + 64, s2_add(h, s2_rounds(m, total, base, 0, Nil, s2_k(), h)))
+fn s2_h1(n) = at("0123456789abcdef", n)
+fn s2_hex(w) = s2_h1(w / 268435456 % 16) + s2_h1(w / 16777216 % 16) + s2_h1(w / 1048576 % 16) + s2_h1(w / 65536 % 16) + s2_h1(w / 4096 % 16) + s2_h1(w / 256 % 16) + s2_h1(w / 16 % 16) + s2_h1(w % 16)
+fn s2_of(m) = let h = s2_blocks(m, (m.n + 9 + 63) / 64 * 64, 0, {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in s2_hex(h.a) + s2_hex(h.b) + s2_hex(h.c) + s2_hex(h.d) + s2_hex(h.e) + s2_hex(h.f) + s2_hex(h.g) + s2_hex(h.h)
+## lower-case hex SHA-256 of a string / of the bytes of a file
+fn se_sha256(s) = s2_of({k: 0, s: s, n: count(s)})
+fn se_sha256_file(path) = s2_of({k: 1, s: path, n: ss_size(path)})
+
 ## ====================================================================================================================
-## 6. Text helpers
+## 7. Text helpers
 ## ====================================================================================================================
 fn se_line_end(s, n, i) = if i >= n or at(s, i) == "\n" then i else se_line_end(s, n, i + 1)
 fn se_rtrim(s, n) = if n > 0 and (at(s, n - 1) == " " or at(s, n - 1) == "\r" or at(s, n - 1) == "\t") then se_rtrim(s, n - 1) else slice(s, 0, n)
@@ -380,7 +825,7 @@ fn se_bound(src, fname) = se_bound_scan(src, count(src), 0, 0, 0, "fn " + fname 
 fn se_bound_scale() = 16
 
 ## ====================================================================================================================
-## 7. Channel A: real lumec + lasm + native execution under a watchdog
+## 8. Channel A: real lumec + lasm + native execution under a watchdog
 ## ====================================================================================================================
 fn se_a_argl(i, n) = if i > n then "" else "toint(os_arg_at(" + str(i) + "))" + (if i < n then ", " else "") + se_a_argl(i + 1, n)
 fn se_a_prog(src, fname, nargs) = src + "\nprint " + fname + "(" + se_a_argl(1, nargs) + ")\n"
@@ -407,30 +852,30 @@ fn se_a_run(tag, args, timeout_ms) = let z = fs_write_sync(tag + ".out", "") in 
 fn se_a_flip(a, inj) = if a.ok == 1 and inj.kind == 4 and inj.bit >= 0 and inj.bit <= 62 then {ok: 1, v: bit_xor(a.v, rv_p2(inj.bit)), reason: "", detail: "result bit " + str(inj.bit) + " flipped by @inject"} else a
 
 ## ====================================================================================================================
-## 8. Translation Validator (external binary; contract: stdin @root/@src/@fn/@json, exit 0 + "status":"validated")
+## 9. Translation Validator (external binary; contract: stdin @root/@src/@fn/@json, exit 0 + "status":"validated")
 ## ====================================================================================================================
 fn se_ltv_out(cfg, tag, raw, timed_out, fname) = if timed_out == 1 then {status: "timeout", sig_ok: 0} else if se_wait_exit(raw) != 0 then {status: "rejected", sig_ok: 0} else if se_has(fs_read_file(tag + ".ltv.out"), "\"name\":\"" + fname + "\",\"status\":\"validated\"") == 1 then {status: "validated", sig_ok: 1} else {status: "no_validation_record", sig_ok: 0}
 fn se_ltv(cfg, tag, fname) = if fs_path_exists(cfg.ltv) != 1 then {status: "missing", sig_ok: 0} else let w = fs_write_sync(tag + ".ltv.in", "@root " + cfg.root + "\n@src " + cfg.src + "\n@fn " + fname + "\n@json 1\n") in let z = fs_write_sync(tag + ".ltv.out", "") in let raw = os_run_input_capture_timeout(cfg.ltv, Nil, tag + ".ltv.in", tag + ".ltv.out", tag + ".ltv.err", cfg.ltv_timeout_ms) in se_ltv_out(cfg, tag, raw, os_last_timed_out(), fname)
 
 ## ====================================================================================================================
-## 9. Event log: {"prev_hash":"<64 hex>","hash":"<64 hex>","body":<json>} per line, hash = sha256(prev_hash + body)
+## 10. Event log: {"prev_hash":"<64 hex>","hash":"<64 hex>","body":<json>} per line, hash = sha256(prev_hash + body)
 ## ====================================================================================================================
 fn se_zero64() = "0000000000000000000000000000000000000000000000000000000000000000"
 fn se_log_bad(cnt) = {ok: 0, last: "", latched: 1, n: cnt}
 fn se_log_latch(body, latched) = if se_starts(body, "{\"event\":\"trip\"") == 1 then 1 else if se_starts(body, "{\"event\":\"reset\"") == 1 then 0 else latched
-fn se_log_line(s, n, i, e, prev, latched, cnt) = if e >= n or e - i < 164 then se_log_bad(cnt) else if slicen(s, n, i, i + 14) != "{\"prev_hash\":\"" or slicen(s, n, i + 78, i + 88) != "\",\"hash\":\"" or slicen(s, n, i + 152, i + 161) != "\",\"body\":" or at(s, e - 1) != "}" then se_log_bad(cnt) else let body = slicen(s, n, i + 161, e - 1) in let h = slicen(s, n, i + 88, i + 152) in if slicen(s, n, i + 14, i + 78) != prev or lsh256(prev + body) != h then se_log_bad(cnt) else se_log_scan(s, n, e + 1, h, se_log_latch(body, latched), cnt + 1)
+fn se_log_line(s, n, i, e, prev, latched, cnt) = if e >= n or e - i < 164 then se_log_bad(cnt) else if slicen(s, n, i, i + 14) != "{\"prev_hash\":\"" or slicen(s, n, i + 78, i + 88) != "\",\"hash\":\"" or slicen(s, n, i + 152, i + 161) != "\",\"body\":" or at(s, e - 1) != "}" then se_log_bad(cnt) else let body = slicen(s, n, i + 161, e - 1) in let h = slicen(s, n, i + 88, i + 152) in if slicen(s, n, i + 14, i + 78) != prev or se_sha256(prev + body) != h then se_log_bad(cnt) else se_log_scan(s, n, e + 1, h, se_log_latch(body, latched), cnt + 1)
 ## {ok, last, latched, n}: walks the whole chain; any malformed line, broken link or wrong hash => ok = 0
 fn se_log_scan(s, n, i, prev, latched, cnt) = if i >= n then {ok: 1, last: prev, latched: latched, n: cnt} else se_log_line(s, n, i, se_line_end(s, n, i), prev, latched, cnt)
 fn se_log_check(path) = let s = fs_read_file(path) in se_log_scan(s, count(s), 0, se_zero64(), 0, 0)
-fn se_log_append(path, prev, body) = let h = lsh256(prev + body) in let w = fs_append_sync(path, "{\"prev_hash\":\"" + prev + "\",\"hash\":\"" + h + "\",\"body\":" + body + "}\n") in h
+fn se_log_append(path, prev, body) = let h = se_sha256(prev + body) in let w = fs_append_sync(path, "{\"prev_hash\":\"" + prev + "\",\"hash\":\"" + h + "\",\"body\":" + body + "}\n") in h
 
 ## ====================================================================================================================
-## 10. Driver
+## 11. Driver
 ## ====================================================================================================================
 fn se_inj_none() = {kind: 0, cyc: 0, target: 0, bit: 0, akind: "", text: "", bad: 0}
 fn se_inj_bad(text) = {kind: 0, cyc: 0, target: 0, bit: 0, akind: "", text: text, bad: 1}
 fn se_inj_mk(text, kind, a, b, c, akind) = if a.ok == 0 or b.ok == 0 or c.ok == 0 or a.v < 0 or b.v < 0 or c.v < 0 then se_inj_bad(text) else {kind: kind, cyc: a.v, target: b.v, bit: c.v, akind: akind, text: text, bad: 0}
-fn se_inj_p(text, k, p) = let n = rv_len(p) in let zero = {ok: 1, v: 0} in if k == "b_ram" and n == 4 then se_inj_mk(text, 1, se_pint(se_nth(p, 1)), se_pint(se_nth(p, 2)), se_pint(se_nth(p, 3)), "") else if k == "b_reg" and n == 4 then se_inj_mk(text, 2, se_pint(se_nth(p, 1)), se_pint(se_nth(p, 2)), se_pint(se_nth(p, 3)), "") else if k == "b_rom" and n == 3 then se_inj_mk(text, 3, zero, se_pint(se_nth(p, 1)), se_pint(se_nth(p, 2)), "") else if k == "a_bit" and n == 2 then se_inj_mk(text, 4, zero, zero, se_pint(se_nth(p, 1)), "") else if k == "a_asm" and n == 3 then se_inj_mk(text, 5, zero, se_pint(se_nth(p, 2)), zero, se_nth(p, 1)) else se_inj_bad(text)
+fn se_inj_p(text, k, p) = let n = rv_len(p) in let zero = {ok: 1, v: 0} in if k == "b_ram" and n == 4 then se_inj_mk(text, 1, se_pint(se_nth(p, 1)), se_pint(se_nth(p, 2)), se_pint(se_nth(p, 3)), "") else if k == "b_reg" and n == 4 then se_inj_mk(text, 2, se_pint(se_nth(p, 1)), se_pint(se_nth(p, 2)), se_pint(se_nth(p, 3)), "") else if k == "b_rom" and n == 3 then se_inj_mk(text, 3, zero, se_pint(se_nth(p, 1)), se_pint(se_nth(p, 2)), "") else if k == "a_bit" and n == 2 then se_inj_mk(text, 4, zero, zero, se_pint(se_nth(p, 1)), "") else if k == "a_asm" and n == 3 then se_inj_mk(text, 5, zero, se_pint(se_nth(p, 2)), zero, se_nth(p, 1)) else if k == "a_src" and n == 3 then se_inj_mk(text, 6, zero, se_pint(se_nth(p, 2)), zero, se_nth(p, 1)) else if k == "b_src" and n == 3 then se_inj_mk(text, 7, zero, se_pint(se_nth(p, 2)), zero, se_nth(p, 1)) else if k == "b_cg" and n == 3 then se_inj_mk(text, 8, zero, se_pint(se_nth(p, 2)), zero, se_nth(p, 1)) else se_inj_bad(text)
 fn se_inj_parse(text) = if text == "" then se_inj_none() else let p = se_split(text, ":") in se_inj_p(text, se_nth(p, 0), p)
 fn se_inj_b(inj) = {kind: if inj.kind >= 1 and inj.kind <= 3 then inj.kind else 0, cyc: inj.cyc, target: inj.target, bit: inj.bit}
 
@@ -445,7 +890,7 @@ fn se_a_none() = {ok: 0, v: 0, reason: "a_not_run", detail: ""}
 fn se_b_none() = {ok: 0, v: 0, cycles: 0, cause: "not_run", detail: ""}
 fn se_refuse(ctx, vs, reason) = se_res("SAFE_STATE_TRIP", vs, se_pints(vs), 0, 0, se_a_none(), se_b_none(), ctx.budget, 0, reason, "not executed")
 
-fn se_b_side(ctx, xs) = if ctx.b_ready != 1 then {ok: 0, v: 0, cycles: 0, cause: "no_program", detail: "channel A did not compile the kernel"} else se_b_run(ctx.prog, ctx.fname, xs, ctx.budget, se_inj_b(ctx.inj))
+fn se_b_side(ctx, xs) = if ctx.b_ready != 1 then {ok: 0, v: 0, cycles: 0, cause: "no_program", detail: "channel B was not compiled"} else se_b_go(ctx.bp, xs, ctx.budget, se_inj_b(ctx.inj))
 fn se_a_side(ctx, xs) = if ctx.a.ok != 1 then {ok: 0, v: 0, reason: ctx.a.reason, detail: ctx.a.detail} else se_a_flip(se_a_run(ctx.tag, xs, ctx.timeout_ms), ctx.inj)
 fn se_decide(ctx, vs, pa, a, b) = let cert_ok = se_cert_ok(ctx.budget, b, ctx.ltv.sig_ok) in let v = se_vote(a, b, cert_ok, ctx.ltv.status) in se_res(if v.commit == 1 then "VerifiedActuatorCommit" else "SAFE_STATE_TRIP", vs, pa, v.commit, v.value, a, b, ctx.budget, cert_ok, v.reason, a.detail + (if a.detail != "" and b.detail != "" then "; " else "") + b.detail)
 ## run both channels for one vector and vote
@@ -459,13 +904,21 @@ fn se_vecs(ctx, vecs, sx) = match vecs
     Nil        => sx
     Cons(h, t) => se_vecs(ctx, t, if ctx.log_ok != 1 then se_acc(sx, se_res_json(se_refuse(ctx, h, "event_log_tamper"), ""), sx.prev, 1, 0) else if sx.latched == 1 then se_step_latched(ctx, sx, se_refuse(ctx, h, "latched")) else se_step_run(ctx, sx, se_one(ctx, h)))
 
-fn se_ctx(cfg, lg, inj, fault, detail, budget, bsrc, bound, a, b_ready, prog, ltv, srcsha, nargs) = {fname: cfg.fname, log: cfg.log, tag: cfg.tag, timeout_ms: cfg.timeout_ms, log_ok: lg.ok, inj: inj, fault: fault, fault_detail: detail, budget: budget, budget_source: bsrc, bound: bound, a: a, b_ready: b_ready, prog: prog, ltv: ltv, srcsha: srcsha, nargs: nargs}
-fn se_ctx_idle(cfg, lg, inj) = se_ctx(cfg, lg, inj, "not_prepared", "", 0, "none", 0, se_a_fail("a_not_run", ""), 0, Nil, {status: "not_run", sig_ok: 0}, "", 0)
+fn se_ctx(cfg, lg, inj, fault, detail, budget, bsrc, bound, a, b_ready, bp, ltv, srcsha, nargs) = {fname: cfg.fname, log: cfg.log, tag: cfg.tag, timeout_ms: cfg.timeout_ms, log_ok: lg.ok, inj: inj, fault: fault, fault_detail: detail, budget: budget, budget_source: bsrc, bound: bound, a: a, b_ready: b_ready, bp: bp, ltv: ltv, srcsha: srcsha, nargs: nargs}
+fn se_bp_err(bp, msg) = {err: msg, tab: bp.tab, k: bp.k, items: bp.items, cx: bp.cx, nfn: bp.nfn, lbl: bp.lbl}
+fn se_bp_none() = {err: "channel B was not compiled", tab: Nil, k: cbp_fn_fail("", 0, ""), items: Nil, cx: cbg_cx(Nil), nfn: 0, lbl: 8}
+fn se_ctx_idle(cfg, lg, inj) = se_ctx(cfg, lg, inj, "not_prepared", "", 0, "none", 0, se_a_fail("a_not_run", ""), 0, se_bp_none(), {status: "not_run", sig_ok: 0}, "", 0)
 fn se_budget(cfg, bound) = if cfg.budget_txt != "" then (let p = se_pint(cfg.budget_txt) in if p.ok == 1 and p.v >= 1 and p.v <= 1000000 then {v: p.v, source: "override", fault: ""} else {v: 0, source: "override", fault: "bad_budget"}) else if bound >= 1 and bound * se_bound_scale() <= 1000000 then {v: bound * se_bound_scale(), source: "bound*" + str(se_bound_scale()), fault: ""} else {v: 0, source: "none", fault: "no_cycle_budget"}
-fn se_prep_b(cfg, lg, inj, src, bud, bound, a, nargs) = let prog = if a.ok == 1 or a.reason == "inject_site_not_found" or a.reason == "a_assemble_failed" then nf_late(lumec_expand(src)) else Nil in se_ctx(cfg, lg, inj, if a.reason == "inject_site_not_found" then a.reason else "", a.detail, bud.v, bud.source, bound, a, if a.reason == "a_compile_failed" then 0 else 1, prog, se_ltv(cfg, cfg.tag, cfg.fname), lsh256(src), nargs)
-fn se_prep_src(cfg, lg, inj, src, bound, bud, nargs) = if inj.bad == 1 then se_ctx(cfg, lg, inj, "bad_inject", inj.text, 0, "none", bound, se_a_fail("a_not_run", ""), 0, Nil, {status: "not_run", sig_ok: 0}, lsh256(src), nargs) else if bud.fault != "" then se_ctx(cfg, lg, inj, bud.fault, cfg.budget_txt, 0, bud.source, bound, se_a_fail("a_not_run", ""), 0, Nil, {status: "not_run", sig_ok: 0}, lsh256(src), nargs) else se_prep_b(cfg, lg, inj, src, bud, bound, se_a_build(cfg, src, cfg.fname, nargs, cfg.tag, inj), nargs)
-## compile channel A, lower the AST for channel B, ask the validator -- once per invocation
-fn se_prep(cfg, lg, inj) = let src = fs_read_file(cfg.src) in if src == "" then se_ctx(cfg, lg, inj, "src_unreadable", cfg.src, 0, "none", 0, se_a_fail("a_not_run", ""), 0, Nil, {status: "not_run", sig_ok: 0}, "", 0) else let bound = se_bound(src, cfg.fname) in se_prep_src(cfg, lg, inj, src, bound, se_budget(cfg, bound), rv_len(se_split(se_nth(cfg.vecs, 0), ",")))
+## the text one channel compiles: the kernel file, or its mutant under `a_src` (kind 6) / `b_src` (kind 7)
+fn se_src_for(src, fname, inj, kind) = if inj.kind == kind then cbm_src(src, fname, inj.akind, inj.target) else {ok: 1, text: src}
+## channel B compiles the raw text by itself; the @bound its own parser reads must be the one the budget came from
+fn se_prep_bp(src_b, fname, bound) = let bp = cb_prog(src_b, fname) in if bp.err == "" and bp.k.bound != bound then se_bp_err(bp, "the @bound read by the channel-B parser (" + str(bp.k.bound) + ") is not the one the cycle budget was derived from (" + str(bound) + ")") else bp
+fn se_prep_b(cfg, lg, inj, src, bud, bound, a, nargs, cgm) = se_ctx(cfg, lg, inj, if a.reason == "inject_site_not_found" or cgm.ok == 0 then "inject_site_not_found" else "", if cgm.ok == 0 then inj.text else a.detail, bud.v, bud.source, bound, a, 1, cgm.bp, se_ltv(cfg, cfg.tag, cfg.fname), se_sha256(src), nargs)
+fn se_prep_cg(inj, bp) = if inj.kind == 8 then cbm_cg(bp, inj.akind, inj.target) else {ok: 1, bp: bp}
+fn se_prep_m(cfg, lg, inj, src, bound, bud, nargs, sa, sb) = if sa.ok == 0 or sb.ok == 0 then se_ctx(cfg, lg, inj, "inject_site_not_found", inj.text, bud.v, bud.source, bound, se_a_fail("a_not_run", ""), 0, se_bp_none(), {status: "not_run", sig_ok: 0}, se_sha256(src), nargs) else se_prep_b(cfg, lg, inj, src, bud, bound, se_a_build(cfg, sa.text, cfg.fname, nargs, cfg.tag, inj), nargs, se_prep_cg(inj, se_prep_bp(sb.text, cfg.fname, bound)))
+fn se_prep_src(cfg, lg, inj, src, bound, bud, nargs) = if inj.bad == 1 then se_ctx(cfg, lg, inj, "bad_inject", inj.text, 0, "none", bound, se_a_fail("a_not_run", ""), 0, se_bp_none(), {status: "not_run", sig_ok: 0}, se_sha256(src), nargs) else if bud.fault != "" then se_ctx(cfg, lg, inj, bud.fault, cfg.budget_txt, 0, bud.source, bound, se_a_fail("a_not_run", ""), 0, se_bp_none(), {status: "not_run", sig_ok: 0}, se_sha256(src), nargs) else se_prep_m(cfg, lg, inj, src, bound, bud, nargs, se_src_for(src, cfg.fname, inj, 6), se_src_for(src, cfg.fname, inj, 7))
+## compile channel A with lumec + lasm, compile channel B from the raw text, ask the validator -- once per invocation
+fn se_prep(cfg, lg, inj) = let src = fs_read_file(cfg.src) in if src == "" then se_ctx(cfg, lg, inj, "src_unreadable", cfg.src, 0, "none", 0, se_a_fail("a_not_run", ""), 0, se_bp_none(), {status: "not_run", sig_ok: 0}, "", 0) else let bound = se_bound(src, cfg.fname) in se_prep_src(cfg, lg, inj, src, bound, se_budget(cfg, bound), rv_len(se_split(se_nth(cfg.vecs, 0), ",")))
 
 fn se_join_rev(xs, acc) = match xs
     Nil        => acc
@@ -479,18 +932,355 @@ fn se_finish(cfg, ctx, lg0, sx) = let fin = se_log_check(cfg.log) in let final_o
 fn se_sx0(prev, latched) = {out: Nil, prev: prev, latched: latched, commits: 0, trips: 0}
 fn se_go(cfg, lg0, lg, inj) = if lg.ok != 1 or lg.latched == 1 then (let ctx = se_ctx_idle(cfg, lg, inj) in se_finish(cfg, ctx, lg0, se_vecs(ctx, cfg.vecs, se_sx0(lg.last, 1)))) else (let ctx = se_prep(cfg, lg, inj) in se_finish(cfg, ctx, lg0, se_vecs(ctx, cfg.vecs, se_sx0(lg.last, 0))))
 ## `@reset 1`: a broken log is moved aside (never deleted) and a new chain starts; the reset itself is the first event
-fn se_reset(cfg, lg0) = let moved = if lg0.ok == 1 then "" else cfg.log + ".tampered-" + slice(lsh256(fs_read_file(cfg.log) + str(os_monotonic_ns())), 0, 16) in let mv = if moved == "" then 0 else os_run("/bin/mv", Cons(cfg.log, Cons(moved, Nil))) in let prev = if lg0.ok == 1 then lg0.last else se_zero64() in let h = se_log_append(cfg.log, prev, "{\"event\":\"reset\",\"was_latched\":" + str(lg0.latched) + ",\"chain_ok_before\":" + str(lg0.ok) + ",\"quarantined\":\"" + se_jesc(moved) + "\",\"mono_ns\":" + str(os_monotonic_ns()) + "}") in {ok: 1, last: h, latched: 0, n: (if lg0.ok == 1 then lg0.n else 0) + 1}
+fn se_reset(cfg, lg0) = let moved = if lg0.ok == 1 then "" else cfg.log + ".tampered-" + slice(se_sha256(fs_read_file(cfg.log) + str(os_monotonic_ns())), 0, 16) in let mv = if moved == "" then 0 else os_run("/bin/mv", Cons(cfg.log, Cons(moved, Nil))) in let prev = if lg0.ok == 1 then lg0.last else se_zero64() in let h = se_log_append(cfg.log, prev, "{\"event\":\"reset\",\"was_latched\":" + str(lg0.latched) + ",\"chain_ok_before\":" + str(lg0.ok) + ",\"quarantined\":\"" + se_jesc(moved) + "\",\"mono_ns\":" + str(os_monotonic_ns()) + "}") in {ok: 1, last: h, latched: 0, n: (if lg0.ok == 1 then lg0.n else 0) + 1}
 fn se_start(cfg) = let m1 = os_run("/bin/mkdir", Cons("-p", Cons(cfg.work, Nil))) in let m2 = os_run("/bin/mkdir", Cons("-p", Cons(cfg.logdir, Nil))) in let lg0 = se_log_check(cfg.log) in se_go(cfg, lg0, if cfg.reset == 1 then se_reset(cfg, lg0) else lg0, se_inj_parse(cfg.inject))
 fn se_ms(txt, dflt) = let p = se_pint(txt) in if p.ok == 1 and p.v >= 1 and p.v <= 600000 then p.v else dflt
 fn se_dirname(p, i) = if i <= 0 then "." else if at(p, i - 1) == "/" then slice(p, 0, i - 1) else se_dirname(p, i - 1)
-fn se_cfg(input, root) = let work = se_or(se_get(input, "work"), root + "/build/safety-envelope") in let log = se_or(se_get(input, "log"), root + "/build/certification/safety_envelope_events.jsonl") in {root: root, src: se_get(input, "src"), fname: se_get(input, "fn"), vecs: se_get_all(input, "args"), budget_txt: se_get(input, "budget"), timeout_ms: se_ms(se_get(input, "timeout_ms"), 2000), ltv: se_or(se_get(input, "ltv"), root + "/build/bin/ltv"), ltv_timeout_ms: se_ms(se_get(input, "ltv_timeout_ms"), 120000), reset: if se_get(input, "reset") == "1" then 1 else 0, inject: se_get(input, "inject"), log: log, logdir: se_dirname(log, count(log)), work: work, tag: work + "/se_" + str(os_getpid()), lumec: root + "/build/bin/lumec", lasm: root + "/build/bin/lasm"}
+fn se_cfg(input, root) = let work = se_or(se_get(input, "work"), root + "/build/safety-envelope") in let log = se_or(se_get(input, "log"), root + "/build/certification/safety_envelope_events.jsonl") in {root: root, src: se_get(input, "src"), fname: se_get(input, "fn"), vecs: se_get_all(input, "args"), budget_txt: se_get(input, "budget"), timeout_ms: se_ms(se_get(input, "timeout_ms"), 2000), ltv: se_or(se_get(input, "ltv"), root + "/build/bin/ltv"), ltv_timeout_ms: se_ms(se_get(input, "ltv_timeout_ms"), 120000), reset: if se_get(input, "reset") == "1" then 1 else 0, inject: se_get(input, "inject"), log: log, logdir: se_dirname(log, count(log)), work: work, tag: work + "/se_" + str(os_getpid()), manifest: se_get(input, "manifest"), seq_txt: se_get(input, "seq"), args1: se_nth(se_get_all(input, "args"), 0), cmd_a: se_get(input, "cmd_a"), cmd_b: se_get(input, "cmd_b"), cmd_c: se_get(input, "cmd_c"), frame_timeout_ms: se_ms(se_get(input, "frame_timeout_ms"), 5000), lumec: root + "/build/bin/lumec", lasm: root + "/build/bin/lasm"}
 ## --- monitor-only mode: the LumePuter as a deterministic computer, without the envelope ---
-fn se_mon_one(prog, fname, v, budget) = let pa = se_pints(v) in let b = if pa.ok == 1 then se_b_run(prog, fname, pa.xs, budget, se_inj_b(se_inj_none())) else {ok: 0, v: 0, cycles: 0, cause: "bad_args", detail: v} in {ok: b.ok, json: "{\"args\":" + se_args_json(v, pa) + ",\"halted\":" + (if b.ok == 1 then "true" else "false") + ",\"value\":" + se_opt_i(b.ok, b.v) + ",\"cycles\":" + str(b.cycles) + ",\"trap\":\"" + (if b.ok == 1 then "" else se_jesc(b.cause)) + "\"}"}
-fn se_mon_vecs(prog, fname, vecs, budget, acc) = match vecs
+fn se_mon_one(bp, v, budget) = let pa = se_pints(v) in let b = if pa.ok == 1 then se_b_go(bp, pa.xs, budget, se_inj_b(se_inj_none())) else {ok: 0, v: 0, cycles: 0, cause: "bad_args", detail: v} in {ok: b.ok, json: "{\"args\":" + se_args_json(v, pa) + ",\"halted\":" + (if b.ok == 1 then "true" else "false") + ",\"value\":" + se_opt_i(b.ok, b.v) + ",\"cycles\":" + str(b.cycles) + ",\"trap\":\"" + (if b.ok == 1 then "" else se_jesc(b.cause)) + "\"}"}
+fn se_mon_vecs(bp, vecs, budget, acc) = match vecs
     Nil        => acc
-    Cons(v, t) => let r = se_mon_one(prog, fname, v, budget) in se_mon_vecs(prog, fname, t, budget, {json: acc.json + (if acc.json == "" then "" else ",") + r.json, ok: if r.ok == 1 then acc.ok else 0, n: acc.n + r.ok})
-## the source is first accepted by the lumec binary: a source the compiler rejects never reaches the in-process parse
-fn se_monitor(cfg) = let src = fs_read_file(cfg.src) in if src == "" then ctfail("lsafety_envelope: cannot read " + cfg.src + "\n") else let m1 = os_run("/bin/mkdir", Cons("-p", Cons(cfg.work, Nil))) in let c = os_run_input_capture_timeout(cfg.lumec, Nil, cfg.src, cfg.tag + ".mon.s", cfg.tag + ".mon.err", 120000) in let cerr = fs_read_file(cfg.tag + ".mon.err") in let z1 = fs_remove(cfg.tag + ".mon.s") in let z2 = fs_remove(cfg.tag + ".mon.err") in if c != 0 then ctfail("lsafety_envelope: lumec rejected " + cfg.src + ":\n" + cerr) else let bound = se_bound(src, cfg.fname) in let bud = se_budget(cfg, bound) in if bud.fault != "" then ctfail("lsafety_envelope: " + bud.fault + " (the kernel needs @bound(cycles: N) or @budget <n>)\n") else let r = se_mon_vecs(nf_late(lumec_expand(src)), cfg.fname, cfg.vecs, bud.v, {json: "", ok: 1, n: 0}) in let out = "{\"tool\":\"lsafety_envelope\",\"mode\":\"lumeputer-monitor\",\"level\":\"deterministic RV32IM execution on the software monitor; no native channel, no vote, no commit\",\"fn\":\"" + se_jesc(cfg.fname) + "\",\"monitor\":\"rv32im\",\"monitor_domain\":\"i32\",\"budget\":" + str(bud.v) + ",\"budget_source\":\"" + bud.source + "\",\"results\":[" + r.json + "],\"halted\":" + str(r.n) + ",\"vectors\":" + str(rv_len(cfg.vecs)) + "}" in if r.ok == 1 then out else let w = fs_write_sync("/dev/stdout", out + "\n") in let x = os_exit(2) in out
-fn se_main(input) = let root = se_get(input, "root") in if root == "" then ctfail("lsafety_envelope: @root is required (stdin: @root, @src, @fn, @args a,b,c ...)\n") else let cfg = se_cfg(input, root) in if cfg.src == "" or cfg.fname == "" then ctfail("lsafety_envelope: @src and @fn are required\n") else if rv_len(cfg.vecs) == 0 then ctfail("lsafety_envelope: at least one @args line is required\n") else if se_get(input, "mode") == "monitor" then se_monitor(cfg) else se_start(cfg)
+    Cons(v, t) => let r = se_mon_one(bp, v, budget) in se_mon_vecs(bp, t, budget, {json: acc.json + (if acc.json == "" then "" else ",") + r.json, ok: if r.ok == 1 then acc.ok else 0, n: acc.n + r.ok})
+## the source is first accepted by the lumec binary (a source the compiler rejects is not executed); the program that
+## runs is the clean-room compile of the same text
+fn se_monitor(cfg) = let src = fs_read_file(cfg.src) in if src == "" then ctfail("lsafety_envelope: cannot read " + cfg.src + "\n") else let m1 = os_run("/bin/mkdir", Cons("-p", Cons(cfg.work, Nil))) in let c = os_run_input_capture_timeout(cfg.lumec, Nil, cfg.src, cfg.tag + ".mon.s", cfg.tag + ".mon.err", 120000) in let cerr = fs_read_file(cfg.tag + ".mon.err") in let z1 = fs_remove(cfg.tag + ".mon.s") in let z2 = fs_remove(cfg.tag + ".mon.err") in if c != 0 then ctfail("lsafety_envelope: lumec rejected " + cfg.src + ":\n" + cerr) else let bound = se_bound(src, cfg.fname) in let bud = se_budget(cfg, bound) in if bud.fault != "" then ctfail("lsafety_envelope: " + bud.fault + " (the kernel needs @bound(cycles: N) or @budget <n>)\n") else let r = se_mon_vecs(cb_prog(src, cfg.fname), cfg.vecs, bud.v, {json: "", ok: 1, n: 0}) in let out = "{\"tool\":\"lsafety_envelope\",\"mode\":\"lumeputer-monitor\",\"level\":\"deterministic RV32IM execution on the software monitor; no native channel, no vote, no commit\",\"fn\":\"" + se_jesc(cfg.fname) + "\",\"monitor\":\"rv32im\",\"monitor_domain\":\"i32\",\"budget\":" + str(bud.v) + ",\"budget_source\":\"" + bud.source + "\",\"results\":[" + r.json + "],\"halted\":" + str(r.n) + ",\"vectors\":" + str(rv_len(cfg.vecs)) + "}" in if r.ok == 1 then out else let w = fs_write_sync("/dev/stdout", out + "\n") in let x = os_exit(2) in out
+## ====================================================================================================================
+## 12. Split bundle: the two channels as standalone programs for two boards, and the frame / voter protocol.
+##     Request  (15 words): 4C535251 "LSRQ", version 1, sequence, kernel id (2 words), nargs, 8 argument words, CRC.
+##     Response (20 words): 4C535253 "LSRS", version 1, sequence, kernel id (2 words), channel code, nargs, the 8
+##                          argument words as received, status, cause, result, cycles, CRC.
+##     A word is 8 upper-case hex digits; a frame is its words and one line feed (121 / 161 bytes). The CRC is
+##     CRC-32/ISO-HDLC (poly 0xEDB88320 reflected, init and final xor 0xFFFFFFFF) over the ASCII characters before it.
+##     kernel id = the first 64 bits of sha256(kernel file text + "\n" + function name).
+##     status 0 = result valid, 1 = the kernel trapped (cause 1 contract, 2 overflow, 3 division by zero, 4 cycle
+##     budget, 5 stack limit, 6 result outside i32, 7 machine exception), 2 = the request was refused (cause 1 magic,
+##     2 version, 3 kernel id, 4 nargs, 5 CRC, 6 format, 8 a bool argument that is not 0 / 1).
+##     channel code: A0000001 channel A x86-64, A0000002 channel A AArch64, B0000001 channel B RV32IM bare metal.
+## ====================================================================================================================
+fn sf_h1(n) = at("0123456789ABCDEF", n)
+fn sf_hex8(w) = sf_h1(w / 268435456 % 16) + sf_h1(w / 16777216 % 16) + sf_h1(w / 1048576 % 16) + sf_h1(w / 65536 % 16) + sf_h1(w / 4096 % 16) + sf_h1(w / 256 % 16) + sf_h1(w / 16 % 16) + sf_h1(w % 16)
+fn sf_hv(c) = let o = ord(c) in if o >= 48 and o <= 57 then o - 48 else if o >= 65 and o <= 70 then o - 55 else 0 - 1
+fn sf_word(s, i, k, acc) = if k == 0 then acc else let d = sf_hv(at(s, i)) in if d < 0 then 0 - 1 else sf_word(s, i + 1, k - 1, acc * 16 + d)
+fn sf_bit(c, k) = if k == 0 then c else sf_bit(bit_xor(c / 2, if c % 2 == 1 then 3988292384 else 0), k - 1)
+fn sf_crc(s, i, e, c) = if i >= e then bit_xor(c, 4294967295) else sf_crc(s, i + 1, e, sf_bit(bit_xor(c, ord(at(s, i))), 8))
+fn sf_frame(body) = body + sf_hex8(sf_crc(body, 0, count(body), 4294967295)) + "\n"
+fn sf_u32(v) = if v < 0 then v + 4294967296 else v
+fn sf_args8(xs, k) = if k == 0 then "" else sf_args8h(xs, k)
+fn sf_args8h(xs, k) = match xs
+    Nil        => "00000000" + sf_args8(Nil, k - 1)
+    Cons(h, t) => sf_hex8(sf_u32(h)) + sf_args8(t, k - 1)
+fn sf_kid(src, fname) = slice(se_sha256(src + "\n" + fname), 0, 16)
+fn sf_up(s, n, i) = if i >= n then "" else let o = ord(at(s, i)) in (if o >= 97 and o <= 102 then at("ABCDEF", o - 97) else at(s, i)) + sf_up(s, n, i + 1)
+## the kernel id as it travels in a frame: 16 upper-case hex digits
+fn sf_kid_up(kid) = sf_up(kid, count(kid), 0)
+fn sf_request(kid, seq, args) = sf_frame("4C535251" + "00000001" + sf_hex8(seq) + sf_kid_up(kid) + sf_hex8(rv_len(args)) + sf_args8(args, 8))
+fn sf_words(s, i, k, acc) = if k == 0 then cb_rev(acc, Nil) else sf_words(s, i + 8, k - 1, Cons(sf_word(s, i, 8, 0), acc))
+fn sf_any_neg(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h < 0 then 1 else sf_any_neg(t)
+fn sf_nth(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i == 0 then h else sf_nth(t, i - 1)
+## a response frame: {ok, why, w}; why "" / missing / malformed / crc
+fn sf_parse(t) = let n = count(t) in if n == 0 then {ok: 0, why: "missing", w: Nil} else if n != 161 or at(t, 160) != "\n" then {ok: 0, why: "malformed", w: Nil} else let w = sf_words(t, 0, 20, Nil) in if sf_any_neg(w) == 1 then {ok: 0, why: "malformed", w: Nil} else if sf_crc(t, 0, 152, 4294967295) != sf_nth(w, 19) then {ok: 0, why: "crc", w: Nil} else {ok: 1, why: "", w: w}
+fn sf_args_eq(w, args, i) = if i >= 8 then 1 else if sf_nth(w, 7 + i) != sf_u32(sf_nth(args, i)) then 0 else sf_args_eq(w, args, i + 1)
+fn sf_cause(k) = if k == 1 then "contract" else if k == 2 then "overflow" else if k == 3 then "division_by_zero" else if k == 4 then "cycle_budget" else if k == 5 then "stack_limit" else if k == 6 then "result_outside_i32" else if k == 7 then "machine_exception" else "unknown"
+## one channel's frame against the request: "" = acceptable, else the reason of the trip (without the channel prefix)
+fn sf_check(f, timed_out, kid, seq, args, chan_hi) = if timed_out == 1 then "frame_timeout" else if f.ok != 1 then "frame_" + f.why else if sf_nth(f.w, 0) != 1280528979 then "frame_magic" else if sf_nth(f.w, 1) != 1 then "frame_version" else if sf_nth(f.w, 2) != seq then "frame_sequence" else if sf_hex8(sf_nth(f.w, 3)) + sf_hex8(sf_nth(f.w, 4)) != sf_kid_up(kid) then "frame_kernel_id" else if sf_nth(f.w, 5) / 268435456 != chan_hi then "frame_channel" else if sf_nth(f.w, 15) == 2 then "request_refused_" + str(sf_nth(f.w, 16)) else if sf_nth(f.w, 6) != rv_len(args) or sf_args_eq(f.w, args, 0) != 1 then "frame_args" else if sf_nth(f.w, 15) == 1 then "trap_" + sf_cause(sf_nth(f.w, 16)) else if sf_nth(f.w, 15) != 0 then "frame_status" else ""
+## the 2oo2 vote over two response frames: {commit, value, reason}
+fn sf_vote(fa, ta, fb, tb, kid, seq, args, kb) = let ea = sf_check(fa, ta, kid, seq, args, 10) in let eb = sf_check(fb, tb, kid, seq, args, 11) in if ea != "" then {commit: 0, value: 0, reason: "a_" + ea} else if eb != "" then {commit: 0, value: 0, reason: "b_" + eb} else if sf_nth(fb.w, 18) > kb then {commit: 0, value: 0, reason: "b_cycle_budget"} else if sf_nth(fa.w, 18) != 0 then {commit: 0, value: 0, reason: "a_frame_cycles"} else if sf_nth(fa.w, 16) != 0 or sf_nth(fb.w, 16) != 0 then {commit: 0, value: 0, reason: "frame_cause_without_trap"} else if sf_nth(fa.w, 17) != sf_nth(fb.w, 17) then {commit: 0, value: 0, reason: "lockstep_mismatch"} else {commit: 1, value: rv_s32(sf_nth(fa.w, 17)), reason: "ok"}
+
+## --- the frame shell, written once for a small register machine and lowered to RV32IM and to A64.
+## Virtual registers 0 .. 9 hold 32-bit values, 10 reads as zero: 0 character, 1 word in / out, 2 running CRC,
+## 4 CRC of the request, 5 digit counter, 6 scratch, 7 status, 8 cause, 9 the CRC polynomial. The request words live in
+## a static buffer (word i at byte 4 * i), the result at 64, the cycle count at 68, the I/O byte at 72.
+## Ops: SLi(r, v) SMov(d, s) SAddi(d, s, k) SSub(d, a, b) SAnd(d, a, b) SAnd1(d, s) SOr(d, a, b) SXor(d, a, b)
+## SShl(d, s, k) SShr(d, s, k) SLw(d, off) SSw(s, off) SLab(l) SJ(l) SBeq(a, b, l) SBne(a, b, l) SBltu(a, b, l)
+## SCall(l) SRet(0) SGetc(r) SPutc(r) SInit(0) SKcall(0) SCyc(r) SSp(0) SHalt(0).
+## Labels: 0 bad format, 1 refused, 2 trap entry (the trap stubs jump here with the cause in register 8), 3 respond,
+## 4 read 8 hex digits, 5 write 8 hex digits, 6 result outside i32, then local ones.
+fn sh_app(a, b) = cb_app(a, b)
+fn sh_crc8(k) = if k == 0 then Nil else Cons(SAnd1(6, 2), Cons(SSub(6, 10, 6), Cons(SAnd(6, 6, 9), Cons(SShr(2, 2, 1), Cons(SXor(2, 2, 6), sh_crc8(k - 1))))))
+## fold the character in register 0 into the CRC in register 2 (register 6 is scratch)
+fn sh_crc() = Cons(SXor(2, 2, 0), sh_crc8(8))
+fn sh_gethex() = sh_app(Cons(SLab(4), Cons(SLi(1, 0), Cons(SLi(5, 8), Cons(SLab(10), Cons(SGetc(0), sh_crc()))))), Cons(SAddi(0, 0, 0 - 48), Cons(SLi(6, 10), Cons(SBltu(0, 6, 12), Cons(SAddi(0, 0, 0 - 17), Cons(SLi(6, 6), Cons(SBltu(0, 6, 11), Cons(SJ(0), Cons(SLab(11), Cons(SAddi(0, 0, 10), Cons(SLab(12), Cons(SShl(1, 1, 4), Cons(SOr(1, 1, 0), Cons(SAddi(5, 5, 0 - 1), Cons(SBne(5, 10, 10), Cons(SRet(0), Nil))))))))))))))))
+fn sh_puthex() = sh_app(Cons(SLab(5), Cons(SLi(5, 8), Cons(SLab(13), Cons(SShr(0, 1, 28), Cons(SShl(1, 1, 4), Cons(SLi(6, 10), Cons(SBltu(0, 6, 14), Cons(SAddi(0, 0, 7), Cons(SLab(14), Cons(SAddi(0, 0, 48), sh_crc())))))))))), Cons(SPutc(0), Cons(SAddi(5, 5, 0 - 1), Cons(SBne(5, 10, 13), Cons(SRet(0), Nil)))))
+fn sh_zero(i) = if i >= 15 then Nil else Cons(SSw(10, 4 * i), sh_zero(i + 1))
+fn sh_read(i, n) = if i >= n then Nil else Cons(SCall(4), Cons(SSw(1, 4 * i), sh_read(i + 1, n)))
+fn sh_expect(off, v, cause) = Cons(SLw(1, off), Cons(SLi(6, v), Cons(SLi(8, cause), Cons(SBne(1, 6, 1), Nil))))
+## a bool parameter must arrive as 0 or 1 (cause 8)
+fn sh_bools(ps, i, lbl) = match ps
+    Nil        => Nil
+    Cons(h, t) => if h.t == 2 then Cons(SLw(1, 24 + 4 * i), Cons(SLi(6, 2), Cons(SLi(8, 8), Cons(SBltu(1, 6, lbl), Cons(SJ(1), Cons(SLab(lbl), sh_bools(t, i + 1, lbl + 1))))))) else sh_bools(t, i + 1, lbl)
+fn sh_put_w(off) = Cons(SLw(1, off), Cons(SCall(5), Nil))
+fn sh_put_c(v) = Cons(SLi(1, v), Cons(SCall(5), Nil))
+fn sh_put_args(i) = if i >= 8 then Nil else sh_app(sh_put_w(24 + 4 * i), sh_put_args(i + 1))
+## pl = {kh, kl (kernel id words), nargs, ps, chan}
+## read the request: 14 words under the CRC, the CRC word, the line feed
+fn sh_p_read() = sh_app(Cons(SInit(0), Cons(SLi(9, 3988292384), sh_zero(0))), sh_app(Cons(SLi(2, 4294967295), sh_read(0, 14)), Cons(SLi(5, 4294967295), Cons(SXor(4, 2, 5), Cons(SCall(4), Cons(SSw(1, 56), Cons(SGetc(0), Cons(SLi(6, 10), Cons(SBne(0, 6, 0), Nil)))))))))
+## refuse a request that is not for this image: CRC, magic, version, kernel id, nargs, bool arguments
+fn sh_p_check(pl) = sh_app(Cons(SLw(1, 56), Cons(SLi(8, 5), Cons(SBne(1, 4, 1), Nil))), sh_app(sh_expect(0, 1280528977, 1), sh_app(sh_expect(4, 1, 2), sh_app(sh_expect(12, pl.kh, 3), sh_app(sh_expect(16, pl.kl, 3), sh_app(sh_expect(20, pl.nargs, 4), sh_bools(pl.ps, 0, 20)))))))
+## call the kernel; then the three other ways to the response: result outside i32, refused request, trap
+fn sh_p_call() = Cons(SLi(7, 0), Cons(SLi(8, 0), Cons(SKcall(0), Cons(SSw(1, 64), Cons(SCyc(1), Cons(SSw(1, 68), Cons(SJ(3), Cons(SLab(6), Cons(SLi(8, 6), Cons(SJ(2), Cons(SLab(0), Cons(SLi(8, 6), Cons(SLab(1), Cons(SLi(7, 2), Cons(SSw(10, 64), Cons(SSw(10, 68), Cons(SJ(3), Cons(SLab(2), Cons(SSp(0), Cons(SLi(7, 1), Cons(SSw(10, 64), Cons(SCyc(1), Cons(SSw(1, 68), Nil)))))))))))))))))))))))
+fn sh_p_resp(pl) = sh_app(Cons(SLab(3), Cons(SLi(2, 4294967295), sh_put_c(1280528979))), sh_app(sh_put_c(1), sh_app(sh_put_w(8), sh_app(sh_put_c(pl.kh), sh_app(sh_put_c(pl.kl), sh_app(sh_put_c(pl.chan), sh_app(sh_put_w(20), sh_app(sh_put_args(0), sh_app(Cons(SMov(1, 7), Cons(SCall(5), Cons(SMov(1, 8), Cons(SCall(5), Nil)))), sh_app(sh_put_w(64), sh_app(sh_put_w(68), Cons(SLi(5, 4294967295), Cons(SXor(1, 2, 5), Cons(SCall(5), Cons(SLi(0, 10), Cons(SPutc(0), Cons(SHalt(0), Nil)))))))))))))))))
+fn sh_prog(pl) = sh_app(sh_p_read(), sh_app(sh_p_check(pl), sh_app(sh_p_call(), sh_app(sh_p_resp(pl), sh_app(sh_gethex(), sh_puthex())))))
+
+## --- lowering to RV32IM (items of section 4). Registers: v0 .. v6 = x18 .. x24, v7 = x28, v8 = x29, v9 = x30,
+## zero = x0; x9 = the buffer; x5 / x6 scratch; x25 stack limit, x26 cycle limit, x27 cycle counter.
+## Memory map of the bare image (QEMU `virt`): code at 0x80000000, buffer at 0x80020000, stack top 0x80030000, stack
+## limit 0x8002C000 (16 KiB, the stack of the in-tool monitor), UART 16550 at 0x10000000, test finisher at 0x100000.
+fn sr_r(v) = if v <= 6 then 18 + v else if v == 7 then 28 else if v == 8 then 29 else if v == 9 then 30 else 0
+fn sr_s32(v) = if v >= 2147483648 then v - 4294967296 else v
+fn sr_uart(st, r, mask, isput) = let lb = st.lbl in let s1 = cbg_b(cbg_w2(cbg_l(cbg_w(cbg_new(st, 1), rv_lui(5, 65536)), lb), rv_lbu(6, 5, 5), rv_andi(6, 6, mask)), 0, 6, 0, lb, 2) in if isput == 1 then cbg_w(s1, rv_sb(sr_r(r), 5, 0)) else cbg_w(s1, rv_lbu(sr_r(r), 5, 0))
+fn sr_push_args(st, n, i) = if i >= n then st else sr_push_args(cbg_w3(st, rv_lw(10, 9, 24 + 4 * i), rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0)), n, i + 1)
+fn sr_kcall(st, pl) = let s1 = cbg_j(sr_push_args(cbg_w(cbg_li2(cbg_w(st, rv_addi(27, 0, 0)), 26, pl.kb), rv_lui(25, 524332)), pl.nargs, 0), 1, 0) in cbg_w(if pl.nargs == 0 then s1 else cbg_w(s1, rv_addi(2, 2, 4 * pl.nargs)), rv_addi(sr_r(1), 10, 0))
+fn sr_halt(st) = let lb = st.lbl in cbg_j(cbg_l(cbg_w4(cbg_new(st, 1), rv_lui(5, 256), rv_lui(6, 5), rv_addi(6, 6, 1365), rv_sw(6, 5, 0)), lb), 0, lb)
+fn sr_op(st, op, pl) = match op
+    SLi(r, v)        => cbg_li(st, sr_r(r), sr_s32(v))
+    SMov(d, s)       => cbg_w(st, rv_addi(sr_r(d), sr_r(s), 0))
+    SAddi(d, s, k)   => cbg_w(st, rv_addi(sr_r(d), sr_r(s), k))
+    SSub(d, a, b)    => cbg_w(st, rv_sub(sr_r(d), sr_r(a), sr_r(b)))
+    SAnd(d, a, b)    => cbg_w(st, rv_and(sr_r(d), sr_r(a), sr_r(b)))
+    SAnd1(d, s)      => cbg_w(st, rv_andi(sr_r(d), sr_r(s), 1))
+    SOr(d, a, b)     => cbg_w(st, rv_or(sr_r(d), sr_r(a), sr_r(b)))
+    SXor(d, a, b)    => cbg_w(st, rv_xor(sr_r(d), sr_r(a), sr_r(b)))
+    SShl(d, s, k)    => cbg_w(st, rv_slli(sr_r(d), sr_r(s), k))
+    SShr(d, s, k)    => cbg_w(st, rv_srli(sr_r(d), sr_r(s), k))
+    SLw(d, off)      => cbg_w(st, rv_lw(sr_r(d), 9, off))
+    SSw(s, off)      => cbg_w(st, rv_sw(sr_r(s), 9, off))
+    SLab(l)          => cbg_l(st, pl.base + l)
+    SJ(l)            => cbg_j(st, 0, pl.base + l)
+    SBeq(a, b, l)    => cbg_b(st, 0, sr_r(a), sr_r(b), pl.base + l, 2)
+    SBne(a, b, l)    => cbg_b(st, 1, sr_r(a), sr_r(b), pl.base + l, 2)
+    SBltu(a, b, l)   => cbg_b(st, 6, sr_r(a), sr_r(b), pl.base + l, 2)
+    SCall(l)         => cbg_j(st, 1, pl.base + l)
+    SRet(z)          => cbg_w(st, rv_jalr(0, 1, 0))
+    SGetc(r)         => sr_uart(st, r, 1, 0)
+    SPutc(r)         => sr_uart(st, r, 32, 1)
+    SInit(z)         => cbg_w(cbg_w2(cbg_w2(st, rv_lui(2, 524336), rv_lui(9, 524320)), rv_lui(5, 524288), rv_addi(5, 5, 4)), 810717299)
+    SKcall(z)        => sr_kcall(st, pl)
+    SCyc(r)          => cbg_w(st, rv_addi(sr_r(r), 27, 0))
+    SSp(z)           => cbg_w(st, rv_lui(2, 524336))
+    SHalt(z)         => sr_halt(st)
+    _                => cbg_err(st, "internal: unknown shell op")
+fn sr_ops(st, ops, pl) = match ops
+    Nil        => st
+    Cons(h, t) => sr_ops(sr_op(st, h, pl), t, pl)
+fn sr_stub(st, lbl, cause, pl) = cbg_j(cbg_w(cbg_l(st, lbl), rv_addi(29, 0, cause)), 0, pl.base + 2)
+
+## --- instrumentation of the kernel code of the bare image (the shell is not instrumented): every basic block first
+## adds its own length to x27 and traps when x27 exceeds x26, every function first traps when sp is below x25. The
+## counter therefore holds, at the kernel's return, the number of kernel instructions executed (those of the
+## uninstrumented one-word-branch layout), which is what the in-tool monitor counts between the stub's call and return.
+fn cbi_ends(w) = w % 128 == 103 or w % 128 == 115
+fn cbi_blk_it(h, t, n) = match h
+    IW(w)              => if cbi_ends(w) then n + 1 else cbi_blk(t, n + 1)
+    IJ(rd, l)          => n + 1
+    IB(f3, a, b, l, k) => n + 1
+    _                  => n
+fn cbi_blk(items, n) = match items
+    Nil        => n
+    Cons(h, t) => cbi_blk_it(h, t, n)
+fn cbi_after(h) = match h
+    IW(w)              => if cbi_ends(w) then 1 else 0
+    IJ(rd, l)          => 1
+    IB(f3, a, b, l, k) => 1
+    _                  => 0
+fn cbi_count(h, t, cx, acc, n) = if n > 2047 then {bad: 1, acc: acc} else {bad: 0, acc: Cons(h, Cons(IB(6, 26, 27, cx.lw, 2), Cons(IW(rv_addi(27, 27, n)), acc)))}
+fn cbi_next(t, cx, h, r) = if r.bad == 1 then {err: "a basic block longer than 2047 instructions", items: Nil} else cbi_go(t, cx, cbi_after(h), r.acc)
+fn cbi_it(h, t, cx, start, acc) = match h
+    IL(l) => cbi_go(t, cx, 1, if l < cx.nf then Cons(IB(6, 2, 25, cx.ls, 2), Cons(h, acc)) else Cons(h, acc))
+    _     => if start == 1 then cbi_next(t, cx, h, cbi_count(h, t, cx, acc, cbi_blk(Cons(h, t), 0))) else cbi_go(t, cx, cbi_after(h), Cons(h, acc))
+fn cbi_go(items, cx, start, acc) = match items
+    Nil        => {err: "", items: cb_rev(acc, Nil)}
+    Cons(h, t) => cbi_it(h, t, cx, start, acc)
+## {err, items}
+fn cbi_instr(items, cx) = cbi_go(items, cx, 1, Nil)
+
+## --- the bare RV32IM image: `jal start`, the machine-exception stub (mtvec points here), the shell, the five trap
+## stubs, the instrumented kernel code. {err, rom}
+fn sb_pl(bp, kid, kb) = {kh: sf_word(sf_kid_up(kid), 0, 8, 0), kl: sf_word(sf_kid_up(kid), 8, 8, 0), nargs: cb_len(bp.k.ps), ps: bp.k.ps, chan: 2952790017, kb: kb, base: bp.lbl}
+fn sb_image_st(bp, pl, ins) = if ins.err != "" then cbg_lerr(ins.err) else let cx = bp.cx in let s0 = cbg_j(cbg_w(cbg_j(cbg_new(cbg_st0(bp.lbl + 64), 1), 0, bp.lbl + 63), rv_addi(29, 0, 7)), 0, pl.base + 2) in let s1 = sr_ops(cbg_l(s0, bp.lbl + 63), sh_prog(pl), pl) in let s2 = sr_stub(sr_stub(sr_stub(sr_stub(sr_stub(s1, cx.lc, 1, pl), cx.lo, 2, pl), cx.ld, 3, pl), cx.lw, 4, pl), cx.ls, 5, pl) in if s2.err != "" then cbg_lerr(s2.err) else cbg_link(cb_app(cb_rev(s2.code, Nil), ins.items))
+fn sb_image(bp, kid, kb) = if bp.err != "" then cbg_lerr(bp.err) else if cb_len(bp.k.ps) > 8 then cbg_lerr("the split protocol carries at most 8 arguments") else if kb < 1 then cbg_lerr("the cycle budget does not cover the reset stub") else sb_image_st(bp, sb_pl(bp, kid, kb), cbi_instr(bp.items, bp.cx))
+## run a bare image on the in-tool LumePuter with `input` on the UART: {st, cause, cyc, out}
+fn sb_exec(rom, input, budget) = let c = rv_machine_io(rom, 14, 2147483648, 2147614720, input) in let m = rv_boot(c, budget, rv_no_inj()) in {st: m.st, cause: m.cause, cyc: m.cyc, out: rv_io_out(c, m.ram)}
+
+## --- A64 encoders the frame shell needs beyond larm64.src (32-bit forms; Arm ARM C4.1, checked against LLVM's
+## assembler by tests/harness/multi_arch_gate.src)
+fn a64_w_add(rd, rn, rm) = 184549376 + rm * 65536 + rn * 32 + rd
+fn a64_w_sub(rd, rn, rm) = 1258291200 + rm * 65536 + rn * 32 + rd
+fn a64_w_and(rd, rn, rm) = 167772160 + rm * 65536 + rn * 32 + rd
+fn a64_w_orr(rd, rn, rm) = 704643072 + rm * 65536 + rn * 32 + rd
+fn a64_w_eor(rd, rn, rm) = 1241513984 + rm * 65536 + rn * 32 + rd
+fn a64_w_addi(rd, rn, imm12) = 285212672 + imm12 * 1024 + rn * 32 + rd
+fn a64_w_subi(rd, rn, imm12) = 1358954496 + imm12 * 1024 + rn * 32 + rd
+fn a64_w_and1(rd, rn) = 301989888 + rn * 32 + rd
+fn a64_w_lsl(rd, rn, k) = 1392508928 + (32 - k) % 32 * 65536 + (31 - k) * 1024 + rn * 32 + rd
+fn a64_w_lsr(rd, rn, k) = 1392508928 + k * 65536 + 31 * 1024 + rn * 32 + rd
+fn a64_w_ldr(rt, rn, off) = 3107979264 + off / 4 * 1024 + rn * 32 + rt
+fn a64_w_str(rt, rn, off) = 3103784960 + off / 4 * 1024 + rn * 32 + rt
+fn a64_ldrsw(rt, rn, off) = 3112173568 + off / 4 * 1024 + rn * 32 + rt
+fn a64_w_ldrb(rt, rn, off) = 960495616 + off * 1024 + rn * 32 + rt
+fn a64_w_strb(rt, rn, off) = 956301312 + off * 1024 + rn * 32 + rt
+fn a64_w_cmp(rn, rm) = 1795162143 + rm * 65536 + rn * 32
+fn a64_sxtw(rd, rn) = 2470476800 + rn * 32 + rd
+
+## --- lowering to A64 Linux (assembler state and label items of lkir.src / larm64.src). Registers: v0 .. v8 =
+## w19 .. w27, v9 = w15, zero = wzr; x28 = the buffer (0x500000, a zero-filled RW segment), x14 = the entry SP.
+fn sa_r(v) = if v <= 8 then 19 + v else if v == 9 then 15 else 31
+fn sa_li(st, r, v) = if v / 65536 == 0 then kir_w(st, la64_movz(r, v, 0)) else kir_w(kir_w(st, la64_movz(r, v % 65536, 0)), la64_movk(r, v / 65536, 1))
+fn sa_push_args(st, n, i) = if i >= n then st else sa_push_args(kir_ws(st, Cons(a64_ldrsw(0, 28, 24 + 4 * i), Cons(la64_str_pre(0, 31, 0 - 16), Nil))), n, i + 1)
+fn sa_kcall(st, pl) = let s1 = kir_ref(sa_push_args(st, pl.nargs, 0), A64BL(pl.kernel)) in kir_w(kir_ref(kir_ws(if pl.nargs == 0 then s1 else kir_w(s1, la64_add_imm(31, 31, 16 * pl.nargs)), Cons(a64_sxtw(1, 0), Cons(la64_cmp(1, 0), Nil))), A64BC(1, pl.base + 6)), a64_w_orr(sa_r(1), 31, 0))
+fn sa_op(st, op, pl) = match op
+    SLi(r, v)        => sa_li(st, sa_r(r), v)
+    SMov(d, s)       => kir_w(st, a64_w_orr(sa_r(d), 31, sa_r(s)))
+    SAddi(d, s, k)   => kir_w(st, if k >= 0 then a64_w_addi(sa_r(d), sa_r(s), k) else a64_w_subi(sa_r(d), sa_r(s), 0 - k))
+    SSub(d, a, b)    => kir_w(st, a64_w_sub(sa_r(d), sa_r(a), sa_r(b)))
+    SAnd(d, a, b)    => kir_w(st, a64_w_and(sa_r(d), sa_r(a), sa_r(b)))
+    SAnd1(d, s)      => kir_w(st, a64_w_and1(sa_r(d), sa_r(s)))
+    SOr(d, a, b)     => kir_w(st, a64_w_orr(sa_r(d), sa_r(a), sa_r(b)))
+    SXor(d, a, b)    => kir_w(st, a64_w_eor(sa_r(d), sa_r(a), sa_r(b)))
+    SShl(d, s, k)    => kir_w(st, a64_w_lsl(sa_r(d), sa_r(s), k))
+    SShr(d, s, k)    => kir_w(st, a64_w_lsr(sa_r(d), sa_r(s), k))
+    SLw(d, off)      => kir_w(st, a64_w_ldr(sa_r(d), 28, off))
+    SSw(s, off)      => kir_w(st, a64_w_str(sa_r(s), 28, off))
+    SLab(l)          => kir_def(st, pl.base + l)
+    SJ(l)            => kir_ref(st, A64B(pl.base + l))
+    SBeq(a, b, l)    => kir_ref(kir_w(st, a64_w_cmp(sa_r(a), sa_r(b))), A64BC(0, pl.base + l))
+    SBne(a, b, l)    => kir_ref(kir_w(st, a64_w_cmp(sa_r(a), sa_r(b))), A64BC(1, pl.base + l))
+    SBltu(a, b, l)   => kir_ref(kir_w(st, a64_w_cmp(sa_r(a), sa_r(b))), A64BC(3, pl.base + l))
+    SCall(l)         => kir_ref(st, A64BL(pl.base + l))
+    SRet(z)          => kir_w(st, la64_ret())
+    SGetc(r)         => kir_w(kir_ref(kir_ws(st, Cons(la64_movz(0, 0, 0), Cons(la64_add_imm(1, 28, 72), Cons(la64_movz(2, 1, 0), Cons(la64_movz(8, 63, 0), Cons(la64_svc(0), Cons(la64_cmp_imm(0, 1), Nil))))))), A64BC(1, pl.base)), a64_w_ldrb(sa_r(r), 28, 72))
+    SPutc(r)         => kir_ws(st, Cons(a64_w_strb(sa_r(r), 28, 72), Cons(la64_movz(0, 1, 0), Cons(la64_add_imm(1, 28, 72), Cons(la64_movz(2, 1, 0), Cons(la64_movz(8, 64, 0), Cons(la64_svc(0), Nil)))))))
+    SInit(z)         => kir_ws(st, Cons(la64_add_imm(14, 31, 0), Cons(la64_movz(28, 80, 1), Nil)))
+    SKcall(z)        => sa_kcall(st, pl)
+    SCyc(r)          => kir_w(st, la64_movz(sa_r(r), 0, 0))
+    SSp(z)           => kir_w(st, la64_add_imm(31, 14, 0))
+    SHalt(z)         => kir_ws(st, Cons(la64_movz(0, 0, 0), Cons(la64_movz(8, 93, 0), Cons(la64_svc(0), Nil))))
+    _                => kir_err(st, "internal: unknown shell op")
+fn sa_ops(st, ops, pl) = match ops
+    Nil        => st
+    Cons(h, t) => sa_ops(sa_op(st, h, pl), t, pl)
+fn sa_stub(st, lbl, cause, pl) = kir_ref(kir_w(kir_def(st, lbl), la64_movz(27, cause, 0)), A64B(pl.base + 2))
+## the AArch64 Linux program of channel A: the kernel through lkir.src + larm64.src (its own reader and code
+## generator), the frame shell at the entry. {err, bytes, words}
+fn sa_image(p, fname, kid, ps) = let tab = kir_fn_ids(p.fns, 0) in let cx = la64_cx(tab, 0) in let pl = {kh: sf_word(sf_kid_up(kid), 0, 8, 0), kl: sf_word(sf_kid_up(kid), 8, 8, 0), nargs: cb_len(ps), ps: ps, chan: 2684354562, kernel: kir_fn_id(tab, fname), base: cx.lp + 1} in if pl.kernel < 0 then {err: "the kernel is not a function lkir.src read", bytes: Nil, words: 0} else let s1 = sa_ops(kir_st0(pl.base + 64), sh_prog(pl), pl) in let s2 = la64_fns(sa_stub(sa_stub(sa_stub(s1, cx.lc, 1, pl), cx.lo, 2, pl), cx.ld, 3, pl), tab, p.fns) in if s2.err != "" then {err: s2.err, bytes: Nil, words: 0} else sa_elf(la64_res(kir_rev(s2.code, Nil), s2.defs, 0))
+fn sa_elf(r) = if r.err != "" then {err: r.err, bytes: Nil, words: 0} else let size = 176 + 4 * kir_len(r.ws) in {err: "", bytes: kir_app(la64_ehdr(4194304 + 176, 2), kir_app(la64_phdr(5, 0, 4194304, size, size, 65536), kir_app(la64_phdr(6, 0, 5242880, 0, 4096, 65536), kir_words_le(r.ws)))), words: kir_len(r.ws)}
+fn sa_compile(src, fname, kid, ps) = let p = kir_parse(src) in if p.err != "" then {err: "lkir.src (the reader of the AArch64 back end) refuses the kernel file: " + p.err, bytes: Nil, words: 0} else sa_image(p, fname, kid, ps)
+
+## --- lowering to RV64 Linux (assembler state and items of lkir.src / lriscv.src): a third program, for qemu-riscv64
+## or an RV64 Linux board. 32-bit values are kept sign-extended (the W instructions and LW produce that form, and an
+## unsigned comparison of two such values orders them as their 32-bit patterns). Registers: v0 .. v9 = x18 .. x27,
+## zero = x0; x9 = the buffer (0x80000, the zero-filled RW segment of lrv_elf64), x8 = the entry SP; x5 scratch.
+fn sv_r(v) = if v <= 9 then 18 + v else 0
+fn sv_subw(rd, a, b) = lrv_enc_r(32, b, a, 0, rd, 59)
+fn sv_slliw(rd, rs, k) = lrv_enc_i(k, rs, 1, rd, 27)
+fn sv_srliw(rd, rs, k) = lrv_enc_i(k, rs, 5, rd, 27)
+fn sv_lbu(rd, rs1, imm) = lrv_enc_i(imm, rs1, 4, rd, 3)
+## branch to a label when the INVERSE condition f3 does not hold: `b<f3> +8; jal x0, label`
+fn sv_br(st, f3, a, b, l) = lrv_j(kir_w(st, lrv_enc_b(8, b, a, f3)), 0, l)
+fn sv_sys(st, nr, fd) = kir_ws(st, Cons(lrv_addi(10, 0, fd), Cons(lrv_addi(11, 9, 72), Cons(lrv_addi(12, 0, 1), Cons(lrv_addi(17, 0, nr), Cons(lrv_ecall(), Nil))))))
+fn sv_push_args(st, n, i) = if i >= n then st else sv_push_args(kir_ws(st, Cons(lrv_lw(10, 9, 24 + 4 * i), Cons(lrv_addi(2, 2, 0 - 8), Cons(lrv_sd(10, 2, 0), Nil)))), n, i + 1)
+fn sv_kcall(st, pl) = let s1 = lrv_j(sv_push_args(st, pl.nargs, 0), 1, pl.kernel) in kir_w(lrv_j(kir_ws(if pl.nargs == 0 then s1 else kir_w(s1, lrv_addi(2, 2, 8 * pl.nargs)), Cons(lrv_addiw(5, 10, 0), Cons(lrv_beq(5, 10, 8), Nil))), 0, pl.base + 6), lrv_addi(sv_r(1), 10, 0))
+fn sv_op(st, op, pl) = match op
+    SLi(r, v)        => lrv_li64(st, sv_r(r), sr_s32(v))
+    SMov(d, s)       => kir_w(st, lrv_addi(sv_r(d), sv_r(s), 0))
+    SAddi(d, s, k)   => kir_w(st, lrv_addiw(sv_r(d), sv_r(s), k))
+    SSub(d, a, b)    => kir_w(st, sv_subw(sv_r(d), sv_r(a), sv_r(b)))
+    SAnd(d, a, b)    => kir_w(st, lrv_and(sv_r(d), sv_r(a), sv_r(b)))
+    SAnd1(d, s)      => kir_w(st, lrv_andi(sv_r(d), sv_r(s), 1))
+    SOr(d, a, b)     => kir_w(st, lrv_or(sv_r(d), sv_r(a), sv_r(b)))
+    SXor(d, a, b)    => kir_w(st, lrv_xor(sv_r(d), sv_r(a), sv_r(b)))
+    SShl(d, s, k)    => kir_w(st, sv_slliw(sv_r(d), sv_r(s), k))
+    SShr(d, s, k)    => kir_w(st, sv_srliw(sv_r(d), sv_r(s), k))
+    SLw(d, off)      => kir_w(st, lrv_lw(sv_r(d), 9, off))
+    SSw(s, off)      => kir_w(st, lrv_sw(sv_r(s), 9, off))
+    SLab(l)          => kir_def(st, pl.base + l)
+    SJ(l)            => lrv_j(st, 0, pl.base + l)
+    SBeq(a, b, l)    => sv_br(st, 1, sv_r(a), sv_r(b), pl.base + l)
+    SBne(a, b, l)    => sv_br(st, 0, sv_r(a), sv_r(b), pl.base + l)
+    SBltu(a, b, l)   => sv_br(st, 7, sv_r(a), sv_r(b), pl.base + l)
+    SCall(l)         => lrv_j(st, 1, pl.base + l)
+    SRet(z)          => kir_w(st, lrv_jalr(0, 1, 0))
+    SGetc(r)         => kir_w(lrv_j(kir_ws(sv_sys(st, 63, 0), Cons(lrv_addi(5, 0, 1), Cons(lrv_beq(10, 5, 8), Nil))), 0, pl.base), sv_lbu(sv_r(r), 9, 72))
+    SPutc(r)         => sv_sys(kir_w(st, lrv_sb(sv_r(r), 9, 72)), 64, 1)
+    SInit(z)         => kir_ws(st, Cons(lrv_addi(8, 2, 0), Cons(lrv_lui(9, 128), Nil)))
+    SKcall(z)        => sv_kcall(st, pl)
+    SCyc(r)          => kir_w(st, lrv_addi(sv_r(r), 0, 0))
+    SSp(z)           => kir_w(st, lrv_addi(2, 8, 0))
+    SHalt(z)         => kir_ws(st, Cons(lrv_addi(10, 0, 0), Cons(lrv_addi(17, 0, 93), Cons(lrv_ecall(), Nil))))
+    _                => kir_err(st, "internal: unknown shell op")
+fn sv_ops(st, ops, pl) = match ops
+    Nil        => st
+    Cons(h, t) => sv_ops(sv_op(st, h, pl), t, pl)
+fn sv_stub(st, lbl, cause, pl) = lrv_j(kir_w(kir_def(st, lbl), lrv_addi(26, 0, cause)), 0, pl.base + 2)
+fn sv_elf(r) = if r.err != "" then {err: r.err, bytes: Nil, words: 0} else {err: "", bytes: lrv_elf64(r.ws), words: kir_len(r.ws)}
+fn sv_image(p, fname, kid, ps) = let tab = kir_fn_ids(p.fns, 0) in let cx = lrv_cx(tab, 0, 64) in let pl = {kh: sf_word(sf_kid_up(kid), 0, 8, 0), kl: sf_word(sf_kid_up(kid), 8, 8, 0), nargs: cb_len(ps), ps: ps, chan: 2684354563, kernel: kir_fn_id(tab, fname), base: cx.lp + 1} in if pl.kernel < 0 then {err: "the kernel is not a function lkir.src read", bytes: Nil, words: 0} else let s1 = sv_ops(kir_st0(pl.base + 64), sh_prog(pl), pl) in let s2 = lrv_fns(sv_stub(sv_stub(sv_stub(s1, cx.lc, 1, pl), cx.lo, 2, pl), cx.ld, 3, pl), tab, 64, p.fns) in if s2.err != "" then {err: s2.err, bytes: Nil, words: 0} else sv_elf(lrv_res(kir_rev(s2.code, Nil), s2.defs, 0))
+## the RV64 Linux program of channel A (lkir.src + lriscv.src). {err, bytes, words}
+fn sv_compile(src, fname, kid, ps) = let p = kir_parse(src) in if p.err != "" then {err: "lkir.src (the reader of the RV64 back end) refuses the kernel file: " + p.err, bytes: Nil, words: 0} else sv_image(p, fname, kid, ps)
+
+## --- the x86-64 program of channel A: the kernel file, then this frame shell in Lume, compiled by lumec + lasm
+fn sx_args(ps, i) = match ps
+    Nil        => ""
+    Cons(h, t) => (if h.t == 2 then "(lsa9_w(s, " + str(6 + i) + ") == 1)" else "lsa9_s32(lsa9_w(s, " + str(6 + i) + "))") + (if cb_len(t) > 0 then ", " else "") + sx_args(t, i + 1)
+fn sx_bools(ps, i) = match ps
+    Nil        => "0"
+    Cons(h, t) => if h.t == 2 then "if lsa9_w(s, " + str(6 + i) + ") > 1 then 8 else " + sx_bools(t, i + 1) else sx_bools(t, i + 1)
+fn sx_prog(src, fname, kid, ps, rt) = src + "\nfn lsa9_hv(c) = let o = ord(c) in if o >= 48 and o <= 57 then o - 48 else if o >= 65 and o <= 70 then o - 55 else 0 - 1\nfn lsa9_word(s, i, k, acc) = if k == 0 then acc else let d = lsa9_hv(at(s, i)) in if d < 0 then 0 - 1 else lsa9_word(s, i + 1, k - 1, acc * 16 + d)\nfn lsa9_bit(c, k) = if k == 0 then c else lsa9_bit(bit_xor(c / 2, if c % 2 == 1 then 3988292384 else 0), k - 1)\nfn lsa9_crc(s, i, e, c) = if i >= e then bit_xor(c, 4294967295) else lsa9_crc(s, i + 1, e, lsa9_bit(bit_xor(c, ord(at(s, i))), 8))\nfn lsa9_h1(n) = at(\"0123456789ABCDEF\", n)\nfn lsa9_hex8(w) = lsa9_h1(w / 268435456 % 16) + lsa9_h1(w / 16777216 % 16) + lsa9_h1(w / 1048576 % 16) + lsa9_h1(w / 65536 % 16) + lsa9_h1(w / 4096 % 16) + lsa9_h1(w / 256 % 16) + lsa9_h1(w / 16 % 16) + lsa9_h1(w % 16)\nfn lsa9_s32(u) = if u >= 2147483648 then u - 4294967296 else u\nfn lsa9_u32(v) = if v < 0 then v + 4294967296 else v\nfn lsa9_w(s, i) = lsa9_word(s, 8 * i, 8, 0)\nfn lsa9_fmt(s, i) = if i >= 15 then 1 else if lsa9_w(s, i) < 0 then 0 else lsa9_fmt(s, i + 1)\nfn lsa9_wellformed(s) = if count(s) == 121 and at(s, 120) == \"\\n\" then lsa9_fmt(s, 0) else 0\nfn lsa9_echo(s, ok, i, n) = if i >= n then \"\" else (if ok == 1 then lsa9_hex8(lsa9_w(s, i)) else \"00000000\") + lsa9_echo(s, ok, i + 1, n)\nfn lsa9_frame(body) = body + lsa9_hex8(lsa9_crc(body, 0, count(body), 4294967295)) + \"\\n\"\nfn lsa9_resp(s, ok, status, cause, result) = lsa9_frame(\"4C53525300000001\" + lsa9_echo(s, ok, 2, 3) + \"" + sf_kid_up(kid) + "A0000001\" + lsa9_echo(s, ok, 5, 14) + lsa9_hex8(status) + lsa9_hex8(cause) + lsa9_hex8(result) + \"00000000\")\nfn lsa9_bad(s) = if lsa9_wellformed(s) != 1 then 6 else if lsa9_crc(s, 0, 112, 4294967295) != lsa9_w(s, 14) then 5 else if lsa9_w(s, 0) != 1280528977 then 1 else if lsa9_w(s, 1) != 1 then 2 else if lsa9_hex8(lsa9_w(s, 3)) + lsa9_hex8(lsa9_w(s, 4)) != \"" + sf_kid_up(kid) + "\" then 3 else if lsa9_w(s, 5) != " + str(cb_len(ps)) + " then 4 else " + sx_bools(ps, 0) + "\nfn lsa9_call(s) = " + (if rt == 2 then "if " + fname + "(" + sx_args(ps, 0) + ") then 1 else 0" else fname + "(" + sx_args(ps, 0) + ")") + "\nfn lsa9_ok(s) = let r = lsa9_call(s) in if r < 0 - 2147483648 or r > 2147483647 then lsa9_resp(s, 1, 1, 6, 0) else lsa9_resp(s, 1, 0, 0, lsa9_u32(r))\nfn lsa9_main(s) = let c = lsa9_bad(s) in let w = fs_write_sync(\"/dev/stdout\", if c != 0 then lsa9_resp(s, lsa9_wellformed(s), 2, c, 0) else lsa9_ok(s)) in os_exit(0)\nprint lsa9_main(readall())\n"
+
+## --- export: `@split <outdir>` with `@src` / `@fn` (and `@budget` when the kernel has no `@bound`)
+fn ss_bytes_hex(ws) = kir_hex(kir_words_le(ws))
+fn ss_write_bin(path, hex) = if fs_write_hex_file(path, hex) == 1 then os_run("/bin/chmod", Cons("+x", Cons(path, Nil))) else 0 - 1
+fn ss_art(dir, file, extra) = "{\"file\":\"" + file + "\",\"bytes\":" + str(ss_size(dir + "/" + file)) + ",\"sha256\":\"" + se_sha256_file(dir + "/" + file) + "\"" + extra + "}"
+fn ss_size_hi(path, step) = if fs_read_byte(path, step) < 0 then step else ss_size_hi(path, step * 2)
+fn ss_size_bin(path, lo, hi) = if lo + 1 >= hi then hi else let mid = (lo + hi) / 2 in if fs_read_byte(path, mid) < 0 then ss_size_bin(path, lo, mid) else ss_size_bin(path, mid, hi)
+fn ss_size(path) = if fs_read_byte(path, 0) < 0 then 0 else ss_size_bin(path, 0, ss_size_hi(path, 1))
+fn ss_ptypes(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => (if h.t == 2 then "bool" else "int") + (if cb_len(t) > 0 then "," else "") + ss_ptypes(t)
+fn ss_fail(msg) = let w = fs_write_sync("/dev/stdout", "{\"tool\":\"lsafety_envelope\",\"mode\":\"split-export\",\"ok\":false,\"error\":\"" + se_jesc(msg) + "\"}\n") in os_exit(2)
+fn ss_x86(cfg, dir, src, kid, k) = let p = dir + "/channel_a_x86_64" in let w = fs_write_sync(p + ".src", sx_prog(src, cfg.fname, kid, k.ps, k.rt)) in let c = os_run_input_capture_timeout(cfg.lumec, Nil, p + ".src", p + ".s", p + ".cerr", 120000) in if se_wait_exit(c) != 0 then "lumec: " + se_first_line(fs_read_file(p + ".cerr")) else let a = os_run_capture_timeout(cfg.lasm, Cons("--strict", Cons(p + ".s", Nil)), p + ".elf", p + ".aerr", 120000) in if se_wait_exit(a) != 0 then "lasm: " + se_first_line(fs_read_file(p + ".aerr")) else let m = os_run("/bin/chmod", Cons("+x", Cons(p + ".elf", Nil))) in let z = se_cleanup(p, Cons(".s", Cons(".cerr", Cons(".aerr", Nil)))) in ""
+fn ss_a64(dir, src, fname, kid, k) = let r = sa_compile(src, fname, kid, k.ps) in if r.err != "" then r.err else if ss_write_bin(dir + "/channel_a_aarch64.elf", kir_hex(r.bytes)) < 0 then "cannot write channel_a_aarch64.elf" else ""
+fn ss_r64(dir, src, fname, kid, k) = let r = sv_compile(src, fname, kid, k.ps) in if r.err != "" then r.err else if ss_write_bin(dir + "/channel_a_riscv64.elf", kir_hex(r.bytes)) < 0 then "cannot write channel_a_riscv64.elf" else ""
+## an optional third frame (`@cmd_c`, a second channel-A class program, e.g. the RV64 one beside the AArch64 one):
+## when it is configured it must pass the same checks and carry the same result, else the vote trips
+fn sf_vote3(v, used, fc, tc, fa, kid, seq, args) = if used == 0 or v.commit != 1 then v else let ec = sf_check(fc, tc, kid, seq, args, 10) in if ec != "" then {commit: 0, value: 0, reason: "c_" + ec} else if sf_nth(fc.w, 18) != 0 or sf_nth(fc.w, 16) != 0 then {commit: 0, value: 0, reason: "c_frame_cycles"} else if sf_nth(fc.w, 17) != sf_nth(fa.w, 17) then {commit: 0, value: 0, reason: "lockstep_mismatch_c"} else v
+fn ss_manifest(cfg, dir, src, kid, bp, bud, kb, nwords, a64err, r64err) = "{\"format\":\"lume-safety-envelope-split/1\",\"level\":\"two standalone channel programs and a tested frame protocol; executed on this host and on QEMU, not on two boards\",\"fn\":\"" + se_jesc(cfg.fname) + "\",\"src_sha256\":\"" + se_sha256(src) + "\",\"kernel_id\":\"" + kid + "\",\"nargs\":" + str(cb_len(bp.k.ps)) + ",\"param_types\":\"" + ss_ptypes(bp.k.ps) + "\",\"result_type\":\"" + (if bp.k.rt == 2 then "bool" else "int") + "\",\"budget_cycles\":" + str(bud.v) + ",\"budget_source\":\"" + bud.source + "\",\"kernel_cycle_limit\":" + str(kb) + ",\"protocol\":{\"version\":1,\"request_words\":15,\"response_words\":20,\"word\":\"8 upper-case hex digits\",\"terminator\":\"LF\",\"crc\":\"CRC-32/ISO-HDLC over the ASCII characters before the CRC word\",\"request\":\"4C535251 version sequence kernel_id(2) nargs args(8) crc\",\"response\":\"4C535253 version sequence kernel_id(2) channel nargs args(8) status cause result cycles crc\"},\"channel_a_x86_64\":" + ss_art(dir, "channel_a_x86_64.elf", ",\"channel_code\":\"A0000001\",\"toolchain\":\"lumec + lasm\",\"source\":\"channel_a_x86_64.src\"") + ",\"channel_a_aarch64\":" + (if a64err != "" then "{\"ok\":false,\"error\":\"" + se_jesc(a64err) + "\"}" else ss_art(dir, "channel_a_aarch64.elf", ",\"ok\":true,\"channel_code\":\"A0000002\",\"toolchain\":\"lumec acceptance, then lkir.src + larm64.src\",\"load_address\":\"0x400000\",\"entry\":\"0x4000B0\"")) + ",\"channel_a_riscv64\":" + (if r64err != "" then "{\"ok\":false,\"error\":\"" + se_jesc(r64err) + "\"}" else ss_art(dir, "channel_a_riscv64.elf", ",\"ok\":true,\"channel_code\":\"A0000003\",\"toolchain\":\"lumec acceptance, then lkir.src + lriscv.src (RV64IM, Linux)\",\"load_address\":\"0x40000\",\"entry\":\"0x40000\"")) + ",\"channel_b_riscv_bare\":" + ss_art(dir, "channel_b_riscv_bare.bin", ",\"channel_code\":\"B0000001\",\"toolchain\":\"clean-room front end and code generator of lsafety_envelope.src\",\"isa\":\"RV32IM + csrrw mtvec\",\"words\":" + str(nwords) + ",\"load_address\":\"0x80000000\",\"entry\":\"0x80000000\",\"buffer\":\"0x80020000\",\"stack_top\":\"0x80030000\",\"stack_limit\":\"0x8002C000\",\"uart\":\"16550, polled, at 0x10000000\",\"halt\":\"word 0x5555 to 0x100000 (QEMU virt test finisher), then an endless loop\"") + "}\n"
+fn ss_export_b(cfg, dir, src, kid, bp, bud, kb, img) = if img.err != "" then ss_fail("channel B: " + img.err) else if ss_write_bin(dir + "/channel_b_riscv_bare.bin", ss_bytes_hex(img.rom)) < 0 then ss_fail("cannot write channel_b_riscv_bare.bin") else let ex = ss_x86(cfg, dir, src, kid, bp.k) in if ex != "" then ss_fail("channel A x86-64: " + ex) else let a64err = ss_a64(dir, src, cfg.fname, kid, bp.k) in let r64err = ss_r64(dir, src, cfg.fname, kid, bp.k) in let man = ss_manifest(cfg, dir, src, kid, bp, bud, kb, rv_len(img.rom), a64err, r64err) in let w = fs_write_sync(dir + "/manifest.json", man) in let o = fs_write_sync("/dev/stdout", "{\"tool\":\"lsafety_envelope\",\"mode\":\"split-export\",\"ok\":true,\"dir\":\"" + se_jesc(dir) + "\",\"manifest\":" + ss_strip_nl(man) + "}\n") in os_exit(0)
+fn ss_strip_nl(s) = let n = count(s) in if n > 0 and at(s, n - 1) == "\n" then slicen(s, n, 0, n - 1) else s
+fn ss_export_bp(cfg, dir, src, bp, bud) = if bp.err != "" then ss_fail("channel B refuses the kernel: " + bp.err) else let kid = sf_kid(src, cfg.fname) in let kb = bud.v - cbg_stub_cycles(cb_len(bp.k.ps)) in ss_export_b(cfg, dir, src, kid, bp, bud, kb, sb_image(bp, kid, kb))
+fn ss_export(cfg, dir) = let src = fs_read_file(cfg.src) in if src == "" then ss_fail("cannot read " + cfg.src) else let m1 = os_run("/bin/mkdir", Cons("-p", Cons(dir, Nil))) in let c = os_run_input_capture_timeout(cfg.lumec, Nil, cfg.src, dir + "/accept.s", dir + "/accept.err", 120000) in let cerr = se_first_line(fs_read_file(dir + "/accept.err")) in let z = se_cleanup(dir + "/accept", Cons(".s", Cons(".err", Nil))) in if se_wait_exit(c) != 0 then ss_fail("lumec rejects the kernel file: " + cerr) else let bud = se_budget(cfg, se_bound(src, cfg.fname)) in if bud.fault != "" then ss_fail(bud.fault + " (the kernel needs @bound(cycles: N) or @budget <n>)") else ss_export_bp(cfg, dir, src, se_prep_bp(src, cfg.fname, se_bound(src, cfg.fname)), bud)
+
+## --- `@mode split-run`: build the request frame, run the two channel commands (stdin = request, stdout = response,
+## under a deadline), vote, log. `@cmd_b lumeputer:<image>` runs the bare image on the in-tool interpreter.
+fn sj_at(s, n, pat, pn) = let p = se_find(s, n, pat, pn, 0) in if p < 0 then 0 - 1 else p + pn
+fn sj_str(s, key) = let n = count(s) in let p = sj_at(s, n, "\"" + key + "\":\"", count(key) + 4) in if p < 0 then "" else slicen(s, n, p, sj_qend(s, n, p))
+fn sj_qend(s, n, i) = if i < n and at(s, i) != "\"" then sj_qend(s, n, i + 1) else i
+fn sj_int(s, key) = let n = count(s) in let p = sj_at(s, n, "\"" + key + "\":", count(key) + 3) in if p < 0 then 0 - 1 else let e = se_digits_end(s, n, p) in if e == p or e - p > 17 then 0 - 1 else toint(slicen(s, n, p, e))
+fn ss_img_words(path, i, acc) = let b0 = fs_read_byte(path, i) in if b0 < 0 then cb_rev(acc, Nil) else ss_img_words(path, i + 4, Cons(b0 + 256 * ss_b0(fs_read_byte(path, i + 1)) + 65536 * ss_b0(fs_read_byte(path, i + 2)) + 16777216 * ss_b0(fs_read_byte(path, i + 3)), acc))
+fn ss_b0(b) = if b < 0 then 0 else b
+## one channel: {text, timed_out, how}
+fn ss_chan(cmd, req, reqpath, outpath, timeout_ms) = if se_starts(cmd, "lumeputer:") == 1 then (let r = sb_exec(ss_img_words(slice(cmd, 10, count(cmd)), 0, Nil), req, 4000000) in {text: if r.st == 1 then r.out else "", timed_out: if r.cause == "watchdog_cycle_budget" then 1 else 0, how: "in-tool LumePuter: " + (if r.st == 1 then "halt" else r.cause) + " after " + str(r.cyc) + " instructions"}) else (let z = fs_write_sync(outpath, "") in let raw = os_run_input_capture_timeout("/bin/sh", Cons("-c", Cons(cmd, Nil)), reqpath, outpath, outpath + ".err", timeout_ms) in {text: if os_last_timed_out() == 1 then "" else fs_read_file(outpath), timed_out: os_last_timed_out(), how: "process exit " + str(se_wait_exit(raw))})
+fn ss_frame_show(t) = let n = count(t) in se_jesc(if n > 200 then slicen(t, n, 0, 200) else t)
+fn ss_run_json(cfg, man, kid, seq, pa, state, has, value, reason, ca, cb, cc, lg0, h, final_ok, latched) = "{\"tool\":\"lsafety_envelope\",\"mode\":\"split-run\",\"level\":\"two channel programs on this host or on emulators, voted over the frame protocol; not two boards\",\"fn\":\"" + se_jesc(sj_str(man, "fn")) + "\",\"kernel_id\":\"" + kid + "\",\"sequence\":" + str(seq) + ",\"args\":" + se_args_json(cfg.args1, pa) + ",\"state\":\"" + state + "\",\"value\":" + se_opt_i(has, value) + ",\"reason\":\"" + se_jesc(reason) + "\",\"channel_a\":{\"how\":\"" + se_jesc(ca.how) + "\",\"frame\":\"" + ss_frame_show(ca.text) + "\"},\"channel_b\":{\"how\":\"" + se_jesc(cb.how) + "\",\"frame\":\"" + ss_frame_show(cb.text) + "\"},\"channel_c\":{\"how\":\"" + se_jesc(cc.how) + "\",\"frame\":\"" + ss_frame_show(cc.text) + "\"},\"kernel_cycle_limit\":" + str(sj_int(man, "kernel_cycle_limit")) + ",\"log\":{\"path\":\"" + se_jesc(cfg.log) + "\",\"chain_ok_before\":" + str(lg0.ok) + ",\"latched_before\":" + str(lg0.latched) + ",\"reset\":" + str(cfg.reset) + ",\"chain_ok_after\":" + str(final_ok) + "},\"event_hash\":\"" + h + "\",\"final_latched\":" + str(latched) + "}\n"
+fn ss_run_end(cfg, man, kid, seq, pa, v, ca, cb, cc, lg0, lg) = let ev = if v.commit == 1 then "commit" else "trip" in let h = se_log_append(cfg.log, lg.last, "{\"event\":\"" + ev + "\",\"mode\":\"split-run\",\"fn\":\"" + se_jesc(sj_str(man, "fn")) + "\",\"kernel_id\":\"" + kid + "\",\"sequence\":" + str(seq) + ",\"args\":" + se_args_json(cfg.args1, pa) + ",\"value\":" + se_opt_i(v.commit, v.value) + ",\"reason\":\"" + se_jesc(v.reason) + "\",\"frame_a\":\"" + ss_frame_show(ca.text) + "\",\"frame_b\":\"" + ss_frame_show(cb.text) + "\",\"frame_c\":\"" + ss_frame_show(cc.text) + "\",\"mono_ns\":" + str(os_monotonic_ns()) + "}") in let fin = se_log_check(cfg.log) in let final_ok = if fin.ok == 1 and fin.last == h then 1 else 0 in let w = fs_write_sync("/dev/stdout", ss_run_json(cfg, man, kid, seq, pa, if v.commit == 1 and final_ok == 1 then "VerifiedActuatorCommit" else "SAFE_STATE_TRIP", if final_ok == 1 then v.commit else 0, v.value, if final_ok == 1 then v.reason else "event_log_tamper", ca, cb, cc, lg0, h, final_ok, if v.commit == 1 and final_ok == 1 then 0 else 1)) in os_exit(if v.commit == 1 and final_ok == 1 then 0 else 2)
+fn ss_none() = {text: "", timed_out: 0, how: "not run"}
+fn ss_refuse(cfg, man, kid, seq, pa, reason, lg0, lg) = let w = fs_write_sync("/dev/stdout", ss_run_json(cfg, man, kid, seq, pa, "SAFE_STATE_TRIP", 0, 0, reason, ss_none(), ss_none(), ss_none(), lg0, "", lg.ok, 1)) in os_exit(2)
+## the largest sequence number of a split-run event already in the event log (-1 when there is none). A request must
+## carry a larger one: otherwise the frames recorded for an earlier request with the same sequence number, kernel and
+## arguments would pass every check, and a channel that has died since would go unnoticed.
+fn ss_seq_scan(s, n, i, mx, pat, pn) = let p = se_find(s, n, pat, pn, i) in if p < 0 then mx else let q = se_find(s, n, "\"sequence\":", 11, p) in if q < 0 then mx else let e = se_digits_end(s, n, q + 11) in if e == q + 11 or e - q - 11 > 17 then ss_seq_scan(s, n, q + 11, 4294967296, pat, pn) else let v = toint(slicen(s, n, q + 11, e)) in ss_seq_scan(s, n, e, if v > mx then v else mx, pat, pn)
+fn ss_seq_last(path) = let s = fs_read_file(path) in let pat = "\"mode\":\"split-run\"" in ss_seq_scan(s, count(s), 0, 0 - 1, pat, count(pat))
+fn ss_run_go(cfg, man, kid, seq, pa, lg0, lg) = if lg.ok != 1 then ss_refuse(cfg, man, kid, seq, pa, "event_log_tamper", lg0, lg) else if lg.latched == 1 then ss_refuse(cfg, man, kid, seq, pa, "latched", lg0, lg) else if pa.ok != 1 or rv_len(pa.xs) != sj_int(man, "nargs") or ss_all_i32(pa.xs) != 1 then ss_run_end(cfg, man, kid, seq, pa, {commit: 0, value: 0, reason: "bad_args"}, ss_none(), ss_none(), ss_none(), lg0, lg) else if seq <= ss_seq_last(cfg.log) then ss_run_end(cfg, man, kid, seq, pa, {commit: 0, value: 0, reason: "sequence_not_fresh"}, ss_none(), ss_none(), ss_none(), lg0, lg) else let req = sf_request(kid, seq, pa.xs) in let w = fs_write_sync(cfg.tag + ".req", req) in let ca = ss_chan(cfg.cmd_a, req, cfg.tag + ".req", cfg.tag + ".fa", cfg.frame_timeout_ms) in let cb = ss_chan(cfg.cmd_b, req, cfg.tag + ".req", cfg.tag + ".fb", cfg.frame_timeout_ms) in let cc = if cfg.cmd_c == "" then {text: "", timed_out: 0, how: "not configured"} else ss_chan(cfg.cmd_c, req, cfg.tag + ".req", cfg.tag + ".fc", cfg.frame_timeout_ms) in let z = se_cleanup(cfg.tag, Cons(".req", Cons(".fa", Cons(".fb", Cons(".fc", Cons(".fa.err", Cons(".fb.err", Cons(".fc.err", Nil)))))))) in ss_run_end(cfg, man, kid, seq, pa, sf_vote3(sf_vote(sf_parse(ca.text), ca.timed_out, sf_parse(cb.text), cb.timed_out, kid, seq, pa.xs, sj_int(man, "kernel_cycle_limit")), if cfg.cmd_c == "" then 0 else 1, sf_parse(cc.text), cc.timed_out, sf_parse(ca.text), kid, seq, pa.xs), ca, cb, cc, lg0, lg)
+fn ss_all_i32(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if h < 0 - 2147483648 or h > 2147483647 then 0 else ss_all_i32(t)
+fn ss_run(cfg) = let man = fs_read_file(cfg.manifest) in let kid = sj_str(man, "kernel_id") in let seq = se_pint(cfg.seq_txt) in if man == "" or count(kid) != 16 or sj_int(man, "nargs") < 0 or sj_int(man, "kernel_cycle_limit") < 1 then ctfail("lsafety_envelope: @manifest is missing or is not a split manifest\n") else if seq.ok != 1 or seq.v < 0 or seq.v > 4294967295 then ctfail("lsafety_envelope: @seq <0 .. 4294967295> is required\n") else if cfg.cmd_a == "" or cfg.cmd_b == "" then ctfail("lsafety_envelope: @cmd_a and @cmd_b are required\n") else let m1 = os_run("/bin/mkdir", Cons("-p", Cons(cfg.work, Nil))) in let m2 = os_run("/bin/mkdir", Cons("-p", Cons(cfg.logdir, Nil))) in let lg0 = se_log_check(cfg.log) in ss_run_go(cfg, man, kid, seq.v, se_pints(cfg.args1), lg0, if cfg.reset == 1 then se_reset(cfg, lg0) else lg0)
+## `@mode split-verify`: every artifact the manifest names must exist beside it with the recorded size and SHA-256
+fn ss_verify_one(dir, man, key) = let n = count(man) in let p = se_find(man, n, "\"" + key + "\":{", count(key) + 4, 0) in if p < 0 then key + ": not in the manifest; " else let sub = slicen(man, n, p, n) in let file = sj_str(sub, "file") in if se_starts(slicen(sub, count(sub), count(key) + 4, count(sub)), "\"ok\":false") == 1 then "" else if file == "" then key + ": no file; " else if se_sha256_file(dir + "/" + file) != sj_str(sub, "sha256") or ss_size(dir + "/" + file) != sj_int(sub, "bytes") then key + ": " + file + " does not match the manifest; " else ""
+fn ss_verify(cfg) = let man = fs_read_file(cfg.manifest) in let dir = se_dirname(cfg.manifest, count(cfg.manifest)) in let e = if man == "" then "manifest unreadable; " else ss_verify_one(dir, man, "channel_a_x86_64") + ss_verify_one(dir, man, "channel_a_aarch64") + ss_verify_one(dir, man, "channel_a_riscv64") + ss_verify_one(dir, man, "channel_b_riscv_bare") in let w = fs_write_sync("/dev/stdout", "{\"tool\":\"lsafety_envelope\",\"mode\":\"split-verify\",\"ok\":" + (if e == "" then "true" else "false") + ",\"error\":\"" + se_jesc(e) + "\"}\n") in os_exit(if e == "" then 0 else 2)
+fn se_main(input) = let root = se_get(input, "root") in if root == "" then ctfail("lsafety_envelope: @root is required (stdin: @root, @src, @fn, @args a,b,c ...)\n") else let cfg = se_cfg(input, root) in let mode = se_get(input, "mode") in if mode == "split-run" then ss_run(cfg) else if mode == "split-verify" then ss_verify(cfg) else if cfg.src == "" or cfg.fname == "" then ctfail("lsafety_envelope: @src and @fn are required\n") else if se_get(input, "split") != "" then ss_export(cfg, se_get(input, "split")) else if rv_len(cfg.vecs) == 0 then ctfail("lsafety_envelope: at least one @args line is required\n") else if mode == "monitor" then se_monitor(cfg) else se_start(cfg)
 
 print se_main(readall())
