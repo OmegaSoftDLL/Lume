@@ -1,0 +1,710 @@
+## ltv_rt.src -- verifier of the EMITTED machine code of the integer runtime helpers (the axioms of ltv.src).
+##
+## ltv.src validates each compiled integer function against its AST and takes the runtime routines the generated code
+## calls as axioms. This module removes that gap for the integer helpers: it takes the assembly text `lumec` printed
+## for a program (the runtime of compiler/stage1/runtime_core.lume is appended to every program, so the helper text
+## that is checked is the text that is assembled), extracts each helper with the internal labels and shared tails it
+## reaches, and VERIFIES it against the specification below by symbolic execution over ALL inputs of the modelled
+## cases. Nothing is run. Everything outside the model is a rejection (fail-closed): an instruction or operand form
+## that is not listed, a branch on flags the model does not define, a jump out of the extracted code, a path that
+## does not close within the step budget, a possible #DE at `idivq`.
+##
+## Value words (runtime_core.lume, "value words"): an integer that fits 63 bits is the odd word 2n+1; an integer
+## that needs the 64th bit is an 8-aligned non-null pointer to a cell [3][n]. Canonical-form invariant: a boxed n does
+## NOT fit 63 bits. The specification below proves that every helper ESTABLISHES it for its result (mkint included),
+## and `tvr_canon_report` re-runs every helper without the invariant on the inputs to show which helpers RELY on it.
+##
+## Input cases, per integer operand (a is the first operand, b the second):
+##   IMM   the word 2a+1,                 -2^62 <= a <  2^62
+##   BOXN  a pointer to [3][a],           -2^63 <= a < -2^62            (canonical boxed, negative)
+##   BOXP  a pointer to [3][a],            2^62 <= a <  2^63            (canonical boxed, positive)
+##   RAW   the register holds a itself,   -2^63 <= a <  2^63            (mkint, __rt_idiv, __rt_imod)
+##   two boxed operands are checked twice: as two distinct cells and as the SAME cell (then b == a).
+## Non-integer operands are outside the specification; the verifier shows that integer inputs never reach their code
+## (a path that does is a rejection).
+##
+## Specification. (R) = returns to the caller with the stack restored and %rbx %rbp %r12 %r13 %r14 %r15 unchanged.
+## W(m) = the canonical word of m: the immediate 2m+1 when m fits 63 bits, else a cell [3][m] (and then m does not
+## fit 63 bits). (T ovf) = control reaches __rt_ovf, (T div0) = control reaches __rt_div0; both are checked to be the
+## stubs `leaq <message>(%rip), %r8; jmp __rt_die3` with the documented message text.
+##   mkint       RAW a in %rdi               (R) %rax = W(a)                                            never traps
+##   addv        words a, b in %rdi, %rsi    (R) %rax = W(a+b) | (T ovf) exactly when a+b is not in [-2^63, 2^63)
+##   __rt_sub    words a, b in %rdi, %rsi    (R) %rax = W(a-b) | (T ovf) exactly when a-b is not in [-2^63, 2^63)
+##   __rt_mul    words a, b in %rdi, %rsi    (R) %rax = W(a*b) | (T ovf) exactly when a*b is not in [-2^63, 2^63)
+##   __rt_div    words a, b in %rdi, %rsi    (R) %rax = W(tdiv(a,b)), b != 0 | (T div0) exactly when b == 0
+##                                           | (T ovf) exactly when a == -2^63 and b == -1
+##   __rt_mod    words a, b in %rdi, %rsi    (R) %rax = W(tmod(a,b)), b != 0 | (T div0) exactly when b == 0
+##                                           | (T ovf) exactly when a == -2^63 and b == -1   (the language rule: the
+##                                           prover's evaluator, 06b_phase3.src, also has no value for MIN % -1)
+##               tdiv truncates toward zero and tmod = a - b*tdiv(a,b) has the sign of a (the result of `idivq`)
+##   __rt_wadd / __rt_wsub / __rt_wmul       (R) %rax = W(wrap64(a+b / a-b / a*b))                      never trap
+##   cmpv        words a, b in %rdi, %rsi    (R) %rax = -1 if a < b, 0 if a == b, 1 if a > b (raw)      never traps
+##   eqv         words a, b in %rdi, %rsi    (R) %rax = 1 if a == b, 0 otherwise (raw)                  never traps
+##   __rt_uint   word a in %rax              (R) %rax = a (raw); every other register unchanged         never traps
+##   __rt_un2    words a, b in %rax, %rcx    (R) %rax = a, %rcx = b (raw); every other register unchanged
+##   __rt_ustk   word a in the stack slot above the return address: (R) the slot holds a (raw); every register unchanged
+##   __rt_cond   word in %rax                BOXN/BOXP: (R) %rax = 3 (the word of true; a boxed integer is not 0)
+##                                           IMM: reaches __rt_not_bool (generated code tests the tag itself first)
+##   __rt_qnext  word a in %rdi              (R) %rax = 0 (raw, "no successor") exactly when a == 2^63-1, else W(a+1)
+##   __rt_idiv   RAW a, b in %rax, %rcx      (R) %rax = tdiv(a,b), b != 0 | (T div0) iff b == 0 | (T ovf) iff a == -2^63, b == -1
+##   __rt_imod   RAW a, b in %rax, %rcx      (R) %rax = tmod(a,b), b != 0 | (T div0) iff b == 0 | (T ovf) iff a == -2^63, b == -1
+## "Exactly when": the symbolic paths of a case partition its inputs (every branch splits on a predicate and its
+## negation), each (R) path is proven to return the specified word (which exists only when the result fits 64 bits)
+## and each (T) path is proven to imply its trap condition, so the trap is taken on the specified inputs and no other.
+##
+## Machine model (every item is an assumption about the x86-64 CPU; nothing else about the CPU is used):
+##   X1  mov / lea / push / pop / call / ret / jmp / jcc / setcc / movzbq / cqto leave the flags unchanged; lea computes
+##       base+disp modulo 2^64 and sets no flag.
+##   X2  add / sub / imul (two-operand) / inc / dec compute the result modulo 2^64 and set OF exactly when the
+##       mathematical result of the signed operands does not fit signed 64 bits. No other flag of these is used.
+##   X3  cmp s, d sets ZF exactly when d == s and makes jl / jge / jg / jle decide d < s, d >= s, d > s, d <= s on the
+##       signed values, for all 64-bit operands (SF != OF is the signed "less").
+##   X4  test x, x sets ZF exactly when x == 0, SF exactly when x < 0 and clears OF; test $k, x sets ZF exactly when
+##       (x and k) == 0. The byte forms (testb / cmpb on %al, %cl or a memory byte) do the same on the low byte.
+##   X5  sar $1, x computes floor(x / 2) and sets CF to bit 0 of x.
+##   X6  and / or compute the bitwise operation; bit 0 of the result is the and / or of the bits 0; xor x, x gives 0.
+##   X7  cqto sets %rdx to the sign extension of %rax. idivq r with %rdx:%rax the sign extension of n and r = d, when
+##       d != 0 and not (n == -2^63 and d == -1), sets %rax = tdiv(n, d) and %rdx = tmod(n, d) and leaves the flags
+##       undefined; in the two excluded cases it raises #DE (so the verifier must PROVE they are excluded).
+##   X8  sete / setne / setl / ... write 1 or 0 into %al under the same condition as the jump; movzbq %al, %rax zero-extends.
+##   X9  little-endian memory: the low byte of the word [3] of an integer cell is 3 (cmpb $3, (p)).
+##   The stack is a list of 64-bit slots; a slot that holds a return address is never read into a register or written.
+## Pointer facts used: a cell pointer is even, 8-aligned and non-null; (p sar 1) + (p sar 1) == p; pointers to
+## distinct cells differ; an odd word never equals a pointer.
+##
+## What stays axiomatic (stated in the report):
+##   A1  the allocator: `call __lume_alloc_a` with a constant size n >= 16 in %rdi returns in %rax a
+##       pointer to a fresh cell of n bytes that no other value points to, and changes only %rax, %r10 and the flags
+##       (runtime_core.lume: "`alloc` keeps its contract of clobbering only rax and r10"; the collector it may run
+##       saves every register). The verifier models exactly that clobber set, so a helper that kept a live value in
+##       %rax or %r10 across the call is rejected; and it checks SYNTACTICALLY that the allocator fast path
+##       (__gc_pop .. __gc_refill) writes no register but %rax, %r10 and %r11 between `pushq %r11` / `popq %r11`.
+##       The slow path (__gc_slow, the collector) is not examined.
+##   A2  the trap tail __rt_die3 does not return (it prints the message in %r8 and exits with status 3, or unwinds to
+##       the innermost __lume_try_begin).
+##   A3  the CPU facts X1..X9, and the assembler's encoding of the text (tests/harness/lasm_gate covers encodings).
+##
+## The verifier's own arithmetic cannot overflow: bounds are "wide" integers h*2^31 + l with -inf / +inf, coefficients
+## are bounded, and every sum of constants is checked in wide arithmetic before it is used.
+##
+## Library: `use ltv_rt`, then tvr_verify_asm(asm_text) -> {ok, n_helpers, n_paths, n_obl, report_json, err}.
+## Tool:    stdin `@asm <file.s>` (or `@root <repo>` + `@src <file.src>` to compile with build/bin/lumec first),
+##          optional `@canon 1` adds the invariant-reliance experiment; stdout one JSON object; exit status non-zero
+##          when a helper is rejected (the JSON is still on stdout).
+
+## --- lists and text ---
+fn tvr_isnil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn tvr_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + tvr_len(t)
+fn tvr_revacc(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => tvr_revacc(t, Cons(h, acc))
+fn tvr_has(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else tvr_has(t, x)
+fn tvr_join(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h + tvr_join(t)
+fn tvr_starts(s, pre) = if count(s) >= count(pre) and slice(s, 0, count(pre)) == pre then 1 else 0
+fn tvr_ends(s, suf) = if count(s) >= count(suf) and slice(s, count(s) - count(suf), count(s)) == suf then 1 else 0
+fn tvr_find(s, c, i) = if i >= count(s) then 0 - 1 else if at(s, i) == c then i else tvr_find(s, c, i + 1)
+fn tvr_findsep_d(s, i, d) = if i + 1 >= count(s) then 0 - 1 else if at(s, i) == "(" then tvr_findsep_d(s, i + 1, d + 1) else if at(s, i) == ")" then tvr_findsep_d(s, i + 1, if d > 0 then d - 1 else 0) else if d == 0 and at(s, i) == "," and at(s, i + 1) == " " then i else tvr_findsep_d(s, i + 1, d)
+fn tvr_isdigits(s, i) = if i >= count(s) then 1 else if at(s, i) >= "0" and at(s, i) <= "9" then tvr_isdigits(s, i + 1) else 0
+## an integer literal the verifier can hold: at most 18 digits (always below 2^63), or 19 digits not above the limit
+fn tvr_isint(s) = let neg = if count(s) > 0 and at(s, 0) == "-" then 1 else 0 in let d = slice(s, neg, count(s)) in if count(d) == 0 or tvr_isdigits(d, 0) == 0 then 0 else if count(d) <= 18 then 1 else if count(d) > 19 then 0 else if neg == 1 then (if d <= "9223372036854775808" then 1 else 0) else if d <= "9223372036854775807" then 1 else 0
+## digits are accumulated as a negative number so that the most negative i64 parses without overflow
+fn tvr_numneg(s, i, n, acc) = if i >= n then acc else tvr_numneg(s, i + 1, n, acc * 10 - (ord(at(s, i)) - 48))
+fn tvr_int(s) = if count(s) > 0 and at(s, 0) == "-" then tvr_numneg(s, 1, count(s), 0) else 0 - tvr_numneg(s, 0, count(s), 0)
+fn tvr_jesc1(c) = if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "\n" then "\\n" else if c == "\t" then " " else c
+fn tvr_jesc_at(s, i, n) = if i >= n then Nil else Cons(tvr_jesc1(at(s, i)), tvr_jesc_at(s, i + 1, n))
+fn tvr_jesc(s) = tvr_join(tvr_jesc_at(s, 0, count(s)))
+fn tvr_abs(x) = if x < 0 then 0 - x else x
+fn tvr_gcd(a, b) = if b == 0 then a else tvr_gcd(b, a % b)
+fn tvr_mod2(c) = let r = c % 2 in if r < 0 then 0 - r else r
+fn tvr_max64() = 9223372036854775807
+fn tvr_min64() = 0 - 9223372036854775807 - 1
+fn tvr_p62() = 4611686018427387904
+
+## --- wide integers: {k: -1 for -inf, 0 finite, 1 for +inf; value h * 2^31 + l with 0 <= l < 2^31} ---
+fn tvr_fdiv(x, m) = let q = x / m in if x % m < 0 then q - 1 else q
+fn tvr_wn(h, l) = let c = tvr_fdiv(l, 2147483648) in {k: 0, h: h + c, l: l - c * 2147483648}
+fn tvr_w(x) = let h = tvr_fdiv(x, 2147483648) in {k: 0, h: h, l: x - h * 2147483648}
+fn tvr_winf(s) = {k: s, h: 0, l: 0}
+fn tvr_wadd(a, b) = if a.k != 0 then a else if b.k != 0 then b else tvr_wn(a.h + b.h, a.l + b.l)
+fn tvr_wneg(a) = if a.k != 0 then tvr_winf(0 - a.k) else tvr_wn(0 - a.h, 0 - a.l)
+fn tvr_wsub(a, b) = tvr_wadd(a, tvr_wneg(b))
+fn tvr_wmuls(a, c) = if c == 0 then tvr_w(0) else if a.k != 0 then tvr_winf(if c > 0 then a.k else 0 - a.k) else tvr_wn(a.h * c, a.l * c)
+fn tvr_wcmp(a, b) = if a.k != b.k then (if a.k < b.k then 0 - 1 else 1) else if a.k != 0 then 0 else if a.h != b.h then (if a.h < b.h then 0 - 1 else 1) else if a.l < b.l then 0 - 1 else if a.l > b.l then 1 else 0
+fn tvr_wmax(a, b) = if tvr_wcmp(a, b) >= 0 then a else b
+fn tvr_wmin(a, b) = if tvr_wcmp(a, b) <= 0 then a else b
+## floor / ceiling of a / g for a small g > 0
+fn tvr_wfdiv(a, g) = if a.k != 0 then a else let qh = tvr_fdiv(a.h, g) in let rh = a.h - qh * g in tvr_wn(qh, (rh * 2147483648 + a.l) / g)
+fn tvr_wcdiv(a, g) = tvr_wneg(tvr_wfdiv(tvr_wneg(a), g))
+fn tvr_wfit(a) = if a.k == 0 and tvr_wcmp(tvr_w(tvr_min64()), a) <= 0 and tvr_wcmp(a, tvr_w(tvr_max64())) <= 0 then 1 else 0
+fn tvr_wint(a) = a.h * 2147483648 + a.l
+fn tvr_wstr(a) = if a.k < 0 then "-inf" else if a.k > 0 then "+inf" else if tvr_wfit(a) == 1 then str(tvr_wint(a)) else str(a.h) + "*2^31+" + str(a.l)
+
+## --- linear forms over the atoms: {c: constant, ts: terms {a: atom, k: coefficient} sorted by atom, no zero k} ---
+## atoms: 0 = a, 1 = b, 2 = a*b, 3 = tdiv(a,b), 4 = tmod(a,b), 5 = wrap64 of the helper's wrapping result
+fn tvr_lc(c) = {c: c, ts: Nil}
+fn tvr_la(i) = {c: 0, ts: Cons({a: i, k: 1}, Nil)}
+fn tvr_lbad() = {ok: 0, v: {c: 0, ts: Nil}}
+fn tvr_lok(l) = {ok: 1, v: l}
+fn tvr_ts_add(x, y) = match x
+    Nil        => y
+    Cons(h, t) => tvr_ts_add1(h, t, y)
+fn tvr_ts_add1(h, t, y) = match y
+    Nil        => Cons(h, t)
+    Cons(g, u) => if h.a < g.a then Cons(h, tvr_ts_add(t, y)) else if g.a < h.a then Cons(g, tvr_ts_add1(h, t, u)) else if h.k + g.k == 0 then tvr_ts_add(t, u) else Cons({a: h.a, k: h.k + g.k}, tvr_ts_add(t, u))
+fn tvr_ts_scale(x, c) = match x
+    Nil        => Nil
+    Cons(h, t) => Cons({a: h.a, k: h.k * c}, tvr_ts_scale(t, c))
+fn tvr_ts_div(x, d) = match x
+    Nil        => Nil
+    Cons(h, t) => Cons({a: h.a, k: h.k / d}, tvr_ts_div(t, d))
+fn tvr_ts_big(ts) = match ts
+    Nil        => 0
+    Cons(h, t) => if h.k > 4096 or h.k < 0 - 4096 then 1 else tvr_ts_big(t)
+fn tvr_ts_even(ts) = match ts
+    Nil        => 1
+    Cons(h, t) => if h.k % 2 != 0 then 0 else tvr_ts_even(t)
+fn tvr_ts_gcd(ts, g) = match ts
+    Nil        => g
+    Cons(h, t) => tvr_ts_gcd(t, tvr_gcd(tvr_abs(h.k), g))
+fn tvr_ts_sign(ts) = match ts
+    Nil        => 1
+    Cons(h, t) => if h.k < 0 then 0 - 1 else 1
+fn tvr_tskey(ts) = match ts
+    Nil        => ""
+    Cons(h, t) => str(h.k) + "*" + str(h.a) + ";" + tvr_tskey(t)
+fn tvr_lkey(l) = str(l.c) + "+" + tvr_tskey(l.ts)
+fn tvr_cadd(x, y) = let s = tvr_wadd(tvr_w(x), tvr_w(y)) in if tvr_wfit(s) == 1 then {ok: 1, v: tvr_wint(s)} else {ok: 0, v: 0}
+fn tvr_ladd(x, y) = let c = tvr_cadd(x.c, y.c) in let ts = tvr_ts_add(x.ts, y.ts) in if c.ok == 0 or tvr_ts_big(ts) == 1 then tvr_lbad() else tvr_lok({c: c.v, ts: ts})
+fn tvr_lscale(x, c) = if c > 4096 or c < 0 - 4096 then tvr_lbad() else let s = tvr_wmuls(tvr_w(x.c), c) in let ts = if c == 0 then Nil else tvr_ts_scale(x.ts, c) in if tvr_wfit(s) == 0 or tvr_ts_big(ts) == 1 then tvr_lbad() else tvr_lok({c: tvr_wint(s), ts: ts})
+fn tvr_lsub(x, y) = let n = tvr_lscale(y, 0 - 1) in if n.ok == 0 then tvr_lbad() else tvr_ladd(x, n.v)
+## k when l is exactly k * atom, else 0
+fn tvr_mono(l, atom) = if l.c != 0 then 0 else tvr_mono1(l.ts, atom)
+fn tvr_mono1(ts, atom) = match ts
+    Nil        => 0
+    Cons(h, t) => if h.a == atom and tvr_isnil(t) == 1 then h.k else 0
+## products: a constant times a form, or (k1 * a) * (k2 * b) = k1 k2 * (a*b); anything else is not representable
+fn tvr_lmul(x, y, bi) = if tvr_isnil(y.ts) == 1 then tvr_lscale(x, y.c) else if tvr_isnil(x.ts) == 1 then tvr_lscale(y, x.c) else let p = if tvr_mono(x, 0) != 0 and tvr_mono(y, bi) != 0 then tvr_mono(x, 0) * tvr_mono(y, bi) else if tvr_mono(x, bi) != 0 and tvr_mono(y, 0) != 0 then tvr_mono(x, bi) * tvr_mono(y, 0) else 0 in if p == 0 or p > 4096 or p < 0 - 4096 then tvr_lbad() else tvr_lok({c: 0, ts: Cons({a: 2, k: p}, Nil)})
+## l = c + s * g * l0 with l0 primitive and its first coefficient positive
+fn tvr_norm(ts) = let g = tvr_ts_gcd(ts, 0) in let s = tvr_ts_sign(ts) in {g: g, s: s, ts: tvr_ts_div(ts, g * s)}
+
+## --- predicates: {l, lo, hi, neg, of}: "l is in [lo, hi]" (neg 0) or "l is outside [lo, hi]" (neg 1);
+##     of marks the overflow predicate of an arithmetic instruction ---
+fn tvr_pin(l, lo, hi) = {l: l, lo: lo, hi: hi, neg: 0, of: 0}
+fn tvr_peq(l, k) = tvr_pin(l, tvr_w(k), tvr_w(k))
+fn tvr_plt0(l) = tvr_pin(l, tvr_winf(0 - 1), tvr_w(0 - 1))
+fn tvr_pgt0(l) = tvr_pin(l, tvr_w(1), tvr_winf(1))
+fn tvr_pof(l) = {l: l, lo: tvr_w(tvr_min64()), hi: tvr_w(tvr_max64()), neg: 1, of: 1}
+fn tvr_pnot(p) = {l: p.l, lo: p.lo, hi: p.hi, neg: 1 - p.neg, of: p.of}
+fn tvr_pfit63(l) = tvr_pin(l, tvr_w(0 - tvr_p62()), tvr_w(tvr_p62() - 1))
+
+## --- the constraint store of a path: entries {key of a primitive form, lo, hi, ex: excluded intervals}.
+##     Every entry is a fact that holds on the path. The range of a form is the interval sum over its atoms,
+##     intersected with its own entry and trimmed by the excluded intervals that cover an end. An empty range
+##     proves the path infeasible; "p is implied" is "asserting not p is infeasible". ---
+fn tvr_cs_find(cs, key) = match cs
+    Nil        => {ok: 0, lo: tvr_winf(0 - 1), hi: tvr_winf(1), ex: Nil}
+    Cons(h, t) => if h.key == key then {ok: 1, lo: h.lo, hi: h.hi, ex: h.ex} else tvr_cs_find(t, key)
+fn tvr_cs_put(cs, key, lo, hi, ex) = match cs
+    Nil        => Cons({key: key, lo: lo, hi: hi, ex: ex}, Nil)
+    Cons(h, t) => if h.key == key then Cons({key: key, lo: lo, hi: hi, ex: ex}, t) else Cons(h, tvr_cs_put(t, key, lo, hi, ex))
+fn tvr_single(ts) = match ts
+    Nil        => 0
+    Cons(h, t) => if h.k == 1 and tvr_isnil(t) == 1 then 1 else 0
+fn tvr_ts_range(ts, cs, lo, hi) = match ts
+    Nil        => {lo: lo, hi: hi}
+    Cons(h, t) => let r = tvr_cs_find(cs, "1*" + str(h.a) + ";") in if h.k > 0 then tvr_ts_range(t, cs, tvr_wadd(lo, tvr_wmuls(r.lo, h.k)), tvr_wadd(hi, tvr_wmuls(r.hi, h.k))) else tvr_ts_range(t, cs, tvr_wadd(lo, tvr_wmuls(r.hi, h.k)), tvr_wadd(hi, tvr_wmuls(r.lo, h.k)))
+fn tvr_trim(lo, hi, all, cur, n) = match cur
+    Nil        => if n <= 1 then {lo: lo, hi: hi, ex: all} else tvr_trim(lo, hi, all, all, n - 1)
+    Cons(x, t) => let lo2 = if tvr_wcmp(x.lo, lo) <= 0 and tvr_wcmp(lo, x.hi) <= 0 then tvr_wadd(x.hi, tvr_w(1)) else lo in let hi2 = if tvr_wcmp(x.lo, hi) <= 0 and tvr_wcmp(hi, x.hi) <= 0 then tvr_wsub(x.lo, tvr_w(1)) else hi in tvr_trim(lo2, hi2, all, t, n)
+fn tvr_empty(lo, hi) = if tvr_wcmp(lo, hi) > 0 or lo.k == 1 or hi.k == 0 - 1 then 1 else 0
+fn tvr_range0(cs, ts) = let e = tvr_cs_find(cs, tvr_tskey(ts)) in if tvr_single(ts) == 1 then {lo: e.lo, hi: e.hi, ex: e.ex} else let b = tvr_ts_range(ts, cs, tvr_w(0), tvr_w(0)) in tvr_trim(tvr_wmax(b.lo, e.lo), tvr_wmin(b.hi, e.hi), e.ex, e.ex, tvr_len(e.ex) + 1)
+fn tvr_cs_in(cs, ts, lo, hi) = let r = tvr_range0(cs, ts) in let t = tvr_trim(tvr_wmax(r.lo, lo), tvr_wmin(r.hi, hi), r.ex, r.ex, tvr_len(r.ex) + 1) in if tvr_empty(t.lo, t.hi) == 1 then {ok: 0, cs: cs} else {ok: 1, cs: tvr_cs_put(cs, tvr_tskey(ts), t.lo, t.hi, r.ex)}
+fn tvr_cs_out(cs, ts, lo, hi) = if tvr_wcmp(lo, hi) > 0 then {ok: 1, cs: cs} else let r = tvr_range0(cs, ts) in let ex = Cons({lo: lo, hi: hi}, r.ex) in let t = tvr_trim(r.lo, r.hi, ex, ex, tvr_len(ex) + 1) in if tvr_empty(t.lo, t.hi) == 1 then {ok: 0, cs: cs} else {ok: 1, cs: tvr_cs_put(cs, tvr_tskey(ts), t.lo, t.hi, ex)}
+## c + s*g*l0 in [lo, hi]  <=>  l0 in [ceil((lo-c)/g), floor((hi-c)/g)] (s > 0), mirrored for s < 0: exact over the integers
+fn tvr_assert(cs, p, want) = let inside = if p.neg == want then 0 else 1 in if tvr_isnil(p.l.ts) == 1 then (let v = tvr_w(p.l.c) in let isin = if tvr_wcmp(p.lo, v) <= 0 and tvr_wcmp(v, p.hi) <= 0 then 1 else 0 in {ok: if isin == inside then 1 else 0, cs: cs}) else let n = tvr_norm(p.l.ts) in let lo2 = tvr_wsub(p.lo, tvr_w(p.l.c)) in let hi2 = tvr_wsub(p.hi, tvr_w(p.l.c)) in let lo3 = if n.s > 0 then tvr_wcdiv(lo2, n.g) else tvr_wcdiv(tvr_wneg(hi2), n.g) in let hi3 = if n.s > 0 then tvr_wfdiv(hi2, n.g) else tvr_wfdiv(tvr_wneg(lo2), n.g) in if inside == 1 then tvr_cs_in(cs, n.ts, lo3, hi3) else tvr_cs_out(cs, n.ts, lo3, hi3)
+fn tvr_implied(cs, p) = if tvr_assert(cs, p, 0).ok == 0 then 1 else 0
+fn tvr_lrange(cs, l) = if tvr_isnil(l.ts) == 1 then {lo: tvr_w(l.c), hi: tvr_w(l.c)} else let n = tvr_norm(l.ts) in let r = tvr_range0(cs, n.ts) in let c = tvr_w(l.c) in if n.s > 0 then {lo: tvr_wadd(tvr_wmuls(r.lo, n.g), c), hi: tvr_wadd(tvr_wmuls(r.hi, n.g), c)} else {lo: tvr_wadd(tvr_wmuls(r.hi, 0 - n.g), c), hi: tvr_wadd(tvr_wmuls(r.lo, 0 - n.g), c)}
+fn tvr_fits(cs, l) = let r = tvr_lrange(cs, l) in if tvr_wcmp(tvr_w(tvr_min64()), r.lo) <= 0 and tvr_wcmp(r.hi, tvr_w(tvr_max64())) <= 0 then 1 else 0
+
+## --- machine words:
+##     TrL(l)   the signed value of the word IS the form l (it fits 64 bits)
+##     TrW(l)   the word is l modulo 2^64 (an arithmetic result that may have wrapped)
+##     TrP(id)  pointer to the cell id            TrH(id)  that pointer shifted right by one
+##     TrA(x,y) x and y    TrO(x,y) x or y    TrM(x,k) x and the constant k (only bit 0 / the low three bits are derived)
+##     TrS(p)   %al holds 1 iff p, the upper bytes are unknown    TrB(p)  the whole word is 1 iff p, else 0
+##     TrX(l)   the sign extension of l (after cqto)    TrI(r)  the value register r had on entry
+##     TrR(pc)  a return address pushed by a modelled call    TrT  the caller's return address    TrU  unknown
+##     TrE(msg) an operand outside the model ---
+fn tvr_verr(v) = match v
+    TrE(m) => m
+    TrU    => ""
+    _      => ""
+fn tvr_constof(v) = match v
+    TrL(l) => if tvr_isnil(l.ts) == 1 then {ok: 1, v: l.c} else {ok: 0, v: 0}
+    _      => {ok: 0, v: 0}
+fn tvr_bit0(v) = match v
+    TrL(l)    => if tvr_ts_even(l.ts) == 1 then tvr_mod2(l.c) else 0 - 1
+    TrW(l)    => if tvr_ts_even(l.ts) == 1 then tvr_mod2(l.c) else 0 - 1
+    TrP(i)    => 0
+    TrA(x, y) => tvr_and01(tvr_bit0(x), tvr_bit0(y))
+    TrO(x, y) => tvr_or01(tvr_bit0(x), tvr_bit0(y))
+    TrM(x, k) => if tvr_mod2(k) == 0 then 0 else tvr_bit0(x)
+    _         => 0 - 1
+fn tvr_and01(a, b) = if a == 0 or b == 0 then 0 else if a == 1 and b == 1 then 1 else 0 - 1
+fn tvr_or01(a, b) = if a == 1 or b == 1 then 1 else if a == 0 and b == 0 then 0 else 0 - 1
+fn tvr_low3(v) = match v
+    TrL(l)    => if tvr_isnil(l.ts) == 1 then ((l.c % 8) + 8) % 8 else 0 - 1
+    TrP(i)    => 0
+    TrA(x, y) => let a = tvr_low3(x) in let b = tvr_low3(y) in if a == 0 or b == 0 then 0 else if a > 0 and b > 0 then bit_and(a, b) else 0 - 1
+    TrO(x, y) => let a = tvr_low3(x) in let b = tvr_low3(y) in if a >= 0 and b >= 0 then bit_or(a, b) else 0 - 1
+    _         => 0 - 1
+fn tvr_isret(v) = match v
+    TrR(p) => 1
+    TrT    => 1
+    _      => 0
+fn tvr_isinit(v, n) = match v
+    TrI(m) => if m == n then 1 else 0
+    _      => 0
+fn tvr_islin(v, l) = match v
+    TrL(x) => if tvr_lkey(x) == tvr_lkey(l) then 1 else 0
+    _      => 0
+
+## --- flags: TrfU unknown | TrfA(l) of an add/sub/imul/inc/dec with mathematical result l | TrfC(d) of a cmp with
+##     mathematical difference d = destination - source | TrfT(l) of test l, l | TrfZ(z) only ZF is known |
+##     TrfY(c) only CF is known ---
+fn tvr_cbad() = {k: 0, v: 0, p: tvr_peq(tvr_lc(0), 0)}
+fn tvr_cconst(v) = {k: 1, v: v, p: tvr_peq(tvr_lc(0), 0)}
+fn tvr_cpred(p) = {k: 2, v: 0, p: p}
+fn tvr_ccbase(cc) = if cc == "e" or cc == "z" or cc == "ne" or cc == "nz" then "e" else if cc == "o" or cc == "no" then "o" else if cc == "l" or cc == "ge" then "l" else if cc == "g" or cc == "le" then "g" else if cc == "s" or cc == "ns" then "s" else if cc == "c" or cc == "nc" then "c" else ""
+fn tvr_ccinv(cc) = if cc == "ne" or cc == "nz" or cc == "no" or cc == "ge" or cc == "le" or cc == "ns" or cc == "nc" then 1 else 0
+fn tvr_cond0(b, f) = match f
+    TrfU    => tvr_cbad()
+    TrfA(l) => if b == "o" then tvr_cpred(tvr_pof(l)) else tvr_cbad()
+    TrfC(d) => if b == "e" then tvr_cpred(tvr_peq(d, 0)) else if b == "l" then tvr_cpred(tvr_plt0(d)) else if b == "g" then tvr_cpred(tvr_pgt0(d)) else tvr_cbad()
+    TrfT(l) => if b == "e" then tvr_cpred(tvr_peq(l, 0)) else if b == "l" or b == "s" then tvr_cpred(tvr_plt0(l)) else if b == "g" then tvr_cpred(tvr_pgt0(l)) else tvr_cbad()
+    TrfZ(z) => if b == "e" then tvr_cconst(z) else tvr_cbad()
+    TrfY(c) => if b == "c" then tvr_cconst(c) else tvr_cbad()
+    _       => tvr_cbad()
+## {k: 0 not modelled | 1 constant v | 2 predicate p; inv: the condition code is the negated one}
+fn tvr_cond(cc, f) = let r = tvr_cond0(tvr_ccbase(cc), f) in {k: r.k, v: r.v, p: r.p, inv: tvr_ccinv(cc)}
+
+## --- machine state: {pc: remaining instructions, rg: registers, stk: stack slots (top first), cells, fl, cs, nob} ---
+fn tvr_s(pc, rg, stk, cells, fl, cs, nob) = {pc: pc, rg: rg, stk: stk, cells: cells, fl: fl, cs: cs, nob: nob}
+fn tvr_spc(s, pc) = tvr_s(pc, s.rg, s.stk, s.cells, s.fl, s.cs, s.nob)
+fn tvr_srg(s, rg) = tvr_s(s.pc, rg, s.stk, s.cells, s.fl, s.cs, s.nob)
+fn tvr_sfl(s, fl) = tvr_s(s.pc, s.rg, s.stk, s.cells, fl, s.cs, s.nob)
+fn tvr_sstk(s, stk) = tvr_s(s.pc, s.rg, stk, s.cells, s.fl, s.cs, s.nob)
+fn tvr_rget(rg, n) = match rg
+    Nil        => TrE("register outside the model: " + n)
+    Cons(h, t) => if h.n == n then h.v else tvr_rget(t, n)
+fn tvr_rhas(rg, n) = match rg
+    Nil        => 0
+    Cons(h, t) => if h.n == n then 1 else tvr_rhas(t, n)
+fn tvr_rset(rg, n, v) = match rg
+    Nil        => Nil
+    Cons(h, t) => if h.n == n then Cons({n: n, v: v}, t) else Cons(h, tvr_rset(t, n, v))
+fn tvr_nth(xs, i) = match xs
+    Nil        => TrE("stack access outside the modelled frame")
+    Cons(h, t) => if i == 0 then h else tvr_nth(t, i - 1)
+fn tvr_lset(xs, i, v) = match xs
+    Nil        => Nil
+    Cons(h, t) => if i == 0 then Cons(v, t) else Cons(h, tvr_lset(t, i - 1, v))
+fn tvr_cell(cells, id) = match cells
+    Nil        => {id: 0, sz: 0, f0: TrU, f8: TrU, fresh: 0}
+    Cons(h, t) => if h.id == id then h else tvr_cell(t, id)
+fn tvr_cell_put(cells, c) = match cells
+    Nil        => Nil
+    Cons(h, t) => if h.id == c.id then Cons(c, t) else Cons(h, tvr_cell_put(t, c))
+fn tvr_load_cell(pv, d, s) = match pv
+    TrP(id) => let c = tvr_cell(s.cells, id) in if d == 0 and c.sz >= 8 then c.f0 else if d == 8 and c.sz >= 16 then c.f8 else TrE("load outside the two words of an integer cell")
+    TrE(m)  => TrE(m)
+    _       => TrE("load through a register that is not a modelled cell pointer")
+fn tvr_load(d, b, s) = if b == "%rsp" then (if d < 0 or d % 8 != 0 then TrE("stack access outside the modelled frame") else tvr_nth(s.stk, d / 8)) else tvr_load_cell(tvr_rget(s.rg, b), d, s)
+fn tvr_rd(o, s) = match o
+    TroN       => TrE("missing operand")
+    TroX       => TrE("operand form outside the model")
+    TroR(r)    => tvr_rget(s.rg, r)
+    TroI(n)    => TrL(tvr_lc(n))
+    TroM(d, b) => tvr_load(d, b, s)
+    _          => TrE("operand form outside the model")
+## the byte operands the helpers use: %al, %cl, or a memory byte (the low byte of the word, little-endian)
+fn tvr_rd8(o, s) = match o
+    TroR(r)    => if r == "%al" then tvr_rget(s.rg, "%rax") else if r == "%cl" then tvr_rget(s.rg, "%rcx") else TrE("byte register outside the model: " + r)
+    TroM(d, b) => tvr_load(d, b, s)
+    _          => TrE("operand form outside the model")
+fn tvr_werr(m, s) = {err: m, s: s}
+fn tvr_wr_stk(d, v, s) = if d < 0 or d % 8 != 0 or d / 8 >= tvr_len(s.stk) then tvr_werr("stack write outside the modelled frame", s) else if tvr_isret(tvr_nth(s.stk, d / 8)) == 1 then tvr_werr("write over a return address", s) else {err: "", s: tvr_sstk(s, tvr_lset(s.stk, d / 8, v))}
+fn tvr_wr_cell(pv, d, v, s) = match pv
+    TrP(id) => let c = tvr_cell(s.cells, id) in if c.fresh == 0 then tvr_werr("store into a cell the helper did not allocate", s) else if d == 0 and c.sz >= 8 then {err: "", s: tvr_s(s.pc, s.rg, s.stk, tvr_cell_put(s.cells, {id: c.id, sz: c.sz, f0: v, f8: c.f8, fresh: 1}), s.fl, s.cs, s.nob)} else if d == 8 and c.sz >= 16 then {err: "", s: tvr_s(s.pc, s.rg, s.stk, tvr_cell_put(s.cells, {id: c.id, sz: c.sz, f0: c.f0, f8: v, fresh: 1}), s.fl, s.cs, s.nob)} else tvr_werr("store outside the two words of the allocated cell", s)
+    _       => tvr_werr("store through a register that is not a modelled cell pointer", s)
+fn tvr_wr1(o, v, s) = match o
+    TroR(r)    => if tvr_rhas(s.rg, r) == 1 then {err: "", s: tvr_srg(s, tvr_rset(s.rg, r, v))} else tvr_werr("write to a register outside the model: " + r, s)
+    TroM(d, b) => if b == "%rsp" then tvr_wr_stk(d, v, s) else tvr_wr_cell(tvr_rget(s.rg, b), d, v, s)
+    _          => tvr_werr("destination operand form outside the model", s)
+fn tvr_wr(o, v, s) = let e = tvr_verr(v) in if e != "" then tvr_werr(e, s) else tvr_wr1(o, v, s)
+
+## --- instruction semantics. A step returns TrsN(state) | TrsJ(label, state) | TrsB(pred, inv, label, state) |
+##     TrsC(taken, label, state) | TrsRet(state) | TrsE(reason) ---
+fn tvr_done(w, fl) = if w.err != "" then TrsE(w.err) else TrsN(tvr_sfl(w.s, fl))
+fn tvr_done0(w) = if w.err != "" then TrsE(w.err) else TrsN(w.s)
+## an arithmetic result: the helper's wrapping result is the atom 5 by definition; otherwise the exact value when the
+## range of the path proves that it fits 64 bits, else a value only known modulo 2^64
+fn tvr_mk(r, s, cx) = if r.ok == 0 then TrU else if cx.wkey != "" and tvr_lkey(r.v) == cx.wkey then TrL(tvr_la(5)) else if tvr_fits(s.cs, r.v) == 1 then TrL(r.v) else TrW(r.v)
+fn tvr_bi(cx) = if cx.alias == 1 then 0 else 1
+fn tvr_arith2(lx, y, k, s, cx) = match y
+    TrL(ly) => let r = if k == 0 then tvr_ladd(lx, ly) else if k == 1 then tvr_lsub(lx, ly) else tvr_lmul(lx, ly, tvr_bi(cx)) in if r.ok == 0 then {v: TrU, f: TrfU} else {v: tvr_mk(r, s, cx), f: TrfA(r.v)}
+    _       => {v: TrU, f: TrfU}
+fn tvr_arith_h(a, y, k) = match y
+    TrH(b) => if k == 0 and a == b then {v: TrP(a), f: TrfU} else {v: TrU, f: TrfU}
+    _      => {v: TrU, f: TrfU}
+fn tvr_arith(x, y, k, s, cx) = match x
+    TrL(lx) => tvr_arith2(lx, y, k, s, cx)
+    TrH(a)  => tvr_arith_h(a, y, k)
+    _       => {v: TrU, f: TrfU}
+fn tvr_x_arith(i, s, cx, k) = let x = tvr_rd(i.b, s) in let y = tvr_rd(i.a, s) in if tvr_verr(x) != "" then TrsE(tvr_verr(x)) else if tvr_verr(y) != "" then TrsE(tvr_verr(y)) else let r = tvr_arith(x, y, k, s, cx) in tvr_done(tvr_wr(i.b, r.v, s), r.f)
+fn tvr_x_incdec(i, s, cx, d) = let x = tvr_rd(i.a, s) in if tvr_verr(x) != "" then TrsE(tvr_verr(x)) else let r = tvr_arith(x, TrL(tvr_lc(d)), 0, s, cx) in tvr_done(tvr_wr(i.a, r.v, s), r.f)
+fn tvr_lea1(v, d, s, cx) = match v
+    TrL(l) => tvr_mk(tvr_ladd(l, tvr_lc(d)), s, cx)
+    TrE(m) => TrE(m)
+    _      => TrU
+fn tvr_lea_val(o, s, cx) = match o
+    TroM(d, b) => tvr_lea1(tvr_rget(s.rg, b), d, s, cx)
+    _          => TrE("leaq operand form outside the model")
+fn tvr_sar1(x) = match x
+    TrL(l) => if tvr_ts_even(l.ts) == 0 then {v: TrU, f: TrfU} else if tvr_mod2(l.c) == 0 then {v: TrL({c: l.c / 2, ts: tvr_ts_div(l.ts, 2)}), f: TrfY(0)} else {v: TrL({c: (l.c - 1) / 2, ts: tvr_ts_div(l.ts, 2)}), f: TrfY(1)}
+    TrP(a) => {v: TrH(a), f: TrfY(0)}
+    _      => {v: TrU, f: TrfU}
+fn tvr_x_sar(i, s) = match i.a
+    TroI(k) => if k != 1 then TrsE("shift count outside the model") else let x = tvr_rd(i.b, s) in if tvr_verr(x) != "" then TrsE(tvr_verr(x)) else let r = tvr_sar1(x) in tvr_done(tvr_wr(i.b, r.v, s), r.f)
+    _       => TrsE("shift operand form outside the model")
+fn tvr_mask(x, k) = let l3 = tvr_low3(x) in let c = tvr_constof(x) in if k >= 0 and k <= 7 and l3 >= 0 then TrL(tvr_lc(bit_and(l3, k))) else if c.ok == 1 then TrL(tvr_lc(bit_and(c.v, k))) else TrM(x, k)
+fn tvr_x_and(i, s) = let x = tvr_rd(i.b, s) in if tvr_verr(x) != "" then TrsE(tvr_verr(x)) else tvr_x_and1(i, x, s)
+fn tvr_x_and1(i, x, s) = match i.a
+    TroI(k) => tvr_done(tvr_wr(i.b, tvr_mask(x, k), s), TrfU)
+    TroR(r) => let y = tvr_rd(i.a, s) in if tvr_verr(y) != "" then TrsE(tvr_verr(y)) else tvr_done(tvr_wr(i.b, TrA(y, x), s), TrfU)
+    _       => TrsE("andq operand form outside the model")
+fn tvr_x_or(i, s) = match i.a
+    TroR(r) => let x = tvr_rd(i.b, s) in let y = tvr_rd(i.a, s) in if tvr_verr(x) != "" then TrsE(tvr_verr(x)) else if tvr_verr(y) != "" then TrsE(tvr_verr(y)) else tvr_done(tvr_wr(i.b, TrO(y, x), s), TrfU)
+    _       => TrsE("orq operand form outside the model")
+fn tvr_x_xor(i, s) = if i.ta == i.tb and tvr_starts(i.ta, "%") == 1 then tvr_done(tvr_wr(i.b, TrL(tvr_lc(0)), s), TrfT(tvr_lc(0))) else tvr_done(tvr_wr(i.b, TrU, s), TrfU)
+fn tvr_masktest(v, k) = let c = tvr_constof(v) in if c.ok == 1 and k >= 0 then TrfZ(if bit_and(c.v, k) == 0 then 1 else 0) else if k == 1 then (let b = tvr_bit0(v) in if b < 0 then TrfU else TrfZ(1 - b)) else if k == 7 then (let l3 = tvr_low3(v) in if l3 >= 0 then TrfZ(if l3 == 0 then 1 else 0) else if tvr_bit0(v) == 1 then TrfZ(0) else TrfU) else TrfU
+fn tvr_selftest(v) = match v
+    TrL(l)    => TrfT(l)
+    TrP(a)    => TrfZ(0)
+    TrM(x, k) => if tvr_bit0(v) == 1 then TrfZ(0) else TrfU
+    _         => TrfU
+fn tvr_x_test(i, s, byte) = match i.a
+    TroI(k) => let v = if byte == 1 then tvr_rd8(i.b, s) else tvr_rd(i.b, s) in if tvr_verr(v) != "" then TrsE(tvr_verr(v)) else TrsN(tvr_sfl(s, tvr_masktest(v, k)))
+    TroR(r) => if byte == 1 or i.ta != i.tb then TrsE("test of two different registers is outside the model") else let v = tvr_rd(i.b, s) in if tvr_verr(v) != "" then TrsE(tvr_verr(v)) else TrsN(tvr_sfl(s, tvr_selftest(v)))
+    _       => TrsE("test operand form outside the model")
+fn tvr_cmp_pl(lv) = if tvr_bit0(lv) == 1 then TrfZ(0) else let c = tvr_constof(lv) in if c.ok == 1 and c.v == 0 then TrfZ(0) else TrfU
+fn tvr_cmp_m(m, o) = let c = tvr_constof(o) in let b = tvr_bit0(m) in if c.ok == 1 and b >= 0 and b != tvr_mod2(c.v) then TrfZ(0) else TrfU
+fn tvr_cmp_l(lx, y, x) = match y
+    TrL(ly)   => let d = tvr_lsub(lx, ly) in if d.ok == 1 then TrfC(d.v) else TrfU
+    TrP(b)    => tvr_cmp_pl(x)
+    TrM(v, k) => tvr_cmp_m(y, x)
+    _         => TrfU
+fn tvr_cmp_p(a, y) = match y
+    TrP(b) => TrfZ(if a == b then 1 else 0)
+    TrL(l) => tvr_cmp_pl(y)
+    _      => TrfU
+## flags of `cmp y, x` (x - y)
+fn tvr_cmp(x, y) = match x
+    TrL(lx)   => tvr_cmp_l(lx, y, x)
+    TrP(a)    => tvr_cmp_p(a, y)
+    TrM(v, k) => tvr_cmp_m(x, y)
+    _         => TrfU
+fn tvr_byte(c) = ((c % 256) + 256) % 256
+fn tvr_cmpb(v, k) = let c = tvr_constof(v) in if c.ok == 1 then TrfZ(if tvr_byte(c.v) == tvr_byte(k) then 1 else 0) else let b = tvr_bit0(v) in if b >= 0 and b != tvr_mod2(k) then TrfZ(0) else TrfU
+fn tvr_x_cmp(i, s) = let x = tvr_rd(i.b, s) in let y = tvr_rd(i.a, s) in if tvr_verr(x) != "" then TrsE(tvr_verr(x)) else if tvr_verr(y) != "" then TrsE(tvr_verr(y)) else TrsN(tvr_sfl(s, tvr_cmp(x, y)))
+fn tvr_x_cmpb(i, s) = match i.a
+    TroI(k) => let v = tvr_rd8(i.b, s) in if tvr_verr(v) != "" then TrsE(tvr_verr(v)) else TrsN(tvr_sfl(s, tvr_cmpb(v, k)))
+    _       => TrsE("cmpb operand form outside the model")
+fn tvr_cqto1(v) = match v
+    TrL(l) => TrX(l)
+    _      => TrU
+fn tvr_x_cqto(s) = TrsN(tvr_srg(s, tvr_rset(s.rg, "%rdx", tvr_cqto1(tvr_rget(s.rg, "%rax")))))
+## idivq: the two #DE cases must be excluded by the path; the quotient / remainder of (a, b) are the atoms 3 / 4
+fn tvr_idiv3(ln, d, s, cx) = match d
+    TrL(ld) => if tvr_implied(s.cs, tvr_pnot(tvr_peq(ld, 0))) == 0 then TrsE("idivq: the divisor is not proven non-zero (#DE)") else if tvr_implied(s.cs, tvr_pnot(tvr_peq(ld, 0 - 1))) == 0 and tvr_implied(s.cs, tvr_pnot(tvr_peq(ln, tvr_min64()))) == 0 then TrsE("idivq: INT64_MIN / -1 is not excluded (#DE)") else let isab = if tvr_lkey(ln) == tvr_lkey(cx.al) and tvr_lkey(ld) == tvr_lkey(cx.bl) then 1 else 0 in TrsN(tvr_s(s.pc, tvr_rset(tvr_rset(s.rg, "%rax", if isab == 1 then TrL(tvr_la(3)) else TrU), "%rdx", if isab == 1 then TrL(tvr_la(4)) else TrU), s.stk, s.cells, TrfU, s.cs, s.nob + 2))
+    _       => TrsE("idivq: the divisor is not a known signed value")
+fn tvr_idiv2(ln, x, d, s, cx) = match x
+    TrX(lx) => if tvr_lkey(lx) != tvr_lkey(ln) then TrsE("idivq: %rdx is not the sign extension of %rax") else tvr_idiv3(ln, d, s, cx)
+    _       => TrsE("idivq: %rdx is not the sign extension of %rax")
+fn tvr_idiv1(n, x, d, s, cx) = match n
+    TrL(ln) => tvr_idiv2(ln, x, d, s, cx)
+    _       => TrsE("idivq: the dividend is not a known signed value")
+fn tvr_x_idiv(i, s, cx) = match i.a
+    TroR(r) => if r == "%rax" or r == "%rdx" or i.tb != "" then TrsE("idivq operand form outside the model") else tvr_idiv1(tvr_rget(s.rg, "%rax"), tvr_rget(s.rg, "%rdx"), tvr_rget(s.rg, r), s, cx)
+    _       => TrsE("idivq operand form outside the model")
+fn tvr_x_push(i, s) = let v = tvr_rd(i.a, s) in if tvr_verr(v) != "" then TrsE(tvr_verr(v)) else if i.tb != "" then TrsE("pushq operand form outside the model") else TrsN(tvr_sstk(s, Cons(v, s.stk)))
+fn tvr_x_pop(i, s) = match s.stk
+    Nil           => TrsE("pop from an empty modelled stack")
+    Cons(v, rest) => if tvr_isret(v) == 1 then TrsE("pop of a return address") else tvr_done0(tvr_wr(i.a, v, tvr_sstk(s, rest)))
+fn tvr_x_ret(s) = match s.stk
+    Nil           => TrsE("ret with an empty modelled stack")
+    Cons(v, rest) => tvr_x_ret1(v, tvr_sstk(s, rest))
+fn tvr_x_ret1(v, s) = match v
+    TrR(pc) => TrsN(tvr_spc(s, pc))
+    TrT     => TrsRet(s)
+    _       => TrsE("ret to a value that is not a return address")
+## axiom A1: a fresh cell in %rax; %r10 and the flags are lost; nothing else changes
+fn tvr_x_alloc(s) = let c = tvr_constof(tvr_rget(s.rg, "%rdi")) in if c.ok == 0 or c.v < 16 or c.v > 4096 then TrsE("allocation size is not a known constant >= 16") else let id = 10 + tvr_len(s.cells) in TrsN(tvr_s(s.pc, tvr_rset(tvr_rset(s.rg, "%rax", TrP(id)), "%r10", TrU), s.stk, Cons({id: id, sz: c.v, f0: TrU, f8: TrU, fresh: 1}, s.cells), TrfU, s.cs, s.nob))
+fn tvr_x_call(i, s) = match i.a
+    TroS(l) => if l == "__lume_alloc_a" then tvr_x_alloc(s) else TrsJ(l, tvr_sstk(s, Cons(TrR(s.pc), s.stk)))
+    _       => TrsE("indirect call")
+fn tvr_x_jmp(i, s) = match i.a
+    TroS(l) => TrsJ(l, s)
+    _       => TrsE("indirect jump")
+fn tvr_x_jcc(i, s, cc) = match i.a
+    TroS(l) => let c = tvr_cond(cc, s.fl) in if c.k == 0 then TrsE("branch on flags the model does not define here") else if c.k == 1 then TrsC(if c.v != c.inv then 1 else 0, l, s) else TrsB(c.p, c.inv, l, s)
+    _       => TrsE("indirect jump")
+fn tvr_x_set(i, s, cc) = if i.ta != "%al" or i.tb != "" then TrsE("setcc destination outside the model") else let c = tvr_cond(cc, s.fl) in if c.k == 0 then TrsE("setcc on flags the model does not define here") else TrsN(tvr_srg(s, tvr_rset(s.rg, "%rax", TrS(if c.k == 1 then tvr_peq(tvr_lc(if c.v != c.inv then 1 else 0), 1) else if c.inv == 1 then tvr_pnot(c.p) else c.p))))
+fn tvr_movzb1(v) = match v
+    TrS(p) => TrB(p)
+    TrL(l) => if tvr_isnil(l.ts) == 1 and l.c >= 0 and l.c <= 255 then v else TrU
+    _      => TrU
+fn tvr_x_movzb(i, s) = if i.ta != "%al" or i.tb != "%rax" then TrsE("movzbq operand form outside the model") else TrsN(tvr_srg(s, tvr_rset(s.rg, "%rax", tvr_movzb1(tvr_rget(s.rg, "%rax")))))
+fn tvr_step(i, s, cx) = let op = i.op in if op == "movq" then tvr_done0(tvr_wr(i.b, tvr_rd(i.a, s), s)) else if op == "leaq" then tvr_done0(tvr_wr(i.b, tvr_lea_val(i.a, s, cx), s)) else if op == "addq" then tvr_x_arith(i, s, cx, 0) else if op == "subq" then tvr_x_arith(i, s, cx, 1) else if op == "imulq" then tvr_x_arith(i, s, cx, 2) else if op == "incq" then tvr_x_incdec(i, s, cx, 1) else if op == "decq" then tvr_x_incdec(i, s, cx, 0 - 1) else if op == "sarq" then tvr_x_sar(i, s) else if op == "andq" then tvr_x_and(i, s) else if op == "orq" then tvr_x_or(i, s) else if op == "xorq" then tvr_x_xor(i, s) else if op == "testq" then tvr_x_test(i, s, 0) else if op == "testb" then tvr_x_test(i, s, 1) else if op == "cmpq" then tvr_x_cmp(i, s) else if op == "cmpb" then tvr_x_cmpb(i, s) else if op == "cqto" then tvr_x_cqto(s) else if op == "idivq" then tvr_x_idiv(i, s, cx) else if op == "pushq" then tvr_x_push(i, s) else if op == "popq" then tvr_x_pop(i, s) else if op == "call" then tvr_x_call(i, s) else if op == "ret" then tvr_x_ret(s) else if op == "jmp" then tvr_x_jmp(i, s) else if op == "movzbq" then tvr_x_movzb(i, s) else if tvr_starts(op, "set") == 1 then tvr_x_set(i, s, slice(op, 3, count(op))) else if tvr_starts(op, "j") == 1 then tvr_x_jcc(i, s, slice(op, 1, count(op))) else if op == "<end>" then TrsE("control leaves the extracted helper code") else TrsE("instruction outside the model")
+
+## --- specification checks at the end of a path ---
+fn tvr_res0() = {np: 0, nob: 0, err: ""}
+fn tvr_rerr(m) = {np: 1, nob: 0, err: m}
+fn tvr_radd(a, b) = {np: a.np + b.np, nob: a.nob + b.nob, err: if a.err != "" then a.err else b.err}
+fn tvr_cok(n) = {why: "", n: n}
+fn tvr_cno(m) = {why: m, n: 0}
+fn tvr_cand(a, b) = if a.why != "" then a else if b.why != "" then b else {why: "", n: a.n + b.n}
+fn tvr_need(s, p, msg) = if tvr_implied(s.cs, p) == 1 then tvr_cok(1) else tvr_cno(msg)
+## the mathematical result of the helper as a form; ok == 0 when the operation has none (cmp, eq, ...)
+fn tvr_math(cx) = let op = cx.op in if op == "add" then tvr_ladd(cx.al, cx.bl) else if op == "sub" then tvr_lsub(cx.al, cx.bl) else if op == "mul" then tvr_lok({c: 0, ts: Cons({a: 2, k: 1}, Nil)}) else if op == "div" or op == "idiv" then tvr_lok(tvr_la(3)) else if op == "mod" or op == "imod" then tvr_lok(tvr_la(4)) else if op == "wadd" or op == "wsub" or op == "wmul" then tvr_lok(tvr_la(5)) else if op == "mkint" then tvr_lok(cx.al) else if op == "qnext" then tvr_ladd(cx.al, tvr_lc(1)) else tvr_lbad()
+fn tvr_word2(m) = let d = tvr_lscale(m, 2) in if d.ok == 0 then tvr_lbad() else tvr_ladd(d.v, tvr_lc(1))
+fn tvr_chk_box(c, m, s) = if tvr_islin(c.f0, tvr_lc(3)) == 0 then tvr_cno("boxed result: the header word is not 3") else if c.sz < 16 or tvr_islin(c.f8, m) == 0 then tvr_cno("boxed result: the payload is not the specified result") else tvr_need(s, tvr_pnot(tvr_pfit63(m)), "boxed result is not proven to need 64 bits (non-canonical box)")
+## %rax is W(m)
+fn tvr_chk_word(v, m, s) = match v
+    TrL(l)  => let e = tvr_word2(m) in if e.ok == 1 and tvr_lkey(l) == tvr_lkey(e.v) then tvr_need(s, tvr_pfit63(m), "immediate result is not proven to fit 63 bits") else tvr_cno("%rax is not the immediate word 2m+1 of the specified result")
+    TrP(id) => tvr_chk_box(tvr_cell(s.cells, id), m, s)
+    _       => tvr_cno("%rax is not proven to be the canonical word of the specified result")
+fn tvr_chk_cmp(v, d, s) = let c = tvr_constof(v) in if c.ok == 0 then tvr_cno("%rax is not a constant comparison result") else if c.v == 0 - 1 then tvr_need(s, tvr_plt0(d), "returns -1 on a path where a < b is not proven") else if c.v == 0 then tvr_need(s, tvr_peq(d, 0), "returns 0 on a path where a == b is not proven") else if c.v == 1 then tvr_need(s, tvr_pgt0(d), "returns 1 on a path where a > b is not proven") else tvr_cno("%rax is not -1, 0 or 1")
+fn tvr_same_zero(pl, d) = if tvr_isnil(pl.ts) == 1 or tvr_isnil(d.ts) == 1 or pl.c != 0 or d.c != 0 then 0 else if tvr_tskey(tvr_norm(pl.ts).ts) == tvr_tskey(tvr_norm(d.ts).ts) then 1 else 0
+fn tvr_chk_eq(v, d, s) = match v
+    TrB(p) => if p.neg == 0 and tvr_wcmp(p.lo, tvr_w(0)) == 0 and tvr_wcmp(p.hi, tvr_w(0)) == 0 and tvr_same_zero(p.l, d) == 1 then tvr_cok(1) else tvr_cno("%rax is a flag of another comparison than a == b")
+    _      => let c = tvr_constof(v) in if c.ok == 0 then tvr_cno("%rax is not a 0/1 equality result") else if c.v == 1 then tvr_need(s, tvr_peq(d, 0), "returns 1 on a path where a == b is not proven") else if c.v == 0 then tvr_need(s, tvr_pnot(tvr_peq(d, 0)), "returns 0 on a path where a != b is not proven") else tvr_cno("%rax is not 0 or 1")
+fn tvr_chk_lin(v, l, what) = if tvr_islin(v, l) == 1 then tvr_cok(1) else tvr_cno(what)
+fn tvr_ret_val(s, cx) = let op = cx.op in let rax = tvr_rget(s.rg, "%rax") in let m = tvr_math(cx) in let d = tvr_lsub(cx.al, cx.bl) in if op == "add" or op == "sub" or op == "mul" or op == "wadd" or op == "wsub" or op == "wmul" or op == "mkint" then (if m.ok == 0 then tvr_cno("the specified result is not representable") else tvr_chk_word(rax, m.v, s)) else if op == "div" or op == "mod" then tvr_cand(tvr_need(s, tvr_pnot(tvr_peq(cx.bl, 0)), "returns on a path where b != 0 is not proven"), tvr_chk_word(rax, m.v, s)) else if op == "idiv" or op == "imod" then tvr_cand(tvr_need(s, tvr_pnot(tvr_peq(cx.bl, 0)), "returns on a path where b != 0 is not proven"), tvr_chk_lin(rax, m.v, "%rax is not the specified quotient / remainder")) else if op == "cmp" then (if d.ok == 0 then tvr_cno("a - b is not representable") else tvr_chk_cmp(rax, d.v, s)) else if op == "eq" then (if d.ok == 0 then tvr_cno("a - b is not representable") else tvr_chk_eq(rax, d.v, s)) else if op == "uint" then tvr_chk_lin(rax, cx.al, "%rax is not the raw value of the operand") else if op == "un2" then tvr_cand(tvr_chk_lin(rax, cx.al, "%rax is not the raw value of the first operand"), tvr_chk_lin(tvr_rget(s.rg, "%rcx"), cx.bl, "%rcx is not the raw value of the second operand")) else if op == "ustk" then tvr_cok(1) else if op == "cond" then (if cx.ka == 0 then tvr_cno("returns for an immediate integer (the specification is the __rt_not_bool trap)") else tvr_chk_lin(rax, tvr_lc(3), "%rax is not the word of true (3)")) else if op == "qnext" then (if tvr_islin(rax, tvr_lc(0)) == 1 then tvr_need(s, tvr_peq(cx.al, tvr_max64()), "returns 0 on a path where a == 2^63-1 is not proven") else if m.ok == 0 then tvr_cno("the specified result is not representable") else tvr_chk_word(rax, m.v, s)) else tvr_cno("no specification for this helper")
+fn tvr_all_regs() = Cons("%rax", Cons("%rcx", Cons("%rdx", Cons("%rbx", Cons("%rbp", Cons("%rsi", Cons("%rdi", Cons("%r8", Cons("%r9", Cons("%r10", Cons("%r11", Cons("%r12", Cons("%r13", Cons("%r14", Cons("%r15", Nil)))))))))))))))
+fn tvr_drop(xs, x) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h == x then tvr_drop(t, x) else Cons(h, tvr_drop(t, x))
+fn tvr_keep(op) = if op == "uint" then tvr_drop(tvr_all_regs(), "%rax") else if op == "un2" then tvr_drop(tvr_drop(tvr_all_regs(), "%rax"), "%rcx") else if op == "ustk" then tvr_all_regs() else Cons("%rbx", Cons("%rbp", Cons("%r12", Cons("%r13", Cons("%r14", Cons("%r15", Nil))))))
+fn tvr_kept(rg, names) = match names
+    Nil        => ""
+    Cons(n, t) => if tvr_isinit(tvr_rget(rg, n), n) == 1 then tvr_kept(rg, t) else n
+fn tvr_stack_ok(stk, cx) = match stk
+    Nil        => if cx.op == "ustk" then 0 else 1
+    Cons(h, t) => if cx.op == "ustk" and tvr_isnil(t) == 1 and tvr_islin(h, cx.al) == 1 then 1 else 0
+fn tvr_ret_check(s, cx) = if tvr_stack_ok(s.stk, cx) == 0 then tvr_rerr(if cx.op == "ustk" then "returns without the raw value in the caller's stack slot" else "returns with an unbalanced stack") else let k = tvr_kept(s.rg, tvr_keep(cx.op)) in if k != "" then tvr_rerr("returns with " + k + " changed") else let r = tvr_ret_val(s, cx) in if r.why != "" then tvr_rerr(r.why) else {np: 1, nob: s.nob + r.n, err: ""}
+fn tvr_trap_names() = Cons("__rt_ovf", Cons("__rt_div0", Cons("__rt_not_int", Cons("__rt_not_bool", Cons("__rt_need_int", Nil)))))
+fn tvr_isdivop(op) = if op == "div" or op == "mod" or op == "idiv" or op == "imod" then 1 else 0
+fn tvr_trap_val(l, s, cx) = let op = cx.op in let m = tvr_math(cx) in if l == "__rt_ovf" and (op == "add" or op == "sub" or op == "mul") then (if m.ok == 0 then tvr_cno("the specified result is not representable") else tvr_need(s, tvr_pof(m.v), "reaches __rt_ovf on a path where the result is not proven to overflow 64 bits")) else if l == "__rt_ovf" and tvr_isdivop(op) == 1 then tvr_cand(tvr_need(s, tvr_peq(cx.al, tvr_min64()), "reaches __rt_ovf on a path where a == -2^63 is not proven"), tvr_need(s, tvr_peq(cx.bl, 0 - 1), "reaches __rt_ovf on a path where b == -1 is not proven")) else if l == "__rt_div0" and tvr_isdivop(op) == 1 then tvr_need(s, tvr_peq(cx.bl, 0), "reaches __rt_div0 on a path where b == 0 is not proven") else if l == "__rt_not_bool" and op == "cond" and cx.ka == 0 then tvr_cok(0) else tvr_cno("reaches the trap " + l + ", which the specification does not allow for these inputs")
+fn tvr_trap_check(l, s, cx) = if tvr_has(cx.bad, l) == 1 then tvr_rerr("the trap stub " + l + " is not `leaq <its message>(%rip), %r8; jmp __rt_die3` with the documented text") else let r = tvr_trap_val(l, s, cx) in if r.why != "" then tvr_rerr(r.why) else {np: 1, nob: s.nob + r.n, err: ""}
+
+## --- the walk: depth-first over the feasible branches ---
+fn tvr_lab_find(labs, l) = match labs
+    Nil        => {ok: 0, pc: Nil}
+    Cons(h, t) => if h.l == l then {ok: 1, pc: h.pc} else tvr_lab_find(t, l)
+## after "the result fits 64 bits" is asserted for the form of p, a word known modulo 2^64 as that form is exact
+fn tvr_exact_v(v, key) = match v
+    TrW(l) => if tvr_lkey(l) == key then TrL(l) else v
+    _      => v
+fn tvr_exact_rg(rg, key) = match rg
+    Nil        => Nil
+    Cons(h, t) => Cons({n: h.n, v: tvr_exact_v(h.v, key)}, tvr_exact_rg(t, key))
+fn tvr_exact_stk(stk, key) = match stk
+    Nil        => Nil
+    Cons(h, t) => Cons(tvr_exact_v(h, key), tvr_exact_stk(t, key))
+fn tvr_refine(s, cs, p, holds) = if p.of == 1 and holds != p.neg then tvr_s(s.pc, tvr_exact_rg(s.rg, tvr_lkey(p.l)), tvr_exact_stk(s.stk, tvr_lkey(p.l)), s.cells, s.fl, cs, s.nob) else tvr_s(s.pc, s.rg, s.stk, s.cells, s.fl, cs, s.nob)
+fn tvr_run(s, fuel, cx) = if fuel <= 0 then tvr_rerr("a path does not close within the step budget") else tvr_run1(s.pc, s, fuel, cx)
+fn tvr_run1(pc, s, fuel, cx) = match pc
+    Nil           => tvr_rerr("control runs off the end of the extracted code")
+    Cons(i, rest) => if i.lab != "" then (if tvr_has(tvr_trap_names(), i.lab) == 1 then tvr_trap_check(i.lab, s, cx) else tvr_run(tvr_spc(s, rest), fuel, cx)) else tvr_after(tvr_step(i, tvr_spc(s, rest), cx), i, fuel - 1, cx)
+fn tvr_goto(l, s, fuel, cx) = if tvr_has(tvr_trap_names(), l) == 1 then tvr_trap_check(l, s, cx) else let t = tvr_lab_find(cx.labs, l) in if t.ok == 0 then tvr_rerr("jump to " + l + ", which is outside the extracted integer code") else tvr_run(tvr_spc(s, t.pc), fuel, cx)
+fn tvr_branch(p, inv, l, s, fuel, cx) = let a = tvr_assert(s.cs, p, 1) in let b = tvr_assert(s.cs, p, 0) in let ra = if a.ok == 0 then tvr_res0() else if inv == 0 then tvr_goto(l, tvr_refine(s, a.cs, p, 1), fuel, cx) else tvr_run(tvr_refine(s, a.cs, p, 1), fuel, cx) in if ra.err != "" then ra else let rb = if b.ok == 0 then tvr_res0() else if inv == 0 then tvr_run(tvr_refine(s, b.cs, p, 0), fuel, cx) else tvr_goto(l, tvr_refine(s, b.cs, p, 0), fuel, cx) in tvr_radd(ra, rb)
+fn tvr_after(r, i, fuel, cx) = match r
+    TrsN(s)            => tvr_run(s, fuel, cx)
+    TrsJ(l, s)         => tvr_goto(l, s, fuel, cx)
+    TrsC(c, l, s)      => if c == 1 then tvr_goto(l, s, fuel, cx) else tvr_run(s, fuel, cx)
+    TrsB(p, inv, l, s) => tvr_branch(p, inv, l, s, fuel, cx)
+    TrsRet(s)          => tvr_ret_check(s, cx)
+    TrsE(m)            => tvr_rerr(m + ": `" + i.txt + "`")
+
+## --- assembly text: the spans of the helper code, parsed. A span starts at one of the labels below, runs through
+##     local `.L` labels and ends (with an <end> marker) at any other label or directive. ---
+fn tvr_span_labels() = Cons("mkint", Cons("__rt_uint", Cons("__rt_uint1", Cons("__rt_cond", Cons("__rt_ustk", Cons("__rt_ustk1", Cons("__rt_un2", Cons("__rt_isstr", Cons("__rt_is1", Cons("__rt_is0", Cons("__rt_idiv", Cons("__rt_imod", Cons("cmpv", Cons("cmpvi", Cons("cmpvlt", Cons("cmpvgt", Cons("addv", Cons("__rt_sub", Cons("__rt_mul", Cons("__rt_div", Cons("__rt_mod", Cons("__rt_wadd", Cons("__rt_wsub", Cons("__rt_wmul", Cons("__rt_qnext", Cons("eqv", Cons("eqvi", Cons("eqv0", Cons("__rt_need_int", Cons("__rt_div0", Cons("__rt_ovf", Cons("__rt_not_int", Cons("__rt_not_bool", Cons("__gc_pop", Cons("__lume_alloc_a", Cons("__gc_miss_a", Cons("__gc_miss_s", Cons("__gc_refill", Nil))))))))))))))))))))))))))))))))))))))
+fn tvr_msg_labels() = Cons("__rt_ovf_msg", Cons("__rt_dzero_msg", Cons("__rt_nint_msg", Cons("__rt_nbool_msg", Cons("__rt_nneed_msg", Nil)))))
+fn tvr_opnd_mem(t) = let p = tvr_find(t, "(", 0) in if p < 0 then TroX else let inner = slice(t, p + 1, count(t) - 1) in let d = slice(t, 0, p) in if count(inner) < 2 or at(inner, 0) != "%" or tvr_find(inner, ",", 0) >= 0 then TroX else if d == "" then TroM(0, inner) else if tvr_isint(d) == 1 then TroM(tvr_int(d), inner) else TroX
+fn tvr_opnd(t) = if t == "" then TroN else if at(t, 0) == "%" then TroR(t) else if at(t, 0) == "$" then (if tvr_isint(slice(t, 1, count(t))) == 1 then TroI(tvr_int(slice(t, 1, count(t)))) else TroX) else if tvr_ends(t, ")") == 1 then tvr_opnd_mem(t) else TroS(t)
+fn tvr_mkins(op, ta, tb, txt) = {lab: "", op: op, a: tvr_opnd(ta), b: tvr_opnd(tb), ta: ta, tb: tb, txt: txt}
+fn tvr_ins2(t) = let sp = tvr_find(t, " ", 0) in if sp < 0 then tvr_mkins(t, "", "", t) else let rest = slice(t, sp + 1, count(t)) in let cm = tvr_findsep_d(rest, 0, 0) in if cm < 0 then tvr_mkins(slice(t, 0, sp), rest, "", t) else tvr_mkins(slice(t, 0, sp), slice(rest, 0, cm), slice(rest, cm + 2, count(rest)), t)
+fn tvr_ltrim(l, i, n) = if i < n and at(l, i) == " " then tvr_ltrim(l, i + 1, n) else slice(l, i, n)
+fn tvr_ins(l) = tvr_ins2(tvr_ltrim(l, 0, count(l)))
+fn tvr_end() = {lab: "", op: "<end>", a: TroN, b: TroN, ta: "", tb: "", txt: "<end of the extracted span>"}
+fn tvr_labrec(nm) = {lab: nm, op: "", a: TroN, b: TroN, ta: "", tb: "", txt: nm + ":"}
+fn tvr_nl(s, n, i) = if i >= n then n else if at(s, i) == "\n" then i else tvr_nl(s, n, i + 1)
+fn tvr_close(mode, acc) = if mode == 1 then Cons(tvr_end(), acc) else acc
+## one line that is not skipped: {mode, pend, acc, msgs}
+fn tvr_line(l, mode, pend, acc, msgs) = let c = count(l) in if at(l, 0) != " " then (if at(l, c - 1) != ":" then {mode: 0, pend: "", acc: tvr_close(mode, acc), msgs: msgs} else let nm = slice(l, 0, c - 1) in if tvr_has(tvr_span_labels(), nm) == 1 or (mode == 1 and tvr_starts(nm, ".L") == 1) then {mode: 1, pend: "", acc: Cons(tvr_labrec(nm), acc), msgs: msgs} else {mode: 0, pend: if tvr_has(tvr_msg_labels(), nm) == 1 then nm else "", acc: tvr_close(mode, acc), msgs: msgs}) else if pend != "" then {mode: mode, pend: "", acc: acc, msgs: Cons({n: pend, t: tvr_ltrim(l, 0, c)}, msgs)} else if tvr_starts(l, "    .") == 1 then {mode: 0, pend: "", acc: tvr_close(mode, acc), msgs: msgs} else {mode: 1, pend: "", acc: Cons(tvr_ins(l), acc), msgs: msgs}
+fn tvr_scan(s, n, i, mode, pend, acc, msgs) = if i >= n then {prog: tvr_revacc(Cons(tvr_end(), acc), Nil), msgs: msgs} else let e = tvr_nl(s, n, i) in if e == i or (mode == 0 and pend == "" and at(s, i) == " ") then tvr_scan(s, n, e + 1, mode, pend, acc, msgs) else let r = tvr_line(slicen(s, n, i, e), mode, pend, acc, msgs) in tvr_scan(s, n, e + 1, r.mode, r.pend, r.acc, r.msgs)
+fn tvr_labs(prog, acc) = match prog
+    Nil        => acc
+    Cons(i, t) => if i.lab != "" then tvr_labs(t, Cons({l: i.lab, pc: t}, acc)) else tvr_labs(t, acc)
+fn tvr_lab_dup(labs) = match labs
+    Nil        => ""
+    Cons(h, t) => if tvr_lab_find(t, h.l).ok == 1 then h.l else tvr_lab_dup(t)
+## the trap stubs: the label, its message label and the text the language documents
+fn tvr_stubs() = Cons({l: "__rt_ovf", m: "__rt_ovf_msg", t: "lume: integer overflow"}, Cons({l: "__rt_div0", m: "__rt_dzero_msg", t: "lume: division by zero"}, Cons({l: "__rt_not_int", m: "__rt_nint_msg", t: "lume: type error: arithmetic needs integers"}, Cons({l: "__rt_not_bool", m: "__rt_nbool_msg", t: "lume: type error: a condition needs a boolean"}, Cons({l: "__rt_need_int", m: "__rt_nneed_msg", t: "lume: type error: this needs an integer"}, Nil)))))
+fn tvr_msg_get(msgs, n) = match msgs
+    Nil        => ""
+    Cons(h, t) => if h.n == n then h.t else tvr_msg_get(t, n)
+fn tvr_stub_ok2(pc, st) = match pc
+    Cons(j, r) => if j.txt == "jmp __rt_die3" then 1 else 0
+    _          => 0
+fn tvr_stub_ok1(pc, st) = match pc
+    Cons(i, r) => if i.txt == "leaq " + st.m + "(%rip), %r8" then tvr_stub_ok2(r, st) else 0
+    _          => 0
+fn tvr_stub_ok(st, labs, msgs) = let t = tvr_lab_find(labs, st.l) in if t.ok == 0 then 0 else if tvr_msg_get(msgs, st.m) != ".asciz \"" + st.t + "\\n\"" then 0 else tvr_stub_ok1(t.pc, st)
+fn tvr_bad_stubs(sts, labs, msgs) = match sts
+    Nil        => Nil
+    Cons(h, t) => if tvr_stub_ok(h, labs, msgs) == 1 then tvr_bad_stubs(t, labs, msgs) else Cons(h.l, tvr_bad_stubs(t, labs, msgs))
+## axiom A1, the part that is checked: the allocator fast path writes no register but %rax, %r10 and, between
+## `pushq %r11` and `popq %r11`, %r11; it leaves only by `ret` or to the slow path / the out-of-memory exit
+fn tvr_fp_dest(i) = let op = i.op in if op == "testq" or op == "cmpq" or op == "pushq" or op == "ret" or tvr_starts(op, "j") == 1 then "" else if op == "incq" or op == "notq" or op == "popq" then i.ta else if op == "movq" or op == "leaq" or op == "addq" or op == "andq" or op == "xorq" then i.tb else "?"
+fn tvr_fp_target_ok(i) = if tvr_starts(i.op, "j") == 0 then 1 else if i.ta == "__gc_pop" or i.ta == "__gc_miss_a" or i.ta == "__gc_miss_s" or i.ta == "__gc_refill" or i.ta == "__gc_slow" or i.ta == ".Lrt_alloc_oom" then 1 else 0
+fn tvr_fp_walk(pc, saved) = match pc
+    Nil        => "the allocator fast path is cut short"
+    Cons(i, t) => if i.lab != "" then tvr_fp_walk(t, saved) else if i.op == "<end>" then (if saved == 0 then "" else "the allocator fast path ends with %r11 saved") else if tvr_fp_target_ok(i) == 0 then "the allocator fast path jumps to " + i.ta else if i.txt == "pushq %r11" then (if saved == 0 then tvr_fp_walk(t, 1) else "nested pushq %r11 in the allocator fast path") else if i.txt == "popq %r11" then (if saved == 1 then tvr_fp_walk(t, 0) else "popq %r11 without pushq %r11 in the allocator fast path") else if i.op == "pushq" or i.op == "popq" then "the allocator fast path uses the stack beyond the %r11 save: `" + i.txt + "`" else if i.op == "ret" and saved == 1 then "the allocator fast path returns with %r11 saved" else let d = tvr_fp_dest(i) in if d == "?" then "the allocator fast path has an instruction outside the checked set: `" + i.txt + "`" else if d == "" or tvr_starts(d, "%") == 0 or d == "%rax" or d == "%r10" or (d == "%r11" and saved == 1) then tvr_fp_walk(t, saved) else "the allocator fast path writes " + d + ": `" + i.txt + "`"
+fn tvr_fp_check(labs) = let t = tvr_lab_find(labs, "__gc_pop") in if t.ok == 0 or tvr_lab_find(labs, "__lume_alloc_a").ok == 0 then "the allocator fast path (__gc_pop / __lume_alloc_a) is missing" else tvr_fp_walk(t.pc, 0)
+
+## --- the helpers: {nm: entry label, op: specification, ins: where the operands are, spec: the text for the report} ---
+fn tvr_h(nm, op, ins, spec) = {nm: nm, op: op, ins: ins, spec: spec}
+fn tvr_helpers() = Cons(tvr_h("mkint", "mkint", "r1di", "RAW a in %rdi: returns W(a); never traps"), Cons(tvr_h("__rt_uint", "uint", "w1ax", "word a in %rax: returns a raw in %rax, every other register unchanged; never traps"), Cons(tvr_h("__rt_un2", "un2", "w2ac", "words a, b in %rax, %rcx: returns a, b raw in %rax, %rcx, every other register unchanged"), Cons(tvr_h("__rt_ustk", "ustk", "stk", "word a in the stack slot above the return address: the slot holds a raw, every register unchanged"), Cons(tvr_h("__rt_cond", "cond", "w1ax", "word in %rax: boxed integer -> %rax = 3 (true); immediate integer -> __rt_not_bool"), Cons(tvr_h("addv", "add", "w2", "returns W(a+b); __rt_ovf exactly when a+b does not fit 64 bits"), Cons(tvr_h("__rt_sub", "sub", "w2", "returns W(a-b); __rt_ovf exactly when a-b does not fit 64 bits"), Cons(tvr_h("__rt_mul", "mul", "w2", "returns W(a*b); __rt_ovf exactly when a*b does not fit 64 bits"), Cons(tvr_h("__rt_div", "div", "w2", "returns W(tdiv(a,b)); __rt_div0 exactly when b == 0; __rt_ovf exactly when a == -2^63 and b == -1"), Cons(tvr_h("__rt_mod", "mod", "w2", "returns W(tmod(a,b)); __rt_div0 exactly when b == 0; __rt_ovf exactly when a == -2^63 and b == -1"), Cons(tvr_h("__rt_wadd", "wadd", "w2", "returns W(wrap64(a+b)); never traps"), Cons(tvr_h("__rt_wsub", "wsub", "w2", "returns W(wrap64(a-b)); never traps"), Cons(tvr_h("__rt_wmul", "wmul", "w2", "returns W(wrap64(a*b)); never traps"), Cons(tvr_h("cmpv", "cmp", "w2", "returns raw -1 / 0 / 1 for a < b / a == b / a > b; never traps"), Cons(tvr_h("eqv", "eq", "w2", "returns raw 1 when a == b, else 0; never traps"), Cons(tvr_h("__rt_qnext", "qnext", "w1di", "returns raw 0 exactly when a == 2^63-1, else W(a+1)"), Cons(tvr_h("__rt_idiv", "idiv", "r2ac", "RAW a, b in %rax, %rcx: returns tdiv(a,b) in %rax; __rt_div0 iff b == 0; __rt_ovf iff a == -2^63 and b == -1"), Cons(tvr_h("__rt_imod", "imod", "r2ac", "RAW a, b in %rax, %rcx: returns tmod(a,b) in %rax; __rt_div0 iff b == 0; __rt_ovf iff a == -2^63 and b == -1"), Nil))))))))))))))))))
+## operand kinds: 0 IMM, 1 BOXN, 2 BOXP, 3 RAW, 4 BOXANY (a boxed cell WITHOUT the canonical-form invariant)
+fn tvr_kname(k) = if k == 0 then "IMM" else if k == 1 then "BOXN" else if k == 2 then "BOXP" else if k == 3 then "RAW" else "BOXANY"
+fn tvr_krange(k) = if k == 0 then {lo: tvr_w(0 - tvr_p62()), hi: tvr_w(tvr_p62() - 1)} else if k == 1 then {lo: tvr_w(tvr_min64()), hi: tvr_w(0 - tvr_p62() - 1)} else if k == 2 then {lo: tvr_w(tvr_p62()), hi: tvr_w(tvr_max64())} else {lo: tvr_w(tvr_min64()), hi: tvr_w(tvr_max64())}
+fn tvr_isbox(k) = if k == 1 or k == 2 or k == 4 then 1 else 0
+fn tvr_word(k, atom, id) = if k == 0 then TrL({c: 1, ts: Cons({a: atom, k: 2}, Nil)}) else if k == 3 then TrL(tvr_la(atom)) else TrP(id)
+fn tvr_case(ka, kb, alias) = {ka: ka, kb: kb, alias: alias}
+fn tvr_kinds(canon) = if canon == 1 then Cons(0, Cons(1, Cons(2, Nil))) else Cons(0, Cons(4, Nil))
+fn tvr_cases1(ks) = match ks
+    Nil        => Nil
+    Cons(k, t) => Cons(tvr_case(k, 3, 0), tvr_cases1(t))
+fn tvr_cases2b(ka, ks) = match ks
+    Nil        => Nil
+    Cons(k, t) => let rest = tvr_cases2b(ka, t) in if k == ka and tvr_isbox(k) == 1 then Cons(tvr_case(ka, k, 0), Cons(tvr_case(ka, k, 1), rest)) else Cons(tvr_case(ka, k, 0), rest)
+fn tvr_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, tvr_app(t, ys))
+fn tvr_cases2(ks, all) = match ks
+    Nil        => Nil
+    Cons(k, t) => tvr_app(tvr_cases2b(k, all), tvr_cases2(t, all))
+fn tvr_cases(ins, canon) = if ins == "r1di" then Cons(tvr_case(3, 3, 0), Nil) else if ins == "r2ac" then Cons(tvr_case(3, 3, 0), Nil) else if ins == "w2" or ins == "w2ac" then tvr_cases2(tvr_kinds(canon), tvr_kinds(canon)) else tvr_cases1(tvr_kinds(canon))
+fn tvr_rg0(names) = match names
+    Nil        => Nil
+    Cons(n, t) => Cons({n: n, v: TrI(n)}, tvr_rg0(t))
+fn tvr_cs0(c) = let ra = tvr_krange(c.ka) in let rb = tvr_krange(c.kb) in let full = tvr_krange(3) in Cons({key: "1*0;", lo: ra.lo, hi: ra.hi, ex: Nil}, Cons({key: "1*1;", lo: rb.lo, hi: rb.hi, ex: Nil}, Cons({key: "1*2;", lo: tvr_winf(0 - 1), hi: tvr_winf(1), ex: Nil}, Cons({key: "1*3;", lo: full.lo, hi: full.hi, ex: Nil}, Cons({key: "1*4;", lo: full.lo, hi: full.hi, ex: Nil}, Cons({key: "1*5;", lo: full.lo, hi: full.hi, ex: Nil}, Nil))))))
+fn tvr_cellof(atom, id) = {id: id, sz: 16, f0: TrL(tvr_lc(3)), f8: TrL(tvr_la(atom)), fresh: 0}
+fn tvr_cells0(c, two) = let ca = if tvr_isbox(c.ka) == 1 then Cons(tvr_cellof(0, 1), Nil) else Nil in if two == 1 and c.alias == 0 and tvr_isbox(c.kb) == 1 then Cons(tvr_cellof(1, 2), ca) else ca
+fn tvr_state0(h, c, pc) = let rg = tvr_rg0(tvr_all_regs()) in let wa = tvr_word(c.ka, 0, 1) in let wb = if c.alias == 1 then wa else tvr_word(c.kb, 1, 2) in let ins = h.ins in let two = if ins == "w2" or ins == "w2ac" or ins == "r2ac" then 1 else 0 in let rg1 = if ins == "w2" then tvr_rset(tvr_rset(rg, "%rdi", wa), "%rsi", wb) else if ins == "w2ac" or ins == "r2ac" then tvr_rset(tvr_rset(rg, "%rax", wa), "%rcx", wb) else if ins == "w1ax" then tvr_rset(rg, "%rax", wa) else if ins == "w1di" or ins == "r1di" then tvr_rset(rg, "%rdi", wa) else rg in tvr_s(pc, rg1, if ins == "stk" then Cons(TrT, Cons(wa, Nil)) else Cons(TrT, Nil), tvr_cells0(c, two), TrfU, tvr_cs0(c), 0)
+fn tvr_wkey(op, al, bl) = if op == "wadd" then tvr_lkey(tvr_ladd(al, bl).v) else if op == "wsub" then tvr_lkey(tvr_lsub(al, bl).v) else if op == "wmul" then tvr_lkey({c: 0, ts: Cons({a: 2, k: 1}, Nil)}) else ""
+fn tvr_cx(g, h, c) = let al = tvr_la(0) in let bl = if c.alias == 1 then tvr_la(0) else tvr_la(1) in {labs: g.labs, bad: g.bad, op: h.op, al: al, bl: bl, alias: c.alias, wkey: tvr_wkey(h.op, al, bl), ka: c.ka}
+fn tvr_case_name(h, c) = if h.ins == "w2" or h.ins == "w2ac" or h.ins == "r2ac" then tvr_kname(c.ka) + "," + tvr_kname(c.kb) + (if c.alias == 1 then " (same cell)" else "") else tvr_kname(c.ka)
+fn tvr_run_cases(g, h, cs, pc, acc) = match cs
+    Nil        => acc
+    Cons(c, t) => if acc.err != "" then acc else let r = tvr_run(tvr_state0(h, c, pc), 400, tvr_cx(g, h, c)) in tvr_run_cases(g, h, t, pc, {nc: acc.nc + 1, np: acc.np + r.np, nob: acc.nob + r.nob, err: if r.err != "" then "case " + tvr_case_name(h, c) + ": " + r.err else ""})
+## one helper: {nm, spec, ok, nc: cases, np: paths, nob: obligations, why}
+fn tvr_helper(g, h, canon) = let t = tvr_lab_find(g.labs, h.nm) in if t.ok == 0 then {nm: h.nm, spec: h.spec, ok: 0, nc: 0, np: 0, nob: 0, why: "the helper is missing from the assembly"} else let r = tvr_run_cases(g, h, tvr_cases(h.ins, canon), t.pc, {nc: 0, np: 0, nob: 0, err: ""}) in {nm: h.nm, spec: h.spec, ok: if r.err == "" then 1 else 0, nc: r.nc, np: r.np, nob: r.nob, why: r.err}
+fn tvr_helpers_run(g, hs, canon) = match hs
+    Nil        => Nil
+    Cons(h, t) => Cons(tvr_helper(g, h, canon), tvr_helpers_run(g, t, canon))
+fn tvr_global(asm) = let p = tvr_scan(asm, count(asm), 0, 0, "", Nil, Nil) in let labs = tvr_labs(p.prog, Nil) in {labs: labs, bad: tvr_bad_stubs(tvr_stubs(), labs, p.msgs), dup: tvr_lab_dup(labs), fp: tvr_fp_check(labs)}
+
+## --- report ---
+## what rejects the whole text: an ambiguous label, a trap stub that is not the documented one, an allocator fast path that writes other registers
+fn tvr_gerr(g) = if g.dup != "" then "label defined twice in the helper code: " + g.dup else if tvr_isnil(g.bad) == 0 then "the trap stub " + tvr_first(g.bad) + " is not `leaq <its message>(%rip), %r8; jmp __rt_die3` with the documented text" else g.fp
+fn tvr_first(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn tvr_sum(rs, k) = match rs
+    Nil        => 0
+    Cons(r, t) => (if k == 0 then r.ok else if k == 1 then r.np else if k == 2 then r.nob else r.nc) + tvr_sum(t, k)
+fn tvr_first_bad(rs) = match rs
+    Nil        => ""
+    Cons(r, t) => if r.ok == 0 then r.nm + ": " + r.why else tvr_first_bad(t)
+fn tvr_json_helpers(rs) = match rs
+    Nil        => ""
+    Cons(r, t) => "{\"name\":\"" + r.nm + "\",\"status\":\"" + (if r.ok == 1 then "verified" else "rejected") + "\",\"spec\":\"" + tvr_jesc(r.spec) + "\",\"cases\":" + str(r.nc) + ",\"paths\":" + str(r.np) + ",\"obligations\":" + str(r.nob) + ",\"reason\":\"" + tvr_jesc(r.why) + "\"}" + (if tvr_isnil(t) == 1 then "" else ",") + tvr_json_helpers(t)
+fn tvr_json_rej(rs, first) = match rs
+    Nil        => ""
+    Cons(r, t) => if r.ok == 1 then tvr_json_rej(t, first) else (if first == 1 then "" else ",") + "{\"name\":\"" + r.nm + "\",\"reason\":\"" + tvr_jesc(r.why) + "\"}" + tvr_json_rej(t, 0)
+fn tvr_json_strs(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => "\"" + tvr_jesc(h) + "\"" + (if tvr_isnil(t) == 1 then "" else ",") + tvr_json_strs(t)
+fn tvr_axioms() = Cons("A1 allocator: call __lume_alloc_a with a constant size >= 16 returns a fresh cell pointer in %rax and changes only %rax, %r10 and the flags (the fast path's register writes are checked syntactically; the slow path and the collector are not examined)", Cons("A2 __rt_die3 (the tail of every trap stub) does not return", Cons("A3 the x86-64 facts X1..X9 listed under x86_facts, and the assembler's encoding of the text (covered by lasm_gate, not here)", Cons("A4 inputs: an integer operand is an immediate word 2a+1 or a pointer to a cell [3][a] whose a does not fit 63 bits; non-integer operands are outside the specification", Nil))))
+fn tvr_x86_facts() = Cons("X1 mov/lea/push/pop/call/ret/jmp/jcc/setcc/movzbq/cqto leave the flags unchanged; lea adds modulo 2^64 and sets no flag", Cons("X2 add/sub/imul(2-operand)/inc/dec compute modulo 2^64 and set OF exactly when the signed mathematical result does not fit 64 bits", Cons("X3 cmp s,d: ZF iff d == s; jl/jge/jg/jle decide the signed order of d and s for all 64-bit operands", Cons("X4 test x,x: ZF iff x == 0, SF iff x < 0, OF = 0; test $k,x: ZF iff (x and k) == 0; byte forms act on the low byte", Cons("X5 sar $1,x computes floor(x/2) and sets CF to bit 0 of x", Cons("X6 and/or are bitwise (bit 0 of the result is the and/or of the bits 0); xor x,x gives 0", Cons("X7 cqto sign-extends %rax into %rdx; idivq d with that dividend n gives %rax = tdiv(n,d), %rdx = tmod(n,d) unless d == 0 or (n == -2^63 and d == -1), which raise #DE", Cons("X8 setcc writes 1/0 into %al under the condition of the matching jcc; movzbq %al,%rax zero-extends", Cons("X9 little-endian: the low byte of the header word 3 of an integer cell is 3", Nil)))))))))
+fn tvr_json(rs, g, extra) = let nbad = tvr_len(rs) - tvr_sum(rs, 0) in let gerr = tvr_gerr(g) in "{\"ok\":" + (if nbad == 0 and gerr == "" then "true" else "false") + ",\"tool\":\"ltv_rt\",\"helpers\":" + str(tvr_len(rs)) + ",\"helpers_verified\":" + str(tvr_sum(rs, 0)) + ",\"helpers_rejected\":" + str(nbad) + ",\"cases\":" + str(tvr_sum(rs, 3)) + ",\"paths\":" + str(tvr_sum(rs, 1)) + ",\"obligations\":" + str(tvr_sum(rs, 2)) + ",\"allocator_fast_path\":\"" + (if g.fp == "" then "register writes checked" else tvr_jesc(g.fp)) + "\",\"global_error\":\"" + tvr_jesc(gerr) + "\",\"rejections\":[" + tvr_json_rej(rs, 1) + "],\"results\":[" + tvr_json_helpers(rs) + "]" + extra + ",\"axioms\":[" + tvr_json_strs(tvr_axioms()) + "],\"x86_facts\":[" + tvr_json_strs(tvr_x86_facts()) + "]}"
+fn tvr_result(rs, g, extra) = let gerr = tvr_gerr(g) in let bad = tvr_first_bad(rs) in {ok: if bad == "" and gerr == "" then 1 else 0, n_helpers: tvr_sum(rs, 0), n_paths: tvr_sum(rs, 1), n_obl: tvr_sum(rs, 2), report_json: tvr_json(rs, g, extra), err: if gerr != "" then gerr else bad, results: rs}
+
+## --- entry points ---
+## verify every helper in the assembly text of a compiled program
+fn tvr_verify_asm(asm) = let g = tvr_global(asm) in tvr_result(tvr_helpers_run(g, tvr_helpers(), 1), g, "")
+## the same helpers with boxed inputs that are NOT assumed canonical: a helper that is rejected here but verified by
+## tvr_verify_asm is correct only under the canonical-form invariant
+fn tvr_canon_names(rs, want) = match rs
+    Nil        => Nil
+    Cons(r, t) => if r.ok == want then Cons(r.nm, tvr_canon_names(t, want)) else tvr_canon_names(t, want)
+fn tvr_word_helpers(hs) = match hs
+    Nil        => Nil
+    Cons(h, t) => if h.ins == "r1di" or h.ins == "r2ac" then tvr_word_helpers(t) else Cons(h, tvr_word_helpers(t))
+fn tvr_canon_run(asm) = let g = tvr_global(asm) in tvr_helpers_run(g, tvr_word_helpers(tvr_helpers()), 0)
+fn tvr_canon_json(rs) = ",\"canonical_form_invariant\":{\"relied_on_by\":[" + tvr_json_strs(tvr_canon_names(rs, 0)) + "],\"not_needed_by\":[" + tvr_json_strs(tvr_canon_names(rs, 1)) + "],\"established_by\":\"every verified helper: a boxed result is proven not to fit 63 bits\",\"detail\":[" + tvr_json_rej(rs, 1) + "]}"
+fn tvr_verify_asm_full(asm) = let g = tvr_global(asm) in tvr_result(tvr_helpers_run(g, tvr_helpers(), 1), g, tvr_canon_json(tvr_canon_run(asm)))
+
+## --- the tool ---
+fn tvr_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else tvr_line_end(s, i + 1)
+fn tvr_get_at(s, key, i) = if i >= count(s) then "" else let e = tvr_line_end(s, i) in let n = count(key) in if e - i > n + 2 and slice(s, i, i + n + 2) == "@" + key + " " then slice(s, i + n + 2, e) else tvr_get_at(s, key, e + 1)
+fn tvr_get(s, key) = tvr_get_at(s, key, 0)
+fn tvr_wait_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
+fn tvr_finish(r) = if r.ok == 1 then r.report_json else let w = fs_write_sync("/dev/stdout", r.report_json + "\n") in ctfail("ltv_rt: runtime helper verification FAILED (fail-closed): " + r.err + "\n")
+fn tvr_main_asm(input, path) = if fs_path_exists(path) == 0 then ctfail("ltv_rt: cannot read " + path + "\n") else let asm = fs_read_file(path) in tvr_finish(if tvr_get(input, "canon") == "1" then tvr_verify_asm_full(asm) else tvr_verify_asm(asm))
+fn tvr_main(input) = let asmp = tvr_get(input, "asm") in let root = tvr_get(input, "root") in let srcp = tvr_get(input, "src") in if asmp != "" then tvr_main_asm(input, asmp) else if root == "" or srcp == "" then ctfail("ltv_rt: usage: `@asm <file.s>`, or `@root <repo>` and `@src <file.src>`, on stdin\n") else let mk = os_run("/bin/mkdir", Cons("-p", Cons(root + "/build/ltv-work", Nil))) in let out = root + "/build/ltv-work/ltv_rt." + str(os_getpid()) + ".s" in let cc = tvr_wait_exit(os_run_input_capture_timeout(root + "/build/bin/lumec", Nil, srcp, out, out + ".err", 600000)) in if cc != 0 then ctfail("ltv_rt: lumec rejected " + srcp + "\n") else tvr_main_asm(input, out)
+
+## --- self-tests (`./lume test compiler/stage1/ltv_rt.src`): the wide arithmetic, the constraint store, and the
+##     verifier on hand-written helper text, with a wrong variant next to every accepted one ---
+fn tvr_t_stubs() = "__rt_dzero_msg:\n    .asciz \"lume: division by zero\\n\"\n__rt_ovf_msg:\n    .asciz \"lume: integer overflow\\n\"\n    .section .text\n__rt_div0:\n    leaq __rt_dzero_msg(%rip), %r8\n    jmp __rt_die3\n__rt_ovf:\n    leaq __rt_ovf_msg(%rip), %r8\n    jmp __rt_die3\n__rt_die3:\n    ret\n"
+fn tvr_t_mkint(jcc) = "mkint:\n    movq %rdi, %rax\n    addq %rax, %rax\n    " + jcc + " .Lrt_mkint_box\n    incq %rax\n    ret\n.Lrt_mkint_box:\n    movq %rdi, %r11\n    movq $16, %rdi\n    call __lume_alloc_a\n    movq $3, (%rax)\n    movq %r11, 8(%rax)\n    ret\n"
+fn tvr_t_idiv(guard) = "__rt_idiv:\n    testq %rcx, %rcx\n    je __rt_div0\n" + guard + ".Lrt_rdv1:\n    cqto\n    idivq %rcx\n    ret\n"
+fn tvr_t_guard() = "    cmpq $-1, %rcx\n    jne .Lrt_rdv1\n    movq %rax, %rdx\n    subq $1, %rdx\n    jo __rt_ovf\n"
+fn tvr_t_pick(hs, nm) = match hs
+    Nil        => Nil
+    Cons(h, t) => if h.nm == nm then Cons(h, Nil) else tvr_t_pick(t, nm)
+fn tvr_t_one(rs) = match rs
+    Nil        => {ok: 0, np: 0, why: "no such helper"}
+    Cons(r, t) => {ok: r.ok, np: r.np, why: r.why}
+fn tvr_t_run(text, nm) = tvr_t_one(tvr_helpers_run(tvr_global(text), tvr_t_pick(tvr_helpers(), nm), 1))
+fn test_tvr_wide_arithmetic() = let lo = tvr_wsub(tvr_w(tvr_min64()), tvr_w(1)) in let hi = tvr_wadd(tvr_w(tvr_max64()), tvr_w(1)) in if tvr_wfit(lo) == 0 and tvr_wfit(hi) == 0 and tvr_wint(tvr_wcdiv(lo, 2)) == 0 - tvr_p62() and tvr_wint(tvr_wfdiv(tvr_wsub(tvr_w(tvr_max64()), tvr_w(1)), 2)) == tvr_p62() - 1 and tvr_wint(tvr_wfdiv(tvr_w(0 - 7), 2)) == 0 - 4 and tvr_wint(tvr_wcdiv(tvr_w(0 - 7), 2)) == 0 - 3 and tvr_wint(tvr_wadd(tvr_wadd(tvr_wmuls(tvr_w(tvr_min64()), 2), tvr_w(tvr_max64())), tvr_w(1))) == tvr_min64() and tvr_wfit(tvr_wmuls(tvr_w(tvr_min64()), 2)) == 0 and tvr_wcmp(tvr_winf(0 - 1), lo) < 0 and tvr_wcmp(hi, tvr_winf(1)) < 0 then 1 else 0
+## two immediates: "2a + 2b + 1 does not overflow" must give exactly "a + b fits 63 bits", and nothing stronger
+fn test_tvr_store_overflow_is_fit63() = let cs = tvr_cs0(tvr_case(0, 0, 0)) in let sum = tvr_ladd(tvr_la(0), tvr_la(1)).v in let w = tvr_ladd(tvr_lscale(sum, 2).v, tvr_lc(1)).v in let no = tvr_assert(cs, tvr_pof(w), 0) in let yes = tvr_assert(cs, tvr_pof(w), 1) in if no.ok == 1 and yes.ok == 1 and tvr_implied(no.cs, tvr_pfit63(sum)) == 1 and tvr_implied(yes.cs, tvr_pnot(tvr_pfit63(sum))) == 1 and tvr_implied(cs, tvr_pfit63(sum)) == 0 and tvr_implied(no.cs, tvr_peq(sum, 0)) == 0 and tvr_implied(yes.cs, tvr_pof(sum)) == 0 then 1 else 0
+fn test_tvr_mkint_verified() = let r = tvr_t_run(tvr_t_mkint("jo"), "mkint") in if r.ok == 1 and r.np == 2 then 1 else 0
+fn test_tvr_mkint_wrong_branch_rejected() = if tvr_t_run(tvr_t_mkint("jno"), "mkint").ok == 0 then 1 else 0
+fn test_tvr_idiv_verified() = let r = tvr_t_run(tvr_t_stubs() + tvr_t_idiv(tvr_t_guard()), "__rt_idiv") in if r.ok == 1 and r.np == 4 then 1 else 0
+fn test_tvr_idiv_without_min_guard_rejected() = if tvr_t_run(tvr_t_stubs() + tvr_t_idiv(""), "__rt_idiv").ok == 0 then 1 else 0
+fn test_tvr_missing_helpers_rejected() = let r = tvr_verify_asm(tvr_t_stubs() + tvr_t_mkint("jo")) in if r.ok == 0 and r.n_helpers == 1 then 1 else 0
+
+print tvr_main(readall())
