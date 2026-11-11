@@ -1,0 +1,181 @@
+## tv_gate.src -- codegen mutation gate for the Lume Translation Validator (compiler/stage1/ltv.src).
+##
+## A validator that accepts everything would pass any positive test, so this gate measures it against ground truth:
+##   1. the fixture below and compiler/stage1/lstd.src are compiled by the real lumec; ltv must VALIDATE every
+##      fixture function, and its native boundary run (@exec 1) must agree with the real machine code;
+##   2. every instruction line of every fixture function is mutated by every operator that applies to it (swap
+##      addq/subq, shift a frame slot, swap setcc / jcc conditions, swap %rdi and %rsi, change an immediate, unbalance
+##      %rsp, swap or drop a runtime call, delete the instruction, ...). Each mutant is a real program: it is
+##      assembled by lasm and run natively on the fixture's input vectors, one process per vector, trapping vectors
+##      included. A mutant whose observable behaviour (exit status, stdout) differs from the original on any vector
+##      is PROVEN non-equivalent, and ltv must reject it. One such mutant accepted is an unsound validator: the gate
+##      fails and prints it.
+##   3. every mutation class the qualification plan names must contain behaviour-changing mutants (so that a class
+##      cannot pass by being empty), and the total must be large enough to mean something.
+## The observable behaviour of a run is its exit status, stdout and stderr (so a trap with another message differs).
+## Mutants that behave like the original on all vectors are reported in two honest buckets and claimed as nothing:
+## "rejected anyway" (the validator is conservative, or the vectors missed the difference) and "accepted". An accepted
+## mutant is then run on 48 more pseudo-random vectors per function that include boxed 64-bit values; a difference
+## there is the same unsoundness failure. What is left is listed in build/certification/tv_gate_equivalent_mutants.txt
+## (dead stores, re-loads of a register that still holds the value, a jump into a slow path that recomputes the same
+## result, code made unreachable by constant operands).
+##
+## stdin: @root <repo>   [@stride <n>: test every n-th mutant, default 1]   [@tmp <dir>, default /tmp/lume-tv-gate.<pid>]
+
+fn tg_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else tg_line_end(s, i + 1)
+fn tg_get_at(s, key, i) = if i >= count(s) then "" else let e = tg_line_end(s, i) in let n = count(key) in if e - i > n + 2 and slice(s, i, i + n + 2) == "@" + key + " " then slice(s, i + n + 2, e) else tg_get_at(s, key, e + 1)
+fn tg_get(s, key) = tg_get_at(s, key, 0)
+fn tg_or(v, d) = if v == "" then d else v
+fn tg_wait_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
+fn tg_index(text, part, i) = if i + count(part) > count(text) then 0 - 1 else if slice(text, i, i + count(part)) == part then i else tg_index(text, part, i + 1)
+fn tg_has(text, part) = if tg_index(text, part, 0) >= 0 then 1 else 0
+fn tg_starts(s, pre) = if count(s) >= count(pre) and slice(s, 0, count(pre)) == pre then 1 else 0
+fn tg_rep1(s, pat, rep) = let i = tg_index(s, pat, 0) in if i < 0 then s else slice(s, 0, i) + rep + slice(s, i + count(pat), count(s))
+fn tg_repall(s, pat, rep, i) = let j = tg_index(s, pat, i) in if j < 0 then s else tg_repall(slice(s, 0, j) + rep + slice(s, j + count(pat), count(s)), pat, rep, j + count(rep))
+fn tg_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + tg_len(t)
+fn tg_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, tg_app(t, ys))
+fn tg_revacc(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => tg_revacc(t, Cons(h, acc))
+fn tg_join(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h + tg_join(t)
+fn tg_run(bin, args, out, ms) = let st = os_run_capture_timeout(bin, args, out, out + ".err", ms) in {status: tg_wait_exit(st), out: fs_read_file(out), err: fs_read_file(out + ".err")}
+fn tg_input(bin, args, inp, out, ms) = let st = os_run_input_capture_timeout(bin, args, inp, out, out + ".err", ms) in {status: tg_wait_exit(st), out: fs_read_file(out), err: fs_read_file(out + ".err")}
+
+## --- the fixture: every construct the validator models, written so that each mutation class changes behaviour ---
+fn tg_fixture() = "fn tva(x: int, y: int) -> int requires x >= 0 and x <= 100 and y >= 1 and y <= 50 = if x <= y then x + y * 2 else (x - y) / y\n" + "fn tvb(a: int) -> int = let t = a * 3 in if t == 6 and a != 0 or a < 0 then 0 - t else t % 7\n" + "fn tvc(x: int, y: int) -> bool = x <= y\n" + "fn tvd(x: int, y: int) -> int = x - y * 3\n" + "fn tve(a: int, b: int) -> int = tvd(a, b) + tvd(b, a + 1) * 2\n" + "fn tvf(x: int, y: int, z: int) -> int = (x + y) * (y - z) + (x - z) * (y + 1)\n" + "fn tvg(x: int, y: int) -> bool = x < y and y < 10 or x == 7\n" + "fn tvh(p: int, q: int, r: int) -> int requires r != 0 = let u = p - q in let w = u * r + 1 in if w > p then (if tvc(u, w) then w / r else u % r) else if q >= 1000000000000 then 9 else w - 5\n" + "fn tvi(flag: bool, n: int) -> int = if flag then (if n then n + 1000 else 0 - 1) else 7 - n\n"
+## a vector is {f, a: argv text}: the arguments reach the program through argv, so the compiler cannot fold or refute a
+## call and every `requires` check stays in the emitted code
+fn tg_arg(n) = if n < 0 then "-" + str(0 - n) else str(n)
+fn tg_v(f, x, y, z) = {f: f, x: tg_arg(x), y: tg_arg(y), z: tg_arg(z)}
+fn tg_grid2y(f, x, ys) = match ys
+    Nil        => Nil
+    Cons(y, t) => Cons(tg_v(f, x, y, 0), tg_grid2y(f, x, t))
+fn tg_grid2(f, xs, ys) = match xs
+    Nil        => Nil
+    Cons(x, t) => tg_app(tg_grid2y(f, x, ys), tg_grid2(f, t, ys))
+fn tg_list1(f, xs) = match xs
+    Nil        => Nil
+    Cons(x, t) => Cons(tg_v(f, x, 0, 0), tg_list1(f, t))
+fn tg_l3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+fn tg_l4(a, b, c, d) = Cons(a, tg_l3(b, c, d))
+fn tg_l5(a, b, c, d, e) = Cons(a, tg_l4(b, c, d, e))
+fn tg_vecs_a() = tg_grid2("tva", tg_app(tg_l4(0, 1, 50, 51), tg_l3(100, 101, 0 - 1)), tg_l5(1, 2, 50, 51, 0))
+fn tg_vecs_b() = tg_list1("tvb", tg_app(tg_l5(0 - 2, 0 - 1, 0, 1, 2), tg_l4(3, 7, 4611686018427387903, 2305843009213693952)))
+fn tg_vecs_c() = tg_grid2("tvc", tg_l4(0 - 1, 0, 1, 5), tg_l3(0, 1, 5))
+fn tg_vecs_d() = tg_grid2("tvd", tg_l4(0, 4, 0 - 7, 4611686018427387903), tg_l3(1, 9, 0 - 2))
+fn tg_vecs_e() = tg_grid2("tve", tg_l3(0, 3, 0 - 5), tg_l3(1, 8, 0 - 4))
+fn tg_vecs_f() = tg_app(tg_l3(tg_v("tvf", 1, 2, 3), tg_v("tvf", 0, 0, 0), tg_v("tvf", 5, 0 - 3, 2)), tg_l3(tg_v("tvf", 0 - 4, 7, 7), tg_v("tvf", 9, 1, 0 - 6), tg_v("tvf", 4611686018427387903, 1, 0)))
+fn tg_vecs_g() = tg_grid2("tvg", tg_l5(0, 7, 9, 10, 0 - 3), tg_l4(1, 9, 10, 11))
+fn tg_vecs_h() = tg_app(tg_l5(tg_v("tvh", 1, 2, 3), tg_v("tvh", 10, 2, 3), tg_v("tvh", 5, 5, 1), tg_v("tvh", 7, 2, 0), tg_v("tvh", 0 - 3, 4, 0 - 2)), tg_l4(tg_v("tvh", 2, 1000000000000, 1), tg_v("tvh", 9, 1, 2), tg_v("tvh", 0, 3, 0 - 1), tg_v("tvh", 100, 1, 5)))
+fn tg_vecs_i() = tg_l5(tg_v("tvi", 1, 0, 0), tg_v("tvi", 1, 5, 0), tg_v("tvi", 1, 0 - 2, 0), tg_v("tvi", 0, 0, 0), tg_v("tvi", 0, 9, 0))
+fn tg_vecs() = tg_app(tg_vecs_a(), tg_app(tg_vecs_b(), tg_app(tg_vecs_c(), tg_app(tg_vecs_d(), tg_app(tg_vecs_e(), tg_app(tg_vecs_f(), tg_app(tg_vecs_g(), tg_app(tg_vecs_h(), tg_vecs_i()))))))))
+fn tg_source() = tg_fixture() + "fn argi(k: int) -> int = let s = os_arg_at(k) in if count(s) > 0 and at(s, 0) == \"-\" then 0 - toint(slice(s, 1, count(s))) else toint(s)
+fn pick(f: str, a: int, b: int, c: int) -> int = if f == \"tva\" then tva(a, b) else if f == \"tvb\" then tvb(a) else if f == \"tvc\" then (if tvc(a, b) then 1 else 0) else if f == \"tvd\" then tvd(a, b) else if f == \"tve\" then tve(a, b) else if f == \"tvf\" then tvf(a, b, c) else if f == \"tvg\" then (if tvg(a, b) then 1 else 0) else if f == \"tvh\" then tvh(a, b, c) else tvi(a == 1, b)
+print pick(os_arg_at(1), argi(2), argi(3), argi(4))
+"
+fn tg_fnames() = Cons("tva", Cons("tvb", Cons("tvc", Cons("tvd", Cons("tve", Cons("tvf", Cons("tvg", Cons("tvh", Cons("tvi", Nil)))))))))
+
+## --- assembly text: split around one function ---
+fn tg_nl(s, n, i) = if i >= n then n else if at(s, i) == "\n" then i else tg_nl(s, n, i + 1)
+fn tg_fn_start(s, n, i, hdr) = if i >= n then 0 - 1 else let e = tg_nl(s, n, i) in if slicen(s, n, i, e) == hdr then i else tg_fn_start(s, n, e + 1, hdr)
+fn tg_fn_end(s, n, i) = if i >= n then n else let e = tg_nl(s, n, i) in if slicen(s, n, i, e) == "    ret" then e + 1 else tg_fn_end(s, n, e + 1)
+fn tg_lines(s, n, i) = if i >= n then Nil else let e = tg_nl(s, n, i) in Cons(slicen(s, n, i, e), tg_lines(s, n, e + 1))
+fn tg_unlines(ls) = match ls
+    Nil        => Nil
+    Cons(h, t) => Cons(h + "\n", tg_unlines(t))
+
+## --- mutation operators: each returns replacements {cls, ls} for one instruction line ---
+fn tg_m(cls, l) = {cls: cls, ls: Cons(l, Nil)}
+fn tg_del(cls) = {cls: cls, ls: Nil}
+fn tg_swap_reg(l) = tg_repall(tg_repall(tg_repall(l, "%rdi", "%r__", 0), "%rsi", "%rdi", 0), "%r__", "%rsi", 0)
+fn tg_digits_end(s, i) = if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then tg_digits_end(s, i + 1) else i
+fn tg_num(s, i, n, acc) = if i >= n then acc else tg_num(s, i + 1, n, acc * 10 + (ord(at(s, i)) - 48))
+## `-N(%rbp)` -> `-(N+d)(%rbp)`
+fn tg_slot(l, d) = let j = tg_index(l, "(%rbp)", 0) in if j < 2 then "" else let b = tg_slot_start(l, j - 1) in if b < 1 or at(l, b - 1) != "-" then "" else let nv = tg_num(l, b, j, 0) + d in if nv < 8 then "" else slice(l, 0, b) + str(nv) + slice(l, j, count(l))
+fn tg_slot_start(l, i) = if i >= 0 and at(l, i) >= "0" and at(l, i) <= "9" then tg_slot_start(l, i - 1) else i + 1
+## `$K` -> `$(K+d)` for a non-negative immediate
+fn tg_imm(l, d) = let j = tg_index(l, "$", 0) in if j < 0 then "" else let e = tg_digits_end(l, j + 1) in if e == j + 1 then "" else slice(l, 0, j + 1) + str(tg_num(l, j + 1, e, 0) + d) + slice(l, e, count(l))
+fn tg_opt(cls, l, acc) = if l == "" then acc else Cons(tg_m(cls, l), acc)
+fn tg_if(c, cls, l, acc) = if c == 1 then Cons(tg_m(cls, l), acc) else acc
+fn tg_jcc(l, acc) = if tg_starts(l, "    jle ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jle ", "jl ")), Cons(tg_m("jcc-swap", tg_rep1(l, "jle ", "jg ")), acc)) else if tg_starts(l, "    jl ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jl ", "jle ")), Cons(tg_m("jcc-swap", tg_rep1(l, "jl ", "jge ")), acc)) else if tg_starts(l, "    jge ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jge ", "jg ")), Cons(tg_m("jcc-swap", tg_rep1(l, "jge ", "jl ")), acc)) else if tg_starts(l, "    jg ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jg ", "jge ")), Cons(tg_m("jcc-swap", tg_rep1(l, "jg ", "jle ")), acc)) else if tg_starts(l, "    jne ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jne ", "je ")), acc) else if tg_starts(l, "    je ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "je ", "jne ")), acc) else if tg_starts(l, "    jnz ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jnz ", "jz ")), acc) else if tg_starts(l, "    jz ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jz ", "jnz ")), acc) else if tg_starts(l, "    jno ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jno ", "jo ")), acc) else if tg_starts(l, "    jo ") == 1 then Cons(tg_m("jcc-swap", tg_rep1(l, "jo ", "jno ")), acc) else acc
+fn tg_setcc(l, acc) = if tg_starts(l, "    setle ") == 1 then Cons(tg_m("setcc-swap", tg_rep1(l, "setle ", "setl ")), acc) else if tg_starts(l, "    setl ") == 1 then Cons(tg_m("setcc-swap", tg_rep1(l, "setl ", "setle ")), acc) else if tg_starts(l, "    setge ") == 1 then Cons(tg_m("setcc-swap", tg_rep1(l, "setge ", "setg ")), acc) else if tg_starts(l, "    setg ") == 1 then Cons(tg_m("setcc-swap", tg_rep1(l, "setg ", "setge ")), acc) else if tg_starts(l, "    setne ") == 1 then Cons(tg_m("setcc-swap", tg_rep1(l, "setne ", "sete ")), acc) else if tg_starts(l, "    sete ") == 1 then Cons(tg_m("setcc-swap", tg_rep1(l, "sete ", "setne ")), acc) else acc
+fn tg_arith(l, acc) = if tg_has(l, "%rsp") == 1 then acc else if tg_starts(l, "    addq ") == 1 then Cons(tg_m("arith-swap", tg_rep1(l, "addq ", "subq ")), acc) else if tg_starts(l, "    subq ") == 1 then Cons(tg_m("arith-swap", tg_rep1(l, "subq ", "addq ")), acc) else if tg_starts(l, "    imulq ") == 1 then Cons(tg_m("arith-swap", tg_rep1(l, "imulq ", "addq ")), acc) else if tg_starts(l, "    leaq -1(") == 1 then Cons(tg_m("arith-swap", tg_rep1(l, "leaq -1(", "leaq 1(")), acc) else if l == "    incq %rax" then Cons(tg_m("arith-swap", "    decq %rax"), acc) else if l == "    sarq $1, %rax" then Cons(tg_m("arith-swap", "    sarq $2, %rax"), acc) else acc
+fn tg_callm(l, acc) = if l == "    call addv" then Cons(tg_m("call-swap", "    call __rt_sub"), acc) else if l == "    call __rt_sub" then Cons(tg_m("call-swap", "    call addv"), acc) else if l == "    call __rt_mul" then Cons(tg_m("call-swap", "    call addv"), acc) else if l == "    call __rt_div" then Cons(tg_m("call-swap", "    call __rt_mod"), acc) else if l == "    call __rt_mod" then Cons(tg_m("call-swap", "    call __rt_div"), acc) else if l == "    call cmpv" then Cons(tg_m("call-swap", "    call eqv"), acc) else if l == "    call ctfail" then Cons(tg_del("call-swap"), acc) else acc
+fn tg_rsp(l, acc) = if l == "    movq %rbp, %rsp" or l == "    popq %rbp" or l == "    pushq %rbp" then Cons(tg_del("rsp-unbalance"), acc) else if tg_starts(l, "    subq $") == 1 and tg_has(l, ", %rsp") == 1 then Cons(tg_m("rsp-unbalance", tg_imm(l, 8)), acc) else if tg_starts(l, "    pushq %r") == 1 or tg_starts(l, "    popq %r") == 1 then Cons(tg_del("rsp-unbalance"), Cons({cls: "rsp-unbalance", ls: Cons(l, Cons(l, Nil))}, acc)) else if l == "    ret" then Cons({cls: "rsp-unbalance", ls: Cons("    pushq %rax", Cons(l, Nil))}, acc) else acc
+fn tg_isframe(l) = if l == "    movq %rbp, %rsp" or l == "    popq %rbp" or l == "    pushq %rbp" or l == "    ret" or l == "    movq %rsp, %rbp" or tg_has(l, "%rsp") == 1 then 1 else 0
+fn tg_muts(l) = if count(l) < 5 or at(l, 0) != " " then Nil else if tg_isframe(l) == 1 then tg_rsp(l, Nil) else tg_rsp(l, tg_jcc(l, tg_setcc(l, tg_arith(l, tg_callm(l, tg_opt("slot-shift", tg_slot(l, 8), tg_opt("slot-shift", tg_slot(l, 0 - 8), tg_if(if tg_has(l, "%rdi") == 1 or tg_has(l, "%rsi") == 1 then 1 else 0, "reg-swap", tg_swap_reg(l), tg_opt("immediate", if tg_starts(l, "    movq $") == 1 or tg_starts(l, "    cmpq $") == 1 or tg_starts(l, "    testb $") == 1 then tg_imm(l, 2) else "", Cons(tg_del("delete"), Nil))))))))))
+## every mutant of a function: {cls, at: line index, was: original line, ls: the function's lines after the mutation}
+fn tg_fn_muts(before_rev, ls, i) = match ls
+    Nil        => Nil
+    Cons(l, t) => tg_app(tg_line_muts(tg_muts(l), before_rev, l, t, i), tg_fn_muts(Cons(l, before_rev), t, i + 1))
+fn tg_line_muts(ms, before_rev, l, after, i) = match ms
+    Nil        => Nil
+    Cons(m, t) => Cons({cls: m.cls, at: i, was: l, ls: tg_revacc(before_rev, tg_app(m.ls, after))}, tg_line_muts(t, before_rev, l, after, i))
+fn tg_show_new(ls, i) = match ls
+    Nil        => "<end>"
+    Cons(h, t) => if i <= 0 then h else tg_show_new(t, i - 1)
+
+## --- behaviour of a binary on the vectors of one function: status and stdout per vector ---
+fn tg_beh1(elf, h, out) = let r = tg_run(elf, Cons(h.f, Cons(h.x, Cons(h.y, Cons(h.z, Nil)))), out, 10000) in str(r.status) + ":" + r.out + ":" + r.err
+fn tg_beh(elf, vs, f, out) = match vs
+    Nil        => ""
+    Cons(h, t) => (if h.f == f then tg_beh1(elf, h, out) + "|" else "") + tg_beh(elf, t, f, out)
+## extended vectors: small values, contract bounds, and words on both sides of the 63-bit tag limit
+fn tg_pool(i) = if i == 0 then 0 else if i == 1 then 1 else if i == 2 then 0 - 1 else if i == 3 then 2 else if i == 4 then 3 else if i == 5 then 7 else if i == 6 then 10 else if i == 7 then 50 else if i == 8 then 100 else if i == 9 then 0 - 7 else if i == 10 then 1000000000000 else if i == 11 then 4611686018427387903 else if i == 12 then 4611686018427387904 else if i == 13 then 0 - 4611686018427387904 else if i == 14 then 0 - 4611686018427387905 else if i == 15 then 9223372036854775807 else if i == 16 then 0 - 9223372036854775807 else if i == 17 then 6 else if i == 18 then 51 else 101
+fn tg_prng(s) = (s * 1103515245 + 12345) % 2147483648
+fn tg_ext(f, k, s) = if k <= 0 then Nil else let s1 = tg_prng(s) in let s2 = tg_prng(s1) in let s3 = tg_prng(s2) in Cons(tg_v(f, tg_pool(s1 / 65536 % 20), tg_pool(s2 / 65536 % 20), tg_pool(s3 / 65536 % 20)), tg_ext(f, k - 1, s3))
+fn tg_nvec(vs, f) = match vs
+    Nil        => 0
+    Cons(h, t) => (if h.f == f then 1 else 0) + tg_nvec(t, f)
+
+## --- one mutant: assemble, run, validate ---
+## st = {err, n, killed (behaviour differs), rej_killed, eq_rej (same behaviour, rejected), eq_acc, noasm, cls: per-class killed counts, log}
+fn tg_cls_add(cs, c) = match cs
+    Nil        => Cons({c: c, n: 1}, Nil)
+    Cons(h, t) => if h.c == c then Cons({c: c, n: h.n + 1}, t) else Cons(h, tg_cls_add(t, c))
+fn tg_cls_get(cs, c) = match cs
+    Nil        => 0
+    Cons(h, t) => if h.c == c then h.n else tg_cls_get(t, c)
+fn tg_cls_show(cs) = match cs
+    Nil        => ""
+    Cons(h, t) => h.c + " " + str(h.n) + tg_sep(t) + tg_cls_show(t)
+fn tg_sep(t) = match t
+    Nil        => ""
+    Cons(h, r) => ", "
+fn tg_ltv(cfg, f, asm_path, out) = tg_input(cfg.ltv, Nil, out + ".in", out, 120000)
+fn tg_mutant(cfg, f, pre, post, m, base, vs, st) = let sp = cfg.tmp + "/m.s" in let w = fs_write_sync(sp, pre + tg_join(tg_unlines(m.ls)) + post) in let a = tg_run(cfg.lasm, Cons("--strict", Cons(sp, Nil)), cfg.tmp + "/m.elf", 120000) in let wi = fs_write_sync(cfg.tmp + "/m.tv.in", "@root " + cfg.root + "\n@src " + cfg.tmp + "/fixture.src\n@asm " + sp + "\n@fn " + f + "\n@out " + cfg.tmp + "/proofs\n") in let v = tg_ltv(cfg, f, sp, cfg.tmp + "/m.tv") in let rejected = if v.status != 0 and tg_has(v.out, "\"name\":\"" + f + "\",\"status\":\"rejected\"") == 1 then 1 else 0 in let validated = if v.status == 0 and tg_has(v.out, "\"name\":\"" + f + "\",\"status\":\"validated\"") == 1 then 1 else 0 in let what = f + " line " + str(m.at) + " [" + m.cls + "]: `" + m.was + "` -> `" + (if tg_len(m.ls) < cfg.nlines then "<deleted>" else tg_show_new(m.ls, m.at)) + "`" in if rejected == 0 and validated == 0 then {err: "ltv gave no verdict (crash or malformed report) on mutant " + what + ": status " + str(v.status) + " " + v.err, n: st.n, killed: st.killed, rej_killed: st.rej_killed, eq_rej: st.eq_rej, eq_acc: st.eq_acc, noasm: st.noasm, cls: st.cls, log: st.log} else if a.status != 0 then {err: "", n: st.n + 1, killed: st.killed, rej_killed: st.rej_killed, eq_rej: st.eq_rej, eq_acc: st.eq_acc, noasm: st.noasm + 1, cls: st.cls, log: st.log} else let ch = os_run("/bin/chmod", Cons("+x", Cons(cfg.tmp + "/m.elf", Nil))) in let differs = if tg_beh(cfg.tmp + "/m.elf", vs, f, cfg.tmp + "/m.run") != base then 1 else 0 in if differs == 1 and validated == 1 then {err: "UNSOUND: ltv validated a mutant whose native behaviour differs from the original: " + what, n: st.n, killed: st.killed, rej_killed: st.rej_killed, eq_rej: st.eq_rej, eq_acc: st.eq_acc, noasm: st.noasm, cls: st.cls, log: st.log} else if differs == 1 then {err: "", n: st.n + 1, killed: st.killed + 1, rej_killed: st.rej_killed + 1, eq_rej: st.eq_rej, eq_acc: st.eq_acc, noasm: st.noasm, cls: tg_cls_add(st.cls, m.cls), log: st.log} else if rejected == 1 then {err: "", n: st.n + 1, killed: st.killed, rej_killed: st.rej_killed, eq_rej: st.eq_rej + 1, eq_acc: st.eq_acc, noasm: st.noasm, cls: st.cls, log: st.log} else if tg_beh(cfg.tmp + "/m.elf", cfg.ext, f, cfg.tmp + "/m.run") != cfg.extbase then {err: "UNSOUND: ltv validated a mutant whose native behaviour differs from the original on the extended vectors: " + what, n: st.n, killed: st.killed, rej_killed: st.rej_killed, eq_rej: st.eq_rej, eq_acc: st.eq_acc, noasm: st.noasm, cls: st.cls, log: st.log} else {err: "", n: st.n + 1, killed: st.killed, rej_killed: st.rej_killed, eq_rej: st.eq_rej, eq_acc: st.eq_acc + 1, noasm: st.noasm, cls: st.cls, log: Cons("  equivalent (accepted, same behaviour on the base and the extended vectors): " + what + "\n", st.log)}
+fn tg_mutants(cfg, f, pre, post, ms, k, base, vs, st) = match ms
+    Nil        => st
+    Cons(m, t) => if st.err != "" then st else if k % cfg.stride != 0 then tg_mutants(cfg, f, pre, post, t, k + 1, base, vs, st) else tg_mutants(cfg, f, pre, post, t, k + 1, base, vs, tg_mutant(cfg, f, pre, post, m, base, vs, st))
+fn tg_fn(cfg, asm, f, vs, st) = let n = count(asm) in let b = tg_fn_start(asm, n, 0, f + ":") in if b < 0 then {err: "fixture function " + f + " is missing from the assembly", n: st.n, killed: st.killed, rej_killed: st.rej_killed, eq_rej: st.eq_rej, eq_acc: st.eq_acc, noasm: st.noasm, cls: st.cls, log: st.log} else let e = tg_fn_end(asm, n, b) in let ls = tg_lines(asm, e, b) in let base = tg_beh(cfg.tmp + "/fixture.elf", vs, f, cfg.tmp + "/base.run") in let ext = tg_ext(f, 48, 20261110 + count(f) * 7919 + ord(at(f, 2))) in tg_mutants({root: cfg.root, tmp: cfg.tmp, lasm: cfg.lasm, ltv: cfg.ltv, stride: cfg.stride, nlines: tg_len(ls), ext: ext, extbase: tg_beh(cfg.tmp + "/fixture.elf", ext, f, cfg.tmp + "/base.run")}, f, slicen(asm, n, 0, b), slicen(asm, n, e, n), tg_fn_muts(Nil, ls, 0), 0, base, vs, st)
+fn tg_fns(cfg, asm, fs, vs, st) = match fs
+    Nil        => st
+    Cons(f, t) => if st.err != "" then st else tg_fns(cfg, asm, t, vs, tg_fn(cfg, asm, f, vs, st))
+fn tg_all_validated(out, fs) = match fs
+    Nil        => ""
+    Cons(f, t) => if tg_has(out, "\"name\":\"" + f + "\",\"status\":\"validated\"") == 1 then tg_all_validated(out, t) else f
+fn tg_field(out, key) = let i = tg_index(out, "\"" + key + "\":", 0) in if i < 0 then 0 else let b = i + count(key) + 3 in tg_num(out, b, tg_digits_end(out, b), 0)
+fn tg_need(cs, names) = match names
+    Nil        => ""
+    Cons(h, t) => if tg_cls_get(cs, h) == 0 then h else tg_need(cs, t)
+## --- [C0010]: machine-level constant time of `@secret` functions. ltv scans the emitted code of a `@secret` function and
+##     rejects a conditional branch, a division and a memory access that is not a frame slot. The gate checks both
+##     directions on real lumec output: a branch-free function is validated, the same `+` that is validated in a public
+##     function is rejected in a secret one (its tag test is a branch), and three leaks injected into the validated
+##     code are each rejected with [C0010] and the reason that names the leak. Runtime helpers reached by `call`
+##     (__rt_un2, mkint, __lume_promise_new) are outside the scan. ---
+fn tg_ct_source() = "@secret fn ctsel(mask: int, a: int, b: int) -> int = bit_xor(a, bit_and(mask, bit_xor(a, b)))\n@secret fn ctadd(k: int, m: int) -> int = k + m\nfn pubadd(k: int, m: int) -> int = k + m\nprint 0\n"
+fn tg_rep1_from(s, pat, rep, from) = let i = tg_index(s, pat, from) in if i < 0 then s else slice(s, 0, i) + rep + slice(s, i + count(pat), count(s))
+fn tg_ct_ltv(cfg, asm_path, f, tag) = let w = fs_write_sync(cfg.tmp + "/ct." + tag + ".in", "@root " + cfg.root + "\n@src " + cfg.tmp + "/ct.src\n@asm " + asm_path + "\n@fn " + f + "\n@out " + cfg.tmp + "/proofs\n") in tg_input(cfg.ltv, Nil, cfg.tmp + "/ct." + tag + ".in", cfg.tmp + "/ct." + tag + ".out", 120000)
+fn tg_ct_rejected(v, f, why) = if v.status != 0 and tg_has(v.out, "\"name\":\"" + f + "\",\"status\":\"rejected\",\"reason\":\"[C0010]") == 1 and tg_has(v.out, why) == 1 then 1 else 0
+fn tg_ct_mut(cfg, asm, at0, tag, pat, rep, why) = let m = tg_rep1_from(asm, pat, rep, at0) in if m == asm then "the mutation site `" + pat + "` is not in the code of ctsel" else let w = fs_write_sync(cfg.tmp + "/ct." + tag + ".s", m) in let v = tg_ct_ltv(cfg, cfg.tmp + "/ct." + tag + ".s", "ctsel", tag) in if tg_ct_rejected(v, "ctsel", why) == 1 then "" else "ltv did not reject with [C0010] (" + why + ") the @secret function ctsel after `" + rep + "` was injected: " + v.out + v.err
+fn tg_ct(cfg) = let w = fs_write_sync(cfg.tmp + "/ct.src", tg_ct_source()) in let c = tg_input(cfg.root + "/build/bin/lumec", Nil, cfg.tmp + "/ct.src", cfg.tmp + "/ct.s", 120000) in if c.status != 0 then "lumec rejected the fixture: " + c.err else let asm = fs_read_file(cfg.tmp + "/ct.s") in let at0 = tg_index(asm, "\nctsel:\n", 0) in if at0 < 0 then "ctsel is missing from the assembly" else let p = tg_ct_ltv(cfg, cfg.tmp + "/ct.s", "ctsel", "pos") in if p.status != 0 or tg_has(p.out, "\"name\":\"ctsel\",\"status\":\"validated\"") == 0 then "ltv did not validate the branch-free @secret function ctsel: " + p.out + p.err else let q = tg_ct_ltv(cfg, cfg.tmp + "/ct.s", "pubadd", "pub") in if q.status != 0 or tg_has(q.out, "\"name\":\"pubadd\",\"status\":\"validated\"") == 0 then "ltv did not validate the public function pubadd: " + q.out + q.err else let n = tg_ct_ltv(cfg, cfg.tmp + "/ct.s", "ctadd", "neg") in if tg_ct_rejected(n, "ctadd", "conditional branch") == 0 then "ltv did not reject with [C0010] the @secret function ctadd, whose emitted `+` branches on the tag of its operands: " + n.out + n.err else let m1 = tg_ct_mut(cfg, asm, at0, "m1", "    xorq %rcx, %rax\n", "    xorq %rcx, %rax\n    jo .Lct_leak\n.Lct_leak:\n", "conditional branch") in if m1 != "" then m1 else let m2 = tg_ct_mut(cfg, asm, at0, "m2", "    andq %rcx, %rax\n", "    andq %rcx, %rax\n    movq (%rcx), %rdx\n", "memory access") in if m2 != "" then m2 else tg_ct_mut(cfg, asm, at0, "m3", "    xorq %rcx, %rax\n", "    xorq %rcx, %rax\n    idivq %rcx\n", "division")
+fn tg_main(input) = let root = tg_get(input, "root") in if root == "" then ctfail("tv gate requires @root\n") else let tmp = tg_or(tg_get(input, "tmp"), "/tmp/lume-tv-gate." + str(os_getpid())) in let mk = os_run("/bin/mkdir", Cons("-p", Cons(tmp + "/proofs", Nil))) in let cfg = {root: root, tmp: tmp, lasm: root + "/build/bin/lasm", ltv: root + "/build/bin/ltv", stride: toint(tg_or(tg_get(input, "stride"), "1")), nlines: 0, ext: Nil, extbase: ""} in let vs = tg_vecs() in let w = fs_write_sync(tmp + "/fixture.src", tg_source()) in let c = tg_input(root + "/build/bin/lumec", Nil, tmp + "/fixture.src", tmp + "/fixture.s", 120000) in if c.status != 0 then ctfail("tv gate failed: lumec rejected the fixture: " + c.err + "\n") else let a = tg_run(cfg.lasm, Cons("--strict", Cons(tmp + "/fixture.s", Nil)), tmp + "/fixture.elf", 120000) in if a.status != 0 then ctfail("tv gate failed: lasm rejected the fixture: " + a.err + "\n") else let ch = os_run("/bin/chmod", Cons("+x", Cons(tmp + "/fixture.elf", Nil))) in let w1 = fs_write_sync(tmp + "/pos.in", "@root " + root + "\n@src " + tmp + "/fixture.src\n@asm " + tmp + "/fixture.s\n@out " + tmp + "/proofs\n@exec 1\n") in let p1 = tg_input(cfg.ltv, Nil, tmp + "/pos.in", tmp + "/pos.out", 600000) in let miss = tg_all_validated(p1.out, tg_fnames()) in if p1.status != 0 or miss != "" then ctfail("tv gate failed: ltv did not validate the unmutated fixture (" + miss + "): " + p1.out + p1.err + "\n") else if tg_field(p1.out, "native_vectors") < 40 then ctfail("tv gate failed: the native boundary run of the fixture covered only " + str(tg_field(p1.out, "native_vectors")) + " vectors\n") else let w2 = fs_write_sync(tmp + "/std.in", "@root " + root + "\n@src " + root + "/compiler/stage1/lstd.src\n@out " + root + "/build/certification/proofs\n@exec 1\n") in let p2 = tg_input(cfg.ltv, Nil, tmp + "/std.in", tmp + "/std.out", 600000) in if p2.status != 0 or tg_field(p2.out, "validated") < 30 or tg_field(p2.out, "rejected") != 0 or tg_field(p2.out, "native_vectors") < 200 then ctfail("tv gate failed: ltv on compiler/stage1/lstd.src: " + p2.out + p2.err + "\n") else let ct = tg_ct(cfg) in if ct != "" then ctfail("tv gate failed: [C0010] machine constant-time check: " + ct + "\n") else let asm = fs_read_file(tmp + "/fixture.s") in let st = tg_fns(cfg, asm, tg_fnames(), vs, {err: "", n: 0, killed: 0, rej_killed: 0, eq_rej: 0, eq_acc: 0, noasm: 0, cls: Nil, log: Nil}) in if st.err != "" then ctfail("tv gate failed: " + st.err + "\n  mutant assembly kept at " + tmp + "/m.s\n") else let lack = if cfg.stride == 1 then tg_need(st.cls, Cons("arith-swap", Cons("slot-shift", Cons("setcc-swap", Cons("jcc-swap", Cons("reg-swap", Cons("immediate", Cons("rsp-unbalance", Cons("call-swap", Cons("delete", Nil)))))))))) else "" in if lack != "" then ctfail("tv gate failed: mutation class " + lack + " produced no behaviour-changing mutant, so it proves nothing\n") else if cfg.stride == 1 and st.killed < 300 then ctfail("tv gate failed: only " + str(st.killed) + " behaviour-changing mutants; the campaign is too small to mean anything\n") else let lg = fs_write_sync(root + "/build/certification/tv_gate_equivalent_mutants.txt", "Mutants that ltv accepted and that behave exactly like the original (exit status, stdout, stderr) on every base vector and on 48 extended vectors per function, boxed 64-bit values included. Listed for audit:\n" + tg_join(st.log)) in let rm = os_run("/bin/rm", Cons("-rf", Cons(tmp, Nil))) in "OK: ltv validated " + str(tg_len(tg_fnames())) + "/" + str(tg_len(tg_fnames())) + " fixture functions and " + str(tg_field(p2.out, "validated")) + " functions of lstd.src (native boundary vectors agreeing with the real machine: " + str(tg_field(p1.out, "native_vectors")) + " + " + str(tg_field(p2.out, "native_vectors")) + "); " + str(st.n) + " codegen mutants over " + str(tg_len(vs)) + " vectors: " + str(st.killed) + " change native behaviour and ltv rejected " + str(st.rej_killed) + "/" + str(st.killed) + " of them (0 unsound acceptances) [" + tg_cls_show(st.cls) + "]; behaviour-identical mutants: " + str(st.eq_rej) + " rejected anyway, " + str(st.eq_acc) + " accepted as equivalent after 48 extended vectors each; " + str(st.noasm) + " not assemblable; [C0010] machine constant-time: 1 branch-free @secret function validated, 1 branching @secret function and 3 injected leaks (branch, memory access, division) rejected"
+
+print tg_main(readall())

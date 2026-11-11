@@ -1,0 +1,322 @@
+## safety_envelope_gate.src -- gate for compiler/stage1/lsafety_envelope.src (the dissimilar-redundancy lockstep envelope).
+##   printf '@root %s\n' "$PWD" | build/bin/safety_envelope_gate
+## Needs build/bin/lumec, build/bin/lasm and build/bin/lsafety_envelope. Scratch: <root>/build/safety-envelope-gate.
+##
+## What is tested, and how it would fail if the envelope were theater:
+##   1. The RV32IM interpreter runs hand-written programs whose instruction words were produced by an independent
+##      assembler (clang --target=riscv32 -march=rv32im, listed next to each word) and whose expected register values
+##      were derived by hand from the RISC-V specification -- including x0, PC alignment, ROM/RAM bounds, illegal
+##      instructions, the DIV/REM/MULH corner cases and the cycle watchdog. The channel-B compiler's encoders are
+##      compared against the same assembler's output.
+##   2. Positive lockstep through the real CLI: kernels written here (if/else, let, nested and recursive calls, division,
+##      contracts, bit operations) and every self-contained `-> int / pure` kernel with a `@bound` that can be extracted
+##      textually from compiler/stage1/lchameleon.src. Every vector must commit and the committed value must equal a
+##      third evaluation of the lowered AST done by this gate (sg_ev), so two channels agreeing on a wrong value fail.
+##   3. Fault injection. A fault is counted as a trip, as masked-benign (the run committed the CORRECT value: the flipped
+##      bit was dead) or as a false negative (a WRONG value was committed). One false negative fails the gate.
+## The validator used for the lockstep runs is a stand-in built here that always answers "validated" (it is a test
+## double for the build/bin/ltv protocol, not a validator); the rejecting / lying / slow / missing variants prove the
+## envelope fails closed. When the real build/bin/ltv exists it is exercised too and the outcome is reported.
+use lsafety_envelope
+
+fn sg_prng(s) = (s * 1103515245 + 12345) % 2147483648
+fn sg_pick(s, n) = s / 65536 % n
+fn sg_max(a, b) = if a >= b then a else b
+
+## ====================================================================================================================
+## 1. RV32IM known-answer tests
+## ====================================================================================================================
+fn sg_words_l(parts) = match parts
+    Nil        => Nil
+    Cons(h, t) => if h == "" then sg_words_l(t) else Cons((se_pint(h)).v, sg_words_l(t))
+fn sg_words(s) = sg_words_l(se_split(s, " "))
+fn sg_run(words, budget) = rv_boot(rv_machine(sg_words(words), 12), budget, rv_no_inj())
+fn sg_reg1(name, m, kv) = let r = (se_pint(se_nth(kv, 0))).v in let want = (se_pint(se_nth(kv, 1))).v in let got = rv_tget(m.x, 16, r) in if got == want then "" else name + ": x" + str(r) + " = " + str(got) + ", expected " + str(want) + "; "
+fn sg_regs_l(name, m, parts) = match parts
+    Nil        => ""
+    Cons(h, t) => sg_reg1(name, m, se_split(h, "=")) + sg_regs_l(name, m, t)
+fn sg_halt(name, words, cycles, regs) = let m = sg_run(words, 100000) in if m.st != 1 then name + ": no halt (" + m.cause + "); " else if m.cyc != cycles then name + ": " + str(m.cyc) + " cycles, expected " + str(cycles) + "; " else sg_regs_l(name, m, se_split(regs, " "))
+fn sg_trap(name, words, budget, cause) = let m = sg_run(words, budget) in if m.st == 2 and m.cause == cause then "" else name + ": expected trap " + cause + ", got state " + str(m.st) + " " + m.cause + "; "
+fn sg_trap_regs(name, words, cause, regs) = let m = sg_run(words, 100000) in if m.st == 2 and m.cause == cause then sg_regs_l(name, m, se_split(regs, " ")) else name + ": expected trap " + cause + ", got state " + str(m.st) + " " + m.cause + "; "
+fn sg_trap_cyc(name, words, budget, cause, cycles) = let m = sg_run(words, budget) in if m.st == 2 and m.cause == cause and m.cyc == cycles then "" else name + ": expected trap " + cause + " at cycle " + str(cycles) + ", got state " + str(m.st) + " " + m.cause + " at " + str(m.cyc) + "; "
+fn sg_k(acc, e) = {n: acc.n + 1, err: acc.err + e}
+fn sg_eq(name, got, want) = if got == want then "" else name + ": encoder gave " + str(got) + ", assembler " + str(want) + "; "
+
+## 00500093 addi x1,x0,5 | 00700113 addi x2,x0,7 | 002081b3 add x3,x1,x2 | 40208233 sub x4,x1,x2 | 022082b3 mul x5,x1,x2
+## | 05d00893 addi a7,x0,93 | 00000073 ecall
+fn sg_p_arith() = "5243027 7340307 2130355 1075872307 35685043 97519763 115"
+## 00500013 addi x0,x0,5 | 000000b3 add x1,x0,x0 | 12345037 lui x0,0x12345 | 0040006f jal x0,+4 | 00100113 addi x2,x0,1
+## | 00202023 sw x2,0(x0)   (the store to address 0 must trap; x0 must still read 0 in the raw register file)
+fn sg_p_x0() = "5242899 179 305418295 4194415 1048851 2105379"
+## ff800093 addi x1,x0,-8 | 00300113 addi x2,x0,3 | 002091b3 sll x3 | 0020d233 srl x4 | 4020d2b3 sra x5 | 0020a333 slt x6
+## | 0020b3b3 sltu x7 | 0020c433 xor x8 | 0020e4b3 or x9 | 0020f533 and x10 (all rs1=x1, rs2=x2) | 00411593 slli x11,x2,4
+## | 01c0d613 srli x12,x1,28 | 4010d693 srai x13,x1,1 | 0000a713 slti x14,x1,0 | fff13793 sltiu x15,x2,-1
+## | fff14813 xori x16,x2,-1 | 70016913 ori x18,x2,0x700 | 0ff0f993 andi x19,x1,0xff | halt
+fn sg_p_logic() = "4286578835 3146003 2134451 2150963 1075892915 2138931 2143155 2147379 2155699 2159923 4265363 29414931 1074845331 42771 4293998483 4294002707 1879140627 267450771 97519763 115"
+## 800000b7 lui x1,0x80000 | fff00113 addi x2,x0,-1 | 800001b7 lui x3,0x80000 | fff18193 addi x3,x3,-1 | 00000213 addi x4,x0,0
+## | 023182b3 mul x5,x3,x3 | 02319333 mulh x6,x3,x3 | 022133b3 mulhu x7,x2,x2 | 02212433 mulhsu x8,x2,x2
+## | 021094b3 mulh x9,x1,x1 | 02208533 mul x10,x1,x2 | 0220c5b3 div x11,x1,x2 | 0220e633 rem x12,x1,x2
+## | 0241c6b3 div x13,x3,x4 | 0241e733 rem x14,x3,x4 | 0241d7b3 divu x15,x3,x4 | 0241f833 remu x16,x3,x4
+## | ff900a13 addi x20,x0,-7 | 00200a93 addi x21,x0,2 | 035a4b33 div x22,x20,x21 | 035a6bb3 rem x23,x20,x21
+## | 035a5c33 divu x24,x20,x21 | 035a7cb3 remu x25,x20,x21 | 0210bd33 mulhu x26,x1,x1 | 0220adb3 mulhsu x27,x1,x2 | halt
+fn sg_p_mext() = "2147483831 4293918995 2147484087 4294017427 531 36799155 36803379 35730355 35726387 34641075 35685683 35702195 35710515 37865139 37873459 37869491 37877811 4287629843 2099859 56249139 56257459 56253491 56261811 34651443 35696051 97519763 115"
+## 00000093 addi x1,x0,0 | 00a00113 addi x2,x0,10 | 002080b3 add x1,x1,x2 | fff10113 addi x2,x2,-1 | fe011ce3 bne x2,x0,-8
+## | fff00193 addi x3,x0,-1 | 00100213 addi x4,x0,1 | 0041c463 blt x3,x4,+8 | 00128293 addi x5,x5,1 | 0041e463 bltu x3,x4,+8
+## | 00130313 addi x6,x6,1 | 00325463 bge x4,x3,+8 | 00128293 | 00327463 bgeu x4,x3,+8 | 00130313 | 00318463 beq x3,x3,+8
+## | 00128293 | 00319463 bne x3,x3,+8 | 00130313 | halt     (x5 counts wrongly skipped branches, x6 the fall-throughs)
+fn sg_p_branch() = "147 10486035 2130099 4293984531 4261485795 4293919123 1049107 4310115 1213075 4318307 1245971 3298403 1213075 3306595 1245971 3245155 1213075 3249251 1245971 97519763 115"
+## 00080137 lui x2,0x80 | 123450b7 lui x1,0x12345 | 67808093 addi x1,x1,0x678 | 00112023 sw x1,0(x2) | 00012183 lw x3,0(x2)
+## | 00010203 lb x4,0(x2) | 00310283 lb x5,3(x2) | 00211303 lh x6,2(x2) | f8000393 addi x7,x0,-128 | 007102a3 sb x7,5(x2)
+## | 00510403 lb x8,5(x2) | 00514483 lbu x9,5(x2) | 00412503 lw x10,4(x2) | 00711423 sh x7,8(x2) | 00811583 lh x11,8(x2)
+## | 00815603 lhu x12,8(x2) | 000846b7 lui x13,0x84 | fe16ae23 sw x1,-4(x13) | ffc6a703 lw x14,-4(x13) | halt
+fn sg_p_mem() = "524599 305418423 1736474771 1122339 74115 66051 3211907 2167555 4160750483 7406243 5309443 5325955 4269315 7410723 8459651 8476163 542391 4262899235 4291208963 97519763 115"
+## 010000ef jal x1,+16 | 00100293 addi x5,x0,1 | 00000397 auipc x7,0 | 00c0006f jal x0,+12 | 00900313 addi x6,x0,9
+## | 001084e7 jalr x9,1(x1) | halt     (jalr clears bit 0 of the target)
+fn sg_p_jump() = "16777455 1049235 919 12583023 9437971 1082599 97519763 115"
+
+fn sg_kat_run(a) = let a1 = sg_k(a, sg_halt("arith", sg_p_arith(), 7, "1=5 2=7 3=12 4=4294967294 5=35 0=0")) in let a2 = sg_k(a1, sg_trap_regs("x0", sg_p_x0(), "ram_out_of_bounds", "0=0 1=0 2=1")) in let a3 = sg_k(a2, sg_halt("logic", sg_p_logic(), 20, "1=4294967288 2=3 3=4294967232 4=536870911 5=4294967295 6=1 7=0 8=4294967291 9=4294967291 10=0 11=48 12=15 13=4294967292 14=1 15=1 16=4294967292 18=1795 19=248")) in let a4 = sg_k(a3, sg_halt("mext", sg_p_mext(), 27, "5=1 6=1073741823 7=4294967294 8=4294967295 9=1073741824 10=2147483648 11=2147483648 12=0 13=4294967295 14=2147483647 15=4294967295 16=2147483647 22=4294967293 23=4294967295 24=2147483644 25=1 26=1073741824 27=2147483648")) in let a5 = sg_k(a4, sg_halt("branch", sg_p_branch(), 45, "1=55 2=0 5=0 6=3")) in let a6 = sg_k(a5, sg_halt("mem", sg_p_mem(), 21, "3=305419896 4=120 5=18 6=4660 8=4294967168 9=128 10=32768 11=4294967168 12=65408 14=305419896")) in sg_k(a6, sg_halt("jump", sg_p_jump(), 8, "1=262148 5=1 6=9 7=262152 9=262168"))
+## 00200093 addi x1,x0,2 | 00008067 jalr x0,0(x1) | 0020006f jal x0,+2 | 00002083 lw x1,0(x0) | 00084137 lui x2,0x84
+## | 00112023 sw x1,0(x2) | 00080137 lui x2,0x80 | ffc12083 lw x1,-4(x2) | 00212083 lw x1,2(x2) | 00111083 lh x1,1(x2)
+## | 001111a3 sh x1,3(x2) | 000401b7 lui x3,0x40 | 0011a023 sw x1,0(x3) | 0001a083 lw x1,0(x3) | 30529073 csrrw x0,mtvec,x5
+## | 04000033 = add with funct7 = 2 (no such instruction) | 00100073 ebreak | 0000006f jal x0,+0 | 0ff0000f fence
+## | 00100893 / 00200893 / 00300893 addi a7,x0,1 / 2 / 3
+fn sg_kat_trap(a) = let a1 = sg_k(a, sg_trap("pc misaligned by jalr", "2097299 32871", 100, "pc_misaligned")) in let a2 = sg_k(a1, sg_trap("pc misaligned by jal", "2097263", 100, "pc_misaligned")) in let a3 = sg_k(a2, sg_trap("run off the ROM", "5243027", 100, "pc_out_of_rom")) in let a4 = sg_k(a3, sg_trap("jump to 0", "32871", 100, "pc_out_of_rom")) in let a5 = sg_k(a4, sg_trap("load below RAM", "8323", 100, "ram_out_of_bounds")) in let a6 = sg_k(a5, sg_trap("store past RAM", "540983 1122339", 100, "ram_out_of_bounds")) in let a7 = sg_k(a6, sg_trap("load just below RAM", "524599 4290846851", 100, "ram_out_of_bounds")) in let a8 = sg_k(a7, sg_trap("lw misaligned", "524599 2171011", 100, "ram_misaligned")) in let a9 = sg_k(a8, sg_trap("lh misaligned", "524599 1118339", 100, "ram_misaligned")) in let b1 = sg_k(a9, sg_trap("sh misaligned", "524599 1118627", 100, "ram_misaligned")) in let b2 = sg_k(b1, sg_trap("store to ROM", "262583 1155107", 100, "ram_out_of_bounds")) in let b3 = sg_k(b2, sg_trap("data load from ROM", "262583 106627", 100, "ram_out_of_bounds")) in let b4 = sg_k(b3, sg_trap("word 0", "0", 100, "illegal_instruction")) in let b5 = sg_k(b4, sg_trap("word ffffffff", "4294967295", 100, "illegal_instruction")) in let b6 = sg_k(b5, sg_trap("csrrw", "810717299", 100, "illegal_instruction")) in let b7 = sg_k(b6, sg_trap("funct7 = 2", "67108915", 100, "illegal_instruction")) in let b8 = sg_k(b7, sg_trap("ebreak", "1048691", 100, "ebreak")) in let b9 = sg_k(b8, sg_trap("ebreak a7=1", "1050771 1048691", 100, "ebreak_contract_violation")) in let c1 = sg_k(b9, sg_trap("ebreak a7=2", "2099347 1048691", 100, "ebreak_integer_overflow")) in let c2 = sg_k(c1, sg_trap("ebreak a7=3", "3147923 1048691", 100, "ebreak_division_by_zero")) in let c3 = sg_k(c2, sg_trap("ecall a7=0", "115", 100, "ecall_unsupported")) in let c4 = sg_k(c3, sg_trap_cyc("endless loop", "111", 1000, "watchdog_cycle_budget", 1000)) in let c5 = sg_k(c4, sg_halt("fence is a no-op", "267386895 97519763 115", 3, "17=93")) in let c6 = sg_k(c5, sg_trap_cyc("budget one short", sg_p_arith(), 6, "watchdog_cycle_budget", 6)) in sg_k(c6, if (sg_run(sg_p_arith(), 7)).st == 1 then "" else "exact budget must halt; ")
+## the channel-B compiler's encoders against the same assembler (the words of build-time file enc.s)
+fn sg_kat_enc(a) = let a1 = sg_k(a, sg_eq("addi sp,sp,-4", rv_addi(2, 2, 0 - 4), 4290838803) + sg_eq("sw a0,0(sp)", rv_sw(10, 2, 0), 10559523) + sg_eq("lw t0,0(sp)", rv_lw(5, 2, 0), 74371) + sg_eq("addi sp,sp,4", rv_addi(2, 2, 4), 4260115)) in let a2 = sg_k(a1, sg_eq("add", rv_add(6, 5, 10), 10650419) + sg_eq("slti", rv_slti(7, 10, 0), 336787) + sg_eq("slt", rv_slt(5, 6, 5), 5448371) + sg_eq("beq +8", rv_beq(7, 5, 8), 5473379) + sg_eq("sub", rv_sub(6, 5, 10), 1084392243)) in let a3 = sg_k(a2, sg_eq("mul", rv_mul(6, 5, 10), 44204851) + sg_eq("mulh", rv_mulh(7, 5, 10), 44209075) + sg_eq("srai", rv_srai(5, 6, 31), 1106465427) + sg_eq("div", rv_div(10, 5, 10), 44221747) + sg_eq("rem", rv_rem(10, 5, 10), 44229939)) in let a4 = sg_k(a3, sg_eq("bne +8", rv_bne(10, 0, 8), 332899) + sg_eq("bne +16", rv_bne(10, 6, 16), 6625379) + sg_eq("lui 0x80000", rv_lui(6, 524288), 2147484471) + sg_eq("lui sp,0x84", rv_lui(2, 132), 540983)) in let a5 = sg_k(a4, sg_eq("xor", rv_xor(6, 5, 10), 10666803) + sg_eq("sltiu", rv_sltiu(10, 6, 1), 1258771) + sg_eq("sltu", rv_sltu(10, 0, 6), 6305075) + sg_eq("xori", rv_xori(10, 10, 1), 1393939) + sg_eq("and", rv_and(10, 5, 10), 10679603) + sg_eq("or", rv_or(10, 5, 10), 10675507)) in let a6 = sg_k(a5, sg_eq("ret", rv_jalr(0, 1, 0), 32871) + sg_eq("lw a0,-12(fp)", rv_lw(10, 8, 0 - 12), 4282656003) + sg_eq("lw a0,24(fp)", rv_lw(10, 8, 24), 25437443) + sg_eq("sw ra,4(sp)", rv_sw(1, 2, 4), 1122851) + sg_eq("sw fp,0(sp)", rv_sw(8, 2, 0), 8462371)) in sg_k(a6, sg_eq("jal ra,+2048", rv_enc_j(2048, 1), 1048815) + sg_eq("jal x0,-64", rv_enc_j(0 - 64, 0), 4229951599) + sg_eq("addi a0,a0,-1", rv_addi(10, 10, 0 - 1), 4294247699) + sg_eq("addi a7,x0,93", rv_addi(17, 0, 93), 97519763) + sg_eq("ecall", rv_ecall(), 115) + sg_eq("ebreak", rv_ebreak(), 1048691))
+fn sg_kats() = sg_kat_enc(sg_kat_trap(sg_kat_run({n: 0, err: ""})))
+
+## ====================================================================================================================
+## 2. The gate's own evaluation of the lowered AST (third opinion). st: 1 value, 2 contract violation,
+##    3 leaves the i32 monitor domain, 4 division by zero, 5 outside the fragment
+## ====================================================================================================================
+fn sg_v(v) = {st: 1, v: v}
+fn sg_bad(st) = {st: st, v: 0}
+fn sg_rng(v) = if v < 0 - 2147483648 or v > 2147483647 then sg_bad(3) else sg_v(v)
+fn sg_norm(x) = if x.st != 1 then x else sg_v(if x.v != 0 then 1 else 0)
+fn sg_b01(c) = sg_v(if c then 1 else 0)
+fn sg_env_get(env, nm) = match env
+    Nil        => sg_bad(5)
+    Cons(h, t) => if h.name == nm then sg_v(h.v) else sg_env_get(t, nm)
+fn sg_ev_op(op, a, b) = if b.st != 1 then b else if op == "+" then sg_rng(a + b.v) else if op == "-" then sg_rng(a - b.v) else if op == "*" then sg_rng(a * b.v) else if op == "/" then (if b.v == 0 then sg_bad(4) else sg_rng(a / b.v)) else if op == "%" then (if b.v == 0 then sg_bad(4) else sg_v(a % b.v)) else if op == "==" then sg_b01(a == b.v) else if op == "!=" then sg_b01(a != b.v) else if op == "<" then sg_b01(a < b.v) else if op == ">" then sg_b01(a > b.v) else if op == "<=" then sg_b01(a <= b.v) else if op == ">=" then sg_b01(a >= b.v) else if op == "bit_and" then sg_v(bit_and(a, b.v)) else if op == "bit_or" then sg_v(bit_or(a, b.v)) else if op == "bit_xor" then sg_v(bit_xor(a, b.v)) else sg_bad(5)
+fn sg_ev_bin(prog, env, op, a, r) = if a.st != 1 then a else if op == "and" then (if a.v == 0 then sg_v(0) else sg_norm(sg_ev(prog, env, r))) else if op == "or" then (if a.v != 0 then sg_v(1) else sg_norm(sg_ev(prog, env, r))) else sg_ev_op(op, a.v, sg_ev(prog, env, r))
+fn sg_ev_if(prog, env, c, t, f) = if c.st != 1 then c else if c.v != 0 then sg_ev(prog, env, t) else sg_ev(prog, env, f)
+fn sg_ev_let(prog, env, nm, v, b) = if v.st != 1 then v else sg_ev(prog, Cons({name: nm, v: v.v}, env), b)
+fn sg_ev_args(prog, env, args) = match args
+    Nil        => {st: 1, vs: Nil}
+    Cons(h, t) => sg_ev_args2(prog, env, sg_ev(prog, env, h), t)
+fn sg_ev_args2(prog, env, a, t) = if a.st != 1 then {st: a.st, vs: Nil} else let r = sg_ev_args(prog, env, t) in if r.st != 1 then r else {st: 1, vs: Cons(a.v, r.vs)}
+fn sg_bind(ps, vs) = match ps
+    Nil        => Nil
+    Cons(h, t) => sg_bind2(h, t, vs)
+fn sg_bind2(h, t, vs) = match vs
+    Nil         => Nil
+    Cons(v, vt) => Cons({name: h, v: v}, sg_bind(t, vt))
+fn sg_ev_user(prog, f, a) = if f.ok != 1 then sg_bad(5) else if a.st != 1 then sg_bad(a.st) else if rv_len(a.vs) != rv_len(f.params) then sg_bad(5) else sg_ev(prog, sg_bind(f.params, a.vs), f.body)
+fn sg_ev_bit(prog, env, nm, args) = match args
+    Nil        => sg_bad(5)
+    Cons(h, t) => sg_ev_bit2(prog, env, nm, sg_ev(prog, env, h), t)
+fn sg_ev_bit2(prog, env, nm, a, t) = match t
+    Nil         => sg_bad(5)
+    Cons(h2, r) => if a.st != 1 then a else sg_ev_op(nm, a.v, sg_ev(prog, env, h2))
+fn sg_ev_call(prog, env, nm, args) = if nm == "ctfail" then sg_bad(2) else if nm == "bit_and" or nm == "bit_or" or nm == "bit_xor" then sg_ev_bit(prog, env, nm, args) else sg_ev_user(prog, rc_prog_find(prog, nm), sg_ev_args(prog, env, args))
+fn sg_ev(prog, env, e) = match e
+    Num(v)          => if v < 0 - 2147483648 or v > 2147483647 then sg_bad(5) else sg_v(v)
+    Var(nm)         => if nm == "true" then sg_v(1) else if nm == "false" then sg_v(0) else sg_env_get(env, nm)
+    Bin(op, l, r)   => sg_ev_bin(prog, env, op, sg_ev(prog, env, l), r)
+    If(c, t, f)     => sg_ev_if(prog, env, sg_ev(prog, env, c), t, f)
+    LetIn(nm, v, b) => sg_ev_let(prog, env, nm, sg_ev(prog, env, v), b)
+    Call(nm, args)  => sg_ev_call(prog, env, nm, args)
+    _               => sg_bad(5)
+fn sg_all_i32(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if h < 0 - 2147483648 or h > 2147483647 then 0 else sg_all_i32(t)
+fn sg_ref(prog, fname, xs) = if sg_all_i32(xs) != 1 then sg_bad(5) else sg_ev_user(prog, rc_prog_find(prog, fname), {st: 1, vs: xs})
+
+## vector sampler: values come from the kernel's own literals (+-1), a few small constants and a uniform range
+fn sg_nums_l(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => sg_nums_l(t, sg_nums(h, acc))
+fn sg_nums(e, acc) = match e
+    Num(v)          => Cons(v - 1, Cons(v, Cons(v + 1, acc)))
+    Bin(op, l, r)   => sg_nums(r, sg_nums(l, acc))
+    If(c, t, f)     => sg_nums(f, sg_nums(t, sg_nums(c, acc)))
+    LetIn(nm, v, b) => sg_nums(b, sg_nums(v, acc))
+    Call(nm, args)  => sg_nums_l(args, acc)
+    _               => acc
+fn sg_pool(prog, fname) = sg_nums((rc_prog_find(prog, fname)).body, Cons(0, Cons(1, Cons(2, Cons(3, Cons(5, Cons(10, Cons(100, Nil))))))))
+fn sg_nth_i(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i == 0 then h else sg_nth_i(t, i - 1)
+fn sg_pick_val(s, pool, pn, rng) = if sg_pick(s, 3) == 0 then sg_pick(sg_prng(s), 2 * rng + 1) - rng else sg_nth_i(pool, sg_pick(sg_prng(s), pn))
+fn sg_gen_vec(s, k, pool, pn, rng) = if k == 0 then {s: s, xs: Nil} else let r = sg_gen_vec(sg_prng(sg_prng(s)), k - 1, pool, pn, rng) in {s: r.s, xs: Cons(sg_pick_val(s, pool, pn, rng), r.xs)}
+fn sg_seen(xs, key) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == key then 1 else sg_seen(t, key)
+fn sg_sample(prog, fname, k, pool, pn, rng, s, tries, want, acc, seen) = if tries == 0 or want == 0 then acc else let gv = sg_gen_vec(s, k, pool, pn, rng) in let key = se_join_ints(gv.xs) in if sg_seen(seen, key) == 1 or (sg_ref(prog, fname, gv.xs)).st != 1 then sg_sample(prog, fname, k, pool, pn, rng, gv.s, tries - 1, want, acc, seen) else sg_sample(prog, fname, k, pool, pn, rng, gv.s, tries - 1, want - 1, Cons(gv.xs, acc), Cons(key, seen))
+fn sg_vectors(prog, fname, rng, seed, tries, want) = let pool = sg_pool(prog, fname) in sg_sample(prog, fname, rv_len((rc_prog_find(prog, fname)).params), pool, rv_len(pool), rng, seed, tries, want, Nil, Nil)
+
+## ====================================================================================================================
+## 3. Driving the real CLI
+## ====================================================================================================================
+fn sg_rm(path) = if fs_path_exists(path) == 1 then fs_remove(path) else 0
+fn sg_cli(g, tag, body) = let inp = g.tmp + "/" + tag + ".in" in let w = fs_write_sync(inp, "@root " + g.root + "\n@work " + g.tmp + "/work\n" + body) in let z = fs_write_sync(g.tmp + "/" + tag + ".json", "") in let raw = os_run_input_capture_timeout(g.bin, Nil, inp, g.tmp + "/" + tag + ".json", g.tmp + "/" + tag + ".err", 300000) in {status: se_wait_exit(raw), out: fs_read_file(g.tmp + "/" + tag + ".json")}
+fn sg_hdr(g, tag, src, fname, ltv) = "@src " + src + "\n@fn " + fname + "\n@ltv " + ltv + "\n@log " + g.tmp + "/" + tag + ".jsonl\n"
+## a fresh event log for every independent invocation (the chain is re-verified on each run, so short logs keep it fast)
+fn sg_cli_fresh(g, tag, src, fname, ltv, body) = let z = sg_rm(g.tmp + "/" + tag + ".jsonl") in sg_cli(g, tag, sg_hdr(g, tag, src, fname, ltv) + body)
+fn sg_args_lines(vecs) = match vecs
+    Nil        => ""
+    Cons(h, t) => "@args " + se_join_ints(h) + "\n" + sg_args_lines(t)
+fn sg_commit_str(xs, v) = "{\"args\":[" + se_join_ints(xs) + "],\"state\":\"VerifiedActuatorCommit\",\"value\":" + str(v) + ",\"out_a\":" + str(v) + ",\"out_b\":" + str(v) + ",\"cycles_b\":"
+fn sg_trip_str(xs) = "{\"args\":[" + se_join_ints(xs) + "],\"state\":\"SAFE_STATE_TRIP\",\"value\":null,"
+fn sg_short(s) = let n = count(s) in if n > 700 then slicen(s, n, 0, 700) else s
+fn sg_cyc_at(out, n, p, en) = if p < 0 then 0 - 1 else toint(slicen(out, n, p + en, se_digits_end(out, n, p + en)))
+fn sg_commit_cyc(out, xs, v) = let ex = sg_commit_str(xs, v) in let n = count(out) in sg_cyc_at(out, n, se_find(out, n, ex, count(ex), 0), count(ex))
+fn sg_commits(out, prog, fname, vecs, acc) = match vecs
+    Nil        => acc
+    Cons(h, t) => if acc.err != "" then acc else let rf = sg_ref(prog, fname, h) in let cyc = if rf.st == 1 then sg_commit_cyc(out, h, rf.v) else 0 - 1 in if cyc < 0 then {err: fname + "(" + se_join_ints(h) + "): no commit of the reference value " + str(rf.v) + " (reference state " + str(rf.st) + ")", n: acc.n, maxc: acc.maxc, sumc: acc.sumc} else sg_commits(out, prog, fname, t, {err: "", n: acc.n + 1, maxc: sg_max(acc.maxc, cyc), sumc: acc.sumc + cyc})
+## one batch: every vector must commit the reference value; {err, n, maxc, sumc}
+fn sg_lockstep(g, tag, src, prog, fname, vecs, ltv, extra) = let r = sg_cli_fresh(g, tag, src, fname, ltv, extra + sg_args_lines(vecs)) in if r.status != 0 then {err: fname + ": lockstep batch exited " + str(r.status) + ": " + sg_short(r.out), n: 0, maxc: 0, sumc: 0} else if se_has(r.out, "\"tripped\":0,\"final_latched\":0}") != 1 then {err: fname + ": batch did not end clean: " + sg_short(r.out), n: 0, maxc: 0, sumc: 0} else sg_commits(r.out, prog, fname, vecs, {err: "", n: 0, maxc: 0, sumc: 0})
+
+## --- the gate's own kernels ------------------------------------------------------------------------------------------
+fn sg_gk_src() = "@bound(cycles: 40)\nfn gk_clamp(v: int, lo: int, hi: int) -> int / pure\n  requires lo <= hi\n  ensures result >= lo and result <= hi\n= if v < lo then lo else if v > hi then hi else v\n\n@bound(cycles: 60)\nfn gk_poly(x: int, y: int) -> int = let t = x * 3 + y in let u = t - y * 2 in if u > 10 and t != 7 or x == 0 - 4 then u * u - t else (t + u) % 9\n\n@bound(cycles: 60)\nfn gk_divmod(a: int, b: int) -> int\n  requires b != 0\n= a / b * 7 + a % b\n\nfn gk_abs(x: int) -> int = if x < 0 then 0 - x else x\nfn gk_max(a: int, b: int) -> int = if a >= b then a else b\n\n@bound(cycles: 120)\nfn gk_dist(a: int, b: int, c: int) -> int = gk_max(gk_abs(a - b), gk_max(gk_abs(b - c), gk_abs(a - c))) + gk_abs(c)\n\nfn gk_tri(n: int) -> int\n  requires n >= 0 and n <= 12\n= if n == 0 then 0 else n + gk_tri(n - 1)\n\n@bound(cycles: 80)\nfn gk_bits(a: int, b: int) -> int = bit_xor(bit_and(a, b), bit_or(a, 5)) + (if true and not (a == b) then 1 else 0)\n\n@bound(cycles: 100)\nfn gk_mix(a: int, b: int, c: int) -> int\n  requires c >= 1\n= let q = (a * b) / c in let r = a * b - q * c in if r == 0 then q else q + gk_abs(r) % c\n\n@bound(cycles: 60)\nfn gk_raw(a: int, b: int, m: int) -> int = if m == 0 then a / b else if m == 1 then a % b else if m == 2 then a * b else if m == 3 then a + b else a - b\n\n@bound(cycles: 30)\nfn gk_big(a: int) -> int = a + 3000000000 - 3000000000\n\n@bound(cycles: 30)\nfn gk_str(a: int) -> int = a + count(str(a))\n\nfn gk_spin(n: int, acc: int) -> int = if n == 0 then acc else gk_spin(n - 1, acc + 1)\nfn gk_down(n: int) -> int = if n == 0 then 0 else 1 + gk_down(n - 1)\n"
+fn sg_gk_list() = Cons({name: "gk_clamp", rng: 50, extra: ""}, Cons({name: "gk_poly", rng: 3000, extra: ""}, Cons({name: "gk_divmod", rng: 9000, extra: ""}, Cons({name: "gk_dist", rng: 100000, extra: ""}, Cons({name: "gk_tri", rng: 12, extra: "@budget 6000\n"}, Cons({name: "gk_bits", rng: 16000, extra: ""}, Cons({name: "gk_mix", rng: 6000, extra: ""}, Cons({name: "gk_raw", rng: 4, extra: ""}, Nil))))))))
+fn sg_pos_acc(acc, r, bound) = if r.err != "" then {err: r.err, kernels: acc.kernels, vecs: acc.vecs, maxr: acc.maxr, sumc: acc.sumc} else {err: "", kernels: acc.kernels + 1, vecs: acc.vecs + r.n, maxr: if bound < 1 then acc.maxr else sg_max(acc.maxr, r.maxc * 100 / bound), sumc: acc.sumc + r.sumc}
+fn sg_pos_one(g, acc, k, vecs) = if rv_len(vecs) < 12 then {err: k.name + ": the sampler found only " + str(rv_len(vecs)) + " committable vectors", kernels: acc.kernels, vecs: acc.vecs, maxr: acc.maxr, sumc: acc.sumc} else sg_pos_acc(acc, sg_lockstep(g, "pos", g.gk, g.prog, k.name, vecs, g.ltv_ok, k.extra), se_bound(g.gsrc, k.name))
+fn sg_positive(g, ks, acc) = match ks
+    Nil        => acc
+    Cons(h, t) => if acc.err != "" then acc else sg_positive(g, t, sg_pos_one(g, acc, h, sg_vectors(g.prog, h.name, h.rng, 20261110 + acc.kernels * 7919, 4000, 24)))
+
+## --- the lchameleon corpus: every `fn ... -> int / pure` preceded by `@bound(` ---------------------------------------
+fn sg_block_end(s, n, i) = if i >= n then i else let e = se_line_end(s, n, i) in if e - i >= 2 and slicen(s, n, i, i + 2) == "= " then (if e < n then e + 1 else e) else if e - i >= 2 and slicen(s, n, i, i + 2) == "  " then sg_block_end(s, n, e + 1) else i
+fn sg_fn_name(line) = let n = count(line) in let p = se_find(line, n, "(", 1, 0) in if p < 4 then "" else slicen(line, n, 3, p)
+fn sg_zeros(k) = if k <= 0 then Nil else Cons(0, sg_zeros(k - 1))
+fn sg_cadd(acc, err, ok, vecs, nsc, unsup, novec, nobound, ratio, named, sumc) = {err: err, ok: acc.ok + ok, vecs: acc.vecs + vecs, nsc: acc.nsc + nsc, unsup: acc.unsup + unsup, novec: acc.novec + novec, nobound: acc.nobound + nobound, maxr: sg_max(acc.maxr, ratio), named: acc.named + named, sumc: acc.sumc + sumc}
+fn sg_named(name) = if name == "lumeputer_rv32im_pc_step" or name == "lumeputer_deltanet_ram_step_exact" or name == "lumeputer_inweights_lcert_check" then 1 else 0
+fn sg_corp_run(g, acc, name, bound, path, prog, vecs) = if rv_len(vecs) == 0 then sg_cadd(acc, "", 0, 0, 0, 0, 1, 0, 0, 0, 0) else let r = sg_lockstep(g, "corpus", path, prog, name, vecs, g.ltv_ok, "") in if r.err != "" then sg_cadd(acc, "lchameleon kernel " + r.err, 0, 0, 0, 0, 0, 0, 0, 0, 0) else sg_cadd(acc, "", 1, r.n, 0, 0, 0, 0, r.maxc * 100 / bound, sg_named(name), r.sumc)
+fn sg_ty_int(ty) = match ty
+    TyName(n) => if n == "int" then 1 else 0
+    _         => 0
+fn sg_tys_int(tys) = match tys
+    Nil        => 1
+    Cons(h, t) => if sg_ty_int(h) == 1 then sg_tys_int(t) else 0
+fn sg_sig_s(s0, t, nm) = match s0
+    Sig(n2, ps, tys, rt) => if n2 == nm then (if sg_tys_int(tys) == 1 and sg_ty_int(rt) == 1 then 1 else 0) else sg_sig_ok(t, nm)
+    _                    => sg_sig_ok(t, nm)
+fn sg_sig_ok(prog, nm) = match prog
+    Nil        => 0
+    Cons(h, t) => sg_sig_s(h, t, nm)
+fn sg_corp_prog(g, acc, name, bound, path, prog) = let k = rv_len((rc_prog_find(prog, name)).params) in if k < 1 or sg_sig_ok(prog, name) != 1 or (rc_rom(prog, name, sg_zeros(k))).err != "" then sg_cadd(acc, "", 0, 0, 0, 1, 0, 0, 0, 0, 0) else sg_corp_run(g, acc, name, bound, path, prog, sg_vectors(prog, name, 20, 977 + acc.ok * 131, 1500, 4))
+## a kernel that calls helpers outside its own block cannot be compiled alone: lumec says so and it is skipped
+fn sg_corp_one(g, acc, block, name) = let bound = se_bound(block, name) in if bound < 1 then sg_cadd(acc, "", 0, 0, 0, 0, 0, 1, 0, 0, 0) else let path = g.tmp + "/corpus_" + name + ".src" in let w = fs_write_sync(path, block) in let c = os_run_input_capture_timeout(g.lumec, Nil, path, path + ".s", path + ".cerr", 60000) in if se_wait_exit(c) != 0 then sg_cadd(acc, "", 0, 0, 1, 0, 0, 0, 0, 0, 0) else sg_corp_prog(g, acc, name, bound, path, nf_late(lumec_expand(block)))
+fn sg_corp_scan(g, s, n, i, ps, acc) = if i >= n or acc.err != "" then acc else let e = se_line_end(s, n, i) in if e - i > 20 and slicen(s, n, i, i + 3) == "fn " and se_has(slicen(s, n, i, e), "-> int / pure") == 1 and slicen(s, n, ps, ps + 7) == "@bound(" then (let be = sg_block_end(s, n, e + 1) in sg_corp_scan(g, s, n, be, be, sg_corp_one(g, acc, slicen(s, n, ps, be), sg_fn_name(slicen(s, n, i, e))))) else sg_corp_scan(g, s, n, e + 1, i, acc)
+fn sg_corpus(g) = let s = fs_read_file(g.root + "/compiler/stage1/lchameleon.src") in sg_corp_scan(g, s, count(s), 0, 0, {err: "", ok: 0, vecs: 0, nsc: 0, unsup: 0, novec: 0, nobound: 0, maxr: 0, named: 0, sumc: 0})
+
+## ====================================================================================================================
+## 4. Fault injection. Counters: {err, inj, trips, masked}; a committed wrong value is an error (false negative).
+## ====================================================================================================================
+fn sg_f0() = {err: "", inj: 0, trips: 0, masked: 0}
+fn sg_f(acc, err, trips, masked) = {err: if acc.err != "" then acc.err else err, inj: acc.inj + trips + masked, trips: acc.trips + trips, masked: acc.masked + masked}
+fn sg_is_trip(r, xs, reason) = if r.status == 2 and se_has(r.out, sg_trip_str(xs)) == 1 and se_has(r.out, "VerifiedActuatorCommit") == 0 and se_has(r.out, "\"reason\":\"" + reason + "\"") == 1 and se_has(r.out, "\"committed\":0,") == 1 then 1 else 0
+
+## (1a) single-event upset in the channel-A result word, through the CLI: every bit 0..31, every vector
+fn sg_abit_one(g, acc, xs, rv, bit) = let r = sg_cli_fresh(g, "abit", g.gk, "gk_poly", g.ltv_ok, "@args " + se_join_ints(xs) + "\n@inject a_bit:" + str(bit) + "\n") in if sg_is_trip(r, xs, "lockstep_mismatch") == 1 and se_has(r.out, "\"out_a\":" + str(bit_xor(rv, rv_p2(bit))) + ",\"out_b\":" + str(rv) + ",") == 1 then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE or wrong diagnosis: channel-A bit " + str(bit) + " flip on gk_poly(" + se_join_ints(xs) + "): " + sg_short(r.out), 0, 0)
+fn sg_abit_bits(g, acc, xs, rv, bit) = if bit > 31 or acc.err != "" then acc else sg_abit_bits(g, sg_abit_one(g, acc, xs, rv, bit), xs, rv, bit + 1)
+fn sg_abit_cli(g, acc, vecs) = match vecs
+    Nil        => acc
+    Cons(h, t) => sg_abit_cli(g, sg_abit_bits(g, acc, h, (sg_ref(g.prog, "gk_poly", h)).v, 0), t)
+## the same upset on a real native result, in process: bits 0..62 through the real voter
+fn sg_a_rec(g, tag, xs) = se_a_run(g.tmp + "/" + tag, xs, 5000)
+fn sg_abit_ip_bits(acc, a, b, bit) = if bit > 62 or acc.err != "" then acc else let v = se_vote(se_a_flip(a, {kind: 4, cyc: 0, target: 0, bit: bit, akind: "", text: "", bad: 0}), b, 1, "validated") in sg_abit_ip_bits(if v.commit == 0 and v.reason == "lockstep_mismatch" then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE: voter accepted a channel-A result with bit " + str(bit) + " flipped", 0, 0), a, b, bit + 1)
+fn sg_abit_ip(g, acc, fname, vecs) = match vecs
+    Nil        => acc
+    Cons(h, t) => let a = sg_a_rec(g, "ipa", h) in let b = se_b_run(g.prog, fname, h, 100000, rv_no_inj()) in if a.ok != 1 or b.ok != 1 or a.v != b.v then sg_f(acc, "in-process channels disagree on " + fname + "(" + se_join_ints(h) + ")", 0, 0) else sg_abit_ip(g, sg_abit_ip_bits(acc, a, b, 0), fname, t)
+
+## (1b) real corrupted native execution: one instruction of the kernel's own machine code is changed before lasm
+fn sg_asm_class(acc, r, xs, rv, what) = if r.status == 0 and se_has(r.out, sg_commit_str(xs, rv)) == 1 then sg_f(acc, "", 0, 1) else if r.status == 2 and se_has(r.out, sg_trip_str(xs)) == 1 and se_has(r.out, "VerifiedActuatorCommit") == 0 and (se_has(r.out, "\"reason\":\"lockstep_mismatch\"") == 1 or se_has(r.out, "\"reason\":\"a_trap\"") == 1 or se_has(r.out, "\"reason\":\"a_watchdog_timeout\"") == 1 or se_has(r.out, "\"reason\":\"a_unparsable_output\"") == 1) then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE or wrong diagnosis: " + what + ": " + sg_short(r.out), 0, 0)
+fn sg_asm_site(g, acc, fname, xs, kind, n) = if n >= 48 or acc.err != "" then acc else let r = sg_cli_fresh(g, "aasm", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@timeout_ms 3000\n@inject a_asm:" + kind + ":" + str(n) + "\n") in if se_has(r.out, "\"reason\":\"inject_site_not_found\"") == 1 then acc else sg_asm_site(g, sg_asm_class(acc, r, xs, (sg_ref(g.prog, fname, xs)).v, "a_asm:" + kind + ":" + str(n) + " on " + fname + "(" + se_join_ints(xs) + ")"), fname, xs, kind, n + 1)
+fn sg_asm_vec(g, acc, fname, xs) = sg_asm_site(g, sg_asm_site(g, sg_asm_site(g, sg_asm_site(g, acc, fname, xs, "addsub", 0), fname, xs, "imm", 0), fname, xs, "cmpimm", 0), fname, xs, "jcc", 0)
+fn sg_asm(g, acc, fname, vecs) = match vecs
+    Nil        => acc
+    Cons(h, t) => sg_asm(g, sg_asm_vec(g, acc, fname, h), fname, t)
+
+## (2)(3) channel-B RAM / register upsets, in process through the real interpreter hook and the real voter.
+## code: 0 masked (correct value committed), 1 comparator trip, 3 channel-B trap, 2 FALSE NEGATIVE
+fn sg_seu_code(c, budget, a, rv, kind, cyc, target, bit) = let b = se_b_rec(rv_boot(c, budget, {kind: kind, cyc: cyc, target: target, bit: bit})) in let v = se_vote(a, b, se_cert_ok(budget, b, 1), "validated") in {code: if v.commit == 1 then (if v.value == rv then 0 else 2) else if v.reason == "lockstep_mismatch" then 1 else 3, cycles: b.cycles}
+fn sg_s0() = {n: 0, masked: 0, cmp: 0, trap: 0, fneg: 0, cyc: 0, dc: 0 - 1, dt: 0, db: 0, mc: 0 - 1, mt: 0, mb: 0}
+fn sg_s(acc, r, cyc, target, bit) = {n: acc.n + 1, masked: acc.masked + (if r.code == 0 then 1 else 0), cmp: acc.cmp + (if r.code == 1 then 1 else 0), trap: acc.trap + (if r.code == 3 then 1 else 0), fneg: acc.fneg + (if r.code == 2 then 1 else 0), cyc: acc.cyc + r.cycles, dc: if r.code == 1 and acc.dc < 0 then cyc else acc.dc, dt: if r.code == 1 and acc.dc < 0 then target else acc.dt, db: if r.code == 1 and acc.dc < 0 then bit else acc.db, mc: if r.code == 0 and acc.mc < 0 then cyc else acc.mc, mt: if r.code == 0 and acc.mc < 0 then target else acc.mt, mb: if r.code == 0 and acc.mc < 0 then bit else acc.mb}
+fn sg_seu_bits(c, budget, a, rv, kind, cyc, target, bit, acc) = if bit > 31 then acc else sg_seu_bits(c, budget, a, rv, kind, cyc, target, bit + 1, sg_s(acc, sg_seu_code(c, budget, a, rv, kind, cyc, target, bit), cyc, target, bit))
+fn sg_seu_tg(c, budget, a, rv, kind, cyc, target, thi, acc) = if target > thi then acc else sg_seu_tg(c, budget, a, rv, kind, cyc, target + 1, thi, sg_seu_bits(c, budget, a, rv, kind, cyc, target, 0, acc))
+fn sg_seu_cyc(c, budget, a, rv, kind, cyc, cmax, step, tlo, thi, acc) = if cyc >= cmax then acc else sg_seu_cyc(c, budget, a, rv, kind, cyc + step, cmax, step, tlo, thi, sg_seu_tg(c, budget, a, rv, kind, cyc, tlo, thi, acc))
+## the sweep for one kernel and vector: {err, s (counters), cycles}
+fn sg_seu(g, atag, fname, xs, kind, step, tlo, thi) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = rc_rom(g.prog, fname, xs) in let c = rv_machine(rom.rom, 12) in let budget = se_bound(g.gsrc, fname) * se_bound_scale() in let base = se_b_rec(rv_boot(c, budget, rv_no_inj())) in let a = sg_a_rec(g, atag, xs) in if rom.err != "" or base.ok != 1 or base.v != rv or a.ok != 1 or a.v != rv then {err: "fault-free baseline of " + fname + "(" + se_join_ints(xs) + ") is not the reference value", s: sg_s0(), cycles: 0} else {err: "", s: sg_seu_cyc(c, budget, {ok: 1, v: a.v, reason: "", detail: ""}, rv, kind, 0, base.cycles, step, tlo, thi, sg_s0()), cycles: base.cycles}
+fn sg_seu_spot(g, fname, xs, what, cyc, target, bit) = sg_cli_fresh(g, "bseu", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@inject " + what + ":" + str(cyc) + ":" + str(target) + ":" + str(bit) + "\n")
+## the sweep must find real detections, no false negative, and the CLI must reproduce one detection and one masked flip
+fn sg_seu_check(g, acc, fname, xs, what, sw) = if sw.err != "" then sg_f(acc, sw.err, 0, 0) else if sw.s.fneg != 0 then sg_f(acc, "FALSE NEGATIVE: " + str(sw.s.fneg) + " " + what + " flips of " + fname + " committed a wrong value", 0, 0) else if sw.s.cmp < 1 or sw.s.dc < 0 or sw.s.mc < 0 then sg_f(acc, what + " sweep of " + fname + " is vacuous: " + str(sw.s.cmp) + " comparator trips, " + str(sw.s.masked) + " masked", 0, 0) else if sg_is_trip(sg_seu_spot(g, fname, xs, what, sw.s.dc, sw.s.dt, sw.s.db), xs, "lockstep_mismatch") != 1 then sg_f(acc, "the CLI did not trip on " + what + ":" + str(sw.s.dc) + ":" + str(sw.s.dt) + ":" + str(sw.s.db) + " of " + fname, 0, 0) else if se_has((sg_seu_spot(g, fname, xs, what, sw.s.mc, sw.s.mt, sw.s.mb)).out, sg_commit_str(xs, (sg_ref(g.prog, fname, xs)).v)) != 1 then sg_f(acc, "the CLI did not commit the correct value under the masked flip " + what + ":" + str(sw.s.mc) + ":" + str(sw.s.mt) + ":" + str(sw.s.mb) + " of " + fname, 0, 0) else sg_f(sg_f(acc, "", sw.s.cmp + sw.s.trap, sw.s.masked), "", 1, 1)
+
+## channel-B ROM upsets: every bit of every instruction word of the kernel image, one at a time
+fn sg_rom_code(rom, budget, a, rv, idx, bit) = let b = se_b_exec(rom, budget, {kind: 3, cyc: 0, target: idx, bit: bit}) in let v = se_vote(a, b, se_cert_ok(budget, b, 1), "validated") in {code: if v.commit == 1 then (if v.value == rv then 0 else 2) else if v.reason == "lockstep_mismatch" then 1 else 3, cycles: b.cycles}
+fn sg_rom_bits(rom, budget, a, rv, idx, bit, acc) = if bit > 31 then acc else sg_rom_bits(rom, budget, a, rv, idx, bit + 1, sg_s(acc, sg_rom_code(rom, budget, a, rv, idx, bit), 0, idx, bit))
+fn sg_rom_idx(rom, budget, a, rv, idx, n, acc) = if idx >= n then acc else sg_rom_idx(rom, budget, a, rv, idx + 1, n, sg_rom_bits(rom, budget, a, rv, idx, 0, acc))
+fn sg_rom(g, atag, fname, xs) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = rc_rom(g.prog, fname, xs) in let budget = se_bound(g.gsrc, fname) * se_bound_scale() in let a = sg_a_rec(g, atag, xs) in if rom.err != "" or a.ok != 1 or a.v != rv then {err: "fault-free baseline of " + fname + " is not the reference value", s: sg_s0(), cycles: 0} else {err: "", s: sg_rom_idx(rom.rom, budget, {ok: 1, v: a.v, reason: "", detail: ""}, rv, 0, rv_len(rom.rom), sg_s0()), cycles: rv_len(rom.rom)}
+fn sg_rom_check(g, acc, fname, xs, sw) = if sw.err != "" then sg_f(acc, sw.err, 0, 0) else if sw.s.fneg != 0 then sg_f(acc, "FALSE NEGATIVE: " + str(sw.s.fneg) + " ROM flips of " + fname + " committed a wrong value", 0, 0) else if sw.s.cmp < 1 or sw.s.trap < 1 or sw.s.dc < 0 then sg_f(acc, "ROM sweep of " + fname + " is vacuous", 0, 0) else if sg_is_trip(sg_cli_fresh(g, "brom", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@inject b_rom:" + str(sw.s.dt) + ":" + str(sw.s.db) + "\n"), xs, "lockstep_mismatch") != 1 then sg_f(acc, "the CLI did not trip on b_rom:" + str(sw.s.dt) + ":" + str(sw.s.db) + " of " + fname, 0, 0) else sg_f(sg_f(acc, "", sw.s.cmp + sw.s.trap, sw.s.masked), "", 1, 0)
+
+## (4) WCET: every budget below the real cycle count trips the cycle watchdog, the exact count commits
+fn sg_wcet_ip(c, need, budget, acc) = if budget >= need or acc.err != "" then acc else let m = rv_boot(c, budget, rv_no_inj()) in sg_wcet_ip(c, need, budget + 1, if m.st == 2 and m.cause == "watchdog_cycle_budget" and m.cyc == budget then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE: budget " + str(budget) + " of " + str(need) + " cycles did not trip the watchdog", 0, 0))
+fn sg_wcet(g, acc, fname, xs) = let rv = (sg_ref(g.prog, fname, xs)).v in let rom = rc_rom(g.prog, fname, xs) in let c = rv_machine(rom.rom, 12) in let base = se_b_rec(rv_boot(c, 100000, rv_no_inj())) in if rom.err != "" or base.ok != 1 or base.v != rv then sg_f(acc, "WCET baseline of " + fname + " failed", 0, 0) else let a1 = sg_wcet_ip(c, base.cycles, 1, acc) in let lo = sg_cli_fresh(g, "wcet", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@budget " + str(base.cycles - 1) + "\n") in let hi = sg_cli_fresh(g, "wcet", g.gk, fname, g.ltv_ok, "@args " + se_join_ints(xs) + "\n@budget " + str(base.cycles) + "\n") in if sg_is_trip(lo, xs, "b_watchdog_cycle_budget") != 1 then sg_f(a1, "FALSE NEGATIVE: the CLI did not trip with @budget " + str(base.cycles - 1) + " on " + fname + ": " + sg_short(lo.out), 0, 0) else if hi.status != 0 or se_has(hi.out, sg_commit_str(xs, rv) + str(base.cycles) + ",\"budget\":" + str(base.cycles) + ",") != 1 then sg_f(a1, "the exact budget " + str(base.cycles) + " must commit " + fname + ": " + sg_short(hi.out), 0, 0) else sg_f(a1, "", 1, 0)
+fn sg_expect_trip(g, acc, tag, fname, ltv, xs, extra, reason, also) = let r = sg_cli_fresh(g, tag, g.gk, fname, ltv, "@args " + se_join_ints(xs) + "\n" + extra) in if sg_is_trip(r, xs, reason) == 1 and (also == "" or se_has(r.out, also) == 1) then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE or wrong diagnosis: " + fname + "(" + se_join_ints(xs) + ") " + extra + "expected SAFE_STATE_TRIP " + reason + " " + also + ": " + sg_short(r.out), 0, 0)
+fn sg_expect_commit(g, acc, tag, fname, ltv, xs, extra, v) = let r = sg_cli_fresh(g, tag, g.gk, fname, ltv, "@args " + se_join_ints(xs) + "\n" + extra) in if r.status == 0 and se_has(r.out, sg_commit_str(xs, v)) == 1 then acc else sg_f(acc, "control " + fname + "(" + se_join_ints(xs) + ") must commit " + str(v) + ": " + sg_short(r.out), 0, 0)
+fn sg_l1(a) = Cons(a, Nil)
+fn sg_l2(a, b) = Cons(a, Cons(b, Nil))
+fn sg_l3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+## channel-A watchdog (a native loop of 2*10^9 iterations against 250 ms) and channel-B stack exhaustion
+fn sg_watchdogs(g, acc) = let a1 = sg_expect_trip(g, acc, "wd", "gk_spin", g.ltv_ok, sg_l2(2000000000, 0), "@timeout_ms 250\n@budget 4000\n", "a_watchdog_timeout", "\"out_a\":null,\"out_b\":null,\"cycles_b\":4000,") in let a2 = sg_expect_trip(g, a1, "wd", "gk_spin", g.ltv_ok, sg_l2(300, 0), "@budget 4000\n", "b_watchdog_cycle_budget", "\"out_a\":300,\"out_b\":null,") in let a3 = sg_expect_trip(g, a2, "wd", "gk_down", g.ltv_ok, sg_l1(3000), "@budget 1000000\n", "b_ram_out_of_bounds", "\"out_a\":3000,\"out_b\":null,") in sg_expect_commit(g, a3, "wd", "gk_down", g.ltv_ok, sg_l1(200), "@budget 1000000\n", 200)
+
+## (5) certificate: the channels agree, the validator does not validate => no commit
+fn sg_cert_case(g, acc, ltv, extra, reason) = let xs = sg_l3(5, 0 - 3, 9) in let v = (sg_ref(g.prog, "gk_clamp", xs)).v in sg_expect_trip(g, acc, "cert", "gk_clamp", ltv, xs, extra, reason, "\"out_a\":" + str(v) + ",\"out_b\":" + str(v) + ",")
+fn sg_cert_guard() = let b = {ok: 1, v: 0, cycles: 100, cause: "", detail: ""} in let nb = {ok: 0, v: 0, cycles: 10, cause: "watchdog_cycle_budget", detail: ""} in if se_cert_ok(100, b, 1) == 1 and se_cert_ok(99, b, 1) == 0 and se_cert_ok(100, b, 0) == 0 and se_cert_ok(5000000, b, 1) == 1 and se_cert_ok(100, nb, 1) == 0 and lumeputer_inweights_lcert_check(0, 1) == 1 and lumeputer_inweights_lcert_check(0 - 1, 1) == 0 and lumeputer_inweights_lcert_check(7, 0) == 0 then "" else "the certificate guard truth table is wrong"
+fn sg_block_of(s, fname) = let n = count(s) in let p = se_find(s, n, "\nfn " + fname + "(", count(fname) + 5, 0) in if p < 0 then "" else slicen(s, n, p + 1, sg_block_end(s, n, se_line_end(s, n, p + 1) + 1))
+fn sg_cert_same_text(g) = let a = sg_block_of(fs_read_file(g.root + "/compiler/stage1/lchameleon.src"), "lumeputer_inweights_lcert_check") in let b = sg_block_of(fs_read_file(g.root + "/compiler/stage1/lsafety_envelope.src"), "lumeputer_inweights_lcert_check") in if a != "" and a == b then "" else "lumeputer_inweights_lcert_check in lsafety_envelope.src is not the function of lchameleon.src"
+fn sg_cert(g, acc) = let e = sg_cert_guard() + sg_cert_same_text(g) in if e != "" then sg_f(acc, e, 0, 0) else let a1 = sg_cert_case(g, acc, g.tmp + "/ltv_reject", "", "cert_ltv_rejected") in let a2 = sg_cert_case(g, a1, g.tmp + "/ltv_wrongname", "", "cert_ltv_no_validation_record") in let a3 = sg_cert_case(g, a2, g.tmp + "/ltv_liar", "", "cert_ltv_rejected") in let a4 = sg_cert_case(g, a3, g.tmp + "/ltv_unsupported", "", "cert_ltv_no_validation_record") in let a5 = sg_cert_case(g, a4, g.tmp + "/ltv_slow", "@ltv_timeout_ms 300\n", "cert_ltv_timeout") in let a6 = sg_cert_case(g, a5, g.tmp + "/ltv_does_not_exist", "", "cert_ltv_missing") in let a7 = sg_cert_case(g, a6, g.tmp + "/ltv_garbage", "", "cert_ltv_rejected") in sg_expect_commit(g, a7, "cert", "gk_clamp", g.ltv_ok, sg_l3(5, 0 - 3, 9), "", 5)
+
+## (6) division by zero, i32 overflow, values outside the monitor domain, code outside the fragment
+fn sg_raw(g, acc, a, b, m, st, reason, also) = let xs = sg_l3(a, b, m) in if (sg_ref(g.prog, "gk_raw", xs)).st != st then sg_f(acc, "the reference evaluator disagrees with the expected state " + str(st) + " for gk_raw(" + se_join_ints(xs) + ")", 0, 0) else sg_expect_trip(g, acc, "arith", "gk_raw", g.ltv_ok, xs, "", reason, also)
+fn sg_raw_ok(g, acc, a, b, m, v) = let xs = sg_l3(a, b, m) in if (sg_ref(g.prog, "gk_raw", xs)).v != v then sg_f(acc, "reference value of gk_raw(" + se_join_ints(xs) + ") is not " + str(v), 0, 0) else sg_expect_commit(g, acc, "arith", "gk_raw", g.ltv_ok, xs, "", v)
+fn sg_b_cause(g, fname, xs) = (se_b_run(g.prog, fname, xs, 100000, rv_no_inj())).cause
+fn sg_arith(g, acc) = let imin = 0 - 2147483648 in let a1 = sg_raw(g, acc, 7, 0, 0, 4, "a_trap", "division by zero") in let a2 = sg_raw(g, a1, 7, 0, 1, 4, "a_trap", "division by zero") in let a3 = sg_raw(g, a2, imin, 0 - 1, 0, 3, "b_ebreak_integer_overflow", "\"out_a\":2147483648,\"out_b\":null,") in let a4 = sg_raw(g, a3, 65536, 65536, 2, 3, "b_ebreak_integer_overflow", "\"out_a\":4294967296,\"out_b\":null,") in let a5 = sg_raw(g, a4, 46341, 46341, 2, 3, "b_ebreak_integer_overflow", "\"out_a\":2147488281,") in let a6 = sg_raw(g, a5, 0 - 46341, 46341, 2, 3, "b_ebreak_integer_overflow", "\"out_a\":-2147488281,") in let a7 = sg_raw(g, a6, 2147483647, 1, 3, 3, "b_ebreak_integer_overflow", "\"out_a\":2147483648,") in let a8 = sg_raw(g, a7, imin, 0 - 1, 3, 3, "b_ebreak_integer_overflow", "\"out_a\":-2147483649,") in let a9 = sg_raw(g, a8, imin, 1, 4, 3, "b_ebreak_integer_overflow", "\"out_a\":-2147483649,") in let b1 = sg_raw(g, a9, 0, imin, 4, 3, "b_ebreak_integer_overflow", "\"out_a\":2147483648,") in let b2 = sg_raw(g, b1, 2147483648, 1, 3, 5, "b_arg_outside_i32", "\"out_a\":2147483649,\"out_b\":null,") in let b3 = sg_expect_trip(g, b2, "arith", "gk_big", g.ltv_ok, sg_l1(41), "", "b_const_outside_i32", "\"out_a\":41,\"out_b\":null,") in let b4 = sg_expect_trip(g, b3, "arith", "gk_str", g.ltv_ok, sg_l1(41), "", "b_compile_unsupported", "\"out_a\":43,\"out_b\":null,") in let b5 = sg_expect_trip(g, b4, "arith", "gk_divmod", g.ltv_ok, sg_l2(9, 0), "", "a_trap", "contract violation") in let b6 = sg_expect_trip(g, b5, "arith", "gk_clamp", g.ltv_ok, sg_l3(1, 9, 2), "", "a_trap", "contract violation") in let e = if sg_b_cause(g, "gk_raw", sg_l3(7, 0, 0)) != "ebreak_division_by_zero" or sg_b_cause(g, "gk_raw", sg_l3(7, 0, 1)) != "ebreak_division_by_zero" or sg_b_cause(g, "gk_divmod", sg_l2(9, 0)) != "ebreak_contract_violation" or sg_b_cause(g, "gk_clamp", sg_l3(1, 9, 2)) != "ebreak_contract_violation" then "channel B alone does not name the division by zero / contract violation" else "" in let c1 = sg_raw_ok(g, sg_f(b6, e, 0, 0), 46340, 46340, 2, 2147395600) in let c2 = sg_raw_ok(g, c1, 2147483647, 0, 3, 2147483647) in let c3 = sg_raw_ok(g, c2, imin, 0, 4, imin) in let c4 = sg_raw_ok(g, c3, imin, 0 - 1, 1, 0) in sg_raw_ok(g, c4, 0 - 7, 2, 0, 0 - 3)
+
+## (7) latch stickiness and event-log tamper detection (one log across several invocations)
+fn sg_lcli(g, body) = sg_cli(g, "latch", sg_hdr(g, "latch", g.gk, "gk_clamp", g.ltv_ok) + body)
+fn sg_replace1(s, pat, rep) = let m = se_mut_nth(s, count(s), pat, count(pat), rep, 0, 0) in if m.ok == 1 then m.text else s
+fn sg_drop_line1(s) = let n = count(s) in slicen(s, n, se_line_end(s, n, 0) + 1, n)
+fn sg_tamper(g, acc, name, good, bad) = let logp = g.tmp + "/latch.jsonl" in let w = fs_write_sync(logp, bad) in let r = sg_lcli(g, "@args 1,0,9\n") in let after = fs_read_file(logp) in let w2 = fs_write_sync(logp, good) in if bad == good then sg_f(acc, "tamper case " + name + " did not change the log", 0, 0) else if r.status == 2 and se_has(r.out, "\"reason\":\"event_log_tamper\"") == 1 and se_has(r.out, "VerifiedActuatorCommit") == 0 and se_has(r.out, "\"chain_ok_before\":0,") == 1 and after == bad then sg_f(acc, "", 1, 0) else sg_f(acc, "FALSE NEGATIVE: event log tamper (" + name + ") was not refused: " + sg_short(r.out), 0, 0)
+fn sg_latch(g, acc) = let logp = g.tmp + "/latch.jsonl" in let z = sg_rm(logp) in let r1 = sg_lcli(g, "@args 1,0,9\n@args 1,9,2\n@args 2,0,9\n@args 3,0,9\n") in let ok1 = if r1.status == 2 and se_has(r1.out, sg_commit_str(sg_l3(1, 0, 9), 1)) == 1 and se_has(r1.out, sg_trip_str(sg_l3(1, 9, 2)) + "\"out_a\":null,\"out_b\":null,\"cycles_b\":") == 1 and se_has(r1.out, sg_trip_str(sg_l3(2, 0, 9)) + "\"out_a\":null,\"out_b\":null,\"cycles_b\":0,\"budget\":640,\"cert_ok\":0,\"reason\":\"latched\",\"detail\":\"not executed\"") == 1 and se_has(r1.out, sg_trip_str(sg_l3(3, 0, 9)) + "\"out_a\":null,\"out_b\":null,\"cycles_b\":0,\"budget\":640,\"cert_ok\":0,\"reason\":\"latched\"") == 1 and se_has(r1.out, "\"committed\":1,\"tripped\":3,\"final_latched\":1}") == 1 then 1 else 0 in let r2 = sg_lcli(g, "@args 2,0,9\n") in let ok2 = if r2.status == 2 and se_has(r2.out, "\"reason\":\"latched\",\"detail\":\"not executed\"") == 1 and se_has(r2.out, "VerifiedActuatorCommit") == 0 and se_has(r2.out, "\"latched_before\":1,") == 1 and se_has(r2.out, "\"ltv\":{\"path\":\"" + g.ltv_ok + "\",\"status\":\"not_run\"}") == 1 then 1 else 0 in let r3 = sg_lcli(g, "@reset 1\n@args 2,0,9\n") in let ok3 = if r3.status == 0 and se_has(r3.out, sg_commit_str(sg_l3(2, 0, 9), 2)) == 1 then 1 else 0 in let chain = se_log_check(logp) in if ok1 != 1 then sg_f(acc, "latch: a batch must commit, trip, then refuse the rest as latched: " + sg_short(r1.out), 0, 0) else if ok2 != 1 then sg_f(acc, "FALSE NEGATIVE: the latch did not survive into the next invocation: " + sg_short(r2.out), 0, 0) else if ok3 != 1 then sg_f(acc, "latch: @reset 1 must release the latch: " + sg_short(r3.out), 0, 0) else if chain.ok != 1 or chain.n != 7 or chain.latched != 0 then sg_f(acc, "latch: the event log must hold 7 chained events, has " + str(chain.n) + " (ok " + str(chain.ok) + ")", 0, 0) else sg_latch_tamper(g, sg_f(acc, "", 4, 0), fs_read_file(logp))
+fn sg_latch_tamper(g, acc, good) = let n = count(good) in let a1 = sg_tamper(g, acc, "one byte of a body", good, sg_replace1(good, "\"value\":1,", "\"value\":7,")) in let a2 = sg_tamper(g, a1, "first event deleted", good, sg_drop_line1(good)) in let a3 = sg_tamper(g, a2, "last line truncated", good, slicen(good, n, 0, n - 2)) in let a4 = sg_tamper(g, a3, "forged event appended", good, good + "{\"prev_hash\":\"" + se_zero64() + "\",\"hash\":\"" + se_zero64() + "\",\"body\":{\"event\":\"reset\",\"was_latched\":1,\"chain_ok_before\":1,\"quarantined\":\"\",\"mono_ns\":1}}\n") in let a5 = sg_tamper(g, a4, "a stored hash edited", good, sg_replace1(good, "\",\"hash\":\"", "\",\"hash\":\"0")) in let ctl = sg_lcli(g, "@args 4,0,9\n") in let w = fs_write_sync(g.tmp + "/latch.jsonl", sg_replace1(good, "\"value\":1,", "\"value\":7,")) in let rr = sg_lcli(g, "@reset 1\n@args 4,0,9\n") in let chain = se_log_check(g.tmp + "/latch.jsonl") in if ctl.status != 0 or se_has(ctl.out, sg_commit_str(sg_l3(4, 0, 9), 4)) != 1 then sg_f(a5, "the restored (untampered) log must be accepted: " + sg_short(ctl.out), 0, 0) else if rr.status != 0 or se_has(rr.out, sg_commit_str(sg_l3(4, 0, 9), 4)) != 1 or se_has(rr.out, "\"chain_ok_before\":0,") != 1 or chain.ok != 1 or chain.n != 2 then sg_f(a5, "@reset 1 on a tampered log must quarantine it and start a new chain: " + sg_short(rr.out), 0, 0) else a5
+
+## ====================================================================================================================
+## 5. Setup, the optional real validator, main
+## ====================================================================================================================
+fn sg_ltv_src(pre, suffix, status, code) = "fn le(s, n, i) = if i >= n or at(s, i) == \"\\n\" then i else le(s, n, i + 1)\nfn g(s, n, i) = if i >= n then \"\" else let e = le(s, n, i) in if e - i > 4 and slice(s, i, i + 4) == \"@fn \" then slice(s, i + 4, e) else g(s, n, e + 1)\nfn m(s) = let z = " + pre + " in let w = fs_write_sync(\"/dev/stdout\", \"{\\\"tool\\\":\\\"ltv-stand-in (test double)\\\",\\\"functions\\\":[{\\\"name\\\":\\\"\" + g(s, count(s), 0) + \"" + suffix + "\\\",\\\"status\\\":\\\"" + status + "\\\"}]}\\n\") in os_exit(" + str(code) + ")\nprint m(readall())\n"
+fn sg_build(g, name, src) = let p = g.tmp + "/" + name in let w = fs_write_sync(p + ".src", src) in let c = os_run_input_capture_timeout(g.lumec, Nil, p + ".src", p + ".s", p + ".cerr", 120000) in if se_wait_exit(c) != 0 then name + ": lumec failed: " + se_first_line(fs_read_file(p + ".cerr")) + "; " else let a = os_run_capture_timeout(g.lasm, Cons("--strict", Cons(p + ".s", Nil)), p, p + ".aerr", 120000) in if se_wait_exit(a) != 0 then name + ": lasm failed; " else let m = os_run("/bin/chmod", Cons("+x", Cons(p, Nil))) in ""
+fn sg_setup_bins(g) = let e1 = sg_build(g, "ltv_ok", sg_ltv_src("0", "", "validated", 0)) + sg_build(g, "ltv_reject", sg_ltv_src("0", "", "rejected", 1)) + sg_build(g, "ltv_wrongname", sg_ltv_src("0", "_other", "validated", 0)) + sg_build(g, "ltv_liar", sg_ltv_src("0", "", "validated", 3)) + sg_build(g, "ltv_unsupported", sg_ltv_src("0", "", "unsupported", 0)) + sg_build(g, "ltv_slow", sg_ltv_src("os_sleep_ms(5000)", "", "validated", 0)) in let w = fs_write_sync(g.tmp + "/ltv_garbage", "this is not an executable\n") in let m = os_run("/bin/chmod", Cons("+x", Cons(g.tmp + "/ltv_garbage", Nil))) in let z = sg_rm(g.tmp + "/ltv_does_not_exist") in let a = se_a_build({lumec: g.lumec, lasm: g.lasm}, g.gsrc, "gk_mix", 3, g.tmp + "/ipa", se_inj_none()) in let a2 = se_a_build({lumec: g.lumec, lasm: g.lasm}, g.gsrc, "gk_dist", 3, g.tmp + "/ipd", se_inj_none()) in e1 + (if a.ok == 1 and a2.ok == 1 then "" else "in-process channel-A build failed: " + a.reason + " " + a.detail + a2.detail)
+fn sg_g(root, tmp, gsrc) = {root: root, tmp: tmp, bin: root + "/build/bin/lsafety_envelope", lumec: root + "/build/bin/lumec", lasm: root + "/build/bin/lasm", ltv_ok: tmp + "/ltv_ok", ltv_real: root + "/build/bin/ltv", gk: tmp + "/gk.src", gsrc: gsrc, prog: nf_late(lumec_expand(gsrc))}
+
+## the real Translation Validator, when it exists: either it validates and the vector commits the reference value, or
+## it does not and the envelope stays in the safe state with a cert_ltv_* reason. Both are counted; neither is assumed.
+fn sg_real_one(g, acc, src, prog, name, extra, xs) = let v = (sg_ref(prog, name, xs)).v in let r = sg_cli_fresh(g, "real", src, name, g.ltv_real, extra + "@args " + se_join_ints(xs) + "\n") in if r.status == 0 and se_has(r.out, sg_commit_str(xs, v)) == 1 and se_has(r.out, "\"status\":\"validated\"") == 1 then {err: acc.err, validated: acc.validated + 1, refused: acc.refused, names: acc.names} else if r.status == 2 and se_has(r.out, "VerifiedActuatorCommit") == 0 and se_has(r.out, "\"reason\":\"cert_ltv_") == 1 and se_has(r.out, "\"out_a\":" + str(v) + ",\"out_b\":" + str(v) + ",") == 1 then {err: acc.err, validated: acc.validated, refused: acc.refused + 1, names: acc.names + " " + name} else {err: "real ltv run of " + name + " is neither a correct commit nor a certificate trip: " + sg_short(r.out), validated: acc.validated, refused: acc.refused, names: acc.names}
+fn sg_real(g, ks, acc) = match ks
+    Nil        => acc
+    Cons(h, t) => if acc.err != "" then acc else sg_real(g, t, sg_real_one(g, acc, g.gk, g.prog, h.name, h.extra, sg_nth_v(sg_vectors(g.prog, h.name, h.rng, 4242, 4000, 1))))
+fn sg_real_corp(g, acc, name) = if acc.err != "" then acc else let path = g.tmp + "/corpus_" + name + ".src" in let prog = nf_late(lumec_expand(fs_read_file(path))) in sg_real_one(g, acc, path, prog, name, "", sg_nth_v(sg_vectors(prog, name, 20, 4242, 1500, 1)))
+fn sg_real_all(g) = sg_real_corp(g, sg_real_corp(g, sg_real_corp(g, sg_real(g, sg_gk_list(), {err: "", validated: 0, refused: 0, names: ""}), "lumeputer_rv32im_pc_step"), "lumeputer_deltanet_ram_step_exact"), "lumeputer_inweights_lcert_check")
+fn sg_nth_v(vs) = match vs
+    Nil        => Nil
+    Cons(h, t) => h
+
+fn sg_frac(x100) = str(x100 / 100) + "." + (if x100 % 100 < 10 then "0" else "") + str(x100 % 100)
+fn sg_fstr(f) = str(f.inj) + " injected / " + str(f.trips) + " trips / " + str(f.masked) + " masked-benign"
+fn sg_sstr(s) = str(s.n) + " flips: " + str(s.cmp) + " comparator trips + " + str(s.trap) + " monitor traps + " + str(s.masked) + " masked-benign"
+fn sg_faults(g, t0, kats, pos, corp) = let v1 = sg_l2(7, 2) in let v2 = sg_l2(0 - 4, 5) in let v3 = sg_l2(1, 1) in let m1 = sg_l3(37, 11, 5) in let d1 = sg_l3(40, 0 - 7, 12) in let fa = sg_abit_ip(g, sg_abit_cli(g, sg_f0(), sg_l2(v1, v3)), "gk_mix", sg_l3(m1, sg_l3(0 - 9, 4, 7), sg_l3(100, 100, 3))) in if fa.err != "" then ctfail("safety envelope gate failed: " + fa.err + "\n") else let fm = sg_asm(g, sg_asm(g, sg_f0(), "gk_poly", sg_l3(v1, v2, v3)), "gk_mix", sg_l1(m1)) in if fm.err != "" then ctfail("safety envelope gate failed: " + fm.err + "\n") else if fm.trips < 6 or fm.inj < 12 then ctfail("safety envelope gate failed: the machine-code mutation sweep is vacuous (" + sg_fstr(fm) + ")\n") else let ts = os_monotonic_ns() in let ram1 = sg_seu(g, "ipa", "gk_mix", m1, 1, 3, 4080, 4095) in let ram2 = sg_seu(g, "ipd", "gk_dist", d1, 1, 5, 4080, 4095) in let reg1 = sg_seu(g, "ipa", "gk_mix", m1, 2, 5, 1, 31) in let reg2 = sg_seu(g, "ipd", "gk_dist", d1, 2, 9, 1, 31) in let te = os_monotonic_ns() in let rom1 = sg_rom(g, "ipa", "gk_mix", m1) in let fo = sg_rom_check(g, sg_f0(), "gk_mix", m1, rom1) in if fo.err != "" then ctfail("safety envelope gate failed: " + fo.err + "\n") else let fr = sg_seu_check(g, sg_seu_check(g, sg_f0(), "gk_mix", m1, "b_ram", ram1), "gk_dist", d1, "b_ram", ram2) in let fg = sg_seu_check(g, sg_seu_check(g, sg_f0(), "gk_mix", m1, "b_reg", reg1), "gk_dist", d1, "b_reg", reg2) in if fr.err != "" or fg.err != "" then ctfail("safety envelope gate failed: " + fr.err + " " + fg.err + "\n") else let fw = sg_watchdogs(g, sg_wcet(g, sg_wcet(g, sg_f0(), "gk_mix", m1), "gk_dist", d1)) in if fw.err != "" then ctfail("safety envelope gate failed: " + fw.err + "\n") else let fc = sg_cert(g, sg_f0()) in if fc.err != "" then ctfail("safety envelope gate failed: " + fc.err + "\n") else let fx = sg_arith(g, sg_f0()) in if fx.err != "" then ctfail("safety envelope gate failed: " + fx.err + "\n") else let fl = sg_latch(g, sg_f0()) in if fl.err != "" then ctfail("safety envelope gate failed: " + fl.err + "\n") else let real = if fs_path_exists(g.ltv_real) == 1 then sg_real_all(g) else {err: "", validated: 0, refused: 0, names: ""} in if real.err != "" then ctfail("safety envelope gate failed: " + real.err + "\n") else let icyc = ram1.s.cyc + ram2.s.cyc + reg1.s.cyc + reg2.s.cyc in let inj = fa.inj + fm.inj + fo.inj + fr.inj + fg.inj + fw.inj + fc.inj + fx.inj + fl.inj in let trips = fa.trips + fm.trips + fo.trips + fr.trips + fg.trips + fw.trips + fc.trips + fx.trips + fl.trips in let masked = fa.masked + fm.masked + fo.masked + fr.masked + fg.masked + fw.masked + fc.masked + fx.masked + fl.masked in "OK: safety envelope: " + str(kats.n) + " RV32IM known-answer checks; lockstep " + str(pos.kernels) + " gate kernels / " + str(pos.vecs) + " vectors + " + str(corp.ok) + " lchameleon kernels / " + str(corp.vecs) + " vectors all committed the reference value (lchameleon skipped: " + str(corp.nsc) + " not self-contained, " + str(corp.unsup) + " outside the fragment, " + str(corp.novec) + " without a sampled vector); max RV32 cycles per @bound cycle " + sg_frac(sg_max(pos.maxr, corp.maxr)) + " (budget scale " + str(se_bound_scale()) + "), mean " + str((pos.sumc + corp.sumc) / (pos.vecs + corp.vecs)) + " cycles per vector; faults injected " + str(inj) + " -> " + str(trips) + " SAFE_STATE_TRIP, " + str(masked) + " masked-benign (correct value committed), 0 false negatives [A result bit: " + sg_fstr(fa) + "; A machine code: " + sg_fstr(fm) + "; B RAM: " + sg_sstr(ram1.s) + " and " + sg_sstr(ram2.s) + "; B register: " + sg_sstr(reg1.s) + " and " + sg_sstr(reg2.s) + "; B ROM (" + str(rom1.cycles) + " words): " + sg_sstr(rom1.s) + "; WCET/watchdog: " + sg_fstr(fw) + "; certificate: " + sg_fstr(fc) + "; arithmetic/domain: " + sg_fstr(fx) + "; latch/log: " + sg_fstr(fl) + "]; interpreter " + str(icyc * 1000 / ((te - ts) / 1000000 + 1)) + " instructions/s over " + str(icyc) + " instructions; real ltv: " + (if fs_path_exists(g.ltv_real) == 1 then str(real.validated) + " kernels validated and committed, " + str(real.refused) + " not validated and held in the safe state (" + real.names + " )" else "absent, stand-in validator only") + "; " + str((os_monotonic_ns() - t0) / 1000000) + " ms"
+fn sg_go(g, t0) = let w = fs_write_sync(g.gk, g.gsrc) in let e = sg_setup_bins(g) in if e != "" then ctfail("safety envelope gate failed: setup: " + e + "\n") else if fs_path_exists(g.bin) != 1 then ctfail("safety envelope gate failed: build/bin/lsafety_envelope is missing\n") else let kats = sg_kats() in if kats.err != "" then ctfail("safety envelope gate failed: RV32IM known-answer tests: " + kats.err + "\n") else let pos = sg_positive(g, sg_gk_list(), {err: "", kernels: 0, vecs: 0, maxr: 0, sumc: 0}) in if pos.err != "" then ctfail("safety envelope gate failed: lockstep: " + pos.err + "\n") else let corp = sg_corpus(g) in if corp.err != "" then ctfail("safety envelope gate failed: lockstep: " + corp.err + "\n") else if corp.ok < 3 or corp.named < 3 then ctfail("safety envelope gate failed: only " + str(corp.ok) + " lchameleon kernels ran in lockstep (" + str(corp.named) + " of the named ones)\n") else if sg_max(pos.maxr, corp.maxr) >= se_bound_scale() * 100 then ctfail("safety envelope gate failed: cycles per @bound cycle reached the budget scale\n") else sg_faults(g, t0, kats, pos, corp)
+fn sg_main(input) = let root = se_get(input, "root") in if root == "" then ctfail("safety envelope gate requires @root\n") else let t0 = os_monotonic_ns() in let tmp = root + "/build/safety-envelope-gate" in let rm = os_run("/bin/rm", Cons("-rf", Cons(tmp, Nil))) in let mk = os_run("/bin/mkdir", Cons("-p", Cons(tmp + "/work", Nil))) in sg_go(sg_g(root, tmp, sg_gk_src()), t0)
+
+print sg_main(readall())

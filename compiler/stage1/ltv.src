@@ -1,0 +1,907 @@
+## ltv.src -- Lume Translation Validator: per-function semantic-preservation check of 05_codegen.src (AST -> x86-64).
+##
+## What it decides. For every function of the integer fragment (int/bool parameters and result; + - * / %, comparisons,
+## and/or, if, let, calls to other fragment functions, ctfail) it takes
+##   * the lowered AST the code generator received (`nf_late(lumec_expand(src))`, the front-end linked in here), and
+##   * the x86-64 text the real `lumec` binary emitted for that function,
+## symbolically executes BOTH, and accepts only if for every valuation of the branch atoms
+##   (T) the emitted code reaches `call ctfail` exactly when the AST evaluation reaches a `ctfail` node, and with the
+##       same message (the .rodata label of a literal is a function of its text, so equal labels are equal texts),
+##   (V) otherwise it reaches the epilogue with %rax holding the canonical word of the AST value,
+##   (E) the multiset of division / modulo / call operations performed is the same,
+##   (F) every frame access stays inside the frame the prologue reserved, pushes and pops are balanced, and the
+##       prologue / epilogue are exactly `pushq %rbp; movq %rsp, %rbp; subq $F, %rsp` ... `movq %rbp, %rsp; popq %rbp; ret`
+##       (so %rsp and %rbp are restored and the saved %rbp / return address are never written).
+## Anything it cannot derive is a rejection (fail-closed): an unknown instruction, a branch on flags it has no model
+## for, a jump out of the function, a backward jump, a value it cannot prove canonical.
+##
+## The machine model follows the real backend, not an idealised one (runtime_core.lume, "value words"):
+##   W(t)  the canonical word of the integer t: 2t+1 when t fits 63 bits (the form is unique), else a boxed cell;
+##   M(p)  a raw word congruent to the polynomial p modulo 2^64. add/sub/imul/lea/inc are ring homomorphisms, so the
+##         congruence is exact; "p is the signed value" is only concluded from a `jo`/`jno` on the flags of the
+##         operation or from a tag test (`testb $1`) that the path condition records as the atom fit(t).
+## Runtime helpers are axioms, listed in tv_call: addv / __rt_sub / __rt_mul / __rt_div / __rt_mod return the canonical
+## word of the mathematical result or do not return (i64 overflow, division by zero); cmpv returns the sign; eqv
+## returns 1 exactly on equal values; mkint boxes a signed word; __rt_cond maps a boxed integer to true and traps on
+## anything else. They are
+## validated against the real machine by the native boundary run (@exec 1), not proved here.
+## Arithmetic is over the integers: the theorem is "for all inputs on which no i64 overflow trap occurs".
+##
+## The decision procedure is propositional + polynomial identity: both sides become polynomials over atoms
+## (parameters, div / mod / call terms, if-then-else terms guarded by comparison atoms). Two results are equal when
+## they have the same normal form under every assignment of the comparison atoms, the atoms taken as independent
+## booleans. That is sound (it quantifies over a superset of the consistent assignments) and complete for a compiler
+## that does not optimise with arithmetic facts, which is what 05_codegen.src is. A boundary evaluation with the real
+## meaning of the atoms and, with @exec 1, a native run of the real binary re-check every accepted function.
+##
+## stdin:  @root <repo>   @src <file.src, self-contained>   [@asm <file.s>]   [@fn <name>]   [@out <dir>]   [@exec 1]
+## stdout: one JSON object; exit status non-zero when a function was rejected (the JSON is still on stdout).
+use lumec
+use lcert
+
+## --- text helpers ---
+fn tv_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else tv_line_end(s, i + 1)
+fn tv_get_at(s, key, i) = if i >= count(s) then "" else let e = tv_line_end(s, i) in let n = count(key) in if e - i > n + 2 and slice(s, i, i + n + 2) == "@" + key + " " then slice(s, i + n + 2, e) else tv_get_at(s, key, e + 1)
+fn tv_get(s, key) = tv_get_at(s, key, 0)
+fn tv_or(v, d) = if v == "" then d else v
+fn tv_find(s, c, i) = if i >= count(s) then 0 - 1 else if at(s, i) == c then i else tv_find(s, c, i + 1)
+fn tv_findsep_d(s, i, d) = if i + 1 >= count(s) then 0 - 1 else if at(s, i) == "(" then tv_findsep_d(s, i + 1, d + 1) else if at(s, i) == ")" then tv_findsep_d(s, i + 1, if d > 0 then d - 1 else 0) else if d == 0 and at(s, i) == "," and at(s, i + 1) == " " then i else tv_findsep_d(s, i + 1, d)
+fn tv_findsep(s, i) = tv_findsep_d(s, i, 0)
+fn tv_contains_at(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else tv_contains_at(text, part, i + 1)
+fn tv_ends(s, suf) = if count(s) >= count(suf) and slice(s, count(s) - count(suf), count(s)) == suf then 1 else 0
+fn tv_starts(s, pre) = if count(s) >= count(pre) and slice(s, 0, count(pre)) == pre then 1 else 0
+fn tv_has(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else tv_has(t, x)
+fn tv_join(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h + tv_join(t)
+fn tv_isdigits(s, i) = if i >= count(s) then 1 else if at(s, i) >= "0" and at(s, i) <= "9" then tv_isdigits(s, i + 1) else 0
+fn tv_isint(s) = if count(s) == 0 then 0 else if at(s, 0) == "-" then (if count(s) > 1 then tv_isdigits(s, 1) else 0) else tv_isdigits(s, 0)
+## digits are accumulated as a negative number so that the most negative i64 parses without overflow
+fn tv_numneg(s, i, n, acc) = if i >= n then acc else tv_numneg(s, i + 1, n, acc * 10 - (ord(at(s, i)) - 48))
+fn tv_int(s) = if count(s) > 0 and at(s, 0) == "-" then tv_numneg(s, 1, count(s), 0) else 0 - tv_numneg(s, 0, count(s), 0)
+fn tv_jesc1(c) = if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "\n" then "\\n" else if c == "\t" then " " else c
+fn tv_jesc_at(s, i, n) = if i >= n then Nil else Cons(tv_jesc1(at(s, i)), tv_jesc_at(s, i + 1, n))
+fn tv_jesc(s) = tv_join(tv_jesc_at(s, 0, count(s)))
+
+## --- polynomials: sorted lists of {c: coefficient, k: monomial key, m: atoms sorted by key}; the constant has k == "" ---
+fn tv_pc(n) = if n == 0 then Nil else Cons({c: n, k: "", m: Nil}, Nil)
+fn tv_padd(p, q) = match p
+    Nil        => q
+    Cons(h, t) => tv_padd2(h, t, q)
+fn tv_padd2(h, t, q) = match q
+    Nil        => Cons(h, t)
+    Cons(g, u) => if h.k == g.k then (if h.c + g.c == 0 then tv_padd(t, u) else Cons({c: h.c + g.c, k: h.k, m: h.m}, tv_padd(t, u))) else if h.k < g.k then Cons(h, tv_padd(t, q)) else Cons(g, tv_padd2(h, t, u))
+fn tv_pscale(p, n) = if n == 0 then Nil else tv_pscale2(p, n)
+fn tv_pscale2(p, n) = match p
+    Nil        => Nil
+    Cons(h, t) => Cons({c: h.c * n, k: h.k, m: h.m}, tv_pscale2(t, n))
+fn tv_pneg(p) = tv_pscale(p, 0 - 1)
+fn tv_psub(p, q) = tv_padd(p, tv_pneg(q))
+fn tv_mmerge(a, b) = match a
+    Nil        => b
+    Cons(h, t) => tv_mmerge2(h, t, b)
+fn tv_mmerge2(h, t, b) = match b
+    Nil        => Cons(h, t)
+    Cons(g, u) => if h.k <= g.k then Cons(h, tv_mmerge(t, b)) else Cons(g, tv_mmerge2(h, t, u))
+fn tv_mkey(m) = match m
+    Nil        => ""
+    Cons(h, t) => h.k + "*" + tv_mkey(t)
+fn tv_pmul1(h, q) = match q
+    Nil        => Nil
+    Cons(g, u) => let m = tv_mmerge(h.m, g.m) in tv_padd(Cons({c: h.c * g.c, k: tv_mkey(m), m: m}, Nil), tv_pmul1(h, u))
+fn tv_pmul(p, q) = match p
+    Nil        => Nil
+    Cons(h, t) => tv_padd(tv_pmul1(h, q), tv_pmul(t, q))
+fn tv_patom(a) = let k = tv_ak(a) in Cons({c: 1, k: k + "*", m: Cons({k: k, a: a}, Nil)}, Nil)
+fn tv_pisc(p) = match p
+    Nil        => 1
+    Cons(h, t) => if h.k == "" and isnil(t) == 1 then 1 else 0
+fn tv_pc0(p) = match p
+    Nil        => 0
+    Cons(h, t) => if h.k == "" then h.c else 0
+fn tv_plead(p) = match p
+    Nil        => 1
+    Cons(h, t) => if h.k == "" then tv_plead(t) else h.c
+fn tv_peven(p) = match p
+    Nil        => 1
+    Cons(h, t) => if h.k != "" and h.c % 2 != 0 then 0 else tv_peven(t)
+fn tv_podd(p) = if tv_pc0(p) % 2 != 0 then 1 else 0
+fn tv_fdiv2(n) = if n >= 0 then n / 2 else (n - 1) / 2
+fn tv_phalf(p) = match p
+    Nil        => Nil
+    Cons(h, t) => if h.k == "" then tv_padd(tv_pc(tv_fdiv2(h.c)), tv_phalf(t)) else Cons({c: h.c / 2, k: h.k, m: h.m}, tv_phalf(t))
+
+## --- canonical keys (structural identity of polynomials, atoms, formulas) ---
+fn tv_pk(p) = match p
+    Nil        => "0"
+    Cons(h, t) => str(h.c) + ":" + h.k + ";" + tv_pk2(t)
+fn tv_pk2(p) = match p
+    Nil        => ""
+    Cons(h, t) => str(h.c) + ":" + h.k + ";" + tv_pk2(t)
+fn tv_pks(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => tv_pk(h) + "," + tv_pks(t)
+fn tv_ak(a) = match a
+    TaVar(n)       => "v." + n
+    TaDiv(p, q)    => "div(" + tv_pk(p) + "," + tv_pk(q) + ")"
+    TaMod(p, q)    => "mod(" + tv_pk(p) + "," + tv_pk(q) + ")"
+    TaBit(kd, p, q) => "bit." + kd + "(" + tv_pk(p) + "," + tv_pk(q) + ")"
+    TaCall(n, ps)  => "call." + n + "(" + tv_pks(ps) + ")"
+    TaEff(n, ps)   => "eff." + n + "(" + tv_pks(ps) + ")"
+    TaIte(f, p, q) => "ite(" + tv_fk(f) + "," + tv_pk(p) + "," + tv_pk(q) + ")"
+fn tv_fk(f) = match f
+    TfT             => "T"
+    TfF             => "F"
+    TfLit(kd, p, q) => kd + "[" + tv_pk(p) + "|" + tv_pk(q) + "]"
+    TfNot(g)        => "!(" + tv_fk(g) + ")"
+    TfAnd(g, h)     => "&(" + tv_fk(g) + "," + tv_fk(h) + ")"
+    TfOr(g, h)      => "|(" + tv_fk(g) + "," + tv_fk(h) + ")"
+
+## --- formulas: TfT | TfF | TfLit(kind, p, q) | TfNot | TfAnd | TfOr; literal kinds:
+##     lt: p < 0   eq: p == 0   fit: p fits 63 bits   both: p and q fit 63 bits   i64: p fits 64 bits ---
+fn tv_fist(f) = match f
+    TfT => 1
+    _   => 0
+fn tv_fisf(f) = match f
+    TfF => 1
+    _   => 0
+fn tv_fnot(f) = match f
+    TfT      => TfF
+    TfF      => TfT
+    TfNot(g) => g
+    _        => TfNot(f)
+fn tv_fand(f, g) = if tv_fisf(f) == 1 or tv_fisf(g) == 1 then TfF else if tv_fist(f) == 1 then g else if tv_fist(g) == 1 then f else TfAnd(f, g)
+fn tv_for(f, g) = if tv_fist(f) == 1 or tv_fist(g) == 1 then TfT else if tv_fisf(f) == 1 then g else if tv_fisf(g) == 1 then f else TfOr(f, g)
+fn tv_fits(n) = if n >= 0 - 4611686018427387904 and n <= 4611686018427387903 then 1 else 0
+fn tv_bool(b) = if b == 1 then TfT else TfF
+fn tv_lt(p) = if tv_pisc(p) == 1 then tv_bool(if tv_pc0(p) < 0 then 1 else 0) else TfLit("lt", p, Nil)
+fn tv_eq(p) = if tv_pisc(p) == 1 then tv_bool(if tv_pc0(p) == 0 then 1 else 0) else TfLit("eq", if tv_plead(p) < 0 then tv_pneg(p) else p, Nil)
+## a value that is 0 or 1 by construction (a materialised comparison) needs no tag test
+fn tv_ptriv(p) = match p
+    Nil        => 1
+    Cons(h, t) => if isnil(t) == 0 then 0 else if h.k == "" then tv_fits(h.c) else if h.c == 1 then tv_mtriv(h.m) else 0
+fn tv_mtriv(m) = match m
+    Nil        => 0
+    Cons(h, t) => if isnil(t) == 1 then tv_atriv(h.a) else 0
+fn tv_atriv(a) = match a
+    TaIte(f, p, q) => if tv_ptriv(p) == 1 then tv_ptriv(q) else 0
+    _              => 0
+fn tv_fit(p) = if tv_ptriv(p) == 1 then TfT else if tv_pisc(p) == 1 then TfF else TfLit("fit", p, Nil)
+fn tv_both(p, q) = let a = tv_fit(p) in let b = tv_fit(q) in if tv_fisf(a) == 1 or tv_fisf(b) == 1 then TfF else if tv_fist(a) == 1 then b else if tv_fist(b) == 1 then a else TfLit("both", p, q)
+fn tv_i64(p) = if tv_pisc(p) == 1 then TfT else TfLit("i64", p, Nil)
+## the no-overflow condition of a flag-setting operation whose mathematical result is r: 2u and 2u+1 fit 64 bits
+## exactly when u fits 63 bits
+fn tv_ofl(r) = if tv_peven(r) == 1 then tv_fit(tv_phalf(r)) else tv_i64(r)
+fn tv_mklit(kd, p, q) = if kd == "lt" then tv_lt(p) else if kd == "eq" then tv_eq(p) else if kd == "fit" then tv_fit(p) else if kd == "both" then tv_both(p, q) else tv_i64(p)
+fn tv_pite(f, p, q) = if tv_fist(f) == 1 then p else if tv_fisf(f) == 1 then q else if tv_pk(p) == tv_pk(q) then p else tv_patom(TaIte(f, p, q))
+
+## --- path conditions: a DNF, i.e. a list of conjunctions; a conjunction is a list of {k: atom key, s: sign, f: atom} ---
+fn tv_lit_of(f) = match f
+    TfNot(g) => {k: tv_fk(g), s: 0, f: g}
+    _        => {k: tv_fk(f), s: 1, f: f}
+fn tv_cj_has(cj, k) = match cj
+    Nil        => 2
+    Cons(h, t) => if h.k == k then h.s else tv_cj_has(t, k)
+fn tv_dadd(d, l) = match d
+    Nil         => Nil
+    Cons(cj, t) => let h = tv_cj_has(cj, l.k) in if h == 2 then Cons(app(cj, Cons(l, Nil)), tv_dadd(t, l)) else if h == l.s then Cons(cj, tv_dadd(t, l)) else tv_dadd(t, l)
+fn tv_both_has(f, ku) = match f
+    TfLit(kd, p, q) => if kd == "both" and (tv_pk(p) == ku or tv_pk(q) == ku) then 1 else 0
+    _               => 0
+fn tv_cj_fit(cj, kf, ku) = match cj
+    Nil        => 0
+    Cons(h, t) => if h.s == 1 and (h.k == kf or tv_both_has(h.f, ku) == 1) then 1 else tv_cj_fit(t, kf, ku)
+fn tv_dfit(d, kf, ku) = match d
+    Nil         => 1
+    Cons(cj, t) => if tv_cj_fit(cj, kf, ku) == 1 then tv_dfit(t, kf, ku) else 0
+## "u fits 63 bits" holds on every path that reaches this point
+fn tv_fitsk(u, d) = let f = tv_fit(u) in if tv_fist(f) == 1 then 1 else if tv_fisf(f) == 1 then 0 else tv_dfit(d, tv_fk(f), tv_pk(u))
+fn tv_dhasnil(d) = match d
+    Nil        => 0
+    Cons(h, t) => if isnil(h) == 1 then 1 else tv_dhasnil(t)
+fn tv_dsel(d, k, s) = match d
+    Nil         => Nil
+    Cons(cj, t) => tv_dsel2(cj, t, k, s)
+fn tv_dsel2(cj, t, k, s) = match cj
+    Nil        => tv_dsel(t, k, s)
+    Cons(l, r) => if l.k == k and l.s == s then Cons(r, tv_dsel(t, k, s)) else tv_dsel(t, k, s)
+fn tv_doth(d, k) = match d
+    Nil         => Nil
+    Cons(cj, t) => tv_doth2(cj, t, k)
+fn tv_doth2(cj, t, k) = match cj
+    Nil        => Cons(cj, tv_doth(t, k))
+    Cons(l, r) => if l.k == k then tv_doth(t, k) else Cons(cj, tv_doth(t, k))
+fn tv_dpre(l, d) = match d
+    Nil        => Nil
+    Cons(h, t) => Cons(Cons(l, h), tv_dpre(l, t))
+fn tv_dtrue(d) = match d
+    Nil        => 0
+    Cons(h, t) => isnil(h)
+fn tv_dhead(d) = match d
+    Nil         => {k: "", s: 1, f: TfT}
+    Cons(cj, t) => tv_dhead2(cj)
+fn tv_dhead2(cj) = match cj
+    Nil        => {k: "", s: 1, f: TfT}
+    Cons(l, r) => l
+## Boolean simplification by Shannon expansion on the first atom: (a and X) or (not a and Y) with X and Y both true
+## is true. Only valid identities are applied, so the result is equivalent to the input whatever the atom order.
+fn tv_dsimp(d) = if isnil(d) == 1 then Nil else if tv_dhasnil(d) == 1 then Cons(Nil, Nil) else tv_dsimp2(d, tv_dhead(d))
+fn tv_dsimp2(d, l) = let pos = tv_dsimp(tv_dsel(d, l.k, 1)) in let neg = tv_dsimp(tv_dsel(d, l.k, 0)) in if tv_dtrue(pos) == 1 and tv_dtrue(neg) == 1 then Cons(Nil, Nil) else app(tv_dpre({k: l.k, s: 1, f: l.f}, pos), app(tv_dpre({k: l.k, s: 0, f: l.f}, neg), tv_dsimp(tv_doth(d, l.k))))
+fn tv_cjform(cj) = match cj
+    Nil        => TfT
+    Cons(h, t) => tv_fand(if h.s == 1 then h.f else TfNot(h.f), tv_cjform(t))
+fn tv_dform(d) = match d
+    Nil        => TfF
+    Cons(h, t) => tv_for(tv_cjform(h), tv_dform(t))
+fn tv_lit_in_all(d, l) = match d
+    Nil         => 1
+    Cons(cj, t) => if tv_cj_has(cj, l.k) == l.s then tv_lit_in_all(t, l) else 0
+fn tv_common(cj, d1, d2) = match cj
+    Nil        => Nil
+    Cons(l, r) => if tv_lit_in_all(d1, l) == 1 and tv_lit_in_all(d2, l) == 1 then Cons(l, tv_common(r, d1, d2)) else tv_common(r, d1, d2)
+fn tv_cj_strip(cj, cm) = match cj
+    Nil        => Nil
+    Cons(l, r) => if tv_cj_has(cm, l.k) == l.s then tv_cj_strip(r, cm) else Cons(l, tv_cj_strip(r, cm))
+fn tv_dstrip(d, cm) = match d
+    Nil         => Nil
+    Cons(cj, t) => Cons(tv_cj_strip(cj, cm), tv_dstrip(t, cm))
+fn tv_dfirst(d) = match d
+    Nil         => Nil
+    Cons(cj, t) => cj
+
+## --- machine words: TvW(t) canonical word of t | TvM(p) raw word = p mod 2^64 | TvAnd(p, q) = W(p) & W(q) |
+##     TvCmp(p) cmpv result (sign of p) | TvEqr(p) eqv result (1 iff p == 0) | TvTruth(p) a truth word (1 iff p == 0) |
+##     TvSet(f) setcc byte | TvAddr(sym) | TvPhi(f, a, b) | TvUnk ---
+fn tv_vk(v) = match v
+    TvW(p)        => "W" + tv_pk(p)
+    TvM(p)        => "M" + tv_pk(p)
+    TvRaw(p)      => "R" + tv_pk(p)
+    TvAnd(p, q)   => "A" + tv_pk(p) + "&" + tv_pk(q)
+    TvCmp(p)      => "C" + tv_pk(p)
+    TvEqr(p)      => "E" + tv_pk(p)
+    TvTruth(p)    => "B" + tv_pk(p)
+    TvSet(f)      => "S" + tv_fk(f)
+    TvAddr(s)     => "@" + s
+    TvPhi(f, a, b) => "P(" + tv_fk(f) + "?" + tv_vk(a) + ":" + tv_vk(b) + ")"
+    _             => "?"
+fn tv_gk(g) = match g
+    TgSign(p) => "s" + tv_pk(p)
+    TgEq(p)   => "e" + tv_pk(p)
+    TgTag(f)  => "t" + tv_fk(f)
+    TgOvf(f)  => "o" + tv_fk(f)
+    TgNone    => "-"
+    _         => "-"
+fn tv_norm(v, d) = match v
+    TvM(p) => if tv_peven(p) == 1 and tv_podd(p) == 1 and tv_fitsk(tv_phalf(p), d) == 1 then TvW(tv_phalf(p)) else v
+    _      => v
+fn tv_asm(v, d) = match v
+    TvM(p) => {ok: 1, p: p}
+    TvW(t) => if tv_fitsk(t, d) == 1 then {ok: 1, p: tv_padd(tv_pscale(t, 2), tv_pc(1))} else {ok: 0, p: Nil}
+    _      => {ok: 0, p: Nil}
+fn tv_wpoly(v) = match v
+    TvW(p) => {ok: 1, p: p}
+    _      => {ok: 0, p: Nil}
+fn tv_rawpoly(v) = match v
+    TvRaw(p) => {ok: 1, p: p}
+    _        => {ok: 0, p: Nil}
+## p is the signed value of the word (not only congruent to it)
+fn tv_exact(p, d) = if tv_pisc(p) == 1 then 1 else if tv_peven(p) == 1 and tv_fitsk(tv_phalf(p), d) == 1 then 1 else tv_fitsk(p, d)
+
+## --- machine state ---
+fn tv_eget(e, n) = match e
+    Nil        => TvUnk
+    Cons(h, t) => if h.n == n then h.v else tv_eget(t, n)
+fn tv_eset(e, n, v) = match e
+    Nil        => Cons({n: n, v: v}, Nil)
+    Cons(h, t) => if h.n == n then Cons({n: n, v: v}, t) else Cons(h, tv_eset(t, n, v))
+fn tv_enorm(e, d) = match e
+    Nil        => Nil
+    Cons(h, t) => Cons({n: h.n, v: tv_norm(h.v, d)}, tv_enorm(t, d))
+fn tv_s(rg, sl, stk, fl, pc, eff) = {live: 1, rg: rg, sl: sl, stk: stk, fl: fl, pc: pc, eff: eff}
+fn tv_dead() = {live: 0, rg: Nil, sl: Nil, stk: Nil, fl: TgNone, pc: Nil, eff: Nil}
+fn tv_clash() = {live: 2, rg: Nil, sl: Nil, stk: Nil, fl: TgNone, pc: Nil, eff: Nil}
+fn tv_setr(s, r, v) = tv_s(tv_eset(s.rg, r, tv_norm(v, s.pc)), s.sl, s.stk, s.fl, s.pc, s.eff)
+fn tv_setf(s, g) = tv_s(s.rg, s.sl, s.stk, g, s.pc, s.eff)
+fn tv_assume(s, f) = if tv_fist(f) == 1 then s else if tv_fisf(f) == 1 then tv_dead() else let d = tv_dadd(s.pc, tv_lit_of(f)) in if isnil(d) == 1 then tv_dead() else tv_s(tv_enorm(s.rg, d), s.sl, s.stk, s.fl, d, s.eff)
+fn tv_vmerge(x, y, c) = if tv_vk(x) == tv_vk(y) then x else if tv_fist(c) == 1 then TvUnk else tv_vmerge2(x, y, c)
+fn tv_vmerge2(x, y, c) = match x
+    TvUnk  => TvUnk
+    TvW(p) => tv_vmerge3(p, x, y, c)
+    _      => tv_vmerge4(x, y, c)
+fn tv_vmerge3(p, x, y, c) = match y
+    TvW(q) => TvW(tv_pite(c, p, q))
+    TvUnk  => TvUnk
+    _      => TvPhi(c, x, y)
+fn tv_vmerge4(x, y, c) = match y
+    TvUnk => TvUnk
+    _     => TvPhi(c, x, y)
+fn tv_emerge(a, b, c) = match a
+    Nil        => Nil
+    Cons(h, t) => Cons({n: h.n, v: tv_vmerge(h.v, tv_eget(b, h.n), c)}, tv_emerge(t, b, c))
+fn tv_lmerge(a, b, c) = match a
+    Nil        => Nil
+    Cons(h, t) => tv_lmerge2(h, t, b, c)
+fn tv_lmerge2(h, t, b, c) = match b
+    Nil        => Nil
+    Cons(g, u) => Cons(tv_vmerge(h, g, c), tv_lmerge(t, u, c))
+## Two paths meet. The condition that tells them apart is the first path's condition without the literals both
+## share; when either side has nothing left to tell it apart, differing values are unknown rather than guessed.
+fn tv_merge(a, b) = if a.live == 2 or b.live == 2 then tv_clash() else if a.live == 0 then b else if b.live == 0 then a else if len(a.stk) != len(b.stk) then tv_clash() else let cm = tv_common(tv_dfirst(a.pc), a.pc, b.pc) in let ca = tv_dform(tv_dstrip(a.pc, cm)) in let cb = tv_dform(tv_dstrip(b.pc, cm)) in let c = if tv_fist(cb) == 1 then TfT else ca in if tv_pk(a.eff) != tv_pk(b.eff) and tv_fist(c) == 1 then tv_clash() else tv_s(tv_emerge(a.rg, b.rg, c), tv_emerge(a.sl, b.sl, c), tv_lmerge(a.stk, b.stk, c), if tv_gk(a.fl) == tv_gk(b.fl) then a.fl else TgNone, tv_dsimp(app(a.pc, b.pc)), tv_pite(c, a.eff, b.eff))
+
+## --- instruction semantics. A step returns {st: fall-through state, jl: jump label, js: state at the jump target,
+##     tp: path condition that reached `call ctfail`, err: rejection} ---
+fn tv_ok(s) = {st: s, jl: "", js: tv_dead(), tp: Nil, tid: 0, err: ""}
+fn tv_bad(msg) = {st: tv_dead(), jl: "", js: tv_dead(), tp: Nil, tid: 0, err: msg}
+fn tv_greg(r) = if r == "%rax" or r == "%rdi" or r == "%rsi" or r == "%rdx" or r == "%rcx" or r == "%r8" or r == "%r9" then 1 else 0
+fn tv_greg32(r) = if r == "%eax" then "%rax" else if r == "%edi" then "%rdi" else if r == "%esi" then "%rsi" else if r == "%edx" then "%rdx" else if r == "%ecx" then "%rcx" else if r == "%r8d" then "%r8" else if r == "%r9d" then "%r9" else ""
+fn tv_isimm(o) = if count(o) > 1 and at(o, 0) == "$" and tv_isint(slice(o, 1, count(o))) == 1 then 1 else 0
+fn tv_imm(o) = tv_int(slice(o, 1, count(o)))
+fn tv_isrbp(o) = if tv_ends(o, "(%rbp)") == 1 and tv_isint(slice(o, 0, count(o) - 6)) == 1 then 1 else 0
+fn tv_rbpoff(o) = tv_int(slice(o, 0, count(o) - 6))
+fn tv_isrsp(o) = if tv_ends(o, "(%rsp)") == 1 then (let ds = slice(o, 0, count(o) - 6) in if ds == "" or tv_isint(ds) == 1 then 1 else 0) else 0
+fn tv_rspoff(o) = let ds = slice(o, 0, count(o) - 6) in if ds == "" then 0 else tv_int(ds)
+fn tv_stk_set(stk, idx, v) = match stk
+    Nil        => {ok: 0, stk: Nil}
+    Cons(h, t) => if idx == 0 then {ok: 1, stk: Cons(v, t)} else let r = tv_stk_set(t, idx - 1, v) in if r.ok == 0 then r else {ok: 1, stk: Cons(h, r.stk)}
+fn tv_stk_get(stk, idx) = match stk
+    Nil        => TvUnk
+    Cons(h, t) => if idx == 0 then h else tv_stk_get(t, idx - 1)
+fn tv_stk_pushn(stk, n) = if n <= 0 then stk else tv_stk_pushn(Cons(TvUnk, stk), n - 1)
+fn tv_stk_dropn(stk, n) = if n <= 0 then {ok: 1, stk: stk} else tv_stk_dropn1(stk, n)
+fn tv_stk_dropn1(stk, n) = match stk
+    Nil        => {ok: 0, stk: Nil}
+    Cons(h, t) => tv_stk_dropn(t, n - 1)
+fn tv_areg(i) = if i == 0 then "%rdi" else if i == 1 then "%rsi" else if i == 2 then "%rdx" else if i == 3 then "%rcx" else if i == 4 then "%r8" else "%r9"
+fn tv_nth(xs, i) = match xs
+    Nil        => ""
+    Cons(h, t) => if i <= 0 then h else tv_nth(t, i - 1)
+fn tv_store(off, v, s, cx) = if off > 0 - 8 or off < 0 - cx.frame or off % 8 != 0 then tv_bad("frame slot " + str(off) + "(%rbp) is outside the " + str(cx.frame) + "-byte frame") else tv_ok(tv_s(s.rg, tv_eset(s.sl, str(off), v), s.stk, s.fl, s.pc, s.eff))
+fn tv_store_rsp(off, v, s) = if off < 0 or off % 8 != 0 then tv_bad("unaligned (%rsp) store") else let u = tv_stk_set(s.stk, off / 8, tv_norm(v, s.pc)) in if u.ok == 0 then tv_bad("store above allocated %rsp stack") else tv_ok(tv_s(s.rg, s.sl, u.stk, s.fl, s.pc, s.eff))
+fn tv_load(off, r, s, cx) = if off >= 16 and off % 8 == 0 then (let pn = tv_nth(cx.params, 6 + (off - 16) / 8) in if pn == "" then tv_bad("read of " + str(off) + "(%rbp) above the incoming arguments") else tv_ok(tv_setr(s, r, TvW(tv_patom(TaVar(pn)))))) else if off > 0 - 8 or off < 0 - cx.frame or off % 8 != 0 then tv_bad("frame slot " + str(off) + "(%rbp) is outside the " + str(cx.frame) + "-byte frame") else tv_ok(tv_setr(s, r, tv_eget(s.sl, str(off))))
+fn tv_mov(a, b, s, cx) = if tv_isimm(a) == 1 and tv_greg(b) == 1 then tv_ok(tv_setr(s, b, TvM(tv_pc(tv_imm(a))))) else if tv_greg(a) == 1 and tv_greg(b) == 1 then tv_ok(tv_setr(s, b, tv_eget(s.rg, a))) else if tv_greg(a) == 1 and tv_isrbp(b) == 1 then tv_store(tv_rbpoff(b), tv_eget(s.rg, a), s, cx) else if tv_greg(a) == 1 and tv_isrsp(b) == 1 then tv_store_rsp(tv_rspoff(b), tv_eget(s.rg, a), s) else if tv_isrbp(a) == 1 and tv_greg(b) == 1 then tv_load(tv_rbpoff(a), b, s, cx) else tv_bad("unsupported operands")
+fn tv_lea_m(m, d, b, s) = if m.ok == 0 then tv_ok(tv_setr(s, b, TvUnk)) else tv_ok(tv_setr(s, b, TvM(tv_padd(m.p, tv_pc(d)))))
+fn tv_lea_dbl(m, b, s) = if m.ok == 0 then tv_ok(tv_setr(s, b, TvUnk)) else tv_ok(tv_setr(s, b, TvM(tv_padd(tv_pscale(m.p, 2), tv_pc(1)))))
+fn tv_lea(a, b, s) = if tv_greg(b) == 0 then tv_bad("unsupported destination") else if tv_ends(a, "(%rip)") == 1 then tv_ok(tv_setr(s, b, TvAddr(slice(a, 0, count(a) - 6)))) else if a == "1(%rax,%rax)" then tv_lea_dbl(tv_asm(tv_eget(s.rg, "%rax"), s.pc), b, s) else let j = tv_find(a, "(", 0) in if j < 0 or tv_ends(a, ")") == 0 then tv_bad("unsupported address") else let r = slice(a, j + 1, count(a) - 1) in let ds = slice(a, 0, j) in if tv_greg(r) == 0 or (ds != "" and tv_isint(ds) == 0) then tv_bad("unsupported address") else tv_lea_m(tv_asm(tv_eget(s.rg, r), s.pc), if ds == "" then 0 else tv_int(ds), b, s)
+fn tv_arith_r(op, x, y, b, s) = if x.ok == 0 or y.ok == 0 then tv_ok(tv_setf(tv_setr(s, b, TvUnk), TgNone)) else let r = if op == "addq" then tv_padd(x.p, y.p) else if op == "subq" then tv_psub(x.p, y.p) else tv_pmul(x.p, y.p) in tv_ok(tv_setf(tv_setr(s, b, TvM(r)), if tv_exact(x.p, s.pc) == 1 and tv_exact(y.p, s.pc) == 1 then TgOvf(tv_ofl(r)) else TgNone))
+fn tv_arith(op, a, b, s) = if tv_greg(b) == 0 then tv_bad("unsupported destination") else if tv_isimm(a) == 1 then tv_arith_r(op, tv_asm(tv_eget(s.rg, b), s.pc), {ok: 1, p: tv_pc(tv_imm(a))}, b, s) else if tv_greg(a) == 1 then tv_arith_r(op, tv_asm(tv_eget(s.rg, b), s.pc), tv_asm(tv_eget(s.rg, a), s.pc), b, s) else tv_bad("unsupported operands")
+fn tv_sar_reg(m, r, s) = if m.ok == 1 and tv_peven(m.p) == 1 and tv_exact(m.p, s.pc) == 1 then tv_ok(tv_setf(tv_setr(s, r, TvM(tv_phalf(m.p))), TgNone)) else tv_ok(tv_setf(tv_setr(s, r, TvUnk), TgNone))
+fn tv_shl1_reg(m, r, s) = if m.ok == 1 then tv_ok(tv_setf(tv_setr(s, r, TvM(tv_pscale(m.p, 2))), TgNone)) else tv_ok(tv_setf(tv_setr(s, r, TvUnk), TgNone))
+fn tv_and(x, y, b, s) = if x.ok == 1 and y.ok == 1 then tv_ok(tv_setf(tv_setr(s, b, TvAnd(x.p, y.p)), TgNone)) else tv_ok(tv_setf(tv_setr(s, b, TvUnk), TgNone))
+fn tv_raw_bin(kd, a, b, s) = let ra = tv_rawpoly(tv_eget(s.rg, b)) in let rb = tv_rawpoly(tv_eget(s.rg, a)) in if ra.ok == 0 or rb.ok == 0 then tv_bad("bitwise operand is not an unboxed raw word") else tv_ok(tv_setf(tv_setr(s, b, TvRaw(tv_patom(TaBit(kd, ra.p, rb.p)))), TgNone))
+fn tv_raw_shift(kd, s) = let ra = tv_rawpoly(tv_eget(s.rg, "%rax")) in let rb = tv_rawpoly(tv_eget(s.rg, "%rcx")) in if ra.ok == 0 or rb.ok == 0 then tv_bad("shift operand is not an unboxed raw word") else tv_ok(tv_setf(tv_setr(s, "%rax", TvRaw(tv_patom(TaBit(kd, ra.p, rb.p)))), TgNone))
+fn tv_and_ins(a, b, s) = if (tv_rawpoly(tv_eget(s.rg, b))).ok == 1 and (tv_rawpoly(tv_eget(s.rg, a))).ok == 1 then tv_raw_bin("and", a, b, s) else tv_and(tv_wpoly(tv_eget(s.rg, b)), tv_wpoly(tv_eget(s.rg, a)), b, s)
+fn tv_xor_ins(a, b, s) = if a == b and (tv_rawpoly(tv_eget(s.rg, a))).ok == 0 then tv_ok(tv_setf(tv_setr(s, b, TvM(Nil)), TgEq(Nil))) else tv_raw_bin("xor", a, b, s)
+fn tv_rsp_sub(k, s) = if k <= 0 or k % 16 != 0 then tv_bad("unaligned %rsp allocation") else tv_ok(tv_setf(tv_s(s.rg, s.sl, tv_stk_pushn(s.stk, k / 8), s.fl, s.pc, s.eff), TgNone))
+fn tv_rsp_add(k, s) = if k <= 0 or k % 16 != 0 then tv_bad("unaligned %rsp deallocation") else let d = tv_stk_dropn(s.stk, k / 8) in if d.ok == 0 then tv_bad("%rsp deallocation exceeds stack") else tv_ok(tv_setf(tv_s(s.rg, s.sl, d.stk, s.fl, s.pc, s.eff), TgNone))
+fn tv_tagf(v) = match v
+    TvW(p)         => TgTag(tv_fit(p))
+    TvAnd(p, q)    => TgTag(tv_both(p, q))
+    TvM(p)         => if tv_peven(p) == 1 and tv_podd(p) == 1 then TgTag(TfT) else TgNone
+    TvPhi(f, a, b) => tv_same_flags(tv_tagf(a), tv_tagf(b))
+    _              => TgNone
+fn tv_same_flags(x, y) = if tv_gk(x) == tv_gk(y) then x else TgNone
+## flags of `cmpq $k, v`
+fn tv_cmpimm(k, v, d) = match v
+    TvW(t)         => if k % 2 == 0 then TgNone else if tv_fitsk(t, d) == 1 then TgSign(tv_psub(t, tv_pc(tv_fdiv2(k)))) else TgEq(tv_psub(t, tv_pc(tv_fdiv2(k))))
+    TvCmp(p)       => if k == 0 then TgSign(p) else TgNone
+    TvEqr(p)       => if k == 1 then TgEq(p) else TgNone
+    TvTruth(p)     => if k == 1 then TgEq(p) else TgNone
+    TvPhi(f, a, b) => tv_same_flags(tv_cmpimm(k, a, d), tv_cmpimm(k, b, d))
+    _              => TgNone
+## flags of `cmpq va, vb` (vb - va): two canonical words are equal exactly when the values are; the order is the
+## order of the values only when both are tagged
+fn tv_cmprr(x, y, d) = if x.ok == 0 or y.ok == 0 then TgNone else if tv_fitsk(x.p, d) == 1 and tv_fitsk(y.p, d) == 1 then TgSign(tv_psub(x.p, y.p)) else TgEq(tv_psub(x.p, y.p))
+fn tv_cmp(a, b, s) = if tv_greg(b) == 0 then tv_bad("unsupported operands") else if tv_isimm(a) == 1 then tv_ok(tv_setf(s, tv_cmpimm(tv_imm(a), tv_eget(s.rg, b), s.pc))) else if tv_greg(a) == 1 then tv_ok(tv_setf(s, tv_cmprr(tv_wpoly(tv_eget(s.rg, b)), tv_wpoly(tv_eget(s.rg, a)), s.pc))) else tv_bad("unsupported operands")
+fn tv_cf_none() = {ok: 0, f: TfF}
+fn tv_cf_some(f) = {ok: 1, f: f}
+fn tv_iseq(cc) = if cc == "e" or cc == "z" then 1 else 0
+fn tv_isne(cc) = if cc == "ne" or cc == "nz" then 1 else 0
+## the condition under which `j<cc>` / `set<cc>` is taken
+fn tv_condf(cc, g) = match g
+    TgSign(p) => if cc == "l" then tv_cf_some(tv_lt(p)) else if cc == "ge" then tv_cf_some(tv_fnot(tv_lt(p))) else if cc == "g" then tv_cf_some(tv_lt(tv_pneg(p))) else if cc == "le" then tv_cf_some(tv_fnot(tv_lt(tv_pneg(p)))) else if tv_iseq(cc) == 1 then tv_cf_some(tv_eq(p)) else if tv_isne(cc) == 1 then tv_cf_some(tv_fnot(tv_eq(p))) else tv_cf_none()
+    TgEq(p)   => if tv_iseq(cc) == 1 then tv_cf_some(tv_eq(p)) else if tv_isne(cc) == 1 then tv_cf_some(tv_fnot(tv_eq(p))) else tv_cf_none()
+    TgTag(f)  => if tv_iseq(cc) == 1 then tv_cf_some(tv_fnot(f)) else if tv_isne(cc) == 1 then tv_cf_some(f) else tv_cf_none()
+    TgOvf(f)  => if cc == "o" then tv_cf_some(tv_fnot(f)) else if cc == "no" then tv_cf_some(f) else tv_cf_none()
+    _         => tv_cf_none()
+fn tv_jcc(cc, lab, s) = let c = tv_condf(cc, s.fl) in if c.ok == 0 then tv_bad("conditional jump on flags the validator cannot derive") else {st: tv_assume(s, tv_fnot(c.f)), jl: lab, js: tv_assume(s, c.f), tp: Nil, tid: 0, err: ""}
+fn tv_setcc(cc, s) = let c = tv_condf(cc, s.fl) in if c.ok == 0 then tv_bad("setcc on flags the validator cannot derive") else tv_ok(tv_setr(s, "%rax", TvSet(c.f)))
+fn tv_movzb(v, s) = match v
+    TvSet(f) => tv_ok(tv_setr(s, "%rax", TvM(tv_pite(f, tv_pc(1), Nil))))
+    _        => tv_ok(tv_setr(s, "%rax", TvUnk))
+fn tv_pop(r, s) = match s.stk
+    Nil        => tv_bad("pop from an empty expression stack")
+    Cons(h, t) => tv_ok(tv_s(tv_eset(s.rg, r, tv_norm(h, s.pc)), s.sl, t, s.fl, s.pc, s.eff))
+## a call returns its result in %rax and leaves every caller-saved register and the flags unknown
+fn tv_ret(s, v, eff) = tv_ok(tv_s(Cons({n: "%rax", v: v}, Nil), s.sl, s.stk, TgNone, s.pc, eff))
+fn tv_sig_get(fns, nm) = match fns
+    Nil        => {nm: "", n: 0 - 1, ok: 0, tys: Nil}
+    Cons(h, t) => if h.nm == nm then h else tv_sig_get(t, nm)
+fn tv_arg_word(s, i) = if i < 6 then tv_eget(s.rg, tv_areg(i)) else tv_stk_get(s.stk, i - 6)
+fn tv_args(s, i, n) = if i >= n then {ok: 1, ps: Nil} else let a = tv_wpoly(tv_arg_word(s, i)) in let r = tv_args(s, i + 1, n) in if a.ok == 0 or r.ok == 0 then {ok: 0, ps: Nil} else {ok: 1, ps: Cons(a.p, r.ps)}
+fn tv_call_user(sym, sg, s) = if sg.n < 0 then tv_bad("call to a symbol with no model") else if sg.ok == 0 then tv_bad("call to a function outside the integer fragment") else let a = tv_args(s, 0, sg.n) in if a.ok == 0 then tv_bad("call argument is not a canonical value") else tv_ret(s, TvW(tv_patom(TaCall(sym, a.ps))), tv_padd(s.eff, tv_patom(TaEff("call." + sym, a.ps))))
+fn tv_call2(sym, a, b, s) = if a.ok == 0 or b.ok == 0 then tv_bad("runtime call operand is not a canonical value") else if sym == "addv" then tv_ret(s, TvW(tv_padd(a.p, b.p)), s.eff) else if sym == "__rt_sub" then tv_ret(s, TvW(tv_psub(a.p, b.p)), s.eff) else if sym == "__rt_mul" then tv_ret(s, TvW(tv_pmul(a.p, b.p)), s.eff) else if sym == "__rt_div" then tv_ret(s, TvW(tv_patom(TaDiv(a.p, b.p))), tv_padd(s.eff, tv_patom(TaEff("div", Cons(a.p, Cons(b.p, Nil)))))) else if sym == "__rt_mod" then tv_ret(s, TvW(tv_patom(TaMod(a.p, b.p))), tv_padd(s.eff, tv_patom(TaEff("mod", Cons(a.p, Cons(b.p, Nil)))))) else if sym == "__rt_wadd" then tv_ret(s, TvW(tv_patom(TaBit("wadd", a.p, b.p))), s.eff) else if sym == "__rt_wsub" then tv_ret(s, TvW(tv_patom(TaBit("wsub", a.p, b.p))), s.eff) else if sym == "__rt_wmul" then tv_ret(s, TvW(tv_patom(TaBit("wmul", a.p, b.p))), s.eff) else if sym == "simd_add4_i64" then tv_ret(s, TvW(tv_pscale(tv_padd(a.p, b.p), 4)), tv_padd(s.eff, tv_patom(TaEff("simd_add4", Cons(a.p, Cons(b.p, Nil)))))) else if sym == "simd_sub4_i64" then tv_ret(s, TvW(tv_pscale(tv_psub(a.p, b.p), 4)), tv_padd(s.eff, tv_patom(TaEff("simd_sub4", Cons(a.p, Cons(b.p, Nil)))))) else if sym == "cmpv" then tv_ret(s, TvCmp(tv_psub(a.p, b.p)), s.eff) else tv_ret(s, TvEqr(tv_psub(a.p, b.p)), s.eff)
+## __rt_cond returns (the word of true) only for a boxed integer and traps on everything else, a tagged integer
+## included; a boxed integer does not fit 63 bits, so it is not 0. The call is therefore modelled only on paths
+## that are known to hold a boxed value.
+fn tv_cj_nfit(cj, kf) = match cj
+    Nil        => 0
+    Cons(h, t) => if h.s == 0 and h.k == kf then 1 else tv_cj_nfit(t, kf)
+fn tv_dnfit(d, kf) = match d
+    Nil         => 1
+    Cons(cj, t) => if tv_cj_nfit(cj, kf) == 1 then tv_dnfit(t, kf) else 0
+fn tv_boxed(u, d) = let f = tv_fit(u) in if tv_fisf(f) == 1 then 1 else if tv_fist(f) == 1 then 0 else tv_dnfit(d, tv_fk(f))
+fn tv_call_cond(x, s) = if x.ok == 0 then tv_bad("__rt_cond operand is not a canonical value") else if tv_boxed(x.p, s.pc) == 0 then tv_bad("__rt_cond reached with a value that is not known to be a boxed integer (it traps on a tagged one)") else tv_ret(s, TvTruth(x.p), s.eff)
+fn tv_call_mkint(v, s) = match v
+    TvM(p)   => if tv_exact(p, s.pc) == 1 then tv_ret(s, TvW(p), s.eff) else tv_bad("mkint operand is not a known signed value")
+    TvRaw(p) => tv_ret(s, TvW(p), s.eff)
+    _        => tv_bad("mkint operand is not a raw word")
+fn tv_call_un2(s) = let a = tv_wpoly(tv_eget(s.rg, "%rax")) in let b = tv_wpoly(tv_eget(s.rg, "%rcx")) in if a.ok == 0 or b.ok == 0 then tv_bad("__rt_un2 operand is not a canonical value") else tv_ok(tv_s(Cons({n: "%rax", v: TvRaw(a.p)}, Cons({n: "%rcx", v: TvRaw(b.p)}, Nil)), s.sl, s.stk, TgNone, s.pc, s.eff))
+fn tv_call_prom(x, s) = if x.ok == 0 then tv_bad("__lume_promise_new operand is not a canonical value") else tv_ret(s, TvW(x.p), tv_padd(s.eff, tv_patom(TaEff("promise_new", Cons(x.p, Nil)))))
+fn tv_ctfail(v, s) = match v
+    TvAddr(l) => {st: tv_dead(), jl: "", js: tv_dead(), tp: s.pc, tid: tv_strhash(l, 0, 7), err: ""}
+    TvM(p)    => if tv_pisc(p) == 1 then {st: tv_dead(), jl: "", js: tv_dead(), tp: s.pc, tid: tv_pc0(p), err: ""} else tv_bad("ctfail message in %rdi is not a string literal")
+    _         => tv_bad("ctfail message in %rdi is not a string literal")
+fn tv_is_call2(sym) = if sym == "addv" or sym == "__rt_sub" or sym == "__rt_mul" or sym == "__rt_div" or sym == "__rt_mod" or sym == "__rt_wadd" or sym == "__rt_wsub" or sym == "__rt_wmul" or sym == "simd_add4_i64" or sym == "simd_sub4_i64" or sym == "cmpv" or sym == "eqv" then 1 else 0
+fn tv_call(sym, s, cx) = if sym == "ctfail" then tv_ctfail(tv_eget(s.rg, "%rdi"), s) else if tv_is_call2(sym) == 1 then tv_call2(sym, tv_wpoly(tv_eget(s.rg, "%rdi")), tv_wpoly(tv_eget(s.rg, "%rsi")), s) else if sym == "__rt_cond" then tv_call_cond(tv_wpoly(tv_eget(s.rg, "%rax")), s) else if sym == "__rt_un2" then tv_call_un2(s) else if sym == "__lume_promise_new" then tv_call_prom(tv_wpoly(tv_eget(s.rg, "%rdi")), s) else if sym == "mkint" then tv_call_mkint(tv_eget(s.rg, "%rdi"), s) else tv_call_user(sym, tv_sig_get(cx.fns, sym), s)
+fn tv_step(i, s, cx) = let op = i.op in let a = i.a in let b = i.b in if op == "movq" then tv_mov(a, b, s, cx) else if op == "leaq" then tv_lea(a, b, s) else if op == "subq" and tv_isimm(a) == 1 and b == "%rsp" then tv_rsp_sub(tv_imm(a), s) else if op == "addq" and tv_isimm(a) == 1 and b == "%rsp" then tv_rsp_add(tv_imm(a), s) else if op == "addq" or op == "subq" or op == "imulq" then tv_arith(op, a, b, s) else if op == "incq" and b == "" then tv_arith("addq", "$1", a, s) else if op == "decq" and b == "" then tv_arith("subq", "$1", a, s) else if op == "sarq" and a == "$1" and tv_greg(b) == 1 then tv_sar_reg(tv_asm(tv_eget(s.rg, b), s.pc), b, s) else if (op == "shlq" or op == "salq") and a == "$1" and tv_greg(b) == 1 then tv_shl1_reg(tv_asm(tv_eget(s.rg, b), s.pc), b, s) else if (op == "salq" or op == "shlq") and a == "%cl" and b == "%rax" then tv_raw_shift("shl", s) else if op == "sarq" and a == "%cl" and b == "%rax" then tv_raw_shift("shr", s) else if op == "andq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_and_ins(a, b, s) else if op == "xorq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_xor_ins(a, b, s) else if op == "xorl" and tv_greg32(a) != "" and a == b then tv_ok(tv_setf(tv_setr(s, tv_greg32(a), TvM(Nil)), TgEq(Nil))) else if op == "orq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_raw_bin("or", a, b, s) else if op == "testb" and a == "$1" and b == "%al" then tv_ok(tv_setf(s, tv_tagf(tv_eget(s.rg, "%rax")))) else if op == "cmpq" then tv_cmp(a, b, s) else if op == "pushq" and tv_greg(a) == 1 and b == "" then tv_ok(tv_s(s.rg, s.sl, Cons(tv_eget(s.rg, a), s.stk), s.fl, s.pc, s.eff)) else if op == "popq" and tv_greg(a) == 1 and b == "" then tv_pop(a, s) else if op == "movzbq" and a == "%al" and b == "%rax" then tv_movzb(tv_eget(s.rg, "%rax"), s) else if op == "call" and b == "" then tv_call(a, s, cx) else if op == "jmp" and b == "" then {st: tv_dead(), jl: a, js: s, tp: Nil, tid: 0, err: ""} else if tv_starts(op, "set") == 1 and a == "%al" and b == "" then tv_setcc(slice(op, 3, count(op)), s) else if tv_starts(op, "j") == 1 and b == "" then tv_jcc(slice(op, 1, count(op)), a, s) else tv_bad("instruction outside the validated set")
+
+## --- the walk: instructions in address order, states merged at labels; every jump must go forward to a local label ---
+fn tv_pend_merge(pend, lab, s) = match pend
+    Nil        => s
+    Cons(h, t) => if h.l == lab then tv_pend_merge(t, lab, tv_merge(h.st, s)) else tv_pend_merge(t, lab, s)
+fn tv_pend_drop(pend, lab) = match pend
+    Nil        => Nil
+    Cons(h, t) => if h.l == lab then tv_pend_drop(t, lab) else Cons(h, tv_pend_drop(t, lab))
+fn tv_acc_err(acc, msg) = {tp: acc.tp, tm: acc.tm, err: msg}
+fn tv_run(ins, s, pend, seen, acc, cx) = match ins
+    Nil          => {st: s, pend: pend, acc: acc}
+    Cons(i, rest) => if acc.err != "" then {st: s, pend: pend, acc: acc} else if i.lab != "" then tv_run_lab(i.lab, rest, s, pend, seen, acc, cx) else if s.live == 0 then tv_run(rest, s, pend, seen, acc, cx) else tv_run_ins(tv_step(i, s, cx), i, rest, pend, seen, acc, cx)
+fn tv_run_lab(lab, rest, s, pend, seen, acc, cx) = if tv_starts(lab, ".") == 0 then tv_run(rest, s, pend, seen, tv_acc_err(acc, "non-local label " + lab + " inside the function"), cx) else let m = tv_pend_merge(pend, lab, s) in if m.live == 2 then tv_run(rest, m, pend, seen, tv_acc_err(acc, "paths with different stack depth or effects meet at " + lab), cx) else tv_run(rest, m, tv_pend_drop(pend, lab), Cons(lab, seen), acc, cx)
+fn tv_run_ins(r, i, rest, pend, seen, acc, cx) = if r.err != "" then tv_run(rest, r.st, pend, seen, tv_acc_err(acc, r.err + ": `" + i.txt + "`"), cx) else if r.jl != "" and tv_has(seen, r.jl) == 1 then tv_run(rest, r.st, pend, seen, tv_acc_err(acc, "backward jump: `" + i.txt + "`"), cx) else tv_run(rest, r.st, if r.jl != "" and r.js.live == 1 then Cons({l: r.jl, st: r.js}, pend) else pend, seen, {tp: app(acc.tp, r.tp), tm: if isnil(r.tp) == 1 then acc.tm else tv_pite(tv_dform(r.tp), tv_pc(r.tid), acc.tm), err: ""}, cx)
+
+## --- assembly text: the lines of each wanted function, parsed ---
+fn tv_nl(s, n, i) = if i >= n then n else if at(s, i) == "\n" then i else tv_nl(s, n, i + 1)
+fn tv_scan(s, n, i, want, cur, acc, out) = if i >= n then out else let e = tv_nl(s, n, i) in if cur == "" then (if e > i + 1 and at(s, i) != " " and at(s, i) != "." and at(s, e - 1) == ":" and tv_has(want, slicen(s, n, i, e - 1)) == 1 then tv_scan(s, n, e + 1, want, slicen(s, n, i, e - 1), Nil, out) else tv_scan(s, n, e + 1, want, "", Nil, out)) else let l = slicen(s, n, i, e) in if l == "    ret" then tv_scan(s, n, e + 1, want, "", Nil, Cons({nm: cur, ls: rev(Cons(l, acc))}, out)) else tv_scan(s, n, e + 1, want, cur, Cons(l, acc), out)
+fn tv_ltrim(l, i, n) = if i < n and at(l, i) == " " then tv_ltrim(l, i + 1, n) else slice(l, i, n)
+fn tv_ins2(t) = let sp = tv_find(t, " ", 0) in if sp < 0 then {lab: "", op: t, a: "", b: "", txt: t} else let rest = slice(t, sp + 1, count(t)) in let cm = tv_findsep(rest, 0) in if cm < 0 then {lab: "", op: slice(t, 0, sp), a: rest, b: "", txt: t} else {lab: "", op: slice(t, 0, sp), a: slice(rest, 0, cm), b: slice(rest, cm + 2, count(rest)), txt: t}
+fn tv_ins(l) = let n = count(l) in if n == 0 then {lab: "", op: "?", a: "", b: "", txt: l} else if at(l, 0) != " " then {lab: if at(l, n - 1) == ":" then slice(l, 0, n - 1) else "?", op: "", a: "", b: "", txt: l} else tv_ins2(tv_ltrim(l, 0, n))
+fn tv_inss(ls) = match ls
+    Nil        => Nil
+    Cons(h, t) => Cons(tv_ins(h), tv_inss(t))
+fn tv_fn_lines(fl, nm) = match fl
+    Nil        => {ok: 0, ls: Nil}
+    Cons(h, t) => if h.nm == nm then {ok: 1, ls: h.ls} else tv_fn_lines(t, nm)
+## prologue and epilogue are matched literally; the body is what lies between them
+fn tv_frame(ls) = match ls
+    Cons(a, r1) => tv_frame2(a, r1)
+    _           => {ok: 0, frame: 0, body: Nil}
+fn tv_frame2(a, r1) = match r1
+    Cons(b, r2) => if a == "    pushq %rbp" and b == "    movq %rsp, %rbp" then tv_frame3(r2) else {ok: 0, frame: 0, body: Nil}
+    _           => {ok: 0, frame: 0, body: Nil}
+fn tv_frame3(r2) = match r2
+    Cons(c, r3) => if tv_starts(c, "    subq $") == 1 and tv_ends(c, ", %rsp") == 1 and tv_isint(slice(c, 10, count(c) - 6)) == 1 then {ok: 1, frame: tv_int(slice(c, 10, count(c) - 6)), body: r3} else {ok: 1, frame: 0, body: r2}
+    _           => {ok: 0, frame: 0, body: Nil}
+fn tv_epi(rv) = match rv
+    Cons(a, r1) => tv_epi2(a, r1)
+    _           => {ok: 0, body: Nil}
+fn tv_epi2(a, r1) = match r1
+    Cons(b, r2) => tv_epi3(a, b, r2)
+    _           => {ok: 0, body: Nil}
+fn tv_epi3(a, b, r2) = match r2
+    Cons(c, r3) => if a == "    ret" and b == "    popq %rbp" and c == "    movq %rbp, %rsp" then {ok: 1, body: rev(r3)} else {ok: 0, body: Nil}
+    _           => {ok: 0, body: Nil}
+
+## --- denotation of the lowered AST: {v: value, t: condition under which evaluation reaches ctfail, e: effects} ---
+fn tv_d(v, t, e, m) = {v: v, t: t, e: e, m: m, err: ""}
+fn tv_derr(msg) = {v: Nil, t: TfF, e: Nil, m: Nil, err: msg}
+fn tv_c(f, t, e, m) = {f: f, t: t, e: e, m: m, err: ""}
+fn tv_cerr(msg) = {f: TfF, t: TfF, e: Nil, m: Nil, err: msg}
+## the identity of a trap message: the word of a short literal, or a hash of the .rodata label of a long one
+fn tv_strhash(s, i, h) = if i >= count(s) then h else tv_strhash(s, i + 1, (h * 131 + ord(at(s, i))) % 2147483647)
+fn tv_msgid(v) = if count(v) <= 7 then lsso_word(v, count(v)) else tv_strhash(".Ls_" + lhashlab(v), 0, 7)
+fn tv_ctfail_arg(args) = match args
+    Cons(h, t) => if isnil(t) == 1 then tv_ctfail_str(h) else {ok: 0, id: 0}
+    _          => {ok: 0, id: 0}
+fn tv_ctfail_str(x) = match x
+    Str(v) => {ok: 1, id: tv_msgid(v)}
+    _      => {ok: 0, id: 0}
+fn tv_den_ctfail(a) = if a.ok == 0 then tv_derr("ctfail with a message that is not a string literal") else tv_d(Nil, TfT, Nil, tv_pc(a.id))
+## the first trap in evaluation order: a's when a traps, else b's
+fn tv_m2(a, b) = tv_pite(a.t, a.m, b.m)
+fn tv_lookup(env, nm) = match env
+    Nil        => {ok: 0, p: Nil}
+    Cons(h, t) => if h.n == nm then {ok: 1, p: h.p} else tv_lookup(t, nm)
+fn tv_iscmp(op) = if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" then 1 else 0
+fn tv_den(x, env, cx) = match x
+    Num(n)          => tv_d(tv_pc(n), TfF, Nil, Nil)
+    Var(nm)         => tv_den_var(nm, tv_lookup(env, nm))
+    Bin(op, l, r)   => if op == "and" or op == "or" or tv_iscmp(op) == 1 then tv_den_bool(tv_cond(x, env, cx)) else tv_den_bin(op, tv_den(l, env, cx), tv_den(r, env, cx))
+    If(c, t, e2)    => tv_den_if(tv_cond(c, env, cx), tv_den(t, env, cx), tv_den(e2, env, cx))
+    LetIn(nm, v, b) => tv_den_let(nm, tv_den(v, env, cx), b, env, cx)
+    Call(nm, args)  => if nm == "ctfail" then tv_den_ctfail(tv_ctfail_arg(args)) else tv_den_call(nm, tv_den_args(args, env, cx), cx)
+    _               => tv_derr("expression form outside the integer fragment")
+fn tv_den_var(nm, r) = if r.ok == 1 then tv_d(r.p, TfF, Nil, Nil) else if nm == "true" then tv_d(tv_pc(1), TfF, Nil, Nil) else if nm == "false" then tv_d(Nil, TfF, Nil, Nil) else tv_derr("name '" + nm + "' is not an integer local")
+fn tv_den_bool(c) = if c.err != "" then tv_derr(c.err) else tv_d(tv_pite(c.f, tv_pc(1), Nil), c.t, c.e, c.m)
+fn tv_den_bin(op, a, b) = if a.err != "" then a else if b.err != "" then b else if op == "+" then tv_d(tv_padd(a.v, b.v), tv_for(a.t, b.t), tv_padd(a.e, b.e), tv_m2(a, b)) else if op == "-" then tv_d(tv_psub(a.v, b.v), tv_for(a.t, b.t), tv_padd(a.e, b.e), tv_m2(a, b)) else if op == "*" then tv_d(tv_pmul(a.v, b.v), tv_for(a.t, b.t), tv_padd(a.e, b.e), tv_m2(a, b)) else if op == "/" then tv_d(tv_patom(TaDiv(a.v, b.v)), tv_for(a.t, b.t), tv_padd(tv_padd(a.e, b.e), tv_patom(TaEff("div", Cons(a.v, Cons(b.v, Nil))))), tv_m2(a, b)) else if op == "%" then tv_d(tv_patom(TaMod(a.v, b.v)), tv_for(a.t, b.t), tv_padd(tv_padd(a.e, b.e), tv_patom(TaEff("mod", Cons(a.v, Cons(b.v, Nil))))), tv_m2(a, b)) else if op == "+%" then tv_d(tv_patom(TaBit("wadd", a.v, b.v)), tv_for(a.t, b.t), tv_padd(a.e, b.e), tv_m2(a, b)) else if op == "-%" then tv_d(tv_patom(TaBit("wsub", a.v, b.v)), tv_for(a.t, b.t), tv_padd(a.e, b.e), tv_m2(a, b)) else if op == "*%" then tv_d(tv_patom(TaBit("wmul", a.v, b.v)), tv_for(a.t, b.t), tv_padd(a.e, b.e), tv_m2(a, b)) else tv_derr("operator '" + op + "' outside the integer fragment")
+fn tv_den_if(c, a, b) = if c.err != "" then tv_derr(c.err) else if a.err != "" then a else if b.err != "" then b else tv_d(tv_pite(c.f, a.v, b.v), tv_for(c.t, tv_for(tv_fand(c.f, a.t), tv_fand(tv_fnot(c.f), b.t))), tv_padd(c.e, tv_pite(c.f, a.e, b.e)), tv_pite(c.t, c.m, tv_pite(c.f, a.m, b.m)))
+fn tv_den_let(nm, dv, b, env, cx) = if dv.err != "" then dv else tv_den_let2(dv, tv_den(b, Cons({n: nm, p: dv.v}, env), cx))
+fn tv_den_let2(dv, db) = if db.err != "" then db else tv_d(db.v, tv_for(dv.t, db.t), tv_padd(dv.e, db.e), tv_m2(dv, db))
+fn tv_den_args(args, env, cx) = match args
+    Nil        => {ps: Nil, t: TfF, e: Nil, m: Nil, err: ""}
+    Cons(h, t) => tv_den_args2(tv_den(h, env, cx), tv_den_args(t, env, cx))
+fn tv_den_args2(a, r) = if a.err != "" then {ps: Nil, t: TfF, e: Nil, m: Nil, err: a.err} else if r.err != "" then r else {ps: Cons(a.v, r.ps), t: tv_for(a.t, r.t), e: tv_padd(a.e, r.e), m: tv_m2(a, r), err: ""}
+fn tv_den_bit_kd(nm) = if nm == "bit_xor" or nm == "bv_xor" then "xor" else if nm == "bit_and" or nm == "bv_and" then "and" else if nm == "bit_or" or nm == "bv_or" then "or" else if nm == "bit_shl" or nm == "bv_shl" then "shl" else if nm == "bit_shr" or nm == "bv_shr" then "shr" else ""
+fn tv_p0(ps) = match ps
+    Cons(h, t) => h
+    _          => Nil
+fn tv_p1(ps) = match ps
+    Cons(h, t) => tv_p0(t)
+    _          => Nil
+fn tv_den_call(nm, a, cx) = if a.err != "" then tv_derr(a.err) else if nm == "__lume_promise_new" and len(a.ps) == 1 then (let p = tv_p0(a.ps) in tv_d(p, a.t, tv_padd(a.e, tv_patom(TaEff("promise_new", Cons(p, Nil)))), a.m)) else if tv_den_bit_kd(nm) != "" and len(a.ps) == 2 then tv_d(tv_patom(TaBit(tv_den_bit_kd(nm), tv_p0(a.ps), tv_p1(a.ps))), a.t, a.e, a.m) else if nm == "simd_add4_i64" and len(a.ps) == 2 then (let p = tv_p0(a.ps) in let q = tv_p1(a.ps) in tv_d(tv_pscale(tv_padd(p, q), 4), a.t, tv_padd(a.e, tv_patom(TaEff("simd_add4", Cons(p, Cons(q, Nil))))), a.m)) else if nm == "simd_sub4_i64" and len(a.ps) == 2 then (let p = tv_p0(a.ps) in let q = tv_p1(a.ps) in tv_d(tv_pscale(tv_psub(p, q), 4), a.t, tv_padd(a.e, tv_patom(TaEff("simd_sub4", Cons(p, Cons(q, Nil))))), a.m)) else if nm == cx.self then tv_derr("self recursion") else let sg = tv_sig_get(cx.fns, nm) in if sg.n < 0 or sg.ok == 0 then tv_derr("call to '" + nm + "', which is outside the integer fragment") else if sg.n != len(a.ps) then tv_derr("call to '" + nm + "' with a wrong number of arguments") else tv_d(tv_patom(TaCall(nm, a.ps)), a.t, tv_padd(a.e, tv_patom(TaEff("call." + nm, a.ps))), a.m)
+fn tv_cond(x, env, cx) = match x
+    Bin(op, l, r) => if op == "and" then tv_cond_and(tv_cond(l, env, cx), tv_cond(r, env, cx)) else if op == "or" then tv_cond_or(tv_cond(l, env, cx), tv_cond(r, env, cx)) else if tv_iscmp(op) == 1 then tv_cond_cmp(op, tv_den(l, env, cx), tv_den(r, env, cx)) else tv_cond_val(tv_den(x, env, cx))
+    _             => tv_cond_val(tv_den(x, env, cx))
+fn tv_cond_and(a, b) = if a.err != "" then a else if b.err != "" then b else tv_c(tv_fand(a.f, b.f), tv_for(a.t, tv_fand(a.f, b.t)), tv_padd(a.e, tv_pite(a.f, b.e, Nil)), tv_m2(a, b))
+fn tv_cond_or(a, b) = if a.err != "" then a else if b.err != "" then b else tv_c(tv_for(a.f, b.f), tv_for(a.t, tv_fand(tv_fnot(a.f), b.t)), tv_padd(a.e, tv_pite(a.f, Nil, b.e)), tv_m2(a, b))
+fn tv_cmpf(op, p) = if op == "<" then tv_lt(p) else if op == ">=" then tv_fnot(tv_lt(p)) else if op == ">" then tv_lt(tv_pneg(p)) else if op == "<=" then tv_fnot(tv_lt(tv_pneg(p))) else if op == "==" then tv_eq(p) else tv_fnot(tv_eq(p))
+fn tv_cond_cmp(op, a, b) = if a.err != "" then tv_cerr(a.err) else if b.err != "" then tv_cerr(b.err) else tv_c(tv_cmpf(op, tv_psub(a.v, b.v)), tv_for(a.t, b.t), tv_padd(a.e, b.e), tv_m2(a, b))
+fn tv_cond_val(a) = if a.err != "" then tv_cerr(a.err) else tv_c(tv_fnot(tv_eq(a.v)), a.t, a.e, a.m)
+
+## --- the proof: lazy case split over the comparison atoms; a leaf compares normal forms ---
+fn tv_sig(sg, k) = match sg
+    Nil        => 2
+    Cons(h, t) => if h.k == k then h.v else tv_sig(t, k)
+fn tv_rp(p, sg) = match p
+    Nil        => {need: "", p: Nil}
+    Cons(h, t) => tv_rp2(tv_rm(h.m, sg), h.c, tv_rp(t, sg))
+fn tv_rp2(a, c, b) = if a.need != "" then a else if b.need != "" then b else {need: "", p: tv_padd(tv_pscale(a.p, c), b.p)}
+fn tv_rm(m, sg) = match m
+    Nil        => {need: "", p: tv_pc(1)}
+    Cons(h, t) => tv_rm2(tv_ra(h.a, sg), tv_rm(t, sg))
+fn tv_rm2(a, b) = if a.need != "" then a else if b.need != "" then b else {need: "", p: tv_pmul(a.p, b.p)}
+fn tv_rps(ps, sg) = match ps
+    Nil        => {need: "", ps: Nil}
+    Cons(h, t) => tv_rps2(tv_rp(h, sg), tv_rps(t, sg))
+fn tv_rps2(a, r) = if a.need != "" then {need: a.need, ps: Nil} else if r.need != "" then r else {need: "", ps: Cons(a.p, r.ps)}
+fn tv_ra(a, sg) = match a
+    TaVar(n)       => {need: "", p: tv_patom(a)}
+    TaDiv(p, q)    => tv_ra_bin(0, tv_rp(p, sg), tv_rp(q, sg))
+    TaMod(p, q)    => tv_ra_bin(1, tv_rp(p, sg), tv_rp(q, sg))
+    TaBit(kd, p, q) => tv_ra_bit(kd, tv_rp(p, sg), tv_rp(q, sg))
+    TaCall(n, ps)  => tv_ra_call(0, n, tv_rps(ps, sg))
+    TaEff(n, ps)   => tv_ra_call(1, n, tv_rps(ps, sg))
+    TaIte(f, p, q) => tv_ra_ite(tv_rf(f, sg), p, q, sg)
+fn tv_ra_bin(k, a, b) = if a.need != "" then a else if b.need != "" then b else {need: "", p: tv_patom(if k == 0 then TaDiv(a.p, b.p) else TaMod(a.p, b.p))}
+fn tv_ra_bit(kd, a, b) = if a.need != "" then a else if b.need != "" then b else {need: "", p: tv_patom(TaBit(kd, a.p, b.p))}
+fn tv_ra_call(k, n, r) = if r.need != "" then {need: r.need, p: Nil} else {need: "", p: tv_patom(if k == 0 then TaCall(n, r.ps) else TaEff(n, r.ps))}
+fn tv_ra_ite(c, p, q, sg) = if c.need != "" then {need: c.need, p: Nil} else if c.v == 1 then tv_rp(p, sg) else tv_rp(q, sg)
+fn tv_rf(f, sg) = match f
+    TfT             => {need: "", v: 1}
+    TfF             => {need: "", v: 0}
+    TfNot(g)        => tv_rf_not(tv_rf(g, sg))
+    TfAnd(g, h)     => tv_rf_and(tv_rf(g, sg), h, sg)
+    TfOr(g, h)      => tv_rf_or(tv_rf(g, sg), h, sg)
+    TfLit(kd, p, q) => tv_rf_lit(kd, tv_rp(p, sg), tv_rp(q, sg), sg)
+fn tv_rf_not(a) = if a.need != "" then a else {need: "", v: 1 - a.v}
+fn tv_rf_and(a, h, sg) = if a.need != "" then a else if a.v == 0 then a else tv_rf(h, sg)
+fn tv_rf_or(a, h, sg) = if a.need != "" then a else if a.v == 1 then a else tv_rf(h, sg)
+fn tv_rf_lit(kd, p, q, sg) = if p.need != "" then {need: p.need, v: 0} else if q.need != "" then {need: q.need, v: 0} else tv_rf_lit2(tv_mklit(kd, p.p, q.p), sg)
+fn tv_rf_lit2(f, sg) = if tv_fist(f) == 1 then {need: "", v: 1} else if tv_fisf(f) == 1 then {need: "", v: 0} else let v = tv_sig(sg, tv_fk(f)) in if v == 2 then {need: tv_fk(f), v: 0} else {need: "", v: v}
+fn tv_sgshow(sg) = match sg
+    Nil        => ""
+    Cons(h, t) => (if h.v == 1 then "" else "not ") + h.k + "; " + tv_sgshow(t)
+fn tv_pr(ok, n, why) = {ok: ok, n: n, why: why}
+## g = {ts, vs, es, ms: AST trap / value / effects / trap message;  ta, va, ea, ma, ra: the same for x86-64, and
+##      "reaches the epilogue"}
+fn tv_prove(g, sg, n) = if n > 200000 then tv_pr(0, n, "proof budget exhausted") else let t1 = tv_rf(g.ts, sg) in if t1.need != "" then tv_split(g, sg, n, t1.need) else let t2 = tv_rf(g.ta, sg) in if t2.need != "" then tv_split(g, sg, n, t2.need) else if t1.v != t2.v then tv_pr(0, n, "the emitted code " + (if t2.v == 1 then "traps where the AST does not" else "does not trap where the AST does") + " [" + tv_sgshow(sg) + "]") else if t1.v == 1 then tv_prove_msg(g, sg, n, tv_rp(g.ms, sg), tv_rp(g.ma, sg)) else tv_prove2(g, sg, n, tv_rf(g.ra, sg))
+fn tv_prove_msg(g, sg, n, m1, m2) = if m1.need != "" then tv_split(g, sg, n, m1.need) else if m2.need != "" then tv_split(g, sg, n, m2.need) else if tv_pk(m1.p) != tv_pk(m2.p) then tv_pr(0, n, "the emitted code traps with a different message than the AST [" + tv_sgshow(sg) + "]") else tv_pr(1, n + 1, "")
+fn tv_prove2(g, sg, n, r) = if r.need != "" then tv_split(g, sg, n, r.need) else if r.v == 0 then tv_pr(0, n, "the emitted code does not reach its epilogue where the AST yields a value [" + tv_sgshow(sg) + "]") else tv_prove3(g, sg, n, tv_rp(g.vs, sg), tv_rp(g.va, sg))
+fn tv_prove3(g, sg, n, v1, v2) = if v1.need != "" then tv_split(g, sg, n, v1.need) else if v2.need != "" then tv_split(g, sg, n, v2.need) else if tv_pk(v1.p) != tv_pk(v2.p) then tv_pr(0, n, "result differs: AST " + tv_xp(v1.p, 2) + " vs x86-64 " + tv_xp(v2.p, 2) + " [" + tv_sgshow(sg) + "]") else tv_prove4(g, sg, n, tv_rp(g.es, sg), tv_rp(g.ea, sg))
+fn tv_prove4(g, sg, n, e1, e2) = if e1.need != "" then tv_split(g, sg, n, e1.need) else if e2.need != "" then tv_split(g, sg, n, e2.need) else if tv_pk(e1.p) != tv_pk(e2.p) then tv_pr(0, n, "the division / modulo / call operations performed differ [" + tv_sgshow(sg) + "]") else tv_pr(1, n + 1, "")
+fn tv_split(g, sg, n, k) = let a = tv_prove(g, Cons({k: k, v: 1}, sg), n) in if a.ok == 0 then a else tv_prove(g, Cons({k: k, v: 0}, sg), a.n)
+
+## --- printers: style 0 SMT-LIB2, 1 Lean 4, 2 lcert kernel S-expression ---
+fn tv_xabs(n) = let t = str(n) in if n < 0 then slice(t, 1, count(t)) else t
+fn tv_xn(n, sty) = if n >= 0 then str(n) else if sty == 0 then "(- " + tv_xabs(n) + ")" else if sty == 1 then "(-" + tv_xabs(n) + ")" else "(- 0 " + tv_xabs(n) + ")"
+fn tv_xbin(op, a, b, sty) = if sty == 1 then "(" + a + " " + op + " " + b + ")" else "(" + op + " " + a + " " + b + ")"
+fn tv_xp(p, sty) = match p
+    Nil        => "0"
+    Cons(h, t) => if isnil(t) == 1 then tv_xt(h, sty) else tv_xbin("+", tv_xt(h, sty), tv_xp(t, sty), sty)
+fn tv_xt(h, sty) = if h.k == "" then tv_xn(h.c, sty) else if h.c == 1 then tv_xm(h.m, sty) else tv_xbin("*", tv_xn(h.c, sty), tv_xm(h.m, sty), sty)
+fn tv_xm(m, sty) = match m
+    Nil        => "1"
+    Cons(h, t) => if isnil(t) == 1 then tv_xa(h.a, sty) else tv_xbin("*", tv_xa(h.a, sty), tv_xm(t, sty), sty)
+fn tv_xps(ps, sty) = match ps
+    Nil        => ""
+    Cons(h, t) => " " + tv_xp(h, sty) + tv_xps(t, sty)
+fn tv_xa(a, sty) = match a
+    TaVar(n)       => if sty == 2 then n else "x_" + n
+    TaDiv(p, q)    => if sty == 2 then "(/ " + tv_xp(p, sty) + " " + tv_xp(q, sty) + ")" else "(lume_div " + tv_xp(p, sty) + " " + tv_xp(q, sty) + ")"
+    TaMod(p, q)    => if sty == 2 then "(% " + tv_xp(p, sty) + " " + tv_xp(q, sty) + ")" else "(lume_mod " + tv_xp(p, sty) + " " + tv_xp(q, sty) + ")"
+    TaBit(kd, p, q) => "(f___bit_" + kd + " " + tv_xp(p, sty) + " " + tv_xp(q, sty) + ")"
+    TaCall(n, ps)  => "(f_" + n + tv_xps(ps, sty) + ")"
+    TaEff(n, ps)   => "0"
+    TaIte(f, p, q) => if sty == 0 then "(ite " + tv_xf(f, sty) + " " + tv_xp(p, sty) + " " + tv_xp(q, sty) + ")" else if sty == 1 then "(if " + tv_xf(f, sty) + " then " + tv_xp(p, sty) + " else " + tv_xp(q, sty) + ")" else "(if " + tv_xf(f, sty) + " " + tv_xp(p, sty) + " " + tv_xp(q, sty) + ")"
+fn tv_xf(f, sty) = match f
+    TfT             => if sty == 0 then "true" else if sty == 1 then "True" else "(>= 0 0)"
+    TfF             => if sty == 0 then "false" else if sty == 1 then "False" else "(>= 0 1)"
+    TfNot(g)        => if sty == 1 then "(Not " + tv_xf(g, sty) + ")" else "(not " + tv_xf(g, sty) + ")"
+    TfAnd(g, h)     => tv_xbin(if sty == 1 then "/\\" else "and", tv_xf(g, sty), tv_xf(h, sty), sty)
+    TfOr(g, h)      => tv_xbin(if sty == 1 then "\\/" else "or", tv_xf(g, sty), tv_xf(h, sty), sty)
+    TfLit(kd, p, q) => tv_xl(kd, p, q, sty)
+fn tv_xl(kd, p, q, sty) = if kd == "lt" then tv_xbin("<", tv_xp(p, sty), "0", sty) else if kd == "eq" then tv_xbin(if sty == 2 then "==" else "=", tv_xp(p, sty), "0", sty) else if kd == "fit" then "(lume_fits63 " + tv_xp(p, sty) + ")" else if kd == "both" then tv_xbin(if sty == 1 then "/\\" else "and", "(lume_fits63 " + tv_xp(p, sty) + ")", "(lume_fits63 " + tv_xp(q, sty) + ")", sty) else "(lume_fits64 " + tv_xp(p, sty) + ")"
+## the callees a certificate has to declare
+fn tv_calls_p(p, acc) = match p
+    Nil        => acc
+    Cons(h, t) => tv_calls_p(t, tv_calls_m(h.m, acc))
+fn tv_calls_m(m, acc) = match m
+    Nil        => acc
+    Cons(h, t) => tv_calls_m(t, tv_calls_a(h.a, acc))
+fn tv_calls_ps(ps, acc) = match ps
+    Nil        => acc
+    Cons(h, t) => tv_calls_ps(t, tv_calls_p(h, acc))
+fn tv_calls_add(acc, n, k) = match acc
+    Nil        => Cons({n: n, k: k}, Nil)
+    Cons(h, t) => if h.n == n then acc else Cons(h, tv_calls_add(t, n, k))
+fn tv_calls_a(a, acc) = match a
+    TaDiv(p, q)    => tv_calls_p(p, tv_calls_p(q, acc))
+    TaMod(p, q)    => tv_calls_p(p, tv_calls_p(q, acc))
+    TaBit(kd, p, q) => tv_calls_p(p, tv_calls_p(q, tv_calls_add(acc, "__bit_" + kd, 2)))
+    TaCall(n, ps)  => tv_calls_ps(ps, tv_calls_add(acc, n, len(ps)))
+    TaIte(f, p, q) => tv_calls_f(f, tv_calls_p(p, tv_calls_p(q, acc)))
+    _              => acc
+fn tv_calls_f(f, acc) = match f
+    TfNot(g)        => tv_calls_f(g, acc)
+    TfAnd(g, h)     => tv_calls_f(g, tv_calls_f(h, acc))
+    TfOr(g, h)      => tv_calls_f(g, tv_calls_f(h, acc))
+    TfLit(kd, p, q) => tv_calls_p(p, tv_calls_p(q, acc))
+    _               => acc
+fn tv_ints(k) = if k <= 0 then "" else "Int" + (if k > 1 then " " else "") + tv_ints(k - 1)
+fn tv_arrows(k) = if k <= 0 then "Int" else "Int -> " + tv_arrows(k - 1)
+fn tv_smt_decls(cs) = match cs
+    Nil        => ""
+    Cons(h, t) => "(declare-fun f_" + h.n + " (" + tv_ints(h.k) + ") Int)\n" + tv_smt_decls(t)
+fn tv_lean_decls(cs) = match cs
+    Nil        => ""
+    Cons(h, t) => " (f_" + h.n + " : " + tv_arrows(h.k) + ")" + tv_lean_decls(t)
+fn tv_smt_params(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => "(declare-const x_" + h + " Int)\n" + tv_smt_params(t)
+fn tv_lean_params(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => "x_" + h + " " + tv_lean_params(t)
+fn tv_all_calls(g) = tv_calls_f(g.ts, tv_calls_f(g.ta, tv_calls_f(g.ra, tv_calls_p(g.vs, tv_calls_p(g.va, Nil)))))
+fn tv_smt(nm, ps, g, hdr) = "; Lume Translation Validator (ltv) certificate for function `" + nm + "`\n" + hdr + "; Claim: the x86-64 code emitted by 05_codegen.src reaches `call ctfail` exactly when the lowered AST does, and\n; otherwise reaches its epilogue with the canonical word of the AST value in %rax. Division, modulo and callees\n; are uninterpreted, so the claim holds for every interpretation of them. Expected answer: unsat.\n(set-logic QF_UFNIA)\n(define-fun lume_fits63 ((n Int)) Bool (and (<= (- 4611686018427387904) n) (<= n 4611686018427387903)))\n(define-fun lume_fits64 ((n Int)) Bool (and (<= (- 9223372036854775808) n) (<= n 9223372036854775807)))\n(declare-fun lume_div (Int Int) Int)\n(declare-fun lume_mod (Int Int) Int)\n" + tv_smt_decls(tv_all_calls(g)) + tv_smt_params(ps) + "(define-fun trap_ast () Bool " + tv_xf(g.ts, 0) + ")\n(define-fun trap_x86 () Bool " + tv_xf(g.ta, 0) + ")\n(define-fun ret_x86 () Bool " + tv_xf(g.ra, 0) + ")\n(define-fun val_ast () Int " + tv_xp(g.vs, 0) + ")\n(define-fun val_x86 () Int " + tv_xp(g.va, 0) + ")\n(assert (not (and (= trap_ast trap_x86) (=> (not trap_ast) (and ret_x86 (= val_ast val_x86))))))\n(check-sat)\n"
+fn tv_lean(nm, ps, g, hdr) = "-- Lume Translation Validator (ltv) certificate for function `" + nm + "`\n" + hdr + "-- Status: EXPORTED. This file is checked by Lean only where a Lean 4 toolchain with Mathlib is installed;\n-- the in-tree verdict comes from ltv's own decision procedure and its SMT-LIB2 twin.\nimport Mathlib.Tactic\nopen Classical\n\ndef lume_fits63 (n : Int) : Prop := -4611686018427387904 <= n /\\ n <= 4611686018427387903\ndef lume_fits64 (n : Int) : Prop := -9223372036854775808 <= n /\\ n <= 9223372036854775807\n\ntheorem " + nm + "_codegen_correct (lume_div lume_mod : Int -> Int -> Int)" + tv_lean_decls(tv_all_calls(g)) + (if isnil(ps) == 1 then "" else " (" + tv_lean_params(ps) + ": Int)") + " :\n    ((" + tv_xf(g.ts, 1) + ") <-> (" + tv_xf(g.ta, 1) + ")) /\\\n    (Not (" + tv_xf(g.ts, 1) + ") ->\n      ((" + tv_xf(g.ra, 1) + ") /\\\n       (" + tv_xp(g.vs, 1) + " : Int) = " + tv_xp(g.va, 1) + ")) := by\n  refine And.intro ?_ ?_\n  all_goals (intros; simp only [lume_fits63, lume_fits64] at *; split_ifs <;> first | tauto | omega | (ring_nf; simp_all))\n"
+
+## --- kernel re-derivation: the raw AST value against the x86-64 value, judged by lcert's independent QF_LIA kernel ---
+fn tv_sx(x) = match x
+    Num(n)          => tv_xn(n, 2)
+    Var(nm)         => if nm == "true" then "1" else if nm == "false" then "0" else nm
+    Bin(op, l, r)   => "(" + op + " " + tv_sx(l) + " " + tv_sx(r) + ")"
+    If(c, t, e2)    => "(if " + tv_sx(c) + " " + tv_sx(t) + " " + tv_sx(e2) + ")"
+    LetIn(nm, v, b) => "(let " + nm + " " + tv_sx(v) + " " + tv_sx(b) + ")"
+    _               => "(unsupported)"
+fn tv_kern(body, va) = match body
+    LetIn(nm, v, b) => if nm == "_vreq_ok" then tv_kern2(v, b, va) else tv_kern3("(>= 0 0)", body, va)
+    _               => tv_kern3("(>= 0 0)", body, va)
+fn tv_kern2(v, b, va) = match v
+    If(c, t, e2) => tv_kern3(tv_sx(c), b, va)
+    _            => 0
+fn tv_kern3(hyp, b, va) = lk_prove_term("(implies (and " + hyp + ") (== " + tv_sx(b) + " " + tv_xp(va, 2) + "))")
+
+## --- boundary evaluation: the same terms with the real meaning of every atom ---
+fn tv_cv(ok, v) = {ok: ok, v: v}
+fn tv_cabs(a) = if a < 0 then 0 - a else a
+fn tv_cadd(a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if tv_cabs(a.v) > 2000000000000000000 or tv_cabs(b.v) > 2000000000000000000 then tv_cv(0, 0) else tv_cv(1, a.v + b.v)
+fn tv_cmul(a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if a.v == 0 or b.v == 0 then tv_cv(1, 0) else if tv_cabs(a.v) > 2000000000000000000 or tv_cabs(b.v) > 2000000000000000000 then tv_cv(0, 0) else if tv_cabs(a.v) > 2000000000000000000 / tv_cabs(b.v) then tv_cv(0, 0) else tv_cv(1, a.v * b.v)
+fn tv_cdiv(k, a, b) = if a.ok == 0 or b.ok == 0 or b.v == 0 then tv_cv(0, 0) else tv_cv(1, if k == 0 then a.v / b.v else a.v % b.v)
+fn tv_cbit(kd, a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if kd == "xor" then tv_cv(1, bit_xor(a.v, b.v)) else if kd == "and" then tv_cv(1, bit_and(a.v, b.v)) else if kd == "or" then tv_cv(1, bit_or(a.v, b.v)) else if kd == "shl" then (if b.v < 0 or b.v >= 64 then tv_cv(0, 0) else tv_cv(1, bit_shl(a.v, b.v))) else if kd == "shr" then (if b.v < 0 or b.v >= 64 then tv_cv(0, 0) else tv_cv(1, bit_shr(a.v, b.v))) else if kd == "wadd" then tv_cv(1, a.v +% b.v) else if kd == "wsub" then tv_cv(1, a.v -% b.v) else if kd == "wmul" then tv_cv(1, a.v *% b.v) else tv_cv(0, 0)
+fn tv_cenv(env, n) = match env
+    Nil        => tv_cv(0, 0)
+    Cons(h, t) => if h.n == n then tv_cv(1, h.v) else tv_cenv(t, n)
+fn tv_cp(p, env, cx, fuel) = match p
+    Nil        => tv_cv(1, 0)
+    Cons(h, t) => tv_cadd(tv_cmul(tv_cv(1, h.c), tv_cm(h.m, env, cx, fuel)), tv_cp(t, env, cx, fuel))
+fn tv_cm(m, env, cx, fuel) = match m
+    Nil        => tv_cv(1, 1)
+    Cons(h, t) => tv_cmul(tv_ca(h.a, env, cx, fuel), tv_cm(t, env, cx, fuel))
+fn tv_cps(ps, env, cx, fuel) = match ps
+    Nil        => {ok: 1, vs: Nil}
+    Cons(h, t) => tv_cps2(tv_cp(h, env, cx, fuel), tv_cps(t, env, cx, fuel))
+fn tv_cps2(a, r) = if a.ok == 0 or r.ok == 0 then {ok: 0, vs: Nil} else {ok: 1, vs: Cons(a.v, r.vs)}
+fn tv_ca(a, env, cx, fuel) = match a
+    TaVar(n)       => tv_cenv(env, n)
+    TaDiv(p, q)    => tv_cdiv(0, tv_cp(p, env, cx, fuel), tv_cp(q, env, cx, fuel))
+    TaMod(p, q)    => tv_cdiv(1, tv_cp(p, env, cx, fuel), tv_cp(q, env, cx, fuel))
+    TaBit(kd, p, q) => tv_cbit(kd, tv_cp(p, env, cx, fuel), tv_cp(q, env, cx, fuel))
+    TaCall(n, ps)  => tv_ccall(tv_dens_get(cx.dens, n), tv_cps(ps, env, cx, fuel), cx, fuel)
+    TaEff(n, ps)   => tv_cv(1, 0)
+    TaIte(f, p, q) => tv_cite(tv_cf(f, env, cx, fuel), p, q, env, cx, fuel)
+fn tv_cite(c, p, q, env, cx, fuel) = if c.ok == 0 then tv_cv(0, 0) else if c.v == 1 then tv_cp(p, env, cx, fuel) else tv_cp(q, env, cx, fuel)
+fn tv_zip(ps, vs) = match ps
+    Nil        => Nil
+    Cons(h, t) => tv_zip2(h, t, vs)
+fn tv_zip2(h, t, vs) = match vs
+    Nil        => Nil
+    Cons(v, r) => Cons({n: h, v: v, b: 0}, tv_zip(t, r))
+fn tv_dens_get(ds, nm) = match ds
+    Nil        => {ok: 0, nm: "", ps: Nil, d: tv_derr("")}
+    Cons(h, t) => if h.nm == nm then h else tv_dens_get(t, nm)
+fn tv_ccall(dn, a, cx, fuel) = if fuel <= 0 or dn.ok == 0 or a.ok == 0 then tv_cv(0, 0) else let env = tv_zip(dn.ps, a.vs) in let t = tv_cf(dn.d.t, env, cx, fuel - 1) in if t.ok == 0 or t.v == 1 then tv_cv(0, 0) else tv_cp(dn.d.v, env, cx, fuel - 1)
+fn tv_cf(f, env, cx, fuel) = match f
+    TfT             => tv_cv(1, 1)
+    TfF             => tv_cv(1, 0)
+    TfNot(g)        => tv_cnot(tv_cf(g, env, cx, fuel))
+    TfAnd(g, h)     => tv_cand(tv_cf(g, env, cx, fuel), h, env, cx, fuel)
+    TfOr(g, h)      => tv_cor(tv_cf(g, env, cx, fuel), h, env, cx, fuel)
+    TfLit(kd, p, q) => tv_clit(kd, tv_cp(p, env, cx, fuel), tv_cp(q, env, cx, fuel))
+fn tv_cnot(a) = if a.ok == 0 then a else tv_cv(1, 1 - a.v)
+fn tv_cand(a, h, env, cx, fuel) = if a.ok == 0 then a else if a.v == 0 then a else tv_cf(h, env, cx, fuel)
+fn tv_cor(a, h, env, cx, fuel) = if a.ok == 0 then a else if a.v == 1 then a else tv_cf(h, env, cx, fuel)
+fn tv_clit(kd, a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if kd == "lt" then tv_cv(1, if a.v < 0 then 1 else 0) else if kd == "eq" then tv_cv(1, if a.v == 0 then 1 else 0) else if kd == "fit" then tv_cv(1, tv_fits(a.v)) else if kd == "both" then tv_cv(1, if tv_fits(a.v) == 1 and tv_fits(b.v) == 1 then 1 else 0) else tv_cv(1, 1)
+## candidate values: the literals of the function and their neighbours, plus the small integers
+fn tv_consts(x, acc) = match x
+    Num(n)          => Cons(n, acc)
+    Bin(op, l, r)   => tv_consts(l, tv_consts(r, acc))
+    If(c, t, e2)    => tv_consts(c, tv_consts(t, tv_consts(e2, acc)))
+    LetIn(nm, v, b) => tv_consts(v, tv_consts(b, acc))
+    Call(nm, args)  => tv_consts_l(args, acc)
+    _               => acc
+fn tv_consts_l(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => tv_consts(h, tv_consts_l(t, acc))
+fn tv_cand_add(acc, v) = if v > 1073741824 or v < 0 - 1073741824 or tv_has(acc, v) == 1 then acc else Cons(v, acc)
+fn tv_cands(cs, acc) = match cs
+    Nil        => acc
+    Cons(h, t) => tv_cands(t, tv_cand_add(tv_cand_add(tv_cand_add(acc, h), h - 1), h + 1))
+fn tv_prng(s) = (s * 1103515245 + 12345) % 2147483648
+fn tv_ith(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i <= 0 then h else tv_ith(t, i - 1)
+fn tv_tyname(tys) = match tys
+    Nil        => "int"
+    Cons(h, t) => h
+fn tv_tyrest(tys) = match tys
+    Nil        => Nil
+    Cons(h, t) => t
+fn tv_vec(ps, tys, cands, nc, s) = match ps
+    Nil        => {env: Nil, s: s}
+    Cons(h, t) => let s1 = tv_prng(s) in let r = tv_vec(t, tv_tyrest(tys), cands, nc, s1) in let b = if tv_tyname(tys) == "bool" then 1 else 0 in {env: Cons({n: h, v: if b == 1 then s1 / 65536 % 2 else tv_ith(cands, s1 / 65536 % nc), b: b}, r.env), s: r.s}
+fn tv_envshow(env) = match env
+    Nil        => ""
+    Cons(h, t) => (if h.b == 1 then (if h.v == 1 then "true" else "false") else if h.v < 0 then "(0 - " + tv_xabs(h.v) + ")" else str(h.v)) + (if isnil(t) == 1 then "" else ", ") + tv_envshow(t)
+## st = {bad: mismatch text, n: vectors compared, lines: native call lines, exp: their expected output}
+fn tv_bnd(g, ps, tys, cands, nc, s, k, cx, st) = if k <= 0 or st.bad != "" then st else let vc = tv_vec(ps, tys, cands, nc, s) in tv_bnd(g, ps, tys, cands, nc, vc.s, k - 1, cx, tv_bnd1(g, vc.env, cx, st))
+fn tv_bnd1(g, env, cx, st) = let t1 = tv_cf(g.ts, env, cx, 4) in let t2 = tv_cf(g.ta, env, cx, 4) in if t1.ok == 0 or t2.ok == 0 then st else if t1.v != t2.v then {bad: "boundary evaluation: trap behaviour differs at (" + tv_envshow(env) + ")", n: st.n, lines: st.lines, exp: st.exp} else if t1.v == 1 then {bad: "", n: st.n + 1, lines: st.lines, exp: st.exp} else tv_bnd2(tv_cp(g.vs, env, cx, 4), tv_cp(g.va, env, cx, 4), env, st)
+fn tv_bnd2(v1, v2, env, st) = if v1.ok == 0 or v2.ok == 0 then st else if v1.v != v2.v then {bad: "boundary evaluation: AST gives " + str(v1.v) + ", x86-64 model gives " + str(v2.v) + " at (" + tv_envshow(env) + ")", n: st.n, lines: st.lines, exp: st.exp} else {bad: "", n: st.n + 1, lines: if len(st.lines) < 12 then Cons(tv_envshow(env), st.lines) else st.lines, exp: if len(st.lines) < 12 then Cons(str(v1.v), st.exp) else st.exp}
+
+## --- one function ---
+fn tv_res(nm, status, why, leaves, vecs, kern, lines, exp, g) = {nm: nm, status: status, why: why, leaves: leaves, vecs: vecs, kern: kern, lines: lines, exp: exp, g: g}
+fn tv_g0() = {ts: TfF, vs: Nil, es: Nil, ms: Nil, ta: TfF, va: Nil, ea: Nil, ma: Nil, ra: TfF}
+fn tv_env0(ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons({n: h, p: tv_patom(TaVar(h))}, tv_env0(t))
+fn tv_regs0(ps, i) = match ps
+    Nil        => Nil
+    Cons(h, t) => if i >= 6 then Nil else Cons({n: tv_areg(i), v: TvW(tv_patom(TaVar(h)))}, tv_regs0(t, i + 1))
+fn tv_ct_div_op(op) = if op == "idivq" or op == "divq" or op == "idivl" or op == "divl" or op == "idivw" or op == "divw" or op == "idivb" or op == "divb" then 1 else 0
+fn tv_ct_mem_bad(op, o) = if op == "leaq" or o == "" or tv_find(o, "(", 0) < 0 then 0 else if tv_find(o, ",", 0) >= 0 then 1 else if tv_ends(o, "(%rbp)") == 1 or tv_ends(o, "(%rsp)") == 1 or tv_ends(o, "(%rip)") == 1 then 0 else 1
+fn tv_ct_ins(i) = if i.lab != "" then "" else if tv_ct_div_op(i.op) == 1 or (i.op == "call" and (i.a == "__rt_div" or i.a == "__rt_mod")) then "[C0010] machine constant-time violation in @secret fn: variable-latency division `" + i.txt + "`" else if tv_starts(i.op, "j") == 1 and i.op != "jmp" then "[C0010] machine constant-time violation in @secret fn: secret-dependent conditional branch `" + i.txt + "`" else if tv_ct_mem_bad(i.op, i.a) == 1 or tv_ct_mem_bad(i.op, i.b) == 1 then "[C0010] machine constant-time violation in @secret fn: register-indexed/non-frame memory access (cache-timing leak) `" + i.txt + "`" else ""
+fn tv_ct_check(inss) = match inss
+    Nil        => ""
+    Cons(i, r) => let e = tv_ct_ins(i) in if e != "" then e else tv_ct_check(r)
+fn tv_validate(f, fl, cx0) = let is_sec = tv_has(cx0.secrets, f.nm) in let cx1 = {self: f.nm, fns: cx0.fns, dens: cx0.dens, frame: 0, params: f.ps} in let d = tv_den(f.body, tv_env0(f.ps), cx1) in if d.err != "" and is_sec == 0 then tv_res(f.nm, "unsupported", d.err, 0, 0, 0, Nil, Nil, tv_g0()) else if fl.ok == 0 then tv_res(f.nm, "rejected", "the function is missing from the assembly", 0, 0, 0, Nil, Nil, tv_g0()) else let fr = tv_frame(fl.ls) in if fr.ok == 0 then tv_res(f.nm, "rejected", "prologue is not `pushq %rbp; movq %rsp, %rbp`", 0, 0, 0, Nil, Nil, tv_g0()) else if fr.frame % 16 != 0 or fr.frame < 0 then tv_res(f.nm, "rejected", "frame of " + str(fr.frame) + " bytes breaks the 16-byte stack alignment", 0, 0, 0, Nil, Nil, tv_g0()) else let ep = tv_epi(rev(fr.body)) in if ep.ok == 0 then tv_res(f.nm, "rejected", "epilogue is not `movq %rbp, %rsp; popq %rbp; ret`", 0, 0, 0, Nil, Nil, tv_g0()) else let inss = tv_inss(ep.body) in let ct_err = if is_sec == 1 then tv_ct_check(inss) else "" in if ct_err != "" then tv_res(f.nm, "rejected", ct_err, 0, 0, 0, Nil, Nil, tv_g0()) else if d.err != "" then tv_res(f.nm, "unsupported", d.err, 0, 0, 0, Nil, Nil, tv_g0()) else tv_validate2(f, d, tv_run(inss, tv_s(tv_regs0(f.ps, 0), Nil, Nil, TgNone, Cons(Nil, Nil), Nil), Nil, Nil, {tp: Nil, tm: Nil, err: ""}, {self: f.nm, fns: cx0.fns, dens: cx0.dens, frame: fr.frame, params: f.ps}), cx1)
+fn tv_retval(v) = match v
+    TvW(p) => {ok: 1, p: p}
+    _      => {ok: 0, p: Nil}
+fn tv_pend_name(pend) = match pend
+    Nil        => ""
+    Cons(h, t) => h.l
+fn tv_validate2(f, d, r, cx) = if r.acc.err != "" then tv_res(f.nm, "rejected", r.acc.err, 0, 0, 0, Nil, Nil, tv_g0()) else if isnil(r.pend) == 0 then tv_res(f.nm, "rejected", "jump to " + tv_pend_name(r.pend) + ", which is not a label of the function", 0, 0, 0, Nil, Nil, tv_g0()) else if r.st.live == 1 and isnil(r.st.stk) == 0 then tv_res(f.nm, "rejected", "the expression stack is not empty at the epilogue (unbalanced %rsp)", 0, 0, 0, Nil, Nil, tv_g0()) else let rv = if r.st.live == 1 then tv_retval(tv_eget(r.st.rg, "%rax")) else {ok: 1, p: Nil} in if rv.ok == 0 then tv_res(f.nm, "rejected", "%rax does not hold a canonical value at the epilogue", 0, 0, 0, Nil, Nil, tv_g0()) else tv_validate3(f, {ts: d.t, vs: d.v, es: d.e, ms: d.m, ma: r.acc.tm, ta: tv_dform(tv_dsimp(r.acc.tp)), va: rv.p, ea: if r.st.live == 1 then r.st.eff else Nil, ra: if r.st.live == 1 then tv_dform(r.st.pc) else TfF}, cx)
+fn tv_validate3(f, g, cx) = let pr = tv_prove(g, Nil, 0) in if pr.ok == 0 then tv_res(f.nm, "rejected", pr.why, pr.n, 0, 0, Nil, Nil, g) else let cands = tv_cands(tv_consts(f.body, Cons(0, Cons(1, Cons(2, Cons(7, Nil))))), Nil) in let b = tv_bnd(g, f.ps, f.tys, cands, len(cands), 20261110 + count(f.nm), 160, cx, {bad: "", n: 0, lines: Nil, exp: Nil}) in if b.bad != "" then tv_res(f.nm, "rejected", b.bad, pr.n, b.n, 0, Nil, Nil, g) else tv_res(f.nm, "validated", "", pr.n, b.n, tv_kern(f.body, g.va), b.lines, b.exp, g)
+
+## --- the program: signatures, denotations, validation of every typed function ---
+fn tv_tyint(ty) = match ty
+    TyName(n) => if n == "int" or n == "bool" then 1 else 0
+    _         => 0
+fn tv_tysint(tys) = match tys
+    Nil        => 1
+    Cons(h, t) => if tv_tyint(h) == 1 then tv_tysint(t) else 0
+fn tv_tynm(ty) = match ty
+    TyName(n) => n
+    _         => "?"
+fn tv_tynms(tys) = match tys
+    Nil        => Nil
+    Cons(h, t) => Cons(tv_tynm(h), tv_tynms(t))
+fn tv_sigs(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => tv_sigs2(h, t)
+fn tv_sigs2(h, t) = match h
+    Sig(nm, ps, tys, rt) => Cons({nm: nm, n: len(ps), ok: if len(ps) == len(tys) and tv_tysint(tys) == 1 and tv_tyint(rt) == 1 then 1 else 0, tys: tv_tynms(tys)}, tv_sigs(t))
+    _                    => tv_sigs(t)
+fn tv_fns(prog, sigs) = match prog
+    Nil        => Nil
+    Cons(h, t) => tv_fns2(h, t, sigs)
+fn tv_fns2(h, t, sigs) = match h
+    Fn(nm, ps, body) => if (tv_sig_get(sigs, nm)).ok == 1 then Cons({nm: nm, ps: ps, body: body, tys: (tv_sig_get(sigs, nm)).tys}, tv_fns(t, sigs)) else tv_fns(t, sigs)
+    _                => tv_fns(t, sigs)
+fn tv_dens(fs, sigs) = match fs
+    Nil        => Nil
+    Cons(f, t) => Cons({ok: 1, nm: f.nm, ps: f.ps, d: tv_den(f.body, tv_env0(f.ps), {self: f.nm, fns: sigs, dens: Nil, frame: 0, params: f.ps})}, tv_dens(t, sigs))
+fn tv_dens_ok(ds) = match ds
+    Nil        => Nil
+    Cons(h, t) => if h.d.err == "" then Cons(h, tv_dens_ok(t)) else tv_dens_ok(t)
+fn tv_names(fs) = match fs
+    Nil        => Nil
+    Cons(f, t) => Cons(f.nm, tv_names(t))
+fn tv_pick(fs, only) = match fs
+    Nil        => Nil
+    Cons(f, t) => if only == "" or f.nm == only then Cons(f, tv_pick(t, only)) else tv_pick(t, only)
+fn tv_all(fs, fl, cx) = match fs
+    Nil        => Nil
+    Cons(f, t) => Cons(tv_validate(f, tv_fn_lines(fl, f.nm), cx), tv_all(t, fl, cx))
+
+## --- certificates, native boundary run, report ---
+fn tv_base(p, i, last) = if i >= count(p) then last else tv_base(p, i + 1, if at(p, i) == "/" then i + 1 else last)
+fn tv_stem(p) = let b = slice(p, tv_base(p, 0, 0), count(p)) in let dot = tv_find(b, ".", 0) in if dot < 0 then b else slice(b, 0, dot)
+fn tv_ps_of(fs, nm) = match fs
+    Nil        => Nil
+    Cons(f, t) => if f.nm == nm then f.ps else tv_ps_of(t, nm)
+fn tv_write_certs(rs, fs, dir, stem, hdr, lean_hdr) = match rs
+    Nil        => 0
+    Cons(r, t) => (if r.status == "validated" then (let a = fs_write_sync(dir + "/" + stem + "__" + r.nm + ".smt2", tv_smt(r.nm, tv_ps_of(fs, r.nm), r.g, hdr)) in let b = fs_write_sync(dir + "/" + stem + "__" + r.nm + ".lean", tv_lean(r.nm, tv_ps_of(fs, r.nm), r.g, lean_hdr)) in 1) else 0) + tv_write_certs(t, fs, dir, stem, hdr, lean_hdr)
+fn tv_wait_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
+fn tv_solver() = if fs_path_exists("/usr/bin/z3") == 1 then "/usr/bin/z3" else if fs_path_exists("/usr/local/bin/z3") == 1 then "/usr/local/bin/z3" else if fs_path_exists("/usr/bin/cvc5") == 1 then "/usr/bin/cvc5" else if fs_path_exists("/usr/local/bin/cvc5") == 1 then "/usr/local/bin/cvc5" else ""
+## every certificate goes through the external solver when one is installed; anything but `unsat` is a failure
+fn tv_solve(rs, dir, stem, solver, work) = match rs
+    Nil        => {n: 0, bad: ""}
+    Cons(r, t) => if r.status != "validated" then tv_solve(t, dir, stem, solver, work) else let st = os_run_capture_timeout(solver, Cons(dir + "/" + stem + "__" + r.nm + ".smt2", Nil), work + ".solver.out", work + ".solver.err", 60000) in let out = fs_read_file(work + ".solver.out") in if tv_starts(out, "unsat") == 0 then {n: 0, bad: r.nm + ": " + solver + " answered " + tv_jesc(slice(out, 0, if count(out) > 60 then 60 else count(out)))} else let rest = tv_solve(t, dir, stem, solver, work) in {n: rest.n + 1, bad: rest.bad}
+fn tv_secrets(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => tv_secrets1(h, tv_secrets(t))
+fn tv_secrets1(st, rest) = match st
+    OSig(nm, pubf, freef, pl, rty, fromp) => if freef / 128 % 2 == 1 then Cons(nm, rest) else rest
+    _                                     => rest
+fn tv_is_prom_body(e) = match e
+    Call(nm, args)  => if nm == "__lume_promise_new" then 1 else 0
+    LetIn(nm, v, b) => tv_is_prom_body(b)
+    _               => 0
+fn tv_fn_is_prom(fs, nm) = match fs
+    Nil        => 0
+    Cons(f, t) => if f.nm == nm then tv_is_prom_body(f.body) else tv_fn_is_prom(t, nm)
+fn tv_exec_lines(nm, lines, prom) = match lines
+    Nil        => ""
+    Cons(h, t) => (if prom == 1 then "print rc_get(" + nm + "(" + h + "))\n" else "print " + nm + "(" + h + ")\n") + tv_exec_lines(nm, t, prom)
+fn tv_exec_exp(exp) = match exp
+    Nil        => ""
+    Cons(h, t) => h + "\n" + tv_exec_exp(t)
+fn tv_exec_prog(rs, fs) = match rs
+    Nil        => {src: "", exp: "", n: 0}
+    Cons(r, t) => let rest = tv_exec_prog(t, fs) in if r.status == "validated" then {src: tv_exec_lines(r.nm, r.lines, tv_fn_is_prom(fs, r.nm)) + rest.src, exp: tv_exec_exp(r.exp) + rest.exp, n: len(r.lines) + rest.n} else rest
+## the module's own top-level `print` statements are dropped so that only the boundary calls run
+fn tv_noprint(s, n, i) = if i >= n then Nil else let e = tv_nl(s, n, i) in if e - i >= 6 and slicen(s, n, i, i + 6) == "print " then tv_noprint(s, n, e + 1) else Cons(slicen(s, n, i, e) + "\n", tv_noprint(s, n, e + 1))
+fn tv_exec(root, src, rs, fs, work) = let p = tv_exec_prog(rs, fs) in if p.n == 0 then {n: 0, bad: ""} else let w = fs_write_sync(work + ".exec.src", tv_join(tv_noprint(src, count(src), 0)) + "\nprint \"LTV-NATIVE-BEGIN\"\n" + p.src) in let c = os_run_input_capture_timeout(root + "/build/bin/lumec", Nil, work + ".exec.src", work + ".exec.s", work + ".exec.err", 600000) in if tv_wait_exit(c) != 0 then {n: 0, bad: "native boundary run: lumec failed: " + tv_jesc(fs_read_file(work + ".exec.err"))} else let a = os_run_capture_timeout(root + "/build/bin/lasm", Cons("--strict", Cons(work + ".exec.s", Nil)), work + ".exec.elf", work + ".exec.err", 600000) in if tv_wait_exit(a) != 0 then {n: 0, bad: "native boundary run: lasm failed"} else let m = os_run("/bin/chmod", Cons("+x", Cons(work + ".exec.elf", Nil))) in let x = os_run_capture_timeout(work + ".exec.elf", Nil, work + ".exec.out", work + ".exec.err", 600000) in let out = fs_read_file(work + ".exec.out") in let mk = "LTV-NATIVE-BEGIN\n" in let j = tv_marker(out, mk, 0) in if tv_wait_exit(x) != 0 then {n: 0, bad: "native boundary run: the binary exited with status " + str(tv_wait_exit(x)) + ": " + tv_jesc(fs_read_file(work + ".exec.err"))} else if j < 0 then {n: 0, bad: "native boundary run: no output marker"} else if slice(out, j + count(mk), count(out)) != p.exp then {n: 0, bad: "native boundary run: the real machine code disagrees with the AST evaluation (see " + work + ".exec.out)"} else {n: p.n, bad: ""}
+fn tv_marker(text, part, i) = if i + count(part) > count(text) then 0 - 1 else if slice(text, i, i + count(part)) == part then i else tv_marker(text, part, i + 1)
+fn tv_count(rs, status) = match rs
+    Nil        => 0
+    Cons(r, t) => (if r.status == status then 1 else 0) + tv_count(t, status)
+fn tv_sum_leaves(rs) = match rs
+    Nil        => 0
+    Cons(r, t) => r.leaves + tv_sum_leaves(t)
+fn tv_sum_vecs(rs) = match rs
+    Nil        => 0
+    Cons(r, t) => r.vecs + tv_sum_vecs(t)
+fn tv_sum_kern(rs) = match rs
+    Nil        => 0
+    Cons(r, t) => (if r.status == "validated" then r.kern else 0) + tv_sum_kern(t)
+fn tv_json_fns(rs) = match rs
+    Nil        => ""
+    Cons(r, t) => "{\"name\":\"" + r.nm + "\",\"status\":\"" + r.status + "\",\"reason\":\"" + tv_jesc(r.why) + "\",\"proof_cases\":" + str(r.leaves) + ",\"boundary_vectors\":" + str(r.vecs) + ",\"kernel_rederived\":" + (if r.status == "validated" and r.kern == 1 then "true" else "false") + "}" + (if isnil(t) == 1 then "" else ",") + tv_json_fns(t)
+fn tv_main(input) = let root = tv_get(input, "root") in let srcp = tv_get(input, "src") in if root == "" or srcp == "" then ctfail("ltv: usage: @root <repo> and @src <file.src> are required on stdin\n") else if fs_path_exists(srcp) == 0 then ctfail("ltv: cannot read " + srcp + "\n") else let src = fs_read_file(srcp) in let mk = os_run("/bin/mkdir", Cons("-p", Cons(root + "/build/ltv-work", Nil))) in let work = root + "/build/ltv-work/" + tv_stem(srcp) + "." + str(os_getpid()) in let asmp = tv_get(input, "asm") in let asm_path = if asmp != "" then asmp else work + ".s" in let cc = if asmp != "" then 0 else tv_wait_exit(os_run_input_capture_timeout(root + "/build/bin/lumec", Nil, srcp, asm_path, work + ".lumec.err", 600000)) in if cc != 0 then ctfail("ltv: lumec rejected " + srcp + ":\n" + fs_read_file(work + ".lumec.err")) else if fs_path_exists(asm_path) == 0 then ctfail("ltv: cannot read " + asm_path + "\n") else let asm = fs_read_file(asm_path) in let secrets = tv_secrets(lumec_parse(src)) in let prog = nf_late(lumec_expand(src)) in let sigs = tv_sigs(prog) in let fs = tv_fns(prog, sigs) in let only = tv_get(input, "fn") in let sel = tv_pick(fs, only) in if only != "" and isnil(sel) == 1 then tv_finish("{\"ok\":false,\"tool\":\"ltv\",\"error\":\"function '" + only + "' is not a typed integer function of " + tv_jesc(srcp) + "\",\"validated\":0,\"rejected\":0,\"unsupported\":1,\"functions\":[{\"name\":\"" + only + "\",\"status\":\"unsupported\",\"reason\":\"not a typed integer function\"}]}", 1) else let cx = {fns: sigs, dens: tv_dens_ok(tv_dens(fs, sigs)), secrets: secrets} in let rs = tv_all(sel, tv_scan(asm, count(asm), 0, tv_names(sel), "", Nil, Nil), cx) in let dir = tv_or(tv_get(input, "out"), root + "/build/certification/proofs") in let md = os_run("/bin/mkdir", Cons("-p", Cons(dir, Nil))) in let sh = lsh256(src) in let ah = lsh256(asm) in let ncert = tv_write_certs(rs, fs, dir, tv_stem(srcp), "; source " + srcp + " sha256 " + sh + "\n; assembly sha256 " + ah + "\n", "-- source " + srcp + " sha256 " + sh + "\n-- assembly sha256 " + ah + "\n") in let solver = tv_solver() in let sv = if solver == "" then {n: 0, bad: ""} else tv_solve(rs, dir, tv_stem(srcp), solver, work) in let ex = if tv_get(input, "exec") == "1" then tv_exec(root, src, rs, fs, work) else {n: 0, bad: ""} in let rej = tv_count(rs, "rejected") in let bad = if sv.bad != "" then sv.bad else ex.bad in let clean = if asmp == "" and bad == "" then fs_remove(asm_path) else 0 in tv_finish("{\"ok\":" + (if rej == 0 and bad == "" then "true" else "false") + ",\"tool\":\"ltv\",\"theorem\":\"trap equivalence (same message) + value equality in %rax + equal div/mod/call effects + frame discipline + [C0010] machine constant-time on @secret fn, over the integers (no i64 overflow), runtime helpers as axioms\",\"source\":\"" + tv_jesc(srcp) + "\",\"source_sha256\":\"" + sh + "\",\"asm_sha256\":\"" + ah + "\",\"typed_integer_functions\":" + str(len(rs)) + ",\"validated\":" + str(tv_count(rs, "validated")) + ",\"rejected\":" + str(rej) + ",\"unsupported\":" + str(tv_count(rs, "unsupported")) + ",\"proof_cases\":" + str(tv_sum_leaves(rs)) + ",\"boundary_vectors\":" + str(tv_sum_vecs(rs)) + ",\"kernel_rederived\":" + str(tv_sum_kern(rs)) + ",\"native_vectors\":" + str(ex.n) + ",\"certificates_written\":" + str(ncert * 2) + ",\"certificate_dir\":\"" + tv_jesc(dir) + "\",\"external_solver\":\"" + (if solver == "" then "none installed" else solver) + "\",\"external_solver_unsat\":" + str(sv.n) + ",\"lean_checked\":false,\"error\":\"" + tv_jesc(bad) + "\",\"functions\":[" + tv_json_fns(rs) + "]}", if rej == 0 and bad == "" then 0 else 1)
+## a rejection still leaves the report on stdout; the status then comes from ctfail
+fn tv_finish(json, code) = if code == 0 then json else let w = fs_write_sync("/dev/stdout", json + "\n") in ctfail("ltv: translation validation FAILED (fail-closed); the report is on stdout\n")
+
+print tv_main(readall())

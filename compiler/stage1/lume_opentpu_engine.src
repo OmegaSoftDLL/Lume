@@ -63,9 +63,9 @@ fn otpu_decode_opcode(insn_word: int) -> int
   ensures result >= 1 and result <= 31
 = insn_word / 1000000
 
-fn otpu_decode_rd(insn_word) = (insn_word / 10000) % 100
+fn otpu_decode_rd(insn_word) = insn_word / 10000 % 100
 
-fn otpu_decode_rs1(insn_word) = (insn_word / 100) % 100
+fn otpu_decode_rs1(insn_word) = insn_word / 100 % 100
 
 fn otpu_decode_imm2(insn_word) = insn_word % 100
 
@@ -98,18 +98,7 @@ fn otpu_bank_select(r: int, b0: int, b1: int) -> int
   ensures result >= 0
 = if r == 0 then b0 else b1
 
-fn otpu_exec_mm_systolic_4x4(a0, a1, a2, a3, w0, w1) =
-    let mac_col0 = a0 * w0 + a1 * w1 + a2 * w0 + a3 * w1 in
-    let mac_col1 = a0 * (w0 + 1) + a1 * w1 + a2 * (w0 + 1) + a3 * w1 in
-    let mac_col2 = a0 * w0 + a1 * (w1 + 1) + a2 * w0 + a3 * (w1 + 1) in
-    let mac_col3 = a0 * (w0 + 2) + a1 * w1 + a2 * w0 + a3 * (w1 + 2) in
-    {
-        col0_acc: mac_col0,
-        col1_acc: mac_col1,
-        col2_acc: mac_col2,
-        col3_acc: mac_col3,
-        total_energy: mac_col0 + mac_col1 + mac_col2 + mac_col3
-    }
+fn otpu_exec_mm_systolic_4x4(a0, a1, a2, a3, w0, w1) = let mac_col0 = a0 * w0 + a1 * w1 + a2 * w0 + a3 * w1 in let mac_col1 = a0 * (w0 + 1) + a1 * w1 + a2 * (w0 + 1) + a3 * w1 in let mac_col2 = a0 * w0 + a1 * (w1 + 1) + a2 * w0 + a3 * (w1 + 1) in let mac_col3 = a0 * (w0 + 2) + a1 * w1 + a2 * w0 + a3 * (w1 + 2) in {col0_acc: mac_col0, col1_acc: mac_col1, col2_acc: mac_col2, col3_acc: mac_col3, total_energy: mac_col0 + mac_col1 + mac_col2 + mac_col3}
 
 ## ============================================================================
 ## 2. TWO-LEVEL BLOCK-SCALED QUANTIZER (`QACT` `Sa * 2^-da` & `FP4` 4.25 B/W)
@@ -133,6 +122,12 @@ fn otpu_qact_clamp_int8(q_raw: int) -> int
   else q_raw
 
 @bound(cycles: 48)
+## The sub-block shift selector yields 0..4 but the dequantiser is specified for 0..3 (factor 8 >> shift, never below 1):
+## callers saturate the shift instead of calling outside the precondition (found when `requires` became a kept runtime check).
+fn otpu_qact_da_sat(da_shift: int) -> int
+  ensures result >= 0 and result <= 3
+= if da_shift >= 0 and da_shift <= 2 then da_shift else 3
+
 fn otpu_qact_dequant_subblock(q_int8: int, da_shift: int) -> int
   requires q_int8 >= 0 and q_int8 <= 127 and da_shift >= 0 and da_shift <= 3
   ensures result >= 0 and result <= 1016
@@ -234,22 +229,22 @@ law otpu_stream_5stage_saves_3_tmem_passes_per_layer(layers: int) =
     (layers * 4) - layers == otpu_se_tmem_passes_saved(layers)
   else 1 == 1
 
-fn otpu_stream_deltanet_step(s0, s1, k0, k1, x_r, q0) =
-    let a_red = (s0 * k0 + s1 * k1) / 100 in
-    let d_val = otpu_se_stage2_scalar_delta(x_r, a_red, 0) in
-    let d_pos = if d_val >= 0 then d_val else 0 in
-    let s0_del = otpu_se_stage3_delay_read(s0) in
-    let s1_del = otpu_se_stage3_delay_read(s1) in
-    let y0 = otpu_se_stage4_map_fmma(s0_del, 90, d_pos, 10) in
-    let y1 = otpu_se_stage4_map_fmma(s1_del, 90, d_pos, 10) in
-    let o_r = (y0 * q0 + y1 * q0) / 100 in
-    {
-        stage1_reduce_a: a_red,
-        stage2_scalar_d: d_val,
-        stage4_y0: y0,
-        stage4_y1: y1,
-        stage5_output_o: o_r
-    }
+@bound(cycles: 24)
+fn otpu_lumeputer_deltanet_ram_sync(otpu_se_out: int, ram_old: int, beta_commit: int) -> int
+  requires beta_commit == 0 or beta_commit == 1
+  ensures (beta_commit == 1 and result == otpu_se_out) or (beta_commit == 0 and result == ram_old)
+= if beta_commit == 1 then otpu_se_out else ram_old
+
+@bound(cycles: 24)
+fn otpu_lumepu_vx_64lane_mac_step(acc: int, act_i8: int, w_i4: int) -> int
+  requires act_i8 >= -128 and act_i8 <= 127 and w_i4 >= -8 and w_i4 <= 7
+  ensures result == acc + act_i8 * w_i4
+= acc + act_i8 * w_i4
+
+law otpu_lumeputer_deltanet_hold_law(se_out: int, ram_old: int) =
+  otpu_lumeputer_deltanet_ram_sync(se_out, ram_old, 0) == ram_old
+
+fn otpu_stream_deltanet_step(s0, s1, k0, k1, x_r, q0) = let a_red = (s0 * k0 + s1 * k1) / 100 in let d_val = otpu_se_stage2_scalar_delta(x_r, a_red, 0) in let d_pos = if d_val >= 0 then d_val else 0 in let s0_del = otpu_se_stage3_delay_read(s0) in let s1_del = otpu_se_stage3_delay_read(s1) in let y0 = otpu_se_stage4_map_fmma(s0_del, 90, d_pos, 10) in let y1 = otpu_se_stage4_map_fmma(s1_del, 90, d_pos, 10) in let o_r = (y0 * q0 + y1 * q0) / 100 in {stage1_reduce_a: a_red, stage2_scalar_d: d_val, stage4_y0: y0, stage4_y1: y1, stage5_output_o: o_r}
 
 ## ============================================================================
 ## 5. CARD-SIDE MOE EXPERT LRU SLOTS & `WAITW` COMPUTE/PCIE-DMA OVERLAP
@@ -279,22 +274,7 @@ law otpu_moe_overlap_never_slower_than_serial(res_c: int, miss_c: int, dma_c: in
     otpu_moe_overlap_waitw_cycles(res_c, miss_c, dma_c) == (dma_c + miss_c)
   else 1 == 1
 
-fn otpu_moe_schedule_4experts(e0, e1, e2, e3, cached_slots) =
-    let h0 = otpu_moe_is_slot_hit(e0, cached_slots) in
-    let h1 = otpu_moe_is_slot_hit(e1, cached_slots) in
-    let h2 = otpu_moe_is_slot_hit(e2, cached_slots) in
-    let h3 = otpu_moe_is_slot_hit(e3, cached_slots) in
-    let hits = h0 + h1 + h2 + h3 in
-    let misses = 4 - hits in
-    let cyc_serial = otpu_moe_serial_cycles(hits * 100, misses * 100, misses * 950) in
-    let cyc_overlap = otpu_moe_overlap_waitw_cycles(hits * 100, misses * 100, misses * 950) in
-    {
-        resident_hits: hits,
-        pcie_misses: misses,
-        serial_cycles: cyc_serial,
-        overlap_waitw_cycles: cyc_overlap,
-        cycles_saved: cyc_serial - cyc_overlap
-    }
+fn otpu_moe_schedule_4experts(e0, e1, e2, e3, cached_slots) = let h0 = otpu_moe_is_slot_hit(e0, cached_slots) in let h1 = otpu_moe_is_slot_hit(e1, cached_slots) in let h2 = otpu_moe_is_slot_hit(e2, cached_slots) in let h3 = otpu_moe_is_slot_hit(e3, cached_slots) in let hits = h0 + h1 + h2 + h3 in let misses = 4 - hits in let cyc_serial = otpu_moe_serial_cycles(hits * 100, misses * 100, misses * 950) in let cyc_overlap = otpu_moe_overlap_waitw_cycles(hits * 100, misses * 100, misses * 950) in {resident_hits: hits, pcie_misses: misses, serial_cycles: cyc_serial, overlap_waitw_cycles: cyc_overlap, cycles_saved: cyc_serial - cyc_overlap}
 
 ## ============================================================================
 ## 6. ANALYTIC HARDWARE SCOREBOARD & BYTE-ROOFLINE VERIFIER (`docs/scoreboard.md`)
@@ -306,12 +286,9 @@ fn otpu_scoreboard_bw_headroom_gbps_x10(peak_gbps_x10: int, achieved_gbps_x10: i
   ensures result >= 0 and result + achieved_gbps_x10 == peak_gbps_x10
 = peak_gbps_x10 - achieved_gbps_x10
 
-fn otpu_scoreboard_roofline_pct(achieved_gbps_x10, peak_gbps_x10) =
-    (achieved_gbps_x10 * 100) / peak_gbps_x10
+fn otpu_scoreboard_roofline_pct(achieved_gbps_x10, peak_gbps_x10) = achieved_gbps_x10 * 100 / peak_gbps_x10
 
-fn otpu_scoreboard_decode_tok_s_x10(achieved_bw_mb_s, active_weight_mb, pcie_dma_penalty_mb) =
-    let total_mb = active_weight_mb + pcie_dma_penalty_mb in
-    if total_mb <= 0 then 0 else (achieved_bw_mb_s * 10) / total_mb
+fn otpu_scoreboard_decode_tok_s_x10(achieved_bw_mb_s, active_weight_mb, pcie_dma_penalty_mb) = let total_mb = active_weight_mb + pcie_dma_penalty_mb in if total_mb <= 0 then 0 else achieved_bw_mb_s * 10 / total_mb
 
 @bound(cycles: 32)
 fn otpu_golden_rtl_zero_ulp_verdict(golden_crc: int, isasim_crc: int, rtl_crc: int) -> int
@@ -321,97 +298,21 @@ fn otpu_golden_rtl_zero_ulp_verdict(golden_crc: int, isasim_crc: int, rtl_crc: i
 law otpu_zero_ulp_transitive_equivalence(crc: int) =
   otpu_golden_rtl_zero_ulp_verdict(crc, crc, crc) == 1
 
-fn otpu_exec_golden_ref(cfg) =
-    let q_dq = otpu_qact_dequant_subblock(otpu_qact_clamp_int8(cfg.a0 * 16), cfg.da_s) in
-    let q_sm = otpu_ksmooth_scale_q(cfg.w0, cfg.ks_s) in
-    let k_sm = otpu_ksmooth_scale_k(cfg.w1 * 64, cfg.ks_s) in
-    let mxu = otpu_exec_mm_systolic_4x4(cfg.a0, cfg.a1, cfg.a2, cfg.a3, cfg.w0, cfg.w1) in
-    let se = otpu_stream_deltanet_step(cfg.a0 * 20, cfg.a1 * 15, 50, 50, cfg.x_r, 100) in
-    q_dq + (q_sm * k_sm) + mxu.total_energy + se.stage5_output_o
+fn otpu_exec_golden_ref(cfg) = let q_dq = otpu_qact_dequant_subblock(otpu_qact_clamp_int8(cfg.a0 * 16), otpu_qact_da_sat(cfg.da_s)) in let q_sm = otpu_ksmooth_scale_q(cfg.w0, cfg.ks_s) in let k_sm = otpu_ksmooth_scale_k(cfg.w1 * 64, cfg.ks_s) in let mxu = otpu_exec_mm_systolic_4x4(cfg.a0, cfg.a1, cfg.a2, cfg.a3, cfg.w0, cfg.w1) in let se = otpu_stream_deltanet_step(cfg.a0 * 20, cfg.a1 * 15, 50, 50, cfg.x_r, 100) in q_dq + q_sm * k_sm + mxu.total_energy + se.stage5_output_o
 
-fn otpu_exec_isasim_vm(w_qact, w_mm, w_stream, cfg) =
-    let op_q = otpu_decode_opcode(w_qact) in
-    let da_imm = otpu_decode_imm2(w_qact) in
-    let op_m = otpu_decode_opcode(w_mm) in
-    let op_s = otpu_decode_opcode(w_stream) in
-    if op_q != 2 or op_m != 1 or op_s != 19 then 0 - 1
-    else
-        let r1_qact = otpu_qact_dequant_subblock(otpu_qact_clamp_int8(cfg.a0 * 16), da_imm) in
-        let r2_mm = otpu_exec_mm_systolic_4x4(cfg.a0, cfg.a1, cfg.a2, cfg.a3, cfg.w0, cfg.w1).total_energy in
-        let r3_se = otpu_stream_deltanet_step(cfg.a0 * 20, cfg.a1 * 15, 50, 50, cfg.x_r, 100).stage5_output_o in
-        let attn_ip = otpu_ksmooth_scale_q(cfg.w0, cfg.ks_s) * otpu_ksmooth_scale_k(cfg.w1 * 64, cfg.ks_s) in
-        r1_qact + attn_ip + r2_mm + r3_se
+fn otpu_exec_isasim_vm(w_qact, w_mm, w_stream, cfg) = let op_q = otpu_decode_opcode(w_qact) in let da_imm = otpu_decode_imm2(w_qact) in let op_m = otpu_decode_opcode(w_mm) in let op_s = otpu_decode_opcode(w_stream) in if op_q != 2 or op_m != 1 or op_s != 19 then 0 - 1 else let r1_qact = otpu_qact_dequant_subblock(otpu_qact_clamp_int8(cfg.a0 * 16), otpu_qact_da_sat(da_imm)) in let r2_mm = (otpu_exec_mm_systolic_4x4(cfg.a0, cfg.a1, cfg.a2, cfg.a3, cfg.w0, cfg.w1)).total_energy in let r3_se = (otpu_stream_deltanet_step(cfg.a0 * 20, cfg.a1 * 15, 50, 50, cfg.x_r, 100)).stage5_output_o in let attn_ip = otpu_ksmooth_scale_q(cfg.w0, cfg.ks_s) * otpu_ksmooth_scale_k(cfg.w1 * 64, cfg.ks_s) in r1_qact + attn_ip + r2_mm + r3_se
 
-fn otpu_exec_verilog_rtl_pipe(cfg) =
-    let col0 = cfg.a0 * cfg.w0 + cfg.a1 * cfg.w1 + cfg.a2 * cfg.w0 + cfg.a3 * cfg.w1 in
-    let col1 = cfg.a0 * (cfg.w0 + 1) + cfg.a1 * cfg.w1 + cfg.a2 * (cfg.w0 + 1) + cfg.a3 * cfg.w1 in
-    let col2 = cfg.a0 * cfg.w0 + cfg.a1 * (cfg.w1 + 1) + cfg.a2 * cfg.w0 + cfg.a3 * (cfg.w1 + 1) in
-    let col3 = cfg.a0 * (cfg.w0 + 2) + cfg.a1 * cfg.w1 + cfg.a2 * cfg.w0 + cfg.a3 * (cfg.w1 + 2) in
-    let rtl_mxu_tree = (col0 + col1) + (col2 + col3) in
-    let rtl_qact = otpu_qact_dequant_subblock(otpu_qact_clamp_int8(cfg.a0 * 16), cfg.da_s) in
-    let rtl_ks = (cfg.w0 * 64) * cfg.w1 in
-    let stg1_a = ((cfg.a0 * 20) * 50 + (cfg.a1 * 15) * 50) / 100 in
-    let stg2_d = otpu_se_stage2_scalar_delta(cfg.x_r, stg1_a, 0) in
-    let stg2_pos = if stg2_d >= 0 then stg2_d else 0 in
-    let stg4_y0 = otpu_se_stage4_map_fmma(cfg.a0 * 20, 90, stg2_pos, 10) in
-    let stg4_y1 = otpu_se_stage4_map_fmma(cfg.a1 * 15, 90, stg2_pos, 10) in
-    let stg5_o = (stg4_y0 * 100 + stg4_y1 * 100) / 100 in
-    rtl_qact + rtl_ks + rtl_mxu_tree + stg5_o
+fn otpu_exec_verilog_rtl_pipe(cfg) = let col0 = cfg.a0 * cfg.w0 + cfg.a1 * cfg.w1 + cfg.a2 * cfg.w0 + cfg.a3 * cfg.w1 in let col1 = cfg.a0 * (cfg.w0 + 1) + cfg.a1 * cfg.w1 + cfg.a2 * (cfg.w0 + 1) + cfg.a3 * cfg.w1 in let col2 = cfg.a0 * cfg.w0 + cfg.a1 * (cfg.w1 + 1) + cfg.a2 * cfg.w0 + cfg.a3 * (cfg.w1 + 1) in let col3 = cfg.a0 * (cfg.w0 + 2) + cfg.a1 * cfg.w1 + cfg.a2 * cfg.w0 + cfg.a3 * (cfg.w1 + 2) in let rtl_mxu_tree = col0 + col1 + (col2 + col3) in let rtl_qact = otpu_qact_dequant_subblock(otpu_qact_clamp_int8(cfg.a0 * 16), otpu_qact_da_sat(cfg.da_s)) in let rtl_ks = cfg.w0 * 64 * cfg.w1 in let stg1_a = (cfg.a0 * 20 * 50 + cfg.a1 * 15 * 50) / 100 in let stg2_d = otpu_se_stage2_scalar_delta(cfg.x_r, stg1_a, 0) in let stg2_pos = if stg2_d >= 0 then stg2_d else 0 in let stg4_y0 = otpu_se_stage4_map_fmma(cfg.a0 * 20, 90, stg2_pos, 10) in let stg4_y1 = otpu_se_stage4_map_fmma(cfg.a1 * 15, 90, stg2_pos, 10) in let stg5_o = (stg4_y0 * 100 + stg4_y1 * 100) / 100 in rtl_qact + rtl_ks + rtl_mxu_tree + stg5_o
 
-fn otpu_scoreboard_evaluate_boards(cfg) =
-    let ypcb_eff = otpu_scoreboard_roofline_pct(131, 140) in
-    let bcu_eff = otpu_scoreboard_roofline_pct(540, 576) in
-    let f2_eff = otpu_scoreboard_roofline_pct(4300, 4600) in
-    let asic_eff = otpu_scoreboard_roofline_pct(960, 1024) in
-    let bw_hr = otpu_scoreboard_bw_headroom_gbps_x10(140, 131) in
-    let qwen06_tok_x10 = otpu_scoreboard_decode_tok_s_x10(13100, 241, 0) in
-    let lfm25_tok_x10 = otpu_scoreboard_decode_tok_s_x10(13100, 950, 20) in
-    let qwen35_tok_x10 = otpu_scoreboard_decode_tok_s_x10(13100, 1520, 738) in
-    let w_qact = otpu_encode_insn(2, 1, 8, cfg.da_s) in
-    let w_mm = otpu_encode_insn(1, 2, 1, 2) in
-    let w_stream = otpu_encode_insn(19, 3, 2, 5) in
-    let g_crc = otpu_exec_golden_ref(cfg) in
-    let s_crc = otpu_exec_isasim_vm(w_qact, w_mm, w_stream, cfg) in
-    let r_crc = otpu_exec_verilog_rtl_pipe(cfg) in
-    let zero_ulp = otpu_golden_rtl_zero_ulp_verdict(g_crc, s_crc, r_crc) in
-    {
-        ypcb_ddr3_roofline_pct: ypcb_eff,
-        bcu1525_ddr4_roofline_pct: bcu_eff,
-        aws_f2_hbm_roofline_pct: f2_eff,
-        asic_nangate45_roofline_pct: asic_eff,
-        ypcb_bw_headroom_gbps_x10: bw_hr,
-        qwen3_0_6b_ypcb_tok_s_x10: qwen06_tok_x10,
-        lfm2_5_8b_moe_ypcb_tok_s_x10: lfm25_tok_x10,
-        qwen3_5_35b_moe_gen2_tok_s_x10: qwen35_tok_x10,
-        golden_digest: g_crc,
-        isasim_digest: s_crc,
-        verilog_rtl_digest: r_crc,
-        zero_ulp_rtl_equivalence: zero_ulp
-    }
+fn otpu_scoreboard_evaluate_boards(cfg) = let ypcb_eff = otpu_scoreboard_roofline_pct(131, 140) in let bcu_eff = otpu_scoreboard_roofline_pct(540, 576) in let f2_eff = otpu_scoreboard_roofline_pct(4300, 4600) in let asic_eff = otpu_scoreboard_roofline_pct(960, 1024) in let bw_hr = otpu_scoreboard_bw_headroom_gbps_x10(140, 131) in let qwen06_tok_x10 = otpu_scoreboard_decode_tok_s_x10(13100, 241, 0) in let lfm25_tok_x10 = otpu_scoreboard_decode_tok_s_x10(13100, 950, 20) in let qwen35_tok_x10 = otpu_scoreboard_decode_tok_s_x10(13100, 1520, 738) in let w_qact = otpu_encode_insn(2, 1, 8, cfg.da_s) in let w_mm = otpu_encode_insn(1, 2, 1, 2) in let w_stream = otpu_encode_insn(19, 3, 2, 5) in let g_crc = otpu_exec_golden_ref(cfg) in let s_crc = otpu_exec_isasim_vm(w_qact, w_mm, w_stream, cfg) in let r_crc = otpu_exec_verilog_rtl_pipe(cfg) in let zero_ulp = otpu_golden_rtl_zero_ulp_verdict(g_crc, s_crc, r_crc) in {ypcb_ddr3_roofline_pct: ypcb_eff, bcu1525_ddr4_roofline_pct: bcu_eff, aws_f2_hbm_roofline_pct: f2_eff, asic_nangate45_roofline_pct: asic_eff, ypcb_bw_headroom_gbps_x10: bw_hr, qwen3_0_6b_ypcb_tok_s_x10: qwen06_tok_x10, lfm2_5_8b_moe_ypcb_tok_s_x10: lfm25_tok_x10, qwen3_5_35b_moe_gen2_tok_s_x10: qwen35_tok_x10, golden_digest: g_crc, isasim_digest: s_crc, verilog_rtl_digest: r_crc, zero_ulp_rtl_equivalence: zero_ulp}
 
 ## ============================================================================
 ## 7. SYMBIOTIC BRIDGE `OPENTPU <-> NEURAL-KERNEL <-> LLM-FORGE <-> NCM`
 ## ============================================================================
 
-fn otpu_synthesize_isa_program(target_path, m_rows, mcols, da_s, misses) =
-    let passes = otpu_stationary_replay_passes(m_rows, mcols) in
-    let w_qact = otpu_encode_insn(2, 1, 8, da_s) in
-    let w_mm = otpu_encode_insn(1, 2, 1, passes) in
-    let w_stream = otpu_encode_insn(19, 3, 2, 5) in
-    let w_waitw = otpu_encode_insn(8, 4, 3, misses) in
-    let w_bar = otpu_encode_insn(6, 0, 0, 0) in
-    ";; openTPU ISA v1 Verified Kernel synthesized by Lume v0.3.0-rc.3\n"
-    + ";; Target source: " + target_path + " | MXU: " + str(mcols) + "x128 | Replay passes: " + str(passes) + "\n"
-    + "  QACT   R1, ARG0, da_shift=" + str(da_s) + "       ; word=" + str(w_qact) + " (rd=R" + str(otpu_decode_rd(w_qact)) + ", rs1=R" + str(otpu_decode_rs1(w_qact)) + ", Sa * 2^-da int8)\n"
-    + "  MM     R2, R1,   replay=" + str(passes) + "         ; word=" + str(w_mm) + " (Systolic MXU FP4/INT8)\n"
-    + "  STREAM R3, R2,   stages=5         ; word=" + str(w_stream) + " (REDUCE_A->SCALAR->DELAY->MAP->REDUCE_Q)\n"
-    + "  WAITW  R4, R3,   dma_slots=" + str(misses) + "      ; word=" + str(w_waitw) + " (MoE PCIe DMA overlap barrier)\n"
-    + "  BAR    R0, R0,   sync=0           ; word=" + str(w_bar) + "\n"
+fn otpu_synthesize_isa_program(target_path, m_rows, mcols, da_s, misses) = let passes = otpu_stationary_replay_passes(m_rows, mcols) in let passes_imm = if passes > 99 then 99 else passes in let w_qact = otpu_encode_insn(2, 1, 8, da_s) in let w_mm = otpu_encode_insn(1, 2, 1, passes_imm) in let w_stream = otpu_encode_insn(19, 3, 2, 5) in let w_waitw = otpu_encode_insn(8, 4, 3, misses) in let w_bar = otpu_encode_insn(6, 0, 0, 0) in ";; openTPU ISA v1 Verified Kernel synthesized by Lume v1.1.0\n" + ";; Target source: " + target_path + " | MXU: " + str(mcols) + "x128 | Replay passes: " + str(passes) + "\n" + "  QACT   R1, ARG0, da_shift=" + str(da_s) + "       ; word=" + str(w_qact) + " (rd=R" + str(otpu_decode_rd(w_qact)) + ", rs1=R" + str(otpu_decode_rs1(w_qact)) + ", Sa * 2^-da int8)\n" + "  MM     R2, R1,   replay=" + str(passes) + "         ; word=" + str(w_mm) + " (Systolic MXU FP4/INT8)\n" + "  STREAM R3, R2,   stages=5         ; word=" + str(w_stream) + " (REDUCE_A->SCALAR->DELAY->MAP->REDUCE_Q)\n" + "  WAITW  R4, R3,   dma_slots=" + str(misses) + "      ; word=" + str(w_waitw) + " (MoE PCIe DMA overlap barrier)\n" + "  BAR    R0, R0,   sync=0           ; word=" + str(w_bar) + "\n"
 
-fn otpu_fail_missing_input(target_path) =
-    let msg = "{\"ok\":false,\"engine\":\"OpenTPU-Lume-Systolic-ISA-Engine-v1.0\",\"error\":\"input file not found\",\"target\":\"" + target_path + "\"}\n" in
-    let w = fs_append_sync("/dev/stdout", msg) in
-    os_exit(1)
+fn otpu_fail_missing_input(target_path) = let msg = "{\"ok\":false,\"engine\":\"OpenTPU-Lume-Systolic-ISA-Engine-v1.0\",\"error\":\"input file not found\",\"target\":\"" + target_path + "\"}\n" in let w = fs_append_sync("/dev/stdout", msg) in os_exit(1)
 
 fn otpu_run_full_pipeline(target_path, out_dir) =
     let chk_missing = if target_path != "" and fs_path_exists(target_path) == 0 then otpu_fail_missing_input(target_path) else 0 in
@@ -431,7 +332,7 @@ fn otpu_run_full_pipeline(target_path, out_dir) =
     let sub_max = 32 + (rev_m.fn_count % 32) in
     let da_s = otpu_qact_subblock_shift(blk_max, sub_max) in
     let q_clamped = otpu_qact_clamp_int8(a0 * 16) in
-    let dq_val = otpu_qact_dequant_subblock(q_clamped, da_s) in
+    let dq_val = otpu_qact_dequant_subblock(q_clamped, otpu_qact_da_sat(da_s)) in
     let fp4_groups = 32 + rev_m.fn_count in
     let fp4_bits = otpu_fp4_storage_bits_16w(fp4_groups) in
     let ks_shift = otpu_ksmooth_select_shift(640, 80) in
@@ -452,6 +353,7 @@ fn otpu_run_full_pipeline(target_path, out_dir) =
         + "\"engine\":\"OpenTPU-Lume-Systolic-ISA-Engine-v1.0\","
         + "\"reference_architecture\":\"https://github.com/OmegaSoftDLL/openTPU\","
         + "\"integrated_with_neural_kernel_llm_forge_ncm\":true,"
+        + "\"integrated_with_lumeputer_and_lumepu_vx\":true,"
         + "\"target_path\":\"" + actual_path + "\","
         + "\"input_bytes\":" + str(count(raw)) + ","
         + "\"input_sha256\":\"" + lc_sha256(raw) + "\","
@@ -515,48 +417,10 @@ fn otpu_run_full_pipeline(target_path, out_dir) =
 ## 8. SELF-HOSTED UNIT TESTS (`lume test compiler/stage1/lume_opentpu_engine.src`)
 ## ============================================================================
 
-fn test_otpu_isa_v1_encoding_linear_regs_and_systolic_replay() =
-    let insn = otpu_encode_insn(19, 3, 2, 5) in
-    let mxu = otpu_exec_mm_systolic_4x4(2, 3, 4, 5, 10, 20) in
-    otpu_reg_read_r0() == 0 and
-    otpu_reg_is_addr_reg(3) == 1 and
-    otpu_reg_is_arg_reg(10) == 1 and
-    otpu_reg_release_arg(5) == 4 and
-    otpu_decode_opcode(insn) == 19 and
-    otpu_decode_rd(insn) == 3 and
-    otpu_decode_rs1(insn) == 2 and
-    otpu_decode_imm2(insn) == 5 and
-    otpu_stationary_replay_passes(16, 4) == 4 and
-    otpu_stationary_replay_passes(16, 8) == 2 and
-    otpu_mm_pair_fp4_cols_used(4) == 8 and
-    mxu.total_energy > 0
+fn test_otpu_isa_v1_encoding_linear_regs_and_systolic_replay() = let insn = otpu_encode_insn(19, 3, 2, 5) in let mxu = otpu_exec_mm_systolic_4x4(2, 3, 4, 5, 10, 20) in otpu_reg_read_r0() == 0 and otpu_reg_is_addr_reg(3) == 1 and otpu_reg_is_arg_reg(10) == 1 and otpu_reg_release_arg(5) == 4 and otpu_decode_opcode(insn) == 19 and otpu_decode_rd(insn) == 3 and otpu_decode_rs1(insn) == 2 and otpu_decode_imm2(insn) == 5 and otpu_stationary_replay_passes(16, 4) == 4 and otpu_stationary_replay_passes(16, 8) == 2 and otpu_mm_pair_fp4_cols_used(4) == 8 and mxu.total_energy > 0
 
-fn test_otpu_qact_fp4_and_ksmoothing_outlier_invariance() =
-    let da = otpu_qact_subblock_shift(512, 48) in
-    let s = otpu_ksmooth_select_shift(640, 80) in
-    let q_s = otpu_ksmooth_scale_q(12, s) in
-    let k_s = otpu_ksmooth_scale_k(640, s) in
-    da == 3 and
-    otpu_qact_clamp_int8(240) == 127 and
-    otpu_qact_clamp_int8(0 - 300) == 0 - 127 and
-    otpu_fp4_storage_bits_16w(10) == 680 and
-    s == 3 and
-    (q_s * k_s) == (12 * 640)
+fn test_otpu_qact_fp4_and_ksmoothing_outlier_invariance() = let da = otpu_qact_subblock_shift(512, 48) in let s = otpu_ksmooth_select_shift(640, 80) in let q_s = otpu_ksmooth_scale_q(12, s) in let k_s = otpu_ksmooth_scale_k(640, s) in da == 3 and otpu_qact_clamp_int8(240) == 127 and otpu_qact_clamp_int8(0 - 300) == 0 - 127 and otpu_fp4_storage_bits_16w(10) == 680 and s == 3 and q_s * k_s == 12 * 640
 
-fn test_otpu_stream_5stage_deltanet_and_moe_waitw_overlap() =
-    let se = otpu_stream_deltanet_step(100, 100, 50, 50, 200, 100) in
-    let moe = otpu_moe_schedule_4experts(10, 20, 30, 200, 128) in
-    se.stage1_reduce_a == 100 and
-    se.stage2_scalar_d == 100 and
-    se.stage4_y0 == 100 and
-    otpu_se_tmem_passes_saved(28) == 84 and
-    moe.resident_hits == 3 and
-    moe.pcie_misses == 1 and
-    moe.cycles_saved == 300
+fn test_otpu_stream_5stage_deltanet_and_moe_waitw_overlap() = let se = otpu_stream_deltanet_step(100, 100, 50, 50, 200, 100) in let moe = otpu_moe_schedule_4experts(10, 20, 30, 200, 128) in se.stage1_reduce_a == 100 and se.stage2_scalar_d == 100 and se.stage4_y0 == 100 and otpu_se_tmem_passes_saved(28) == 84 and moe.resident_hits == 3 and moe.pcie_misses == 1 and moe.cycles_saved == 300
 
-fn test_otpu_full_pipeline_scoreboard_and_ncm_bridge() =
-    let rep = otpu_run_full_pipeline("compiler/stage1/lume_ncm_engine.src", "") in
-    egm_count_substr(rep, "\"engine\":\"OpenTPU-Lume-Systolic-ISA-Engine-v1.0\"") >= 1 and
-    egm_count_substr(rep, "\"integrated_with_neural_kernel_llm_forge_ncm\":true") >= 1 and
-    egm_count_substr(rep, "\"ksmooth_inner_product_invariant\":true") >= 1 and
-    egm_count_substr(rep, "\"zero_ulp_rtl_equivalence\":true") >= 1
+fn test_otpu_full_pipeline_scoreboard_and_ncm_bridge() = let rep = otpu_run_full_pipeline("compiler/stage1/lume_ncm_engine.src", "") in egm_count_substr(rep, "\"engine\":\"OpenTPU-Lume-Systolic-ISA-Engine-v1.0\"") >= 1 and egm_count_substr(rep, "\"integrated_with_neural_kernel_llm_forge_ncm\":true") >= 1 and egm_count_substr(rep, "\"integrated_with_lumeputer_and_lumepu_vx\":true") >= 1 and egm_count_substr(rep, "\"ksmooth_inner_product_invariant\":true") >= 1 and egm_count_substr(rep, "\"zero_ulp_rtl_equivalence\":true") >= 1 and otpu_lumeputer_deltanet_ram_sync(512, 256, 1) == 512 and otpu_lumepu_vx_64lane_mac_step(100, 12, 4) == 148

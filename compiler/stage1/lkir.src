@@ -1,0 +1,209 @@
+## lkir.src -- kernel IR shared by the certified multi-ISA back ends (larm64.src, lriscv.src, ltv_multiarch.src).
+##
+## A "kernel" is a self-contained file of pure integer functions plus `print <expr>` statements:
+##   fn name(p1: int, p2: int) -> int [/ pure] [requires e]* [ensures e]* = body      print name(1, 2)
+## Expression fragment: integer literals, parameters, `let x = v in b`, `if c then a else b`, + - * / %,
+## == != < > <= >=, short-circuit and / or (0/1 valued), `not`, true / false, calls to other kernel functions
+## (recursion included). Nothing else: no strings, lists, records, closures, `use`. Attributes (`@name(...)`), `pub`
+## and `total` are skipped. The grammar and the operator precedence are those of compiler/stage1/lume/02_parser.src.
+##
+## Reference semantics (what every back end must implement, and what kir_ev below computes): signed integers of
+## `bits` bits (64 on x86-64 / AArch64 / RV64, 32 on RV32). + - * trap on signed overflow (trap code 2); `/` and `%`
+## truncate toward zero, trap on a zero divisor (3) and on MIN / -1 (2); a false `requires` / `ensures` traps (1).
+## Contracts are always compiled as run-time checks here (fail-closed); no proof is consulted to elide them.
+## This front end shares no code with lumec's: it is a second, small reader of the same surface syntax.
+
+fn kir_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => kir_rev(t, Cons(h, acc))
+fn kir_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + kir_len(t)
+fn kir_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, kir_app(t, ys))
+fn kir_hd(ts) = match ts
+    Nil        => ""
+    Cons(h, t) => h
+fn kir_tl(ts) = match ts
+    Nil        => Nil
+    Cons(h, t) => t
+
+## --- lexer: a list of token texts ---------------------------------------------------------------------------------
+fn kir_isdig(c) = c >= "0" and c <= "9"
+fn kir_isal(c) = c >= "a" and c <= "z" or c >= "A" and c <= "Z" or c == "_"
+fn kir_scan(s, i, n, kind) = if i >= n then i else let c = at(s, i) in if kind == 0 and kir_isdig(c) or kind == 1 and (kir_isal(c) or kir_isdig(c)) then kir_scan(s, i + 1, n, kind) else i
+fn kir_eol(s, i, n) = if i >= n then i else if at(s, i) == "\n" then i else kir_eol(s, i + 1, n)
+fn kir_two(a, b) = b == "=" and (a == "=" or a == "!" or a == "<" or a == ">") or a == "-" and b == ">"
+fn kir_lex(s, i, n, acc) = if i >= n then kir_rev(acc, Nil) else let c = at(s, i) in if c == " " or c == "\t" or c == "\n" or c == "\r" then kir_lex(s, i + 1, n, acc) else if c == "#" then kir_lex(s, kir_eol(s, i, n), n, acc) else if kir_isdig(c) then (let e = kir_scan(s, i, n, 0) in kir_lex(s, e, n, Cons(slice(s, i, e), acc))) else if kir_isal(c) then (let e = kir_scan(s, i, n, 1) in kir_lex(s, e, n, Cons(slice(s, i, e), acc))) else if i + 1 < n and kir_two(c, at(s, i + 1)) then kir_lex(s, i + 2, n, Cons(slice(s, i, i + 2), acc)) else kir_lex(s, i + 1, n, Cons(c, acc))
+
+## --- parser: KNum KVar KBin KIf KLet KCall KTrap KBad ----------------------------------------------------------------
+fn kir_isnum(t) = if t == "" then 0 else if kir_isdig(at(t, 0)) then 1 else 0
+fn kir_isid(t) = if t == "" then 0 else if kir_isal(at(t, 0)) then 1 else 0
+fn kir_iskw(t) = t == "if" or t == "then" or t == "else" or t == "let" or t == "in" or t == "fn" or t == "print" or t == "and" or t == "or" or t == "not" or t == "requires" or t == "ensures"
+fn kir_want(e, ts, tok) = if kir_hd(ts) == tok then {e: e, rest: kir_tl(ts)} else {e: KBad("expected '" + tok + "' before '" + kir_hd(ts) + "'"), rest: ts}
+fn kir_args(ts) = if kir_hd(ts) == ")" then {xs: Nil, rest: kir_tl(ts)} else let r = kir_expr(ts) in if kir_hd(r.rest) == "," then (let rr = kir_args(kir_tl(r.rest)) in {xs: Cons(r.e, rr.xs), rest: rr.rest}) else if kir_hd(r.rest) == ")" then {xs: Cons(r.e, Nil), rest: kir_tl(r.rest)} else {xs: Cons(KBad("expected ')' or ',' in an argument list before '" + kir_hd(r.rest) + "'"), Nil), rest: r.rest}
+fn kir_if(ts) = let c = kir_expr(ts) in let c2 = kir_want(c.e, c.rest, "then") in let t = kir_expr(c2.rest) in let t2 = kir_want(t.e, t.rest, "else") in let f = kir_expr(t2.rest) in {e: KIf(c2.e, t2.e, f.e), rest: f.rest}
+fn kir_let(ts) = let nm = kir_hd(ts) in let w = kir_want(KNum(0), kir_tl(ts), "=") in let v = kir_expr(w.rest) in let v2 = kir_want(v.e, v.rest, "in") in let b = kir_expr(v2.rest) in if kir_isid(nm) == 0 or kir_iskw(nm) then {e: KBad("expected a name after 'let'"), rest: b.rest} else {e: KLet(nm, if kir_isbad(w.e) == 1 then w.e else v2.e, b.e), rest: b.rest}
+fn kir_isbad(e) = match e
+    KBad(m) => 1
+    _       => 0
+fn kir_ident(nm, ts) = if nm == "true" then {e: KNum(1), rest: ts} else if nm == "false" then {e: KNum(0), rest: ts} else if kir_hd(ts) == "(" then (let a = kir_args(kir_tl(ts)) in {e: KCall(nm, a.xs), rest: a.rest}) else {e: KVar(nm), rest: ts}
+fn kir_atom(ts) = let h = kir_hd(ts) in let t = kir_tl(ts) in if kir_isnum(h) == 1 then (if count(h) > 19 or count(h) == 19 and h > "9223372036854775807" then {e: KBad("integer literal " + h + " is too large"), rest: t} else {e: KNum(toint(h)), rest: t}) else if h == "-" then (let r = kir_atom(t) in {e: KBin("-", KNum(0), r.e), rest: r.rest}) else if h == "(" then (let r = kir_expr(t) in kir_want(r.e, r.rest, ")")) else if h == "if" then kir_if(t) else if h == "let" then kir_let(t) else if h == "not" then (let r = kir_atom(t) in {e: KBin("==", r.e, KNum(0)), rest: r.rest}) else if kir_isid(h) == 1 and kir_iskw(h) == 0 then kir_ident(h, t) else {e: KBad("'" + h + "' is outside the integer kernel fragment"), rest: t}
+fn kir_mul_lp(l) = let op = kir_hd(l.rest) in if op == "*" or op == "/" or op == "%" then (let r = kir_atom(kir_tl(l.rest)) in kir_mul_lp({e: KBin(op, l.e, r.e), rest: r.rest})) else l
+fn kir_mul(ts) = kir_mul_lp(kir_atom(ts))
+fn kir_add_lp(l) = let op = kir_hd(l.rest) in if op == "+" or op == "-" then (let r = kir_mul(kir_tl(l.rest)) in kir_add_lp({e: KBin(op, l.e, r.e), rest: r.rest})) else l
+fn kir_add(ts) = kir_add_lp(kir_mul(ts))
+fn kir_iscmp(op) = op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">="
+fn kir_cmp(ts) = let l = kir_add(ts) in let op = kir_hd(l.rest) in if kir_iscmp(op) then (let r = kir_add(kir_tl(l.rest)) in if kir_iscmp(kir_hd(r.rest)) then {e: KBad("comparisons do not chain"), rest: r.rest} else {e: KBin(op, l.e, r.e), rest: r.rest}) else l
+fn kir_and_lp(l) = if kir_hd(l.rest) == "and" then (let r = kir_cmp(kir_tl(l.rest)) in kir_and_lp({e: KBin("and", l.e, r.e), rest: r.rest})) else l
+fn kir_or_lp(l) = if kir_hd(l.rest) == "or" then (let r = kir_and_lp(kir_cmp(kir_tl(l.rest))) in kir_or_lp({e: KBin("or", l.e, r.e), rest: r.rest})) else l
+fn kir_expr(ts) = kir_or_lp(kir_and_lp(kir_cmp(ts)))
+
+## skip a type annotation / effect row: up to one of the stop tokens at bracket depth 0
+fn kir_skip_to(ts, d, mode) = match ts
+    Nil        => Nil
+    Cons(h, t) => if d == 0 and (mode == 0 and (h == "," or h == ")") or mode == 1 and (h == "=" or h == "requires" or h == "ensures")) then ts else if h == "(" or h == "[" or h == "{" then kir_skip_to(t, d + 1, mode) else if (h == ")" or h == "]" or h == "}") and d > 0 then kir_skip_to(t, d - 1, mode) else kir_skip_to(t, d, mode)
+fn kir_params(ts) = if kir_hd(ts) == ")" then {ps: Nil, rest: kir_tl(ts), err: ""} else let nm = kir_hd(ts) in let t1 = kir_skip_to(kir_tl(ts), 0, 0) in if kir_isid(nm) == 0 or kir_iskw(nm) then {ps: Nil, rest: t1, err: "expected a parameter name, found '" + nm + "'"} else if kir_hd(t1) == "," then (let r = kir_params(kir_tl(t1)) in {ps: Cons(nm, r.ps), rest: r.rest, err: r.err}) else if kir_hd(t1) == ")" then {ps: Cons(nm, Nil), rest: kir_tl(t1), err: ""} else {ps: Nil, rest: t1, err: "unterminated parameter list"}
+fn kir_contracts(ts, reqs, enss) = if kir_hd(ts) == "requires" then (let r = kir_expr(kir_tl(ts)) in kir_contracts(r.rest, Cons(r.e, reqs), enss)) else if kir_hd(ts) == "ensures" then (let r = kir_expr(kir_tl(ts)) in kir_contracts(r.rest, reqs, Cons(r.e, enss))) else {reqs: kir_rev(reqs, Nil), enss: kir_rev(enss, Nil), rest: ts}
+fn kir_skip_attr(ts) = let t1 = kir_tl(ts) in if kir_hd(t1) == "(" then kir_skip_group(kir_tl(t1), 1) else t1
+fn kir_skip_group(ts, d) = match ts
+    Nil        => Nil
+    Cons(h, t) => if h == "(" then kir_skip_group(t, d + 1) else if h == ")" then (if d <= 1 then t else kir_skip_group(t, d - 1)) else kir_skip_group(t, d)
+fn kir_prog_fn(ts, fns, prints) = let nm = kir_hd(ts) in let w = kir_want(KNum(0), kir_tl(ts), "(") in let pr = kir_params(w.rest) in let cr = kir_contracts(kir_skip_to(pr.rest, 0, 1), Nil, Nil) in let w2 = kir_want(KNum(0), cr.rest, "=") in let b = kir_expr(w2.rest) in if kir_isid(nm) == 0 or kir_iskw(nm) then {err: "expected a function name after 'fn'", fns: Nil, prints: Nil} else if kir_isbad(w.e) == 1 or pr.err != "" then {err: "malformed parameter list of '" + nm + "'" + (if pr.err != "" then ": " + pr.err else ""), fns: Nil, prints: Nil} else if kir_isbad(w2.e) == 1 then {err: "expected '=' and a body for '" + nm + "'", fns: Nil, prints: Nil} else kir_prog(b.rest, Cons({nm: nm, ps: pr.ps, reqs: cr.reqs, enss: cr.enss, body: b.e}, fns), prints)
+fn kir_prog(ts, fns, prints) = let h = kir_hd(ts) in if h == "" then {err: "", fns: kir_rev(fns, Nil), prints: kir_rev(prints, Nil)} else if h == "@" then kir_prog(kir_skip_attr(kir_tl(ts)), fns, prints) else if h == "pub" or h == "total" then kir_prog(kir_tl(ts), fns, prints) else if h == "fn" then kir_prog_fn(kir_tl(ts), fns, prints) else if h == "print" then (let r = kir_expr(kir_tl(ts)) in kir_prog(r.rest, fns, Cons(r.e, prints))) else {err: "top-level construct '" + h + "' is outside the integer kernel fragment (only 'fn' and 'print' are compiled)", fns: Nil, prints: Nil}
+
+## --- static checks: every name bound, every callee defined with the right arity, no KBad -----------------------------
+fn kir_mem(nm, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else kir_mem(nm, t)
+fn kir_fn_none() = {nm: "", ps: Nil, reqs: Nil, enss: Nil, body: KNum(0)}
+fn kir_find(fns, nm) = match fns
+    Nil        => kir_fn_none()
+    Cons(h, t) => if h.nm == nm then h else kir_find(t, nm)
+fn kir_j(a, b) = if a != "" then a else b
+fn kir_chk_l(xs, env, fns) = match xs
+    Nil        => ""
+    Cons(h, t) => kir_j(kir_chk(h, env, fns), kir_chk_l(t, env, fns))
+fn kir_chk(e, env, fns) = match e
+    KNum(v)         => ""
+    KVar(nm)        => if kir_mem(nm, env) == 1 then "" else "unbound variable '" + nm + "'"
+    KBin(op, l, r)  => kir_j(kir_chk(l, env, fns), kir_chk(r, env, fns))
+    KIf(c, t, f)    => kir_j(kir_chk(c, env, fns), kir_j(kir_chk(t, env, fns), kir_chk(f, env, fns)))
+    KLet(nm, v, b)  => kir_j(kir_chk(v, env, fns), kir_chk(b, Cons(nm, env), fns))
+    KCall(nm, args) => let f = kir_find(fns, nm) in if f.nm == "" then "call of '" + nm + "', which is not a function of this kernel (builtins and imports are outside the fragment)" else if kir_len(f.ps) != kir_len(args) then "'" + nm + "' takes " + str(kir_len(f.ps)) + " argument(s), " + str(kir_len(args)) + " given" else kir_chk_l(args, env, fns)
+    KTrap(k)        => ""
+    KBad(m)         => m
+    _               => "unknown node"
+fn kir_dup(fns, seen) = match fns
+    Nil        => ""
+    Cons(h, t) => if kir_mem(h.nm, seen) == 1 then "function '" + h.nm + "' is defined twice" else kir_dup(t, Cons(h.nm, seen))
+fn kir_chk_fns(todo, fns) = match todo
+    Nil        => ""
+    Cons(h, t) => let e = kir_j(kir_chk_l(h.reqs, h.ps, fns), kir_j(kir_chk_l(h.enss, Cons("result", h.ps), fns), kir_chk(h.body, h.ps, fns))) in if e != "" then "in '" + h.nm + "': " + e else kir_chk_fns(t, fns)
+
+## --- contracts become run-time checks around the body ---------------------------------------------------------------
+fn kir_wrap_reqs(reqs, inner) = match reqs
+    Nil        => inner
+    Cons(h, t) => KIf(h, kir_wrap_reqs(t, inner), KTrap(1))
+fn kir_wrap_enss(enss) = match enss
+    Nil        => KVar("result")
+    Cons(h, t) => KIf(h, kir_wrap_enss(t), KTrap(1))
+fn kir_lower_fn(f) = {nm: f.nm, ps: f.ps, reqs: Nil, enss: Nil, body: kir_wrap_reqs(f.reqs, kir_ens_wrap(f.enss, f.body))}
+fn kir_ens_wrap(enss, body) = match enss
+    Nil        => body
+    Cons(h, t) => KLet("result", body, kir_wrap_enss(enss))
+fn kir_lower_fns(fns) = match fns
+    Nil        => Nil
+    Cons(h, t) => Cons(kir_lower_fn(h), kir_lower_fns(t))
+## {err, fns (lowered: contracts folded into the bodies), prints}
+fn kir_parse(src) = let p = kir_prog(kir_lex(src, 0, count(src), Nil), Nil, Nil) in if p.err != "" then p else let e = kir_j(kir_dup(p.fns, Nil), kir_j(kir_chk_fns(p.fns, p.fns), kir_chk_l(p.prints, Nil, p.fns))) in if e != "" then {err: e, fns: Nil, prints: Nil} else {err: "", fns: kir_lower_fns(p.fns), prints: p.prints}
+
+## --- reference evaluator: {st, v}; st 0 = value, 1 / 2 / 3 = trap code, 9 = fuel exhausted ---------------------------
+fn kir_p2(k) = if k <= 0 then 1 else 2 * kir_p2(k - 1)
+fn kir_min(bits) = 0 - kir_p2(bits - 2) - kir_p2(bits - 2)
+fn kir_max(bits) = kir_p2(bits - 2) - 1 + kir_p2(bits - 2)
+fn kir_fits(v, bits) = if v >= kir_min(bits) and v <= kir_max(bits) then 1 else 0
+fn kir_v(v) = {st: 0, v: v}
+fn kir_t(k) = {st: k, v: 0}
+fn kir_add_ovf(a, b, bits) = if b > 0 and a > kir_max(bits) - b then 1 else if b < 0 and a < kir_min(bits) - b then 1 else 0
+fn kir_mul_ovf(a, b, bits) = if a == 0 or b == 0 then 0 else if a == 0 - 1 then (if b == kir_min(bits) then 1 else 0) else if b == 0 - 1 then (if a == kir_min(bits) then 1 else 0) else if a > 0 and b > 0 then (if a > kir_max(bits) / b then 1 else 0) else if a < 0 and b < 0 then (if a < kir_max(bits) / b then 1 else 0) else if a > 0 then (if b < kir_min(bits) / a then 1 else 0) else if a < kir_min(bits) / b then 1 else 0
+fn kir_arith(op, a, b, bits) = if op == "+" then (if kir_add_ovf(a, b, bits) == 1 then kir_t(2) else kir_v(a + b)) else if op == "-" then (if b == kir_min(bits) then (if a >= 0 then kir_t(2) else kir_v(a - b)) else if kir_add_ovf(a, 0 - b, bits) == 1 then kir_t(2) else kir_v(a - b)) else if op == "*" then (if kir_mul_ovf(a, b, bits) == 1 then kir_t(2) else kir_v(a * b)) else if op == "/" or op == "%" then (if b == 0 then kir_t(3) else if a == kir_min(bits) and b == 0 - 1 then kir_t(2) else kir_v(if op == "/" then a / b else a % b)) else if op == "==" then kir_v(if a == b then 1 else 0) else if op == "!=" then kir_v(if a != b then 1 else 0) else if op == "<" then kir_v(if a < b then 1 else 0) else if op == ">" then kir_v(if a > b then 1 else 0) else if op == "<=" then kir_v(if a <= b then 1 else 0) else kir_v(if a >= b then 1 else 0)
+fn kir_env_get(env, nm) = match env
+    Nil        => 0
+    Cons(h, t) => if h.k == nm then h.v else kir_env_get(t, nm)
+fn kir_bind(ps, vs) = match ps
+    Nil        => Nil
+    Cons(p, r) => kir_bind1(p, r, vs)
+fn kir_bind1(p, r, vs) = match vs
+    Nil         => Nil
+    Cons(v, vr) => Cons({k: p, v: v}, kir_bind(r, vr))
+fn kir_ev_args(fns, xs, env, fuel, bits, acc) = match xs
+    Nil        => {st: 0, vs: kir_rev(acc, Nil)}
+    Cons(h, t) => let r = kir_ev(fns, h, env, fuel, bits) in if r.st != 0 then {st: r.st, vs: Nil} else kir_ev_args(fns, t, env, fuel, bits, Cons(r.v, acc))
+fn kir_ev_bin(fns, op, l, r, env, fuel, bits) = let a = kir_ev(fns, l, env, fuel, bits) in if a.st != 0 then a else if op == "and" then (if a.v == 0 then kir_v(0) else let b = kir_ev(fns, r, env, fuel, bits) in if b.st != 0 then b else kir_v(if b.v != 0 then 1 else 0)) else if op == "or" then (if a.v != 0 then kir_v(1) else let b = kir_ev(fns, r, env, fuel, bits) in if b.st != 0 then b else kir_v(if b.v != 0 then 1 else 0)) else let b = kir_ev(fns, r, env, fuel, bits) in if b.st != 0 then b else kir_arith(op, a.v, b.v, bits)
+fn kir_ev_call(fns, f, args, env, fuel, bits) = let ra = kir_ev_args(fns, args, env, fuel, bits, Nil) in if ra.st != 0 then kir_t(ra.st) else kir_ev(fns, f.body, kir_bind(f.ps, ra.vs), fuel - 1, bits)
+fn kir_ev(fns, e, env, fuel, bits) = if fuel <= 0 then kir_t(9) else match e
+    KNum(v)         => if kir_fits(v, bits) == 1 then kir_v(v) else kir_t(2)
+    KVar(nm)        => kir_v(kir_env_get(env, nm))
+    KBin(op, l, r)  => kir_ev_bin(fns, op, l, r, env, fuel, bits)
+    KIf(c, t, f)    => let rc = kir_ev(fns, c, env, fuel, bits) in if rc.st != 0 then rc else if rc.v != 0 then kir_ev(fns, t, env, fuel, bits) else kir_ev(fns, f, env, fuel, bits)
+    KLet(nm, v, b)  => let rv = kir_ev(fns, v, env, fuel, bits) in if rv.st != 0 then rv else kir_ev(fns, b, Cons({k: nm, v: rv.v}, env), fuel, bits)
+    KCall(nm, args) => kir_ev_call(fns, kir_find(fns, nm), args, env, fuel, bits)
+    KTrap(k)        => kir_t(k)
+    _               => kir_t(9)
+
+## --- assembler state shared by the back ends: words, label references, label definitions ----------------------------
+fn kir_st0(lbl) = {code: Nil, n: 0, lbl: lbl, defs: Nil, err: ""}
+fn kir_w(st, w) = {code: Cons(KW(w), st.code), n: st.n + 1, lbl: st.lbl, defs: st.defs, err: st.err}
+fn kir_ref(st, it) = {code: Cons(it, st.code), n: st.n + 1, lbl: st.lbl, defs: st.defs, err: st.err}
+fn kir_def(st, l) = {code: st.code, n: st.n, lbl: st.lbl, defs: Cons({id: l, idx: st.n}, st.defs), err: st.err}
+fn kir_bump(st, k) = {code: st.code, n: st.n, lbl: st.lbl + k, defs: st.defs, err: st.err}
+fn kir_err(st, msg) = if st.err != "" then st else {code: st.code, n: st.n, lbl: st.lbl, defs: st.defs, err: msg}
+fn kir_ws(st, ws) = match ws
+    Nil        => st
+    Cons(h, t) => kir_ws(kir_w(st, h), t)
+fn kir_lbl_idx(defs, l) = match defs
+    Nil        => 0 - 1
+    Cons(h, t) => if h.id == l then h.idx else kir_lbl_idx(t, l)
+## variable environment: {name, slot}; slot is the 1-based push index inside the frame, parameters are negative
+fn kir_slot(env, nm) = match env
+    Nil        => 0
+    Cons(h, t) => if h.name == nm then h.slot else kir_slot(t, nm)
+fn kir_penv(ps, i) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons({name: h, slot: 0 - 1 - i}, kir_penv(t, i + 1))
+fn kir_fn_ids(fns, i) = match fns
+    Nil        => Nil
+    Cons(h, t) => Cons({nm: h.nm, id: i, arity: kir_len(h.ps)}, kir_fn_ids(t, i + 1))
+fn kir_fn_id(tab, nm) = match tab
+    Nil        => 0 - 1
+    Cons(h, t) => if h.nm == nm then h.id else kir_fn_id(t, nm)
+
+## --- bytes and hex ---------------------------------------------------------------------------------------------------
+fn kir_le(v, n) = if n <= 0 then Nil else Cons(v % 256, kir_le(v / 256, n - 1))
+fn kir_words_le(ws) = match ws
+    Nil        => Nil
+    Cons(h, t) => Cons(h % 256, Cons(h / 256 % 256, Cons(h / 65536 % 256, Cons(h / 16777216 % 256, kir_words_le(t)))))
+fn kir_zeros(n) = if n <= 0 then Nil else Cons(0, kir_zeros(n - 1))
+fn kir_hex1(n) = at("0123456789abcdef", n)
+fn kir_hex_strs(bs) = match bs
+    Nil        => Nil
+    Cons(h, t) => Cons(kir_hex1(h / 16 % 16) + kir_hex1(h % 16), kir_hex_strs(t))
+fn kir_pairs(xs) = match xs
+    Nil        => Nil
+    Cons(a, r) => kir_pairs2(a, r)
+fn kir_pairs2(a, r) = match r
+    Nil         => Cons(a, Nil)
+    Cons(b, r2) => Cons(a + b, kir_pairs(r2))
+fn kir_join(xs) = match xs
+    Nil        => ""
+    Cons(a, r) => kir_join2(a, r, xs)
+fn kir_join2(a, r, xs) = match r
+    Nil        => a
+    Cons(b, t) => kir_join(kir_pairs(xs))
+fn kir_hex(bs) = kir_join(kir_hex_strs(bs))
+fn kir_hex8(w) = kir_hex1(w / 268435456 % 16) + kir_hex1(w / 16777216 % 16) + kir_hex1(w / 1048576 % 16) + kir_hex1(w / 65536 % 16) + kir_hex1(w / 4096 % 16) + kir_hex1(w / 256 % 16) + kir_hex1(w / 16 % 16) + kir_hex1(w % 16)
+
+fn test_kir_parse_and_reference_semantics() = let p = kir_parse("fn gcd(a: int, b: int) -> int requires a >= 0 and b >= 0 ensures result >= 0 = if b == 0 then a else gcd(b, a % b)\nfn f(x: int) -> int = let y = x * 3 - 1 in if y < 0 or x == 7 then 0 - y else y / 2\nprint gcd(48, 18)\n") in let g = kir_ev(p.fns, KCall("gcd", Cons(KNum(48), Cons(KNum(18), Nil))), Nil, 1000, 64) in let neg = kir_ev(p.fns, KCall("gcd", Cons(KNum(0 - 1), Cons(KNum(18), Nil))), Nil, 1000, 64) in let f1 = kir_ev(p.fns, KCall("f", Cons(KNum(0 - 4), Nil)), Nil, 1000, 64) in let f2 = kir_ev(p.fns, KCall("f", Cons(KNum(9), Nil)), Nil, 1000, 64) in let ov = kir_ev(p.fns, KBin("*", KNum(65536), KNum(65536)), Nil, 10, 32) in let dz = kir_ev(p.fns, KBin("/", KNum(1), KNum(0)), Nil, 10, 64) in p.err == "" and g.st == 0 and g.v == 6 and neg.st == 1 and f1.v == 13 and f2.v == 13 and ov.st == 2 and dz.st == 3
+fn test_kir_rejects_what_is_outside_the_fragment() = (kir_parse("fn f(x) = count(x)\n")).err != "" and (kir_parse("fn f(x) = x + y\n")).err != "" and (kir_parse("fn f(x) = \"s\"\n")).err != "" and (kir_parse("use lcert\n")).err != "" and (kir_parse("fn f(x) = f(x, 1)\n")).err != "" and (kir_parse("fn f(x) = x\nfn f(y) = y\n")).err != ""

@@ -464,6 +464,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   - **Empirical-Bayes Beta-Binomial SPC, Bilateral CUSUM, CPM Float & $k$-Anonymous PAVA (Wave 3):**
     `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`,
     `analytics_k_anonymity_release_ok` ($k \ge 5$ privacy gate), and `analytics_pava_monotonic_pair_hi`.
+  - **Wave 6 `LumePuter` Recursive Stack `.lweights` Compiler, Relational Octagon/Interval Loop Prover & Universal Interface-Signature Incremental Cache v2:**
+    `lumeputer_stack_push_frame_sp` & `lumeputer_compile_src_bundle_lweights`, `prover_octagon_transitive_upper` & `prover_loop_ranking_steps_remaining`, and `incremental_module_iface_digest` & `incremental_can_reuse_downstream_mod`.
 - **NetSentinel IEC 62443, Conduite HA & Sovereign Mesh/Raft/DHT/TOFU (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` in `std.net`, `68/68` `QF_LIA` & WCET obligations, `15/15` tests):**
   - **Purdue Model (`L0..L4`) & DMZ (`L3.5`) Conduit Guard:** `iec62443_purdue_conduit_ok`
     enforces strict zone-conduit traversal and forbids direct enterprise-to-control bridging.
@@ -607,8 +609,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
   `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 582 formal obligations +
-  155 unit tests + 99 verified toolchain artifacts).
+  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 632 formal obligations +
+  158 unit tests + 99 verified toolchain artifacts + 64 autonomous evolution domains + 17 LumePuter modules).
 
 # CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI
 

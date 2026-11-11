@@ -1,0 +1,432 @@
+## lneural_cartridge.src -- verified neural cartridges: Lume `/ pure` integer functions compiled to a `.safetensors` file
+## (`lume build <file.src> --target safetensors -o <out.safetensors>`), a strict loader, and a forward pass that
+## executes the function from the tensors of the file.
+##
+## What a cartridge is
+##   The entry function and everything it calls are compiled by the channel-B compiler of lsafety_envelope.src (`rc_*`,
+##   the LumePuter monitor fragment: integer literals, parameters, `let`, `if`, + - * / %, comparisons, short-circuit
+##   and/or, bit_and/bit_or/bit_xor, calls, `ctfail`) into RV32IM words. Those words are the tensor `deltanet_rom`. The
+##   other tensors are the weights of ONE SwiGLU block with K = 128 hidden units and the ballast guard vector:
+##
+##     tensor                   dtype  shape        role
+##     swiglu_gate_proj         I32    [128, 128]   gate projection  G: hidden unit k reads g_k = G[k] . x
+##     swiglu_up_proj           I32    [128, 128]   up projection    U: hidden unit k reads u_k = U[k] . x
+##     swiglu_down_proj         I64    [16, 128]    down projection  W: output channel j = W[j] . h
+##     deltanet_rom             U32    [n]          RV32IM program, word i is the instruction at PC = 0x40000 + 4 i
+##     ballast_rmsnorm_guard    I64    [16]         ballast B: channel j is accepted only when |y_j| * 4 <= B[j]
+##
+##   The hidden unit is the exact SwiGLU/ReLU unit of the LumePuter model (lumeputer_swiglu_exact_relu_unit in
+##   lchameleon.src): h_k = 0 when g_k <= 0, else u_k * g_k. Every weight is an integer, every product and sum is exact
+##   in 64-bit integers (range-checked, see lnc_unit / lnc_term), so there is no rounding anywhere: the "network" is
+##   integer matrix arithmetic. I32 holds the 0/1 gate and up weights; the down projection needs I64 because the weights
+##   that reassemble a 32-bit word from its bits go up to 2^31 and -2^32; the ROM is U32 (raw instruction words).
+##
+## What the matrices compute and what the control logic around them computes (one RV32IM step = two applications of
+## the block, "ALU" then "select"):
+##   matrices, stage ALU   bitwise AND (32 units a_i * b_i), OR and XOR (a + b - and, a + b - 2 and, by the down
+##                         projection), ADD and SUB before the 2^32 wrap, the four 16x16-bit partial products of MUL /
+##                         MULH, PC + 4, PC + immediate (branch / JAL / AUIPC target before the wrap).
+##   matrices, stage SELECT the result multiplexer (16 units candidate_j * one_hot_j -> the value written to rd) and the
+##                         next-PC multiplexer (4 units).
+##   control logic         instruction fetch address check and field decode; the one-hot select lines; the split of the
+##                         operands into bits and 16-bit limbs (the feature vector x); reduction modulo 2^32; the
+##                         signed / unsigned comparisons (SLT, SLTU, branch conditions other than equality, which comes
+##                         from the XOR channel); DIV and REM with the RISC-V corner cases; shifts; the carry
+##                         propagation that turns the MUL partial products into the low and high word; ECALL / EBREAK;
+##                         the cycle budget.
+##   Gated DeltaNet        registers and RAM are addressable rows updated by lumeputer_deltanet_ram_step_exact's rule
+##                         (row' = new value when key_one_hot == 1 and beta_write == 1, else the old row: zero drift).
+##                         The addressing itself (which row has key 1) is an index into a persistent trie, i.e. control
+##                         logic; the ROM fetch reads row PC/4 of `deltanet_rom`.
+##   ballast guard         after each application of the block every output channel must satisfy |y_j| * 4 <= B[j]
+##                         (lumeputer_ballast_rmsnorm_guard_ok). A channel that leaves the range traps the run.
+##   This is a software evaluation of the weights (sparse rows, exact integers). It demonstrates that the function can be
+##   executed from the cartridge alone and bit-exactly; it is not a claim that a floating-point inference engine that
+##   loads the file reproduces it.
+##
+## Machine: the LumePuter of lsafety_envelope.src (ROM at 0x40000, 16 KiB RAM at 0x80000, i32 monitor domain, traps on
+## signed overflow of + - *, on x / 0 and INT_MIN / -1, on `ctfail`). The reset stub of a cartridge reads argument i
+## from RAM word i (the input cells), so one cartridge serves every argument vector; the envelope's own ROM bakes the
+## arguments into the stub instead. Instructions the forward pass executes: everything `rc_*` emits (ADDI SLTI SLTIU
+## XORI SRAI ADD SUB SLT SLTU XOR OR AND MUL MULH DIV REM LW SW BEQ BNE JAL JALR LUI ECALL EBREAK) plus ORI ANDI SLLI
+## SRLI SLL SRL SRA AUIPC BLT BGE BLTU BGEU and FENCE. MULHSU MULHU DIVU REMU and byte / half-word loads and stores are
+## valid RV32IM that the emulator runs and this forward pass refuses (trap `cartridge_unsupported_instruction`).
+##
+## File format: official safetensors -- 8 bytes little-endian u64 N, N bytes of JSON header (starts with `{`, padded with
+## spaces to a multiple of 8), then the tensor bytes; `data_offsets` are relative to the first tensor byte, contiguous
+## and cover the buffer exactly. `__metadata__` (string -> string) carries: format, entry, arity, isa, source_sha256
+## (SHA-256 of the source text), tensors_sha256 (SHA-256 of the tensor bytes), the lcert verdict for the source
+## (lcert_kernel_verified, lcert_certificate_hash, lcert_proven_count, lcert_budget_checked_count,
+## lcert_total_obligations, proof_status = name:kind:status;...) and cartridge_sha256, the hash chained over all of
+## these. lcert fields come from re-running the certificate kernel (lcert.src, linked in) on the certificate JSON that
+## the caller passes in; without a certificate they say so ("false" / "none"). The chain is tamper evidence, not a
+## signature: whoever rewrites the file can recompute it.
+##
+## Tool protocol (stdin -> stdout), the reply convention of ltarget:
+##   @compile safetensors            first line, required
+##   @entry <function>               optional; default: the last function declared `/ pure`
+##   @cert <certificate JSON>        optional, one line: the output of `lcaas @mode certify` for the same source
+##   <source text>                   everything after the directive lines
+## reply: `HEX:<byte count>:<lowercase hex of the file>` or `ERR:<message>`.
+use lsafety_envelope
+use lcert
+use ljson
+
+## ====================================================================================================================
+## 1. small helpers: lists, tries, bytes, hex
+## ====================================================================================================================
+fn lnc_len(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => lnc_len(t, n + 1)
+fn lnc_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lnc_rev(t, Cons(h, acc))
+fn lnc_app(xs, ys) = lnc_rev(lnc_rev(xs, Nil), ys)
+fn lnc_nth(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i <= 0 then h else lnc_nth(t, i - 1)
+fn lnc_drop(xs, n) = match xs
+    Nil        => Nil
+    Cons(h, t) => if n <= 0 then xs else lnc_drop(t, n - 1)
+fn lnc_abs(v) = if v < 0 then 0 - v else v
+fn lnc_p2(k) = if k <= 0 then 1 else 2 * lnc_p2(k - 1)
+fn lnc_fdiv(p, m) = let q = p / m in if p % m < 0 then q - 1 else q
+fn lnc_w32(v) = let m = v % 4294967296 in if m < 0 then m + 4294967296 else m
+fn lnc_s32(u) = if u >= 2147483648 then u - 4294967296 else u
+fn lnc_sx(v, modulus) = if v >= modulus / 2 then v - modulus else v
+fn lnc_zeros(n, tail) = if n <= 0 then tail else lnc_zeros(n - 1, Cons(0, tail))
+fn lnc_bits(v, n, tail) = if n <= 0 then tail else Cons(v % 2, lnc_bits(v / 2, n - 1, tail))
+fn lnc_onehot(n, i, hot, v, tail) = if i >= n then tail else Cons(if i == hot then v else 0, lnc_onehot(n, i + 1, hot, v, tail))
+
+## persistent binary tries (index 0 .. 2 * half - 1): feature vectors, hidden vectors, register file, RAM, ROM
+fn lnc_tz(d) = if d <= 0 then LnL(0) else let s = lnc_tz(d - 1) in LnT(s, s)
+fn lnc_tget(t, half, i) = match t
+    LnL(v)    => v
+    LnT(l, r) => if i < half then lnc_tget(l, half / 2, i) else lnc_tget(r, half / 2, i - half)
+fn lnc_tb0(xs) = match xs
+    Nil        => {t: LnL(0), rest: Nil}
+    Cons(h, r) => {t: LnL(h), rest: r}
+## bottom-up build from a list in index order (missing tail entries are 0)
+fn lnc_tb(d, xs) = if d <= 0 then lnc_tb0(xs) else let l = lnc_tb(d - 1, xs) in let r = lnc_tb(d - 1, l.rest) in {t: LnT(l.t, r.t), rest: r.rest}
+fn lnc_trie(d, xs) = (lnc_tb(d, xs)).t
+fn lnc_log2c(n, d, p) = if p >= n then d else lnc_log2c(n, d + 1, p * 2)
+
+## little-endian byte lists (prepended to `tail`)
+fn lnc_le(v, nbytes, tail) = if nbytes <= 0 then tail else Cons(v % 256, lnc_le(v / 256, nbytes - 1, tail))
+fn lnc_le_i32(v, tail) = lnc_le(if v < 0 then v + 4294967296 else v, 4, tail)
+fn lnc_le_i64(v, tail) = lnc_le(lnc_w32(v), 4, lnc_le(lnc_w32(lnc_fdiv(v, 4294967296)), 4, tail))
+fn lnc_hexd(n) = at("0123456789abcdef", n)
+fn lnc_hex_list(bs, acc) = match bs
+    Nil        => acc
+    Cons(h, t) => lnc_hex_list(t, Cons(lnc_hexd(h / 16) + lnc_hexd(h % 16), acc))
+fn lnc_hex(bs) = joinall(own lnc_rev(lnc_hex_list(bs, Nil), Nil))
+fn lnc_str_bytes(s, i, tail) = if i < 0 then tail else lnc_str_bytes(s, i - 1, Cons(ord(at(s, i)), tail))
+fn lnc_bytes_of_str(s, tail) = lnc_str_bytes(s, count(s) - 1, tail)
+fn lnc_chr_list(bs, n, acc) = match bs
+    Nil        => acc
+    Cons(h, t) => if n <= 0 then acc else lnc_chr_list(t, n - 1, Cons(chr(h), acc))
+fn lnc_str_of_bytes(bs, n) = joinall(own lnc_rev(lnc_chr_list(bs, n, Nil), Nil))
+fn lnc_ascii(bs, n) = match bs
+    Nil        => if n <= 0 then 1 else 0
+    Cons(h, t) => if n <= 0 then 1 else if h < 9 or h > 126 then 0 else lnc_ascii(t, n - 1)
+fn lnc_u_le(bs, nbytes, mul, acc) = match bs
+    Nil        => acc
+    Cons(h, t) => if nbytes <= 0 then acc else if nbytes == 1 then acc + h * mul else lnc_u_le(t, nbytes - 1, mul * 256, acc + h * mul)
+## a real file as a byte list (fs_read_byte is NUL-safe and binary-exact)
+fn lnc_read_acc(path, i, acc) = let b = fs_read_byte(path, i) in if b < 0 then acc else lnc_read_acc(path, i + 1, Cons(b, acc))
+fn lnc_read_file(path) = lnc_rev(lnc_read_acc(path, 0, Nil), Nil)
+
+## ====================================================================================================================
+## 2. SHA-256 over a byte list (FIPS 180-4), on the round function of the certificate kernel (lcert.src)
+## ====================================================================================================================
+fn lnc_sha_take_w(bs, t, w_rev) = match bs
+    Cons(a, Cons(b, Cons(c, Cons(d, r)))) => lnc_sha_take(r, t + 1, Cons(a * 16777216 + b * 65536 + c * 256 + d, w_rev))
+    _                                     => {w: w_rev, rest: Nil}
+fn lnc_sha_take(bs, t, w_rev) = if t >= 16 then {w: w_rev, rest: bs} else lnc_sha_take_w(bs, t, w_rev)
+fn lnc_sha_ext(t, w_rev) = if t >= 64 then w_rev else lnc_sha_ext(t + 1, Cons(sha_u32(sha_nth(w_rev, 15) + sha_sml_sig0(sha_nth(w_rev, 14)) + sha_nth(w_rev, 6) + sha_sml_sig1(sha_nth(w_rev, 1))), w_rev))
+fn lnc_sha_blocks(bs, st) = match bs
+    Nil        => st
+    Cons(h, t) => let blk = lnc_sha_take(bs, 0, Nil) in let r = sha_rounds(st, lnc_sha_ext(16, blk.w), 0) in lnc_sha_blocks(blk.rest, {a: sha_u32(st.a + r.a), b: sha_u32(st.b + r.b), c: sha_u32(st.c + r.c), d: sha_u32(st.d + r.d), e: sha_u32(st.e + r.e), f: sha_u32(st.f + r.f), g: sha_u32(st.g + r.g), h: sha_u32(st.h + r.h)})
+fn lnc_be(v, nbytes, tail) = if nbytes <= 0 then tail else lnc_be(v / 256, nbytes - 1, Cons(v % 256, tail))
+fn lnc_sha_pad(n) = let total = (n + 9 + 63) / 64 * 64 in Cons(128, lnc_zeros(total - n - 9, lnc_be(n * 8, 8, Nil)))
+fn lnc_sha256_bytes(bs) = let n = lnc_len(bs, 0) in let fin = lnc_sha_blocks(lnc_app(bs, lnc_sha_pad(n)), {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in sha_hex32(fin.a) + sha_hex32(fin.b) + sha_hex32(fin.c) + sha_hex32(fin.d) + sha_hex32(fin.e) + sha_hex32(fin.f) + sha_hex32(fin.g) + sha_hex32(fin.h)
+
+## ====================================================================================================================
+## 3. The SwiGLU block: layout of the feature vector, the hidden units and the output channels
+## ====================================================================================================================
+fn lnc_k() = 128
+fn lnc_d() = 128
+fn lnc_o() = 16
+## feature vector x (D = 128)
+##   0 one   1 a   2 b   3 pc   4 imm+   5 imm-   6 a_lo16   7 a_hi16   8 b_lo16   9 b_hi16
+##   16..47 bits of a   48..79 bits of b   80..95 result select (one-hot)   96..111 result candidates
+##   112..115 next-PC select (one-hot)   116..119 next-PC candidates
+## hidden units h (K = 128): 0..31 a_i AND b_i   32..35 MUL partial products ll, lh, hl, hh   36 a   37 b   38 pc
+##   39 imm+   40 imm-   41 one   48..63 result multiplexer   64..67 next-PC multiplexer   (the others are zero rows)
+## output channels y (O = 16): 0 and   1 or   2 xor   3 add   4 sub   5 mul ll   6 mul lh + hl   7 mul hh   8 pc + 4
+##   9 pc + imm   11 rd value   12 next pc   (10, 13..15 are zero rows)
+fn lnc_e(r, c, w) = {r: r, c: c, w: w}
+fn lnc_diag(n, i, r0, c0, tail) = if i >= n then tail else Cons(lnc_e(r0 + i, c0 + i, 1), lnc_diag(n, i + 1, r0, c0, tail))
+fn lnc_gate_spec() = lnc_diag(32, 0, 0, 48, Cons(lnc_e(32, 8, 1), Cons(lnc_e(33, 9, 1), Cons(lnc_e(34, 8, 1), Cons(lnc_e(35, 9, 1), Cons(lnc_e(36, 0, 1), Cons(lnc_e(37, 0, 1), Cons(lnc_e(38, 0, 1), Cons(lnc_e(39, 0, 1), Cons(lnc_e(40, 0, 1), Cons(lnc_e(41, 0, 1), lnc_diag(16, 0, 48, 80, lnc_diag(4, 0, 64, 112, Nil)))))))))))))
+fn lnc_up_spec() = lnc_diag(32, 0, 0, 16, Cons(lnc_e(32, 6, 1), Cons(lnc_e(33, 6, 1), Cons(lnc_e(34, 7, 1), Cons(lnc_e(35, 7, 1), Cons(lnc_e(36, 1, 1), Cons(lnc_e(37, 2, 1), Cons(lnc_e(38, 3, 1), Cons(lnc_e(39, 4, 1), Cons(lnc_e(40, 5, 1), Cons(lnc_e(41, 0, 1), lnc_diag(16, 0, 48, 96, lnc_diag(4, 0, 64, 116, Nil)))))))))))))
+fn lnc_bitw(row, i, scale, tail) = if i >= 32 then tail else Cons(lnc_e(row, i, scale * lnc_p2(i)), lnc_bitw(row, i + 1, scale, tail))
+fn lnc_mux_row(row, n, i, k0, tail) = if i >= n then tail else Cons(lnc_e(row, k0 + i, 1), lnc_mux_row(row, n, i + 1, k0, tail))
+fn lnc_down_spec() = let t6 = lnc_mux_row(11, 16, 0, 48, lnc_mux_row(12, 4, 0, 64, Nil)) in let t5 = Cons(lnc_e(8, 38, 1), Cons(lnc_e(8, 41, 4), Cons(lnc_e(9, 38, 1), Cons(lnc_e(9, 39, 1), Cons(lnc_e(9, 40, 0 - 1), t6))))) in let t4 = Cons(lnc_e(5, 32, 1), Cons(lnc_e(6, 33, 1), Cons(lnc_e(6, 34, 1), Cons(lnc_e(7, 35, 1), t5)))) in let t3 = Cons(lnc_e(3, 36, 1), Cons(lnc_e(3, 37, 1), Cons(lnc_e(4, 36, 1), Cons(lnc_e(4, 37, 0 - 1), t4)))) in let t2 = Cons(lnc_e(2, 36, 1), Cons(lnc_e(2, 37, 1), lnc_bitw(2, 0, 0 - 2, t3))) in let t1 = Cons(lnc_e(1, 36, 1), Cons(lnc_e(1, 37, 1), lnc_bitw(1, 0, 0 - 1, t2))) in lnc_bitw(0, 0, 1, t1)
+## ballast: 2^36 covers 4 * the largest exact channel value (pc + imm and the MUL middle sum stay below 2^34)
+fn lnc_ballast_spec(i) = if i >= 16 then Nil else Cons(68719476736, lnc_ballast_spec(i + 1))
+
+## dense row-major matrix from the sparse specification
+fn lnc_row_entries(spec, r) = match spec
+    Nil        => Nil
+    Cons(h, t) => if h.r == r then Cons(h, lnc_row_entries(t, r)) else lnc_row_entries(t, r)
+fn lnc_cell(row, c) = match row
+    Nil        => 0
+    Cons(h, t) => if h.c == c then h.w + lnc_cell(t, c) else lnc_cell(t, c)
+fn lnc_dense_row(row, c, cols, wide, tail) = if c < 0 then tail else lnc_dense_row(row, c - 1, cols, wide, if wide == 1 then lnc_le_i64(lnc_cell(row, c), tail) else lnc_le_i32(lnc_cell(row, c), tail))
+fn lnc_dense(spec, r, rows, cols, wide, tail) = if r < 0 then tail else lnc_dense(spec, r - 1, rows, cols, wide, lnc_dense_row(lnc_row_entries(spec, r), cols - 1, cols, wide, tail))
+fn lnc_i64_list(xs, tail) = match xs
+    Nil        => tail
+    Cons(h, t) => lnc_le_i64(h, lnc_i64_list(t, tail))
+fn lnc_u32_list(xs, tail) = match xs
+    Nil        => tail
+    Cons(h, t) => lnc_le(h, 4, lnc_u32_list(t, tail))
+
+## the exact SwiGLU/ReLU unit of the LumePuter model: zero when the gate is not positive, else the product. The product
+## is formed only when it cannot leave the i64 range; anything above 2^34 in magnitude is not a value of this datapath
+## and is reported as lnc_bad() (the run then traps on `swiglu_activation_out_of_range`).
+fn lnc_bad() = 4611686018427387904
+fn lnc_unit(a_val, b_gate) = if b_gate <= 0 then 0 else if b_gate > 131072 or a_val > 17179869184 or a_val < 0 - 17179869184 then lnc_bad() else let p = a_val * b_gate in if p > 17179869184 or p < 0 - 17179869184 then lnc_bad() else p
+law lnc_unit_closed_gate_is_zero(a_val: int, b_gate: int) = if b_gate <= 0 then lnc_unit(a_val, b_gate) == 0 else 1 == 1
+## one term w * h of the down projection, exact or lnc_bad()
+fn lnc_term(w, h) = if w == 0 or h == 0 then 0 else if lnc_abs(h) > 17179869184 then lnc_bad() else if lnc_abs(h) > 134217728 and lnc_abs(w) > 64 then lnc_bad() else let p = w * h in if lnc_abs(p) > 1099511627776 then lnc_bad() else p
+## the ballast guard of the LumePuter model (lumeputer_ballast_rmsnorm_guard_ok): residual * 4 <= ballast
+fn lnc_guard(y, ballast) = let m = lnc_abs(y) in if ballast < 1 or m > 1152921504606846976 then 0 else if m * 4 <= ballast then 1 else 0
+## the Gated DeltaNet row update of the LumePuter model (lumeputer_deltanet_ram_step_exact): zero drift unless written
+fn lnc_dn_step(old_row_val, key_one_hot, beta_write, new_val) = if key_one_hot == 1 and beta_write == 1 then new_val else old_row_val
+law lnc_dn_zero_drift(old_row_val: int, new_val: int) = lnc_dn_step(old_row_val, 0, 1, new_val) == old_row_val and lnc_dn_step(old_row_val, 1, 0, new_val) == old_row_val
+## write through the addressed row: the leaf reached by `i` is the row whose key is 1, every other row keeps key 0
+fn lnc_dn_write(t, half, i, beta, v) = match t
+    LnL(o)    => LnL(lnc_dn_step(o, 1, beta, v))
+    LnT(l, r) => if i < half then LnT(lnc_dn_write(l, half / 2, i, beta, v), r) else LnT(l, lnc_dn_write(r, half / 2, i - half, beta, v))
+
+## sparse rows read back from the dense tensors: {c, w} per non-zero cell
+fn lnc_dot(row, x) = match row
+    Nil        => 0
+    Cons(e, t) => e.w * lnc_tget(x, 64, e.c) + lnc_dot(t, x)
+fn lnc_hid2(gv, gr, us, x) = match us
+    Nil         => Nil
+    Cons(u, ur) => Cons(if gv <= 0 then 0 else lnc_unit(lnc_dot(u, x), gv), lnc_hid(gr, ur, x))
+fn lnc_hid(gs, us, x) = match gs
+    Nil         => Nil
+    Cons(g, gr) => lnc_hid2(lnc_dot(g, x), gr, us, x)
+fn lnc_ddot(row, ht, acc) = match row
+    Nil        => acc
+    Cons(e, t) => let tv = lnc_term(e.w, lnc_tget(ht, 64, e.c)) in if tv == lnc_bad() then lnc_bad() else lnc_ddot(t, ht, acc + tv)
+fn lnc_outs(rows, ht) = match rows
+    Nil        => Nil
+    Cons(r, t) => Cons(lnc_ddot(r, ht, 0), lnc_outs(t, ht))
+## "" when every channel is exact and inside its ballast
+fn lnc_guard_all(ys, bs) = match ys
+    Nil        => ""
+    Cons(y, t) => if y == lnc_bad() then "swiglu_activation_out_of_range" else if lnc_guard(y, lnc_nth(bs, 0)) == 0 then "ballast_rmsnorm_guard" else lnc_guard_all(t, lnc_drop(bs, 1))
+## one application of the block: y = W . relu_unit(U x, G x), guarded. {err, y}
+fn lnc_block(c, feats) = let ys = lnc_outs(c.down, lnc_trie(7, lnc_hid(c.gate, c.up, lnc_trie(7, feats)))) in {err: lnc_guard_all(ys, c.ballast), y: ys}
+
+## ====================================================================================================================
+## 4. Forward pass: the LumePuter step computed from the cartridge
+## ====================================================================================================================
+fn lnc_ok(pc, x, ram) = {st: 0, cause: "", pc: pc, x: x, ram: ram}
+fn lnc_stop(st, cause, pc, x, ram) = {st: st, cause: cause, pc: pc, x: x, ram: ram}
+fn lnc_reg(x, r) = if r == 0 then 0 else lnc_tget(x, 16, r)
+## result slot of an instruction: 0..14 = candidate index, -1 = no register result, -2 = illegal, -3 = not supported here
+fn lnc_slot_op(f3, f7) = if f7 == 1 then (if f3 == 0 then 5 else if f3 == 1 then 6 else if f3 == 4 then 9 else if f3 == 6 then 10 else 0 - 3) else if f7 == 0 then (if f3 == 0 then 3 else if f3 == 1 then 11 else if f3 == 2 then 7 else if f3 == 3 then 8 else if f3 == 4 then 2 else if f3 == 5 then 11 else if f3 == 6 then 1 else 0) else if f7 == 32 then (if f3 == 0 then 4 else if f3 == 5 then 11 else 0 - 2) else 0 - 2
+fn lnc_slot_imm(f3, f7) = if f3 == 0 then 3 else if f3 == 2 then 7 else if f3 == 3 then 8 else if f3 == 4 then 2 else if f3 == 6 then 1 else if f3 == 7 then 0 else if f3 == 1 then (if f7 == 0 then 11 else 0 - 2) else if f7 == 0 or f7 == 32 then 11 else 0 - 2
+fn lnc_slot(opc, f3, f7) = if opc == 51 then lnc_slot_op(f3, f7) else if opc == 19 then lnc_slot_imm(f3, f7) else if opc == 3 then (if f3 == 2 then 14 else if f3 == 0 or f3 == 1 or f3 == 4 or f3 == 5 then 0 - 3 else 0 - 2) else if opc == 55 then 12 else if opc == 23 then 11 else if opc == 111 then 13 else if opc == 103 then (if f3 == 0 then 13 else 0 - 2) else if opc == 99 then (if f3 == 2 or f3 == 3 then 0 - 2 else 0 - 1) else if opc == 35 then (if f3 == 2 then 0 - 1 else if f3 == 0 or f3 == 1 then 0 - 3 else 0 - 2) else if opc == 15 then (if f3 == 0 then 0 - 1 else 0 - 2) else 0 - 2
+fn lnc_shift(f3, f7, a, sh) = if f3 == 1 then a % lnc_p2(32 - sh) * lnc_p2(sh) else if f7 == 0 then a / lnc_p2(sh) else lnc_w32(lnc_fdiv(lnc_s32(a), lnc_p2(sh)))
+fn lnc_div(a, b) = let sa = lnc_s32(a) in let sb = lnc_s32(b) in if b == 0 then 4294967295 else if sa == 0 - 2147483648 and sb == 0 - 1 then 2147483648 else lnc_w32(sa / sb)
+fn lnc_rem(a, b) = let sa = lnc_s32(a) in let sb = lnc_s32(b) in if b == 0 then a else if sa == 0 - 2147483648 and sb == 0 - 1 then 0 else lnc_w32(sa % sb)
+## MULH from the partial products of the ALU stage: unsigned high word, then the two sign corrections
+fn lnc_mulh(ys, a, b) = lnc_w32(lnc_nth(ys, 7) + (lnc_nth(ys, 6) * 65536 + lnc_nth(ys, 5)) / 4294967296 - (if lnc_s32(a) < 0 then b else 0) - (if lnc_s32(b) < 0 then a else 0))
+fn lnc_mem_err(addr) = if addr < 524288 or addr + 4 > 524288 + 16384 then "ram_out_of_bounds" else if addr % 4 != 0 then "ram_misaligned" else ""
+## the value of the selected candidate (the other candidates enter the multiplexer as 0 under a closed gate)
+fn lnc_cand(slot, ys, d, ram) = if slot <= 2 then lnc_nth(ys, slot) else if slot == 3 then lnc_w32(lnc_nth(ys, 3)) else if slot == 4 then lnc_w32(lnc_nth(ys, 4)) else if slot == 5 then lnc_w32(lnc_nth(ys, 5) + lnc_nth(ys, 6) * 65536) else if slot == 6 then lnc_mulh(ys, d.a, d.b) else if slot == 7 then (if lnc_s32(d.a) < lnc_s32(d.b) then 1 else 0) else if slot == 8 then (if d.a < d.b then 1 else 0) else if slot == 9 then lnc_div(d.a, d.b) else if slot == 10 then lnc_rem(d.a, d.b) else if slot == 11 then (if d.opc == 23 then lnc_w32(lnc_nth(ys, 9)) else lnc_shift(d.f3, d.f7, d.a, if d.opc == 19 then d.rs2 else d.b % 32)) else if slot == 12 then d.w / 4096 * 4096 else if slot == 13 then lnc_nth(ys, 8) else lnc_tget(ram, 2048, (lnc_w32(lnc_nth(ys, 3)) - 524288) / 4)
+fn lnc_taken(f3, ys, a, b) = if f3 == 0 then (if lnc_nth(ys, 2) == 0 then 1 else 0) else if f3 == 1 then (if lnc_nth(ys, 2) != 0 then 1 else 0) else if f3 == 4 then (if lnc_s32(a) < lnc_s32(b) then 1 else 0) else if f3 == 5 then (if lnc_s32(a) >= lnc_s32(b) then 1 else 0) else if f3 == 6 then (if a < b then 1 else 0) else if a >= b then 1 else 0
+## next-PC select: 0 = pc + 4, 1 = pc + imm, 2 = JALR target
+fn lnc_psel(d, ys) = if d.opc == 111 then 1 else if d.opc == 103 then 2 else if d.opc == 99 then lnc_taken(d.f3, ys, d.a, d.b) else 0
+fn lnc_pcand(ps, ys) = if ps == 0 then lnc_nth(ys, 8) else if ps == 1 then lnc_w32(lnc_nth(ys, 9)) else let t = lnc_w32(lnc_nth(ys, 3)) in t - t % 2
+fn lnc_feat_a(d, pc) = Cons(1, Cons(d.a, Cons(d.b, Cons(pc, Cons(if d.ims >= 0 then d.ims else 0, Cons(if d.ims < 0 then 0 - d.ims else 0, Cons(d.a % 65536, Cons(d.a / 65536, Cons(d.b % 65536, Cons(d.b / 65536, lnc_zeros(6, lnc_bits(d.a, 32, lnc_bits(d.b, 32, Nil)))))))))))))
+fn lnc_feat_b(slot, cv, ps, pv) = lnc_zeros(80, lnc_onehot(16, 0, slot, 1, lnc_onehot(16, 0, slot, cv, lnc_onehot(4, 0, ps, 1, lnc_onehot(4, 0, ps, pv, Nil)))))
+## commit: the register row rd and (for SW) the RAM row are rewritten by the DeltaNet rule
+fn lnc_commit(d, slot, yb, ya, x, ram) = let x2 = if d.rd == 0 then x else lnc_dn_write(x, 16, d.rd, if slot >= 0 then 1 else 0, lnc_nth(yb, 11)) in let ram2 = if d.opc == 35 then lnc_dn_write(ram, 2048, (lnc_w32(lnc_nth(ya, 3)) - 524288) / 4, 1, d.sv) else ram in lnc_ok(lnc_nth(yb, 12), x2, ram2)
+fn lnc_select(c, d, pc, x, ram, slot, ya) = let ps = lnc_psel(d, ya) in let sb = lnc_block(c, lnc_feat_b(slot, if slot >= 0 then lnc_cand(slot, ya, d, ram) else 0, ps, lnc_pcand(ps, ya))) in if sb.err != "" then lnc_stop(2, sb.err, pc, x, ram) else lnc_commit(d, slot, sb.y, ya, x, ram)
+fn lnc_alu(c, d, pc, x, ram, slot) = let sa = lnc_block(c, lnc_feat_a(d, pc)) in if sa.err != "" then lnc_stop(2, sa.err, pc, x, ram) else let me = if d.opc == 3 or d.opc == 35 then lnc_mem_err(lnc_w32(lnc_nth(sa.y, 3))) else "" in if me != "" then lnc_stop(2, me, pc, x, ram) else lnc_select(c, d, pc, x, ram, slot, sa.y)
+fn lnc_ebreak_cause(k) = if k == 1 then "ebreak_contract_violation" else if k == 2 then "ebreak_integer_overflow" else if k == 3 then "ebreak_division_by_zero" else "ebreak"
+fn lnc_system(pc, x, ram, w) = if w == 115 then (if lnc_reg(x, 17) == 93 then lnc_stop(1, "halt", pc, x, ram) else lnc_stop(2, "ecall_unsupported", pc, x, ram)) else if w == 1048691 then lnc_stop(2, lnc_ebreak_cause(lnc_reg(x, 17)), pc, x, ram) else lnc_stop(2, "illegal_instruction", pc, x, ram)
+## decode (control logic): fields, operand a = x[rs1], operand b = x[rs2] or the immediate word, pc-relative immediate
+fn lnc_imm_b(w, rd, f7) = lnc_sx(w / 2147483648 * 4096 + rd % 2 * 2048 + f7 % 64 * 32 + rd / 2 * 2, 8192)
+fn lnc_imm_j(w) = lnc_sx(w / 2147483648 * 1048576 + w / 4096 % 256 * 4096 + w / 1048576 % 2 * 2048 + w / 2097152 % 1024 * 2, 2097152)
+fn lnc_decode(x, w) = let opc = w % 128 in let rd = w / 128 % 32 in let f3 = w / 4096 % 8 in let rs1 = w / 32768 % 32 in let rs2 = w / 1048576 % 32 in let f7 = w / 33554432 in {w: w, opc: opc, rd: if opc == 99 or opc == 35 or opc == 15 then 0 else rd, f3: f3, f7: f7, rs2: rs2, a: if opc == 55 or opc == 23 or opc == 111 then 0 else lnc_reg(x, rs1), b: if opc == 51 or opc == 99 then lnc_reg(x, rs2) else if opc == 19 or opc == 3 or opc == 103 then lnc_w32(lnc_sx(w / 1048576, 4096)) else if opc == 35 then lnc_w32(lnc_sx(f7 * 32 + rd, 4096)) else 0, ims: if opc == 99 then lnc_imm_b(w, rd, f7) else if opc == 111 then lnc_imm_j(w) else if opc == 23 then w / 4096 * 4096 else 0, sv: if opc == 35 then lnc_reg(x, rs2) else 0}
+fn lnc_exec(c, pc, x, ram, w) = if w % 128 == 115 then lnc_system(pc, x, ram, w) else let slot = lnc_slot(w % 128, w / 4096 % 8, w / 33554432) in if slot == 0 - 2 then lnc_stop(2, "illegal_instruction", pc, x, ram) else if slot == 0 - 3 then lnc_stop(2, "cartridge_unsupported_instruction", pc, x, ram) else lnc_alu(c, lnc_decode(x, w), pc, x, ram, slot)
+## fetch through the DeltaNet ROM: row PC/4 of `deltanet_rom`
+fn lnc_step(c, pc, x, ram) = if pc % 4 != 0 then lnc_stop(2, "pc_misaligned", pc, x, ram) else if pc < 262144 or pc >= 262144 + 4 * c.romn then lnc_stop(2, "pc_out_of_rom", pc, x, ram) else lnc_exec(c, pc, x, ram, lnc_tget(c.rom, c.romhalf, (pc - 262144) / 4))
+fn lnc_run(c, pc, x, ram, cyc, budget) = if cyc >= budget then {st: 2, cause: "watchdog_cycle_budget", x: x, cyc: cyc} else let s = lnc_step(c, pc, x, ram) in if s.st != 0 then {st: s.st, cause: s.cause, x: s.x, cyc: cyc + 1} else lnc_run(c, s.pc, s.x, s.ram, cyc + 1, budget)
+fn lnc_args_ram(ram, args, i) = match args
+    Nil        => ram
+    Cons(h, t) => lnc_args_ram(lnc_dn_write(ram, 2048, i, 1, lnc_w32(h)), t, i + 1)
+fn lnc_args_i32(args) = match args
+    Nil        => 1
+    Cons(h, t) => if h < 0 - 2147483648 or h > 2147483647 then 0 else lnc_args_i32(t)
+## {ok, v, cycles, cause}: ok == 1 only when the machine halted through its reset stub; v is the i32 result
+fn lnc_forward_b(cart, args, budget) = if lnc_len(args, 0) != cart.arity then {ok: 0, v: 0, cycles: 0, cause: "wrong_argument_count"} else if lnc_args_i32(args) == 0 then {ok: 0, v: 0, cycles: 0, cause: "arg_outside_i32"} else let m = lnc_run(cart, 262144, lnc_tz(5), lnc_args_ram(lnc_tz(12), args, 0), 0, budget) in if m.st == 1 then {ok: 1, v: lnc_s32(lnc_reg(m.x, 10)), cycles: m.cyc, cause: ""} else {ok: 0, v: 0, cycles: m.cyc, cause: m.cause}
+fn lnc_default_budget() = 1000000
+fn lnc_forward(cart, args) = lnc_forward_b(cart, args, lnc_default_budget())
+
+## ====================================================================================================================
+## 5. Compiler: source -> ROM -> safetensors bytes
+## ====================================================================================================================
+## the cartridge ROM: the envelope's layout (reset stub, three trap stubs, the functions) with a stub that loads
+## argument i from RAM word i instead of a constant
+fn lnc_stub_args(st, i, n) = if i >= n then st else lnc_stub_args(rc_w3(st, rv_lw(10, 5, 4 * i), rv_addi(2, 2, 0 - 4), rv_sw(10, 2, 0)), i + 1, n)
+fn lnc_rom_build(tab, k) = let nf = rv_len(tab) in let cx = {fns: tab, lc: nf, lo: nf + 1, ld: nf + 2} in let s1 = lnc_stub_args(rc_w(rc_li2(rc_st0(nf + 3), 2, 524288 + 16384), rv_lui(5, 128)), 0, k.arity) in let s2 = rc_w3(rc_j(s1, 1, k.id), rv_addi(2, 2, 4 * k.arity), rv_addi(17, 0, 93), rv_ecall()) in let s3 = rc_w2(rc_def(rc_w2(rc_def(rc_w2(rc_def(s2, cx.lc), rv_addi(17, 0, 1), rv_ebreak()), cx.lo), rv_addi(17, 0, 2), rv_ebreak()), cx.ld), rv_addi(17, 0, 3), rv_ebreak()) in let s4 = rc_fns(s3, cx, tab) in if s4.err != "" then rc_rom_err(s4.err) else rc_res(rc_rev(s4.code, Nil), s4.defs, 0)
+fn lnc_rom_k(tab, k, fname) = if k.id < 0 then rc_rom_err("entry function not found: " + fname) else if k.arity > 64 then rc_rom_err("more than 64 parameters") else lnc_rom_build(tab, k)
+## {err, rom, arity}
+fn lnc_rom(prog, fname) = let tab = rc_table(prog, Cons(fname, Nil), Nil, 0) in let k = rc_fn_find(tab, fname) in let r = lnc_rom_k(tab, k, fname) in {err: r.err, rom: r.rom, arity: k.arity}
+
+## functions declared `/ pure`, in source order
+fn lnc_has_pure(effs) = match effs
+    Nil        => 0
+    Cons(h, t) => if h == "pure" then 1 else lnc_has_pure(t)
+fn lnc_pure_fns(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => lnc_pure_fn1(h, lnc_pure_fns(t))
+fn lnc_pure_fn1(st, rest) = match st
+    KEffSig(nm, effs) => if lnc_has_pure(effs) == 1 then Cons(nm, rest) else rest
+    _                 => rest
+fn lnc_last(xs, d) = match xs
+    Nil        => d
+    Cons(h, t) => lnc_last(t, h)
+fn lnc_mem(nm, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else lnc_mem(nm, t)
+
+## certificate facts for the metadata: the kernel is re-run here on the certificate the caller supplies
+fn lnc_jint_at(s, i, n, acc, seen) = if i >= n then (if seen == 1 then acc else 0 - 1) else let c = at(s, i) in if c >= "0" and c <= "9" then lnc_jint_at(s, i + 1, n, acc * 10 + (ord(c) - 48), 1) else if seen == 1 then acc else 0 - 1
+fn lnc_jint(json, key) = let pat = "\"" + key + "\":" in let p = lk_find_sub(json, pat, 0) in if p < 0 then 0 - 1 else lnc_jint_at(json, p + count(pat), count(json), 0, 0)
+fn lnc_obl_status(objs) = match objs
+    Nil        => ""
+    Cons(h, t) => lk_jstr(h, "name") + ":" + lk_jstr(h, "kind") + ":" + lk_jstr(h, "status") + ";" + lnc_obl_status(t)
+fn lnc_cert_none() = {verified: "false", hash: "none", proven: "0", budgeted: "0", total: "0", status: "no certificate supplied", srchash: ""}
+fn lnc_cert_facts(cert_json) = if cert_json == "" then lnc_cert_none() else let v = lcert_verify_artifact(cert_json) in let obr = lk_jarr_raw(cert_json, "obligations") in {verified: if lk_find_sub(v, "\"kernel_verified\":true", 0) >= 0 then "true" else "false", hash: lk_jstr(cert_json, "certificate_hash"), proven: str(lnc_jint(v, "proven_count")), budgeted: str(lnc_jint(v, "budget_checked_count")), total: str(lnc_jint(v, "total_obligations")), status: if obr.ok == 1 then lnc_obl_status(lk_split_objs(obr.raw)) else "malformed certificate", srchash: lk_jstr(cert_json, "source_hash")}
+fn lnc_chain(entry, arity, srcsha, tsha, cf) = sha256_hex("lume-neural-cartridge-v1|" + entry + "|" + arity + "|" + srcsha + "|" + tsha + "|" + cf.hash + "|" + cf.verified + "|" + cf.proven + "|" + cf.budgeted + "|" + cf.total + "|" + cf.status)
+fn lnc_kv(k, v) = "\"" + k + "\":\"" + lk_jesc(v) + "\""
+fn lnc_tensor_json(name, dtype, shape, b, e) = "\"" + name + "\":{\"dtype\":\"" + dtype + "\",\"shape\":[" + shape + "],\"data_offsets\":[" + str(b) + "," + str(e) + "]}"
+fn lnc_pad8(s) = if (count(s)) % 8 == 0 then s else lnc_pad8(s + " ")
+fn lnc_header(entry, arity, srcsha, tsha, cf, romn) = let g = 65536 in let d = 16384 in let r = romn * 4 in lnc_pad8("{\"__metadata__\":{" + lnc_kv("format", "lume-neural-cartridge-v1") + "," + lnc_kv("isa", "rv32im-lumeputer") + "," + lnc_kv("swiglu_hidden_units", "128") + "," + lnc_kv("entry", entry) + "," + lnc_kv("arity", arity) + "," + lnc_kv("source_sha256", srcsha) + "," + lnc_kv("tensors_sha256", tsha) + "," + lnc_kv("lcert_kernel_verified", cf.verified) + "," + lnc_kv("lcert_certificate_hash", cf.hash) + "," + lnc_kv("lcert_proven_count", cf.proven) + "," + lnc_kv("lcert_budget_checked_count", cf.budgeted) + "," + lnc_kv("lcert_total_obligations", cf.total) + "," + lnc_kv("proof_status", cf.status) + "," + lnc_kv("cartridge_sha256", lnc_chain(entry, arity, srcsha, tsha, cf)) + "}," + lnc_tensor_json("swiglu_gate_proj", "I32", "128,128", 0, g) + "," + lnc_tensor_json("swiglu_up_proj", "I32", "128,128", g, 2 * g) + "," + lnc_tensor_json("swiglu_down_proj", "I64", "16,128", 2 * g, 2 * g + d) + "," + lnc_tensor_json("deltanet_rom", "U32", str(romn), 2 * g + d, 2 * g + d + r) + "," + lnc_tensor_json("ballast_rmsnorm_guard", "I64", "16", 2 * g + d + r, 2 * g + d + r + 128) + "}")
+## tensor bytes in file order: gate, up, down, rom, ballast
+fn lnc_tensor_bytes(rom) = lnc_dense(lnc_gate_spec(), 127, 128, 128, 0, lnc_dense(lnc_up_spec(), 127, 128, 128, 0, lnc_dense(lnc_down_spec(), 15, 16, 128, 1, lnc_u32_list(rom, lnc_i64_list(lnc_ballast_spec(0), Nil)))))
+fn lnc_file_bytes(entry, arity, srcsha, cf, rom) = let tb = lnc_tensor_bytes(rom) in let hdr = lnc_header(entry, str(arity), srcsha, lnc_sha256_bytes(tb), cf, lnc_len(rom, 0)) in lnc_le(count(hdr), 8, lnc_bytes_of_str(hdr, tb))
+fn lnc_fail(msg) = {err: msg, bytes: Nil, entry: "", arity: 0, rom_words: 0}
+fn lnc_compile_rom(src, entry, cert_json, r) = if r.err != "" then lnc_fail("'" + entry + "' is outside the LumePuter fragment (integer literals, parameters, let, if, + - * / %, comparisons, and/or, bit_and/bit_or/bit_xor, calls): " + r.err) else let srcsha = sha256_hex(src) in let cf = lnc_cert_facts(cert_json) in if cf.srchash != "" and cf.srchash != "sha256:" + srcsha then lnc_fail("the certificate is for another source (source_hash " + cf.srchash + ", this source sha256:" + srcsha + ")") else {err: "", bytes: lnc_file_bytes(entry, r.arity, srcsha, cf, r.rom), entry: entry, arity: r.arity, rom_words: lnc_len(r.rom, 0)}
+fn lnc_compile_entry(src, entry, cert_json, pures) = if entry == "" then lnc_fail("no function is declared `/ pure`: a cartridge is compiled from a pure integer function") else if lnc_mem(entry, pures) == 0 then lnc_fail("entry function '" + entry + "' is not declared `/ pure`") else lnc_compile_rom(src, entry, cert_json, lnc_rom(nf_late(lumec_expand(src)), entry))
+## {err, bytes, entry, arity, rom_words}. `entry` "" selects the last `/ pure` function; `cert_json` "" = no certificate.
+## The source goes through the compiler's own front end (lumec_expand): a source lumec rejects aborts here as it does there.
+fn lnc_compile(src, entry, cert_json) = let pures = lnc_pure_fns(parseprogram(src)) in lnc_compile_entry(src, if entry == "" then lnc_last(pures, "") else entry, cert_json, pures)
+
+## ====================================================================================================================
+## 6. Strict loader
+## ====================================================================================================================
+fn lnc_lerr(msg) = {err: msg, entry: "", arity: 0, romn: 0, romhalf: 1, rom: LnL(0), romlist: Nil, gate: Nil, up: Nil, down: Nil, ballast: Nil, meta: Nil, nbytes: 0, header_len: 0, tensors_sha256: ""}
+fn lnc_dtype_size(dt) = if dt == "I32" or dt == "U32" or dt == "F32" then 4 else if dt == "I64" or dt == "U64" or dt == "F64" then 8 else if dt == "I16" or dt == "U16" or dt == "F16" or dt == "BF16" then 2 else if dt == "I8" or dt == "U8" or dt == "BOOL" then 1 else 0
+fn lnc_shape_prod(items, acc) = match items
+    Nil        => acc
+    Cons(h, t) => if h.kind != "number" or h.num < 0 or h.num > 16777216 or acc > 16777216 then 0 - 1 else lnc_shape_prod(t, acc * h.num)
+fn lnc_shape_str(items) = match items
+    Nil        => ""
+    Cons(h, t) => h.text + (if lj_isnil(t) == 1 then "" else "," + lnc_shape_str(t))
+## one header entry -> {err, name, dtype, shape, b, e}
+fn lnc_tinfo(name, v) = let dt = lj_get(v, "dtype") in let sh = lj_get(v, "shape") in let off = lj_get(v, "data_offsets") in if v.kind != "object" or dt.kind != "string" or sh.kind != "array" or off.kind != "array" then {err: "tensor '" + name + "' needs dtype, shape and data_offsets", name: name, dtype: "", shape: "", b: 0, e: 0} else let size = lnc_dtype_size(dt.text) in let n = lnc_shape_prod(sh.items, 1) in let b = lnc_nth_item(off.items, 0) in let e = lnc_nth_item(off.items, 1) in if size == 0 then {err: "tensor '" + name + "' has an unknown dtype '" + dt.text + "'", name: name, dtype: "", shape: "", b: 0, e: 0} else if lnc_len(off.items, 0) != 2 or b < 0 or e < b then {err: "tensor '" + name + "' has malformed data_offsets", name: name, dtype: "", shape: "", b: 0, e: 0} else if n < 0 or e - b != n * size then {err: "tensor '" + name + "': data_offsets span " + str(e - b) + " bytes, dtype and shape need " + str(n * size), name: name, dtype: "", shape: "", b: 0, e: 0} else {err: "", name: name, dtype: dt.text, shape: lnc_shape_str(sh.items), b: b, e: e}
+fn lnc_nth_item(items, i) = match items
+    Nil        => 0 - 1
+    Cons(h, t) => if i <= 0 then (if h.kind == "number" then h.num else 0 - 1) else lnc_nth_item(t, i - 1)
+fn lnc_tinfos(fields) = match fields
+    Nil        => Nil
+    Cons(h, t) => if h.key == "__metadata__" then lnc_tinfos(t) else Cons(lnc_tinfo(h.key, h.value), lnc_tinfos(t))
+fn lnc_tinfo_err(ts) = match ts
+    Nil        => ""
+    Cons(h, t) => if h.err != "" then h.err else lnc_tinfo_err(t)
+fn lnc_dup_name(ts, seen) = match ts
+    Nil        => ""
+    Cons(h, t) => if lnc_mem(h.name, seen) == 1 then h.name else lnc_dup_name(t, Cons(h.name, seen))
+## the tensor that starts at offset `at_off` (zero-length tensors are skipped), "" when none does
+fn lnc_next_at(ts, at_off) = match ts
+    Nil        => {ok: 0, e: 0}
+    Cons(h, t) => if h.b == at_off and h.e > h.b then {ok: 1, e: h.e} else lnc_next_at(t, at_off)
+fn lnc_count_nonempty(ts, n) = match ts
+    Nil        => n
+    Cons(h, t) => lnc_count_nonempty(t, if h.e > h.b then n + 1 else n)
+## contiguous, non-overlapping cover of [0, buflen): follow the chain from offset 0; it must use every tensor
+fn lnc_cover(ts, at_off, used, total, buflen) = if at_off == buflen then (if used == total then "" else "tensor data_offsets overlap") else if used >= total then "tensor data_offsets do not cover the buffer (" + str(at_off) + " of " + str(buflen) + " bytes)" else let nx = lnc_next_at(ts, at_off) in if nx.ok == 0 then "tensor data_offsets are not contiguous at byte " + str(at_off) else if nx.e > buflen then "a tensor runs past the end of the file" else lnc_cover(ts, nx.e, used + 1, total, buflen)
+fn lnc_find_t(ts, name) = match ts
+    Nil        => {err: "missing", name: name, dtype: "", shape: "", b: 0, e: 0}
+    Cons(h, t) => if h.name == name then h else lnc_find_t(t, name)
+fn lnc_expect(ts, name, dtype, shape) = let t = lnc_find_t(ts, name) in if t.err != "" then "missing tensor '" + name + "'" else if t.dtype != dtype then "tensor '" + name + "' must be " + dtype + ", found " + t.dtype else if shape != "" and t.shape != shape then "tensor '" + name + "' must have shape [" + shape + "], found [" + t.shape + "]" else ""
+fn lnc_first_err(a, b) = if a != "" then a else b
+fn lnc_meta_all_str(fields) = match fields
+    Nil        => 1
+    Cons(h, t) => if h.value.kind != "string" then 0 else lnc_meta_all_str(t)
+fn lnc_meta(fields, key) = match fields
+    Nil        => ""
+    Cons(h, t) => if h.key == key then h.value.text else lnc_meta(t, key)
+## values of a tensor from the buffer
+fn lnc_vals(bs, n, size, signed, acc) = if n <= 0 then lnc_rev(acc, Nil) else let u = lnc_u_le(bs, if size == 8 then 4 else size, 1, 0) in let v = if size == 8 then u + lnc_s32(lnc_u_le(lnc_drop(bs, 4), 4, 1, 0)) * 4294967296 else if signed == 1 then lnc_s32(u) else u in lnc_vals(lnc_drop(bs, size), n - 1, size, signed, Cons(v, acc))
+fn lnc_tvals(buf, t, size, signed) = lnc_vals(lnc_drop(buf, t.b), (t.e - t.b) / size, size, signed, Nil)
+## dense values -> sparse rows; `lim` bounds the magnitude of a weight (exactness of the datapath), -1 marks a violation
+fn lnc_sparse_row(vs, c, cols, lim, acc) = if c >= cols then {row: lnc_rev(acc, Nil), rest: vs, bad: 0} else lnc_sparse_cell(vs, c, cols, lim, acc)
+fn lnc_sparse_cell(vs, c, cols, lim, acc) = match vs
+    Nil        => {row: Nil, rest: Nil, bad: 1}
+    Cons(h, t) => if lnc_abs(h) > lim then {row: Nil, rest: Nil, bad: 1} else lnc_sparse_row(t, c + 1, cols, lim, if h == 0 then acc else Cons({c: c, w: h}, acc))
+fn lnc_sparse(vs, r, rows, cols, lim) = if r >= rows then {rows: Nil, bad: 0} else let x = lnc_sparse_row(vs, 0, cols, lim, Nil) in if x.bad == 1 then {rows: Nil, bad: 1} else let rest = lnc_sparse(x.rest, r + 1, rows, cols, lim) in {rows: Cons(x.row, rest.rows), bad: rest.bad}
+fn lnc_ballast_ok(bs) = match bs
+    Nil        => 1
+    Cons(h, t) => if h < 1 or h > 4611686018427387904 then 0 else lnc_ballast_ok(t)
+fn lnc_toint_ok(s, i) = if count(s) == 0 or count(s) > 3 then 0 else if i >= count(s) then 1 else if at(s, i) >= "0" and at(s, i) <= "9" then lnc_toint_ok(s, i + 1) else 0
+fn lnc_cert_of_meta(mf) = {verified: lnc_meta(mf, "lcert_kernel_verified"), hash: lnc_meta(mf, "lcert_certificate_hash"), proven: lnc_meta(mf, "lcert_proven_count"), budgeted: lnc_meta(mf, "lcert_budget_checked_count"), total: lnc_meta(mf, "lcert_total_obligations"), status: lnc_meta(mf, "proof_status"), srchash: ""}
+fn lnc_load_cart(buf, ts, mf, n, hn, tsha) = let rom = lnc_tvals(buf, lnc_find_t(ts, "deltanet_rom"), 4, 0) in let romn = lnc_len(rom, 0) in let g = lnc_sparse(lnc_tvals(buf, lnc_find_t(ts, "swiglu_gate_proj"), 4, 1), 0, 128, 128, 256) in let u = lnc_sparse(lnc_tvals(buf, lnc_find_t(ts, "swiglu_up_proj"), 4, 1), 0, 128, 128, 256) in let d = lnc_sparse(lnc_tvals(buf, lnc_find_t(ts, "swiglu_down_proj"), 8, 1), 0, 16, 128, 17179869184) in let bl = lnc_tvals(buf, lnc_find_t(ts, "ballast_rmsnorm_guard"), 8, 1) in let depth = (let dd = lnc_log2c(romn, 0, 1) in if dd < 1 then 1 else dd) in if romn < 1 then lnc_lerr("deltanet_rom is empty") else if g.bad == 1 or u.bad == 1 then lnc_lerr("a gate / up projection weight is outside the exact range (|w| <= 256)") else if d.bad == 1 then lnc_lerr("a down projection weight is outside the exact range (|w| <= 2^34)") else if lnc_ballast_ok(bl) == 0 then lnc_lerr("a ballast entry is outside 1 .. 2^62") else {err: "", entry: lnc_meta(mf, "entry"), arity: toint(lnc_meta(mf, "arity")), romn: romn, romhalf: lnc_p2(depth) / 2, rom: lnc_trie(depth, rom), romlist: rom, gate: g.rows, up: u.rows, down: d.rows, ballast: bl, meta: mf, nbytes: n, header_len: hn, tensors_sha256: tsha}
+fn lnc_load_meta(buf, ts, mf, n, hn) = if lnc_meta(mf, "format") != "lume-neural-cartridge-v1" then lnc_lerr("__metadata__.format is not lume-neural-cartridge-v1") else if lnc_meta(mf, "entry") == "" or lnc_toint_ok(lnc_meta(mf, "arity"), 0) == 0 then lnc_lerr("__metadata__ needs entry and a decimal arity") else let tsha = lnc_sha256_bytes(buf) in if tsha != lnc_meta(mf, "tensors_sha256") then lnc_lerr("tensor bytes do not match __metadata__.tensors_sha256 (hash mismatch: " + tsha + ")") else if lnc_chain(lnc_meta(mf, "entry"), lnc_meta(mf, "arity"), lnc_meta(mf, "source_sha256"), tsha, lnc_cert_of_meta(mf)) != lnc_meta(mf, "cartridge_sha256") then lnc_lerr("__metadata__ does not match cartridge_sha256 (hash chain mismatch)") else lnc_load_cart(buf, ts, mf, n, hn, tsha)
+fn lnc_load_hdr(buf, hdr, n, hn) = if hdr.ok == 0 then lnc_lerr("header is not valid JSON: " + hdr.text) else if hdr.kind != "object" then lnc_lerr("header is not a JSON object") else let ts = lnc_tinfos(hdr.fields) in let md = lj_get(hdr, "__metadata__") in let buflen = n - 8 - hn in let e1 = lnc_first_err(lnc_tinfo_err(ts), if lnc_dup_name(ts, Nil) != "" then "duplicate tensor name '" + lnc_dup_name(ts, Nil) + "'" else "") in if e1 != "" then lnc_lerr(e1) else let e2 = lnc_cover(ts, 0, 0, lnc_count_nonempty(ts, 0), buflen) in if e2 != "" then lnc_lerr(e2) else let e3 = lnc_first_err(lnc_expect(ts, "swiglu_gate_proj", "I32", "128,128"), lnc_first_err(lnc_expect(ts, "swiglu_up_proj", "I32", "128,128"), lnc_first_err(lnc_expect(ts, "swiglu_down_proj", "I64", "16,128"), lnc_first_err(lnc_expect(ts, "deltanet_rom", "U32", ""), lnc_expect(ts, "ballast_rmsnorm_guard", "I64", "16"))))) in if e3 != "" then lnc_lerr(e3) else if md.ok == 0 or md.kind != "object" then lnc_lerr("__metadata__ is missing") else if lnc_meta_all_str(md.fields) == 0 then lnc_lerr("__metadata__ must map strings to strings") else lnc_load_meta(buf, ts, md.fields, n, hn)
+fn lnc_load_n(bytes, n, hn) = if hn < 2 or hn > 100000000 or 8 + hn > n then lnc_lerr("bad header length " + str(hn) + " for a file of " + str(n) + " bytes") else let hb = lnc_drop(bytes, 8) in if lnc_nth(hb, 0) != 123 then lnc_lerr("header does not start with '{'") else if lnc_ascii(hb, hn) == 0 then lnc_lerr("header contains bytes outside printable ASCII") else lnc_load_hdr(lnc_drop(hb, hn), lj_parse(lnc_str_of_bytes(hb, hn)), n, hn)
+## strict loader: a byte list (the whole file) -> cartridge record; `err` != "" rejects the file
+fn lnc_load(bytes) = let n = lnc_len(bytes, 0) in if n < 8 then lnc_lerr("truncated file: no 8-byte header length") else if lnc_u_le(lnc_drop(bytes, 4), 4, 1, 0) != 0 then lnc_lerr("bad header length (above 4 GiB)") else lnc_load_n(bytes, n, lnc_u_le(bytes, 4, 1, 0))
+fn lnc_load_file(path) = lnc_load(lnc_read_file(path))
+
+## ====================================================================================================================
+## 7. Tool entry
+## ====================================================================================================================
+fn lnc_line_end(s, i, n) = if i >= n or at(s, i) == "\n" then i else lnc_line_end(s, i + 1, n)
+fn lnc_chomp(s) = let n = count(s) in if n > 0 and (at(s, n - 1) == "\r" or at(s, n - 1) == " ") then lnc_chomp(slice(s, 0, n - 1)) else s
+fn lnc_starts(s, p) = if count(s) < count(p) then 0 else if slice(s, 0, count(p)) == p then 1 else 0
+## directive lines after `@compile`: `@entry <fn>` and `@cert <json>`; the first other line starts the source
+fn lnc_req(s, i, n, entry, cert) = let e = lnc_line_end(s, i, n) in let line = slice(s, i, e) in if lnc_starts(line, "@entry ") == 1 then lnc_req(s, e + 1, n, lnc_chomp(slice(line, 7, count(line))), cert) else if lnc_starts(line, "@cert ") == 1 then lnc_req(s, e + 1, n, entry, lnc_chomp(slice(line, 6, count(line)))) else {entry: entry, cert: cert, src: if i >= n then "" else slice(s, i, n)}
+fn lnc_tool_reply(r) = if r.err != "" then "ERR:lume: safetensors target: " + r.err else "HEX:" + str(lnc_len(r.bytes, 0)) + ":" + lnc_hex(r.bytes)
+fn lnc_tool(input) = let n = count(input) in let e = lnc_line_end(input, 0, n) in if lnc_chomp(slice(input, 0, e)) != "@compile safetensors" then "ERR:lume: safetensors target: the request must start with '@compile safetensors'" else let rq = lnc_req(input, e + 1, n, "", "") in if rq.src == "" then "ERR:lume: safetensors target: empty source" else lnc_tool_reply(lnc_compile(rq.src, rq.entry, rq.cert))
+
+## ====================================================================================================================
+## 8. Unit tests
+## ====================================================================================================================
+fn lnc_t_src() = "fn sq(x: int) -> int / pure requires x >= 0 - 1000 and x <= 1000 ensures result >= 0 = x * x\nfn mix(a: int, b: int) -> int / pure = if a < b then sq(a) + b else bit_xor(a, b) - sq(b) / 3\n"
+fn lnc_t_cart() = lnc_load((lnc_compile(lnc_t_src(), "", "")).bytes)
+fn test_sha256_of_bytes_matches_the_fips_vectors() = lnc_sha256_bytes(Nil) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" and lnc_sha256_bytes(Cons(97, Cons(98, Cons(99, Nil)))) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" and lnc_sha256_bytes(lnc_bytes_of_str("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", Nil)) == sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+fn test_units_follow_the_lumeputer_model() = lnc_unit(7, 0) == 0 and lnc_unit(7, 0 - 3) == 0 and lnc_unit(7, 3) == 21 and lnc_unit(17179869185, 1) == lnc_bad() and lnc_dn_step(5, 1, 1, 9) == 9 and lnc_dn_step(5, 0, 1, 9) == 5 and lnc_dn_step(5, 1, 0, 9) == 5 and lnc_guard(10, 40) == 1 and lnc_guard(11, 40) == 0 and lnc_guard(0 - 11, 40) == 0 and lnc_guard(1, 0) == 0
+fn test_little_endian_two_complement_roundtrip() = lnc_vals(lnc_le_i64(0 - 4294967296, lnc_le_i64(2147483648, lnc_le_i64(0 - 1, Nil))), 3, 8, 1, Nil) == Cons(0 - 4294967296, Cons(2147483648, Cons(0 - 1, Nil))) and lnc_vals(lnc_le_i32(0 - 2, lnc_le_i32(7, Nil)), 2, 4, 1, Nil) == Cons(0 - 2, Cons(7, Nil)) and lnc_hex(lnc_le_i32(0 - 2, Nil)) == "feffffff"
+fn test_compile_load_forward_matches_the_emulator() = let c = lnc_t_cart() in let prog = nf_late(lumec_expand(lnc_t_src())) in let f1 = lnc_forward(c, Cons(3, Cons(10, Nil))) in let f2 = lnc_forward(c, Cons(0 - 7, Cons(0 - 20, Nil))) in let e1 = se_b_run(prog, "mix", Cons(3, Cons(10, Nil)), 100000, rv_no_inj()) in let e2 = se_b_run(prog, "mix", Cons(0 - 7, Cons(0 - 20, Nil)), 100000, rv_no_inj()) in c.err == "" and c.entry == "mix" and c.arity == 2 and f1.ok == 1 and f1.v == 19 and e1.ok == 1 and e1.v == f1.v and f2.ok == 1 and e2.ok == 1 and e2.v == f2.v and f2.v == bit_xor(0 - 7, 0 - 20) - 400 / 3
+fn test_traps_are_reported_not_returned() = let c = lnc_t_cart() in let f = lnc_forward(c, Cons(5000, Cons(6000, Nil))) in f.ok == 0 and f.cause == "ebreak_contract_violation" and (lnc_forward(c, Cons(1, Nil))).cause == "wrong_argument_count" and (lnc_forward(c, Cons(4294967296, Cons(1, Nil)))).cause == "arg_outside_i32" and (lnc_forward_b(c, Cons(3, Cons(10, Nil)), 5)).cause == "watchdog_cycle_budget"
+fn lnc_t_flip(bs, i) = match bs
+    Nil        => Nil
+    Cons(h, t) => if i == 0 then Cons(bit_xor(h, 1), t) else Cons(h, lnc_t_flip(t, i - 1))
+fn lnc_t_take(bs, n) = match bs
+    Nil        => Nil
+    Cons(h, t) => if n <= 0 then Nil else Cons(h, lnc_t_take(t, n - 1))
+fn test_loader_rejects_damaged_files() = let b = (lnc_compile(lnc_t_src(), "", "")).bytes in let n = lnc_len(b, 0) in (lnc_load(lnc_t_flip(b, n - 200))).err != "" and (lnc_load(lnc_t_take(b, n - 8))).err != "" and (lnc_load(lnc_t_take(b, 5))).err != "" and (lnc_load(lnc_t_flip(b, 0))).err != "" and (lnc_load(lnc_t_flip(b, 9))).err != "" and (lnc_load(b)).err == ""
+fn test_entry_must_be_pure_and_inside_the_fragment() = (lnc_compile("fn f(x: int) -> int = x + 1\n", "", "")).err != "" and (lnc_compile(lnc_t_src(), "nope", "")).err != "" and (lnc_compile("fn g(x: int) -> int / pure = count(str(x))\n", "", "")).err != "" and lnc_starts(lnc_tool("@compile elf\nfn f() = 1\n"), "ERR:") == 1 and lnc_starts(lnc_tool("@compile safetensors\n" + lnc_t_src()), "HEX:") == 1
+
+print lnc_tool(readall())

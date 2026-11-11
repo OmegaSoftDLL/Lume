@@ -1,0 +1,158 @@
+## lriscv.src -- RISC-V back end (RV32IM and RV64IM) for the integer kernel fragment of lkir.src: instruction encoder,
+## code generator, ELF32 / ELF64 writer (EM_RISCV = 243) and flat `.bin` ROM image for a microcontroller.
+## Encodings follow "The RISC-V Instruction Set Manual, Volume I: Unprivileged ISA", chapters "RV32I", "RV64I", "M" and
+## the instruction listings; every word is assembled from its fields.
+##
+## Why this is not a wrapper around `rc_*` of lsafety_envelope.src: that compiler is RV32-only, takes lumec's lowered
+## AST (it links the whole compiler front end) and its `rv_*` names collide with ltarget.src's own, so ltarget could not
+## import it. This module is self-contained (prefix `lrv_`), reads the kernel through lkir.src and covers both widths.
+## The bare-metal RV32IM image uses the LumePuter's machine contract on purpose, so the gate runs it on that emulator:
+## reset vector = ROM base 0x40000, 16 KiB of static RAM at 0x80000, sp = 0x84000, halt = `a7 = 93; ECALL` with the
+## result in a0, software trap = `a7 = cause; EBREAK` (1 contract, 2 overflow, 3 division by zero).
+##
+## Code shape (xlen = 32 or 64, W = xlen / 8), a stack machine like larm64.src: value in a0, left operand popped into
+## t0, arguments pushed left to right before `jal ra, f`, frame = one word (ra); push j of d is at W*(d-j)(sp),
+## parameter i of n at W*(d+1+n-1-i)(sp). A conditional branch only ever skips the following `jal` (+-1 MiB reach).
+## + - * carry the same overflow tests as the LumePuter compiler; / and % test the divisor, divide and multiply the
+## quotient back with the checked multiplication (MIN / -1 traps as an overflow).
+## Variants: "bare" (riscv32-none-elf, riscv64-none-elf): `_start` sets sp, evaluates the first `print` into a0 and
+## halts. "linux" (RV64 only, riscv64-linux-gnu): `_start` evaluates every `print`, writes each value in decimal
+## (write, a7 = 64) and exits (a7 = 93) with the last one; traps exit with status 3. It exists so that qemu-riscv64
+## (user mode) can execute the RV64 code generator; the bare RV64 image differs only in `_start` and the trap stubs.
+use lkir
+
+## --- 1. instruction encoders ------------------------------------------------------------------------------------------
+fn lrv_enc_r(f7, rs2, rs1, f3, rd, opc) = f7 * 33554432 + rs2 * 1048576 + rs1 * 32768 + f3 * 4096 + rd * 128 + opc
+fn lrv_enc_i(imm, rs1, f3, rd, opc) = (if imm < 0 then imm + 4096 else imm) * 1048576 + rs1 * 32768 + f3 * 4096 + rd * 128 + opc
+fn lrv_enc_s(imm, rs2, rs1, f3, opc) = let u = if imm < 0 then imm + 4096 else imm in u / 32 * 33554432 + rs2 * 1048576 + rs1 * 32768 + f3 * 4096 + u % 32 * 128 + opc
+fn lrv_enc_b(imm, rs2, rs1, f3) = let u = if imm < 0 then imm + 8192 else imm in u / 4096 * 2147483648 + u / 32 % 64 * 33554432 + rs2 * 1048576 + rs1 * 32768 + f3 * 4096 + u / 2 % 16 * 256 + u / 2048 % 2 * 128 + 99
+fn lrv_enc_u(imm20, rd, opc) = imm20 * 4096 + rd * 128 + opc
+fn lrv_enc_j(imm, rd) = let u = if imm < 0 then imm + 2097152 else imm in u / 1048576 * 2147483648 + u / 2 % 1024 * 2097152 + u / 2048 % 2 * 1048576 + u / 4096 % 256 * 4096 + rd * 128 + 111
+fn lrv_lui(rd, imm20) = lrv_enc_u(imm20, rd, 55)
+fn lrv_auipc(rd, imm20) = lrv_enc_u(imm20, rd, 23)
+fn lrv_addi(rd, rs1, imm) = lrv_enc_i(imm, rs1, 0, rd, 19)
+fn lrv_addiw(rd, rs1, imm) = lrv_enc_i(imm, rs1, 0, rd, 27)
+fn lrv_slti(rd, rs1, imm) = lrv_enc_i(imm, rs1, 2, rd, 19)
+fn lrv_sltiu(rd, rs1, imm) = lrv_enc_i(imm, rs1, 3, rd, 19)
+fn lrv_xori(rd, rs1, imm) = lrv_enc_i(imm, rs1, 4, rd, 19)
+fn lrv_ori(rd, rs1, imm) = lrv_enc_i(imm, rs1, 6, rd, 19)
+fn lrv_andi(rd, rs1, imm) = lrv_enc_i(imm, rs1, 7, rd, 19)
+## shift amounts: 0..31 on RV32, 0..63 on RV64 (the sixth bit lands in instruction bit 25)
+fn lrv_slli(rd, rs1, sh) = lrv_enc_i(sh, rs1, 1, rd, 19)
+fn lrv_srli(rd, rs1, sh) = lrv_enc_i(sh, rs1, 5, rd, 19)
+fn lrv_srai(rd, rs1, sh) = lrv_enc_i(1024 + sh, rs1, 5, rd, 19)
+fn lrv_add(rd, rs1, rs2) = lrv_enc_r(0, rs2, rs1, 0, rd, 51)
+fn lrv_sub(rd, rs1, rs2) = lrv_enc_r(32, rs2, rs1, 0, rd, 51)
+fn lrv_slt(rd, rs1, rs2) = lrv_enc_r(0, rs2, rs1, 2, rd, 51)
+fn lrv_sltu(rd, rs1, rs2) = lrv_enc_r(0, rs2, rs1, 3, rd, 51)
+fn lrv_xor(rd, rs1, rs2) = lrv_enc_r(0, rs2, rs1, 4, rd, 51)
+fn lrv_or(rd, rs1, rs2) = lrv_enc_r(0, rs2, rs1, 6, rd, 51)
+fn lrv_and(rd, rs1, rs2) = lrv_enc_r(0, rs2, rs1, 7, rd, 51)
+fn lrv_mul(rd, rs1, rs2) = lrv_enc_r(1, rs2, rs1, 0, rd, 51)
+fn lrv_mulh(rd, rs1, rs2) = lrv_enc_r(1, rs2, rs1, 1, rd, 51)
+fn lrv_div(rd, rs1, rs2) = lrv_enc_r(1, rs2, rs1, 4, rd, 51)
+fn lrv_rem(rd, rs1, rs2) = lrv_enc_r(1, rs2, rs1, 6, rd, 51)
+fn lrv_beq(rs1, rs2, imm) = lrv_enc_b(imm, rs2, rs1, 0)
+fn lrv_bne(rs1, rs2, imm) = lrv_enc_b(imm, rs2, rs1, 1)
+fn lrv_blt(rs1, rs2, imm) = lrv_enc_b(imm, rs2, rs1, 4)
+fn lrv_bge(rs1, rs2, imm) = lrv_enc_b(imm, rs2, rs1, 5)
+fn lrv_jal(rd, imm) = lrv_enc_j(imm, rd)
+fn lrv_jalr(rd, rs1, imm) = lrv_enc_i(imm, rs1, 0, rd, 103)
+fn lrv_lw(rd, rs1, imm) = lrv_enc_i(imm, rs1, 2, rd, 3)
+fn lrv_ld(rd, rs1, imm) = lrv_enc_i(imm, rs1, 3, rd, 3)
+fn lrv_sb(rs2, rs1, imm) = lrv_enc_s(imm, rs2, rs1, 0, 35)
+fn lrv_sw(rs2, rs1, imm) = lrv_enc_s(imm, rs2, rs1, 2, 35)
+fn lrv_sd(rs2, rs1, imm) = lrv_enc_s(imm, rs2, rs1, 3, 35)
+fn lrv_ecall() = 115
+fn lrv_ebreak() = 1048691
+
+## --- 2. code generator ------------------------------------------------------------------------------------------------
+## registers: x1 ra, x2 sp, x5 t0, x6 t1, x7 t2, x10 a0, x17 a7, x28 t3, x29 t4
+fn lrv_load(cx, rd, rs1, off) = if cx.xlen == 64 then lrv_ld(rd, rs1, off) else lrv_lw(rd, rs1, off)
+fn lrv_store(cx, rs2, rs1, off) = if cx.xlen == 64 then lrv_sd(rs2, rs1, off) else lrv_sw(rs2, rs1, off)
+fn lrv_fdiv(p, m) = let q = p / m in if p % m < 0 then q - 1 else q
+fn lrv_lo12(v) = let m = (v % 4096 + 4096) % 4096 in if m >= 2048 then m - 4096 else m
+## the upper part of v once its sign-extended low 12 bits are taken away: (v - lo12) / 4096, without leaving i64
+fn lrv_hi(v) = lrv_fdiv(v, 4096) + (if lrv_lo12(v) < 0 then 1 else 0)
+fn lrv_li32(st, rd, v) = kir_ws(st, Cons(lrv_lui(rd, (lrv_hi(v) % 1048576 + 1048576) % 1048576), Cons(lrv_addi(rd, rd, lrv_lo12(v)), Nil)))
+## RV64: LUI sign-extends bit 31, ADDIW wraps the sum back to 32 bits; wider constants are built 12 bits at a time
+fn lrv_li64(st, rd, v) = if v >= 0 - 2048 and v <= 2047 then kir_w(st, lrv_addi(rd, 0, v)) else if v >= 0 - 2147483648 and v <= 2147483647 then kir_ws(st, Cons(lrv_lui(rd, (lrv_hi(v) % 1048576 + 1048576) % 1048576), Cons(lrv_addiw(rd, rd, lrv_lo12(v)), Nil))) else let s1 = kir_w(lrv_li64(st, rd, lrv_hi(v)), lrv_slli(rd, rd, 12)) in if lrv_lo12(v) == 0 then s1 else kir_w(s1, lrv_addi(rd, rd, lrv_lo12(v)))
+fn lrv_li(st, cx, rd, v) = if cx.xlen == 64 then lrv_li64(st, rd, v) else if v < 0 - 2147483648 or v > 2147483647 then kir_err(st, "constant outside the 32-bit domain of RV32: " + str(v)) else if v >= 0 - 2048 and v <= 2047 then kir_w(st, lrv_addi(rd, 0, v)) else lrv_li32(st, rd, v)
+fn lrv_push(st, cx) = kir_ws(st, Cons(lrv_addi(2, 2, 0 - cx.w), Cons(lrv_store(cx, 10, 2, 0), Nil)))
+fn lrv_pop_t0(st, cx) = kir_ws(st, Cons(lrv_load(cx, 5, 2, 0), Cons(lrv_addi(2, 2, cx.w), Nil)))
+fn lrv_j(st, rd, l) = kir_ref(st, LrvJ(rd, l))
+## skip the trap / the far jump when a0 != 0
+fn lrv_bnez_skip(st, l) = lrv_j(kir_w(st, lrv_bne(10, 0, 8)), 0, l)
+fn lrv_var(st, cx, env, d, nm) = let s = kir_slot(env, nm) in let off = if s > 0 then cx.w * (d - s) else cx.w * (d + 1 + cx.ar + s) in if s == 0 then kir_err(st, "unbound variable: " + nm) else if off > 2047 then kir_err(st, "frame deeper than " + str(2047 / cx.w) + " words") else kir_w(st, lrv_load(cx, 10, 2, off))
+## checked t1 = rs * a0: overflow iff mulh(rs, a0) != (mul(rs, a0) >> (xlen - 1), arithmetic)
+fn lrv_mul_chk(st, cx, rs) = lrv_j(kir_ws(st, Cons(lrv_mul(6, rs, 10), Cons(lrv_mulh(7, rs, 10), Cons(lrv_srai(29, 6, cx.xlen - 1), Cons(lrv_beq(7, 29, 8), Nil))))), 0, cx.lo)
+## t0 = left operand, a0 = right operand -> a0
+##   add: overflow iff (b < 0) != (a + b < a)        sub: overflow iff (b < 0) != (a < a - b)
+fn lrv_arith(st, cx, op) = if op == "+" then kir_w(lrv_j(kir_ws(st, Cons(lrv_add(6, 5, 10), Cons(lrv_slti(7, 10, 0), Cons(lrv_slt(29, 6, 5), Cons(lrv_beq(7, 29, 8), Nil))))), 0, cx.lo), lrv_addi(10, 6, 0)) else if op == "-" then kir_w(lrv_j(kir_ws(st, Cons(lrv_sub(6, 5, 10), Cons(lrv_slti(7, 10, 0), Cons(lrv_slt(29, 5, 6), Cons(lrv_beq(7, 29, 8), Nil))))), 0, cx.lo), lrv_addi(10, 6, 0)) else if op == "*" then kir_w(lrv_mul_chk(st, cx, 5), lrv_addi(10, 6, 0)) else if op == "/" then kir_w(lrv_mul_chk(kir_w(lrv_bnez_skip(st, cx.ld), lrv_div(28, 5, 10)), cx, 28), lrv_addi(10, 28, 0)) else if op == "%" then kir_w(lrv_mul_chk(kir_w(lrv_bnez_skip(st, cx.ld), lrv_div(28, 5, 10)), cx, 28), lrv_sub(10, 5, 6)) else if op == "==" then kir_ws(st, Cons(lrv_xor(6, 5, 10), Cons(lrv_sltiu(10, 6, 1), Nil))) else if op == "!=" then kir_ws(st, Cons(lrv_xor(6, 5, 10), Cons(lrv_sltu(10, 0, 6), Nil))) else if op == "<" then kir_w(st, lrv_slt(10, 5, 10)) else if op == ">" then kir_w(st, lrv_slt(10, 10, 5)) else if op == "<=" then kir_ws(st, Cons(lrv_slt(10, 10, 5), Cons(lrv_xori(10, 10, 1), Nil))) else if op == ">=" then kir_ws(st, Cons(lrv_slt(10, 5, 10), Cons(lrv_xori(10, 10, 1), Nil))) else kir_err(st, "unsupported operator: " + op)
+fn lrv_c_and(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = lrv_bnez_skip(lrv_x(kir_bump(st, 2), cx, env, d, l), lb) in let s2 = lrv_j(kir_w(lrv_x(s1, cx, env, d, r), lrv_sltu(10, 0, 10)), 0, lb + 1) in kir_def(kir_w(kir_def(s2, lb), lrv_addi(10, 0, 0)), lb + 1)
+fn lrv_c_or(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = lrv_x(kir_bump(st, 2), cx, env, d, l) in let s2 = lrv_j(kir_w(lrv_bnez_skip(s1, lb), lrv_addi(10, 0, 1)), 0, lb + 1) in kir_def(kir_w(lrv_x(kir_def(s2, lb), cx, env, d, r), lrv_sltu(10, 0, 10)), lb + 1)
+fn lrv_bin(st, cx, env, d, op, l, r) = if op == "and" then lrv_c_and(st, cx, env, d, l, r) else if op == "or" then lrv_c_or(st, cx, env, d, l, r) else lrv_arith(lrv_pop_t0(lrv_x(lrv_push(lrv_x(st, cx, env, d, l), cx), cx, env, d + 1, r), cx), cx, op)
+fn lrv_if(st, cx, env, d, c, t, f) = let lb = st.lbl in let s1 = lrv_bnez_skip(lrv_x(kir_bump(st, 2), cx, env, d, c), lb) in let s2 = lrv_j(lrv_x(s1, cx, env, d, t), 0, lb + 1) in kir_def(lrv_x(kir_def(s2, lb), cx, env, d, f), lb + 1)
+fn lrv_let(st, cx, env, d, nm, v, b) = kir_w(lrv_x(lrv_push(lrv_x(st, cx, env, d, v), cx), cx, Cons({name: nm, slot: d + 1}, env), d + 1, b), lrv_addi(2, 2, cx.w))
+fn lrv_args(st, cx, env, d, args) = match args
+    Nil        => st
+    Cons(h, t) => lrv_args(lrv_push(lrv_x(st, cx, env, d, h), cx), cx, env, d + 1, t)
+fn lrv_call(st, cx, env, d, nm, args) = let id = kir_fn_id(cx.fns, nm) in let n = kir_len(args) in if id < 0 then kir_err(st, "call to an unknown function: " + nm) else if n > 255 then kir_err(st, "more than 255 arguments: " + nm) else let s1 = lrv_j(lrv_args(st, cx, env, d, args), 1, id) in if n == 0 then s1 else kir_w(s1, lrv_addi(2, 2, cx.w * n))
+fn lrv_x(st, cx, env, d, e) = match e
+    KNum(v)         => lrv_li(st, cx, 10, v)
+    KVar(nm)        => lrv_var(st, cx, env, d, nm)
+    KBin(op, l, r)  => lrv_bin(st, cx, env, d, op, l, r)
+    KIf(c, t, f)    => lrv_if(st, cx, env, d, c, t, f)
+    KLet(nm, v, b)  => lrv_let(st, cx, env, d, nm, v, b)
+    KCall(nm, args) => lrv_call(st, cx, env, d, nm, args)
+    KTrap(k)        => lrv_j(st, 0, if k == 1 then cx.lc else if k == 2 then cx.lo else cx.ld)
+    _               => kir_err(st, "expression outside the kernel fragment")
+fn lrv_cx(tab, ar, xlen) = let nf = kir_len(tab) in {fns: tab, ar: ar, xlen: xlen, w: xlen / 8, lc: nf, lo: nf + 1, ld: nf + 2, lp: nf + 3}
+fn lrv_fn(st, tab, xlen, f) = let cx = lrv_cx(tab, kir_len(f.ps), xlen) in let s1 = kir_ws(kir_def(st, kir_fn_id(tab, f.nm)), Cons(lrv_addi(2, 2, 0 - cx.w), Cons(lrv_store(cx, 1, 2, 0), Nil))) in kir_ws(lrv_x(s1, cx, kir_penv(f.ps, 0), 0, f.body), Cons(lrv_load(cx, 1, 2, 0), Cons(lrv_addi(2, 2, cx.w), Cons(lrv_jalr(0, 1, 0), Nil))))
+fn lrv_fns(st, tab, xlen, fns) = match fns
+    Nil        => st
+    Cons(h, t) => lrv_fns(lrv_fn(st, tab, xlen, h), tab, xlen, t)
+## decimal writer of the linux variant (RV64): prints a0 and a newline through write(1, buf, len); a0 is preserved.
+## Digits come from the non-positive value: digit = '0' - (v % 10).
+fn lrv_print(st, lp) = kir_ws(kir_def(st, lp), Cons(lrv_addi(2, 2, 0 - 48), Cons(lrv_addi(28, 10, 0), Cons(lrv_addi(11, 2, 40), Cons(lrv_addi(6, 0, 10), Cons(lrv_addi(11, 11, 0 - 1), Cons(lrv_sb(6, 11, 0), Cons(lrv_addi(5, 28, 0), Cons(lrv_bge(0, 5, 8), Cons(lrv_sub(5, 0, 5), Cons(lrv_rem(7, 5, 6), Cons(lrv_div(5, 5, 6), Cons(lrv_addi(29, 0, 48), Cons(lrv_sub(7, 29, 7), Cons(lrv_addi(11, 11, 0 - 1), Cons(lrv_sb(7, 11, 0), Cons(lrv_bne(5, 0, 0 - 24), Cons(lrv_bge(28, 0, 16), Cons(lrv_addi(7, 0, 45), Cons(lrv_addi(11, 11, 0 - 1), Cons(lrv_sb(7, 11, 0), Cons(lrv_addi(10, 0, 1), Cons(lrv_addi(12, 2, 40), Cons(lrv_sub(12, 12, 11), Cons(lrv_addi(17, 0, 64), Cons(lrv_ecall(), Cons(lrv_addi(10, 28, 0), Cons(lrv_addi(2, 2, 48), Cons(lrv_jalr(0, 1, 0), Nil)))))))))))))))))))))))))))))
+fn lrv_prints(st, cx, prints) = match prints
+    Nil        => st
+    Cons(h, t) => lrv_prints(lrv_j(lrv_x(st, cx, Nil, 0, h), 1, cx.lp), cx, t)
+fn lrv_stub_bare(st, l, cause) = kir_ws(kir_def(st, l), Cons(lrv_addi(17, 0, cause), Cons(lrv_ebreak(), Nil)))
+fn lrv_stub_linux(st, l) = kir_ws(kir_def(st, l), Cons(lrv_addi(10, 0, 3), Cons(lrv_addi(17, 0, 93), Cons(lrv_ecall(), Nil))))
+fn lrv_first(prints) = match prints
+    Nil        => KNum(0)
+    Cons(h, t) => h
+fn lrv_halt(st) = kir_ws(st, Cons(lrv_addi(17, 0, 93), Cons(lrv_ecall(), Nil)))
+fn lrv_fn_syms(tab, defs) = match tab
+    Nil        => Nil
+    Cons(h, t) => Cons({nm: h.nm, idx: kir_lbl_idx(defs, h.id)}, lrv_fn_syms(t, defs))
+fn lrv_syms(tab, cx, defs) = Cons({nm: "__trap_contract", idx: kir_lbl_idx(defs, cx.lc)}, Cons({nm: "__trap_overflow", idx: kir_lbl_idx(defs, cx.lo)}, Cons({nm: "__trap_div0", idx: kir_lbl_idx(defs, cx.ld)}, Cons({nm: "__print", idx: kir_lbl_idx(defs, cx.lp)}, lrv_fn_syms(tab, defs)))))
+fn lrv_res_jal(rd, tgt, i, rest) = if tgt < 0 then {err: "internal: undefined label", ws: Nil} else if (tgt - i) * 4 < 0 - 1048576 or (tgt - i) * 4 > 1048574 then {err: "jump outside the JAL range", ws: Nil} else {err: "", ws: Cons(lrv_enc_j((tgt - i) * 4, rd), rest)}
+fn lrv_res_item(it, defs, i, rest) = match it
+    KW(w)      => {err: "", ws: Cons(w, rest)}
+    LrvJ(rd, l) => lrv_res_jal(rd, kir_lbl_idx(defs, l), i, rest)
+    _          => {err: "internal: unknown assembler item", ws: Nil}
+fn lrv_res(items, defs, i) = match items
+    Nil        => {err: "", ws: Nil}
+    Cons(h, t) => let r = lrv_res(t, defs, i + 1) in if r.err != "" then r else lrv_res_item(h, defs, i, r.ws)
+## image layout: `_start` at word 0 (the reset vector), the three trap stubs, the decimal writer (linux), the functions
+fn lrv_image(p, xlen, mode) = let tab = kir_fn_ids(p.fns, 0) in let cx = lrv_cx(tab, 0, xlen) in let st0 = kir_st0(cx.lp + 1) in if mode == "linux" and xlen != 64 then {err: "the linux variant exists for RV64 only", words: Nil, syms: Nil} else let s1 = if mode == "linux" then lrv_halt(lrv_prints(kir_w(st0, lrv_addi(10, 0, 0)), cx, p.prints)) else lrv_halt(lrv_x(lrv_li32(st0, 2, 524288 + 16384), cx, Nil, 0, lrv_first(p.prints))) in let s2 = if mode == "linux" then lrv_print(lrv_stub_linux(lrv_stub_linux(lrv_stub_linux(s1, cx.lc), cx.lo), cx.ld), cx.lp) else lrv_stub_bare(lrv_stub_bare(lrv_stub_bare(s1, cx.lc, 1), cx.lo, 2), cx.ld, 3) in let s3 = lrv_fns(s2, tab, xlen, p.fns) in if s3.err != "" then {err: s3.err, words: Nil, syms: Nil} else let r = lrv_res(kir_rev(s3.code, Nil), s3.defs, 0) in {err: r.err, words: r.ws, syms: lrv_syms(tab, cx, s3.defs)}
+
+## --- 3. ELF writers and the flat ROM image --------------------------------------------------------------------------
+## Both: PT_LOAD R+X, the ROM, at 0x40000 (file offset 4096) and PT_LOAD RW, 16 KiB of zeroed static RAM at 0x80000.
+## e_flags = 0: soft-float ABI, no compressed instructions. e_entry = 0x40000 = the reset vector.
+fn lrv_ident(class) = Cons(127, Cons(69, Cons(76, Cons(70, Cons(class, Cons(1, Cons(1, kir_zeros(9))))))))
+fn lrv_ph32(flags, off, vaddr, filesz, memsz) = kir_app(kir_le(1, 4), kir_app(kir_le(off, 4), kir_app(kir_le(vaddr, 4), kir_app(kir_le(vaddr, 4), kir_app(kir_le(filesz, 4), kir_app(kir_le(memsz, 4), kir_app(kir_le(flags, 4), kir_le(4096, 4))))))))
+fn lrv_ph64(flags, off, vaddr, filesz, memsz) = kir_app(kir_le(1, 4), kir_app(kir_le(flags, 4), kir_app(kir_le(off, 8), kir_app(kir_le(vaddr, 8), kir_app(kir_le(vaddr, 8), kir_app(kir_le(filesz, 8), kir_app(kir_le(memsz, 8), kir_le(4096, 8))))))))
+fn lrv_elf32(words) = let n = 4 * kir_len(words) in let hdr = kir_app(lrv_ident(1), kir_app(kir_le(2, 2), kir_app(kir_le(243, 2), kir_app(kir_le(1, 4), kir_app(kir_le(262144, 4), kir_app(kir_le(52, 4), kir_app(kir_le(0, 4), kir_app(kir_le(0, 4), kir_app(kir_le(52, 2), kir_app(kir_le(32, 2), kir_app(kir_le(2, 2), kir_app(kir_le(40, 2), kir_app(kir_le(0, 2), kir_le(0, 2)))))))))))))) in kir_app(hdr, kir_app(lrv_ph32(5, 4096, 262144, n, n), kir_app(lrv_ph32(6, 0, 524288, 0, 16384), kir_app(kir_zeros(4096 - 116), kir_words_le(words)))))
+fn lrv_elf64(words) = let n = 4 * kir_len(words) in let hdr = kir_app(lrv_ident(2), kir_app(kir_le(2, 2), kir_app(kir_le(243, 2), kir_app(kir_le(1, 4), kir_app(kir_le(262144, 8), kir_app(kir_le(64, 8), kir_app(kir_le(0, 8), kir_app(kir_le(0, 4), kir_app(kir_le(64, 2), kir_app(kir_le(56, 2), kir_app(kir_le(2, 2), kir_app(kir_le(64, 2), kir_app(kir_le(0, 2), kir_le(0, 2)))))))))))))) in kir_app(hdr, kir_app(lrv_ph64(5, 4096, 262144, n, n), kir_app(lrv_ph64(6, 0, 524288, 0, 16384), kir_app(kir_zeros(4096 - 176), kir_words_le(words)))))
+## {err, words, syms, elf, bin}: xlen 32 or 64, mode "bare" or "linux"
+fn lrv_compile(src, xlen, mode) = let p = kir_parse(src) in if p.err != "" then {err: p.err, words: Nil, syms: Nil, elf: Nil, bin: Nil} else let im = lrv_image(p, xlen, mode) in if im.err != "" then {err: im.err, words: Nil, syms: Nil, elf: Nil, bin: Nil} else {err: "", words: im.words, syms: im.syms, elf: if xlen == 64 then lrv_elf64(im.words) else lrv_elf32(im.words), bin: kir_words_le(im.words)}
+
+fn lrv_nth(xs, i) = match xs
+    Nil        => 0 - 1
+    Cons(h, t) => if i <= 0 then h else lrv_nth(t, i - 1)
+## official encodings (RISC-V unprivileged ISA, instruction listings; the same words GNU as emits for these mnemonics)
+fn test_lrv_encoder_matches_official_encodings() = lrv_addi(10, 0, 42) == 44041491 and lrv_addi(2, 2, 0 - 16) == 4278255891 and lrv_lui(5, 74565) == 305418935 and lrv_add(10, 11, 12) == 12944691 and lrv_sub(5, 6, 7) == 1081279155 and lrv_mul(10, 10, 11) == 45417779 and lrv_div(10, 10, 11) == 45434163 and lrv_rem(10, 10, 11) == 45442355 and lrv_slt(10, 11, 12) == 12952883 and lrv_beq(10, 11, 8) == 11863139 and lrv_bne(10, 0, 0 - 4) == 4261748451 and lrv_jal(1, 2048) == 1048815 and lrv_jalr(0, 1, 0) == 32871 and lrv_lw(10, 2, 8) == 8463619 and lrv_sw(10, 2, 8) == 10560547 and lrv_ld(10, 2, 8) == 8467715 and lrv_sd(10, 2, 8) == 10564643 and lrv_ecall() == 115 and lrv_ebreak() == 1048691
+fn test_lrv_compiles_a_kernel_to_elf_and_flat_rom() = let r = lrv_compile("fn sq(x: int) -> int = x * x\nprint sq(7)\n", 32, "bare") in let r64 = lrv_compile("fn sq(x: int) -> int = x * x\nprint sq(7)\n", 64, "bare") in let big = lrv_compile("fn k() -> int = 5000000000\nprint k()\n", 32, "bare") in r.err == "" and lrv_nth(r.elf, 4) == 1 and lrv_nth(r.elf, 18) == 243 and lrv_nth(r.elf, 26) == 4 and kir_len(r.bin) == 4 * kir_len(r.words) and kir_len(r.elf) == 4096 + kir_len(r.bin) and lrv_nth(r.words, 0) == lrv_lui(2, 132) and r64.err == "" and lrv_nth(r64.elf, 4) == 2 and lrv_nth(r64.elf, 18) == 243 and big.err != ""

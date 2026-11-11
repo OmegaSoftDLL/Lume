@@ -54,9 +54,18 @@ fn bs_at_line(xs, idx) = match xs
 
 fn bs_root(input) = let line = bs_at_line(lc_split_lines(input, 0, count(input)), 0) in if cs_startswith(line, "@root ") == 1 then slice(line, 6, count(line)) else ""
 
-fn bs_main(root) = let amalgamated = bs_amalgamate(root) in if amalgamated != 1 then "amalgamation failed" else let seeded = bs_stage0(root) in if seeded != "" then seeded else let staged = bs_stages(root) in if staged != "" then staged else let fixed = bs_fixpoint(root) in if fixed != "" then fixed else bs_sanity(root)
+## Once stage 2 == stage 3 bit for bit and the sanity program runs, stage 2 IS the toolchain of these sources: it is
+## installed over build/bin/{lumec,lc,lasm,lcli} so the working compiler can never lag behind compiler/stage1. Each
+## binary is copied next to its destination and renamed over it (atomic on one filesystem), then compared again.
+fn bs_install_one(src, dst) = let tmp = dst + ".bootstrap-new" in let copied = os_run_capture_timeout("/bin/cp", Cons("-f", Cons(src, Cons(tmp, Nil))), "/dev/null", "/dev/null", 60000) in if copied != 0 then "cannot copy " + src else if bs_executable(tmp) != 0 then "cannot mark " + tmp + " executable" else let moved = os_run_capture_timeout("/bin/mv", Cons("-f", Cons(tmp, Cons(dst, Nil))), "/dev/null", "/dev/null", 60000) in if moved != 0 then "cannot install " + dst else if bs_files_equal(src, dst) == 0 then "installed " + dst + " differs from " + src else ""
+fn bs_install_list(pairs) = match pairs
+    Nil        => ""
+    Cons(h, t) => let e = bs_install_one(h.src, h.dst) in if e != "" then e else bs_install_list(t)
+fn bs_install(root) = let out = bs_out(root) in let bin = root + "/build/bin" in let made = bs_mkdir(bin) in bs_install_list(Cons({src: out + "/lumec2", dst: bin + "/lumec"}, Cons({src: out + "/lumec2", dst: bin + "/lc"}, Cons({src: out + "/lasm2", dst: bin + "/lasm"}, Cons({src: out + "/lcli2", dst: bin + "/lcli"}, Nil)))))
 
-fn bs_dispatch(input) = let root = bs_root(input) in let result = bs_main(root) in if result != "" then ctfail("native bootstrap failed: " + result + "\n") else "OK: Lume is self-hosted -- stages 1-3 use NO C, and stage 2 == stage 3 bit-identically."
+fn bs_main(root) = let amalgamated = bs_amalgamate(root) in if amalgamated != 1 then "amalgamation failed" else let seeded = bs_stage0(root) in if seeded != "" then seeded else let staged = bs_stages(root) in if staged != "" then staged else let fixed = bs_fixpoint(root) in if fixed != "" then fixed else let sane = bs_sanity(root) in if sane != "" then sane else let installed = bs_install(root) in if installed != "" then "fixpoint reached, but installing stage 2 failed: " + installed else ""
+
+fn bs_dispatch(input) = let root = bs_root(input) in let result = bs_main(root) in if result != "" then ctfail("native bootstrap failed: " + result + "\n") else "OK: Lume is self-hosted -- stages 1-3 use NO C, and stage 2 == stage 3 bit-identically. Stage 2 installed as build/bin/lumec, lc, lasm and lcli."
 
 fn test_binary_comparison_detects_difference() = let a = fs_write_sync("bs_same_a", "abc") in let b = fs_write_sync("bs_same_b", "abd") in bs_same("bs_same_a", "bs_same_b", 0) == 0
 
@@ -71,6 +80,8 @@ fn test_file_comparison_detects_content_difference() = let a = fs_write_sync("bs
 fn test_file_comparison_detects_length_difference() = let a = fs_write_sync("bs_compare_a", "abc") in let b = fs_write_sync("bs_compare_b", "abcd") in fs_files_equal("bs_compare_a", "bs_compare_b") == 0
 
 fn test_file_comparison_accepts_nul() = let a = fs_write_sync("bs_compare_a", "a0b") in let b = fs_write_sync("bs_compare_b", "a0b") in fs_files_equal("bs_compare_a", "bs_compare_b") == 1
+
+fn test_install_replaces_a_stale_binary_and_verifies_it() = let a = fs_write_sync("bs_compare_a", "new toolchain") in let b = fs_write_sync("bs_compare_b", "stale") in bs_install_one("bs_compare_a", "bs_compare_b") == "" and fs_read_file("bs_compare_b") == "new toolchain" and fs_path_exists("bs_compare_b.bootstrap-new") == 0 and bs_install_one("definitely_missing_stage2", "bs_compare_b") != "" and fs_read_file("bs_compare_b") == "new toolchain"
 
 fn test_file_comparison_rejects_missing_file() = fs_files_equal("definitely_missing_comparison_file", "bs_compare_a") < 0
 

@@ -50,8 +50,27 @@ fn tensor_relu_scalar(x: int) -> int
     ensures result >= 0 and result >= x
     = if x > 0 then x else 0
 
+@bound(cycles: 16)
+fn tensor_deltanet_ram_step_exact(old_cell: int, write_val: int, beta_gate: int) -> int
+    requires beta_gate == 0 or beta_gate == 1
+    ensures (beta_gate == 1 and result == write_val) or (beta_gate == 0 and result == old_cell)
+    = if beta_gate == 1 then write_val else old_cell
+
+@bound(cycles: 16)
+fn tensor_swiglu_exact_relu(x: int, gate_bit: int, k_gain: int) -> int
+    requires (gate_bit == 0 or gate_bit == 1) and k_gain >= 18
+    ensures result >= 0
+    = if gate_bit == 1 and x > 0 then x else 0
+
+@bound(cycles: 24)
+fn tensor_lumepu_vx_vmat_mac(acc: int, a_i8: int, w_i4: int, scale: int) -> int
+    requires scale >= 1
+    ensures result == acc + a_i8 * w_i4 * scale
+    = acc + a_i8 * w_i4 * scale
+
 law tensor_relu_idempotent_law(x: int) = tensor_relu_scalar(tensor_relu_scalar(x)) == tensor_relu_scalar(x)
 law tensor_relu_nonneg_law(x: int) = tensor_relu_scalar(x) >= 0
+law tensor_deltanet_zero_drift_law(cell: int, w: int) = tensor_deltanet_ram_step_exact(cell, w, 0) == cell
 
 fn tensor_get(t, r, c) = t_nth(t.data, r * t.cols + c)
 
@@ -154,3 +173,5 @@ fn test_tensor_transpose_and_argmax() = let m = tensor_mat(2, 3, Cons(10, Cons(5
 fn test_tensor_einsum_contractions() = let m = tensor_mat(2, 2, Cons(3, Cons(1, Cons(2, Cons(4, Nil))))) in let bd = einsum_batch_dot(m, m) in einsum_trace(m) == 7 and tensor_get(bd, 0, 0) == 10 and tensor_get(bd, 1, 0) == 20
 
 fn test_tensor_elementwise_arithmetic() = let a = tensor_ones(2, 2) in let b = tensor_scale(a, 5) in let c = tensor_add(a, b) in tensor_sum(c) == 24 and tensor_mean(c) == 6
+
+fn test_tensor_lumeputer_deltanet_and_lumepu_vx() = tensor_deltanet_ram_step_exact(77, 123, 0) == 77 and tensor_deltanet_ram_step_exact(77, 123, 1) == 123 and tensor_swiglu_exact_relu(64, 1, 18) == 64 and tensor_swiglu_exact_relu(64, 0, 18) == 0 and tensor_swiglu_exact_relu(0 - 9, 1, 18) == 0 and tensor_lumepu_vx_vmat_mac(50, 10, 4, 2) == 130

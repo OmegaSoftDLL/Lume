@@ -436,7 +436,7 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
     `marine_heavy_lift_feasible_ok` (`DNV-ST-N001`), `subsea_hyperbaric_decompression_safe_ok`
     (`Buhlmann ZH-L16C` $p_O2 \in [16, 160]$ cbar), `subsea_well_kill_icp_kpa` &
     `subsea_well_kill_mud_sg_milli` (*Wait & Weight* kill sheet), e `subsea_b31g_corroded_pipe_safe_ok`.
-- **Motor Dinamico de Transicao de 2a Ordem, Fronteira de Singularidade $\Omega$, Bayes-SPC e Tensor/Quire/Assimilator Zero-Limitacoes (`lume singularity` / `lume ote` / `lume transition-engine` em `lchameleon.src`, `93/93` obrigacoes `QF_LIA` & WCET, `13/13` testes):**
+- **Motor Dinamico de Transicao de 2a Ordem, Fronteira de Singularidade $\Omega$, Bayes-SPC e Tensor/Quire/Assimilator Zero-Limitacoes (`lume singularity` / `lume ote` / `lume transition-engine` em `lchameleon.src`, `200/200` obrigacoes `QF_LIA` & WCET, `19/19` testes):
   - **Identificacao em Dois Regimes e Estimador Quantitativo de $\zeta$:** `ote_select_damping_regime`
     e `ote_estimate_zeta_milli` despacham entre o regime subamortecido ($0 < \zeta < 1$ via sobressinal
     $M_p$ e periodo $T_d$) e o regime criticamente amortecido / superamortecido ($1 \le \zeta \le 100$
@@ -464,6 +464,42 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
     `fp_tensor_core_mma_m16n8k16_waves` & `fp_flash_attention_o1_sram_tiles` (Tensor Cores GPU PTX/SPIR-V),
     `pkg_assimilate_purity_gate_ok` (bloqueio de backdoor de supply-chain), e
     `pkg_omni_stdlib_btree_split_mid` & `pkg_omni_stdlib_mvcc_visibility_ok` (`Omni-Stdlib` ACID B+Tree/MVCC).
+  - **LumePuter & LumePU VM Neural Compilada nos Pesos `RV32IM_Zba` + Bignum + NPU Vetorial/Matricial (`VDOT`/`SMAQA`/`VX VMAT`) & RAM `Gated DeltaNet` Deriva Zero (Onda 5, `lume lumeputer` / `lume lumepu` / `lume qwenputer`, Integrado nos 17 Modulos Core e 104 Dominios Autonomos):**
+    `lumeputer_swiglu_exact_relu_unit` (`SiLU(k * b) -> ReLU` para $k \ge 18$),
+    `lumeputer_ballast_rmsnorm_guard_ok` (imunidade de absorcao `RMSNorm` `B = 10000`),
+    `lumeputer_deltanet_ram_step_exact` (escrita exata `beta = 1` e retencao `beta = 0` com `0%` de deriva BF16),
+    `lumeputer_rv32im_pc_step` (`PC = anchor + commits` alinhado a 4 bytes e saltos/JALR),
+    `lumeputer_bmac_digit_file_step` (registradores bignum de 128 digitos `BMAC`),
+    `lumepu_vdot_int8_int4_mac` & `lumepu_vx_vmat_row_mac_exact` (NPU sistolica `VX VMAT` de 64 pistas nos pesos FFN),
+    `lumeputer_compile_rv32_vx_to_weights_layers` (`11` camadas para `RV32IM_Zba`, `13` camadas com NPU `VX` `stories260K` dentro dos pesos),
+    e integracao completa nos 17 modulos do compilador (`stdlib/std.lume`, `lstd.src`, `tensor.src`, `nn.src`,
+    `ai_runtime.src`, `ltarget.src` `--target lumeputer-rv32im-weights`, `lchameleon.src`, `lsentience.src`,
+    `lume_driver.src`, `lcli.src`, `linteractive.src`, `lmanual.src`, `lume_llm_core.src`,
+    `lume_opentpu_engine.src`, `lume_ncm_engine.src`, `lume_continuum_nexus_engine.src`, `claude_audit_gate.src`)
+    mais o Evoluidor Autonomo 24/7 de 104 Dominios Soberanos (`#0..#103`, passo coprimo `43 mod 104`).
+  - **Onda 6 Compilador `.lweights` de Pilha Recursiva `LumePuter`, Prover de Lacos Octagono/Intervalo Relacional e Cache Incremental de Assinatura de Interface v2:**
+    `lumeputer_stack_push_frame_sp` & `lumeputer_compile_src_bundle_lweights` (pilha recursiva `SP` e empacotamento `.lweights` multi-funcao),
+    `prover_octagon_transitive_upper` & `prover_loop_ranking_steps_remaining` (dominio abstrato Octagono/Intervalo relacional e funcao de ranking de terminacao de lacos),
+    e `incremental_module_iface_digest` & `incremental_can_reuse_downstream_mod` (Cache Incremental Universal v2 baseado em assinatura de interface sem recompilar dependentes).
+  - **Onda 7 Trap/CSR `LumePuter` (`ecall`/`mret`) & Verificador `lcert` nos Pesos, Prover Dual de Farkas + Bit-Shift e Guarda de Epoca de Arena de Callback FFI + Reparo Fuzzy:**
+    `lumeputer_ecall_save_mepc`, `lumeputer_mret_restore_pc` & `lumeputer_inweights_lcert_check` (roundtrip de interrupcao `ecall`/`mret` CSR e verificacao `lcert` dentro dos pesos),
+    `prover_farkas_dual_rhs_sum`, `prover_farkas_unsat_witness_ok` & `prover_bitshift_shl_exact_bound` (testemunha dual de contradicao linear pelo Lema de Farkas e limites exatos de deslocamento de bits),
+    e `ffi_callback_arena_epoch_safe`, `diag_fuzzy_repair_distance_score` & `diag_fuzzy_repair_suggest_ok` (`#334` guarda de epoca de arena em callbacks FFI e `#407` reparo fuzzy de simbolos/aridade).
+  - **Onda 8 Otimizador Industrial SSA/Chaitin/AVX-512, Ponte FFI `io_uring` Zero-Copy, Provador Nao-Linear Horner/Grafo Indutivo e Auto-Evoluidor Estrutural de Passes:**
+    `ssa_chaitin_register_spill_cost`, `ssa_interprocedural_inline_gain` & `avx512_autovec_loop_speedup_lanes` (alocacao de registradores Chaitin-Briggs $K$-coloravel com zero spill, inlining interprocedural e auto-vetorizacao AVX-512 de 8 pistas),
+    `ffi_auto_header_abi_layout_ok` & `io_uring_zero_copy_ring_submit` (verificacao automatica de ABI C/OS/CUDA e anel de submissao DMA zero-copy `io_uring`/IOCP),
+    `prover_nonlinear_horner_lower_bound` & `prover_inductive_graph_dag_rank_ok` (limitacao polinomial nao-linear de Horner/Bernstein e prova indutiva de aciclicidade de grafos DAG),
+    e `compiler_pass_evolve_verified_promote` (auto-evolucao estrutural de passes do compilador validada por equivalencia `QF_LIA` e reducao estrita de WCET).
+  - **Onda 9 Emissao Real de Codigo de Maquina VEX/EVEX SIMD (`AVX2`/`AVX-512`), Syscalls Reais de Kernel `io_uring` (`425`/`426`/`427`), Provador Quadratico AST Nativo `x * x` de Horner e Pre-Processador Industrial de Headers `.h` (`--preprocess`):**
+    `simd_add4_i64`, `simd_sub4_i64`, `simd_xor4_i64` & `vex_simd_hardware_add4_sum` (codificacao real VEX `%ymm0..%ymm15` e EVEX `%zmm0..%zmm15` em `lasm.src` + instrucoes 256-bit `vpaddq`/`vpsubq`/`vpxor` em `05_codegen.src`),
+    `os_io_uring_setup`, `os_io_uring_enter`, `os_io_uring_register` & `io_uring_kernel_syscall_sqe_batch_safe` (syscalls reais `io_uring` `425`/`426`/`427` do kernel Linux em `05_codegen.src`),
+    `ast_native_horner_quadratic_eval` & `ast_native_quadratic_square_completion_law` (completamento de quadrado AST nativo `x * x + 2 * x + 1 >= 0` e `x * x + x >= 0` dentro de `06b_phase3.src` e `lcaas.src`),
+    e `c_header_preprocessor_macro_strip_ok` (`lume adapt c --preprocess <header.h>` / `lume adapt c-raw <header.h>` filtrando `#ifdef`/`#define`/`typedef`/`struct`/`__attribute__`/`WINAPI` de headers `.h` reais).
+  - **Onda 10 Suite Critica de Garantia em Producao e Verificacao Independente (Dominios `#108..#111`, 112 Dominios Soberanos no Total `#0..#111`):**
+    `lasm_vs_gnu_as_differential_byte_eq` & `lasm_differential_Mismatch_rejected_law` (Dominio `#108` `LASM_Differential_Assembler_Oracle`: verificacao diferencial byte-a-byte do montador nativo `lasm` escalar x86-64, AVX2 VEX `0xC5`/`0xC4` e AVX-512 EVEX `0x62` `disp8*N` & `disp32` contra GNU `/usr/bin/as` + `objcopy -O binary`),
+    `prover_adversarial_false_theorem_rejected` & `prover_unsound_acceptance_rejected_law` (Dominio `#109` `Adversarial_Prover_False_Theorem_Fuzzer`: PRNG deterministico e 25+ familias de teoremas falsos adversariais em `QF_LIA`, modulo negativo, bit-shifts, wrapping `+%`/`-%`/`*%`, `x*x` nao-linear e quantificadores sombreados sob `let`, provando 0 falsos positivos aceitos em `lumec` e `lcaas`),
+    `mutation_testing_kill_ratio_verified` & `mutation_surviving_mutant_rejected_law` (Dominio `#110` `Gate_Mutation_Testing_Kill_Verifier`: harness ativo de mutacao semantica injetando mutantes de contrato, ownership, `@secret`, `/ pure`, registradores SIMD, `void*` em header C e boot-sector ISO, verificando taxa de eliminacao de 100%),
+    e `ddc_diverse_double_compilation_bit_identical` & `ddc_bootstrap_divergence_rejected_law` (Dominio `#111` `Wheeler_Diverse_Double_Compilation_DDC`: Diverse Double-Compilation de David A. Wheeler provando que a cadeia C11 independente `GCC -> lume0 -> stage1 -> stage2` produz um binario de compilador bit-a-bit identico a cadeia auto-hospedada `lumec -> stage3`).
 - **NetSentinel IEC 62443, Conduite HA e Sovereign Mesh/Raft/DHT/TOFU (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` em `std.net`, `68/68` obrigacoes `QF_LIA` & WCET, `15/15` testes):**
   - **Modelo Purdue (`L0..L4`) e Guarda de Conduite DMZ (`L3.5`):** `iec62443_purdue_conduit_ok`
     impõe isolamento estrito entre zonas e proibe travessia direta entre rede corporativa e controle.
@@ -514,6 +550,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - GPUs / IA:        `nvptx64-nvidia-cuda` (CUDA PTX 8.0), `spirv64-vulkan-compute` (SPIR-V 1.6)
 - Silicio / FPGA:   `verilog-rtl` (IEEE 1364), `vhdl-rtl` (IEEE 1076)
 - Quantico e Bio:   `qasm3-quantum` (OpenQASM 3.0), `dna-quaternary` (`A,C,G,T`)
+- VM Neural e NPU nos Pesos: `lumeputer-rv32im-weights` (aliases `lumeputer`, `lumepu`, `qwenputer`,
+                    `rv32im-weights` — compila `.src` diretamente para o manifesto de processador neural
+                    de 13 camadas `RV32IM_Zba + BMAC + VX VMAT` com Ballast `B = 10000` e RAM `Gated DeltaNet`)
 
 ## 7.2 Empacotadores de Loja/Boot, LumeMIR, Classificacao `subset` e Codegen Tail-Recursive
 - `lasm.src` e `ltarget.src` usam acumuladores 100% tail-recursive (`rev_append` / `lt_lines_acc`)
@@ -572,12 +611,98 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   lume unified-field|ufe|subsea [alvo]               Motor de Campo Unificado e Submarino/Offshore em `std.gfx` (`ufe_dls_lambda_sq_milli`..`ufe_latency_shedder_step`, `subsea_catenary_top_tension_n`, `subsea_viv_screening_ok`, `subsea_miner_fatigue_safe_ok`, `marine_dnv_daf_floor_milli`, `marine_heavy_lift_feasible_ok`, `subsea_hyperbaric_decompression_safe_ok`, `subsea_well_kill_icp_kpa`, `subsea_b31g_corroded_pipe_safe_ok`)
   lume singularity|ote|transition-engine [alvo]      Motor Dinamico de Transicao de 2a Ordem, Fronteira Omega e Bayes-SPC/CPM/k-Anonymity em `lchameleon.src` (`ote_select_damping_regime`..`ote_diagnose_primary_code`, `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`, `analytics_k_anonymity_release_ok`, `analytics_pava_monotonic_pair_hi`)
   lume net-sentinel|iec62443|conduite|omega-mesh [a] NetSentinel IEC 62443, Conduite HA e Sovereign Mesh/Raft/DHT/TOFU em `std.net` (`iec62443_purdue_conduit_ok`..`ot_finite_sentinel_clamp`, `conduit_admin_timeout_ok`, `conduit_ha_failover_parity_ok`, `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, `mesh_atomic_dual_rate_deduct`, `mesh_dht_healing_rank`, `mesh_raft_quorum_ok`, `mesh_tofu_verify_code`, `mesh_channel_mux_quota_ok`)
+  lume lumeputer|lumepu|qwenputer [alvo]             LumePuter & LumePU VM Compilada nos Pesos `RV32IM_Zba` + Bignum + NPU Vetorial/Matricial (`VDOT`/`SMAQA`/`VX VMAT`) & RAM `Gated DeltaNet` em `lchameleon.src` (`lumeputer_swiglu_exact_relu_unit`..`lumeputer_compile_rv32_vx_to_weights_layers`)
   lume run compiler/stage1/lume_llm_core.src         Nucleo Soberano LLM 1-Bit/Ternario, Audio LFM3 LiquidCodec, Guarda MoE Colibri e Roteador 3-Tier (`21/21` provas)
   lume run examples/apps/sovereign_llm_router/main.src Roteador LLM Hibrido Edge/Local/Cloud e Oraculo Anti-Alucinacao de Precos (`20/20` provas)
   lume os-control / bios-core / web-research / crypto-engine
   lume sensory-cortex / multimodal / file-indexer / interface / self-build
   lume wireshark / switch-fabric / scada-ics / modbus / dnp3 / iec104 / iec61850
   lume gfx / render-3d / scada-hmi / ied-protection / recall / synapse / orchestrate
+
+### Comandos de Certificacao da Onda 11 (Dominios `#112..#115`)
+  lume tv <src.src> [--fn <f>] [--exec]      Validacao de traducao (`ltv`): por funcao, a AST rebaixada contra o x86-64 que o `lumec` emitiu
+  lume mcdc <src.src> [--fn <f>] [--exec]    Obrigacoes de decisao + MC/DC por mascaramento (`lmcdc`); cada testemunha roda no binario real
+  lume safety-envelope <kernel.src> --fn <f> --args <a,b,..> [--args ..] [--budget n] [--reset]
+                                             Lockstep 2oo2: x86-64 nativo (canal A) contra o monitor LumePuter RV32IM (canal B)
+  lume safety-envelope --gate                Gate de injecao de falhas do envelope (bit flips, RAM/registrador/ROM, WCET, certificado)
+  lume lumeputer exec <kernel.src> --fn <f> --args <a,b,..>   Executa um kernel somente no monitor LumePuter RV32IM (sem voto, sem commit)
+  lume tv-gate [--stride n]                  Gate de mutacao do codegen: o `ltv` tem de rejeitar todo mutante que muda o comportamento
+  lume soak [--rounds n] [--procs n]         Soak battle: estresse do coletor, falhas de SO, determinismo concorrente, ledger encadeado por hash
+  lume prover-fuzz [--n k] [--seed s]        Fuzzer de teoremas falsos contra `lumec`, `lcaas` e o kernel `lcert`
+  lume qualify [--quick]                     Bateria de qualificacao de ferramenta; grava TOR, TQP, RTM, evidencias e dossie em `build/certification/`
+
+- **`ltv` (Dominio `#112`)** executa simbolicamente a AST e o assembly emitido de cada funcao inteira e so aceita
+  quando, para toda valoracao dos atomos de desvio, ambos chegam a `ctfail` nos mesmos casos e com a mesma mensagem,
+  senao retornam o mesmo valor em `%rax`, fazem as mesmas divisoes / modulos / chamadas e mantem a disciplina de
+  frame (`%rsp`/`%rbp` restaurados, nenhuma escrita fora do frame). O modelo de maquina e o real: inteiros de 63 bits
+  com tag, caminhos rapidos guardados por `jo`/`jno`, helpers do runtime como axiomas declarados. O que ele nao
+  consegue derivar e rejeicao. Limites: so o fragmento inteiro (o resto e `unsupported`, nunca `validated`); o teorema
+  vale sobre os inteiros (execucoes sem trap de overflow i64); os certificados SMT-LIB2 e Lean 4 em
+  `build/certification/proofs/` so sao checados quando `z3`/`cvc5`/`lean` estao instalados (o relatorio diz em
+  `external_solver` e `lean_checked`).
+- **`lmcdc` (Dominio `#114`)** lista as decisoes da AST rebaixada (`requires`, `ensures` checado em runtime, condicoes
+  de `if`, valores booleanos), procura vetores-testemunha e roda cada um no binario real. Obrigacao sem testemunha e
+  relatada como `theorem_false` (saida falsa de uma lei provada ou de um ensures checado), `infeasible` (contradicao
+  provada pelo kernel `lcert`: clausula redundante ou ramo morto, listado para revisao) ou `uncovered`.
+- **`lsafety_envelope` (Dominio `#115`)** so libera `VerifiedActuatorCommit(valor)` quando o canal A terminou dentro
+  do watchdog, o canal B parou dentro do orcamento de ciclos (`@bound(cycles: N)` x 16, ou `--budget`) sem trap, o
+  `ltv` validou o kernel e as duas palavras sao iguais. Qualquer outro caso trava `SAFE_STATE_TRIP` no log encadeado
+  `build/certification/safety_envelope_events.jsonl` ate `--reset`. Nivel real: o canal B e um interpretador RV32IM em
+  software no mesmo host (diversidade de projeto, nao independencia fisica); o front-end e comum aos dois canais; o
+  dominio do monitor e i32 (um kernel que sai dele entra em estado seguro).
+- **`lume qualify` (Dominio `#114`)** roda 70 sondas, as baterias de modulo (ltv, lmcdc, estado das provas) e 16 gates,
+  confere a matriz de rastreabilidade bidirecional (todo requisito precisa de pai, arquivo-fonte existente, teste
+  positivo passando, teste negativo passando e gate de mutacao ou prova passando) e grava o dossie. E o pacote de
+  evidencias do desenvolvedor para trabalho DO-330 TQL-1 / DO-178C DAL A / IEC 61508 T3 / IEC 62304 classe C, **nao e
+  uma qualificacao**: ela e concedida por projeto pela autoridade ou avaliador e exige verificacao independente.
+- **Ledger de soak (Dominio `#113`)**: `build/certification/battle_telemetry_ledger.json` acumula as campanhas do
+  `lume soak`; cada entrada carrega o hash da anterior e o gate reverifica a cadeia antes de anexar.
+
+### Comandos Industriais da Onda 12 (Dominios `#116..#121`) e Fechamento da Onda 13
+  lume build --dwarf|-g <src.src> [-o <out>]             Tabela de linhas e simbolos DWARF v4 (`.debug_line`, `.debug_info`, `.debug_abbrev`, `.symtab`, `.strtab`)
+  lume build --keep-proven-checks|--critical <src.src>   Mantem o cheque em runtime de todo `ensures` provado (defesa em profundidade)
+  lume build --target aarch64-linux-gnu|aarch64-elf|riscv64-linux-gnu|riscv64-none-elf|riscv64-none-bin|riscv32-none-elf|riscv32-none-bin <kernel.src> -o <out>
+                                                         Back ends certificados de kernel inteiro (`larm64`, `lriscv`), com o front-end do `lumec` antes
+  lume build --target safetensors [--entry <fn>] <src.src> -o <out.safetensors>   Cartucho neural de uma funcao inteira `/ pure`
+  lume proof-cache <check|store> <src.src> [<cache_dir>] [--require-all-hits]      Cache incremental de provas por funcao (`lproof_cache`)
+  lume verify-cert --check-source <src.src> <cert.json>  Kernel de certificados com o cheque de vinculo fonte-obrigacao
+  lume qualify --verify                                  Reconfere a cadeia de hash e a assinatura Ed25519 de `build/certification/`
+  lume realtime-gate | concurrency-gate | crypto-gate | multi-arch-gate | safetensors-gate | dwarf-cache-gate | cert-source-gate
+                                                         Os gates de aceitacao dos recursos abaixo
+
+- **`@no_alloc` (Dominio `#116`, `[E0210]`)**: a funcao e toda funcao que ela chama (o cheque e transitivo) nao
+  podem alcancar alocacao no heap: parametros `int`/`bool` com limites provados, `+ - *` provados dentro da faixa
+  imediata de 63 bits, nenhum record, construtor com campos, string ou builtin que aloca, recursao so em posicao de
+  cauda. O `realtime_gate` mede o resultado com `heap_stats()`: zero alocacoes nos kernels aceitos. Limites: nao se
+  calcula profundidade maxima de pilha em bytes e nada e cronometrado; `@bound` e o orcamento de ciclos.
+- **Back ends multi-ISA (Dominio `#117`)**: `larm64.src` e `lriscv.src` compilam o fragmento de kernel inteiro
+  (funcoes `int`, `+ - * / %`, comparacoes, `and`/`or`, `if`, `let`, chamadas, `print`) para imagens AArch64, RV64 e
+  RV32; o `ltv_multiarch.src` valida cada imagem de funcao contra o fonte. Nenhuma imagem sai antes de o front-end
+  do `lumec` aceitar o mesmo fonte (`[T0902]` com o diagnostico dele, `[T0903]` se o `lumec` nao for encontrado);
+  fonte fora do fragmento e `[T0901]`. Nivel real: executado em `qemu-aarch64`, `qemu-riscv64` e no interpretador
+  LumePuter, nao em silicio.
+- **Concorrencia linear (Dominio `#118`)**: um valor enviado com `chan_send_linear` nao pode ser usado de novo
+  (`[E0305]`); `lock_acquire` fora da ordem de rank, lock nao liberado ou ciclo de arestas `actor_link` e rejeitado
+  (`[E0306]`).
+- **Criptografia e TLS 1.3 (Dominio `#119`, `use lcrypto_tls`)**: SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305,
+  Ed25519, X25519, o key schedule, a camada de registros e a maquina de estados do handshake do TLS 1.3, tudo em
+  Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. O `ltv` acrescenta o `[C0010]`: o codigo
+  emitido de uma funcao `@secret` nao pode ter desvio condicional, divisao nem acesso a memoria fora do frame.
+  Limites: testado, nao verificado formalmente; o `[C0010]` nao olha dentro dos helpers de runtime alcancados por
+  `call`; sem validacao de cadeia X.509.
+- **Cache incremental de provas (Dominio `#120`)**: um registro selado por funcao, indexado pelo SHA-256 do corpo,
+  dos contratos, das interfaces dos chamados e da versao do provador. Registro adulterado e recusado (`[PC0002]`),
+  modulo refutado pelo provador nunca e gravado (`[PC0003]`), `--require-all-hits` transforma miss em erro (`[PC0005]`).
+- **Cartuchos neurais (Dominio `#121`)**: uma funcao inteira `/ pure` compilada para palavras RV32IM dentro de um
+  arquivo `.safetensors` com os pesos inteiros de um bloco SwiGLU; o forward pass sobre os pesos do arquivo tem de
+  ser igual ao programa nativo e a execucao no LumePuter. E aritmetica matricial inteira avaliada por esta cadeia de
+  ferramentas, nao uma afirmacao sobre um motor de inferencia em ponto flutuante.
+- **Vinculo de certificado (`lcert --check-source`)**: alem de rederivar cada termo de prova, o kernel le os
+  contratos do proprio fonte e recusa um certificado cujas obrigacoes nao sejam as obrigacoes daquele arquivo.
+- **Evidencia assinada**: o `lume qualify` encadeia as secoes de `QUALIFICATION_EVIDENCE.json` com SHA-256 e grava uma
+  assinatura Ed25519 destacada (`QUALIFICATION_EVIDENCE.sig.json`). A chave e uma chave de desenvolvedor guardada em
+  arquivo no host (`/root/.lume/keys/qualification_ed25519.seed` ou `--sign-key`): ela mostra quem produziu o
+  arquivo, nao e um atestado independente.
 
 ## 8.4 Orquestrador Universal de Modulos (`LumeSynapse`) e Memoria Proativa
 - `lume synapse <arq.src>` (ou `lume orchestrate <arq.src>`): Coordena todos os modulos
@@ -589,13 +714,13 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x
   mais rapidos).
 - `lume self-prove` (ou `lume prove-all` / `lume verify-all` / `lume self prove`): Executa
-  nativamente dentro do proprio compilador todas as 15 Baterias Soberanas de Provas
-  (`LumeCompiler-Embedded-OmniProof-v3`) sem nenhum script externo (`std.net`, `std.gfx`,
+  nativamente dentro do proprio compilador as baterias de provas (todo numero do JSON e medido na execucao)
+  (`LumeCompiler-Embedded-OmniProof-v4`) sem nenhum script externo (`std.net`, `std.gfx`,
   `lume_crypto_blockchain_engine`, `lume_reversa_engine`, `lume_pingora_proxy_engine`,
   `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,
   `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
-  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 582 obrigacoes formais +
-  155 testes unitarios + 99 artefatos verificados).
+  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 700 obrigacoes formais +
+  162 testes unitarios + 99 artefatos verificados + 112 dominios autonomos + 17 modulos LumePuter).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
@@ -679,6 +804,20 @@ fn run_chameleon_demo() =
     str(ok) + ":" + r.id
 
 print run_chameleon_demo()
+```
+
+## Exemplo 8: LumePuter & LumePU VM Neural e NPU nos Pesos (`lumeputer_demo.src`)
+```lume
+use lchameleon
+
+fn run_lumeputer_demo() =
+    let relu_val = lumeputer_swiglu_exact_relu_unit(42, 1, 20) in
+    let ram_cell = lumeputer_deltanet_ram_step_exact(99, 777, 1) in
+    let vx_mac = lumepu_vx_vmat_row_mac_exact(10, 4, 8, 64) in
+    let layers = lumeputer_compile_rv32_vx_to_weights_layers(64, 1, 1) in
+    str(relu_val) + ":" + str(ram_cell) + ":" + str(vx_mac) + ":" + str(layers)
+
+print run_lumeputer_demo()
 ```
 
 # CAPITULO 10: TABELA DE CODIGOS DE ERRO E COMO CORRIGIR

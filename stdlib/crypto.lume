@@ -1,0 +1,133 @@
+## Lume Sovereign Standard Library (`stdlib/crypto.lume`)
+## Formally Verified QF_LIA Framing, Padding & Sequencing Kernels of the Native Crypto + TLS 1.3 Stack
+##
+## The primitives themselves (SHA-256 / SHA-512, HMAC, HKDF, ChaCha20, Poly1305, ChaCha20-Poly1305, Ed25519, X25519,
+## the TLS 1.3 key schedule, record layer and 1-RTT handshake state machines) are implemented in `compiler/stage1/lcrypto_tls.src` (`use lcrypto_tls`,
+## zero C, zero OpenSSL) and accepted by `tests/harness/crypto_tls_gate.src` against the official RFC vectors:
+##   lct_sha256(bytes)  lct_sha512(bytes)  lct_hmac_sha256(key, msg)
+##   lct_hkdf_extract(salt, ikm)  lct_hkdf_expand(prk, info, len)  lct_hkdf(salt, ikm, info, len)
+##   lct_chacha20_xor(key, counter, nonce, data)  lct_poly1305(one_time_key, msg)
+##   lct_aead_seal(key, nonce, aad, plaintext) -> {ct, tag}   lct_aead_open(key, nonce, aad, ct, tag) -> {ok, pt}
+##   lct_ed25519_public_key(seed)  lct_ed25519_sign(seed, msg)  lct_ed25519_verify(public_key, msg, signature)
+##   lct_tls13_key_schedule(psk, ecdhe, hello_hash, finished_hash) -> {early, handshake, master, c_hs, s_hs, c_ap, s_ap, exp_master}
+##   lct_tls13_traffic_keys(secret, key_len) -> {key, iv}
+##   lct_tls13_record_seal(key, iv, seq, content_type, data)   lct_tls13_record_open(key, iv, seq, record) -> {ok, ctype, data}
+##   lct_x25519(scalar, u) -> 32 bytes   lct_x25519_base(scalar)   lct_x25519_shared(scalar, peer_u) -> {ok, secret}
+##   lct_tls13_client_config(random, session_id, x25519_private, pinned_server_key)   lct_tls13_client_start(cfg)
+##   lct_tls13_server_config(random, x25519_private, ed25519_seed, request_client_cert)   lct_tls13_server_start(cfg)
+##   lct_tls13_feed(state, record) -> state with .out (records to send) and .app (data received)
+##   lct_tls13_send(state, data) -> {ok, st}   lct_tls13_close(state)   lct_tls13_secrets(state) -> {ok, c_ap, s_ap, exp_master}
+## The handshake authenticates the server by a pinned raw Ed25519 public key (no X.509 validation), offers one suite
+## (TLS_CHACHA20_POLY1305_SHA256) and one group (x25519), has no PSK / 0-RTT / HelloRetryRequest / client certificates /
+## KeyUpdate, and takes its randoms and ephemeral private keys from the caller (there is no RNG in the library).
+## This file mirrors the integer kernels those functions rely on, each with a machine-checked contract.
+
+@bound(16)
+pub fn crypto_sha256_pad_zeros(left: int) -> int
+    requires left >= 0 and left <= 63
+    ensures result >= 0 and result <= 63
+    if left <= 55 then 55 - left else 119 - left
+
+@bound(16)
+pub fn crypto_sha512_pad_zeros(left: int) -> int
+    requires left >= 0 and left <= 127
+    ensures result >= 0 and result <= 127
+    if left <= 111 then 111 - left else 239 - left
+
+@bound(8)
+pub fn crypto_sha256_padded_len(left: int, zeros: int) -> int
+    requires left >= 0 and left <= 55 and zeros == 55 - left
+    ensures result == 64
+    left + 1 + zeros + 8
+
+@bound(8)
+pub fn crypto_aead_sealed_len(plain_len: int) -> int
+    requires plain_len >= 0
+    ensures result == plain_len + 16 and result >= 16
+    plain_len + 16
+
+@bound(8)
+pub fn crypto_aead_plain_len(sealed_len: int) -> int
+    requires sealed_len >= 16
+    ensures result >= 0 and result + 16 == sealed_len
+    sealed_len - 16
+
+@bound(8)
+pub fn crypto_tls13_record_len(data_len: int) -> int
+    requires data_len >= 0 and data_len <= 16384
+    ensures result == data_len + 22 and result >= 22 and result <= 16406
+    5 + data_len + 1 + 16
+
+@bound(8)
+pub fn crypto_tls13_seq_next(seq: int) -> int
+    requires seq >= 0 and seq < 4611686018427387903
+    ensures result == seq + 1 and result > seq
+    seq + 1
+
+@bound(16)
+pub fn crypto_tag_accept(xor_accumulator: int) -> int
+    requires xor_accumulator >= 0 and xor_accumulator <= 255
+    ensures (xor_accumulator == 0 and result == 1) or (xor_accumulator >= 1 and result == 0)
+    if xor_accumulator == 0 then 1 else 0
+
+@bound(16)
+pub fn crypto_record_open_verdict(header_ok: int, tag_ok: int, has_content_type: int) -> int
+    requires header_ok >= 0 and header_ok <= 1 and tag_ok >= 0 and tag_ok <= 1 and has_content_type >= 0 and has_content_type <= 1
+    ensures result == 0 or result == 1
+    if header_ok == 1 and tag_ok == 1 and has_content_type == 1 then 1 else 0
+
+@bound(16)
+pub fn crypto_ed25519_scalar_accept(below_group_order: int, point_decoded: int, equation_holds: int) -> int
+    requires below_group_order >= 0 and below_group_order <= 1 and point_decoded >= 0 and point_decoded <= 1 and equation_holds >= 0 and equation_holds <= 1
+    ensures result >= 0 and result <= below_group_order
+    if below_group_order == 1 and point_decoded == 1 and equation_holds == 1 then 1 else 0
+
+@bound(8)
+pub fn crypto_limb_bits_poly1305(limbs: int) -> int
+    requires limbs == 5
+    ensures result == 130
+    26 * limbs
+
+@bound(8)
+pub fn crypto_limb_bits_ed25519(limbs: int) -> int
+    requires limbs == 16
+    ensures result == 256
+    16 * limbs
+
+## X25519 scalar clamping (RFC 7748 section 5), in arithmetic form: the library does it with bit masks
+## (`& 248` and `& 127 | 64`) so that nothing is divided by a secret; these state what the masks compute.
+@bound(16)
+pub fn crypto_x25519_clamp_first(b: int) -> int
+    requires b >= 0 and b <= 255
+    ensures result >= 0 and result <= 248 and b - result >= 0 and b - result <= 7
+    b - b % 8
+
+@bound(16)
+pub fn crypto_x25519_clamp_last(b: int) -> int
+    requires b >= 0 and b <= 255
+    ensures result >= 64 and result <= 127
+    b % 64 + 64
+
+## The all-zero check of an X25519 shared secret from the OR of its 32 bytes: accept exactly when a bit is set.
+@bound(16)
+pub fn crypto_x25519_accept(or_of_bytes: int) -> int
+    requires or_of_bytes >= 0 and or_of_bytes <= 255
+    ensures (or_of_bytes == 0 and result == 0) or (or_of_bytes >= 1 and result == 1)
+    if or_of_bytes == 0 then 0 else 1
+
+## The TLS 1.3 handshake transition table of RFC 8446 Appendix A (the same function as `lct_tls13_hs_next`).
+## States: client 0 START, 1 WAIT_SH, 2 WAIT_EE, 3 WAIT_CERT_CR, 4 WAIT_CERT, 5 WAIT_CV, 6 WAIT_FINISHED, 7 CONNECTED;
+## server 10 START, 11 RECVD_CH, 12 NEGOTIATED, 13 WAIT_FLIGHT2, 14 WAIT_CERT, 15 WAIT_FINISHED, 16 CONNECTED; 99 error.
+## Events: handshake message types (1 ClientHello, 2 ServerHello, 8 EncryptedExtensions, 11 Certificate,
+## 13 CertificateRequest, 15 CertificateVerify, 20 Finished) and local steps 100 .. 104.
+## Contract: every move either fails closed (99) or goes strictly forward, so no state is ever re-entered, the error
+## state is absorbing and the handshake terminates.
+@bound(96)
+pub fn crypto_tls13_hs_next(state: int, ev: int) -> int
+    requires state >= 0 and ev >= 0
+    ensures result == 99 or (result > state and result <= 16)
+    if state == 0 then (if ev == 100 then 1 else 99) else if state == 1 then (if ev == 2 then 2 else 99) else if state == 2 then (if ev == 8 then 3 else 99) else if state == 3 then (if ev == 13 then 4 else if ev == 11 then 5 else 99) else if state == 4 then (if ev == 11 then 5 else 99) else if state == 5 then (if ev == 15 then 6 else 99) else if state == 6 then (if ev == 20 then 7 else 99) else if state == 10 then (if ev == 1 then 11 else 99) else if state == 11 then (if ev == 101 then 12 else 99) else if state == 12 then (if ev == 102 then 13 else 99) else if state == 13 then (if ev == 103 then 15 else if ev == 104 then 14 else 99) else if state == 14 then (if ev == 11 then 15 else 99) else if state == 15 then (if ev == 20 then 16 else 99) else 99
+
+fn test_wave13_x25519_and_handshake_kernels() = crypto_x25519_clamp_first(255) == 248 and crypto_x25519_clamp_first(119) == 112 and crypto_x25519_clamp_last(255) == 127 and crypto_x25519_clamp_last(42) == 106 and crypto_x25519_accept(0) == 0 and crypto_x25519_accept(128) == 1 and crypto_tls13_hs_next(0, 100) == 1 and crypto_tls13_hs_next(1, 2) == 2 and crypto_tls13_hs_next(3, 13) == 4 and crypto_tls13_hs_next(3, 11) == 5 and crypto_tls13_hs_next(5, 20) == 99 and crypto_tls13_hs_next(6, 20) == 7 and crypto_tls13_hs_next(7, 20) == 99 and crypto_tls13_hs_next(13, 103) == 15 and crypto_tls13_hs_next(15, 20) == 16 and crypto_tls13_hs_next(99, 2) == 99
+
+fn test_wave12_crypto_framing_kernels() = crypto_sha256_pad_zeros(0) == 55 and crypto_sha256_pad_zeros(56) == 63 and crypto_sha512_pad_zeros(112) == 127 and crypto_sha256_padded_len(3, 52) == 64 and crypto_aead_sealed_len(114) == 130 and crypto_aead_plain_len(130) == 114 and crypto_tls13_record_len(18) == 40 and crypto_tls13_seq_next(41) == 42 and crypto_tag_accept(0) == 1 and crypto_tag_accept(128) == 0 and crypto_record_open_verdict(1, 1, 1) == 1 and crypto_record_open_verdict(1, 0, 1) == 0 and crypto_ed25519_scalar_accept(1, 1, 1) == 1 and crypto_ed25519_scalar_accept(0, 1, 1) == 0 and crypto_limb_bits_poly1305(5) == 130 and crypto_limb_bits_ed25519(16) == 256

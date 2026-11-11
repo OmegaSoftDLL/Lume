@@ -13,10 +13,7 @@ fn lumec_drive() / {CompilerIO} = lumec_compile(read_source())
 ## ============================================================================================================
 
 ## --- SHA-256 (FIPS 180-4) over a string, ported from lcert.src's official-vector-validated implementation ---
-fn lsh_ord_lo(c) = if c < "0" then (if c < "(" then (if c == " " then 32 else if c == "!" then 33 else if c == "\"" then 34 else if c == "#" then 35 else if c == "$" then 36 else if c == "%" then 37 else if c == "&" then 38 else 39) else (if c == "(" then 40 else if c == ")" then 41 else if c == "*" then 42 else if c == "+" then 43 else if c == "," then 44 else if c == "-" then 45 else if c == "." then 46 else 47)) else (if c < ":" then 48 + toint(c) else (if c == ":" then 58 else if c == ";" then 59 else if c == "<" then 60 else if c == "=" then 61 else if c == ">" then 62 else if c == "?" then 63 else 64))
-fn lsh_ord_up(c) = if c < "N" then (if c < "G" then (if c == "A" then 65 else if c == "B" then 66 else if c == "C" then 67 else if c == "D" then 68 else if c == "E" then 69 else 70) else (if c == "G" then 71 else if c == "H" then 72 else if c == "I" then 73 else if c == "J" then 74 else if c == "K" then 75 else if c == "L" then 76 else 77)) else (if c < "U" then (if c == "N" then 78 else if c == "O" then 79 else if c == "P" then 80 else if c == "Q" then 81 else if c == "R" then 82 else if c == "S" then 83 else 84) else (if c == "U" then 85 else if c == "V" then 86 else if c == "W" then 87 else if c == "X" then 88 else if c == "Y" then 89 else if c == "Z" then 90 else if c == "[" then 91 else if c == "\\" then 92 else if c == "]" then 93 else if c == "^" then 94 else if c == "_" then 95 else 96))
-fn lsh_ord_az(c) = if c < "n" then (if c < "g" then (if c == "a" then 97 else if c == "b" then 98 else if c == "c" then 99 else if c == "d" then 100 else if c == "e" then 101 else 102) else (if c == "g" then 103 else if c == "h" then 104 else if c == "i" then 105 else if c == "j" then 106 else if c == "k" then 107 else if c == "l" then 108 else 109)) else (if c < "u" then (if c == "n" then 110 else if c == "o" then 111 else if c == "p" then 112 else if c == "q" then 113 else if c == "r" then 114 else if c == "s" then 115 else 116) else (if c == "u" then 117 else if c == "v" then 118 else if c == "w" then 119 else if c == "x" then 120 else if c == "y" then 121 else if c == "z" then 122 else if c == "|" then 124 else if c == "~" then 126 else if c > "z" and c < "|" then 123 else 125))
-fn lsh_ord(c) = if c == "\n" then 10 else if c == "\r" then 13 else if c == "\t" then 9 else if c > "~" then ord(c) else if c < "A" then lsh_ord_lo(c) else if c < "a" then lsh_ord_up(c) else lsh_ord_az(c)
+fn lsh_ord(c) = ord(c)
 fn lsh_u32(x) = let r = x % 4294967296 in if r < 0 then r + 4294967296 else r
 fn lsh_pow2(n) = if n <= 0 then 1 else if n >= 16 then 65536 * lsh_pow2(n - 16) else if n >= 8 then 256 * lsh_pow2(n - 8) else if n >= 4 then 16 * lsh_pow2(n - 4) else if n == 3 then 8 else if n == 2 then 4 else 2
 fn lsh_shr(x, n) = x / lsh_pow2(n)
@@ -231,7 +228,90 @@ fn lil_is_mainstmt(s0) = match s0
     Print(v) => 1
     ExprS(v) => 1
     _        => 0
-fn lumec_module_fragment(name, role, toolchain, prog0) = let reason = lsc_prog(prog0) in if reason != "" then ctfail("lume: incremental fallback: module " + name + " uses " + reason + "\n") else if role == "lib" and lil_has_mainstmts(prog0) == 1 then ctfail("lume: incremental fallback: library module " + name + " has top-level statements\n") else let h = lumec_asthash_prog(prog0) in let expanded = cfold(own gerase(own tcheck(prog0))) in let an = lgen_analysis(expanded, "m_" + name + "_") in if isnil(an.ffi_osigs) == 0 then ctfail("lume: incremental fallback: module " + name + " declares foreign signatures\n") else let flagsline = "is_krn=" + str(an.is_krn) + " isr=" + (if an.isr_fn == "" then "-" else an.isr_fn) + " has_sys=" + str(an.has_sys) + " has_tier=" + str(an.has_tier) + " has_mem=" + str(an.has_mem) + " uses_fs=" + str(an.uses_fs) in let fraghash = lsh256(flagsline + "\n" + an.ffi_links + an.dt_s + an.funcs_raw + an.mains_s) in "@lume-fragment 1\n@name " + name + "\n@role " + role + "\n@toolchain " + toolchain + "\n@asthash " + h + "\n@fraghash " + fraghash + "\n@flags " + flagsline + "\n@mframe " + str(an.mframe) + "\n@ffilinks\n" + an.ffi_links + "@end\n@dt\n" + an.dt_s + "@end\n@funcs\n" + an.funcs_raw + "@end\n@mains\n" + an.mains_s + "@end"
+## --- cross-module calls of a separately compiled module --------------------------------------------------------
+## A module is checked on its own, so a call into another module has no definition here. That one finding is not an
+## error yet: the fragment records it as `ext=name/argc,...`, next to `defs=name/arity,...` for what the module
+## defines, and the link step refuses the build if any recorded call has no definition, or the wrong argument count.
+## Every other name error is reported right here, exactly as in a whole-bundle build.
+fn lmx_is_ext(h) = if h.code == "R0200" and count(h.msg) >= 26 and slice(h.msg, 0, 26) == "call to undefined function" then 1 else 0
+fn lmx_exts(errs, acc) = match errs
+    Nil        => acc
+    Cons(h, t) => if lmx_is_ext(h) == 1 then lmx_exts(t, Cons(h.name, acc)) else ctfail("lume: " + nf_kind(h.code) + " error [" + h.code + "]: " + h.msg + "\n")
+fn lmx_mem(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else lmx_mem(x, t)
+fn lmx_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + lmx_len(t)
+fn lmx_add(x, acc) = if lmx_mem(x, acc) == 1 then acc else Cons(x, acc)
+fn lmx_calls_el(xs, exts, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lmx_calls_el(t, exts, lmx_calls_e(h, exts, acc))
+fn lmx_calls_recl(xs, exts, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lmx_calls_recl(t, exts, lmx_calls_e(h.val, exts, acc))
+fn lmx_calls_arms(arms, exts, acc) = match arms
+    Nil        => acc
+    Cons(h, t) => lmx_calls_arms(t, exts, lmx_calls_e(h.body, exts, acc))
+fn lmx_calls_e(e, exts, acc) = match e
+    Bin(op, a, b)          => lmx_calls_e(b, exts, lmx_calls_e(a, exts, acc))
+    If(c, t, e2)           => lmx_calls_e(e2, exts, lmx_calls_e(t, exts, lmx_calls_e(c, exts, acc)))
+    LetIn(nm, v, b)        => lmx_calls_e(b, exts, lmx_calls_e(v, exts, acc))
+    VarIn(nm, v, b)        => lmx_calls_e(b, exts, lmx_calls_e(v, exts, acc))
+    LambdaE(ps, ts, rt, b) => lmx_calls_e(b, exts, acc)
+    Call(nm, args)         => lmx_calls_el(args, exts, if lmx_mem(nm, exts) == 1 then lmx_add(nm + "/" + str(lmx_len(args)), acc) else acc)
+    Rec(items)             => lmx_calls_recl(items, exts, acc)
+    RecT(tn, items)        => lmx_calls_recl(items, exts, acc)
+    Field(o, fld)          => lmx_calls_e(o, exts, acc)
+    Match(sc, arms)        => lmx_calls_arms(arms, exts, lmx_calls_e(sc, exts, acc))
+    OwnE(x)                => lmx_calls_e(x, exts, acc)
+    MutE(x)                => lmx_calls_e(x, exts, acc)
+    DeferE(c, b)           => lmx_calls_e(b, exts, lmx_calls_e(c, exts, acc))
+    ErrDeferE(c, b)        => lmx_calls_e(b, exts, lmx_calls_e(c, exts, acc))
+    _                      => acc
+fn lmx_calls_s(st, exts, acc) = match st
+    Fn(nm, ps, body) => lmx_calls_e(body, exts, acc)
+    Print(v)         => lmx_calls_e(v, exts, acc)
+    ExprS(v)         => lmx_calls_e(v, exts, acc)
+    _                => acc
+fn lmx_calls(prog, exts, acc) = match prog
+    Nil        => acc
+    Cons(h, t) => lmx_calls(t, exts, lmx_calls_s(h, exts, acc))
+fn lmx_has_name(nm, sites) = match sites
+    Nil        => 0
+    Cons(h, t) => if count(h) > count(nm) and slice(h, 0, count(nm) + 1) == nm + "/" then 1 else lmx_has_name(nm, t)
+## a call the walker above did not reach is still recorded, with `?` for "any argument count"
+fn lmx_fill(exts, sites) = match exts
+    Nil        => sites
+    Cons(h, t) => lmx_fill(t, if lmx_has_name(h, sites) == 1 then sites else Cons(h + "/?", sites))
+fn lmx_defs(prog, gens) = match prog
+    Nil        => Nil
+    Cons(h, t) => match h
+        Fn(nm, ps, body) => Cons(nm + "/" + (if nf_gen_total(nm, gens) >= 0 then "?" else str(lmx_len(ps))), lmx_defs(t, gens))
+        _                => lmx_defs(t, gens)
+fn lmx_join(xs) = match xs
+    Nil        => "-"
+    Cons(h, t) => if isnil(t) == 1 then h else h + "," + lmx_join(t)
+fn lmx_split(s, i, start, acc) = if s == "-" then Nil else if i >= count(s) then lil_rev(Cons(slice(s, start, i), acc)) else if at(s, i) == "," then lmx_split(s, i + 1, i + 1, Cons(slice(s, start, i), acc)) else lmx_split(s, i + 1, start, acc)
+fn lmx_slash(s, i) = if i >= count(s) then i else if at(s, i) == "/" then i else lmx_slash(s, i + 1)
+fn lmx_def_arity(nm, defs) = match defs
+    Nil        => ""
+    Cons(h, t) => let k = lmx_slash(h, 0) in if slice(h, 0, k) == nm then slice(h, k + 1, count(h)) else lmx_def_arity(nm, t)
+fn lmx_resolve1(modname, site, defs) = let k = lmx_slash(site, 0) in let nm = slice(site, 0, k) in let got = slice(site, k + 1, count(site)) in let want = lmx_def_arity(nm, defs) in if want == "" then ctfail("lume: name error [R0200]: call to undefined function '" + nm + "' (module '" + modname + "' calls it and no module of this build defines it; fix-it: define '" + nm + "' or import the module providing it)\n") else if want == "?" or got == "?" or want == got then 0 else ctfail("lume: name error [R0202]: call to '" + nm + "' passes " + got + " argument(s) but it takes " + want + " (called from module '" + modname + "')\n")
+fn lmx_resolve_sites(modname, sites, defs) = match sites
+    Nil        => 0
+    Cons(h, t) => let z = lmx_resolve1(modname, h, defs) in lmx_resolve_sites(modname, t, defs)
+fn lmx_all_defs(frags) = match frags
+    Nil        => Nil
+    Cons(h, t) => app(lmx_split(h.defs, 0, 0, Nil), lmx_all_defs(t))
+fn lmx_resolve_all(frags, defs) = match frags
+    Nil        => 0
+    Cons(h, t) => let z = lmx_resolve_sites(h.name, lmx_split(h.ext, 0, 0, Nil), defs) in lmx_resolve_all(t, defs)
+fn lmx_parse_all(mods) = match mods
+    Nil        => Nil
+    Cons(h, t) => let frag = lil_frag_parse(h.lines) in let z = lil_link_verify(h, frag) in Cons(frag, lmx_parse_all(t))
+fn lil_link_resolve(mods) = let frags = lmx_parse_all(mods) in lmx_resolve_all(frags, lmx_all_defs(frags))
+fn lumec_module_fragment(name, role, toolchain, prog0) = let reason = lsc_prog(prog0) in if reason != "" then ctfail("lume: incremental fallback: module " + name + " uses " + reason + "\n") else if role == "lib" and lil_has_mainstmts(prog0) == 1 then ctfail("lume: incremental fallback: library module " + name + " has top-level statements\n") else let h = lumec_asthash_prog(prog0) in let exts = lmx_exts(nf_errors(nf_check(prog0)), Nil) in let sites = lmx_fill(exts, lmx_calls(prog0, exts, Nil)) in let expanded = cfold(own gerase(own tcheck(ocheck_mod(prog0)))) in let an = lgen_analysis(expanded, "m_" + name + "_") in if isnil(an.ffi_osigs) == 0 then ctfail("lume: incremental fallback: module " + name + " declares foreign signatures\n") else let flagsline = "is_krn=" + str(an.is_krn) + " isr=" + (if an.isr_fn == "" then "-" else an.isr_fn) + " has_sys=" + str(an.has_sys) + " has_tier=" + str(an.has_tier) + " has_mem=" + str(an.has_mem) + " uses_fs=" + str(an.uses_fs) + " ext=" + lmx_join(sites) + " defs=" + lmx_join(lmx_defs(prog0, nf_generics(prog0))) in let fraghash = lsh256(flagsline + "\n" + an.ffi_links + an.dt_s + an.funcs_raw + an.mains_s) in "@lume-fragment 1\n@name " + name + "\n@role " + role + "\n@toolchain " + toolchain + "\n@asthash " + h + "\n@fraghash " + fraghash + "\n@flags " + flagsline + "\n@mframe " + str(an.mframe) + "\n@ffilinks\n" + an.ffi_links + "@end\n@dt\n" + an.dt_s + "@end\n@funcs\n" + an.funcs_raw + "@end\n@mains\n" + an.mains_s + "@end"
 
 ## --- fragment parsing (position-based; the emitter above fixes the layout) and the link step ---
 fn lil_expect(line, marker) = if lil_trim(line) == marker then 0 else ctfail("lume: incremental error: malformed module fragment (expected " + marker + ")\n")
@@ -246,7 +326,7 @@ fn lil_hd(xs) = match xs
 fn lil_tl(xs) = match xs
     Cons(h, t) => t
     Nil => ctfail("lume: incremental error: malformed module fragment\n")
-fn lil_frag_parse(lines) = let h0 = lil_hd(lines) in let t0 = lil_tl(lines) in let z0 = lil_expect(h0, "@lume-fragment 1") in let h1 = lil_hd(t0) in let t1 = lil_tl(t0) in let name = lil_field_after(lil_trim(h1), "@name ") in let h2 = lil_hd(t1) in let t2 = lil_tl(t1) in let role = lil_field_after(lil_trim(h2), "@role ") in let h3 = lil_hd(t2) in let t3 = lil_tl(t2) in let toolchain = lil_field_after(lil_trim(h3), "@toolchain ") in let h4 = lil_hd(t3) in let t4 = lil_tl(t3) in let asthash = lil_field_after(lil_trim(h4), "@asthash ") in let h4b = lil_hd(t4) in let t4b = lil_tl(t4) in let fraghash = lil_field_after(lil_trim(h4b), "@fraghash ") in let h5 = lil_hd(t4b) in let t5 = lil_tl(t4b) in let flags = lil_trim(h5) in let is_krn = lil_flagval(flags, "is_krn=") in let isr = lil_flagstr(flags, "isr=") in let has_sys = lil_flagval(flags, "has_sys=") in let has_tier = lil_flagval(flags, "has_tier=") in let has_mem = lil_flagval(flags, "has_mem=") in let uses_fs = lil_flagval(flags, "uses_fs=") in let h6 = lil_hd(t5) in let t6 = lil_tl(t5) in let mframe = toint(lil_field_after(lil_trim(h6), "@mframe ")) in let h7 = lil_hd(t6) in let t7 = lil_tl(t6) in let z7 = lil_expect(h7, "@ffilinks") in let blk1 = lil_takeuntil(t7, "@end") in let h8 = lil_hd(blk1.rest) in let t8 = lil_tl(blk1.rest) in let z8 = lil_expect(h8, "@dt") in let blk2 = lil_takeuntil(t8, "@end") in let h9 = lil_hd(blk2.rest) in let t9 = lil_tl(blk2.rest) in let z9 = lil_expect(h9, "@funcs") in let blk3 = lil_takeuntil(t9, "@end") in let h10 = lil_hd(blk3.rest) in let t10 = lil_tl(blk3.rest) in let z10 = lil_expect(h10, "@mains") in let blk4 = lil_takeuntil(t10, "@end") in {name: name, role: role, toolchain: toolchain, asthash: asthash, fraghash: fraghash, is_krn: is_krn, isr: isr, has_sys: has_sys, has_tier: has_tier, has_mem: has_mem, uses_fs: uses_fs, mframe: mframe, ffi_links: lil_joinlines_end(blk1.lines), dt: lil_joinlines_end(blk2.lines), funcs: lil_joinlines_end(blk3.lines), mains: lil_joinlines_end(blk4.lines)}
+fn lil_frag_parse(lines) = let h0 = lil_hd(lines) in let t0 = lil_tl(lines) in let z0 = lil_expect(h0, "@lume-fragment 1") in let h1 = lil_hd(t0) in let t1 = lil_tl(t0) in let name = lil_field_after(lil_trim(h1), "@name ") in let h2 = lil_hd(t1) in let t2 = lil_tl(t1) in let role = lil_field_after(lil_trim(h2), "@role ") in let h3 = lil_hd(t2) in let t3 = lil_tl(t2) in let toolchain = lil_field_after(lil_trim(h3), "@toolchain ") in let h4 = lil_hd(t3) in let t4 = lil_tl(t3) in let asthash = lil_field_after(lil_trim(h4), "@asthash ") in let h4b = lil_hd(t4) in let t4b = lil_tl(t4) in let fraghash = lil_field_after(lil_trim(h4b), "@fraghash ") in let h5 = lil_hd(t4b) in let t5 = lil_tl(t4b) in let flags = lil_trim(h5) in let is_krn = lil_flagval(flags, "is_krn=") in let isr = lil_flagstr(flags, "isr=") in let has_sys = lil_flagval(flags, "has_sys=") in let has_tier = lil_flagval(flags, "has_tier=") in let has_mem = lil_flagval(flags, "has_mem=") in let uses_fs = lil_flagval(flags, "uses_fs=") in let ext = lil_flagstr(flags, "ext=") in let defs = lil_flagstr(flags, "defs=") in let h6 = lil_hd(t5) in let t6 = lil_tl(t5) in let mframe = toint(lil_field_after(lil_trim(h6), "@mframe ")) in let h7 = lil_hd(t6) in let t7 = lil_tl(t6) in let z7 = lil_expect(h7, "@ffilinks") in let blk1 = lil_takeuntil(t7, "@end") in let h8 = lil_hd(blk1.rest) in let t8 = lil_tl(blk1.rest) in let z8 = lil_expect(h8, "@dt") in let blk2 = lil_takeuntil(t8, "@end") in let h9 = lil_hd(blk2.rest) in let t9 = lil_tl(blk2.rest) in let z9 = lil_expect(h9, "@funcs") in let blk3 = lil_takeuntil(t9, "@end") in let h10 = lil_hd(blk3.rest) in let t10 = lil_tl(blk3.rest) in let z10 = lil_expect(h10, "@mains") in let blk4 = lil_takeuntil(t10, "@end") in {name: name, role: role, toolchain: toolchain, asthash: asthash, fraghash: fraghash, is_krn: is_krn, isr: isr, has_sys: has_sys, has_tier: has_tier, has_mem: has_mem, uses_fs: uses_fs, ext: ext, defs: defs, mframe: mframe, ffi_links: lil_joinlines_end(blk1.lines), dt: lil_joinlines_end(blk2.lines), funcs: lil_joinlines_end(blk3.lines), mains: lil_joinlines_end(blk4.lines)}
 fn lil_joinlines_end(lines) = match lines
     Nil        => ""
     Cons(h, t) => if isnil(t) == 1 then h + "\n" else h + "\n" + lil_joinlines_end(t)
@@ -256,7 +336,7 @@ fn lil_joinlines_end(lines) = match lines
 fn lil_link_parse(lines, target, mods) = match lines
     Nil        => {target: target, mods: mods}
     Cons(h, t) => let tr = lil_trim(h) in if lil_starts(tr, "@target ") then lil_link_parse(t, lil_field_after(tr, "@target "), mods) else if lil_starts(tr, "@mod ") then let rest1 = lil_field_after(tr, "@mod ") in let sp = lil_findsp(rest1, 0) in let name = slice(rest1, 0, sp) in let hash = lil_trim(slice(rest1, sp + 1, count(rest1))) in let body = lil_takeuntil(t, "@stop") in lil_link_parse(body.rest, target, Cons({name: name, hash: hash, lines: body.lines}, mods)) else if tr == "@end" then {target: target, mods: mods} else lil_link_parse(t, target, mods)
-fn lil_link_verify(mentry, frag) = if frag.name != mentry.name or frag.asthash != mentry.hash then ctfail("lume: incremental error: stale or mismatched cache entry for module " + mentry.name + "\n") else let flagsline = "is_krn=" + str(frag.is_krn) + " isr=" + frag.isr + " has_sys=" + str(frag.has_sys) + " has_tier=" + str(frag.has_tier) + " has_mem=" + str(frag.has_mem) + " uses_fs=" + str(frag.uses_fs) in if lsh256(flagsline + "\n" + frag.ffi_links + frag.dt + frag.funcs + frag.mains) != frag.fraghash then ctfail("lume: incremental error: corrupt cache entry for module " + mentry.name + "\n") else 0
+fn lil_link_verify(mentry, frag) = if frag.name != mentry.name or frag.asthash != mentry.hash then ctfail("lume: incremental error: stale or mismatched cache entry for module " + mentry.name + "\n") else let flagsline = "is_krn=" + str(frag.is_krn) + " isr=" + frag.isr + " has_sys=" + str(frag.has_sys) + " has_tier=" + str(frag.has_tier) + " has_mem=" + str(frag.has_mem) + " uses_fs=" + str(frag.uses_fs) + " ext=" + frag.ext + " defs=" + frag.defs in if lsh256(flagsline + "\n" + frag.ffi_links + frag.dt + frag.funcs + frag.mains) != frag.fraghash then ctfail("lume: incremental error: corrupt cache entry for module " + mentry.name + "\n") else 0
 fn lil_rev_acc(xs, acc) = match xs
     Nil        => acc
     Cons(h, t) => lil_rev_acc(t, Cons(h, acc))
@@ -269,6 +349,24 @@ fn lil_link_analysis(mods) = match mods
 ## --- mode entry points (dispatched from lumec_main) ---
 fn lumec_mode_asthash(input) = lil_hashblock(lil_lines(input, 0), "")
 fn lumec_mode_module(name, role, toolchain, input) = lumec_module_fragment(name, role, toolchain, parseprogram(input))
-fn lumec_mode_link(input) = let parsed = lil_link_parse(lil_lines(input, 0), "", Nil) in if isnil(parsed.mods) == 1 then ctfail("lume: incremental error: link request has no modules\n") else lgen_emit(lil_link_analysis(lil_rev(parsed.mods)))
-fn lumec_main(src) = if os_arg_count() >= 2 and os_arg_at(1) == "--ast-hash" then lumec_mode_asthash(src) else if os_arg_count() >= 5 and os_arg_at(1) == "--module" then lumec_mode_module(os_arg_at(2), os_arg_at(3), os_arg_at(4), src) else if os_arg_count() >= 2 and os_arg_at(1) == "--link" then lumec_mode_link(src) else lumec_compile(src)
+fn lumec_mode_link(input) = let parsed = lil_link_parse(lil_lines(input, 0), "", Nil) in if isnil(parsed.mods) == 1 then ctfail("lume: incremental error: link request has no modules\n") else let zres = lil_link_resolve(parsed.mods) in lgen_emit(lil_link_analysis(lil_rev(parsed.mods)))
+## --- `--dwarf <source path>` (lume build -g): line-table directives for the assembler ------------------------------
+## One `.loc 1 <line> 0` row in front of every function label (and of `_start`, at the first top-level statement) and a
+## `.file 1 "<path>"` header. lasm turns them into `.debug_line` / `.debug_info` / `.symtab`. Without the flag the
+## assembly text is byte-identical to what it always was, so the bootstrap fixpoint does not see this code path.
+fn ldw_fnline1(t, ln, acc) = match t
+    Nil          => acc
+    Cons(h2, t2) => if h2.kind == "id" and headtext(t2) == "(" then ldw_fnlines(t2, Cons({nm: h2.text, ln: ln}, acc)) else ldw_fnlines(t, acc)
+fn ldw_fnlines(ts, acc) = match ts
+    Nil        => acc
+    Cons(h, t) => if h.kind == "id" and h.text == "fn" then ldw_fnline1(t, h.line, acc) else if h.kind == "id" and h.text == "print" and ldw_lookup("_start", acc) == 0 then ldw_fnlines(t, Cons({nm: "_start", ln: h.line}, acc)) else ldw_fnlines(t, acc)
+fn ldw_lookup(nm, tab) = match tab
+    Nil        => 0
+    Cons(h, t) => if h.nm == nm then h.ln else ldw_lookup(nm, t)
+fn ldw_label(line) = let n = count(line) in if n >= 2 and at(line, n - 1) == ":" and at(line, 0) != " " and at(line, 0) != "." then slice(line, 0, n - 1) else ""
+fn ldw_row(line, tab) = let lb = ldw_label(line) in let ln = if lb == "" then 0 else ldw_lookup(lb, tab) in if ln > 0 then "    .loc 1 " + str(ln) + " 0\n" + line else line
+fn ldw_pass(s, i, n, tab, acc) = if i >= n then acc else let e = lil_line_end(s, i) in ldw_pass(s, e + 1, n, tab, Cons(if e >= n then ldw_row(slice(s, i, e), tab) else ldw_row(slice(s, i, e), tab) + "\n", acc))
+fn ldw_annotate(asm, src, path) = "    .file 1 \"" + path + "\"\n" + joinall(own rev(ldw_pass(asm, 0, count(asm), ldw_fnlines(lex(src, 0), Nil), Nil)))
+fn ldw_path(i) = if i + 1 >= os_arg_count() then "" else if os_arg_at(i) == "--dwarf" then os_arg_at(i + 1) else ldw_path(i + 1)
+fn lumec_main(src) = if os_arg_count() >= 2 and os_arg_at(1) == "--ast-hash" then lumec_mode_asthash(src) else if os_arg_count() >= 5 and os_arg_at(1) == "--module" then lumec_mode_module(os_arg_at(2), os_arg_at(3), os_arg_at(4), src) else if os_arg_count() >= 2 and os_arg_at(1) == "--link" then lumec_mode_link(src) else let dp = ldw_path(1) in if dp == "" then lumec_compile(src) else ldw_annotate(lumec_compile(src), src, dp)
 print with handler CompilerIO { fn read_source() -> str = readall() } in lumec_main(read_source())

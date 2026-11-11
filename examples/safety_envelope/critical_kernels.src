@@ -1,0 +1,44 @@
+## critical_kernels.src -- kernels for the lockstep safety envelope (`lume safety-envelope`).
+## Each one is a pure integer function with a contract and a cycle bound. `lume safety-envelope` computes it twice:
+## natively on x86-64 (channel A) and on the LumePuter RV32IM monitor (channel B), and releases the value only when the
+## two words are equal, the monitor stayed inside its cycle budget and the translation validator accepted the kernel.
+##
+##   lume safety-envelope examples/safety_envelope/critical_kernels.src --fn actuator_rate_limit --args 120,100,15 --reset
+##   lume tv   examples/safety_envelope/critical_kernels.src
+##   lume mcdc examples/safety_envelope/critical_kernels.src --exec
+
+## Slew-rate limiter of an actuator command: the output moves toward `demand` by at most `max_step` per cycle.
+@bound(cycles: 40)
+fn actuator_rate_limit(demand: int, current: int, max_step: int) -> int / pure
+  requires max_step >= 1 and max_step <= 1000 and demand >= 0 - 100000 and demand <= 100000 and current >= 0 - 100000 and current <= 100000
+  ensures result >= current - max_step and result <= current + max_step
+= if demand > current + max_step then current + max_step else if demand < current - max_step then current - max_step else demand
+
+## Infusion-pump dose clamp (IEC 62304 class C style): never above the hard limit, never negative.
+@bound(cycles: 32)
+fn infusion_dose_clamp(requested_ul: int, hard_limit_ul: int) -> int / pure
+  requires hard_limit_ul >= 0 and hard_limit_ul <= 50000 and requested_ul >= 0 - 1000000 and requested_ul <= 1000000
+  ensures result >= 0 and result <= hard_limit_ul
+= if requested_ul < 0 then 0 else if requested_ul > hard_limit_ul then hard_limit_ul else requested_ul
+
+## Mid-value select of three redundant sensors (the median of the three readings).
+@bound(cycles: 48)
+fn sensor_mid_value_select(a: int, b: int, c: int) -> int / pure
+  requires a >= 0 - 1000000 and a <= 1000000 and b >= 0 - 1000000 and b <= 1000000 and c >= 0 - 1000000 and c <= 1000000
+  ensures result >= 0 - 1000000 and result <= 1000000
+= if a <= b then (if b <= c then b else if a <= c then c else a) else (if a <= c then a else if b <= c then c else b)
+
+## Train protection supervision (SIL-4 style): the distance left after the braking curve and the safety margin are
+## reserved; 0 means "brake now".
+@bound(cycles: 40)
+fn braking_margin_mm(distance_to_target_mm: int, braking_distance_mm: int, safety_margin_mm: int) -> int / pure
+  requires distance_to_target_mm >= 0 and distance_to_target_mm <= 100000000 and braking_distance_mm >= 0 and braking_distance_mm <= 100000000 and safety_margin_mm >= 0 and safety_margin_mm <= 1000000
+  ensures result >= 0 and result <= distance_to_target_mm
+= if distance_to_target_mm - braking_distance_mm - safety_margin_mm < 0 then 0 else distance_to_target_mm - braking_distance_mm - safety_margin_mm
+
+## LumePuter program-counter step (the kernel of compiler/stage1/lchameleon.src, here so that the monitor checks itself).
+@bound(cycles: 28)
+fn lumeputer_rv32im_pc_step(rom_base: int, anchor_word: int, commits_n: int, is_jump: int, jump_target_word: int) -> int / pure
+  requires rom_base >= 262144 and anchor_word >= 0 and commits_n >= 0 and commits_n <= 63 and is_jump >= 0 and is_jump <= 1 and jump_target_word >= 0
+  ensures result >= rom_base
+= if is_jump == 1 then rom_base + jump_target_word * 4 else rom_base + (anchor_word + commits_n) * 4

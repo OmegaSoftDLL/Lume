@@ -1,0 +1,354 @@
+## ltv_multiarch.src -- multi-ISA translation validation for the integer kernel back ends (larm64.src, lriscv.src).
+##
+## What it decides. For one function of a kernel (lkir.src) and the machine words a back end emitted for it, it
+## symbolically executes BOTH the source body (reference semantics of lkir.src) and the words, and reports
+## `validated` only when the two have exactly the same set of paths:
+##   (C) the same sequence of branch decisions, each a canonical atom with its truth value: comparisons `(< p q)`,
+##       `(== p q)`, the overflow predicates `(vadd p q)`, `(vmul p q)` and nothing else (the overflow of p - q is
+##       written `(vadd p-q q)`: in wrapped arithmetic the two tests are the same predicate);
+##   (V) on a returning path, the same result polynomial over the parameters and the opaque terms `(/ p q)` and
+##       `(call f a1 .. an)`;
+##   (T) on a trapping path, the same trap (1 contract, 2 overflow, 3 division by zero): the machine path must
+##       reach that trap's stub;
+##   (F) the frame discipline: every load reads a slot the function pushed or one of its own parameters, the stack
+##       pointer and (AArch64) X29 / X30, (RISC-V) ra are back to their entry values at the return, calls find their
+##       arguments on top of the stack and target a function of the kernel with the right arity.
+## Anything else is a rejection (fail-closed): an instruction word the decoder does not know, an operand form the
+## back ends never emit, a backward or out-of-function jump, a read of an unwritten slot, a flag or a temporary
+## used before it is defined, more than 4096 paths.
+##
+## Independence. The decoders below take the words apart with shifts and masks (bit_shr / bit_and) and their own
+## opcode tables; they share no code with the encoders of larm64.src / lriscv.src, which compose words by
+## multiplication and addition. The source side shares only the parser and the reference evaluator's overflow
+## predicates (lkir.src). What is trusted: lkir.src's reading of the source, the instruction semantics written here
+## (Arm ARM C6.2, RISC-V unprivileged ISA) and three arithmetic lemmas used to recognise the overflow tests:
+##   signed add overflows  iff (q < 0) != (p + q < p)        signed sub overflows  iff (q < 0) != (p < p - q)
+##   signed mul overflows  iff mulh(p, q) != (p * q) >> (xlen - 1), arithmetic shift
+## Arithmetic is over the integers: + - * are ring operations modulo 2^xlen and the paths on which they would wrap
+## are exactly the overflow paths, which must trap. Constants are kept wrapped to xlen bits.
+##
+## The decision procedure enumerates paths by re-execution: one run follows a list of forced atom values and logs
+## the atoms it had to decide; flipping each logged decision in turn gives the other runs.
+use lkir
+
+## --- polynomials: sorted lists of {k: monomial key, as: sorted atoms, c: coefficient}; "?ovf" poisons a result --------
+fn tvm_c(c) = if c == 0 then Nil else Cons({k: "", as: Nil, c: c}, Nil)
+fn tvm_atom(key) = Cons({k: key, as: Cons(key, Nil), c: 1}, Nil)
+fn tvm_poison() = {k: "?ovf", as: Cons("?ovf", Nil), c: 1}
+fn tvm_pcons(t, rest) = if t.c == 0 then rest else Cons(t, rest)
+fn tvm_tadd(a, b) = if kir_add_ovf(a.c, b.c, 64) == 1 then tvm_poison() else {k: a.k, as: a.as, c: a.c + b.c}
+fn tvm_padd(p, q) = match p
+    Nil         => q
+    Cons(a, pr) => tvm_padd1(a, pr, q)
+fn tvm_padd1(a, pr, q) = match q
+    Nil         => Cons(a, pr)
+    Cons(b, qr) => if a.k == b.k then tvm_pcons(tvm_tadd(a, b), tvm_padd(pr, qr)) else if a.k < b.k then Cons(a, tvm_padd(pr, q)) else Cons(b, tvm_padd1(a, pr, qr))
+fn tvm_mmerge(xs, ys) = match xs
+    Nil        => ys
+    Cons(a, r) => tvm_mmerge1(a, r, ys)
+fn tvm_mmerge1(a, r, ys) = match ys
+    Nil         => Cons(a, r)
+    Cons(b, yr) => if a <= b then Cons(a, tvm_mmerge(r, ys)) else Cons(b, tvm_mmerge1(a, r, yr))
+fn tvm_mkey(xs) = match xs
+    Nil        => ""
+    Cons(a, r) => if kir_len(r) == 0 then a else a + "*" + tvm_mkey(r)
+fn tvm_tmul(a, b) = let ms = tvm_mmerge(a.as, b.as) in if kir_mul_ovf(a.c, b.c, 64) == 1 then tvm_poison() else {k: tvm_mkey(ms), as: ms, c: a.c * b.c}
+fn tvm_tmul_p(a, q) = match q
+    Nil         => Nil
+    Cons(b, qr) => tvm_padd(Cons(tvm_tmul(a, b), Nil), tvm_tmul_p(a, qr))
+fn tvm_pmul(p, q) = match p
+    Nil         => Nil
+    Cons(a, pr) => tvm_padd(tvm_tmul_p(a, q), tvm_pmul(pr, q))
+fn tvm_psub(p, q) = tvm_padd(p, tvm_pmul(tvm_c(0 - 1), q))
+fn tvm_ts(t) = if t.k == "" then str(t.c) else str(t.c) + "*" + t.k
+fn tvm_ps(p) = match p
+    Nil        => "0"
+    Cons(a, r) => if kir_len(r) == 0 then tvm_ts(a) else tvm_ts(a) + "+" + tvm_ps(r)
+fn tvm_isconst(p) = match p
+    Nil        => 1
+    Cons(a, r) => if a.k == "" and kir_len(r) == 0 then 1 else 0
+fn tvm_cval(p) = match p
+    Nil        => 0
+    Cons(a, r) => a.c
+fn tvm_wrap(v, bits) = if bits == 64 then v else let m = (v % 4294967296 + 4294967296) % 4294967296 in if m >= 2147483648 then m - 4294967296 else m
+fn tvm_n(p, bits) = if tvm_isconst(p) == 1 then tvm_c(tvm_wrap(tvm_cval(p), bits)) else p
+## p + imm as the machine computes it: a constant wraps at `bits` (the 12-bit steps of a 64-bit constant rely on it)
+fn tvm_addc(p, imm, bits) = if tvm_isconst(p) == 1 then tvm_c(tvm_wrap(tvm_cval(p) +% imm, bits)) else tvm_padd(p, tvm_c(imm))
+fn tvm_eq(p, q) = if tvm_ps(p) == tvm_ps(q) then 1 else 0
+
+## --- canonical boolean terms -----------------------------------------------------------------------------------------
+## boolean atoms start with "(<", "(=" or "(v"; a boolean-shaped polynomial is A or 1 - A for such an atom
+fn tvm_batom(k) = if count(k) < 2 then 0 else let h = slice(k, 0, 2) in if h == "(<" or h == "(=" or h == "(v" then 1 else 0
+fn tvm_one_atom(t) = if kir_len(t.as) == 1 and tvm_batom(t.k) == 1 then 1 else 0
+## {kind, key}: 0 constant, 1 = atom, 2 = 1 - atom, 3 anything else
+fn tvm_shape(p) = match p
+    Nil        => {kind: 0, key: ""}
+    Cons(a, r) => tvm_shape1(a, r)
+fn tvm_shape1(a, r) = match r
+    Nil         => if a.k == "" then {kind: 0, key: ""} else if a.c == 1 and tvm_one_atom(a) == 1 then {kind: 1, key: a.k} else {kind: 3, key: ""}
+    Cons(b, r2) => if kir_len(r2) == 0 and a.k == "" and a.c == 1 and b.c == 0 - 1 and tvm_one_atom(b) == 1 then {kind: 2, key: b.k} else {kind: 3, key: ""}
+fn tvm_not(p) = tvm_psub(tvm_c(1), p)
+fn tvm_isbool(p) = let s = tvm_shape(p) in if s.kind == 1 or s.kind == 2 then 1 else 0
+fn tvm_eq_atom(a, b) = let sa = tvm_ps(a) in let sb = tvm_ps(b) in if sa <= sb then tvm_atom("(== " + sa + " " + sb + ")") else tvm_atom("(== " + sb + " " + sa + ")")
+fn tvm_cmp_c(op, a, b) = if op == "<" then (if a < b then 1 else 0) else if op == ">" then (if a > b then 1 else 0) else if op == "<=" then (if a <= b then 1 else 0) else if op == ">=" then (if a >= b then 1 else 0) else if op == "==" then (if a == b then 1 else 0) else if a != b then 1 else 0
+## every comparison is a polynomial over `<` and `==` atoms; (v == 0) for a boolean-shaped v is 1 - v
+fn tvm_cmp(op, a, b) = if tvm_isconst(a) == 1 and tvm_isconst(b) == 1 then tvm_c(tvm_cmp_c(op, tvm_cval(a), tvm_cval(b))) else if op == "<" then tvm_atom("(< " + tvm_ps(a) + " " + tvm_ps(b) + ")") else if op == ">" then tvm_cmp("<", b, a) else if op == "<=" then tvm_not(tvm_cmp("<", b, a)) else if op == ">=" then tvm_not(tvm_cmp("<", a, b)) else if op == "!=" then tvm_not(tvm_cmp("==", a, b)) else if tvm_isconst(b) == 1 and tvm_cval(b) == 0 and tvm_isbool(a) == 1 then tvm_not(a) else if tvm_isconst(a) == 1 and tvm_cval(a) == 0 and tvm_isbool(b) == 1 then tvm_not(b) else tvm_eq_atom(a, b)
+## "v is non-zero" as {key, pol}: it holds exactly when the atom `key` has the value pol; key "" = decided, pol
+fn tvm_truth(v) = let s = tvm_shape(v) in if s.kind == 0 then {key: "", pol: if tvm_cval(v) != 0 then 1 else 0} else if s.kind == 1 then {key: s.key, pol: 1} else if s.kind == 2 then {key: s.key, pol: 0} else {key: (tvm_shape(tvm_eq_atom(v, Nil))).key, pol: 0}
+fn tvm_vconst(kind, a, b, bits) = if kind == "vadd" then kir_add_ovf(a, b, bits) else kir_mul_ovf(a, b, bits)
+## p - q overflows exactly when (p - q, wrapped) + q does
+fn tvm_vsub(p, q, bits) = tvm_vcond("vadd", tvm_n(tvm_psub(p, q), bits), q, bits)
+## overflow predicate of a signed operation at `bits` bits
+fn tvm_vcond(kind, p, q, bits) = if tvm_isconst(p) == 1 and tvm_isconst(q) == 1 then tvm_c(tvm_vconst(kind, tvm_cval(p), tvm_cval(q), bits)) else tvm_atom("(" + kind + " " + tvm_ps(p) + " " + tvm_ps(q) + ")")
+fn tvm_div(p, q, bits) = if tvm_isconst(p) == 1 and tvm_isconst(q) == 1 and tvm_cval(q) != 0 and (kir_arith("/", tvm_cval(p), tvm_cval(q), bits)).st == 0 then tvm_c(tvm_cval(p) / tvm_cval(q)) else tvm_atom("(/ " + tvm_ps(p) + " " + tvm_ps(q) + ")")
+fn tvm_args_s(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => " " + tvm_ps(h) + tvm_args_s(t)
+fn tvm_call(nm, ps) = tvm_atom("(call " + nm + tvm_args_s(ps) + ")")
+
+## --- the decision oracle: forced atom values first, then "true"; every decided atom is logged ------------------------
+fn tvm_o0(forced) = {forced: forced, cs: Nil, ds: Nil}
+## {d, o}: d = 1 when the condition holds on this path
+fn tvm_decide(o, tr) = if tr.key == "" then {d: tr.pol, o: o} else tvm_decide1(o, tr, o.forced)
+fn tvm_decide1(o, tr, forced) = match forced
+    Nil        => {d: tr.pol, o: {forced: Nil, cs: Cons(tr.key + "=1;", o.cs), ds: Cons(1, o.ds)}}
+    Cons(a, r) => {d: if a == tr.pol then 1 else 0, o: {forced: r, cs: Cons(tr.key + "=" + str(a) + ";", o.cs), ds: Cons(a, o.ds)}}
+
+## --- source side: one path of the reference semantics ---------------------------------------------------------------
+fn tvm_sr(o, t, v) = {o: o, t: t, v: v}
+fn tvm_env(env, nm) = match env
+    Nil        => Nil
+    Cons(h, t) => if h.k == nm then h.v else tvm_env(t, nm)
+fn tvm_s_args(xs, env, o, bits, acc) = match xs
+    Nil        => {o: o, t: 0, vs: kir_rev(acc, Nil)}
+    Cons(h, t) => let r = tvm_sev(h, env, o, bits) in if r.t != 0 then {o: r.o, t: r.t, vs: Nil} else tvm_s_args(t, env, r.o, bits, Cons(r.v, acc))
+fn tvm_s_ovf(kind, p, q, val, o, bits) = let d = tvm_decide(o, tvm_truth(tvm_vcond(kind, p, q, bits))) in if d.d == 1 then tvm_sr(d.o, 2, Nil) else tvm_sr(d.o, 0, val)
+fn tvm_s_divmod(op, p, q, o, bits) = let d0 = tvm_decide(o, tvm_truth(tvm_cmp("==", q, Nil))) in if d0.d == 1 then tvm_sr(d0.o, 3, Nil) else let dv = tvm_div(p, q, bits) in tvm_s_ovf("vmul", dv, q, if op == "/" then dv else tvm_n(tvm_psub(p, tvm_pmul(dv, q)), bits), d0.o, bits)
+fn tvm_s_arith(op, p, q, o, bits) = if op == "+" then tvm_s_ovf("vadd", p, q, tvm_n(tvm_padd(p, q), bits), o, bits) else if op == "-" then (let d = tvm_decide(o, tvm_truth(tvm_vsub(p, q, bits))) in if d.d == 1 then tvm_sr(d.o, 2, Nil) else tvm_sr(d.o, 0, tvm_n(tvm_psub(p, q), bits))) else if op == "*" then tvm_s_ovf("vmul", p, q, tvm_n(tvm_pmul(p, q), bits), o, bits) else if op == "/" or op == "%" then tvm_s_divmod(op, p, q, o, bits) else tvm_sr(o, 0, tvm_cmp(op, p, q))
+fn tvm_s_norm(r) = if r.t != 0 then r else tvm_sr(r.o, 0, tvm_cmp("!=", r.v, Nil))
+fn tvm_s_bin(op, l, r, env, o, bits) = let a = tvm_sev(l, env, o, bits) in if a.t != 0 then a else if op == "and" then (let d = tvm_decide(a.o, tvm_truth(a.v)) in if d.d == 0 then tvm_sr(d.o, 0, Nil) else tvm_s_norm(tvm_sev(r, env, d.o, bits))) else if op == "or" then (let d = tvm_decide(a.o, tvm_truth(a.v)) in if d.d == 1 then tvm_sr(d.o, 0, tvm_c(1)) else tvm_s_norm(tvm_sev(r, env, d.o, bits))) else let b = tvm_sev(r, env, a.o, bits) in if b.t != 0 then b else tvm_s_arith(op, a.v, b.v, b.o, bits)
+fn tvm_sev(e, env, o, bits) = match e
+    KNum(v)         => tvm_sr(o, 0, tvm_c(v))
+    KVar(nm)        => tvm_sr(o, 0, tvm_env(env, nm))
+    KBin(op, l, r)  => tvm_s_bin(op, l, r, env, o, bits)
+    KIf(c, t, f)    => let rc = tvm_sev(c, env, o, bits) in if rc.t != 0 then rc else let d = tvm_decide(rc.o, tvm_truth(rc.v)) in if d.d == 1 then tvm_sev(t, env, d.o, bits) else tvm_sev(f, env, d.o, bits)
+    KLet(nm, v, b)  => let rv = tvm_sev(v, env, o, bits) in if rv.t != 0 then rv else tvm_sev(b, Cons({k: nm, v: rv.v}, env), rv.o, bits)
+    KCall(nm, args) => let ra = tvm_s_args(args, env, o, bits, Nil) in if ra.t != 0 then tvm_sr(ra.o, ra.t, Nil) else tvm_sr(ra.o, 0, tvm_call(nm, ra.vs))
+    KTrap(k)        => tvm_sr(o, k, Nil)
+    _               => tvm_sr(o, 9, Nil)
+fn tvm_penv(ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons({k: h, v: tvm_atom(h)}, tvm_penv(t))
+fn tvm_join(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => tvm_join(t) + h
+fn tvm_bad_p(p) = match p
+    Nil        => 0
+    Cons(a, r) => if kir_mem("?ovf", a.as) == 1 then 1 else tvm_bad_p(r)
+fn tvm_res_s(t, v) = if t != 0 then "T" + str(t) else if tvm_bad_p(v) == 1 then "?" else "V" + tvm_ps(v)
+fn tvm_run_src(fx, forced) = let r = tvm_sev(fx.f.body, tvm_penv(fx.f.ps), tvm_o0(forced), fx.bits) in {c: tvm_join(r.o.cs), r: tvm_res_s(r.t, r.v), ds: kir_rev(r.o.ds, Nil)}
+
+## --- machine values, registers, stack ----------------------------------------------------------------------------------
+## VP(poly)  VLt(l, r): the 0/1 result of a signed compare, kept apart so the overflow tests can be recognised
+## VXor(a, b)  VMulh(p, q)  VSra(r, k)  VRet (the return address)  VFp0 (the caller's frame pointer)  VSp(k)  VJunk
+fn tvm_f(w, lo, n) = bit_and(bit_shr(w, lo), kir_p2(n) - 1)
+fn tvm_sx(v, n) = if v >= kir_p2(n - 1) then v - kir_p2(n) else v
+fn tvm_rg(regs, r) = match regs
+    Nil        => VJunk
+    Cons(h, t) => if h.r == r then h.v else tvm_rg(t, r)
+fn tvm_sg(stk, k) = match stk
+    Nil        => VJunk
+    Cons(h, t) => if h.k == k then h.v else tvm_sg(t, k)
+fn tvm_vp(v) = match v
+    VP(p)     => {ok: 1, p: p}
+    VLt(l, r) => {ok: 1, p: tvm_cmp("<", l, r)}
+    _         => {ok: 0, p: Nil}
+fn tvm_isjunk(v) = match v
+    VJunk => 1
+    _     => 0
+fn tvm_nth(xs, i) = match xs
+    Nil        => 0 - 1
+    Cons(h, t) => if i <= 0 then h else tvm_nth(t, i - 1)
+fn tvm_nth_p(xs, i) = match xs
+    Nil        => Nil
+    Cons(h, t) => if i <= 0 then h else tvm_nth_p(t, i - 1)
+fn tvm_sym_at(syms, idx) = match syms
+    Nil        => ""
+    Cons(h, t) => if h.idx == idx then h.nm else tvm_sym_at(t, idx)
+fn tvm_trap_kind(nm) = if nm == "__trap_contract" then 1 else if nm == "__trap_overflow" then 2 else if nm == "__trap_div0" then 3 else 0
+## machine state: pc (absolute word index), k (bytes pushed below the entry stack pointer), regs, stk, fl, o, end, res
+fn tvm_m0(fx, forced, regs) = {pc: fx.start, k: 0, regs: regs, stk: Nil, fl: FNone, o: tvm_o0(forced), end: "", t: 0, v: Nil}
+fn tvm_rej(m, why) = {pc: m.pc, k: m.k, regs: m.regs, stk: m.stk, fl: m.fl, o: m.o, end: "reject: " + why + " at word " + str(m.pc), t: 0, v: Nil}
+fn tvm_fin(m, t, v) = {pc: m.pc, k: m.k, regs: m.regs, stk: m.stk, fl: m.fl, o: m.o, end: "done", t: t, v: v}
+fn tvm_set(m, r, v) = {pc: m.pc + 1, k: m.k, regs: Cons({r: r, v: v}, m.regs), stk: m.stk, fl: m.fl, o: m.o, end: "", t: 0, v: Nil}
+fn tvm_setf(m, r, v, fl) = {pc: m.pc + 1, k: m.k, regs: Cons({r: r, v: v}, m.regs), stk: m.stk, fl: fl, o: m.o, end: "", t: 0, v: Nil}
+fn tvm_flags(m, fl) = {pc: m.pc + 1, k: m.k, regs: m.regs, stk: m.stk, fl: fl, o: m.o, end: "", t: 0, v: Nil}
+fn tvm_sp(m, k) = if k < 0 then tvm_rej(m, "stack pointer above the entry value") else {pc: m.pc + 1, k: k, regs: m.regs, stk: m.stk, fl: m.fl, o: m.o, end: "", t: 0, v: Nil}
+fn tvm_push(m, k, slots) = {pc: m.pc + 1, k: k, regs: m.regs, stk: kir_app(slots, m.stk), fl: m.fl, o: m.o, end: "", t: 0, v: Nil}
+fn tvm_goto(m, pc, o) = {pc: pc, k: m.k, regs: m.regs, stk: m.stk, fl: m.fl, o: o, end: "", t: 0, v: Nil}
+## a jump: to a trap stub (the path ends there) or forward inside the function
+fn tvm_jump(m, fx, tgt, o) = let tk = tvm_trap_kind(tvm_sym_at(fx.syms, tgt)) in if tk != 0 then tvm_fin(tvm_goto(m, tgt, o), tk, Nil) else if tgt > m.pc and tgt < fx.stop then tvm_goto(m, tgt, o) else tvm_rej(m, "jump out of the function or backwards")
+## a conditional branch on the polynomial c (taken when c != 0)
+fn tvm_branch(m, fx, c, tgt) = let d = tvm_decide(m.o, tvm_truth(c)) in if d.d == 1 then tvm_jump(m, fx, tgt, d.o) else tvm_goto(m, m.pc + 1, d.o)
+## a load from [sp + off]: a slot this frame pushed, or one of the function's own parameters (slot bytes each)
+fn tvm_load(m, fx, rd, off, slot) = if off < 0 or off % slot != 0 then tvm_rej(m, "misaligned stack load") else if off < m.k then (let v = tvm_sg(m.stk, m.k - off) in if tvm_isjunk(v) == 1 then tvm_rej(m, "load of a slot that was never written") else tvm_set(m, rd, v)) else let i = fx.ar - 1 - (off - m.k) / slot in if i < 0 or i >= fx.ar then tvm_rej(m, "load above the parameters") else tvm_set(m, rd, VP(tvm_atom(tvm_nth(fx.f.ps, i))))
+fn tvm_call_args(m, n, i, slot, acc) = if i >= n then {ok: 1, ps: kir_rev(acc, Nil)} else let r = tvm_vp(tvm_sg(m.stk, m.k - slot * (n - 1 - i))) in if r.ok == 0 or m.k - slot * (n - 1 - i) <= 0 then {ok: 0, ps: Nil} else tvm_call_args(m, n, i + 1, slot, Cons(r.p, acc))
+## a call: the callee must be a kernel function, its arguments the top n slots; only sp (and X29) survive it
+fn tvm_do_call(m, fx, tgt, slot, rres, keep) = let g = kir_find(fx.fns, tvm_sym_at(fx.syms, tgt)) in if g.nm == "" then tvm_rej(m, "call of something that is not a kernel function") else let a = tvm_call_args(m, kir_len(g.ps), 0, slot, Nil) in if a.ok == 0 then tvm_rej(m, "call arguments are not on top of the stack") else {pc: m.pc + 1, k: m.k, regs: Cons({r: rres, v: VP(tvm_call(g.nm, a.ps))}, keep), stk: m.stk, fl: FNone, o: m.o, end: "", t: 0, v: Nil}
+
+## --- AArch64: independent decoder (Arm ARM C4.1 encoding groups) and symbolic semantics ----------------------------
+fn tvm_a_dec(w) = if w == 3596551104 then ARet else if tvm_f(w, 23, 9) == 421 then AMovz(tvm_f(w, 0, 5), tvm_f(w, 5, 16), tvm_f(w, 21, 2)) else if tvm_f(w, 23, 9) == 485 then AMovk(tvm_f(w, 0, 5), tvm_f(w, 5, 16), tvm_f(w, 21, 2)) else if tvm_f(w, 31, 1) == 1 and tvm_f(w, 23, 6) == 34 then AAsi(tvm_f(w, 30, 1), tvm_f(w, 29, 1), tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_f(w, 10, 12), tvm_f(w, 22, 1)) else if tvm_f(w, 31, 1) == 1 and tvm_f(w, 24, 5) == 11 and tvm_f(w, 21, 1) == 0 then AAsr(tvm_f(w, 30, 1) * 2 + tvm_f(w, 29, 1), tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_f(w, 16, 5), tvm_f(w, 22, 2), tvm_f(w, 10, 6)) else if tvm_f(w, 21, 11) == 1240 then AMul(tvm_f(w, 15, 1), tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_f(w, 16, 5), tvm_f(w, 10, 5)) else if tvm_f(w, 21, 11) == 1242 and tvm_f(w, 10, 6) == 31 then ASmulh(tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_f(w, 16, 5)) else if tvm_f(w, 21, 11) == 1238 and tvm_f(w, 10, 6) == 3 then ASdiv(tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_f(w, 16, 5)) else if tvm_f(w, 21, 11) == 1236 and tvm_f(w, 10, 2) == 1 then ACsinc(tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_f(w, 16, 5), tvm_f(w, 12, 4)) else if tvm_f(w, 26, 6) == 5 then AB(tvm_sx(tvm_f(w, 0, 26), 26)) else if tvm_f(w, 26, 6) == 37 then ABl(tvm_sx(tvm_f(w, 0, 26), 26)) else if tvm_f(w, 24, 8) == 84 and tvm_f(w, 4, 1) == 0 then ABc(tvm_f(w, 0, 4), tvm_sx(tvm_f(w, 5, 19), 19)) else if tvm_f(w, 22, 10) == 678 then AStp(tvm_f(w, 0, 5), tvm_f(w, 10, 5), tvm_f(w, 5, 5), tvm_sx(tvm_f(w, 15, 7), 7) * 8) else if tvm_f(w, 22, 10) == 675 then ALdp(tvm_f(w, 0, 5), tvm_f(w, 10, 5), tvm_f(w, 5, 5), tvm_sx(tvm_f(w, 15, 7), 7) * 8) else if tvm_f(w, 22, 10) == 997 then ALdr(tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_f(w, 10, 12) * 8) else if tvm_f(w, 21, 11) == 1984 and tvm_f(w, 10, 2) == 3 then AStrPre(tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_sx(tvm_f(w, 12, 9), 9)) else if tvm_f(w, 21, 11) == 1986 and tvm_f(w, 10, 2) == 1 then ALdrPost(tvm_f(w, 0, 5), tvm_f(w, 5, 5), tvm_sx(tvm_f(w, 12, 9), 9)) else AUnk
+fn tvm_a_movk(m, rd, imm, hw, v) = match v
+    VP(p) => if tvm_isconst(p) == 1 then tvm_set(m, rd, VP(tvm_c(bit_or(bit_and(tvm_cval(p), bit_xor(0 - 1, bit_shl(65535, 16 * hw))), bit_shl(imm, 16 * hw))))) else tvm_rej(m, "MOVK into a non-constant")
+    _     => tvm_rej(m, "MOVK into a non-constant")
+fn tvm_a_asi(m, op, s, rd, rn, imm, sh) = if sh != 0 then tvm_rej(m, "shifted immediate") else if op == 0 and s == 0 and rn == 31 and rd == 31 then tvm_sp(m, m.k - imm) else if op == 0 and s == 0 and rn == 31 and rd == 29 and imm == 0 then tvm_set(m, 29, VSp(m.k)) else if op == 0 and s == 0 and rn != 31 and rd != 31 then tvm_a_addi(m, rd, imm, tvm_rg(m.regs, rn)) else if op == 1 and s == 1 and rd == 31 and rn != 31 then (if tvm_isjunk(tvm_rg(m.regs, rn)) == 1 then tvm_rej(m, "compare of an undefined register") else tvm_flags(m, FSub(tvm_rg(m.regs, rn), VP(tvm_c(imm))))) else tvm_rej(m, "add/sub immediate form the back end does not emit")
+fn tvm_a_addi(m, rd, imm, v) = let r = tvm_vp(v) in if r.ok == 0 then tvm_rej(m, "add to a non-integer value") else tvm_set(m, rd, VP(tvm_padd(r.p, tvm_c(imm))))
+fn tvm_a_asr2(m, ops, rd, shift, amt, a, vb, b) = if a.ok == 0 or b.ok == 0 then tvm_rej(m, "arithmetic on an undefined or non-integer register") else if ops == 3 and rd == 31 and shift == 2 and amt == 63 then tvm_flags(m, FSub(VP(a.p), VSra(b.p, 63))) else if shift != 0 or amt != 0 then tvm_rej(m, "shifted operand the back end does not emit") else if ops == 1 and rd != 31 then tvm_setf(m, rd, VP(tvm_padd(a.p, b.p)), FAdd(a.p, b.p)) else if ops == 3 and rd != 31 then tvm_setf(m, rd, VP(tvm_psub(a.p, b.p)), FSub(VP(a.p), VP(b.p))) else if ops == 3 then tvm_flags(m, FSub(VP(a.p), VP(b.p))) else if ops == 2 and rd != 31 then tvm_set(m, rd, VP(tvm_psub(a.p, b.p))) else tvm_rej(m, "add/sub register form the back end does not emit")
+## CMP hi, lo, ASR #63 keeps `hi` as it is (the SMULH result)
+fn tvm_a_asr(m, ops, rd, rn, rm, shift, amt) = if rn == 31 or rm == 31 then tvm_rej(m, "SP / XZR operand") else if ops == 3 and rd == 31 and shift == 2 and amt == 63 then tvm_a_cmp_asr(m, tvm_rg(m.regs, rn), tvm_vp(tvm_rg(m.regs, rm))) else tvm_a_asr2(m, ops, rd, shift, amt, tvm_vp(tvm_rg(m.regs, rn)), tvm_rg(m.regs, rm), tvm_vp(tvm_rg(m.regs, rm)))
+fn tvm_a_cmp_asr(m, va, b) = if b.ok == 0 or tvm_isjunk(va) == 1 then tvm_rej(m, "compare of an undefined register") else tvm_flags(m, FSub(va, VSra(b.p, 63)))
+fn tvm_a_op(cond) = if cond == 0 then "==" else if cond == 1 then "!=" else if cond == 11 then "<" else if cond == 10 then ">=" else if cond == 12 then ">" else if cond == 13 then "<=" else ""
+fn tvm_a_inv(cond) = if cond % 2 == 0 then cond + 1 else cond - 1
+## the value of "condition holds" as a polynomial, from the flags
+fn tvm_a_cond(fl, cond, bits) = match fl
+    FAdd(p, q)  => if cond == 6 then {ok: 1, c: tvm_vcond("vadd", p, q, bits)} else {ok: 0, c: Nil}
+    FSub(va, vb) => tvm_a_cond_sub(va, vb, cond, bits)
+    FNone       => {ok: 0, c: Nil}
+    _           => {ok: 0, c: Nil}
+fn tvm_a_cond_sub(va, vb, cond, bits) = match vb
+    VSra(r, k) => tvm_a_cond_mul(va, r, cond, bits)
+    _          => let a = tvm_vp(va) in let b = tvm_vp(vb) in if a.ok == 0 or b.ok == 0 then {ok: 0, c: Nil} else if cond == 6 then {ok: 1, c: tvm_vsub(a.p, b.p, bits)} else if tvm_a_op(cond) == "" then {ok: 0, c: Nil} else {ok: 1, c: tvm_cmp(tvm_a_op(cond), a.p, b.p)}
+fn tvm_a_cond_mul(va, r, cond, bits) = match va
+    VMulh(p, q) => if cond == 1 and tvm_eq(r, tvm_pmul(p, q)) == 1 then {ok: 1, c: tvm_vcond("vmul", p, q, bits)} else {ok: 0, c: Nil}
+    _           => {ok: 0, c: Nil}
+fn tvm_a_bc(m, fx, cond, off) = let c = tvm_a_cond(m.fl, cond, fx.bits) in if c.ok == 0 then tvm_rej(m, "conditional branch on flags that are undefined or have no model") else tvm_branch(m, fx, c.c, m.pc + off)
+fn tvm_a_cset(m, fx, rd, rn, rm, cond) = if rn != 31 or rm != 31 or rd == 31 then tvm_rej(m, "CSINC form the back end does not emit") else let c = tvm_a_cond(m.fl, tvm_a_inv(cond), fx.bits) in if c.ok == 0 or tvm_a_inv(cond) == 6 then tvm_rej(m, "CSET on flags that are undefined or have no model") else tvm_set(m, rd, VP(c.c))
+fn tvm_a_bin(m, rd, a, b, kind, bits) = if a.ok == 0 or b.ok == 0 or rd == 31 then tvm_rej(m, "arithmetic on an undefined or non-integer register") else if kind == 0 then tvm_set(m, rd, VP(tvm_n(tvm_pmul(a.p, b.p), bits))) else if kind == 1 then tvm_set(m, rd, VMulh(a.p, b.p)) else tvm_set(m, rd, VP(tvm_div(a.p, b.p, bits)))
+fn tvm_keep29(regs) = Cons({r: 29, v: tvm_rg(regs, 29)}, Nil)
+fn tvm_a_ret(m) = match tvm_rg(m.regs, 30)
+    VRet => tvm_a_ret2(m, tvm_rg(m.regs, 29), tvm_vp(tvm_rg(m.regs, 0)))
+    _    => tvm_rej(m, "RET with a return address that is not the caller's")
+fn tvm_a_ret2(m, fp, r) = match fp
+    VFp0 => if m.k != 0 then tvm_rej(m, "RET with an unbalanced stack") else if r.ok == 0 then tvm_rej(m, "RET without an integer result in X0") else tvm_fin(m, 0, r.p)
+    _    => tvm_rej(m, "RET without the caller's frame pointer in X29")
+fn tvm_a_exec(m, fx, ins) = match ins
+    AMovz(rd, imm, hw)               => if rd == 31 then tvm_rej(m, "MOVZ to XZR") else tvm_set(m, rd, VP(tvm_c(bit_shl(imm, 16 * hw))))
+    AMovk(rd, imm, hw)               => if rd == 31 then tvm_rej(m, "MOVK to XZR") else tvm_a_movk(m, rd, imm, hw, tvm_rg(m.regs, rd))
+    AAsi(op, s, rd, rn, imm, sh)     => tvm_a_asi(m, op, s, rd, rn, imm, sh)
+    AAsr(ops, rd, rn, rm, shift, amt) => tvm_a_asr(m, ops, rd, rn, rm, shift, amt)
+    AMul(o0, rd, rn, rm, ra)         => if o0 != 0 or ra != 31 or rn == 31 or rm == 31 then tvm_rej(m, "MADD / MSUB form the back end does not emit") else tvm_a_bin(m, rd, tvm_vp(tvm_rg(m.regs, rn)), tvm_vp(tvm_rg(m.regs, rm)), 0, fx.bits)
+    ASmulh(rd, rn, rm)               => if rn == 31 or rm == 31 then tvm_rej(m, "XZR operand") else tvm_a_bin(m, rd, tvm_vp(tvm_rg(m.regs, rn)), tvm_vp(tvm_rg(m.regs, rm)), 1, fx.bits)
+    ASdiv(rd, rn, rm)                => if rn == 31 or rm == 31 then tvm_rej(m, "XZR operand") else tvm_a_bin(m, rd, tvm_vp(tvm_rg(m.regs, rn)), tvm_vp(tvm_rg(m.regs, rm)), 2, fx.bits)
+    ACsinc(rd, rn, rm, cond)         => tvm_a_cset(m, fx, rd, rn, rm, cond)
+    AB(off)                          => tvm_jump(m, fx, m.pc + off, m.o)
+    ABl(off)                         => if m.k % 16 != 0 then tvm_rej(m, "call with a misaligned stack") else tvm_do_call(m, fx, m.pc + off, 16, 0, tvm_keep29(m.regs))
+    ABc(cond, off)                   => tvm_a_bc(m, fx, cond, off)
+    AStp(rt, rt2, rn, imm)           => if rt != 29 or rt2 != 30 or rn != 31 or imm != 0 - 16 then tvm_rej(m, "STP form the back end does not emit") else tvm_push(m, m.k + 16, Cons({k: m.k + 16, v: tvm_rg(m.regs, 29)}, Cons({k: m.k + 8, v: tvm_rg(m.regs, 30)}, Nil)))
+    ALdp(rt, rt2, rn, imm)           => if rt != 29 or rt2 != 30 or rn != 31 or imm != 16 or m.k < 16 then tvm_rej(m, "LDP form the back end does not emit") else tvm_sp({pc: m.pc, k: m.k, regs: Cons({r: 29, v: tvm_sg(m.stk, m.k)}, Cons({r: 30, v: tvm_sg(m.stk, m.k - 8)}, m.regs)), stk: m.stk, fl: m.fl, o: m.o, end: "", t: 0, v: Nil}, m.k - 16)
+    ALdr(rt, rn, off)                => if rn != 31 or rt == 31 then tvm_rej(m, "load that is not SP-relative") else tvm_load(m, fx, rt, off, 16)
+    AStrPre(rt, rn, simm)            => if rn != 31 or rt == 31 or simm != 0 - 16 or tvm_isjunk(tvm_rg(m.regs, rt)) == 1 then tvm_rej(m, "push form the back end does not emit, or push of an undefined register") else tvm_push(m, m.k + 16, Cons({k: m.k + 16, v: tvm_rg(m.regs, rt)}, Nil))
+    ALdrPost(rt, rn, simm)           => if rn != 31 or rt == 31 or simm != 16 or m.k < 16 or tvm_isjunk(tvm_sg(m.stk, m.k)) == 1 then tvm_rej(m, "pop form the back end does not emit, or pop of an unwritten slot") else tvm_sp(tvm_set({pc: m.pc - 1, k: m.k, regs: m.regs, stk: m.stk, fl: m.fl, o: m.o, end: "", t: 0, v: Nil}, rt, tvm_sg(m.stk, m.k)), m.k - 16)
+    ARet                             => tvm_a_ret(m)
+    AUnk                             => tvm_rej(m, "unknown instruction word")
+    _                                => tvm_rej(m, "unknown instruction word")
+
+## --- RISC-V: independent decoder (RV32I / RV64I / M base opcode map) and symbolic semantics -----------------------
+fn tvm_r_dec(w) = let opc = bit_and(w, 127) in let rd = tvm_f(w, 7, 5) in let f3 = tvm_f(w, 12, 3) in let rs1 = tvm_f(w, 15, 5) in let rs2 = tvm_f(w, 20, 5) in if opc == 51 then ROp(tvm_f(w, 25, 7), f3, rd, rs1, rs2) else if opc == 19 then RImm(f3, rd, rs1, tvm_sx(tvm_f(w, 20, 12), 12)) else if opc == 27 then RImmW(f3, rd, rs1, tvm_sx(tvm_f(w, 20, 12), 12)) else if opc == 3 then RLoad(f3, rd, rs1, tvm_sx(tvm_f(w, 20, 12), 12)) else if opc == 35 then RStore(f3, rs1, rs2, tvm_sx(bit_or(bit_shl(tvm_f(w, 25, 7), 5), rd), 12)) else if opc == 99 then RBr(f3, rs1, rs2, tvm_sx(bit_or(bit_or(bit_shl(tvm_f(w, 31, 1), 12), bit_shl(tvm_f(w, 7, 1), 11)), bit_or(bit_shl(tvm_f(w, 25, 6), 5), bit_shl(tvm_f(w, 8, 4), 1))), 13)) else if opc == 111 then RJal(rd, tvm_sx(bit_or(bit_or(bit_shl(tvm_f(w, 31, 1), 20), bit_shl(tvm_f(w, 12, 8), 12)), bit_or(bit_shl(tvm_f(w, 20, 1), 11), bit_shl(tvm_f(w, 21, 10), 1))), 21)) else if opc == 103 then RJalr(f3, rd, rs1, tvm_sx(tvm_f(w, 20, 12), 12)) else if opc == 55 then RLui(rd, tvm_f(w, 12, 20)) else RUnk
+fn tvm_r_rg(regs, r) = if r == 0 then VP(Nil) else tvm_rg(regs, r)
+fn tvm_r_const(m, rd, v, f) = match v
+    VP(p) => if tvm_isconst(p) == 1 then tvm_set(m, rd, VP(tvm_c(f))) else tvm_rej(m, "constant-building instruction on a non-constant")
+    _     => tvm_rej(m, "constant-building instruction on a non-constant")
+fn tvm_r_cv(v) = match v
+    VP(p) => tvm_cval(p)
+    _     => 0
+fn tvm_r_seqz(m, rd, v) = match v
+    VXor(a, b) => tvm_set(m, rd, VP(tvm_cmp("==", a, b)))
+    _          => tvm_rej(m, "SLTIU 1 on something that is not an XOR")
+fn tvm_r_snez(m, rd, v) = match v
+    VXor(a, b) => tvm_set(m, rd, VP(tvm_cmp("!=", a, b)))
+    _          => let r = tvm_vp(v) in if r.ok == 0 then tvm_rej(m, "SLTU x0 on an undefined register") else tvm_set(m, rd, VP(tvm_cmp("!=", r.p, Nil)))
+fn tvm_r_not(m, rd, r) = if r.ok == 0 or tvm_isbool(r.p) == 0 and (tvm_isconst(r.p) == 0 or tvm_cval(r.p) < 0 or tvm_cval(r.p) > 1) then tvm_rej(m, "XORI 1 on a value that is not a truth value") else tvm_set(m, rd, VP(tvm_not(r.p)))
+fn tvm_r_imm(m, fx, f3, rd, rs1, imm) = let v = tvm_r_rg(m.regs, rs1) in let r = tvm_vp(v) in if f3 == 0 and rd == 2 and rs1 == 2 then (if imm % fx.w != 0 then tvm_rej(m, "misaligned stack adjustment") else tvm_sp(m, m.k - imm)) else if rd == 0 or rd == 2 or rs1 == 2 then tvm_rej(m, "immediate form the back end does not emit") else if f3 == 0 and imm == 0 and rs1 != 0 then (if tvm_isjunk(v) == 1 then tvm_rej(m, "move of an undefined register") else tvm_set(m, rd, v)) else if f3 == 0 then (if r.ok == 0 then tvm_rej(m, "ADDI on a non-integer value") else tvm_set(m, rd, VP(tvm_addc(r.p, imm, fx.bits)))) else if f3 == 2 then (if r.ok == 0 then tvm_rej(m, "SLTI on a non-integer value") else tvm_set(m, rd, VLt(r.p, tvm_c(imm)))) else if f3 == 3 and imm == 1 then tvm_r_seqz(m, rd, v) else if f3 == 4 and imm == 1 then tvm_r_not(m, rd, r) else if f3 == 1 and imm >= 0 and imm < fx.bits then tvm_r_const(m, rd, v, tvm_wrap(bit_shl(tvm_r_cv(v), imm), fx.bits)) else if f3 == 5 and imm == 1024 + fx.bits - 1 then (if r.ok == 0 then tvm_rej(m, "SRAI on a non-integer value") else tvm_set(m, rd, VSra(r.p, fx.bits - 1))) else tvm_rej(m, "immediate form the back end does not emit")
+fn tvm_r_op(m, fx, f7, f3, rd, rs1, rs2) = let a = tvm_vp(tvm_r_rg(m.regs, rs1)) in let b = tvm_vp(tvm_r_rg(m.regs, rs2)) in if rd == 0 or rd == 2 or rs1 == 2 or rs2 == 2 then tvm_rej(m, "register form the back end does not emit") else if f7 == 0 and f3 == 3 then (if rs1 != 0 then tvm_rej(m, "SLTU with a first operand other than x0") else tvm_r_snez(m, rd, tvm_r_rg(m.regs, rs2))) else if a.ok == 0 or b.ok == 0 then tvm_rej(m, "arithmetic on an undefined or non-integer register") else if f7 == 0 and f3 == 0 then tvm_set(m, rd, VP(tvm_n(tvm_padd(a.p, b.p), fx.bits))) else if f7 == 32 and f3 == 0 then tvm_set(m, rd, VP(tvm_n(tvm_psub(a.p, b.p), fx.bits))) else if f7 == 0 and f3 == 2 then tvm_set(m, rd, VLt(a.p, b.p)) else if f7 == 0 and f3 == 4 then tvm_set(m, rd, VXor(a.p, b.p)) else if f7 == 1 and f3 == 0 then tvm_set(m, rd, VP(tvm_n(tvm_pmul(a.p, b.p), fx.bits))) else if f7 == 1 and f3 == 1 then tvm_set(m, rd, VMulh(a.p, b.p)) else if f7 == 1 and f3 == 4 then tvm_set(m, rd, VP(tvm_div(a.p, b.p, fx.bits))) else tvm_rej(m, "register operation the back end does not emit")
+## beq of the two halves of an overflow test: {ok, c} with c = "no overflow"
+fn tvm_r_ovf(va, vb, bits) = match va
+    VLt(x, z)   => tvm_r_ovf_as(x, z, vb, bits)
+    VMulh(p, q) => tvm_r_ovf_mul(p, q, vb, bits)
+    _           => {ok: 0, c: Nil}
+fn tvm_r_ovf_as(x, z, vb, bits) = match vb
+    VLt(u, v) => if tvm_isconst(z) == 0 or tvm_cval(z) != 0 then {ok: 0, c: Nil} else if tvm_eq(u, tvm_n(tvm_padd(v, x), bits)) == 1 then {ok: 1, c: tvm_not(tvm_vcond("vadd", v, x, bits))} else {ok: 0, c: Nil}
+    _         => {ok: 0, c: Nil}
+fn tvm_r_ovf_mul(p, q, vb, bits) = match vb
+    VSra(r, k) => if k == bits - 1 and tvm_eq(r, tvm_n(tvm_pmul(p, q), bits)) == 1 then {ok: 1, c: tvm_not(tvm_vcond("vmul", p, q, bits))} else {ok: 0, c: Nil}
+    _          => {ok: 0, c: Nil}
+fn tvm_r_br(m, fx, f3, rs1, rs2, imm) = if f3 != 0 and f3 != 1 or imm % 4 != 0 then tvm_rej(m, "branch the back end does not emit") else if rs2 == 0 then (let a = tvm_vp(tvm_r_rg(m.regs, rs1)) in if a.ok == 0 then tvm_rej(m, "branch on an undefined register") else tvm_branch(m, fx, tvm_cmp(if f3 == 0 then "==" else "!=", a.p, Nil), m.pc + imm / 4)) else if f3 == 0 then (let c = tvm_r_ovf(tvm_r_rg(m.regs, rs1), tvm_r_rg(m.regs, rs2), fx.bits) in if c.ok == 0 then tvm_rej(m, "BEQ that is not one of the three overflow tests") else tvm_branch(m, fx, c.c, m.pc + imm / 4)) else tvm_rej(m, "branch the back end does not emit")
+fn tvm_r_store(m, fx, f3, rs1, rs2, imm) = if f3 != (if fx.bits == 64 then 3 else 2) or rs1 != 2 or imm != 0 or m.k <= 0 or rs2 == 0 or rs2 == 2 or tvm_isjunk(tvm_rg(m.regs, rs2)) == 1 then tvm_rej(m, "store that is not a push of a defined register at 0(sp)") else tvm_push(m, m.k, Cons({k: m.k, v: tvm_rg(m.regs, rs2)}, Nil))
+fn tvm_r_ret(m) = match tvm_rg(m.regs, 1)
+    VRet => let r = tvm_vp(tvm_rg(m.regs, 10)) in if m.k != 0 then tvm_rej(m, "return with an unbalanced stack") else if r.ok == 0 then tvm_rej(m, "return without an integer result in a0") else tvm_fin(m, 0, r.p)
+    _    => tvm_rej(m, "return to an address that is not the caller's")
+fn tvm_r_exec(m, fx, ins) = match ins
+    ROp(f7, f3, rd, rs1, rs2)  => tvm_r_op(m, fx, f7, f3, rd, rs1, rs2)
+    RImm(f3, rd, rs1, imm)     => tvm_r_imm(m, fx, f3, rd, rs1, imm)
+    RImmW(f3, rd, rs1, imm)    => if fx.bits != 64 or f3 != 0 or rd == 0 or rd == 2 or rs1 == 2 or rs1 == 0 then tvm_rej(m, "ADDIW form the back end does not emit") else tvm_r_const(m, rd, tvm_rg(m.regs, rs1), tvm_wrap(tvm_r_cv(tvm_rg(m.regs, rs1)) + imm, 32))
+    RLui(rd, imm20)            => if rd == 0 or rd == 2 then tvm_rej(m, "LUI form the back end does not emit") else tvm_set(m, rd, VP(tvm_c(tvm_wrap(imm20 * 4096, 32))))
+    RLoad(f3, rd, rs1, imm)    => if f3 != (if fx.bits == 64 then 3 else 2) or rs1 != 2 or rd == 0 or rd == 2 then tvm_rej(m, "load that is not SP-relative at the machine width") else tvm_load(m, fx, rd, imm, fx.w)
+    RStore(f3, rs1, rs2, imm)  => tvm_r_store(m, fx, f3, rs1, rs2, imm)
+    RBr(f3, rs1, rs2, imm)     => tvm_r_br(m, fx, f3, rs1, rs2, imm)
+    RJal(rd, imm)              => if imm % 4 != 0 then tvm_rej(m, "misaligned jump") else if rd == 0 then tvm_jump(m, fx, m.pc + imm / 4, m.o) else if rd == 1 then tvm_do_call(m, fx, m.pc + imm / 4, fx.w, 10, Nil) else tvm_rej(m, "JAL with a link register other than ra")
+    RJalr(f3, rd, rs1, imm)    => if f3 != 0 or rd != 0 or rs1 != 1 or imm != 0 then tvm_rej(m, "JALR that is not `ret`") else tvm_r_ret(m)
+    RUnk                       => tvm_rej(m, "unknown instruction word")
+    _                          => tvm_rej(m, "unknown instruction word")
+
+## --- one machine path, path enumeration, comparison ---------------------------------------------------------------
+fn tvm_step(m, fx) = if m.pc < fx.start or m.pc >= fx.stop then tvm_rej(m, "execution left the function") else let w = tvm_nth(fx.words, m.pc - fx.start) in if fx.isa == "a64" then tvm_a_exec(m, fx, tvm_a_dec(w)) else tvm_r_exec(m, fx, tvm_r_dec(w))
+fn tvm_loop(m, fx, fuel) = if m.end != "" then m else if fuel <= 0 then tvm_rej(m, "step budget exhausted") else tvm_loop(tvm_step(m, fx), fx, fuel - 1)
+fn tvm_regs0(fx) = if fx.isa == "a64" then Cons({r: 29, v: VFp0}, Cons({r: 30, v: VRet}, Nil)) else Cons({r: 1, v: VRet}, Nil)
+fn tvm_run_mach(fx, forced) = let m = tvm_loop(tvm_m0(fx, forced, tvm_regs0(fx)), fx, 4 * (fx.stop - fx.start) + 16) in {c: tvm_join(m.o.cs), r: if m.end == "done" then tvm_res_s(m.t, m.v) else m.end, ds: kir_rev(m.o.ds, Nil)}
+fn tvm_run(side, fx, forced) = if side == 0 then tvm_run_src(fx, forced) else tvm_run_mach(fx, forced)
+fn tvm_take(xs, n) = if n <= 0 then Nil else match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(h, tvm_take(t, n - 1))
+## every path: run under `forced`, then flip each decision the run added, deepest first
+fn tvm_explore(side, fx, forced, acc) = if kir_len(acc) > 4096 then acc else let r = tvm_run(side, fx, forced) in tvm_flips(side, fx, r.ds, kir_len(r.ds) - 1, kir_len(forced), Cons({c: r.c, r: r.r}, acc))
+fn tvm_flips(side, fx, ds, i, lo, acc) = if i < lo then acc else tvm_flips(side, fx, ds, i - 1, lo, tvm_explore(side, fx, kir_app(tvm_take(ds, i), Cons(1 - tvm_nth(ds, i), Nil)), acc))
+fn tvm_has(paths, c, r) = match paths
+    Nil        => 0
+    Cons(h, t) => if h.c == c and h.r == r then 1 else tvm_has(t, c, r)
+fn tvm_sub_at(s, pat, i) = if i + count(pat) > count(s) then 0 else if slice(s, i, i + count(pat)) == pat then 1 else tvm_sub_at(s, pat, i + 1)
+fn tvm_first_bad(ms, ss) = match ms
+    Nil        => ""
+    Cons(h, t) => if count(h.r) > 0 and at(h.r, 0) == "r" then h.r else if h.r == "?" or tvm_sub_at(h.c, "?ovf", 0) == 1 or tvm_sub_at(h.r, "?ovf", 0) == 1 then "a coefficient left the 64-bit range" else if tvm_has(ss, h.c, h.r) == 0 then "machine path [" + h.c + "] ends in " + h.r + ", which the source semantics does not have" else tvm_first_bad(t, ss)
+fn tvm_stop(syms, start, best) = match syms
+    Nil        => best
+    Cons(h, t) => tvm_stop(t, start, if h.idx > start and h.idx < best then h.idx else best)
+fn tvm_slice(ws, i, lo, hi) = match ws
+    Nil        => Nil
+    Cons(h, t) => if i >= hi then Nil else if i >= lo then Cons(h, tvm_slice(t, i + 1, lo, hi)) else tvm_slice(t, i + 1, lo, hi)
+fn tvm_sym_idx(syms, nm) = match syms
+    Nil        => 0 - 1
+    Cons(h, t) => if h.nm == nm then h.idx else tvm_sym_idx(t, nm)
+fn tvm_fx(p, words, syms, isa, bits, f) = let start = tvm_sym_idx(syms, f.nm) in let stop = tvm_stop(syms, start, kir_len(words)) in {f: f, fns: p.fns, ar: kir_len(f.ps), syms: syms, isa: isa, bits: bits, w: bits / 8, start: start, stop: stop, words: tvm_slice(words, 0, start, stop)}
+## {ok, why, paths}: ok == 1 only when the machine paths and the source paths are the same set
+fn tvm_validate_fx(fx) = if fx.start < 0 then {ok: 0, why: "no symbol for the function", paths: 0} else let ss = tvm_explore(0, fx, Nil, Nil) in let ms = tvm_explore(1, fx, Nil, Nil) in let bad = tvm_first_bad(ms, ss) in if kir_len(ss) > 4096 or kir_len(ms) > 4096 then {ok: 0, why: "more than 4096 paths", paths: kir_len(ss)} else if bad != "" then {ok: 0, why: bad, paths: kir_len(ss)} else if kir_len(ms) != kir_len(ss) then {ok: 0, why: "the machine code has " + str(kir_len(ms)) + " paths, the source " + str(kir_len(ss)), paths: kir_len(ss)} else {ok: 1, why: "", paths: kir_len(ss)}
+fn tvm_validate_fn(p, words, syms, isa, bits, fname) = let f = kir_find(p.fns, fname) in if f.nm == "" then {ok: 0, why: "no such function: " + fname, paths: 0} else tvm_validate_fx(tvm_fx(p, words, syms, isa, bits, f))
+## every function of the kernel: {ok, n, paths, why}
+fn tvm_validate_all(p, words, syms, isa, bits, fns, n, paths) = match fns
+    Nil        => {ok: 1, n: n, paths: paths, why: ""}
+    Cons(f, t) => let r = tvm_validate_fn(p, words, syms, isa, bits, f.nm) in if r.ok == 0 then {ok: 0, n: n, paths: paths, why: f.nm + ": " + r.why} else tvm_validate_all(p, words, syms, isa, bits, t, n + 1, paths + r.paths)
+fn tvm_validate(p, words, syms, isa, bits) = tvm_validate_all(p, words, syms, isa, bits, p.fns, 0, 0)
+
+## --- single-bit mutants of one function's words: a mutant is killed when it no longer validates ---------------------
+fn tvm_setw(ws, i, w) = match ws
+    Nil        => Nil
+    Cons(h, t) => if i == 0 then Cons(w, t) else Cons(h, tvm_setw(t, i - 1, w))
+fn tvm_mut_fx(fx, i, bit) = {f: fx.f, fns: fx.fns, ar: fx.ar, syms: fx.syms, isa: fx.isa, bits: fx.bits, w: fx.w, start: fx.start, stop: fx.stop, words: tvm_setw(fx.words, i, bit_xor(tvm_nth(fx.words, i), kir_p2(bit)))}
+fn tvm_mut_loop(fx, i, bit, n, acc) = if i >= n then acc else if bit >= 32 then tvm_mut_loop(fx, i + 1, 0, n, acc) else let r = tvm_validate_fx(tvm_mut_fx(fx, i, bit)) in tvm_mut_loop(fx, i, bit + 1, n, if r.ok == 1 then {total: acc.total + 1, killed: acc.killed, surv: Cons({i: i, bit: bit, w: tvm_nth(fx.words, i)}, acc.surv)} else {total: acc.total + 1, killed: acc.killed + 1, surv: acc.surv})
+## a surviving mutant is one the validator still PROVES equivalent to the source. `dead` counts the survivors whose
+## word no path ever executes (the function also validates with that word replaced by the undefined word 0): the
+## jump to a trap stub behind a guard that a constant decides, e.g. the zero test of a literal divisor.
+fn tvm_word_dead(fx, i) = (tvm_validate_fx({f: fx.f, fns: fx.fns, ar: fx.ar, syms: fx.syms, isa: fx.isa, bits: fx.bits, w: fx.w, start: fx.start, stop: fx.stop, words: tvm_setw(fx.words, i, 0)})).ok
+fn tvm_dead_count(fx, surv, n) = match surv
+    Nil        => n
+    Cons(h, t) => tvm_dead_count(fx, t, n + tvm_word_dead(fx, h.i))
+## {total, killed, surv: [{i, bit, w}], dead} over every bit of every word of `fname`
+fn tvm_mutants(p, words, syms, isa, bits, fname) = let fx = tvm_fx(p, words, syms, isa, bits, kir_find(p.fns, fname)) in let r = tvm_mut_loop(fx, 0, 0, fx.stop - fx.start, {total: 0, killed: 0, surv: Nil}) in {total: r.total, killed: r.killed, surv: r.surv, dead: tvm_dead_count(fx, r.surv, 0)}

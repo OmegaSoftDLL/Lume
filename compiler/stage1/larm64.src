@@ -1,0 +1,149 @@
+## larm64.src -- AArch64 (A64) back end for the integer kernel fragment of lkir.src: instruction encoder, code generator
+## and ELF64 writer (EM_AARCH64 = 183). Every instruction word is built from its fields as laid out in the Arm
+## Architecture Reference Manual for A-profile (DDI 0487), chapter C4 "A64 Instruction Set Encoding"; nothing is a
+## pasted constant. tests/harness/multi_arch_gate.src checks the encoders against official encodings, runs the emitted
+## executables under qemu-aarch64 and has ltv_multiarch.src validate the emitted words function by function.
+##
+## Code shape (a plain stack machine, deliberately free of optimisation so that it can be validated):
+##   * every expression leaves its value in X0; a binary operator evaluates the left operand, pushes it
+##     (`STR X0, [SP, #-16]!`, 16 bytes so SP stays 16-byte aligned), evaluates the right one and pops into X1;
+##   * the caller pushes the arguments left to right, `BL f`, then drops them (`ADD SP, SP, #16 * n`);
+##   * prologue `STP X29, X30, [SP, #-16]!; MOV X29, SP`, epilogue `LDP X29, X30, [SP], #16; RET`;
+##   * with d words pushed since the prologue, push number j is at [SP, #16 * (d - j)] and parameter i of n at
+##     [SP, #16 * (d + 1 + n - 1 - i)] (unsigned-offset LDR);
+##   * + and - are ADDS / SUBS followed by `B.VS overflow`; * is MUL + SMULH and `CMP hi, lo, ASR #63; B.NE overflow`;
+##     / and % test the divisor (`B.EQ div0`), divide with SDIV and multiply the quotient back with the checked
+##     multiplication, which is what turns MIN / -1 into the overflow trap; a false contract branches to its own stub.
+## Variants: "linux" (aarch64-linux-gnu): `_start` evaluates every `print`, writes each value in decimal to stdout
+## (write, x8 = 64) and exits (x8 = 93) with the last value; a trap exits with status 3. "bare" (aarch64-elf): `_start`
+## loads SP with the top of a static RAM segment, evaluates the first `print` into X0 and parks in `B .`; a trap parks
+## with its cause (1 contract, 2 overflow, 3 division by zero) in X17. The bare image is not executed by the gate (no
+## system emulator is installed); its code generator is the one the linux variant exercises.
+use lkir
+
+## --- 1. instruction encoders ------------------------------------------------------------------------------------------
+fn la64_movz(rd, imm16, hw) = 3531603968 + hw * 2097152 + imm16 * 32 + rd
+fn la64_movk(rd, imm16, hw) = 4068474880 + hw * 2097152 + imm16 * 32 + rd
+## add / sub, immediate: op 0 = ADD, 1 = SUB; s = 1 sets the flags; sh = 1 shifts the immediate left by 12
+fn la64_addsub_imm(op, s, rd, rn, imm12, sh) = 2432696320 + op * 1073741824 + s * 536870912 + sh * 4194304 + imm12 * 1024 + rn * 32 + rd
+fn la64_add_imm(rd, rn, imm12) = la64_addsub_imm(0, 0, rd, rn, imm12, 0)
+fn la64_sub_imm(rd, rn, imm12) = la64_addsub_imm(1, 0, rd, rn, imm12, 0)
+fn la64_cmp_imm(rn, imm12) = la64_addsub_imm(1, 1, 31, rn, imm12, 0)
+## add / sub, shifted register: shift 0 = LSL, 1 = LSR, 2 = ASR
+fn la64_addsub_reg(op, s, rd, rn, rm, shift, amount) = 2332033024 + op * 1073741824 + s * 536870912 + shift * 4194304 + rm * 65536 + amount * 1024 + rn * 32 + rd
+fn la64_add(rd, rn, rm) = la64_addsub_reg(0, 0, rd, rn, rm, 0, 0)
+fn la64_sub(rd, rn, rm) = la64_addsub_reg(1, 0, rd, rn, rm, 0, 0)
+fn la64_adds(rd, rn, rm) = la64_addsub_reg(0, 1, rd, rn, rm, 0, 0)
+fn la64_subs(rd, rn, rm) = la64_addsub_reg(1, 1, rd, rn, rm, 0, 0)
+fn la64_cmp(rn, rm) = la64_addsub_reg(1, 1, 31, rn, rm, 0, 0)
+fn la64_cmp_asr(rn, rm, amount) = la64_addsub_reg(1, 1, 31, rn, rm, 2, amount)
+fn la64_madd(rd, rn, rm, ra) = 2600468480 + rm * 65536 + ra * 1024 + rn * 32 + rd
+fn la64_msub(rd, rn, rm, ra) = 2600501248 + rm * 65536 + ra * 1024 + rn * 32 + rd
+fn la64_mul(rd, rn, rm) = la64_madd(rd, rn, rm, 31)
+fn la64_smulh(rd, rn, rm) = 2604694528 + rm * 65536 + rn * 32 + rd
+fn la64_sdiv(rd, rn, rm) = 2596277248 + rm * 65536 + rn * 32 + rd
+## condition codes: EQ 0, NE 1, VS 6, GE 10, LT 11, GT 12, LE 13. CSET rd, c is CSINC rd, XZR, XZR, invert(c)
+fn la64_cond(op) = if op == "==" then 0 else if op == "!=" then 1 else if op == "<" then 11 else if op == ">=" then 10 else if op == ">" then 12 else 13
+fn la64_cinv(c) = if c % 2 == 0 then c + 1 else c - 1
+fn la64_csinc(rd, rn, rm, c) = 2592080896 + rm * 65536 + c * 4096 + rn * 32 + rd
+fn la64_cset(rd, c) = la64_csinc(rd, 31, 31, la64_cinv(c))
+fn la64_u(v, modulus) = if v < 0 then v + modulus else v
+fn la64_b(off_words) = 335544320 + la64_u(off_words, 67108864)
+fn la64_bl(off_words) = 2483027968 + la64_u(off_words, 67108864)
+fn la64_bcond(c, off_words) = 1409286144 + la64_u(off_words, 524288) * 32 + c
+fn la64_ret() = 3596551104
+fn la64_stp_pre(rt, rt2, rn, imm) = 2843738112 + la64_u(imm / 8, 128) * 32768 + rt2 * 1024 + rn * 32 + rt
+fn la64_ldp_post(rt, rt2, rn, imm) = 2831155200 + la64_u(imm / 8, 128) * 32768 + rt2 * 1024 + rn * 32 + rt
+fn la64_ldr(rt, rn, off) = 4181721088 + off / 8 * 1024 + rn * 32 + rt
+fn la64_str(rt, rn, off) = 4177526784 + off / 8 * 1024 + rn * 32 + rt
+fn la64_str_pre(rt, rn, simm9) = 4160752640 + la64_u(simm9, 512) * 4096 + rn * 32 + rt
+fn la64_ldr_post(rt, rn, simm9) = 4164944896 + la64_u(simm9, 512) * 4096 + rn * 32 + rt
+fn la64_strb_pre(rt, rn, simm9) = 939527168 + la64_u(simm9, 512) * 4096 + rn * 32 + rt
+fn la64_svc(imm16) = 3556769793 + imm16 * 32
+fn la64_nop() = 3573751839
+
+## --- 2. code generator ------------------------------------------------------------------------------------------------
+fn la64_fdiv(p, m) = let q = p / m in if p % m < 0 then q - 1 else q
+fn la64_chunk(v, k) = let q = la64_fdiv(v, if k == 0 then 1 else if k == 1 then 65536 else if k == 2 then 4294967296 else 281474976710656) in (q % 65536 + 65536) % 65536
+fn la64_movk_if(st, rd, v, k) = if la64_chunk(v, k) == 0 then st else kir_w(st, la64_movk(rd, la64_chunk(v, k), k))
+## load a 64-bit constant: MOVZ for bits 0..15, one MOVK for every other non-zero 16-bit chunk
+fn la64_li(st, rd, v) = la64_movk_if(la64_movk_if(la64_movk_if(kir_w(st, la64_movz(rd, la64_chunk(v, 0), 0)), rd, v, 1), rd, v, 2), rd, v, 3)
+fn la64_push(st) = kir_w(st, la64_str_pre(0, 31, 0 - 16))
+fn la64_pop1(st) = kir_w(st, la64_ldr_post(1, 31, 16))
+fn la64_bc(st, c, l) = kir_ref(st, A64BC(c, l))
+fn la64_jmp(st, l) = kir_ref(st, A64B(l))
+fn la64_var(st, cx, env, d, nm) = let s = kir_slot(env, nm) in let off = if s > 0 then 16 * (d - s) else 16 * (d + 1 + cx.ar + s) in if s == 0 then kir_err(st, "unbound variable: " + nm) else if off > 32760 then kir_err(st, "frame deeper than 2047 words") else kir_w(st, la64_ldr(0, 31, off))
+## checked X2 = rn * X0 (the product is left in X2)
+fn la64_mul_chk(st, cx, rn) = la64_bc(kir_ws(st, Cons(la64_mul(2, rn, 0), Cons(la64_smulh(3, rn, 0), Cons(la64_cmp_asr(3, 2, 63), Nil)))), 1, cx.lo)
+## X1 = left operand, X0 = right operand -> X0
+fn la64_arith(st, cx, op) = if op == "+" then la64_bc(kir_w(st, la64_adds(0, 1, 0)), 6, cx.lo) else if op == "-" then la64_bc(kir_w(st, la64_subs(0, 1, 0)), 6, cx.lo) else if op == "*" then kir_w(la64_mul_chk(st, cx, 1), la64_add_imm(0, 2, 0)) else if op == "/" then kir_w(la64_mul_chk(kir_w(la64_bc(kir_w(st, la64_cmp_imm(0, 0)), 0, cx.ld), la64_sdiv(4, 1, 0)), cx, 4), la64_add_imm(0, 4, 0)) else if op == "%" then kir_w(la64_mul_chk(kir_w(la64_bc(kir_w(st, la64_cmp_imm(0, 0)), 0, cx.ld), la64_sdiv(4, 1, 0)), cx, 4), la64_sub(0, 1, 2)) else if kir_iscmp(op) then kir_ws(st, Cons(la64_cmp(1, 0), Cons(la64_cset(0, la64_cond(op)), Nil))) else kir_err(st, "unsupported operator: " + op)
+fn la64_norm(st) = kir_ws(st, Cons(la64_cmp_imm(0, 0), Cons(la64_cset(0, 1), Nil)))
+fn la64_and(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = la64_bc(kir_w(la64_x(kir_bump(st, 2), cx, env, d, l), la64_cmp_imm(0, 0)), 0, lb) in let s2 = la64_jmp(la64_norm(la64_x(s1, cx, env, d, r)), lb + 1) in kir_def(kir_w(kir_def(s2, lb), la64_movz(0, 0, 0)), lb + 1)
+fn la64_or(st, cx, env, d, l, r) = let lb = st.lbl in let s1 = la64_bc(kir_w(la64_x(kir_bump(st, 2), cx, env, d, l), la64_cmp_imm(0, 0)), 1, lb) in let s2 = la64_jmp(la64_norm(la64_x(s1, cx, env, d, r)), lb + 1) in kir_def(kir_w(kir_def(s2, lb), la64_movz(0, 1, 0)), lb + 1)
+fn la64_bin(st, cx, env, d, op, l, r) = if op == "and" then la64_and(st, cx, env, d, l, r) else if op == "or" then la64_or(st, cx, env, d, l, r) else la64_arith(la64_pop1(la64_x(la64_push(la64_x(st, cx, env, d, l)), cx, env, d + 1, r)), cx, op)
+fn la64_if(st, cx, env, d, c, t, f) = let lb = st.lbl in let s1 = la64_bc(kir_w(la64_x(kir_bump(st, 2), cx, env, d, c), la64_cmp_imm(0, 0)), 0, lb) in let s2 = la64_jmp(la64_x(s1, cx, env, d, t), lb + 1) in kir_def(la64_x(kir_def(s2, lb), cx, env, d, f), lb + 1)
+fn la64_let(st, cx, env, d, nm, v, b) = kir_w(la64_x(la64_push(la64_x(st, cx, env, d, v)), cx, Cons({name: nm, slot: d + 1}, env), d + 1, b), la64_add_imm(31, 31, 16))
+fn la64_args(st, cx, env, d, args) = match args
+    Nil        => st
+    Cons(h, t) => la64_args(la64_push(la64_x(st, cx, env, d, h)), cx, env, d + 1, t)
+fn la64_call(st, cx, env, d, nm, args) = let id = kir_fn_id(cx.fns, nm) in let n = kir_len(args) in if id < 0 then kir_err(st, "call to an unknown function: " + nm) else if n > 255 then kir_err(st, "more than 255 arguments: " + nm) else let s1 = kir_ref(la64_args(st, cx, env, d, args), A64BL(id)) in if n == 0 then s1 else kir_w(s1, la64_add_imm(31, 31, 16 * n))
+fn la64_trap(st, cx, k) = la64_jmp(st, if k == 1 then cx.lc else if k == 2 then cx.lo else cx.ld)
+fn la64_x(st, cx, env, d, e) = match e
+    KNum(v)         => la64_li(st, 0, v)
+    KVar(nm)        => la64_var(st, cx, env, d, nm)
+    KBin(op, l, r)  => la64_bin(st, cx, env, d, op, l, r)
+    KIf(c, t, f)    => la64_if(st, cx, env, d, c, t, f)
+    KLet(nm, v, b)  => la64_let(st, cx, env, d, nm, v, b)
+    KCall(nm, args) => la64_call(st, cx, env, d, nm, args)
+    KTrap(k)        => la64_trap(st, cx, k)
+    _               => kir_err(st, "expression outside the kernel fragment")
+fn la64_cx(tab, ar) = let nf = kir_len(tab) in {fns: tab, ar: ar, lc: nf, lo: nf + 1, ld: nf + 2, lp: nf + 3}
+fn la64_fn(st, tab, f) = let cx = la64_cx(tab, kir_len(f.ps)) in let s1 = kir_ws(kir_def(st, kir_fn_id(tab, f.nm)), Cons(la64_stp_pre(29, 30, 31, 0 - 16), Cons(la64_add_imm(29, 31, 0), Nil))) in kir_ws(la64_x(s1, cx, kir_penv(f.ps, 0), 0, f.body), Cons(la64_ldp_post(29, 30, 31, 16), Cons(la64_ret(), Nil)))
+fn la64_fns(st, tab, fns) = match fns
+    Nil        => st
+    Cons(h, t) => la64_fns(la64_fn(st, tab, h), tab, t)
+
+## decimal writer of the linux variant: prints X0 and a newline through write(1, buf, len); X0 is preserved.
+## The digits are produced from the non-positive value (so MIN needs no special case): digit = '0' - (v % 10).
+fn la64_print(st, lp) = let l1 = st.lbl in let s0 = kir_bump(kir_def(st, lp), 3) in let s1 = kir_ws(s0, Cons(la64_sub_imm(31, 31, 48), Cons(la64_add_imm(9, 0, 0), Cons(la64_add_imm(10, 31, 40), Cons(la64_movz(12, 10, 0), Cons(la64_strb_pre(12, 10, 0 - 1), Cons(la64_add_imm(11, 9, 0), Cons(la64_cmp_imm(11, 0), Nil)))))))) in let s2 = kir_def(kir_w(la64_bc(s1, 13, l1), la64_sub(11, 31, 11)), l1) in let s3 = kir_ws(s2, Cons(la64_sdiv(13, 11, 12), Cons(la64_msub(14, 13, 12, 11), Cons(la64_movz(15, 48, 0), Cons(la64_sub(14, 15, 14), Cons(la64_strb_pre(14, 10, 0 - 1), Cons(la64_add_imm(11, 13, 0), Cons(la64_cmp_imm(11, 0), Nil)))))))) in let s4 = la64_bc(kir_w(la64_bc(s3, 1, l1), la64_cmp_imm(9, 0)), 10, l1 + 1) in let s5 = kir_def(kir_ws(s4, Cons(la64_movz(14, 45, 0), Cons(la64_strb_pre(14, 10, 0 - 1), Nil))), l1 + 1) in kir_ws(s5, Cons(la64_movz(0, 1, 0), Cons(la64_add_imm(1, 10, 0), Cons(la64_add_imm(2, 31, 40), Cons(la64_sub(2, 2, 1), Cons(la64_movz(8, 64, 0), Cons(la64_svc(0), Cons(la64_add_imm(0, 9, 0), Cons(la64_add_imm(31, 31, 48), Cons(la64_ret(), Nil))))))))))
+fn la64_prints(st, cx, prints) = match prints
+    Nil        => st
+    Cons(h, t) => la64_prints(kir_ref(la64_x(st, cx, Nil, 0, h), A64BL(cx.lp)), cx, t)
+fn la64_stub_linux(st, l) = kir_ws(kir_def(st, l), Cons(la64_movz(0, 3, 0), Cons(la64_movz(8, 93, 0), Cons(la64_svc(0), Nil))))
+fn la64_stub_bare(st, l, cause) = kir_ws(kir_def(st, l), Cons(la64_movz(17, cause, 0), Cons(la64_b(0), Nil)))
+fn la64_first(prints) = match prints
+    Nil        => KNum(0)
+    Cons(h, t) => h
+## image layout: `_start` at word 0, the three trap stubs, the decimal writer (linux only), then the functions
+fn la64_image(p, mode, stack_top) = let tab = kir_fn_ids(p.fns, 0) in let cx = la64_cx(tab, 0) in let st0 = kir_st0(cx.lp + 1) in let s1 = if mode == "bare" then kir_w(la64_x(kir_w(la64_li(st0, 9, stack_top), la64_add_imm(31, 9, 0)), cx, Nil, 0, la64_first(p.prints)), la64_b(0)) else kir_ws(la64_prints(kir_w(st0, la64_movz(0, 0, 0)), cx, p.prints), Cons(la64_movz(8, 93, 0), Cons(la64_svc(0), Nil))) in let s2 = if mode == "bare" then la64_stub_bare(la64_stub_bare(la64_stub_bare(s1, cx.lc, 1), cx.lo, 2), cx.ld, 3) else la64_print(la64_stub_linux(la64_stub_linux(la64_stub_linux(s1, cx.lc), cx.lo), cx.ld), cx.lp) in let s3 = la64_fns(s2, tab, p.fns) in if s3.err != "" then {err: s3.err, words: Nil, syms: Nil} else let r = la64_res(kir_rev(s3.code, Nil), s3.defs, 0) in {err: r.err, words: r.ws, syms: la64_syms(tab, cx, s3.defs)}
+fn la64_syms(tab, cx, defs) = Cons({nm: "__trap_contract", idx: kir_lbl_idx(defs, cx.lc)}, Cons({nm: "__trap_overflow", idx: kir_lbl_idx(defs, cx.lo)}, Cons({nm: "__trap_div0", idx: kir_lbl_idx(defs, cx.ld)}, Cons({nm: "__print", idx: kir_lbl_idx(defs, cx.lp)}, la64_fn_syms(tab, defs)))))
+fn la64_fn_syms(tab, defs) = match tab
+    Nil        => Nil
+    Cons(h, t) => Cons({nm: h.nm, idx: kir_lbl_idx(defs, h.id)}, la64_fn_syms(t, defs))
+fn la64_res_item(it, defs, i, rest) = match it
+    KW(w)       => {err: "", ws: Cons(w, rest)}
+    A64B(l)     => la64_res_b(0, 0, kir_lbl_idx(defs, l), i, rest)
+    A64BL(l)    => la64_res_b(1, 0, kir_lbl_idx(defs, l), i, rest)
+    A64BC(c, l) => la64_res_b(2, c, kir_lbl_idx(defs, l), i, rest)
+    _           => {err: "internal: unknown assembler item", ws: Nil}
+fn la64_res_b(kind, c, tgt, i, rest) = if tgt < 0 then {err: "internal: undefined label", ws: Nil} else let off = tgt - i in if kind == 2 and (off < 0 - 262144 or off > 262143) then {err: "conditional branch outside the +-1 MiB range", ws: Nil} else if off < 0 - 33554432 or off > 33554431 then {err: "branch outside the +-128 MiB range", ws: Nil} else {err: "", ws: Cons(if kind == 0 then la64_b(off) else if kind == 1 then la64_bl(off) else la64_bcond(c, off), rest)}
+fn la64_res(items, defs, i) = match items
+    Nil        => {err: "", ws: Nil}
+    Cons(h, t) => let r = la64_res(t, defs, i + 1) in if r.err != "" then r else la64_res_item(h, defs, i, r.ws)
+
+## --- 3. ELF64 writer ---------------------------------------------------------------------------------------------------
+fn la64_ehdr(entry, phnum) = kir_app(Cons(127, Cons(69, Cons(76, Cons(70, Cons(2, Cons(1, Cons(1, kir_zeros(9)))))))), kir_app(kir_le(2, 2), kir_app(kir_le(183, 2), kir_app(kir_le(1, 4), kir_app(kir_le(entry, 8), kir_app(kir_le(64, 8), kir_app(kir_le(0, 8), kir_app(kir_le(0, 4), kir_app(kir_le(64, 2), kir_app(kir_le(56, 2), kir_app(kir_le(phnum, 2), kir_app(kir_le(64, 2), kir_app(kir_le(0, 2), kir_le(0, 2))))))))))))))
+fn la64_phdr(flags, off, vaddr, filesz, memsz, align) = kir_app(kir_le(1, 4), kir_app(kir_le(flags, 4), kir_app(kir_le(off, 8), kir_app(kir_le(vaddr, 8), kir_app(kir_le(vaddr, 8), kir_app(kir_le(filesz, 8), kir_app(kir_le(memsz, 8), kir_le(align, 8))))))))
+## linux: one PT_LOAD R+X mapping the whole file at 0x400000, entry right after the headers (file offset 120)
+fn la64_elf_linux(words) = let size = 120 + 4 * kir_len(words) in kir_app(la64_ehdr(4194304 + 120, 1), kir_app(la64_phdr(5, 0, 4194304, size, size, 65536), kir_words_le(words)))
+## bare: PT_LOAD R+X at 0x40000 (headers + code, entry at file offset 176) and PT_LOAD RW, 16 KiB of zeroed RAM at 0x80000
+fn la64_elf_bare(words) = let size = 176 + 4 * kir_len(words) in kir_app(la64_ehdr(262144 + 176, 2), kir_app(la64_phdr(5, 0, 262144, size, size, 4096), kir_app(la64_phdr(6, 0, 524288, 0, 16384, 4096), kir_words_le(words))))
+## {err, words, syms, bytes}: mode "linux" or "bare"
+fn la64_compile(src, mode) = let p = kir_parse(src) in if p.err != "" then {err: p.err, words: Nil, syms: Nil, bytes: Nil} else let im = la64_image(p, mode, 524288 + 16384) in if im.err != "" then {err: im.err, words: Nil, syms: Nil, bytes: Nil} else {err: "", words: im.words, syms: im.syms, bytes: if mode == "bare" then la64_elf_bare(im.words) else la64_elf_linux(im.words)}
+
+fn la64_nth(xs, i) = match xs
+    Nil        => 0 - 1
+    Cons(h, t) => if i <= 0 then h else la64_nth(t, i - 1)
+## official encodings (Arm ARM C6.2, cross-checked with the listings GNU as prints for the same mnemonics)
+fn test_la64_encoder_matches_official_encodings() = la64_stp_pre(29, 30, 31, 0 - 16) == 2847898621 and la64_ldp_post(29, 30, 31, 16) == 2831252477 and la64_ret() == 3596551104 and la64_svc(0) == 3556769793 and la64_nop() == 3573751839 and la64_movz(0, 42, 0) == 3531605312 and la64_movk(1, 65535, 3) == 4076863457 and la64_add(0, 1, 2) == 2332164128 and la64_sub(3, 4, 5) == 3406102659 and la64_mul(0, 1, 2) == 2600631328 and la64_sdiv(0, 1, 2) == 2596408352 and la64_cmp(1, 0) == 3942645823 and la64_cset(0, 0) == 2594117600 and la64_str_pre(0, 31, 0 - 16) == 4162785248 and la64_ldr_post(1, 31, 16) == 4165011425 and la64_b(4) == 335544324 and la64_bl(0 - 1) == 2550136831 and la64_bcond(1, 2) == 1409286209
+fn test_la64_compiles_a_kernel_to_a_valid_elf() = let r = la64_compile("fn sq(x: int) -> int = x * x\nprint sq(7)\n", "linux") in let b = la64_compile("fn sq(x: int) -> int = x * x\nprint sq(7)\n", "bare") in let bad = la64_compile("fn f(x) = count(x)\nprint f(1)\n", "linux") in r.err == "" and la64_nth(r.bytes, 0) == 127 and la64_nth(r.bytes, 4) == 2 and la64_nth(r.bytes, 18) == 183 and la64_nth(r.bytes, 19) == 0 and la64_nth(r.bytes, 24) == 120 and la64_nth(r.bytes, 56) == 1 and kir_len(r.bytes) == 120 + 4 * kir_len(r.words) and b.err == "" and la64_nth(b.bytes, 56) == 2 and la64_nth(b.bytes, 18) == 183 and bad.err != ""

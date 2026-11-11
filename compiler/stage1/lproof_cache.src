@@ -1,0 +1,358 @@
+## lproof_cache.src -- 100% Native Lume Incremental Proof-Certificate Cache (< 30 ms).
+##
+## Computes deterministic, domain-separated FIPS 180-4 SHA-256 digests per function combining:
+##   1. Normalized function signature & body token stream (comment/whitespace-invariant, token-exact)
+##   2. Normalized `requires` / `ensures` / `terminates` contract token streams
+##   3. Referenced callee contract digests (modular interface barrier for contracted callees,
+##      transitive body+contract closure for uncontracted helpers, plus referenced const/type items)
+##   4. Prover engine version tag (`Lume-OmniProof-QF_LIA-v1.1.0`)
+##
+## Cached records live at `<cache_dir>/proofs/<digest>.cert` with a constant-time SHA-256 seal
+## and exact canonical serialization check on every read so corrupted or tampered `.cert` entries
+## fail closed (`[PC0002]`).
+
+fn pc_prover_version() = "Lume-OmniProof-QF_LIA-v1.1.0"
+fn pc_cert_schema() = "lume-proof-cache-cert/1"
+
+## --- 1. Formally Verified Cache & SHA-256 Framing Invariants (QF_LIA) -------------------------
+
+fn pc_sha256_padded_bytes(msg_len: int) -> int
+    requires msg_len >= 0 and msg_len <= 1073741824
+    ensures result >= 64 and result >= msg_len + 9
+= ((msg_len + 9 + 63) / 64) * 64
+
+fn pc_partition_ok(total: int, hits: int, misses: int) -> int
+    requires total >= 0 and hits >= 0 and misses >= 0 and hits + misses == total
+    ensures result == 1 and hits <= total and misses <= total
+= 1
+
+fn pc_invalidated_count(total: int, hits: int) -> int
+    requires total >= 0 and hits >= 0 and hits <= total
+    ensures result >= 0 and result + hits == total
+= total - hits
+
+law pc_cache_partition_conservation_law(total: int, hits: int, misses: int) =
+    if total >= 0 and hits >= 0 and misses >= 0 and hits + misses == total then total - hits == misses and hits <= total else 1 == 1
+
+law pc_single_edit_hits_law(total: int) =
+    if total >= 1 then pc_invalidated_count(total, total - 1) == 1 else 1 == 1
+
+## --- 2. List & String Primitives (prefixed `pc_` for collision-free `use lproof_cache`) -------
+
+fn pc_isnil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+
+fn pc_len_acc(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => pc_len_acc(t, n + 1)
+
+fn pc_len(xs) = pc_len_acc(xs, 0)
+
+fn pc_rev_acc(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => pc_rev_acc(t, Cons(h, acc))
+
+fn pc_rev(xs) = pc_rev_acc(xs, Nil)
+
+fn pc_app(xs, ys) = if pc_isnil(ys) == 1 then xs else pc_rev_acc(pc_rev(xs), ys)
+
+fn pc_pairs2(a, t) = match t
+    Nil        => Cons(a, Nil)
+    Cons(b, r) => Cons(a + b, pc_pairs(r))
+
+fn pc_pairs(xs) = match xs
+    Nil        => Nil
+    Cons(a, t) => pc_pairs2(a, t)
+
+fn pc_joinall(xs) = match xs
+    Nil        => ""
+    Cons(a, t) => if pc_isnil(t) == 1 then a else pc_joinall(pc_pairs(xs))
+
+fn pc_addsep_acc(xs, sep, acc) = match xs
+    Nil        => pc_rev(acc)
+    Cons(h, t) => if pc_isnil(t) == 1 then pc_rev(Cons(h, acc)) else pc_addsep_acc(t, sep, Cons(h + sep, acc))
+
+fn pc_joinsep(xs, sep) = pc_joinall(pc_addsep_acc(xs, sep, Nil))
+
+fn pc_str_mem(s, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == s then 1 else pc_str_mem(s, t)
+
+fn pc_insert_sorted(s, xs) = match xs
+    Nil        => Cons(s, Nil)
+    Cons(h, t) => if s == h then xs else if s < h then Cons(s, xs) else Cons(h, pc_insert_sorted(s, t))
+
+fn pc_starts_with(s, p) = let m = count(p) in if count(s) < m then 0 else slice(s, 0, m) == p
+
+fn pc_ends_with(s, p) = let n = count(s) in let m = count(p) in if n < m then 0 else slice(s, n - m, n) == p
+
+fn pc_contains_at(s, n, p, m, i) = if i + m > n then 0 else if slice(s, i, i + m) == p then 1 else pc_contains_at(s, n, p, m, i + 1)
+
+fn pc_contains(s, p) = let m = count(p) in if m == 0 then 1 else pc_contains_at(s, count(s), p, m, 0)
+
+fn pc_line_end(s, i, n) = if i >= n or at(s, i) == "\n" then i else pc_line_end(s, i + 1, n)
+
+fn pc_lines_acc(s, i, n, acc) = if i >= n then pc_rev(acc) else let e = pc_line_end(s, i, n) in pc_lines_acc(s, e + 1, n, Cons(slicen(s, n, i, e), acc))
+
+fn pc_lines(s) = pc_lines_acc(s, 0, count(s), Nil)
+
+fn pc_rfind_slash(s, i) = if i < 0 then 0 - 1 else if at(s, i) == "/" then i else pc_rfind_slash(s, i - 1)
+
+fn pc_dir_of(path) = let k = pc_rfind_slash(path, count(path) - 1) in if k < 0 then "." else if k == 0 then "/" else slice(path, 0, k)
+
+fn pc_jesc_loop(s, i, n, acc) = if i >= n then pc_joinall(pc_rev(acc)) else let c = at(s, i) in let esc = if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "\n" then "\\n" else if c == "\r" then "\\r" else if c == "\t" then "\\t" else c in pc_jesc_loop(s, i + 1, n, Cons(esc, acc))
+
+fn pc_jesc(s) = pc_jesc_loop(s, 0, count(s), Nil)
+
+## Constant-time ASCII string equality for cryptographic digest / seal verification
+fn pc_ct_eq_loop(a, b, i, n, diff) = if i >= n then diff else pc_ct_eq_loop(a, b, i + 1, n, bit_or(diff, bit_xor(ord(at(a, i)), ord(at(b, i)))))
+
+fn pc_ct_eq_str(a, b) = let na = count(a) in let nb = count(b) in if na != nb then 0 else if pc_ct_eq_loop(a, b, 0, na, 0) == 0 then 1 else 0
+
+fn pc_is_hex_ch(c) = c >= "0" and c <= "9" or c >= "a" and c <= "f"
+
+fn pc_is_hex64_at(s, i) = if i >= 64 then 1 else if pc_is_hex_ch(at(s, i)) == 1 then pc_is_hex64_at(s, i + 1) else 0
+
+fn pc_is_hex64(s) = if count(s) != 64 then 0 else pc_is_hex64_at(s, 0)
+
+## --- 3. Exact FIPS 180-4 SHA-256 (Scalar 16-Word Sliding Window, Zero Heap Schedule) ----------
+
+fn pc_u32(x) = bit_and(x, 4294967295)
+
+fn pc_rotr32(x, n) = bit_or(bit_shr(x, n), bit_and(bit_shl(x, 32 - n), 4294967295))
+
+fn pc_s0(x) = bit_xor(bit_xor(pc_rotr32(x, 7), pc_rotr32(x, 18)), bit_shr(x, 3))
+
+fn pc_s1(x) = bit_xor(bit_xor(pc_rotr32(x, 17), pc_rotr32(x, 19)), bit_shr(x, 10))
+
+fn pc_bsig0(x) = bit_xor(bit_xor(pc_rotr32(x, 2), pc_rotr32(x, 13)), pc_rotr32(x, 22))
+
+fn pc_bsig1(x) = bit_xor(bit_xor(pc_rotr32(x, 6), pc_rotr32(x, 11)), pc_rotr32(x, 25))
+
+fn pc_ch(e, f, g) = bit_xor(bit_and(e, f), bit_and(bit_xor(e, 4294967295), g))
+
+fn pc_maj(a, b, c) = bit_xor(bit_xor(bit_and(a, b), bit_and(a, c)), bit_and(b, c))
+
+fn pc_sha_k(t) = if t < 16 then (if t == 0 then 1116352408 else if t == 1 then 1899447441 else if t == 2 then 3049323471 else if t == 3 then 3921009573 else if t == 4 then 961987163 else if t == 5 then 1508970993 else if t == 6 then 2453635748 else if t == 7 then 2870763221 else if t == 8 then 3624381080 else if t == 9 then 310598401 else if t == 10 then 607225278 else if t == 11 then 1426881987 else if t == 12 then 1925078388 else if t == 13 then 2162078206 else if t == 14 then 2614888103 else 3248222580) else if t < 32 then (if t == 16 then 3835390401 else if t == 17 then 4022224774 else if t == 18 then 264347078 else if t == 19 then 604807628 else if t == 20 then 770255983 else if t == 21 then 1249150122 else if t == 22 then 1555081692 else if t == 23 then 1996064986 else if t == 24 then 2554220882 else if t == 25 then 2821834349 else if t == 26 then 2952996808 else if t == 27 then 3210313671 else if t == 28 then 3336571891 else if t == 29 then 3584528711 else if t == 30 then 113926993 else 338241895) else if t < 48 then (if t == 32 then 666307205 else if t == 33 then 773529912 else if t == 34 then 1294757372 else if t == 35 then 1396182291 else if t == 36 then 1695183700 else if t == 37 then 1986661051 else if t == 38 then 2177026350 else if t == 39 then 2456956037 else if t == 40 then 2730485921 else if t == 41 then 2820302411 else if t == 42 then 3259730800 else if t == 43 then 3345764771 else if t == 44 then 3516065817 else if t == 45 then 3600352804 else if t == 46 then 4094571909 else 275423344) else if t == 48 then 430227734 else if t == 49 then 506948616 else if t == 50 then 659060556 else if t == 51 then 883997877 else if t == 52 then 958139571 else if t == 53 then 1322822218 else if t == 54 then 1537002063 else if t == 55 then 1747873779 else if t == 56 then 1955562222 else if t == 57 then 2024104815 else if t == 58 then 2227730452 else if t == 59 then 2361852424 else if t == 60 then 2428436474 else if t == 61 then 2756734187 else if t == 62 then 3204031479 else 3329325298
+
+fn pc_sha_b(data, len, total, i) = if i < len then ord(at(data, i)) else if i == len then 128 else if i >= total - 8 then bit_and(bit_shr(len * 8, 8 * (total - 1 - i)), 255) else 0
+
+fn pc_sha_w(data, len, total, base) = bit_or(bit_or(bit_shl(pc_sha_b(data, len, total, base), 24), bit_shl(pc_sha_b(data, len, total, base + 1), 16)), bit_or(bit_shl(pc_sha_b(data, len, total, base + 2), 8), pc_sha_b(data, len, total, base + 3)))
+
+fn pc_sha_round(t, a, b, c, d, e, f, g, h, w0, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15, data, len, total, base) = if t >= 64 then {a: a, b: b, c: c, d: d, e: e, f: f, g: g, h: h} else let wt = if t < 16 then pc_sha_w(data, len, total, base + t * 4) else pc_u32(pc_s1(w14) + w9 + pc_s0(w1) + w0) in let t1 = pc_u32(h + pc_bsig1(e) + pc_ch(e, f, g) + pc_sha_k(t) + wt) in let t2 = pc_u32(pc_bsig0(a) + pc_maj(a, b, c)) in pc_sha_round(t + 1, pc_u32(t1 + t2), a, b, c, pc_u32(d + t1), e, f, g, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14, w15, wt, data, len, total, base)
+
+fn pc_sha_blk(data, len, total, base, h0, h1, h2, h3, h4, h5, h6, h7) = let st = pc_sha_round(0, h0, h1, h2, h3, h4, h5, h6, h7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, data, len, total, base) in {a: pc_u32(h0 + st.a), b: pc_u32(h1 + st.b), c: pc_u32(h2 + st.c), d: pc_u32(h3 + st.d), e: pc_u32(h4 + st.e), f: pc_u32(h5 + st.f), g: pc_u32(h6 + st.g), h: pc_u32(h7 + st.h)}
+
+fn pc_sha_blocks(data, len, total, nblocks, blk, h0, h1, h2, h3, h4, h5, h6, h7) = if blk >= nblocks then {a: h0, b: h1, c: c_id(h2), d: h3, e: h4, f: h5, g: h6, h: h7} else let st = pc_sha_blk(data, len, total, blk * 64, h0, h1, h2, h3, h4, h5, h6, h7) in pc_sha_blocks(data, len, total, nblocks, blk + 1, st.a, st.b, st.c, st.d, st.e, st.f, st.g, st.h)
+
+fn c_id(x) = x
+
+fn pc_hex1(n) = at("0123456789abcdef", bit_and(n, 15))
+
+fn pc_hex32(w) = pc_hex1(bit_shr(w, 28)) + pc_hex1(bit_shr(w, 24)) + pc_hex1(bit_shr(w, 20)) + pc_hex1(bit_shr(w, 16)) + pc_hex1(bit_shr(w, 12)) + pc_hex1(bit_shr(w, 8)) + pc_hex1(bit_shr(w, 4)) + pc_hex1(w)
+
+fn pc_sha256_hex(data) = let len = count(data) in let total = (len + 9 + 63) / 64 * 64 in let fin = pc_sha_blocks(data, len, total, total / 64, 0, 1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225) in pc_hex32(fin.a) + pc_hex32(fin.b) + pc_hex32(fin.c) + pc_hex32(fin.d) + pc_hex32(fin.e) + pc_hex32(fin.f) + pc_hex32(fin.g) + pc_hex32(fin.h)
+
+## --- 4. Fast Canonical Lume Lexer (Comment/Whitespace-Normalized, Fail-Closed) ----------------
+
+fn pc_is_ws(c) = c == " " or c == "\t" or c == "\n" or c == "\r"
+fn pc_is_digit(c) = c >= "0" and c <= "9"
+fn pc_is_alpha(c) = c >= "a" and c <= "z" or c >= "A" and c <= "Z" or c == "_"
+fn pc_is_alnum(c) = pc_is_digit(c) or pc_is_alpha(c)
+fn pc_is_numch(c) = pc_is_alnum(c) or c == "."
+
+fn pc_skip_ws_comments(s, i, n) = if i >= n then i else let c = at(s, i) in if pc_is_ws(c) then pc_skip_ws_comments(s, i + 1, n) else if c == "#" then pc_skip_ws_comments(s, pc_line_end(s, i + 1, n), n) else i
+
+fn pc_ident_end(s, i, n) = if i >= n then i else if pc_is_alnum(at(s, i)) then pc_ident_end(s, i + 1, n) else i
+
+fn pc_num_end(s, i, n) = if i >= n then i else let c = at(s, i) in if pc_is_alnum(c) then pc_num_end(s, i + 1, n) else if c == "." and i + 1 < n and pc_is_digit(at(s, i + 1)) then pc_num_end(s, i + 2, n) else i
+
+fn pc_str_plain(s, i, n) = if i >= n then i else let c = at(s, i) in if c == "\"" or c == "\\" then i else pc_str_plain(s, i + 1, n)
+
+fn pc_scan_str(s, i, n, start) = let j = pc_str_plain(s, i, n) in if j >= n then {ok: 0, text: "", next: n} else if at(s, j) == "\"" then {ok: 1, text: slicen(s, n, start, j), next: j + 1} else if j + 1 >= n then {ok: 0, text: "", next: n} else pc_scan_str(s, j + 2, n, start)
+
+fn pc_scan_triple_str(s, i, n, start) = if i + 2 >= n then {ok: 0, text: "", next: n} else if at(s, i) == "\"" and at(s, i + 1) == "\"" and at(s, i + 2) == "\"" then {ok: 1, text: slicen(s, n, start, i), next: i + 3} else if at(s, i) == "\\" and i + 1 < n then pc_scan_triple_str(s, i + 2, n, start) else pc_scan_triple_str(s, i + 1, n, start)
+
+fn pc_is_two_op(p) = p == "==" or p == "!=" or p == "<=" or p == ">=" or p == "->" or p == "=>" or p == "|>" or p == ".." or p == "+%" or p == "-%" or p == "*%"
+
+fn pc_delim_delta(txt) = if txt == "(" or txt == "[" or txt == "{" then 1 else if txt == ")" or txt == "]" or txt == "}" then 0 - 1 else 0
+
+fn pc_lex_loop(s, i, n, depth, acc) = let k = pc_skip_ws_comments(s, i, n) in if k >= n then (if depth != 0 then {ok: 0, err: "[PC0001] unbalanced delimiters in source", tokens: Nil} else {ok: 1, err: "", tokens: pc_rev(acc)}) else let c = at(s, k) in if c == "\"" then let sr = if k + 2 < n and at(s, k + 1) == "\"" and at(s, k + 2) == "\"" then pc_scan_triple_str(s, k + 3, n, k + 3) else pc_scan_str(s, k + 1, n, k + 1) in if sr.ok == 0 then {ok: 0, err: "[PC0001] unterminated string literal", tokens: Nil} else pc_lex_loop(s, sr.next, n, depth, Cons({kind: "ST", text: sr.text}, acc)) else if pc_is_digit(c) then let j = pc_num_end(s, k, n) in pc_lex_loop(s, j, n, depth, Cons({kind: "NM", text: slicen(s, n, k, j)}, acc)) else if pc_is_alpha(c) then let j = pc_ident_end(s, k, n) in pc_lex_loop(s, j, n, depth, Cons({kind: "ID", text: slicen(s, n, k, j)}, acc)) else if k + 1 < n and pc_is_two_op(slicen(s, n, k, k + 2)) then pc_lex_loop(s, k + 2, n, depth, Cons({kind: "SY", text: slicen(s, n, k, k + 2)}, acc)) else let d2 = depth + pc_delim_delta(c) in if d2 < 0 then {ok: 0, err: "[PC0001] unexpected closing delimiter '" + c + "'", tokens: Nil} else pc_lex_loop(s, k + 1, n, d2, Cons({kind: "SY", text: c}, acc))
+
+fn pc_lex(src) = pc_lex_loop(src, 0, count(src), 0, Nil)
+
+## --- 5. Top-Level Item & Function/Contract Segmentation ---------------------------------------
+
+fn pc_tok_empty() = {kind: "EOF", text: ""}
+
+fn pc_hd_tok(ts) = match ts
+    Nil        => pc_tok_empty()
+    Cons(h, t) => h
+
+fn pc_tl_tok(ts) = match ts
+    Nil        => Nil
+    Cons(h, t) => t
+
+fn pc_prev_continues(prev) = if prev == "" then 0 else prev == "=" or prev == "=>" or prev == "->" or prev == "then" or prev == "else" or prev == "in" or prev == "+" or prev == "-" or prev == "*" or prev == "/" or prev == "%" or prev == "+%" or prev == "-%" or prev == "*%" or prev == "==" or prev == "!=" or prev == "<" or prev == ">" or prev == "<=" or prev == ">=" or prev == "and" or prev == "or" or prev == "not" or prev == "|>" or prev == ":" or prev == "," or prev == "." or prev == "requires" or prev == "ensures" or prev == "terminates" or prev == "invariant" or prev == "@" or prev == "pub" or prev == "kernel" or prev == "extern"
+
+fn pc_starts_top_decl(ts, prev, depth, let_depth) = if depth != 0 or let_depth != 0 or pc_prev_continues(prev) == 1 then 0 else let h = pc_hd_tok(ts) in let nx = pc_hd_tok(pc_tl_tok(ts)) in if h.text == "@" or h.text == "pub" or h.text == "kernel" or h.text == "use" or h.text == "type" or h.text == "const" or h.text == "effect" or h.text == "print" then 1 else if h.text == "fn" and nx.kind == "ID" then 1 else if h.text == "law" and nx.kind == "ID" then 1 else 0
+
+## Wait: `@bound(cycles: 64) fn foo(...)` has `)` followed immediately by `fn`!
+## When an item ONLY has `@...` attribute tokens so far (no `fn`/`type`/`const`/`law` seen yet),
+## `fn`/`pub`/`kernel`/`type`/`const` continues the SAME attributed declaration!
+fn pc_split_decls_loop(ts, cur, has_head, prev, depth, let_depth, acc) = match ts
+    Nil        => let acc2 = if pc_isnil(cur) == 1 then acc else Cons(pc_rev(cur), acc) in pc_rev(acc2)
+    Cons(h, t) => let split_now = if pc_isnil(cur) == 0 and has_head == 1 and pc_starts_top_decl(ts, prev, depth, let_depth) == 1 then 1 else 0 in if split_now == 1 then pc_split_decls_loop(ts, Nil, 0, "", 0, 0, Cons(pc_rev(cur), acc)) else let d2 = depth + pc_delim_delta(h.text) in let ld2 = if h.text == "let" then let_depth + 1 else if h.text == "in" and let_depth > 0 then let_depth - 1 else let_depth in let head2 = if has_head == 1 then 1 else if depth == 0 and (h.text == "fn" or h.text == "law" or h.text == "type" or h.text == "const" or h.text == "use" or h.text == "effect" or h.text == "print") then 1 else 0 in pc_split_decls_loop(t, Cons(h, cur), head2, h.text, d2, ld2, acc)
+
+fn pc_norm_tok(tok) = if tok.kind == "ST" then "ST:" + str(count(tok.text)) + ":" + tok.text else tok.kind + ":" + tok.text
+
+fn pc_norm_toks_acc(ts, acc) = match ts
+    Nil        => pc_joinsep(pc_rev(acc), " ")
+    Cons(h, t) => pc_norm_toks_acc(t, Cons(pc_norm_tok(h), acc))
+
+fn pc_norm_toks(ts) = pc_norm_toks_acc(ts, Nil)
+
+fn pc_collect_ids_acc(ts, skip_name, acc) = match ts
+    Nil        => acc
+    Cons(h, t) => let acc2 = if h.kind == "ID" and h.text != skip_name then pc_insert_sorted(h.text, acc) else acc in pc_collect_ids_acc(t, skip_name, acc2)
+
+fn pc_find_kw_name(ts, kw) = match ts
+    Nil        => ""
+    Cons(h, t) => if h.text == kw then let nx = pc_hd_tok(t) in if nx.kind == "ID" then nx.text else "" else pc_find_kw_name(t, kw)
+
+fn pc_has_kw_top(ts, kw, depth) = match ts
+    Nil        => 0
+    Cons(h, t) => if depth == 0 and h.text == kw then 1 else pc_has_kw_top(t, kw, depth + pc_delim_delta(h.text))
+
+fn pc_push_clause_sep(xs) = if pc_isnil(xs) == 1 then xs else Cons({kind: "SEP", text: ";"}, xs)
+
+fn pc_partition_fn_loop(ts, mode, depth, let_depth, sig, req, ens, term) = match ts
+    Nil        => {has_eq: 0, sig: pc_rev(sig), req: pc_rev(req), ens: pc_rev(ens), term: pc_rev(term), body: Nil}
+    Cons(h, t) => if depth == 0 and let_depth == 0 and h.text == "=" then {has_eq: 1, sig: pc_rev(sig), req: pc_rev(req), ens: pc_rev(ens), term: pc_rev(term), body: t} else if depth == 0 and let_depth == 0 and h.text == "requires" then pc_partition_fn_loop(t, "req", 0, 0, sig, pc_push_clause_sep(req), ens, term) else if depth == 0 and let_depth == 0 and h.text == "ensures" then pc_partition_fn_loop(t, "ens", 0, 0, sig, req, pc_push_clause_sep(ens), term) else if depth == 0 and let_depth == 0 and h.text == "terminates" then pc_partition_fn_loop(t, "term", 0, 0, sig, req, ens, pc_push_clause_sep(term)) else let d2 = depth + pc_delim_delta(h.text) in let ld2 = if h.text == "let" then let_depth + 1 else if h.text == "in" and let_depth > 0 then let_depth - 1 else let_depth in if mode == "req" then pc_partition_fn_loop(t, mode, d2, ld2, sig, Cons(h, req), ens, term) else if mode == "ens" then pc_partition_fn_loop(t, mode, d2, ld2, sig, req, Cons(h, ens), term) else if mode == "term" then pc_partition_fn_loop(t, mode, d2, ld2, sig, req, ens, Cons(h, term)) else pc_partition_fn_loop(t, mode, d2, ld2, Cons(h, sig), req, ens, term)
+
+fn pc_clause_invalid(raw_ts, extracted_ts, kw) = if pc_has_kw_top(raw_ts, kw, 0) == 1 and pc_isnil(extracted_ts) == 1 then 1 else 0
+
+fn pc_parse_fn_decl(ts) = let nm = pc_find_kw_name(ts, "fn") in let is_ext = pc_has_kw_top(ts, "extern", 0) in if nm == "" then {ok: 0, err: "[PC0001] missing function identifier after fn", item: pc_empty_item()} else let p = pc_partition_fn_loop(ts, "sig", 0, 0, Nil, Nil, Nil, Nil) in if is_ext == 0 and (p.has_eq == 0 or pc_isnil(p.body) == 1) then {ok: 0, err: "[PC0001] function '" + nm + "' is missing a body expression", item: pc_empty_item()} else if pc_clause_invalid(ts, p.req, "requires") == 1 or pc_clause_invalid(ts, p.ens, "ensures") == 1 or pc_clause_invalid(ts, p.term, "terminates") == 1 then {ok: 0, err: "[PC0001] function '" + nm + "' has an empty contract clause", item: pc_empty_item()} else let sig_n = pc_norm_toks(p.sig) in let req_n = pc_norm_toks(p.req) in let ens_n = pc_norm_toks(p.ens) in let term_n = pc_norm_toks(p.term) in let body_n = pc_norm_toks(p.body) in let c_refs = pc_collect_ids_acc(p.term, nm, pc_collect_ids_acc(p.ens, nm, pc_collect_ids_acc(p.req, nm, pc_collect_ids_acc(p.sig, nm, Nil)))) in let a_refs = pc_collect_ids_acc(p.body, nm, c_refs) in {ok: 1, err: "", item: {kind: "fn", name: nm, sig_norm: sig_n, req_norm: req_n, ens_norm: ens_n, term_norm: term_n, body_norm: body_n, contract_refs: c_refs, all_refs: a_refs}}
+
+fn pc_empty_item() = {kind: "", name: "", sig_norm: "", req_norm: "", ens_norm: "", term_norm: "", body_norm: "", contract_refs: Nil, all_refs: Nil}
+
+fn pc_parse_aux_decl(ts, kw) = let nm = pc_find_kw_name(ts, kw) in if nm == "" then {ok: 1, has: 0, item: pc_empty_item()} else let norm = pc_norm_toks(ts) in let refs = pc_collect_ids_acc(ts, nm, Nil) in {ok: 1, has: 1, item: {kind: kw, name: nm, sig_norm: norm, req_norm: "", ens_norm: "", term_norm: "", body_norm: norm, contract_refs: refs, all_refs: refs}}
+
+fn pc_extract_decls_loop(decls, fns_acc, sym_acc) = match decls
+    Nil        => {ok: 1, err: "", fns: pc_rev(fns_acc), syms: pc_rev(sym_acc)}
+    Cons(d, t) => if pc_has_kw_top(d, "fn", 0) == 1 then let r = pc_parse_fn_decl(d) in if r.ok == 0 then {ok: 0, err: r.err, fns: Nil, syms: Nil} else pc_extract_decls_loop(t, Cons(r.item, fns_acc), Cons(r.item, sym_acc)) else if pc_has_kw_top(d, "const", 0) == 1 then let rc = pc_parse_aux_decl(d, "const") in pc_extract_decls_loop(t, fns_acc, if rc.has == 1 then Cons(rc.item, sym_acc) else sym_acc) else if pc_has_kw_top(d, "type", 0) == 1 then let rt = pc_parse_aux_decl(d, "type") in pc_extract_decls_loop(t, fns_acc, if rt.has == 1 then Cons(rt.item, sym_acc) else sym_acc) else pc_extract_decls_loop(t, fns_acc, sym_acc)
+
+fn pc_find_sym(name, syms) = match syms
+    Nil        => pc_empty_item()
+    Cons(h, t) => if h.name == name then h else pc_find_sym(name, t)
+
+fn pc_has_explicit_contract(it) = if it.req_norm != "" or it.ens_norm != "" or it.term_norm != "" then 1 else 0
+
+fn pc_own_contract_digest(it) = pc_sha256_hex("lume-fn-contract-v1|" + pc_prover_version() + "|kind:" + it.kind + "|name:" + it.name + "|sig:" + it.sig_norm + "|req:" + it.req_norm + "|ens:" + it.ens_norm + "|term:" + it.term_norm)
+
+fn pc_ref_digests_loop(refs, syms, visited, acc) = match refs
+    Nil        => pc_joinsep(pc_rev(acc), ",")
+    Cons(r, t) => let target = pc_find_sym(r, syms) in if target.name == "" then pc_ref_digests_loop(t, syms, visited, acc) else let d = pc_effective_iface_digest(target, syms, visited) in pc_ref_digests_loop(t, syms, visited, Cons(r + ":" + d, acc))
+
+fn pc_effective_iface_digest(it, syms, visited) = if pc_str_mem(it.name, visited) == 1 then pc_own_contract_digest(it) else let vis2 = Cons(it.name, visited) in let own_c = pc_own_contract_digest(it) in if it.kind == "fn" and pc_has_explicit_contract(it) == 1 then let sub = pc_ref_digests_loop(it.contract_refs, syms, vis2, Nil) in pc_sha256_hex("lume-iface-contracted-v1|" + own_c + "|crefs:" + sub) else let sub_all = pc_ref_digests_loop(it.all_refs, syms, vis2, Nil) in pc_sha256_hex("lume-iface-transparent-v1|" + own_c + "|body:" + it.body_norm + "|arefs:" + sub_all)
+
+fn pc_empty_callees_digest() = "8f6d2429c452950d8649b760679b0b120e375b8e30f9a0e4b19f05246f7c2789"
+
+fn pc_build_fn_record(f, syms, empty_cal_dig) = let c_dig = pc_own_contract_digest(f) in let cal_pairs = if pc_isnil(f.all_refs) == 1 then "" else pc_ref_digests_loop(f.all_refs, syms, Cons(f.name, Nil), Nil) in let cal_dig = if cal_pairs == "" then empty_cal_dig else pc_sha256_hex("lume-callees-v1|" + pc_prover_version() + "|" + cal_pairs) in let b_dig = pc_sha256_hex("lume-fn-body-v1|" + f.sig_norm + "|" + f.body_norm) in let full_dig = pc_sha256_hex("lume-proof-digest-v1|prover:" + pc_prover_version() + "|fn:" + f.name + "|contract:" + c_dig + "|body:" + b_dig + "|callees:" + cal_dig) in {name: f.name, fn_digest: full_dig, contract_digest: c_dig, body_digest: b_dig, callees_digest: cal_dig}
+
+fn pc_build_fn_records_loop(fns, syms, empty_cal_dig, acc) = match fns
+    Nil        => pc_rev(acc)
+    Cons(f, t) => pc_build_fn_records_loop(t, syms, empty_cal_dig, Cons(pc_build_fn_record(f, syms, empty_cal_dig), acc))
+
+fn pc_analyze_source(src) = let lx = pc_lex(src) in if lx.ok == 0 then {ok: 0, err: lx.err, records: Nil} else let decls = pc_split_decls_loop(lx.tokens, Nil, 0, "", 0, 0, Nil) in let ex = pc_extract_decls_loop(decls, Nil, Nil) in if ex.ok == 0 then {ok: 0, err: ex.err, records: Nil} else let empty_cal = pc_sha256_hex("lume-callees-v1|" + pc_prover_version() + "|") in {ok: 1, err: "", records: pc_build_fn_records_loop(ex.fns, ex.syms, empty_cal, Nil)}
+
+## --- 6. Tamper-Evident `.cert` Serialization, Seal & Directory Audit -------------------------
+
+fn pc_cert_seal(schema, prover_ver, fn_name, fn_dig, c_dig, b_dig, cal_dig, status) = pc_sha256_hex("lume-proof-cert-seal-v1|" + schema + "|" + prover_ver + "|" + fn_name + "|" + fn_dig + "|" + c_dig + "|" + b_dig + "|" + cal_dig + "|" + status)
+
+fn pc_render_cert_with_seal(rec, seal) = "schema=" + pc_cert_schema() + "\n" + "prover_version=" + pc_prover_version() + "\n" + "fn_name=" + rec.name + "\n" + "fn_digest=" + rec.fn_digest + "\n" + "contract_digest=" + rec.contract_digest + "\n" + "body_digest=" + rec.body_digest + "\n" + "callees_digest=" + rec.callees_digest + "\n" + "status=proven\n" + "seal_sha256=" + seal + "\n"
+
+fn pc_render_cert(rec) = let seal = pc_cert_seal(pc_cert_schema(), pc_prover_version(), rec.name, rec.fn_digest, rec.contract_digest, rec.body_digest, rec.callees_digest, "proven") in pc_render_cert_with_seal(rec, seal)
+
+fn pc_kv_val(line, prefix) = if pc_starts_with(line, prefix) == 1 then slice(line, count(prefix), count(line)) else ""
+
+fn pc_nth_str(xs, idx) = match xs
+    Nil        => ""
+    Cons(h, t) => if idx <= 0 then h else pc_nth_str(t, idx - 1)
+
+fn pc_verify_cert_text(raw, expected_digest) = if pc_is_hex64(expected_digest) == 0 then {ok: 0, fn_name: "", err: "[PC0002] invalid certificate filename digest: " + expected_digest} else let ls = pc_lines(raw) in if pc_len(ls) != 9 then {ok: 0, fn_name: "", err: "[PC0002] corrupted certificate line count for " + expected_digest} else let v_schema = pc_kv_val(pc_nth_str(ls, 0), "schema=") in let v_prover = pc_kv_val(pc_nth_str(ls, 1), "prover_version=") in let v_name = pc_kv_val(pc_nth_str(ls, 2), "fn_name=") in let v_fndig = pc_kv_val(pc_nth_str(ls, 3), "fn_digest=") in let v_cdig = pc_kv_val(pc_nth_str(ls, 4), "contract_digest=") in let v_bdig = pc_kv_val(pc_nth_str(ls, 5), "body_digest=") in let v_caldig = pc_kv_val(pc_nth_str(ls, 6), "callees_digest=") in let v_status = pc_kv_val(pc_nth_str(ls, 7), "status=") in let v_seal = pc_kv_val(pc_nth_str(ls, 8), "seal_sha256=") in if v_schema != pc_cert_schema() or v_prover != pc_prover_version() or v_name == "" or v_status != "proven" then {ok: 0, fn_name: "", err: "[PC0002] tampered certificate metadata or prover version for " + expected_digest} else if pc_is_hex64(v_fndig) == 0 or pc_is_hex64(v_cdig) == 0 or pc_is_hex64(v_bdig) == 0 or pc_is_hex64(v_caldig) == 0 or pc_is_hex64(v_seal) == 0 then {ok: 0, fn_name: "", err: "[PC0002] malformed hex digest field in certificate " + expected_digest} else if pc_ct_eq_str(v_fndig, expected_digest) == 0 then {ok: 0, fn_name: "", err: "[PC0002] certificate fn_digest does not match filename " + expected_digest} else let want_seal = pc_cert_seal(v_schema, v_prover, v_name, v_fndig, v_cdig, v_bdig, v_caldig, v_status) in if pc_ct_eq_str(v_seal, want_seal) == 0 then {ok: 0, fn_name: "", err: "[PC0002] certificate SHA-256 seal mismatch for " + expected_digest} else let rec = {name: v_name, fn_digest: v_fndig, contract_digest: v_cdig, body_digest: v_bdig, callees_digest: v_caldig} in if raw != pc_render_cert_with_seal(rec, want_seal) then {ok: 0, fn_name: "", err: "[PC0002] non-canonical trailing/injected bytes in certificate " + expected_digest} else {ok: 1, fn_name: v_name, err: ""}
+
+fn pc_proofs_dir(cache_dir) = let base = if cache_dir == "" then ".lume_cache" else cache_dir in if pc_ends_with(base, "/proofs") == 1 or base == "proofs" then base else base + "/proofs"
+
+fn pc_audit_dir_entries(pdir, entries, acc) = match entries
+    Nil        => {ok: 1, err: "", verified: acc}
+    Cons(e, t) => if e == "" or e == "." or e == ".." then pc_audit_dir_entries(pdir, t, acc) else if pc_ends_with(e, ".cert") == 0 then {ok: 0, err: "[PC0002] unexpected non-cert entry in proof cache: " + pdir + "/" + e, verified: Nil} else let stem = slice(e, 0, count(e) - 5) in let full = pdir + "/" + e in let raw = fs_read_file(full) in let vr = pc_verify_cert_text(raw, stem) in if vr.ok == 0 then {ok: 0, err: vr.err + " (" + full + ")", verified: Nil} else pc_audit_dir_entries(pdir, t, pc_insert_sorted(stem, acc))
+
+fn pc_load_verified_set(pdir) = if fs_path_exists(pdir) == 0 then {ok: 1, mode: "empty", err: "", verified: Nil} else let listing = fs_read_dir(pdir) in let entries = pc_lines(listing) in if pc_len(entries) <= 128 then let au = pc_audit_dir_entries(pdir, entries, Nil) in {ok: au.ok, mode: "set", err: au.err, verified: au.verified} else {ok: 1, mode: "probe", err: "", verified: Nil}
+
+fn pc_check_record_one(pdir, load_st, rec) = if load_st.mode == "empty" then {ok: 1, hit: 0, err: ""} else if load_st.mode == "set" then {ok: 1, hit: pc_str_mem(rec.fn_digest, load_st.verified), err: ""} else let full = pdir + "/" + rec.fn_digest + ".cert" in if fs_path_exists(full) == 0 then {ok: 1, hit: 0, err: ""} else let vr = pc_verify_cert_text(fs_read_file(full), rec.fn_digest) in if vr.ok == 0 then {ok: 0, hit: 0, err: vr.err + " (" + full + ")"} else {ok: 1, hit: 1, err: ""}
+
+fn pc_eval_records_loop(pdir, load_st, recs, hits, misses, missed_acc, to_store_acc) = match recs
+    Nil        => {ok: 1, err: "", total: hits + misses, hits: hits, misses: misses, missed_names: pc_rev(missed_acc), missed_recs: pc_rev(to_store_acc)}
+    Cons(r, t) => let chk = pc_check_record_one(pdir, load_st, r) in if chk.ok == 0 then {ok: 0, err: chk.err, total: 0, hits: 0, misses: 0, missed_names: Nil, missed_recs: Nil} else if chk.hit == 1 then pc_eval_records_loop(pdir, load_st, t, hits + 1, misses, missed_acc, to_store_acc) else pc_eval_records_loop(pdir, load_st, t, hits, misses + 1, Cons(r.name, missed_acc), Cons(r, to_store_acc))
+
+fn pc_check_source_in_cache(src, cache_dir) = let t0 = os_monotonic_ns() in let an = pc_analyze_source(src) in if an.ok == 0 then {ok: 0, err: an.err, total: 0, hits: 0, misses: 0, elapsed_ns: 0, missed_names: Nil, missed_recs: Nil} else let pdir = pc_proofs_dir(cache_dir) in let ld = pc_load_verified_set(pdir) in if ld.ok == 0 then {ok: 0, err: ld.err, total: 0, hits: 0, misses: 0, elapsed_ns: 0, missed_names: Nil, missed_recs: Nil} else let ev = pc_eval_records_loop(pdir, ld, an.records, 0, 0, Nil, Nil) in let t1 = os_monotonic_ns() in let dt = if t1 >= t0 then t1 - t0 else 0 in let z = if ev.ok == 1 then pc_partition_ok(ev.total, ev.hits, ev.misses) else 0 in {ok: ev.ok, err: ev.err, total: ev.total, hits: ev.hits, misses: ev.misses, elapsed_ns: dt, missed_names: ev.missed_names, missed_recs: ev.missed_recs}
+
+fn pc_check_file(src_path, cache_dir) = if fs_path_exists(src_path) == 0 then {ok: 0, err: "[PC0001] source file does not exist: " + src_path, total: 0, hits: 0, misses: 0, elapsed_ns: 0, missed_names: Nil, missed_recs: Nil} else pc_check_source_in_cache(fs_read_file(src_path), cache_dir)
+
+## --- 7. Prover Verification Gate & Store Mode -------------------------------------------------
+
+fn pc_find_lcaas() = let self_dir = pc_dir_of(os_arg_at(0)) in if fs_path_exists(self_dir + "/lcaas") == 1 then self_dir + "/lcaas" else if fs_path_exists("build/bin/lcaas") == 1 then "build/bin/lcaas" else if fs_path_exists("../build/bin/lcaas") == 1 then "../build/bin/lcaas" else if fs_path_exists("/root/.lume/bin/lcaas") == 1 then "/root/.lume/bin/lcaas" else if fs_path_exists("/usr/local/lib/lume/bin/lcaas") == 1 then "/usr/local/lib/lume/bin/lcaas" else ""
+
+fn pc_verify_with_prover(src_path) = let lcaas = pc_find_lcaas() in if lcaas == "" then {ok: 0, err: "[PC0003] cannot locate native lcaas prover binary to verify missed obligations"} else let pid = str(os_getpid()) in let tbase = (if fs_path_exists("/tmp") == 1 then "/tmp" else ".") + "/lproof-cache-" + pid in let req = tbase + ".in" in let out = tbase + ".out" in let err = tbase + ".err" in let src = fs_read_file(src_path) in let w = fs_write_sync(req, src) in if w != 1 then {ok: 0, err: "[PC0003] cannot stage prover request"} else let st = os_run_input_capture_timeout(lcaas, Nil, req, out, err, 120000) in let body = fs_read_file(out) in let ebody = fs_read_file(err) in let rm1 = fs_remove(req) in let rm2 = fs_remove(out) in let rm3 = fs_remove(err) in if st != 0 or pc_contains(body, "\"ok\":true") == 0 or pc_contains(body, "\"status\":\"refuted\"") == 1 or pc_contains(body, "\"status\":\"failed\"") == 1 then {ok: 0, err: "[PC0003] prover rejected obligations in " + src_path + ": " + body + ebody} else {ok: 1, err: ""}
+
+fn pc_mkdir_chain(cache_dir, pdir) = let base = if cache_dir == "" then ".lume_cache" else cache_dir in let r1 = if fs_path_exists(base) == 1 then 1 else os_run("/bin/mkdir", Cons("-p", Cons(pdir, Nil))) == 0 in let r2 = if fs_path_exists(pdir) == 1 then 1 else fs_mkdir(pdir) in if fs_path_exists(pdir) == 1 then 1 else 0
+
+fn pc_write_certs_loop(pdir, recs, count_written) = match recs
+    Nil        => {ok: 1, err: "", written: count_written}
+    Cons(r, t) => let full = pdir + "/" + r.fn_digest + ".cert" in let text = pc_render_cert(r) in if fs_write_sync(full, text) != 1 then {ok: 0, err: "[PC0004] failed writing certificate " + full, written: count_written} else let vr = pc_verify_cert_text(fs_read_file(full), r.fn_digest) in if vr.ok == 0 then {ok: 0, err: "[PC0004] post-write readback verification failed for " + full, written: count_written} else pc_write_certs_loop(pdir, t, count_written + 1)
+
+fn pc_store_source(src, cache_dir, verify_fn_path) = let t0 = os_monotonic_ns() in let chk = pc_check_source_in_cache(src, cache_dir) in if chk.ok == 0 then {ok: 0, err: chk.err, total: 0, reused: 0, stored: 0, elapsed_ns: 0} else if chk.misses == 0 then let t1 = os_monotonic_ns() in {ok: 1, err: "", total: chk.total, reused: chk.hits, stored: 0, elapsed_ns: if t1 >= t0 then t1 - t0 else 0} else let pv = if verify_fn_path == "" then {ok: 1, err: ""} else pc_verify_with_prover(verify_fn_path) in if pv.ok == 0 then {ok: 0, err: pv.err, total: chk.total, reused: chk.hits, stored: 0, elapsed_ns: 0} else let pdir = pc_proofs_dir(cache_dir) in if pc_mkdir_chain(cache_dir, pdir) != 1 then {ok: 0, err: "[PC0004] cannot create proof cache directory " + pdir, total: 0, reused: 0, stored: 0, elapsed_ns: 0} else let wr = pc_write_certs_loop(pdir, chk.missed_recs, 0) in let t2 = os_monotonic_ns() in if wr.ok == 0 then {ok: 0, err: wr.err, total: chk.total, reused: chk.hits, stored: wr.written, elapsed_ns: 0} else {ok: 1, err: "", total: chk.total, reused: chk.hits, stored: wr.written, elapsed_ns: if t2 >= t0 then t2 - t0 else 0}
+
+fn pc_store_file(src_path, cache_dir) = if fs_path_exists(src_path) == 0 then {ok: 0, err: "[PC0001] source file does not exist: " + src_path, total: 0, reused: 0, stored: 0, elapsed_ns: 0} else pc_store_source(fs_read_file(src_path), cache_dir, src_path)
+
+## --- 8. JSON Formatting & CLI Entrypoint ------------------------------------------------------
+
+fn pc_json_strs_acc(xs, acc) = match xs
+    Nil        => "[" + pc_joinsep(pc_rev(acc), ",") + "]"
+    Cons(h, t) => pc_json_strs_acc(t, Cons("\"" + pc_jesc(h) + "\"", acc))
+
+fn pc_json_check(r) = let us = r.elapsed_ns / 1000 in let ms = r.elapsed_ns / 1000000 in "{\"ok\":true,\"mode\":\"check\",\"prover_version\":\"" + pc_prover_version() + "\",\"all_cached\":" + (if r.misses == 0 then "true" else "false") + ",\"total\":" + str(r.total) + ",\"hits\":" + str(r.hits) + ",\"misses\":" + str(r.misses) + ",\"elapsed_ns\":" + str(r.elapsed_ns) + ",\"elapsed_us\":" + str(us) + ",\"elapsed_ms\":" + str(ms) + ",\"missed_functions\":" + pc_json_strs_acc(r.missed_names, Nil) + "}"
+
+fn pc_json_store(r) = let us = r.elapsed_ns / 1000 in let ms = r.elapsed_ns / 1000000 in "{\"ok\":true,\"mode\":\"store\",\"prover_version\":\"" + pc_prover_version() + "\",\"total\":" + str(r.total) + ",\"reused\":" + str(r.reused) + ",\"stored\":" + str(r.stored) + ",\"elapsed_ns\":" + str(r.elapsed_ns) + ",\"elapsed_us\":" + str(us) + ",\"elapsed_ms\":" + str(ms) + "}"
+
+fn pc_has_flag(flag, i) = if i >= os_arg_count() then 0 else if os_arg_at(i) == flag then 1 else pc_has_flag(flag, i + 1)
+
+fn pc_cli_run() = let argc = os_arg_count() in if argc <= 1 then str(pc_self_test_sum()) else let cmd = os_arg_at(1) in if cmd == "self-test" then str(pc_self_test_sum()) else if argc < 3 then ctfail("usage: lproof_cache <check|store> <file.src> [<cache_dir>] [--require-all-hits]\n") else let src_path = os_arg_at(2) in let raw_cdir = if argc >= 4 and pc_starts_with(os_arg_at(3), "--") == 0 then os_arg_at(3) else ".lume_cache" in if cmd == "check" then let r = pc_check_file(src_path, raw_cdir) in if r.ok == 0 then ctfail("lproof_cache: " + r.err + "\n") else if pc_has_flag("--require-all-hits", 3) == 1 and r.misses > 0 then ctfail("lproof_cache: [PC0005] cache miss on " + str(r.misses) + " of " + str(r.total) + " functions: " + pc_json_check(r) + "\n") else pc_json_check(r) else if cmd == "store" then let rs = pc_store_file(src_path, raw_cdir) in if rs.ok == 0 then ctfail("lproof_cache: " + rs.err + "\n") else pc_json_store(rs) else ctfail("lproof_cache: unsupported subcommand '" + cmd + "' (expected check or store)\n")
+
+## --- 9. Unit Tests (`lume test compiler/stage1/lproof_cache.src`) -----------------------------
+
+fn test_sha256_nist_kat() = pc_sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" and pc_sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" and pc_sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+
+fn test_comment_whitespace_invariance() = let s1 = "fn clamp(x: int) -> int requires x >= 0 ensures result >= 0 = x + 1\n" in let s2 = "## comment header\n\nfn   clamp( x : int ) -> int\n  requires x >= 0\n  ensures result >= 0\n  = x + 1\n" in let a1 = pc_analyze_source(s1) in let a2 = pc_analyze_source(s2) in a1.ok == 1 and a2.ok == 1 and (pc_hd_recs(a1.records)).fn_digest == (pc_hd_recs(a2.records)).fn_digest
+
+fn pc_hd_recs(rs) = match rs
+    Nil        => {name: "", fn_digest: "", contract_digest: "", body_digest: "", callees_digest: ""}
+    Cons(h, t) => h
+
+fn pc_nth_rec(rs, idx) = match rs
+    Nil        => {name: "", fn_digest: "", contract_digest: "", body_digest: "", callees_digest: ""}
+    Cons(h, t) => if idx <= 0 then h else pc_nth_rec(t, idx - 1)
+
+fn test_body_vs_contract_and_callee_invalidation() = let base = "fn leaf(x: int) -> int requires x >= 0 ensures result >= 1 = x + 1\nfn caller(y: int) -> int requires y >= 0 ensures result >= 1 = leaf(y)\n" in let body_mod = "fn leaf(x: int) -> int requires x >= 0 ensures result >= 1 = x + 2\nfn caller(y: int) -> int requires y >= 0 ensures result >= 1 = leaf(y)\n" in let ens_mod = "fn leaf(x: int) -> int requires x >= 0 ensures result >= 2 = x + 2\nfn caller(y: int) -> int requires y >= 0 ensures result >= 1 = leaf(y)\n" in let req_mod = "fn leaf(x: int) -> int requires x >= 1 ensures result >= 1 = x + 1\nfn caller(y: int) -> int requires y >= 0 ensures result >= 1 = leaf(y)\n" in let r0 = (pc_analyze_source(base)).records in let r_body = (pc_analyze_source(body_mod)).records in let r_ens = (pc_analyze_source(ens_mod)).records in let r_req = (pc_analyze_source(req_mod)).records in let leaf0 = pc_nth_rec(r0, 0) in let call0 = pc_nth_rec(r0, 1) in let leaf_b = pc_nth_rec(r_body, 0) in let call_b = pc_nth_rec(r_body, 1) in let leaf_e = pc_nth_rec(r_ens, 0) in let call_e = pc_nth_rec(r_ens, 1) in let call_q = pc_nth_rec(r_req, 1) in leaf0.fn_digest != leaf_b.fn_digest and call0.fn_digest == call_b.fn_digest and leaf0.fn_digest != leaf_e.fn_digest and call0.fn_digest != call_e.fn_digest and call0.fn_digest != call_q.fn_digest
+
+fn test_cert_tamper_fail_closed() = let a = pc_analyze_source("fn f(x: int) -> int requires x >= 0 ensures result >= 0 = x\n") in let rec = pc_hd_recs(a.records) in let cert = pc_render_cert(rec) in let ok0 = (pc_verify_cert_text(cert, rec.fn_digest)).ok == 1 in let bad_seal = slice(cert, 0, count(cert) - 3) + "ff\n" in let bad_extra = cert + "\n" in let bad_name = (pc_verify_cert_text(cert, "0000000000000000000000000000000000000000000000000000000000000000")).ok == 0 in ok0 and (pc_verify_cert_text(bad_seal, rec.fn_digest)).ok == 0 and (pc_verify_cert_text(bad_extra, rec.fn_digest)).ok == 0 and bad_name
+
+fn test_end_to_end_cache_roundtrip_and_tamper() = let cdir = (if fs_path_exists("/tmp") == 1 then "/tmp" else ".") + "/lpc_unit_" + str(os_getpid()) in let clean1 = os_run("/bin/rm", Cons("-rf", Cons(cdir, Nil))) in let src1 = "fn a(x: int) -> int requires x >= 0 ensures result >= 0 = x\nfn b(x: int) -> int requires x >= 0 ensures result >= 1 = a(x) + 1\nfn c(x: int) -> int requires x >= 0 ensures result >= 2 = x + 2\n" in let src2 = "fn a(x: int) -> int requires x >= 0 ensures result >= 0 = x\nfn b(x: int) -> int requires x >= 0 ensures result >= 1 = a(x) + 1\nfn c(x: int) -> int requires x >= 0 ensures result >= 2 = x + 3\n" in let st1 = pc_store_source(src1, cdir, "") in let ck1 = pc_check_source_in_cache(src1, cdir) in let ck2 = pc_check_source_in_cache(src2, cdir) in let r_a = pc_hd_recs((pc_analyze_source(src1)).records) in let cert_p = pc_proofs_dir(cdir) + "/" + r_a.fn_digest + ".cert" in let w_tamp = fs_write_sync(cert_p, "tampered=1\n") in let ck_bad = pc_check_source_in_cache(src1, cdir) in let clean2 = os_run("/bin/rm", Cons("-rf", Cons(cdir, Nil))) in st1.ok == 1 and st1.stored == 3 and ck1.ok == 1 and ck1.hits == 3 and ck1.misses == 0 and ck2.ok == 1 and ck2.hits == 2 and ck2.misses == 1 and ck_bad.ok == 0
+
+fn pc_b2i(b) = if b then 1 else 0
+
+fn pc_self_test_sum() = pc_b2i(test_sha256_nist_kat()) + pc_b2i(test_comment_whitespace_invariance()) + pc_b2i(test_body_vs_contract_and_callee_invalidation()) + pc_b2i(test_cert_tamper_fail_closed()) + pc_b2i(test_end_to_end_cache_roundtrip_and_tamper())
+
+print pc_cli_run()

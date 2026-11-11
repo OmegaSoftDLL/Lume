@@ -1,0 +1,334 @@
+## lconcurrency.src -- Sovereign Linear Concurrency, SPSC Ring-Buffer & Multi-Worker Parallel Dispatcher (100% Lume).
+##
+## Works in concert with `compiler/stage1/lume/06b_phase3.src`:
+##   * [E0305] linear channel move checking on `chan_send_linear(ch, msg)` (use-after-send across channels or aliases
+##     is rejected at compile time before codegen);
+##   * [E0306] Havender strict lock-rank ordering on `lock_acquire(rank)` / `lock_release(rank)` and static wait-for
+##     graph acyclicity on `actor_link(src_actor, dst_actor)`.
+##
+## Provides:
+##   1. Bounded SPSC lock-free ring-buffer index & occupancy arithmetic with QF_LIA-proven contracts and conservation laws;
+##   2. Linear ownership transfer token protocol (`linear_msg_pack`, `linear_msg_consume`) + runtime channel/lock/actor
+##      primitives (`chan_send_linear`, `chan_recv_linear`, `lock_acquire`, `lock_release`, `actor_link`);
+##   3. Static/runtime DAG topological rank & general directed wait-for graph cycle validator (`dag_edge_acyclic_ok`,
+##      `dag_graph_acyclic_ok`);
+##   4. Deterministic multi-worker OS-process parallel dispatcher on Linux (`parallel_dispatch_partitions`), spawning
+##      concurrent isolated worker processes and reducing partitioned outputs bit-identically regardless of scheduling.
+
+## --- 1. Bounded SPSC Lock-Free Ring-Buffer State & Index Arithmetic (QF_LIA Proven) -------------------------------
+
+@bound(16)
+fn spsc_ring_advance_slot(slot: int, cap: int) -> int
+    requires cap >= 2 and slot >= 0 and slot < cap
+    ensures result >= 0 and result < cap
+= if slot + 1 >= cap then 0 else slot + 1
+
+@bound(16)
+fn spsc_ring_occupancy(head: int, tail: int, cap: int) -> int
+    requires cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap
+    ensures result >= 0 and result < cap
+= if tail >= head then tail - head else cap - head + tail
+
+@bound(24)
+fn spsc_ring_free_slots(head: int, tail: int, cap: int) -> int
+    requires cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap
+    ensures result >= 0 and result <= cap - 1
+= let occ = if tail >= head then tail - head else cap - head + tail in (cap - 1) - occ
+
+@bound(24)
+fn spsc_ring_can_push(head: int, tail: int, cap: int) -> int
+    requires cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap
+    ensures result == 0 or result == 1
+= let next_tail = if tail + 1 >= cap then 0 else tail + 1 in if next_tail != head then 1 else 0
+
+@bound(16)
+fn spsc_ring_can_pop(head: int, tail: int, cap: int) -> int
+    requires cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap
+    ensures (head == tail and result == 0) or (head != tail and result == 1)
+= if head != tail then 1 else 0
+
+law spsc_ring_conservation_law(head: int, tail: int, cap: int) =
+    if cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap then
+        let occ = if tail >= head then tail - head else cap - head + tail in
+        let free_s = (cap - 1) - occ in
+        occ + free_s == cap - 1 and occ >= 0 and free_s >= 0
+    else 1 == 1
+
+law spsc_ring_empty_iff_cannot_pop_law(head: int, tail: int, cap: int) =
+    if cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap and head == tail then
+        let occ = if tail >= head then tail - head else cap - head + tail in
+        let can_pop = if head != tail then 1 else 0 in
+        occ == 0 and can_pop == 0
+    else 1 == 1
+
+law spsc_ring_push_increments_occupancy_law(head: int, tail: int, cap: int) =
+    if cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap then
+        let next_tail = if tail + 1 >= cap then 0 else tail + 1 in
+        if next_tail != head then
+            let occ0 = if tail >= head then tail - head else cap - head + tail in
+            let occ1 = if next_tail >= head then next_tail - head else cap - head + next_tail in
+            occ1 == occ0 + 1
+        else 1 == 1
+    else 1 == 1
+
+law spsc_ring_pop_decrements_occupancy_law(head: int, tail: int, cap: int) =
+    if cap >= 2 and head >= 0 and head < cap and tail >= 0 and tail < cap and head != tail then
+        let next_head = if head + 1 >= cap then 0 else head + 1 in
+        let occ0 = if tail >= head then tail - head else cap - head + tail in
+        let occ1 = if tail >= next_head then tail - next_head else cap - next_head + tail in
+        occ1 == occ0 - 1
+    else 1 == 1
+
+## Functional SPSC ring-buffer state helpers over immutable snapshot `{head, tail, cap, items}`
+fn lconc_rev_acc(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lconc_rev_acc(t, Cons(h, acc))
+
+fn lconc_rev(xs) = lconc_rev_acc(xs, Nil)
+
+fn lconc_app(xs, ys) = lconc_rev_acc(lconc_rev(xs), ys)
+
+fn spsc_ring_new(cap: int) =
+    let c = if cap < 2 then 2 else cap in
+    {head: 0, tail: 0, cap: c, items: Nil}
+
+fn spsc_ring_push(ring, item) =
+    if spsc_ring_can_push(ring.head, ring.tail, ring.cap) == 0 then
+        {ok: 0, ring: ring}
+    else
+        {ok: 1, ring: {head: ring.head, tail: spsc_ring_advance_slot(ring.tail, ring.cap), cap: ring.cap, items: lconc_app(ring.items, Cons(item, Nil))}}
+
+fn spsc_ring_pop(ring) =
+    if spsc_ring_can_pop(ring.head, ring.tail, ring.cap) == 0 then
+        {ok: 0, val: 0, ring: ring}
+    else match ring.items
+        Nil        => {ok: 0, val: 0, ring: ring}
+        Cons(h, t) => {ok: 1, val: h, ring: {head: spsc_ring_advance_slot(ring.head, ring.cap), tail: ring.tail, cap: ring.cap, items: t}}
+
+## --- 2. Linear Ownership Transfer Protocol & Compiler-Checked Concurrency Primitives ------------------------------
+
+@bound(16)
+fn linear_msg_pack(epoch: int, payload_tag: int) -> int
+    requires epoch >= 1 and epoch <= 1000000 and payload_tag >= 0 and payload_tag < 1000
+    ensures result == epoch * 1024 + payload_tag + 1 and result > 1024
+= epoch * 1024 + payload_tag + 1
+
+@bound(16)
+fn linear_msg_consume(token_live: int, payload_val: int) -> int
+    requires token_live == 1
+    ensures result == payload_val
+= payload_val
+
+@bound(8)
+fn linear_token_relinquish(token_live: int) -> int
+    requires token_live == 1
+    ensures result == 0
+= token_live - 1
+
+law linear_single_owner_conservation_law(sender_before: int, receiver_before: int) =
+    if sender_before == 1 and receiver_before == 0 then
+        let sender_after = sender_before - 1 in
+        let receiver_after = receiver_before + 1 in
+        sender_after == 0 and receiver_after == 1 and sender_after + receiver_after == 1
+    else 1 == 1
+
+## Runtime counterparts of the primitives statically verified by `06b_phase3.src` ([E0305] and [E0306]).
+## `chan_send_linear` is polymorphic in `msg` so linear records, ADTs, lists, strings, and scalars can be moved.
+fn chan_send_linear(ch, msg) = {chan: ch, payload: msg, live: 1}
+
+fn chan_recv_linear(envelope) = envelope.payload
+
+@bound(8)
+fn lock_acquire(rank: int) -> int
+    requires rank >= 0
+    ensures result == rank and result >= 0
+= rank
+
+@bound(8)
+fn lock_release(rank: int) -> int
+    requires rank >= 0
+    ensures result == 0
+= rank - rank
+
+@bound(8)
+fn actor_link(src_actor: int, dst_actor: int) -> int
+    requires src_actor >= 0 and dst_actor >= 0
+    ensures result >= 0
+= src_actor + dst_actor + 1
+
+## --- 3. Static & Runtime DAG Lock / Actor Wait-For Order Validator ------------------------------------------------
+
+@bound(16)
+fn dag_edge_acyclic_ok(src_rank: int, dst_rank: int) -> int
+    requires src_rank >= 0 and dst_rank >= 0
+    ensures (src_rank < dst_rank and result == 1) or (src_rank >= dst_rank and result == 0)
+= if src_rank < dst_rank then 1 else 0
+
+law dag_strict_rank_irreflexive_law(r: int) =
+    if r >= 0 then (if r < r then 1 else 0) == 0 else 1 == 1
+
+law dag_strict_rank_asymmetric_law(a: int, b: int) =
+    if a >= 0 and b >= 0 and a < b then (if b < a then 1 else 0) == 0 else 1 == 1
+
+law dag_strict_rank_transitive_law(a: int, b: int, c: int) =
+    if a >= 0 and b >= 0 and c >= 0 and a < b and b < c then a < c and a != c else 1 == 1
+
+fn lconc_mem_int(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else lconc_mem_int(x, t)
+
+fn lconc_succ(u, edges, acc) = match edges
+    Nil        => acc
+    Cons(e, r) => lconc_succ(u, r, if e.a == u then Cons(e.b, acc) else acc)
+
+fn lconc_reach(todo, tgt, edges, seen) = match todo
+    Nil        => 0
+    Cons(h, t) => if h == tgt then 1 else if lconc_mem_int(h, seen) == 1 then lconc_reach(t, tgt, edges, seen) else lconc_reach(lconc_app(lconc_succ(h, edges, Nil), t), tgt, edges, Cons(h, seen))
+
+fn lconc_has_cycle(es, edges) = match es
+    Nil        => 0
+    Cons(e, r) => if lconc_reach(lconc_succ(e.a, edges, Nil), e.a, edges, Nil) == 1 then 1 else lconc_has_cycle(r, edges)
+
+fn dag_graph_acyclic_ok(edges) = if lconc_has_cycle(edges, edges) == 0 then 1 else 0
+
+## --- 4. Multi-Worker Concurrent OS-Process Task Dispatcher (Linux) ------------------------------------------------
+
+@bound(16)
+fn parallel_partition_lo(total_items: int, worker_idx: int, num_workers: int, chunk: int) -> int
+    requires total_items >= 0 and num_workers >= 1 and worker_idx >= 0 and worker_idx < num_workers and chunk >= 0 and worker_idx * chunk <= total_items
+    ensures result >= 0 and result <= total_items
+= worker_idx * chunk
+
+@bound(16)
+fn parallel_partition_hi(lo: int, span: int, total_items: int) -> int
+    requires total_items >= 0 and lo >= 0 and lo <= total_items and span >= 0
+    ensures result >= lo and result <= total_items
+= if lo + span > total_items then total_items else lo + span
+
+fn lconc_trim_nl(s) = let n = count(s) in if n > 0 and at(s, n - 1) == "\n" then slice(s, 0, n - 1) else s
+
+fn lconc_parse_int_neg(s, i, n, acc) = if i >= n then acc else lconc_parse_int_neg(s, i + 1, n, acc * 10 - (ord(at(s, i)) - 48))
+
+fn lconc_parse_int(raw) =
+    let s = lconc_trim_nl(raw) in
+    let n = count(s) in
+    if n == 0 then {ok: 0, v: 0}
+    else if at(s, 0) == "-" then {ok: 1, v: lconc_parse_int_neg(s, 1, n, 0)}
+    else {ok: 1, v: 0 - lconc_parse_int_neg(s, 0, n, 0)}
+
+fn lconc_sh_quote(s) = "'" + s + "'"
+
+fn lconc_build_spawn_lines(work_dir, worker_bin, parts, idx) = match parts
+    Nil        => ""
+    Cons(p, r) =>
+        let outp = work_dir + "/w" + str(idx) + ".out" in
+        let errp = work_dir + "/w" + str(idx) + ".err" in
+        lconc_sh_quote(worker_bin) + " " + str(p.lo) + " " + str(p.hi) + " > " + lconc_sh_quote(outp) + " 2> " + lconc_sh_quote(errp) + " &\n" +
+        "P_" + str(idx) + "=$!\n" +
+        lconc_build_spawn_lines(work_dir, worker_bin, r, idx + 1)
+
+fn lconc_build_wait_lines(parts, idx) = match parts
+    Nil        => ""
+    Cons(p, r) =>
+        "wait $P_" + str(idx) + " || RC=1\n" +
+        lconc_build_wait_lines(r, idx + 1)
+
+fn lconc_collect_outputs(work_dir, n, idx, sum_acc, cat_acc) =
+    if idx >= n then {ok: 1, workers: n, sum: sum_acc, transcript: cat_acc}
+    else
+        let outp = work_dir + "/w" + str(idx) + ".out" in
+        if fs_path_exists(outp) == 0 then {ok: 0, workers: idx, sum: 0, transcript: "missing:" + outp}
+        else
+            let raw = fs_read_file(outp) in
+            let pv = lconc_parse_int(raw) in
+            if pv.ok == 0 then {ok: 0, workers: idx, sum: 0, transcript: "malformed:" + outp}
+            else lconc_collect_outputs(work_dir, n, idx + 1, sum_acc + pv.v, cat_acc + str(idx) + ":" + str(pv.v) + ";")
+
+fn lconc_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + lconc_len(t)
+
+fn lconc_make_parts_loop(total, nw, chunk, idx) =
+    if idx >= nw then Nil
+    else
+        let lo = idx * chunk in
+        let hi = if idx + 1 == nw then total else if lo + chunk > total then total else lo + chunk in
+        Cons({lo: lo, hi: hi}, lconc_make_parts_loop(total, nw, chunk, idx + 1))
+
+fn parallel_make_partitions(total: int, num_workers: int) =
+    if num_workers <= 0 or total < 0 then Nil
+    else let chunk = total / num_workers in lconc_make_parts_loop(total, num_workers, chunk, 0)
+
+fn lconc_wait_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
+
+## Spawns all partitions concurrently as isolated OS processes, waits for barrier completion, and reduces deterministically.
+fn parallel_dispatch_partitions(work_dir, worker_bin, parts) =
+    let n = lconc_len(parts) in
+    if n <= 0 then {ok: 0, workers: 0, sum: 0, transcript: "empty"}
+    else
+        let mk = os_run("/bin/mkdir", Cons("-p", Cons(work_dir, Nil))) in
+        let script = "#!/bin/sh\nRC=0\n" + lconc_build_spawn_lines(work_dir, worker_bin, parts, 0) + lconc_build_wait_lines(parts, 0) + "exit $RC\n" in
+        let sp = work_dir + "/dispatch.sh" in
+        let w = fs_write_sync(sp, script) in
+        let st = os_run_capture_timeout("/bin/sh", Cons(sp, Nil), work_dir + "/dispatch.out", work_dir + "/dispatch.err", 60000) in
+        if lconc_wait_exit(st) != 0 then {ok: 0, workers: n, sum: 0, transcript: "worker_failed:" + fs_read_file(work_dir + "/dispatch.err")}
+        else lconc_collect_outputs(work_dir, n, 0, 0, "")
+
+## Deterministic reference workload kernel: sum_{i = lo}^{hi - 1} (i * i + 3 * i + 7)
+fn parallel_ref_kernel(lo: int, hi: int, acc: int) -> int =
+    if lo >= hi then acc else parallel_ref_kernel(lo + 1, hi, acc + (lo * lo + 3 * lo + 7))
+
+## --- 5. Unit Tests (`lume test compiler/stage1/lconcurrency.src`) -------------------------------------------------
+
+fn test_spsc_ring_wraparound_and_conservation() =
+    let r0 = spsc_ring_new(4) in
+    let p1 = spsc_ring_push(r0, 10) in
+    let p2 = spsc_ring_push(p1.ring, 20) in
+    let p3 = spsc_ring_push(p2.ring, 30) in
+    let p4 = spsc_ring_push(p3.ring, 40) in
+    let g1 = spsc_ring_pop(p3.ring) in
+    let p5 = spsc_ring_push(g1.ring, 40) in
+    let g2 = spsc_ring_pop(p5.ring) in
+    let g3 = spsc_ring_pop(g2.ring) in
+    let g4 = spsc_ring_pop(g3.ring) in
+    let g5 = spsc_ring_pop(g4.ring) in
+    p1.ok == 1 and p2.ok == 1 and p3.ok == 1 and p4.ok == 0 and
+    spsc_ring_occupancy(p3.ring.head, p3.ring.tail, 4) == 3 and
+    spsc_ring_free_slots(p3.ring.head, p3.ring.tail, 4) == 0 and
+    g1.ok == 1 and g1.val == 10 and p5.ok == 1 and
+    g2.val == 20 and g3.val == 30 and g4.val == 40 and g5.ok == 0 and
+    spsc_ring_occupancy(g4.ring.head, g4.ring.tail, 4) == 0
+
+fn test_linear_token_and_channel_primitives() =
+    let pkt = linear_msg_pack(7, 42) in
+    let v = linear_msg_consume(1, 99) in
+    let dead_tok = linear_token_relinquish(1) in
+    let msg = {tag: 77, body: 1234} in
+    let env = chan_send_linear(1, msg) in
+    let rx = chan_recv_linear(env) in
+    let l1 = lock_acquire(1) in
+    let l2 = lock_acquire(2) in
+    let u2 = lock_release(2) in
+    let u1 = lock_release(1) in
+    let lk = actor_link(0, 1) in
+    pkt == 7 * 1024 + 43 and v == 99 and dead_tok == 0 and rx.body == 1234 and l1 == 1 and l2 == 2 and u1 + u2 == 0 and lk == 2
+
+fn test_dag_order_and_cycle_detection() =
+    let ok_dag = dag_graph_acyclic_ok(Cons({a: 0, b: 1}, Cons({a: 1, b: 2}, Cons({a: 0, b: 2}, Cons({a: 2, b: 3}, Nil))))) in
+    let bad_ring = dag_graph_acyclic_ok(Cons({a: 0, b: 1}, Cons({a: 1, b: 2}, Cons({a: 2, b: 0}, Nil)))) in
+    let bad_self = dag_graph_acyclic_ok(Cons({a: 4, b: 4}, Nil)) in
+    dag_edge_acyclic_ok(1, 5) == 1 and dag_edge_acyclic_ok(5, 5) == 0 and dag_edge_acyclic_ok(6, 2) == 0 and
+    ok_dag == 1 and bad_ring == 0 and bad_self == 0
+
+fn test_parallel_multi_worker_dispatch_linux() =
+    let wdir = "/tmp/lume-conc-unit." + str(os_getpid()) in
+    let mk = os_run("/bin/mkdir", Cons("-p", Cons(wdir, Nil))) in
+    let wbin = wdir + "/worker.sh" in
+    let wsrc = "#!/bin/sh\nLO=$1\nHI=$2\nACC=0\nI=$LO\nwhile [ \"$I\" -lt \"$HI\" ]; do\n  ACC=$((ACC + I * I + 3 * I + 7))\n  I=$((I + 1))\ndone\necho \"$ACC\"\n" in
+    let wf = fs_write_sync(wbin, wsrc) in
+    let ch = os_run("/bin/chmod", Cons("+x", Cons(wbin, Nil))) in
+    let parts = parallel_make_partitions(200, 4) in
+    let res = parallel_dispatch_partitions(wdir, wbin, parts) in
+    let seq_ref = parallel_ref_kernel(0, 200, 0) in
+    let rm = os_run("/bin/rm", Cons("-rf", Cons(wdir, Nil))) in
+    res.ok == 1 and res.workers == 4 and res.sum == seq_ref
