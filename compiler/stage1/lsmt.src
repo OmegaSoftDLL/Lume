@@ -1,0 +1,490 @@
+## lsmt.src -- clean-room native checker for the SMT-LIB2 proof certificates that ltv exports.
+##
+## Independence. This file shares no code with ltv.src, lcert.src or the compiler: it has no `use` line, its own
+## S-expression reader, its own typed terms, its own polynomial normal form and its own case split. The gate
+## tests/harness/smt_cert_gate.src asserts that from the bundle.
+##
+## What it decides. The input is an SMT-LIB2 script in the subset the certificates use:
+##   (set-logic QF_UFNIA)  (declare-fun f (Int ...) Int|Bool)  (declare-const c Int|Bool)
+##   (define-fun g ((p Int) ...) Int|Bool body)  (assert t)  (check-sat)
+##   terms: numerals, (- n), + - * (n-ary), ite, not and or => =, < <= > >=, applications of declared / defined symbols.
+## Verdicts:
+##   unsat        PROVED: the conjunction of the assertions has no model over the integers, for every interpretation of
+##                the declared functions;
+##   unknown      not proved (budget, an abstract model exists, a coefficient left 64 bits): a FAILED check;
+##   unsupported  well-formed-looking SMT-LIB outside the subset (other logics, let, quantifiers, div, strings, ...);
+##   malformed    not a well-formed script of the subset (unbalanced parentheses, unknown symbol, sort error, duplicate
+##                definition, no check-sat, ...);
+##   forged       (certificate mode only) a well-formed script that is not the claim ltv's header states.
+## Only `unsat` is a pass. Nothing but a completed refutation produces it.
+##
+## Certificate mode (the default, lsmt_check_text) also checks the SHAPE of the claim, because `(assert false)` is
+## trivially unsat. The command sequence has to be exactly
+##   (set-logic QF_UFNIA), the two lume_fits define-funs verbatim, (declare-fun lume_div/lume_mod (Int Int) Int),
+##   any number of (declare-fun f_* (Int ...) Int) and (declare-const x_* Int),
+##   (define-fun trap_ast () Bool _) (define-fun trap_x86 () Bool _) (define-fun ret_x86 () Bool _)
+##   (define-fun val_ast () Int _) (define-fun val_x86 () Int _),
+##   (assert (not (and (= trap_ast trap_x86) (=> (not trap_ast) (and ret_x86 (= val_ast val_x86)))))), (check-sat)
+## and nothing else: one assertion, one check-sat. Raw mode (lsmt_solve_text, `@mode raw`) refutes the conjunction of
+## whatever assertions a script of the subset has; the gate uses it for the hand-written and mutated controls.
+##
+## The decision procedure, and why every rule is sound for NIA + UF over the integers. "Sound" means: if the script has
+## a model M, the procedure does not answer unsat.
+##   R1 polynomial normal form. An Int term whose `ite` conditions are all decided becomes a polynomial with i64
+##      coefficients over opaque atoms (constants, applications with normalised arguments, numerals beyond 64 bits),
+##      built with + and * only. These are the commutative-ring identities, valid in Z. Coefficient arithmetic is
+##      overflow-checked; an overflow poisons the result and the verdict is `unknown`.
+##   R2 congruence. An application f(t1..tn) is an atom keyed by f and the normal forms of its arguments. Equal keys
+##      mean syntactically equal arguments up to ring identities, so M gives both the same value. Different keys are
+##      never assumed different. The keys are injective (the name alphabet [A-Za-z0-9_] excludes the separators).
+##   R3 parametric define-funs (lume_fits63, lume_fits64) are treated as UNINTERPRETED symbols. A refutation that holds
+##      for every interpretation of a symbol holds for the defined one.
+##   R4 comparison atoms. a < b is (a - b) < 0; a <= b is (a - b - 1) < 0 (integers); a > b, a >= b by swapping; a = b is
+##      (a - b) = 0. With p = q + c (q without constant term): if q is empty the atom is decided by c; if the leading
+##      coefficient of q is negative the atom is rewritten over -q: -q + c < 0 <=> not (q - c - 1 < 0) (integers), and
+##      -q + c = 0 <=> q - c = 0. So every atom is LT(q, c): q + c < 0 or EQ(q, c): q + c = 0 with one base q.
+##   R5 case split. The assertion is evaluated in three-valued logic under a partial assignment of ground atoms; the
+##      first undecided atom is split on (true, then false). Every model M follows one path of that tree (it gives
+##      every ground atom a truth value, and an `ite` picks the branch M picks), and on that path the evaluation is M's
+##      value of the assertion. All leaves false => no model. The atoms are otherwise free booleans: the set of
+##      assignments explored is a SUPERSET of the consistent ones, which can only lose proofs, never invent one.
+##   R6 bounds on one base. Before splitting on LT(q, c) / EQ(q, c) the facts already assigned on the SAME base q are
+##      combined: LT(q, c)=1 gives q <= -c-1, LT=0 gives q >= -c, EQ=1 gives q = -c. If the interval decides the new
+##      atom, that value is used. It is the value M gives, because q is one integer in M. EQ(q, c)=0 (q != -c) moves a
+##      bound that sits on -c one step inwards, which is exact over the integers. (Facts whose constant cannot be
+##      negated in 64 bits are ignored.)
+##   R7 common factor. When every coefficient of the base q is a multiple of g > 1, q = g * r with r an integer:
+##      g*r + c = 0 is false if g does not divide c and is r + c/g = 0 otherwise; g*r + c < 0 <=> r + floor(c/g) < 0.
+##      Exact over the integers; it lets 4*(x - y) < 0 and x - y < 0 share one base.
+## A budget on evaluation passes makes it terminate (default 200000, `@budget n`).
+##
+## What `unsat` establishes: the certificate TEXT is a valid refutation, checked by a procedure that is not ltv's.
+## What it does not: that trap_ast / val_x86 / ... describe the source and the emitted assembly. That binding is ltv's.
+##
+## Library:  lsmt_check_text(text) -> {verdict, why, n}   certificate mode
+##           lsmt_solve_text(text) -> {verdict, why, n}   raw mode          (n = evaluation passes)
+## CLI:      stdin  @file <path> (repeatable)   @dir <dir> (every *.smt2)   [@mode raw]   [@budget n]   [@verbose 1]
+##           stdout one JSON object; exit status 0 only when at least one file was given and every file is `unsat`.
+
+## --- lists and text ---
+fn sm_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + sm_len(t)
+fn sm_isnil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn sm_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => sm_rev(t, Cons(h, acc))
+fn sm_mem(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else sm_mem(t, x)
+fn sm_starts(s, pre) = if count(s) >= count(pre) and slice(s, 0, count(pre)) == pre then 1 else 0
+fn sm_ends(s, suf) = if count(s) >= count(suf) and slice(s, count(s) - count(suf), count(s)) == suf then 1 else 0
+fn sm_find(s, n, part, m, i) = if i + m > n then 0 - 1 else if slicen(s, n, i, i + m) == part then i else sm_find(s, n, part, m, i + 1)
+## membership of a word in a space-delimited list (" a b c ")
+fn sm_word(words, a) = if sm_find(words, count(words), " " + a + " ", count(a) + 2, 0) >= 0 then 1 else 0
+fn sm_clip(s) = if count(s) > 120 then slice(s, 0, 120) + "..." else s
+fn sm_isws(o) = if o == 32 or o == 10 or o == 9 or o == 13 then 1 else 0
+fn sm_isdig(o) = if o >= 48 and o <= 57 then 1 else 0
+fn sm_isal(o) = if (o >= 65 and o <= 90) or (o >= 97 and o <= 122) or o == 95 then 1 else 0
+## the other characters of an SMT-LIB simple symbol: ~ ! @ $ % ^ & * - + = < > . ? /
+fn sm_ispunct(o) = if o == 126 or o == 33 or o == 64 or o == 36 or o == 37 or o == 94 or o == 38 or o == 42 or o == 45 or o == 43 or o == 61 or o == 60 or o == 62 or o == 46 or o == 63 or o == 47 then 1 else 0
+fn sm_symch(o) = if sm_isdig(o) == 1 or sm_isal(o) == 1 or sm_ispunct(o) == 1 then 1 else 0
+fn sm_plain_at(a, n, i) = if i >= n then 1 else let o = ord(at(a, i)) in if sm_isal(o) == 1 or sm_isdig(o) == 1 then sm_plain_at(a, n, i + 1) else 0
+fn sm_plain(a) = sm_plain_at(a, count(a), 0)
+
+## --- the S-expression reader: SxA(text) | SxL(items). `;` starts a comment that runs to the end of the line. ---
+fn sm_eol(s, n, i) = if i >= n then i else if ord(at(s, i)) == 10 then i else sm_eol(s, n, i + 1)
+fn sm_ws(s, n, i) = if i >= n then i else let o = ord(at(s, i)) in if sm_isws(o) == 1 then sm_ws(s, n, i + 1) else if o == 59 then sm_ws(s, n, sm_eol(s, n, i)) else i
+fn sm_aend(s, n, i) = if i >= n then i else if sm_symch(ord(at(s, i))) == 1 then sm_aend(s, n, i + 1) else i
+fn sm_rerr(e, i) = {e: e, x: SxL(Nil), i: i}
+fn sm_badch(o) = if o == 34 or o == 124 or o == 35 or o == 58 then "unsupported: lexeme outside the certificate subset (string, quoted symbol, #-literal or keyword)" else "malformed: illegal character (code " + str(o) + ")"
+fn sm_rd(s, n, i0) = let i = sm_ws(s, n, i0) in if i >= n then sm_rerr("malformed: unexpected end of input", i) else let o = ord(at(s, i)) in if o == 40 then sm_rdl(s, n, i + 1, Nil) else if o == 41 then sm_rerr("malformed: unbalanced parentheses: unexpected `)`", i) else if sm_symch(o) == 1 then (let j = sm_aend(s, n, i) in {e: "", x: SxA(slicen(s, n, i, j)), i: j}) else sm_rerr(sm_badch(o), i)
+fn sm_rdl(s, n, i0, acc) = let i = sm_ws(s, n, i0) in if i >= n then sm_rerr("malformed: unbalanced parentheses: a `)` is missing (truncated input?)", i) else if ord(at(s, i)) == 41 then {e: "", x: SxL(sm_rev(acc, Nil)), i: i + 1} else let r = sm_rd(s, n, i) in if r.e != "" then r else sm_rdl(s, n, r.i, Cons(r.x, acc))
+fn sm_rdall(s, n, i0, acc) = let i = sm_ws(s, n, i0) in if i >= n then {e: "", xs: sm_rev(acc, Nil)} else let r = sm_rd(s, n, i) in if r.e != "" then {e: r.e, xs: Nil} else sm_rdall(s, n, r.i, Cons(r.x, acc))
+fn sm_show(x) = match x
+    SxA(a)  => a
+    SxL(xs) => "(" + sm_shows(xs) + ")"
+fn sm_shows(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => sm_show(h) + (if sm_isnil(t) == 1 then "" else " ") + sm_shows(t)
+fn sm_atom(x) = match x
+    SxA(a)  => a
+    SxL(xs) => ""
+fn sm_x0(xs) = match xs
+    Nil        => SxL(Nil)
+    Cons(h, t) => h
+fn sm_x1(xs) = match xs
+    Nil        => SxL(Nil)
+    Cons(h, t) => sm_x0(t)
+fn sm_x2(xs) = match xs
+    Nil        => SxL(Nil)
+    Cons(h, t) => sm_x1(t)
+fn sm_x3(xs) = match xs
+    Nil        => SxL(Nil)
+    Cons(h, t) => sm_x2(t)
+
+## --- typed terms.
+## Int:  SmNum(n) | SmBig(digits) | SmVar(name) | SmApp(f, args) | SmAdd(a, b) | SmMul(a, b) | SmNeg(a) | SmIte(c, a, b)
+## Bool: SmT | SmF | SmNot(a) | SmAnd(a, b) | SmOr(a, b) | SmIff(a, b) | SmBIte(c, a, b) | SmLt(a, b) | SmLe(a, b) |
+##       SmEq(a, b) | SmPred(p, args)
+## An elaboration result is {e: error or "", s: sort (0 Int, 1 Bool), t: term}. The environment is a list of
+## {n: name, kd: 0 declared | 1 defined without parameters | 2 defined with parameters, ar: arity, rs: result sort,
+##  t: the elaborated body of a kd 1 entry}. A reference to a kd 1 symbol IS its body (shared, not copied). ---
+fn sm_ops_core() = " not and or => = < <= > >= + - * ite true false "
+fn sm_ops_other() = " let forall exists distinct div mod abs xor / to_real to_int is_int ! _ as match par Int Bool Real Array BitVec String "
+fn sm_cmds_other() = " set-info set-option get-info get-option push pop exit reset reset-assertions get-model get-value get-proof get-unsat-core get-unsat-assumptions get-assertions get-assignment check-sat-assuming declare-sort define-sort define-fun-rec define-funs-rec declare-datatype declare-datatypes echo "
+fn sm_iscore(f) = if f == "and" or f == "or" or f == "not" or f == "=" or f == "<" or f == "+" or f == "*" or f == "ite" or f == "-" or f == "=>" or f == "<=" or f == ">" or f == ">=" then 1 else 0
+fn sm_te(e) = {e: e, s: 0, t: SmT}
+fn sm_ti(t) = {e: "", s: 0, t: t}
+fn sm_tb(t) = {e: "", s: 1, t: t}
+fn sm_noent() = {n: "", kd: 0, ar: 0, rs: 0, t: SmT}
+fn sm_env(env, a) = match env
+    Nil        => sm_noent()
+    Cons(h, t) => if h.n == a then h else sm_env(t, a)
+fn sm_alldig(a, n, i) = if i >= n then 1 else if sm_isdig(ord(at(a, i))) == 1 then sm_alldig(a, n, i + 1) else 0
+fn sm_num(a, n, i, acc) = if i >= n then acc else sm_num(a, n, i + 1, acc * 10 + (ord(at(a, i)) - 48))
+## a numeral of at most 18 digits fits; one of 19 digits fits when it is not above 2^63 - 1 (same length: text order)
+fn sm_fits(a, n) = if n < 19 then 1 else if n > 19 then 0 else if "9223372036854775807" < a then 0 else 1
+fn sm_el_num(a, n) = if sm_alldig(a, n, 0) == 0 then sm_te("malformed: `" + sm_clip(a) + "` is not a numeral") else if n > 1 and at(a, 0) == "0" then sm_te("malformed: numeral with a leading zero") else if sm_fits(a, n) == 1 then sm_ti(SmNum(sm_num(a, n, 0, 0))) else sm_ti(SmBig(a))
+fn sm_unk(a) = if sm_word(sm_ops_core() + sm_ops_other(), a) == 1 then "unsupported: `" + a + "` is outside the certificate subset here" else "malformed: unknown symbol `" + sm_clip(a) + "`"
+fn sm_el_ref(a, d) = if d.n == "" then sm_te(sm_unk(a)) else if d.ar > 0 then sm_te("malformed: function `" + a + "` used without arguments") else if d.kd == 1 then {e: "", s: d.rs, t: d.t} else if d.rs == 1 then sm_tb(SmPred(a, Nil)) else sm_ti(SmVar(a))
+fn sm_el_atom(a, env, loc) = if a == "true" then sm_tb(SmT) else if a == "false" then sm_tb(SmF) else if sm_isdig(ord(at(a, 0))) == 1 then sm_el_num(a, count(a)) else if sm_mem(loc, a) == 1 then sm_ti(SmVar(a)) else sm_el_ref(a, sm_env(env, a))
+fn sm_elab(x, env, loc) = match x
+    SxA(a)  => sm_el_atom(a, env, loc)
+    SxL(xs) => sm_el_list(xs, env, loc)
+fn sm_el_list(xs, env, loc) = match xs
+    Nil           => sm_te("malformed: empty application ()")
+    Cons(h, args) => sm_el_head(h, args, env, loc)
+fn sm_el_head(h, args, env, loc) = match h
+    SxL(ys) => sm_te("unsupported: compound application head")
+    SxA(f)  => if sm_iscore(f) == 1 then sm_el_core(f, sm_el_args(args, env, loc)) else if sm_mem(loc, f) == 1 then sm_te("malformed: parameter `" + f + "` is not a function") else sm_el_call(f, args, sm_env(env, f), env, loc)
+fn sm_el_args(xs, env, loc) = match xs
+    Nil        => {e: "", ts: Nil}
+    Cons(h, t) => sm_el_args2(sm_elab(h, env, loc), t, env, loc)
+fn sm_el_args2(a, t, env, loc) = if a.e != "" then {e: a.e, ts: Nil} else let r = sm_el_args(t, env, loc) in if r.e != "" then r else {e: "", ts: Cons(a, r.ts)}
+## every element of ts has sort s
+fn sm_srt(ts, s) = match ts
+    Nil        => 1
+    Cons(h, t) => if h.s == s then sm_srt(t, s) else 0
+fn sm_terms(ts) = match ts
+    Nil        => Nil
+    Cons(h, t) => Cons(h.t, sm_terms(t))
+fn sm_tl(ts) = match ts
+    Nil        => Nil
+    Cons(h, t) => t
+fn sm_a0(ts) = match ts
+    Nil        => SmT
+    Cons(h, t) => h.t
+fn sm_a1(ts) = sm_a0(sm_tl(ts))
+fn sm_a2(ts) = sm_a0(sm_tl(sm_tl(ts)))
+fn sm_s0(ts) = match ts
+    Nil        => 0 - 1
+    Cons(h, t) => h.s
+## left-associative folds: `and` / `or`, and + * - on Int
+fn sm_foldb(f, acc, ts) = match ts
+    Nil        => acc
+    Cons(h, t) => sm_foldb(f, if f == "and" then SmAnd(acc, h.t) else SmOr(acc, h.t), t)
+fn sm_foldi(f, acc, ts) = match ts
+    Nil        => acc
+    Cons(h, t) => sm_foldi(f, if f == "+" then SmAdd(acc, h.t) else if f == "*" then SmMul(acc, h.t) else SmAdd(acc, SmNeg(h.t)), t)
+fn sm_ar(f) = sm_te("malformed: wrong number of arguments for `" + f + "`")
+fn sm_so(f) = sm_te("malformed: sort error in the arguments of `" + f + "`")
+fn sm_few(f) = sm_te("unsupported: `" + f + "` with fewer than two arguments")
+fn sm_chain(f) = sm_te("unsupported: chained `" + f + "` with more than two arguments")
+fn sm_el_core(f, r) = if r.e != "" then sm_te(r.e) else sm_el_op(f, r.ts, sm_len(r.ts))
+fn sm_el_op(f, ts, k) = if f == "not" then (if k != 1 then sm_ar(f) else if sm_srt(ts, 1) == 0 then sm_so(f) else sm_tb(SmNot(sm_a0(ts)))) else if f == "and" or f == "or" then (if k < 2 then sm_few(f) else if sm_srt(ts, 1) == 0 then sm_so(f) else sm_tb(sm_foldb(f, sm_a0(ts), sm_tl(ts)))) else if f == "=>" then (if k < 2 then sm_ar(f) else if k > 2 then sm_chain(f) else if sm_srt(ts, 1) == 0 then sm_so(f) else sm_tb(SmOr(SmNot(sm_a0(ts)), sm_a1(ts)))) else if f == "=" then (if k < 2 then sm_ar(f) else if k > 2 then sm_chain(f) else if sm_srt(ts, 0) == 1 then sm_tb(SmEq(sm_a0(ts), sm_a1(ts))) else if sm_srt(ts, 1) == 1 then sm_tb(SmIff(sm_a0(ts), sm_a1(ts))) else sm_so(f)) else if f == "ite" then sm_el_ite(ts, k) else sm_el_arith(f, ts, k)
+fn sm_el_ite(ts, k) = if k != 3 then sm_ar("ite") else if sm_s0(ts) != 1 or sm_s0(sm_tl(ts)) != sm_s0(sm_tl(sm_tl(ts))) then sm_so("ite") else if sm_s0(sm_tl(ts)) == 0 then sm_ti(SmIte(sm_a0(ts), sm_a1(ts), sm_a2(ts))) else sm_tb(SmBIte(sm_a0(ts), sm_a1(ts), sm_a2(ts)))
+fn sm_el_arith(f, ts, k) = if k == 0 then sm_ar(f) else if sm_srt(ts, 0) == 0 then sm_so(f) else if f == "-" then (if k == 1 then sm_ti(SmNeg(sm_a0(ts))) else sm_ti(sm_foldi(f, sm_a0(ts), sm_tl(ts)))) else if f == "+" or f == "*" then (if k < 2 then sm_few(f) else sm_ti(sm_foldi(f, sm_a0(ts), sm_tl(ts)))) else if k < 2 then sm_ar(f) else if k > 2 then sm_chain(f) else if f == "<" then sm_tb(SmLt(sm_a0(ts), sm_a1(ts))) else if f == "<=" then sm_tb(SmLe(sm_a0(ts), sm_a1(ts))) else if f == ">" then sm_tb(SmLt(sm_a1(ts), sm_a0(ts))) else sm_tb(SmLe(sm_a1(ts), sm_a0(ts)))
+fn sm_el_call(f, args, d, env, loc) = if d.n == "" then sm_te(sm_unk(f)) else if d.ar == 0 then sm_te("malformed: `" + f + "` is a constant, not a function") else if d.ar != sm_len(args) then sm_te("malformed: `" + f + "` takes " + str(d.ar) + " argument(s)") else sm_el_call2(f, d, sm_el_args(args, env, loc))
+fn sm_el_call2(f, d, r) = if r.e != "" then sm_te(r.e) else if sm_srt(r.ts, 0) == 0 then sm_so(f) else if d.rs == 1 then sm_tb(SmPred(f, sm_terms(r.ts))) else sm_ti(SmApp(f, sm_terms(r.ts)))
+
+## --- commands. State {e, env, fs: asserted formulas (latest first), chk: check-sat seen, nc: commands seen} ---
+fn sm_st0() = {e: "", env: Nil, fs: Nil, chk: 0, nc: 0}
+fn sm_serr(st, e) = {e: e, env: st.env, fs: st.fs, chk: st.chk, nc: st.nc}
+fn sm_sort(x) = let a = sm_atom(x) in if a == "Int" then 0 else if a == "Bool" then 1 else 0 - 1
+## the number of argument sorts of a declare-fun, all of which have to be Int: -2 not a list, -1 another sort
+fn sm_ints(x) = match x
+    SxA(a)  => 0 - 2
+    SxL(xs) => sm_ints1(xs, 0)
+fn sm_ints1(xs, k) = match xs
+    Nil        => k
+    Cons(h, t) => if sm_atom(h) == "Int" then sm_ints1(t, k + 1) else 0 - 1
+fn sm_name_err(nm, env) = if nm == "" then "malformed: a symbol was expected" else if sm_isdig(ord(at(nm, 0))) == 1 then "malformed: `" + sm_clip(nm) + "` is not a symbol" else if sm_word(sm_ops_core() + sm_ops_other(), nm) == 1 then "malformed: `" + nm + "` is reserved" else if sm_plain(nm) == 0 then "unsupported: symbol `" + sm_clip(nm) + "` (the subset allows [A-Za-z_][A-Za-z0-9_]*)" else if (sm_env(env, nm)).n != "" then "malformed: duplicate definition of `" + nm + "`" else ""
+fn sm_c_decl(nx, k, rx, st) = let nm = sm_atom(nx) in let ne = sm_name_err(nm, st.env) in if ne != "" then sm_serr(st, ne) else if k == 0 - 2 then sm_serr(st, "malformed: declare-fun needs a list of argument sorts") else if k < 0 then sm_serr(st, "unsupported: argument sort other than Int in the declaration of `" + nm + "`") else if sm_sort(rx) < 0 then sm_serr(st, "unsupported: sort `" + sm_clip(sm_show(rx)) + "`") else {e: "", env: Cons({n: nm, kd: 0, ar: k, rs: sm_sort(rx), t: SmT}, st.env), fs: st.fs, chk: 0, nc: st.nc + 1}
+## the parameters of a define-fun: ((p Int) ...), distinct, not shadowing a global
+fn sm_params(x, env) = match x
+    SxA(a)  => {e: "malformed: define-fun needs a parameter list", ps: Nil}
+    SxL(xs) => sm_params1(xs, env, Nil)
+fn sm_params1(xs, env, acc) = match xs
+    Nil        => {e: "", ps: sm_rev(acc, Nil)}
+    Cons(h, t) => sm_params2(h, t, env, acc)
+fn sm_params2(h, t, env, acc) = match h
+    SxA(a)  => {e: "malformed: a parameter is (name sort)", ps: Nil}
+    SxL(ys) => if sm_len(ys) != 2 then {e: "malformed: a parameter is (name sort)", ps: Nil} else let nm = sm_atom(sm_x0(ys)) in let ne = sm_name_err(nm, env) in if ne != "" then {e: (if sm_starts(ne, "malformed: duplicate") == 1 then "unsupported: parameter `" + nm + "` shadows a global symbol" else ne), ps: Nil} else if sm_mem(acc, nm) == 1 then {e: "malformed: duplicate parameter `" + nm + "`", ps: Nil} else if sm_atom(sm_x1(ys)) != "Int" then {e: "unsupported: parameter sort other than Int", ps: Nil} else sm_params1(t, env, Cons(nm, acc))
+fn sm_c_def(nx, px, rx, bx, st) = let nm = sm_atom(nx) in let ne = sm_name_err(nm, st.env) in if ne != "" then sm_serr(st, ne) else let pr = sm_params(px, st.env) in if pr.e != "" then sm_serr(st, pr.e) else if sm_mem(pr.ps, nm) == 1 then sm_serr(st, "unsupported: a parameter of `" + nm + "` has its name") else if sm_sort(rx) < 0 then sm_serr(st, "unsupported: sort `" + sm_clip(sm_show(rx)) + "`") else let b = sm_elab(bx, st.env, pr.ps) in if b.e != "" then sm_serr(st, b.e) else if b.s != sm_sort(rx) then sm_serr(st, "malformed: the body of `" + nm + "` does not have the declared sort") else {e: "", env: Cons({n: nm, kd: (if sm_isnil(pr.ps) == 1 then 1 else 2), ar: sm_len(pr.ps), rs: b.s, t: b.t}, st.env), fs: st.fs, chk: 0, nc: st.nc + 1}
+fn sm_c_assert(x, st) = let r = sm_elab(x, st.env, Nil) in if r.e != "" then sm_serr(st, r.e) else if r.s != 1 then sm_serr(st, "malformed: the asserted term is not Bool") else {e: "", env: st.env, fs: Cons(r.t, st.fs), chk: 0, nc: st.nc + 1}
+fn sm_c_logic(args, k, st) = if st.nc != 0 then sm_serr(st, "malformed: set-logic has to be the first command and appear once") else if k != 1 or sm_atom(sm_x0(args)) == "" then sm_serr(st, "malformed: set-logic takes one symbol") else if sm_atom(sm_x0(args)) != "QF_UFNIA" then sm_serr(st, "unsupported: logic `" + sm_clip(sm_atom(sm_x0(args))) + "` (the certificates use QF_UFNIA)") else {e: "", env: st.env, fs: st.fs, chk: 0, nc: 1}
+fn sm_cmd3(c, args, k, st) = if st.chk > 0 then sm_serr(st, "unsupported: command `" + sm_clip(c) + "` after (check-sat)") else if c == "set-logic" then sm_c_logic(args, k, st) else if st.nc == 0 then sm_serr(st, (if sm_word(sm_cmds_other() + " declare-const declare-fun define-fun assert check-sat ", c) == 1 then "unsupported: the script does not start with (set-logic QF_UFNIA)" else "malformed: unknown command `" + sm_clip(c) + "`")) else if c == "declare-const" then (if k != 2 then sm_serr(st, "malformed: declare-const takes a name and a sort") else sm_c_decl(sm_x0(args), 0, sm_x1(args), st)) else if c == "declare-fun" then (if k != 3 then sm_serr(st, "malformed: declare-fun takes a name, argument sorts and a sort") else sm_c_decl(sm_x0(args), sm_ints(sm_x1(args)), sm_x2(args), st)) else if c == "define-fun" then (if k != 4 then sm_serr(st, "malformed: define-fun takes a name, parameters, a sort and a body") else sm_c_def(sm_x0(args), sm_x1(args), sm_x2(args), sm_x3(args), st)) else if c == "assert" then (if k != 1 then sm_serr(st, "malformed: assert takes one term") else sm_c_assert(sm_x0(args), st)) else if c == "check-sat" then (if k != 0 then sm_serr(st, "malformed: check-sat takes no argument") else {e: "", env: st.env, fs: st.fs, chk: 1, nc: st.nc + 1}) else if sm_word(sm_cmds_other(), c) == 1 then sm_serr(st, "unsupported: command `" + c + "`") else sm_serr(st, "malformed: unknown command `" + sm_clip(c) + "`")
+fn sm_cmd2(h, args, st) = match h
+    SxL(ys) => sm_serr(st, "malformed: a command name was expected")
+    SxA(c)  => sm_cmd3(c, args, sm_len(args), st)
+fn sm_cmd1(xs, st) = match xs
+    Nil           => sm_serr(st, "malformed: empty command ()")
+    Cons(h, args) => sm_cmd2(h, args, st)
+fn sm_cmd(x, st) = match x
+    SxA(a)  => sm_serr(st, "malformed: top-level atom `" + sm_clip(a) + "` where a command was expected")
+    SxL(xs) => sm_cmd1(xs, st)
+fn sm_cmds(xs, st) = match xs
+    Nil        => st
+    Cons(h, t) => sm_cmds2(sm_cmd(h, st), t)
+fn sm_cmds2(st, t) = if st.e != "" then st else sm_cmds(t, st)
+
+## --- overflow-checked i64 arithmetic (the operators + and * of Lume trap; a checker must not) ---
+fn sm_min() = 0 - 9223372036854775807 - 1
+fn sm_sg(a) = if a >= 0 then 1 else 0
+fn sm_addok(a, b) = if sm_sg(a) != sm_sg(b) then 1 else if sm_sg(a +% b) == sm_sg(a) then 1 else 0
+## for a outside {0, -1}: the wrapped product r is exact iff r / a == b (an overflow moves r by a multiple of 2^64,
+## further from a * b than |a|)
+fn sm_mulok(a, b) = if a == 0 or b == 0 then 1 else if a == 0 - 1 then (if b == sm_min() then 0 else 1) else if b == 0 - 1 then (if a == sm_min() then 0 else 1) else if (a *% b) / a == b then 1 else 0
+
+## --- polynomials: lists of {c: coefficient != 0, k: monomial key, m: atom keys in order}, sorted by k; the constant
+## term has k == "". A poisoned polynomial (a coefficient left 64 bits) is the single monomial with key "!". ---
+fn sm_pbad() = Cons({c: 1, k: "!", m: Nil}, Nil)
+fn sm_isbad(p) = match p
+    Nil        => 0
+    Cons(h, t) => if h.k == "!" then 1 else 0
+fn sm_pconst(n) = if n == 0 then Nil else Cons({c: n, k: "", m: Nil}, Nil)
+fn sm_patom(key) = Cons({c: 1, k: key, m: Cons(key, Nil)}, Nil)
+fn sm_pcons(c, h, rest) = if sm_isbad(rest) == 1 then rest else if c == 0 then rest else Cons({c: c, k: h.k, m: h.m}, rest)
+fn sm_padd(p, q) = if sm_isbad(p) == 1 then p else if sm_isbad(q) == 1 then q else sm_padd1(p, q)
+fn sm_padd1(p, q) = match p
+    Nil        => q
+    Cons(h, t) => sm_padd2(h, t, q)
+fn sm_padd2(h, t, q) = match q
+    Nil        => Cons(h, t)
+    Cons(g, u) => if h.k == g.k then (if sm_addok(h.c, g.c) == 0 then sm_pbad() else sm_pcons(h.c +% g.c, h, sm_padd1(t, u))) else if h.k < g.k then sm_pcons(h.c, h, sm_padd1(t, q)) else sm_pcons(g.c, g, sm_padd2(h, t, u))
+fn sm_pscale(p, n) = if n == 0 then Nil else if sm_isbad(p) == 1 then p else sm_pscale1(p, n)
+fn sm_pscale1(p, n) = match p
+    Nil        => Nil
+    Cons(h, t) => if sm_mulok(h.c, n) == 0 then sm_pbad() else sm_pcons(h.c *% n, h, sm_pscale1(t, n))
+fn sm_merge(a, b) = match a
+    Nil        => b
+    Cons(h, t) => sm_merge2(h, t, b)
+fn sm_merge2(h, t, b) = match b
+    Nil        => Cons(h, t)
+    Cons(g, u) => if g < h then Cons(g, sm_merge2(h, t, u)) else Cons(h, sm_merge(t, b))
+fn sm_mkey(m) = match m
+    Nil        => ""
+    Cons(h, t) => if sm_isnil(t) == 1 then h else h + "*" + sm_mkey(t)
+fn sm_mmul(h, g) = let m = sm_merge(h.m, g.m) in Cons({c: h.c *% g.c, k: sm_mkey(m), m: m}, Nil)
+fn sm_mmulp(h, q) = match q
+    Nil        => Nil
+    Cons(g, u) => if sm_mulok(h.c, g.c) == 0 then sm_pbad() else sm_padd(sm_mmul(h, g), sm_mmulp(h, u))
+fn sm_pmul(p, q) = if sm_isbad(p) == 1 then p else if sm_isbad(q) == 1 then q else sm_pmul1(p, q)
+fn sm_pmul1(p, q) = match p
+    Nil        => Nil
+    Cons(h, t) => sm_padd(sm_mmulp(h, q), sm_pmul1(t, q))
+## the key of a polynomial: `c:monomial` joined by `+`. Injective: names are [A-Za-z0-9_]+, a big numeral is #digits,
+## an application is (f key,key...), and none of : + * , ( ) # can occur in a name.
+fn sm_pkey(p) = match p
+    Nil        => "0"
+    Cons(h, t) => str(h.c) + ":" + h.k + (if sm_isnil(t) == 1 then "" else "+" + sm_pkey(t))
+fn sm_c0(p) = match p
+    Nil        => 0
+    Cons(h, t) => if h.k == "" then h.c else 0
+fn sm_rest(p) = match p
+    Nil        => Nil
+    Cons(h, t) => if h.k == "" then t else p
+fn sm_lead(q) = match q
+    Nil        => 0
+    Cons(h, t) => h.c
+
+## --- three-valued evaluation under a partial assignment sg of ground atoms.
+## sg is a list of {k: atom key, v: 0 / 1, kd: 0 LT | 1 EQ | 2 predicate, b: base key, c: constant}.
+## A result is {st: 0 decided | 1 an atom is needed | 2 failed, p: polynomial, v: truth value, nd: the atom, why}. ---
+fn sm_noat() = {k: "", kd: 2, b: "", c: 0}
+fn sm_rp(p) = {st: 0, p: p, v: 0, nd: sm_noat(), why: ""}
+fn sm_rv(v) = {st: 0, p: Nil, v: v, nd: sm_noat(), why: ""}
+fn sm_rn(a) = {st: 1, p: Nil, v: 0, nd: a, why: ""}
+fn sm_rf(why) = {st: 2, p: Nil, v: 0, nd: sm_noat(), why: why}
+fn sm_ovf() = sm_rf("an integer coefficient of a normal form does not fit 64 bits")
+fn sm_rpc(p) = if sm_isbad(p) == 1 then sm_ovf() else sm_rp(p)
+fn sm_ei(t, sg) = match t
+    SmNum(n)       => sm_rp(sm_pconst(n))
+    SmBig(d)       => sm_rp(sm_patom("#" + d))
+    SmVar(a)       => sm_rp(sm_patom(a))
+    SmApp(f, args) => sm_ei_app(f, sm_eargs(args, sg))
+    SmAdd(a, b)    => sm_ei_bin(0, sm_ei(a, sg), b, sg)
+    SmMul(a, b)    => sm_ei_bin(1, sm_ei(a, sg), b, sg)
+    SmNeg(a)       => sm_ei_neg(sm_ei(a, sg))
+    SmIte(c, a, b) => sm_ei_ite(sm_eb(c, sg), a, b, sg)
+fn sm_ei_bin(op, ra, b, sg) = if ra.st != 0 then ra else sm_ei_bin2(op, ra.p, sm_ei(b, sg))
+fn sm_ei_bin2(op, pa, rb) = if rb.st != 0 then rb else sm_rpc(if op == 0 then sm_padd(pa, rb.p) else sm_pmul(pa, rb.p))
+fn sm_ei_neg(ra) = if ra.st != 0 then ra else sm_rpc(sm_pscale(ra.p, 0 - 1))
+fn sm_ei_ite(rc, a, b, sg) = if rc.st != 0 then rc else if rc.v == 1 then sm_ei(a, sg) else sm_ei(b, sg)
+## the keys of the arguments of an application, joined by `,`
+fn sm_eargs(args, sg) = match args
+    Nil        => {st: 0, ks: "", nd: sm_noat(), why: ""}
+    Cons(h, t) => sm_eargs2(sm_ei(h, sg), t, sg)
+fn sm_eargs2(rh, t, sg) = if rh.st != 0 then {st: rh.st, ks: "", nd: rh.nd, why: rh.why} else let rt = sm_eargs(t, sg) in if rt.st != 0 then rt else {st: 0, ks: sm_pkey(rh.p) + (if sm_isnil(t) == 1 then "" else ",") + rt.ks, nd: rt.nd, why: ""}
+fn sm_ei_app(f, r) = if r.st != 0 then {st: r.st, p: Nil, v: 0, nd: r.nd, why: r.why} else sm_rp(sm_patom("(" + f + " " + r.ks + ")"))
+fn sm_eb(f, sg) = match f
+    SmT             => sm_rv(1)
+    SmF             => sm_rv(0)
+    SmNot(a)        => sm_eb_not(sm_eb(a, sg))
+    SmAnd(a, b)     => sm_eb_and(sm_eb(a, sg), b, sg)
+    SmOr(a, b)      => sm_eb_or(sm_eb(a, sg), b, sg)
+    SmIff(a, b)     => sm_eb_iff(sm_eb(a, sg), b, sg)
+    SmBIte(c, a, b) => sm_eb_ite(sm_eb(c, sg), a, b, sg)
+    SmLt(a, b)      => sm_eb_cmp(0, sm_ei(a, sg), b, sg)
+    SmLe(a, b)      => sm_eb_cmp(1, sm_ei(a, sg), b, sg)
+    SmEq(a, b)      => sm_eb_cmp(2, sm_ei(a, sg), b, sg)
+    SmPred(p, args) => sm_eb_pred(p, sm_eargs(args, sg), sg)
+fn sm_eb_not(r) = if r.st != 0 then r else sm_rv(1 - r.v)
+fn sm_eb_and(ra, b, sg) = if ra.st != 0 then ra else if ra.v == 0 then ra else sm_eb(b, sg)
+fn sm_eb_or(ra, b, sg) = if ra.st != 0 then ra else if ra.v == 1 then ra else sm_eb(b, sg)
+fn sm_eb_iff(ra, b, sg) = if ra.st != 0 then ra else sm_eb_iff2(ra.v, sm_eb(b, sg))
+fn sm_eb_iff2(v, rb) = if rb.st != 0 then rb else sm_rv(if v == rb.v then 1 else 0)
+fn sm_eb_ite(rc, a, b, sg) = if rc.st != 0 then rc else if rc.v == 1 then sm_eb(a, sg) else sm_eb(b, sg)
+fn sm_eb_pred(p, r, sg) = if r.st != 0 then {st: r.st, p: Nil, v: 0, nd: r.nd, why: r.why} else let key = "P(" + p + " " + r.ks + ")" in let v = sm_look(sg, key) in if v != 2 then sm_rv(v) else sm_rn({k: key, kd: 2, b: key, c: 0})
+## rule R4: op 0 is a < b, 1 is a <= b, 2 is a = b
+fn sm_eb_cmp(op, ra, b, sg) = if ra.st != 0 then ra else sm_eb_cmp2(op, ra.p, sm_ei(b, sg), sg)
+fn sm_eb_cmp2(op, pa, rb, sg) = if rb.st != 0 then rb else let d = sm_padd(pa, sm_pscale(rb.p, 0 - 1)) in sm_cmp(if op == 2 then 1 else 0, if op == 1 then sm_padd(d, sm_pconst(0 - 1)) else d, sg)
+fn sm_cmp(kd, p, sg) = if sm_isbad(p) == 1 then sm_ovf() else sm_cmp1(kd, sm_c0(p), sm_rest(p), sg)
+fn sm_cmp1(kd, c, q, sg) = if sm_isnil(q) == 1 then sm_rv(if kd == 0 then (if c < 0 then 1 else 0) else (if c == 0 then 1 else 0)) else if sm_lead(q) > 0 then sm_askg(kd, q, c, 0, sg) else if c == sm_min() then sm_ovf() else sm_cmp2(kd, c, sm_pscale(q, 0 - 1), sg)
+fn sm_cmp2(kd, c, nq, sg) = if sm_isbad(nq) == 1 then sm_ovf() else if kd == 1 then sm_askg(1, nq, 0 - c, 0, sg) else sm_askg(0, nq, 0 - c - 1, 1, sg)
+## rule R7: the common factor g > 1 of the coefficients of the base. With q = g * r (r an integer in every model):
+## g*r + c = 0 is false when g does not divide c, else r + c/g = 0; g*r + c < 0 <=> r < -c/g <=> r + floor(c/g) < 0.
+fn sm_gcd(a, b) = if b == 0 then a else sm_gcd(b, a % b)
+fn sm_pgcd(q, g) = match q
+    Nil        => g
+    Cons(h, t) => if h.c == sm_min() or g == 1 then 1 else sm_pgcd(t, sm_gcd(if h.c < 0 then 0 - h.c else h.c, g))
+fn sm_pdiv(q, g) = match q
+    Nil        => Nil
+    Cons(h, t) => Cons({c: h.c / g, k: h.k, m: h.m}, sm_pdiv(t, g))
+## floor(c / g) for g > 0: the truncated quotient is the floor unless c is negative and not a multiple of g
+fn sm_fdiv(c, g) = let d = c / g in if c < 0 and d * g != c then d - 1 else d
+fn sm_askg(kd, q, c, fl, sg) = let g = sm_pgcd(q, 0) in if g <= 1 or c == sm_min() then sm_ask(kd, sm_pkey(q), c, fl, sg) else if kd == 1 then (if c % g != 0 then sm_rv(sm_flip(0, fl)) else sm_ask(1, sm_pkey(sm_pdiv(q, g)), c / g, fl, sg)) else sm_ask(0, sm_pkey(sm_pdiv(q, g)), sm_fdiv(c, g), fl, sg)
+fn sm_look(sg, key) = match sg
+    Nil        => 2
+    Cons(h, t) => if h.k == key then h.v else sm_look(t, key)
+fn sm_flip(v, fl) = if fl == 1 then 1 - v else v
+## the atom LT(b, c): b + c < 0 (kd 0) or EQ(b, c): b + c = 0 (kd 1), by assignment, else by rule R6, else needed
+fn sm_ask(kd, bk, c, fl, sg) = let key = (if kd == 0 then "L" else "E") + str(c) + ":" + bk in let v = sm_look(sg, key) in if v != 2 then sm_rv(sm_flip(v, fl)) else if c == sm_min() then sm_rn({k: key, kd: kd, b: bk, c: c}) else let w = sm_theory(kd, 0 - c, sm_tight(sg, bk, sm_bounds(sg, bk, {hl: 0, lo: 0, hh: 0, hi: 0}), 64)) in if w != 2 then sm_rv(sm_flip(w, fl)) else sm_rn({k: key, kd: kd, b: bk, c: c})
+## rule R6. bd = {hl: has a lower bound, lo, hh: has an upper bound, hi} for the base bk. With t = -c:
+## LT(b, c) = 1 is b <= t - 1, LT(b, c) = 0 is b >= t, EQ(b, c) = 1 is b = t. (c != MIN, so t and t - 1 are exact.)
+fn sm_bhi(bd, x) = if bd.hh == 1 and bd.hi <= x then bd else {hl: bd.hl, lo: bd.lo, hh: 1, hi: x}
+fn sm_blo(bd, x) = if bd.hl == 1 and bd.lo >= x then bd else {hl: 1, lo: x, hh: bd.hh, hi: bd.hi}
+fn sm_bound1(h, t, bd) = if h.kd == 0 then (if h.v == 1 then sm_bhi(bd, t - 1) else sm_blo(bd, t)) else if h.v == 1 then sm_bhi(sm_blo(bd, t), t) else bd
+fn sm_bounds(sg, bk, bd) = match sg
+    Nil        => bd
+    Cons(h, t) => sm_bounds(t, bk, if h.kd < 2 and h.c != sm_min() and h.b == bk then sm_bound1(h, 0 - h.c, bd) else bd)
+## EQ(b, c) = 0 is b != t: a bound that sits on t moves one step inwards (integers). Repeated while it changes, at
+## most k rounds. (When both bounds sit on t the interval becomes empty: no model follows that path.)
+fn sm_tight2(t, bd) = if bd.hl == 1 and bd.lo == t and t != 9223372036854775807 then {hl: 1, lo: t + 1, hh: bd.hh, hi: bd.hi} else if bd.hh == 1 and bd.hi == t and t != sm_min() then {hl: bd.hl, lo: bd.lo, hh: 1, hi: t - 1} else bd
+fn sm_tight1(sg, bk, bd) = match sg
+    Nil        => bd
+    Cons(h, t) => sm_tight1(t, bk, if h.kd == 1 and h.v == 0 and h.c != sm_min() and h.b == bk then sm_tight2(0 - h.c, bd) else bd)
+fn sm_tight(sg, bk, bd, k) = if bd.hl == 0 and bd.hh == 0 then bd else sm_tight3(sg, bk, bd, k, sm_tight1(sg, bk, bd))
+fn sm_tight3(sg, bk, bd, k, nb) = if k <= 0 or (nb.lo == bd.lo and nb.hi == bd.hi) then nb else sm_tight(sg, bk, nb, k - 1)
+## the atom asks b < t (kd 0) or b = t (kd 1): 1 true, 0 false, 2 not decided by the interval
+fn sm_theory(kd, t, bd) = if kd == 0 then (if bd.hh == 1 and bd.hi < t then 1 else if bd.hl == 1 and bd.lo >= t then 0 else 2) else if bd.hh == 1 and bd.hi < t then 0 else if bd.hl == 1 and bd.lo > t then 0 else if bd.hl == 1 and bd.hh == 1 and bd.lo == t and bd.hi == t then 1 else 2
+
+## --- rule R5: the case split. n counts evaluation passes. ---
+fn sm_sgshow(sg) = match sg
+    Nil        => ""
+    Cons(h, t) => (if h.v == 1 then "" else "not ") + h.k + "; " + sm_sgshow(t)
+fn sm_ext(sg, a, v) = Cons({k: a.k, v: v, kd: a.kd, b: a.b, c: a.c}, sg)
+fn sm_prove(f, sg, n, budget) = if n > budget then {ok: 0, n: n, why: "budget of " + str(budget) + " evaluation passes exhausted"} else sm_prove1(f, sg, n, budget, sm_eb(f, sg))
+fn sm_prove1(f, sg, n, budget, r) = if r.st == 2 then {ok: 0, n: n + 1, why: r.why} else if r.st == 0 then (if r.v == 0 then {ok: 1, n: n + 1, why: ""} else {ok: 0, n: n + 1, why: "not refuted: the assertions hold when the atoms are assigned [" + sm_clip(sm_sgshow(sg)) + "]"}) else sm_prove2(f, sg, budget, r.nd, sm_prove(f, sm_ext(sg, r.nd, 1), n + 1, budget))
+fn sm_prove2(f, sg, budget, a, r1) = if r1.ok == 0 then r1 else sm_prove(f, sm_ext(sg, a, 0), r1.n, budget)
+fn sm_conj(fs) = match fs
+    Nil        => SmT
+    Cons(h, t) => if sm_isnil(t) == 1 then h else SmAnd(sm_conj(t), h)
+
+## --- the shape of a certificate (see the header). "" when the command list is exactly the claim ltv states. ---
+fn sm_w_logic() = "(set-logic QF_UFNIA)"
+fn sm_w_f63() = "(define-fun lume_fits63 ((n Int)) Bool (and (<= (- 4611686018427387904) n) (<= n 4611686018427387903)))"
+fn sm_w_f64() = "(define-fun lume_fits64 ((n Int)) Bool (and (<= (- 9223372036854775808) n) (<= n 9223372036854775807)))"
+fn sm_w_div() = "(declare-fun lume_div (Int Int) Int)"
+fn sm_w_mod() = "(declare-fun lume_mod (Int Int) Int)"
+fn sm_w_claim() = "(assert (not (and (= trap_ast trap_x86) (=> (not trap_ast) (and ret_x86 (= val_ast val_x86))))))"
+fn sm_prof_pre(cs, want, env) = match want
+    Nil         => sm_prof_decl(cs, env)
+    Cons(w, wt) => sm_prof_pre2(cs, w, wt, env)
+fn sm_prof_pre2(cs, w, wt, env) = match cs
+    Nil         => "the certificate prelude is incomplete: `" + w + "` is missing"
+    Cons(c, ct) => if sm_show(c) == w then sm_prof_pre(ct, wt, env) else "the certificate prelude differs: expected `" + w + "`, found `" + sm_clip(sm_show(c)) + "`"
+fn sm_cname(c) = match c
+    SxA(a)  => ""
+    SxL(xs) => sm_atom(sm_x1(xs))
+fn sm_prof_decl(cs, env) = match cs
+    Nil         => "the claim definitions are missing"
+    Cons(c, ct) => sm_prof_decl2(sm_show(c), c, cs, ct, env)
+fn sm_prof_decl2(s, c, cs, ct, env) = if sm_starts(s, "(declare-fun f_") == 1 or sm_starts(s, "(declare-const x_") == 1 then (if (sm_env(env, sm_cname(c))).rs != 0 then "`" + sm_cname(c) + "` is not declared with result sort Int" else sm_prof_decl(ct, env)) else sm_prof_claim(cs, Cons("(define-fun trap_ast () Bool ", Cons("(define-fun trap_x86 () Bool ", Cons("(define-fun ret_x86 () Bool ", Cons("(define-fun val_ast () Int ", Cons("(define-fun val_x86 () Int ", Cons(sm_w_claim(), Cons("(check-sat)", Nil))))))))
+## a wanted text that ends with a blank is a prefix (the body follows), any other is the whole command
+fn sm_prof_claim(cs, want) = match want
+    Nil         => if sm_isnil(cs) == 1 then "" else "a command follows (check-sat)"
+    Cons(w, wt) => sm_prof_claim2(cs, w, wt)
+fn sm_prof_claim2(cs, w, wt) = match cs
+    Nil         => "the certificate ends where `" + w + "` was expected"
+    Cons(c, ct) => sm_prof_claim3(sm_show(c), w, wt, ct)
+fn sm_prof_claim3(s, w, wt, ct) = if (if sm_ends(w, " ") == 1 then sm_starts(s, w) else (if s == w then 1 else 0)) == 1 then sm_prof_claim(ct, wt) else "the claim differs from the one ltv states: expected `" + w + "`, found `" + sm_clip(s) + "`"
+fn sm_profile(cs, env) = sm_prof_pre(cs, Cons(sm_w_logic(), Cons(sm_w_f63(), Cons(sm_w_f64(), Cons(sm_w_div(), Cons(sm_w_mod(), Nil))))), env)
+
+## --- one script. mode 0: certificate, 1: raw ---
+fn sm_colon(e, n, i) = if i >= n then n else if at(e, i) == ":" then i else sm_colon(e, n, i + 1)
+fn sm_verdict(e) = let i = sm_colon(e, count(e), 0) in {verdict: slice(e, 0, i), why: (if i + 2 <= count(e) then slice(e, i + 2, count(e)) else ""), n: 0}
+fn sm_run(text, mode, budget) = let rd = sm_rdall(text, count(text), 0, Nil) in if rd.e != "" then sm_verdict(rd.e) else let st = sm_cmds(rd.xs, sm_st0()) in if st.e != "" then sm_verdict(st.e) else if st.chk == 0 then sm_verdict("malformed: the script has no (check-sat)") else sm_run2(mode, budget, st, if mode == 0 then sm_profile(rd.xs, st.env) else "")
+fn sm_run2(mode, budget, st, pf) = if pf != "" then {verdict: "forged", why: pf, n: 0} else let r = sm_prove(sm_conj(st.fs), Nil, 0, budget) in if r.ok == 1 then {verdict: "unsat", why: "", n: r.n} else {verdict: "unknown", why: r.why, n: r.n}
+fn sm_budget() = 200000
+fn lsmt_check_text(text) = sm_run(text, 0, sm_budget())
+fn lsmt_solve_text(text) = sm_run(text, 1, sm_budget())
+
+## --- command line ---
+fn sm_line_end(s, n, i) = if i >= n then i else if at(s, i) == "\n" then i else sm_line_end(s, n, i + 1)
+fn sm_get_at(s, n, key, i) = if i >= n then "" else let e = sm_line_end(s, n, i) in let m = count(key) in if e - i > m + 2 and slicen(s, n, i, i + m + 2) == "@" + key + " " then slicen(s, n, i + m + 2, e) else sm_get_at(s, n, key, e + 1)
+fn sm_get(s, key) = sm_get_at(s, count(s), key, 0)
+fn sm_ins(x, xs) = match xs
+    Nil        => Cons(x, Nil)
+    Cons(h, t) => if x < h then Cons(x, xs) else Cons(h, sm_ins(x, t))
+## the *.smt2 entries of a directory listing (one name per line), sorted
+fn sm_dir(ls, n, i, acc) = if i >= n then acc else let e = sm_line_end(ls, n, i) in let nm = slicen(ls, n, i, e) in sm_dir(ls, n, e + 1, if sm_ends(nm, ".smt2") == 1 then sm_ins(nm, acc) else acc)
+fn sm_prefix(d, xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => sm_prefix(d, t, Cons(d + "/" + h, acc))
+## the files named on stdin, in order (collected latest first)
+fn sm_files(s, n, i, acc) = if i >= n then sm_rev(acc, Nil) else let e = sm_line_end(s, n, i) in if e - i > 6 and slicen(s, n, i, i + 6) == "@file " then sm_files(s, n, e + 1, Cons(slicen(s, n, i + 6, e), acc)) else if e - i > 5 and slicen(s, n, i, i + 5) == "@dir " then (let d = slicen(s, n, i + 5, e) in let ls = fs_read_dir(d) in sm_files(s, n, e + 1, sm_prefix(d, sm_dir(ls, count(ls), 0, Nil), acc))) else sm_files(s, n, e + 1, acc)
+fn sm_jesc1(c) = if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if ord(c) < 32 then " " else c
+fn sm_jesc_at(s, i, n) = if i >= n then "" else sm_jesc1(at(s, i)) + sm_jesc_at(s, i + 1, n)
+fn sm_jesc(s) = sm_jesc_at(s, 0, count(s))
+fn sm_join(xs, sep) = match xs
+    Nil        => ""
+    Cons(h, t) => h + (if sm_isnil(t) == 1 then "" else sep) + sm_join(t, sep)
+## (a NUL byte in the file reaches the reader as character code 0, which is not a legal character: malformed)
+fn sm_file(path, mode, budget) = if fs_path_exists(path) == 0 then {verdict: "malformed", why: "cannot read the file", n: 0} else sm_run(fs_read_file(path), mode, budget)
+fn sm_tally(a, path, r, verbose) = {nf: a.nf + 1, us: a.us + (if r.verdict == "unsat" then 1 else 0), uk: a.uk + (if r.verdict == "unknown" then 1 else 0), un: a.un + (if r.verdict == "unsupported" then 1 else 0), ma: a.ma + (if r.verdict == "malformed" then 1 else 0), fo: a.fo + (if r.verdict == "forged" then 1 else 0), np: a.np + r.n, nbad: a.nbad + (if r.verdict == "unsat" then 0 else 1), bad: (if r.verdict != "unsat" and a.nbad < 20 then Cons("{\"file\":\"" + sm_jesc(path) + "\",\"verdict\":\"" + r.verdict + "\",\"why\":\"" + sm_jesc(r.why) + "\"}", a.bad) else a.bad), all: (if verbose == 1 then Cons("{\"file\":\"" + sm_jesc(path) + "\",\"verdict\":\"" + r.verdict + "\",\"passes\":" + str(r.n) + "}", a.all) else a.all)}
+fn sm_each(files, mode, budget, verbose, a) = match files
+    Nil        => a
+    Cons(h, t) => sm_each(t, mode, budget, verbose, sm_tally(a, h, sm_file(h, mode, budget), verbose))
+fn sm_json(a, mode, verbose, ms) = "{\"ok\":" + (if a.nf > 0 and a.us == a.nf then "true" else "false") + ",\"tool\":\"lsmt\",\"mode\":\"" + (if mode == 0 then "certificate" else "raw") + "\",\"files\":" + str(a.nf) + ",\"unsat\":" + str(a.us) + ",\"unknown\":" + str(a.uk) + ",\"unsupported\":" + str(a.un) + ",\"malformed\":" + str(a.ma) + ",\"forged\":" + str(a.fo) + ",\"evaluation_passes\":" + str(a.np) + ",\"elapsed_ms\":" + str(ms) + (if a.nf == 0 then ",\"error\":\"no certificate was given (@file <path> or @dir <dir> on stdin)\"" else "") + ",\"failures\":[" + sm_join(sm_rev(a.bad, Nil), ",") + "]" + (if verbose == 1 then ",\"results\":[" + sm_join(sm_rev(a.all, Nil), ",") + "]" else "") + "}"
+fn lsmt_main(input) = let t0 = os_monotonic_ns() in let mode = if sm_get(input, "mode") == "raw" then 1 else 0 in let bs = sm_get(input, "budget") in let budget = if bs != "" and sm_alldig(bs, count(bs), 0) == 1 and count(bs) < 10 then sm_num(bs, count(bs), 0, 0) else sm_budget() in let verbose = if sm_get(input, "verbose") == "1" then 1 else 0 in let a = sm_each(sm_files(input, count(input), 0, Nil), mode, budget, verbose, {nf: 0, us: 0, uk: 0, un: 0, ma: 0, fo: 0, np: 0, nbad: 0, bad: Nil, all: Nil}) in {ok: (if a.nf > 0 and a.us == a.nf then 1 else 0), json: sm_json(a, mode, verbose, (os_monotonic_ns() - t0) / 1000000)}
+## a failed run still leaves the report on stdout; the exit status is then 1
+fn sm_finish(r) = if r.ok == 1 then r.json else let w = fs_write_sync("/dev/stdout", r.json + "\n") in os_exit(1)
+
+## --- self tests (`./lume test compiler/stage1/lsmt.src`) ---
+fn smt_pre() = "(set-logic QF_UFNIA)\n(declare-const x Int)\n(declare-const y Int)\n(declare-fun f (Int) Int)\n"
+fn smt_raw(body) = (lsmt_solve_text(smt_pre() + body + "(check-sat)\n")).verdict
+fn smt_cert(defs, tail) = (lsmt_check_text(sm_w_logic() + "\n" + sm_w_f63() + "\n" + sm_w_f64() + "\n" + sm_w_div() + "\n" + sm_w_mod() + "\n(declare-const x_a Int)\n" + defs + tail)).verdict
+fn smt_defs(ta, tx, r, va, vx) = "(define-fun trap_ast () Bool " + ta + ")\n(define-fun trap_x86 () Bool " + tx + ")\n(define-fun ret_x86 () Bool " + r + ")\n(define-fun val_ast () Int " + va + ")\n(define-fun val_x86 () Int " + vx + ")\n"
+fn smt_tail() = sm_w_claim() + "\n(check-sat)\n"
+fn test_lsmt_raw_unsat() = if smt_raw("(assert (and (< x 0) (>= x 0)))\n") == "unsat" and smt_raw("(assert (not (= (* (+ x y) (+ x y)) (+ (* x x) (+ (* 2 (* x y)) (* y y))))))\n") == "unsat" and smt_raw("(assert (not (= (f (+ x 1)) (f (+ 1 x)))))\n") == "unsat" and smt_raw("(assert (and (< x 3) (> x 5)))\n") == "unsat" and smt_raw("(assert (< x 0))\n(assert (= x 4))\n") == "unsat" then 1 else 0
+fn test_lsmt_raw_sat_is_never_unsat() = if smt_raw("(assert (< x 0))\n") == "unknown" and smt_raw("(assert (not (= (f x) (f y))))\n") == "unknown" and smt_raw("(assert (and (< x 5) (> x 3)))\n") == "unknown" and smt_raw("(assert (not (= (* x y) (+ x y))))\n") == "unknown" and smt_raw("") == "unknown" then 1 else 0
+fn test_lsmt_malformed_and_unsupported() = if smt_raw("(assert (< x 0)\n") == "malformed" and smt_raw("(assert (< x z))\n") == "malformed" and smt_raw("(declare-const x Int)\n(assert false)\n") == "malformed" and smt_raw("(assert (+ x 1))\n") == "malformed" and smt_raw("(assert (= (div x 2) 0))\n(assert false)\n") == "unsupported" and smt_raw("(assert (let ((z 1)) false))\n") == "unsupported" and (lsmt_solve_text(smt_pre() + "(assert false)\n")).verdict == "malformed" and (lsmt_solve_text("(assert false)\n(check-sat)\n")).verdict == "unsupported" then 1 else 0
+fn test_lsmt_certificate_shape() = if smt_cert(smt_defs("(< x_a 0)", "(not (>= x_a 0))", "true", "(+ x_a 1)", "(+ 1 x_a)"), smt_tail()) == "unsat" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), smt_tail()) == "unknown" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), "(assert false)\n(check-sat)\n") == "forged" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), "(assert (< x_a 0))\n" + smt_tail()) == "forged" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), "(assert (and ret_x86 (not ret_x86)))\n(check-sat)\n") == "forged" and smt_cert("(declare-const trap_ast Bool)\n(define-fun trap_x86 () Bool false)\n(define-fun ret_x86 () Bool true)\n(define-fun val_ast () Int 0)\n(define-fun val_x86 () Int 0)\n(assert (and trap_ast (not trap_ast)))\n(check-sat)\n", "") == "forged" then 1 else 0
+fn test_lsmt_overflow_is_unknown() = if smt_raw("(assert (not (= (* 9223372036854775807 (* 2 x)) (* 2 (* 9223372036854775807 x)))))\n") == "unknown" and smt_raw("(assert (not (= (+ x 9223372036854775808) (+ 9223372036854775808 x))))\n") == "unsat" then 1 else 0
+fn test_lsmt_bounds_on_one_base() = if smt_raw("(assert (and (not (= x 0)) (not (= x 1)) (>= x 0) (<= x 1)))\n") == "unsat" and smt_raw("(assert (and (not (= x 0)) (not (= x 1)) (>= x 0) (<= x 2)))\n") == "unknown" and smt_raw("(assert (and (>= x 0) (not (= x 5)) (< x 3)))\n") == "unknown" and smt_raw("(assert (not (or (< x y) (= x y) (> x y))))\n") == "unsat" and smt_raw("(assert (and (<= x 5) (>= x 5) (not (= x 5))))\n") == "unsat" and smt_raw("(assert (and (<= x 5) (>= x 4) (not (= x 5))))\n") == "unknown" then 1 else 0
+
+print sm_finish(lsmt_main(readall()))
