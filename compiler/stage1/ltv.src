@@ -26,6 +26,13 @@
 ## anything else. They are
 ## validated against the real machine by the native boundary run (@exec 1), not proved here.
 ## Arithmetic is over the integers: the theorem is "for all inputs on which no i64 overflow trap occurs".
+## Constant-time kernels (`@secret` + `@no_alloc`, Wave 14) are the exception, in both directions: their code has no
+## tag test and no overflow test, so the validator must derive by itself that every word is an immediate and that no
+## operation leaves 63 bits; and then their theorem has no overflow proviso. Its hypothesis is "every parameter is an
+## immediate", which the literal entry guard of the kernel enforces by faulting. See the Wave 14 section below.
+## [C0010] (machine constant time of a `@secret` function) is closed over calls: the instructions of every routine
+## reached by `call` or `jmp` -- user functions and the runtime text alike -- are scanned with the same rules, and the
+## rejection names the call chain. A plain `@secret` function that calls a runtime helper is therefore rejected.
 ##
 ## The decision procedure is propositional + polynomial identity: both sides become polynomials over atoms
 ## (parameters, div / mod / call terms, if-then-else terms guarded by comparison atoms). Two results are equal when
@@ -35,7 +42,9 @@
 ## meaning of the atoms and, with @exec 1, a native run of the real binary re-check every accepted function.
 ##
 ## stdin:  @root <repo>   @src <file.src, self-contained>   [@asm <file.s>]   [@fn <name>]   [@out <dir>]   [@exec 1]
-## stdout: one JSON object; exit status non-zero when a function was rejected (the JSON is still on stdout).
+## stdout: one JSON object; exit status non-zero when a function was rejected (the JSON is still on stdout). Per
+##         function: secret, constant_time_kernel, ct_checked_transitively, ct_callees_inspected; per module:
+##         secret_functions / secret_validated / secret_rejected, constant_time_kernels(_validated).
 use lumec
 use lcert
 
@@ -174,7 +183,7 @@ fn tv_i64(p) = if tv_pisc(p) == 1 then TfT else TfLit("i64", p, Nil)
 ## the no-overflow condition of a flag-setting operation whose mathematical result is r: 2u and 2u+1 fit 64 bits
 ## exactly when u fits 63 bits
 fn tv_ofl(r) = if tv_peven(r) == 1 then tv_fit(tv_phalf(r)) else tv_i64(r)
-fn tv_mklit(kd, p, q) = if kd == "lt" then tv_lt(p) else if kd == "eq" then tv_eq(p) else if kd == "fit" then tv_fit(p) else if kd == "both" then tv_both(p, q) else tv_i64(p)
+fn tv_mklit(kd, p, q) = if kd == "hge" or kd == "hle" then TfT else if kd == "lt" then tv_lt(p) else if kd == "eq" then tv_eq(p) else if kd == "fit" then tv_fit(p) else if kd == "both" then tv_both(p, q) else tv_i64(p)
 fn tv_pite(f, p, q) = if tv_fist(f) == 1 then p else if tv_fisf(f) == 1 then q else if tv_pk(p) == tv_pk(q) then p else tv_patom(TaIte(f, p, q))
 
 ## --- path conditions: a DNF, i.e. a list of conjunctions; a conjunction is a list of {k: atom key, s: sign, f: atom} ---
@@ -197,7 +206,7 @@ fn tv_dfit(d, kf, ku) = match d
     Nil         => 1
     Cons(cj, t) => if tv_cj_fit(cj, kf, ku) == 1 then tv_dfit(t, kf, ku) else 0
 ## "u fits 63 bits" holds on every path that reaches this point
-fn tv_fitsk(u, d) = let f = tv_fit(u) in if tv_fist(f) == 1 then 1 else if tv_fisf(f) == 1 then 0 else tv_dfit(d, tv_fk(f), tv_pk(u))
+fn tv_fitsk(u, d) = let f = tv_fit(u) in if tv_fist(f) == 1 then 1 else if tv_fisf(f) == 1 then 0 else if tv_dfit(d, tv_fk(f), tv_pk(u)) == 1 then 1 else tv_ivfits(tv_ivp(u, d))
 fn tv_dhasnil(d) = match d
     Nil        => 0
     Cons(h, t) => if isnil(h) == 1 then 1 else tv_dhasnil(t)
@@ -259,6 +268,7 @@ fn tv_vk(v) = match v
     TvM(p)        => "M" + tv_pk(p)
     TvRaw(p)      => "R" + tv_pk(p)
     TvAnd(p, q)   => "A" + tv_pk(p) + "&" + tv_pk(q)
+    TvAndL(ps)    => "L" + tv_pks(ps)
     TvCmp(p)      => "C" + tv_pk(p)
     TvEqr(p)      => "E" + tv_pk(p)
     TvTruth(p)    => "B" + tv_pk(p)
@@ -444,8 +454,9 @@ fn tv_ctfail(v, s) = match v
     TvM(p)    => if tv_pisc(p) == 1 then {st: tv_dead(), jl: "", js: tv_dead(), tp: s.pc, tid: tv_pc0(p), err: ""} else tv_bad("ctfail message in %rdi is not a string literal")
     _         => tv_bad("ctfail message in %rdi is not a string literal")
 fn tv_is_call2(sym) = if sym == "addv" or sym == "__rt_sub" or sym == "__rt_mul" or sym == "__rt_div" or sym == "__rt_mod" or sym == "__rt_wadd" or sym == "__rt_wsub" or sym == "__rt_wmul" or sym == "simd_add4_i64" or sym == "simd_sub4_i64" or sym == "cmpv" or sym == "eqv" then 1 else 0
-fn tv_call(sym, s, cx) = if sym == "ctfail" then tv_ctfail(tv_eget(s.rg, "%rdi"), s) else if tv_is_call2(sym) == 1 then tv_call2(sym, tv_wpoly(tv_eget(s.rg, "%rdi")), tv_wpoly(tv_eget(s.rg, "%rsi")), s) else if sym == "__rt_cond" then tv_call_cond(tv_wpoly(tv_eget(s.rg, "%rax")), s) else if sym == "__rt_un2" then tv_call_un2(s) else if sym == "__lume_promise_new" then tv_call_prom(tv_wpoly(tv_eget(s.rg, "%rdi")), s) else if sym == "mkint" then tv_call_mkint(tv_eget(s.rg, "%rdi"), s) else tv_call_user(sym, tv_sig_get(cx.fns, sym), s)
-fn tv_step(i, s, cx) = let op = i.op in let a = i.a in let b = i.b in if op == "movq" then tv_mov(a, b, s, cx) else if op == "leaq" then tv_lea(a, b, s) else if op == "subq" and tv_isimm(a) == 1 and b == "%rsp" then tv_rsp_sub(tv_imm(a), s) else if op == "addq" and tv_isimm(a) == 1 and b == "%rsp" then tv_rsp_add(tv_imm(a), s) else if op == "addq" or op == "subq" or op == "imulq" then tv_arith(op, a, b, s) else if op == "incq" and b == "" then tv_arith("addq", "$1", a, s) else if op == "decq" and b == "" then tv_arith("subq", "$1", a, s) else if op == "sarq" and a == "$1" and tv_greg(b) == 1 then tv_sar_reg(tv_asm(tv_eget(s.rg, b), s.pc), b, s) else if (op == "shlq" or op == "salq") and a == "$1" and tv_greg(b) == 1 then tv_shl1_reg(tv_asm(tv_eget(s.rg, b), s.pc), b, s) else if (op == "salq" or op == "shlq") and a == "%cl" and b == "%rax" then tv_raw_shift("shl", s) else if op == "sarq" and a == "%cl" and b == "%rax" then tv_raw_shift("shr", s) else if op == "andq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_and_ins(a, b, s) else if op == "xorq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_xor_ins(a, b, s) else if op == "xorl" and tv_greg32(a) != "" and a == b then tv_ok(tv_setf(tv_setr(s, tv_greg32(a), TvM(Nil)), TgEq(Nil))) else if op == "orq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_raw_bin("or", a, b, s) else if op == "testb" and a == "$1" and b == "%al" then tv_ok(tv_setf(s, tv_tagf(tv_eget(s.rg, "%rax")))) else if op == "cmpq" then tv_cmp(a, b, s) else if op == "pushq" and tv_greg(a) == 1 and b == "" then tv_ok(tv_s(s.rg, s.sl, Cons(tv_eget(s.rg, a), s.stk), s.fl, s.pc, s.eff)) else if op == "popq" and tv_greg(a) == 1 and b == "" then tv_pop(a, s) else if op == "movzbq" and a == "%al" and b == "%rax" then tv_movzb(tv_eget(s.rg, "%rax"), s) else if op == "call" and b == "" then tv_call(a, s, cx) else if op == "jmp" and b == "" then {st: tv_dead(), jl: a, js: s, tp: Nil, tid: 0, err: ""} else if tv_starts(op, "set") == 1 and a == "%al" and b == "" then tv_setcc(slice(op, 3, count(op)), s) else if tv_starts(op, "j") == 1 and b == "" then tv_jcc(slice(op, 1, count(op)), a, s) else tv_bad("instruction outside the validated set")
+fn tv_call(sym, s, cx) = if sym == "ctfail" then tv_ctfail(tv_eget(s.rg, "%rdi"), s) else if tv_is_call2(sym) == 1 then tv_call2(sym, tv_wpoly(tv_eget(s.rg, "%rdi")), tv_wpoly(tv_eget(s.rg, "%rsi")), s) else if sym == "__rt_cond" then tv_call_cond(tv_wpoly(tv_eget(s.rg, "%rax")), s) else if sym == "__rt_un2" then tv_call_un2(s) else if sym == "__lume_promise_new" then tv_call_prom(tv_wpoly(tv_eget(s.rg, "%rdi")), s) else if sym == "mkint" then tv_call_mkint(tv_eget(s.rg, "%rdi"), s) else if sym == "__rt_ustk" then tv_call_ustk(s) else tv_call_user(sym, tv_sig_get(cx.fns, sym), s)
+fn tv_step(i, s, cx) = if cx.ct == 1 then tv_ct_step(i, s, cx) else tv_step0(i, s, cx)
+fn tv_step0(i, s, cx) = let op = i.op in let a = i.a in let b = i.b in if op == "movq" then tv_mov(a, b, s, cx) else if op == "leaq" then tv_lea(a, b, s) else if op == "subq" and tv_isimm(a) == 1 and b == "%rsp" then tv_rsp_sub(tv_imm(a), s) else if op == "addq" and tv_isimm(a) == 1 and b == "%rsp" then tv_rsp_add(tv_imm(a), s) else if op == "addq" or op == "subq" or op == "imulq" then tv_arith(op, a, b, s) else if op == "incq" and b == "" then tv_arith("addq", "$1", a, s) else if op == "decq" and b == "" then tv_arith("subq", "$1", a, s) else if op == "sarq" and a == "$1" and tv_greg(b) == 1 then tv_sar_reg(tv_asm(tv_eget(s.rg, b), s.pc), b, s) else if (op == "shlq" or op == "salq") and a == "$1" and tv_greg(b) == 1 then tv_shl1_reg(tv_asm(tv_eget(s.rg, b), s.pc), b, s) else if (op == "salq" or op == "shlq") and a == "%cl" and b == "%rax" then tv_raw_shift("shl", s) else if op == "sarq" and a == "%cl" and b == "%rax" then tv_raw_shift("shr", s) else if op == "andq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_and_ins(a, b, s) else if op == "xorq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_xor_ins(a, b, s) else if op == "xorl" and tv_greg32(a) != "" and a == b then tv_ok(tv_setf(tv_setr(s, tv_greg32(a), TvM(Nil)), TgEq(Nil))) else if op == "orq" and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_raw_bin("or", a, b, s) else if op == "testb" and a == "$1" and b == "%al" then tv_ok(tv_setf(s, tv_tagf(tv_eget(s.rg, "%rax")))) else if op == "cmpq" then tv_cmp(a, b, s) else if op == "pushq" and tv_greg(a) == 1 and b == "" then tv_ok(tv_s(s.rg, s.sl, Cons(tv_eget(s.rg, a), s.stk), s.fl, s.pc, s.eff)) else if op == "popq" and tv_greg(a) == 1 and b == "" then tv_pop(a, s) else if op == "movzbq" and a == "%al" and b == "%rax" then tv_movzb(tv_eget(s.rg, "%rax"), s) else if op == "call" and b == "" then tv_call(a, s, cx) else if op == "jmp" and b == "" then {st: tv_dead(), jl: a, js: s, tp: Nil, tid: 0, err: ""} else if tv_starts(op, "set") == 1 and a == "%al" and b == "" then tv_setcc(slice(op, 3, count(op)), s) else if tv_starts(op, "j") == 1 and b == "" then tv_jcc(slice(op, 1, count(op)), a, s) else tv_bad("instruction outside the validated set")
 
 ## --- the walk: instructions in address order, states merged at labels; every jump must go forward to a local label ---
 fn tv_pend_merge(pend, lab, s) = match pend
@@ -457,7 +468,7 @@ fn tv_pend_drop(pend, lab) = match pend
 fn tv_acc_err(acc, msg) = {tp: acc.tp, tm: acc.tm, err: msg}
 fn tv_run(ins, s, pend, seen, acc, cx) = match ins
     Nil          => {st: s, pend: pend, acc: acc}
-    Cons(i, rest) => if acc.err != "" then {st: s, pend: pend, acc: acc} else if i.lab != "" then tv_run_lab(i.lab, rest, s, pend, seen, acc, cx) else if s.live == 0 then tv_run(rest, s, pend, seen, acc, cx) else tv_run_ins(tv_step(i, s, cx), i, rest, pend, seen, acc, cx)
+    Cons(i, rest) => if acc.err != "" then {st: s, pend: pend, acc: acc} else if i.lab != "" then tv_run_lab(i.lab, rest, s, pend, seen, acc, cx) else if s.live == 0 then tv_run(rest, s, pend, seen, acc, cx) else tv_run_mac(tv_macro(i, rest, s, cx), i, rest, s, pend, seen, acc, cx)
 fn tv_run_lab(lab, rest, s, pend, seen, acc, cx) = if tv_starts(lab, ".") == 0 then tv_run(rest, s, pend, seen, tv_acc_err(acc, "non-local label " + lab + " inside the function"), cx) else let m = tv_pend_merge(pend, lab, s) in if m.live == 2 then tv_run(rest, m, pend, seen, tv_acc_err(acc, "paths with different stack depth or effects meet at " + lab), cx) else tv_run(rest, m, tv_pend_drop(pend, lab), Cons(lab, seen), acc, cx)
 fn tv_run_ins(r, i, rest, pend, seen, acc, cx) = if r.err != "" then tv_run(rest, r.st, pend, seen, tv_acc_err(acc, r.err + ": `" + i.txt + "`"), cx) else if r.jl != "" and tv_has(seen, r.jl) == 1 then tv_run(rest, r.st, pend, seen, tv_acc_err(acc, "backward jump: `" + i.txt + "`"), cx) else tv_run(rest, r.st, if r.jl != "" and r.js.live == 1 then Cons({l: r.jl, st: r.js}, pend) else pend, seen, {tp: app(acc.tp, r.tp), tm: if isnil(r.tp) == 1 then acc.tm else tv_pite(tv_dform(r.tp), tv_pc(r.tid), acc.tm), err: ""}, cx)
 
@@ -539,7 +550,7 @@ fn tv_p0(ps) = match ps
 fn tv_p1(ps) = match ps
     Cons(h, t) => tv_p0(t)
     _          => Nil
-fn tv_den_call(nm, a, cx) = if a.err != "" then tv_derr(a.err) else if nm == "__lume_promise_new" and len(a.ps) == 1 then (let p = tv_p0(a.ps) in tv_d(p, a.t, tv_padd(a.e, tv_patom(TaEff("promise_new", Cons(p, Nil)))), a.m)) else if tv_den_bit_kd(nm) != "" and len(a.ps) == 2 then tv_d(tv_patom(TaBit(tv_den_bit_kd(nm), tv_p0(a.ps), tv_p1(a.ps))), a.t, a.e, a.m) else if nm == "simd_add4_i64" and len(a.ps) == 2 then (let p = tv_p0(a.ps) in let q = tv_p1(a.ps) in tv_d(tv_pscale(tv_padd(p, q), 4), a.t, tv_padd(a.e, tv_patom(TaEff("simd_add4", Cons(p, Cons(q, Nil))))), a.m)) else if nm == "simd_sub4_i64" and len(a.ps) == 2 then (let p = tv_p0(a.ps) in let q = tv_p1(a.ps) in tv_d(tv_pscale(tv_psub(p, q), 4), a.t, tv_padd(a.e, tv_patom(TaEff("simd_sub4", Cons(p, Cons(q, Nil))))), a.m)) else if nm == cx.self then tv_derr("self recursion") else let sg = tv_sig_get(cx.fns, nm) in if sg.n < 0 or sg.ok == 0 then tv_derr("call to '" + nm + "', which is outside the integer fragment") else if sg.n != len(a.ps) then tv_derr("call to '" + nm + "' with a wrong number of arguments") else tv_d(tv_patom(TaCall(nm, a.ps)), a.t, tv_padd(a.e, tv_patom(TaEff("call." + nm, a.ps))), a.m)
+fn tv_den_call(nm, a, cx) = if a.err != "" then tv_derr(a.err) else if nm == "__lume_promise_new" and len(a.ps) == 1 then (let p = tv_p0(a.ps) in tv_d(p, a.t, tv_padd(a.e, tv_patom(TaEff("promise_new", Cons(p, Nil)))), a.m)) else if tv_den_bit_kd(nm) != "" and len(a.ps) == 2 then tv_d(tv_patom(TaBit(tv_den_bit_kd(nm), tv_p0(a.ps), tv_p1(a.ps))), a.t, a.e, a.m) else if nm == "simd_add4_i64" and len(a.ps) == 2 then (let p = tv_p0(a.ps) in let q = tv_p1(a.ps) in tv_d(tv_pscale(tv_padd(p, q), 4), a.t, tv_padd(a.e, tv_patom(TaEff("simd_add4", Cons(p, Cons(q, Nil))))), a.m)) else if nm == "simd_sub4_i64" and len(a.ps) == 2 then (let p = tv_p0(a.ps) in let q = tv_p1(a.ps) in tv_d(tv_pscale(tv_psub(p, q), 4), a.t, tv_padd(a.e, tv_patom(TaEff("simd_sub4", Cons(p, Cons(q, Nil))))), a.m)) else if nm == "ct_eq" and len(a.ps) == 2 then tv_d(tv_cteq_val(tv_p0(a.ps), tv_p1(a.ps)), a.t, a.e, a.m) else if nm == "ct_select" and len(a.ps) == 3 then tv_d(tv_selraw(tv_p0(a.ps), tv_p1(a.ps), tv_p2(a.ps)), a.t, a.e, a.m) else if nm == cx.self then tv_derr("self recursion") else let sg = tv_sig_get(cx.fns, nm) in if sg.n < 0 or sg.ok == 0 then tv_derr("call to '" + nm + "', which is outside the integer fragment") else if sg.n != len(a.ps) then tv_derr("call to '" + nm + "' with a wrong number of arguments") else tv_d(tv_patom(TaCall(nm, a.ps)), a.t, tv_padd(a.e, tv_patom(TaEff("call." + nm, a.ps))), a.m)
 fn tv_cond(x, env, cx) = match x
     Bin(op, l, r) => if op == "and" then tv_cond_and(tv_cond(l, env, cx), tv_cond(r, env, cx)) else if op == "or" then tv_cond_or(tv_cond(l, env, cx), tv_cond(r, env, cx)) else if tv_iscmp(op) == 1 then tv_cond_cmp(op, tv_den(l, env, cx), tv_den(r, env, cx)) else tv_cond_val(tv_den(x, env, cx))
     _             => tv_cond_val(tv_den(x, env, cx))
@@ -632,7 +643,7 @@ fn tv_xf(f, sty) = match f
     TfAnd(g, h)     => tv_xbin(if sty == 1 then "/\\" else "and", tv_xf(g, sty), tv_xf(h, sty), sty)
     TfOr(g, h)      => tv_xbin(if sty == 1 then "\\/" else "or", tv_xf(g, sty), tv_xf(h, sty), sty)
     TfLit(kd, p, q) => tv_xl(kd, p, q, sty)
-fn tv_xl(kd, p, q, sty) = if kd == "lt" then tv_xbin("<", tv_xp(p, sty), "0", sty) else if kd == "eq" then tv_xbin(if sty == 2 then "==" else "=", tv_xp(p, sty), "0", sty) else if kd == "fit" then "(lume_fits63 " + tv_xp(p, sty) + ")" else if kd == "both" then tv_xbin(if sty == 1 then "/\\" else "and", "(lume_fits63 " + tv_xp(p, sty) + ")", "(lume_fits63 " + tv_xp(q, sty) + ")", sty) else "(lume_fits64 " + tv_xp(p, sty) + ")"
+fn tv_xl(kd, p, q, sty) = if kd == "hge" then tv_xbin(">=", tv_xp(p, sty), tv_xp(q, sty), sty) else if kd == "hle" then tv_xbin("<=", tv_xp(p, sty), tv_xp(q, sty), sty) else if kd == "lt" then tv_xbin("<", tv_xp(p, sty), "0", sty) else if kd == "eq" then tv_xbin(if sty == 2 then "==" else "=", tv_xp(p, sty), "0", sty) else if kd == "fit" then "(lume_fits63 " + tv_xp(p, sty) + ")" else if kd == "both" then tv_xbin(if sty == 1 then "/\\" else "and", "(lume_fits63 " + tv_xp(p, sty) + ")", "(lume_fits63 " + tv_xp(q, sty) + ")", sty) else "(lume_fits64 " + tv_xp(p, sty) + ")"
 ## the callees a certificate has to declare
 fn tv_calls_p(p, acc) = match p
     Nil        => acc
@@ -674,8 +685,8 @@ fn tv_lean_params(ps) = match ps
     Nil        => ""
     Cons(h, t) => "x_" + h + " " + tv_lean_params(t)
 fn tv_all_calls(g) = tv_calls_f(g.ts, tv_calls_f(g.ta, tv_calls_f(g.ra, tv_calls_p(g.vs, tv_calls_p(g.va, Nil)))))
-fn tv_smt(nm, ps, g, hdr) = "; Lume Translation Validator (ltv) certificate for function `" + nm + "`\n" + hdr + "; Claim: the x86-64 code emitted by 05_codegen.src reaches `call ctfail` exactly when the lowered AST does, and\n; otherwise reaches its epilogue with the canonical word of the AST value in %rax. Division, modulo and callees\n; are uninterpreted, so the claim holds for every interpretation of them. Expected answer: unsat.\n(set-logic QF_UFNIA)\n(define-fun lume_fits63 ((n Int)) Bool (and (<= (- 4611686018427387904) n) (<= n 4611686018427387903)))\n(define-fun lume_fits64 ((n Int)) Bool (and (<= (- 9223372036854775808) n) (<= n 9223372036854775807)))\n(declare-fun lume_div (Int Int) Int)\n(declare-fun lume_mod (Int Int) Int)\n" + tv_smt_decls(tv_all_calls(g)) + tv_smt_params(ps) + "(define-fun trap_ast () Bool " + tv_xf(g.ts, 0) + ")\n(define-fun trap_x86 () Bool " + tv_xf(g.ta, 0) + ")\n(define-fun ret_x86 () Bool " + tv_xf(g.ra, 0) + ")\n(define-fun val_ast () Int " + tv_xp(g.vs, 0) + ")\n(define-fun val_x86 () Int " + tv_xp(g.va, 0) + ")\n(assert (not (and (= trap_ast trap_x86) (=> (not trap_ast) (and ret_x86 (= val_ast val_x86))))))\n(check-sat)\n"
-fn tv_lean(nm, ps, g, hdr) = "-- Lume Translation Validator (ltv) certificate for function `" + nm + "`\n" + hdr + "-- Status: EXPORTED. This file is checked by Lean only where a Lean 4 toolchain with Mathlib is installed;\n-- the in-tree verdict comes from ltv's own decision procedure and its SMT-LIB2 twin.\nimport Mathlib.Tactic\nopen Classical\n\ndef lume_fits63 (n : Int) : Prop := -4611686018427387904 <= n /\\ n <= 4611686018427387903\ndef lume_fits64 (n : Int) : Prop := -9223372036854775808 <= n /\\ n <= 9223372036854775807\n\ntheorem " + nm + "_codegen_correct (lume_div lume_mod : Int -> Int -> Int)" + tv_lean_decls(tv_all_calls(g)) + (if isnil(ps) == 1 then "" else " (" + tv_lean_params(ps) + ": Int)") + " :\n    ((" + tv_xf(g.ts, 1) + ") <-> (" + tv_xf(g.ta, 1) + ")) /\\\n    (Not (" + tv_xf(g.ts, 1) + ") ->\n      ((" + tv_xf(g.ra, 1) + ") /\\\n       (" + tv_xp(g.vs, 1) + " : Int) = " + tv_xp(g.va, 1) + ")) := by\n  refine And.intro ?_ ?_\n  all_goals (intros; simp only [lume_fits63, lume_fits64] at *; split_ifs <;> first | tauto | omega | (ring_nf; simp_all))\n"
+fn tv_smt(nm, ps, g, hdr) = "; Lume Translation Validator (ltv) certificate for function `" + nm + "`\n" + hdr + "; Claim: the x86-64 code emitted by 05_codegen.src reaches `call ctfail` exactly when the lowered AST does, and\n; otherwise reaches its epilogue with the canonical word of the AST value in %rax. Division, modulo and callees\n; are uninterpreted, so the claim holds for every interpretation of them. Expected answer: unsat.\n(set-logic QF_UFNIA)\n(define-fun lume_fits63 ((n Int)) Bool (and (<= (- 4611686018427387904) n) (<= n 4611686018427387903)))\n(define-fun lume_fits64 ((n Int)) Bool (and (<= (- 9223372036854775808) n) (<= n 9223372036854775807)))\n(declare-fun lume_div (Int Int) Int)\n(declare-fun lume_mod (Int Int) Int)\n" + tv_smt_decls(tv_all_calls(g)) + tv_smt_params(ps) + "(define-fun trap_ast () Bool " + tv_xf(g.ts, 0) + ")\n(define-fun trap_x86 () Bool " + tv_xf(g.ta, 0) + ")\n(define-fun ret_x86 () Bool " + tv_xf(g.ra, 0) + ")\n(define-fun val_ast () Int " + tv_xp(g.vs, 0) + ")\n(define-fun val_x86 () Int " + tv_xp(g.va, 0) + ")\n" + tv_smt_hyp(g) + "(assert (not (and (= trap_ast trap_x86) (=> (not trap_ast) (and ret_x86 (= val_ast val_x86))))))\n(check-sat)\n"
+fn tv_lean(nm, ps, g, hdr) = "-- Lume Translation Validator (ltv) certificate for function `" + nm + "`\n" + hdr + "-- Status: EXPORTED. This file is checked by Lean only where a Lean 4 toolchain with Mathlib is installed;\n-- the in-tree verdict comes from ltv's own decision procedure and its SMT-LIB2 twin.\nimport Mathlib.Tactic\nopen Classical\n\ndef lume_fits63 (n : Int) : Prop := -4611686018427387904 <= n /\\ n <= 4611686018427387903\ndef lume_fits64 (n : Int) : Prop := -9223372036854775808 <= n /\\ n <= 9223372036854775807\n\ntheorem " + nm + "_codegen_correct (lume_div lume_mod : Int -> Int -> Int)" + tv_lean_decls(tv_all_calls(g)) + (if isnil(ps) == 1 then "" else " (" + tv_lean_params(ps) + ": Int)") + tv_lean_hyp(g) + " :\n    ((" + tv_xf(g.ts, 1) + ") <-> (" + tv_xf(g.ta, 1) + ")) /\\\n    (Not (" + tv_xf(g.ts, 1) + ") ->\n      ((" + tv_xf(g.ra, 1) + ") /\\\n       (" + tv_xp(g.vs, 1) + " : Int) = " + tv_xp(g.va, 1) + ")) := by\n  refine And.intro ?_ ?_\n  all_goals (intros; simp only [lume_fits63, lume_fits64] at *; split_ifs <;> first | tauto | omega | (ring_nf; simp_all))\n"
 
 ## --- kernel re-derivation: the raw AST value against the x86-64 value, judged by lcert's independent QF_LIA kernel ---
 fn tv_sx(x) = match x
@@ -696,8 +707,6 @@ fn tv_kern3(hyp, b, va) = lk_prove_term("(implies (and " + hyp + ") (== " + tv_s
 ## --- boundary evaluation: the same terms with the real meaning of every atom ---
 fn tv_cv(ok, v) = {ok: ok, v: v}
 fn tv_cabs(a) = if a < 0 then 0 - a else a
-fn tv_cadd(a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if tv_cabs(a.v) > 2000000000000000000 or tv_cabs(b.v) > 2000000000000000000 then tv_cv(0, 0) else tv_cv(1, a.v + b.v)
-fn tv_cmul(a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if a.v == 0 or b.v == 0 then tv_cv(1, 0) else if tv_cabs(a.v) > 2000000000000000000 or tv_cabs(b.v) > 2000000000000000000 then tv_cv(0, 0) else if tv_cabs(a.v) > 2000000000000000000 / tv_cabs(b.v) then tv_cv(0, 0) else tv_cv(1, a.v * b.v)
 fn tv_cdiv(k, a, b) = if a.ok == 0 or b.ok == 0 or b.v == 0 then tv_cv(0, 0) else tv_cv(1, if k == 0 then a.v / b.v else a.v % b.v)
 fn tv_cbit(kd, a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if kd == "xor" then tv_cv(1, bit_xor(a.v, b.v)) else if kd == "and" then tv_cv(1, bit_and(a.v, b.v)) else if kd == "or" then tv_cv(1, bit_or(a.v, b.v)) else if kd == "shl" then (if b.v < 0 or b.v >= 64 then tv_cv(0, 0) else tv_cv(1, bit_shl(a.v, b.v))) else if kd == "shr" then (if b.v < 0 or b.v >= 64 then tv_cv(0, 0) else tv_cv(1, bit_shr(a.v, b.v))) else if kd == "wadd" then tv_cv(1, a.v +% b.v) else if kd == "wsub" then tv_cv(1, a.v -% b.v) else if kd == "wmul" then tv_cv(1, a.v *% b.v) else tv_cv(0, 0)
 fn tv_cenv(env, n) = match env
@@ -742,7 +751,7 @@ fn tv_cf(f, env, cx, fuel) = match f
 fn tv_cnot(a) = if a.ok == 0 then a else tv_cv(1, 1 - a.v)
 fn tv_cand(a, h, env, cx, fuel) = if a.ok == 0 then a else if a.v == 0 then a else tv_cf(h, env, cx, fuel)
 fn tv_cor(a, h, env, cx, fuel) = if a.ok == 0 then a else if a.v == 1 then a else tv_cf(h, env, cx, fuel)
-fn tv_clit(kd, a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if kd == "lt" then tv_cv(1, if a.v < 0 then 1 else 0) else if kd == "eq" then tv_cv(1, if a.v == 0 then 1 else 0) else if kd == "fit" then tv_cv(1, tv_fits(a.v)) else if kd == "both" then tv_cv(1, if tv_fits(a.v) == 1 and tv_fits(b.v) == 1 then 1 else 0) else tv_cv(1, 1)
+fn tv_clit(kd, a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if kd == "hge" then tv_cv(1, if a.v >= b.v then 1 else 0) else if kd == "hle" then tv_cv(1, if a.v <= b.v then 1 else 0) else if kd == "lt" then tv_cv(1, if a.v < 0 then 1 else 0) else if kd == "eq" then tv_cv(1, if a.v == 0 then 1 else 0) else if kd == "fit" then tv_cv(1, tv_fits(a.v)) else if kd == "both" then tv_cv(1, if tv_fits(a.v) == 1 and tv_fits(b.v) == 1 then 1 else 0) else tv_cv(1, 1)
 ## candidate values: the literals of the function and their neighbours, plus the small integers
 fn tv_consts(x, acc) = match x
     Num(n)          => Cons(n, acc)
@@ -774,35 +783,23 @@ fn tv_vec(ps, tys, cands, nc, s) = match ps
 fn tv_envshow(env) = match env
     Nil        => ""
     Cons(h, t) => (if h.b == 1 then (if h.v == 1 then "true" else "false") else if h.v < 0 then "(0 - " + tv_xabs(h.v) + ")" else str(h.v)) + (if isnil(t) == 1 then "" else ", ") + tv_envshow(t)
-## st = {bad: mismatch text, n: vectors compared, lines: native call lines, exp: their expected output}
-fn tv_bnd(g, ps, tys, cands, nc, s, k, cx, st) = if k <= 0 or st.bad != "" then st else let vc = tv_vec(ps, tys, cands, nc, s) in tv_bnd(g, ps, tys, cands, nc, vc.s, k - 1, cx, tv_bnd1(g, vc.env, cx, st))
-fn tv_bnd1(g, env, cx, st) = let t1 = tv_cf(g.ts, env, cx, 4) in let t2 = tv_cf(g.ta, env, cx, 4) in if t1.ok == 0 or t2.ok == 0 then st else if t1.v != t2.v then {bad: "boundary evaluation: trap behaviour differs at (" + tv_envshow(env) + ")", n: st.n, lines: st.lines, exp: st.exp} else if t1.v == 1 then {bad: "", n: st.n + 1, lines: st.lines, exp: st.exp} else tv_bnd2(tv_cp(g.vs, env, cx, 4), tv_cp(g.va, env, cx, 4), env, st)
-fn tv_bnd2(v1, v2, env, st) = if v1.ok == 0 or v2.ok == 0 then st else if v1.v != v2.v then {bad: "boundary evaluation: AST gives " + str(v1.v) + ", x86-64 model gives " + str(v2.v) + " at (" + tv_envshow(env) + ")", n: st.n, lines: st.lines, exp: st.exp} else {bad: "", n: st.n + 1, lines: if len(st.lines) < 12 then Cons(tv_envshow(env), st.lines) else st.lines, exp: if len(st.lines) < 12 then Cons(str(v1.v), st.exp) else st.exp}
 
 ## --- one function ---
 fn tv_res(nm, status, why, leaves, vecs, kern, lines, exp, g) = {nm: nm, status: status, why: why, leaves: leaves, vecs: vecs, kern: kern, lines: lines, exp: exp, g: g}
-fn tv_g0() = {ts: TfF, vs: Nil, es: Nil, ms: Nil, ta: TfF, va: Nil, ea: Nil, ma: Nil, ra: TfF}
+fn tv_g0() = {ts: TfF, vs: Nil, es: Nil, ms: Nil, ta: TfF, va: Nil, ea: Nil, ma: Nil, ra: TfF, ct: 0}
 fn tv_env0(ps) = match ps
     Nil        => Nil
     Cons(h, t) => Cons({n: h, p: tv_patom(TaVar(h))}, tv_env0(t))
 fn tv_regs0(ps, i) = match ps
     Nil        => Nil
     Cons(h, t) => if i >= 6 then Nil else Cons({n: tv_areg(i), v: TvW(tv_patom(TaVar(h)))}, tv_regs0(t, i + 1))
-fn tv_ct_div_op(op) = if op == "idivq" or op == "divq" or op == "idivl" or op == "divl" or op == "idivw" or op == "divw" or op == "idivb" or op == "divb" then 1 else 0
-fn tv_ct_mem_bad(op, o) = if op == "leaq" or o == "" or tv_find(o, "(", 0) < 0 then 0 else if tv_find(o, ",", 0) >= 0 then 1 else if tv_ends(o, "(%rbp)") == 1 or tv_ends(o, "(%rsp)") == 1 or tv_ends(o, "(%rip)") == 1 then 0 else 1
-fn tv_ct_ins(i) = if i.lab != "" then "" else if tv_ct_div_op(i.op) == 1 or (i.op == "call" and (i.a == "__rt_div" or i.a == "__rt_mod")) then "[C0010] machine constant-time violation in @secret fn: variable-latency division `" + i.txt + "`" else if tv_starts(i.op, "j") == 1 and i.op != "jmp" then "[C0010] machine constant-time violation in @secret fn: secret-dependent conditional branch `" + i.txt + "`" else if tv_ct_mem_bad(i.op, i.a) == 1 or tv_ct_mem_bad(i.op, i.b) == 1 then "[C0010] machine constant-time violation in @secret fn: register-indexed/non-frame memory access (cache-timing leak) `" + i.txt + "`" else ""
-fn tv_ct_check(inss) = match inss
-    Nil        => ""
-    Cons(i, r) => let e = tv_ct_ins(i) in if e != "" then e else tv_ct_check(r)
-fn tv_validate(f, fl, cx0) = let is_sec = tv_has(cx0.secrets, f.nm) in let cx1 = {self: f.nm, fns: cx0.fns, dens: cx0.dens, frame: 0, params: f.ps} in let d = tv_den(f.body, tv_env0(f.ps), cx1) in if d.err != "" and is_sec == 0 then tv_res(f.nm, "unsupported", d.err, 0, 0, 0, Nil, Nil, tv_g0()) else if fl.ok == 0 then tv_res(f.nm, "rejected", "the function is missing from the assembly", 0, 0, 0, Nil, Nil, tv_g0()) else let fr = tv_frame(fl.ls) in if fr.ok == 0 then tv_res(f.nm, "rejected", "prologue is not `pushq %rbp; movq %rsp, %rbp`", 0, 0, 0, Nil, Nil, tv_g0()) else if fr.frame % 16 != 0 or fr.frame < 0 then tv_res(f.nm, "rejected", "frame of " + str(fr.frame) + " bytes breaks the 16-byte stack alignment", 0, 0, 0, Nil, Nil, tv_g0()) else let ep = tv_epi(rev(fr.body)) in if ep.ok == 0 then tv_res(f.nm, "rejected", "epilogue is not `movq %rbp, %rsp; popq %rbp; ret`", 0, 0, 0, Nil, Nil, tv_g0()) else let inss = tv_inss(ep.body) in let ct_err = if is_sec == 1 then tv_ct_check(inss) else "" in if ct_err != "" then tv_res(f.nm, "rejected", ct_err, 0, 0, 0, Nil, Nil, tv_g0()) else if d.err != "" then tv_res(f.nm, "unsupported", d.err, 0, 0, 0, Nil, Nil, tv_g0()) else tv_validate2(f, d, tv_run(inss, tv_s(tv_regs0(f.ps, 0), Nil, Nil, TgNone, Cons(Nil, Nil), Nil), Nil, Nil, {tp: Nil, tm: Nil, err: ""}, {self: f.nm, fns: cx0.fns, dens: cx0.dens, frame: fr.frame, params: f.ps}), cx1)
 fn tv_retval(v) = match v
     TvW(p) => {ok: 1, p: p}
     _      => {ok: 0, p: Nil}
 fn tv_pend_name(pend) = match pend
     Nil        => ""
     Cons(h, t) => h.l
-fn tv_validate2(f, d, r, cx) = if r.acc.err != "" then tv_res(f.nm, "rejected", r.acc.err, 0, 0, 0, Nil, Nil, tv_g0()) else if isnil(r.pend) == 0 then tv_res(f.nm, "rejected", "jump to " + tv_pend_name(r.pend) + ", which is not a label of the function", 0, 0, 0, Nil, Nil, tv_g0()) else if r.st.live == 1 and isnil(r.st.stk) == 0 then tv_res(f.nm, "rejected", "the expression stack is not empty at the epilogue (unbalanced %rsp)", 0, 0, 0, Nil, Nil, tv_g0()) else let rv = if r.st.live == 1 then tv_retval(tv_eget(r.st.rg, "%rax")) else {ok: 1, p: Nil} in if rv.ok == 0 then tv_res(f.nm, "rejected", "%rax does not hold a canonical value at the epilogue", 0, 0, 0, Nil, Nil, tv_g0()) else tv_validate3(f, {ts: d.t, vs: d.v, es: d.e, ms: d.m, ma: r.acc.tm, ta: tv_dform(tv_dsimp(r.acc.tp)), va: rv.p, ea: if r.st.live == 1 then r.st.eff else Nil, ra: if r.st.live == 1 then tv_dform(r.st.pc) else TfF}, cx)
-fn tv_validate3(f, g, cx) = let pr = tv_prove(g, Nil, 0) in if pr.ok == 0 then tv_res(f.nm, "rejected", pr.why, pr.n, 0, 0, Nil, Nil, g) else let cands = tv_cands(tv_consts(f.body, Cons(0, Cons(1, Cons(2, Cons(7, Nil))))), Nil) in let b = tv_bnd(g, f.ps, f.tys, cands, len(cands), 20261110 + count(f.nm), 160, cx, {bad: "", n: 0, lines: Nil, exp: Nil}) in if b.bad != "" then tv_res(f.nm, "rejected", b.bad, pr.n, b.n, 0, Nil, Nil, g) else tv_res(f.nm, "validated", "", pr.n, b.n, tv_kern(f.body, g.va), b.lines, b.exp, g)
+fn tv_validate2(f, d, r, cx) = if r.acc.err != "" then tv_res(f.nm, "rejected", r.acc.err, 0, 0, 0, Nil, Nil, tv_g0()) else if isnil(r.pend) == 0 then tv_res(f.nm, "rejected", "jump to " + tv_pend_name(r.pend) + ", which is not a label of the function", 0, 0, 0, Nil, Nil, tv_g0()) else if r.st.live == 1 and isnil(r.st.stk) == 0 then tv_res(f.nm, "rejected", "the expression stack is not empty at the epilogue (unbalanced %rsp)", 0, 0, 0, Nil, Nil, tv_g0()) else let rv = if r.st.live == 1 then tv_retval(tv_eget(r.st.rg, "%rax")) else {ok: 1, p: Nil} in if rv.ok == 0 then tv_res(f.nm, "rejected", "%rax does not hold a canonical value at the epilogue", 0, 0, 0, Nil, Nil, tv_g0()) else if cx.ct == 1 and r.st.live == 1 and tv_guard_miss2(f.ps, r.st.pc) != "" then tv_rej(f, "[C0010] machine constant-time violation in @secret fn: the fail-closed entry guard does not cover parameter '" + tv_guard_miss2(f.ps, r.st.pc) + "'") else if cx.ct == 1 and (r.st.live == 0 or tv_fitsk(rv.p, r.st.pc) == 0) then tv_rej(f, "constant-time kernel: the result is not proven to be an immediate integer") else tv_validate3(f, {ts: d.t, vs: d.v, es: d.e, ms: d.m, ma: r.acc.tm, ta: tv_dform(tv_dsimp(r.acc.tp)), va: rv.p, ea: if r.st.live == 1 then r.st.eff else Nil, ra: if r.st.live == 1 then tv_dform(r.st.pc) else TfF, ct: cx.ct}, cx)
 
 ## --- the program: signatures, denotations, validation of every typed function ---
 fn tv_tyint(ty) = match ty
@@ -829,9 +826,6 @@ fn tv_fns(prog, sigs) = match prog
 fn tv_fns2(h, t, sigs) = match h
     Fn(nm, ps, body) => if (tv_sig_get(sigs, nm)).ok == 1 then Cons({nm: nm, ps: ps, body: body, tys: (tv_sig_get(sigs, nm)).tys}, tv_fns(t, sigs)) else tv_fns(t, sigs)
     _                => tv_fns(t, sigs)
-fn tv_dens(fs, sigs) = match fs
-    Nil        => Nil
-    Cons(f, t) => Cons({ok: 1, nm: f.nm, ps: f.ps, d: tv_den(f.body, tv_env0(f.ps), {self: f.nm, fns: sigs, dens: Nil, frame: 0, params: f.ps})}, tv_dens(t, sigs))
 fn tv_dens_ok(ds) = match ds
     Nil        => Nil
     Cons(h, t) => if h.d.err == "" then Cons(h, tv_dens_ok(t)) else tv_dens_ok(t)
@@ -841,9 +835,6 @@ fn tv_names(fs) = match fs
 fn tv_pick(fs, only) = match fs
     Nil        => Nil
     Cons(f, t) => if only == "" or f.nm == only then Cons(f, tv_pick(t, only)) else tv_pick(t, only)
-fn tv_all(fs, fl, cx) = match fs
-    Nil        => Nil
-    Cons(f, t) => Cons(tv_validate(f, tv_fn_lines(fl, f.nm), cx), tv_all(t, fl, cx))
 
 ## --- certificates, native boundary run, report ---
 fn tv_base(p, i, last) = if i >= count(p) then last else tv_base(p, i + 1, if at(p, i) == "/" then i + 1 else last)
@@ -898,11 +889,329 @@ fn tv_sum_vecs(rs) = match rs
 fn tv_sum_kern(rs) = match rs
     Nil        => 0
     Cons(r, t) => (if r.status == "validated" then r.kern else 0) + tv_sum_kern(t)
-fn tv_json_fns(rs) = match rs
-    Nil        => ""
-    Cons(r, t) => "{\"name\":\"" + r.nm + "\",\"status\":\"" + r.status + "\",\"reason\":\"" + tv_jesc(r.why) + "\",\"proof_cases\":" + str(r.leaves) + ",\"boundary_vectors\":" + str(r.vecs) + ",\"kernel_rederived\":" + (if r.status == "validated" and r.kern == 1 then "true" else "false") + "}" + (if isnil(t) == 1 then "" else ",") + tv_json_fns(t)
-fn tv_main(input) = let root = tv_get(input, "root") in let srcp = tv_get(input, "src") in if root == "" or srcp == "" then ctfail("ltv: usage: @root <repo> and @src <file.src> are required on stdin\n") else if fs_path_exists(srcp) == 0 then ctfail("ltv: cannot read " + srcp + "\n") else let src = fs_read_file(srcp) in let mk = os_run("/bin/mkdir", Cons("-p", Cons(root + "/build/ltv-work", Nil))) in let work = root + "/build/ltv-work/" + tv_stem(srcp) + "." + str(os_getpid()) in let asmp = tv_get(input, "asm") in let asm_path = if asmp != "" then asmp else work + ".s" in let cc = if asmp != "" then 0 else tv_wait_exit(os_run_input_capture_timeout(root + "/build/bin/lumec", Nil, srcp, asm_path, work + ".lumec.err", 600000)) in if cc != 0 then ctfail("ltv: lumec rejected " + srcp + ":\n" + fs_read_file(work + ".lumec.err")) else if fs_path_exists(asm_path) == 0 then ctfail("ltv: cannot read " + asm_path + "\n") else let asm = fs_read_file(asm_path) in let secrets = tv_secrets(lumec_parse(src)) in let prog = nf_late(lumec_expand(src)) in let sigs = tv_sigs(prog) in let fs = tv_fns(prog, sigs) in let only = tv_get(input, "fn") in let sel = tv_pick(fs, only) in if only != "" and isnil(sel) == 1 then tv_finish("{\"ok\":false,\"tool\":\"ltv\",\"error\":\"function '" + only + "' is not a typed integer function of " + tv_jesc(srcp) + "\",\"validated\":0,\"rejected\":0,\"unsupported\":1,\"functions\":[{\"name\":\"" + only + "\",\"status\":\"unsupported\",\"reason\":\"not a typed integer function\"}]}", 1) else let cx = {fns: sigs, dens: tv_dens_ok(tv_dens(fs, sigs)), secrets: secrets} in let rs = tv_all(sel, tv_scan(asm, count(asm), 0, tv_names(sel), "", Nil, Nil), cx) in let dir = tv_or(tv_get(input, "out"), root + "/build/certification/proofs") in let md = os_run("/bin/mkdir", Cons("-p", Cons(dir, Nil))) in let sh = lsh256(src) in let ah = lsh256(asm) in let ncert = tv_write_certs(rs, fs, dir, tv_stem(srcp), "; source " + srcp + " sha256 " + sh + "\n; assembly sha256 " + ah + "\n", "-- source " + srcp + " sha256 " + sh + "\n-- assembly sha256 " + ah + "\n") in let solver = tv_solver() in let sv = if solver == "" then {n: 0, bad: ""} else tv_solve(rs, dir, tv_stem(srcp), solver, work) in let ex = if tv_get(input, "exec") == "1" then tv_exec(root, src, rs, fs, work) else {n: 0, bad: ""} in let rej = tv_count(rs, "rejected") in let bad = if sv.bad != "" then sv.bad else ex.bad in let clean = if asmp == "" and bad == "" then fs_remove(asm_path) else 0 in tv_finish("{\"ok\":" + (if rej == 0 and bad == "" then "true" else "false") + ",\"tool\":\"ltv\",\"theorem\":\"trap equivalence (same message) + value equality in %rax + equal div/mod/call effects + frame discipline + [C0010] machine constant-time on @secret fn, over the integers (no i64 overflow), runtime helpers as axioms\",\"source\":\"" + tv_jesc(srcp) + "\",\"source_sha256\":\"" + sh + "\",\"asm_sha256\":\"" + ah + "\",\"typed_integer_functions\":" + str(len(rs)) + ",\"validated\":" + str(tv_count(rs, "validated")) + ",\"rejected\":" + str(rej) + ",\"unsupported\":" + str(tv_count(rs, "unsupported")) + ",\"proof_cases\":" + str(tv_sum_leaves(rs)) + ",\"boundary_vectors\":" + str(tv_sum_vecs(rs)) + ",\"kernel_rederived\":" + str(tv_sum_kern(rs)) + ",\"native_vectors\":" + str(ex.n) + ",\"certificates_written\":" + str(ncert * 2) + ",\"certificate_dir\":\"" + tv_jesc(dir) + "\",\"external_solver\":\"" + (if solver == "" then "none installed" else solver) + "\",\"external_solver_unsat\":" + str(sv.n) + ",\"lean_checked\":false,\"error\":\"" + tv_jesc(bad) + "\",\"functions\":[" + tv_json_fns(rs) + "]}", if rej == 0 and bad == "" then 0 else 1)
+fn tv_main(input) = let root = tv_get(input, "root") in let srcp = tv_get(input, "src") in if root == "" or srcp == "" then ctfail("ltv: usage: @root <repo> and @src <file.src> are required on stdin\n") else if fs_path_exists(srcp) == 0 then ctfail("ltv: cannot read " + srcp + "\n") else let src = fs_read_file(srcp) in let mk = os_run("/bin/mkdir", Cons("-p", Cons(root + "/build/ltv-work", Nil))) in let work = root + "/build/ltv-work/" + tv_stem(srcp) + "." + str(os_getpid()) in let asmp = tv_get(input, "asm") in let asm_path = if asmp != "" then asmp else work + ".s" in let cc = if asmp != "" then 0 else tv_wait_exit(os_run_input_capture_timeout(root + "/build/bin/lumec", Nil, srcp, asm_path, work + ".lumec.err", 600000)) in if cc != 0 then ctfail("ltv: lumec rejected " + srcp + ":\n" + fs_read_file(work + ".lumec.err")) else if fs_path_exists(asm_path) == 0 then ctfail("ltv: cannot read " + asm_path + "\n") else let asm = fs_read_file(asm_path) in let secrets = tv_secrets(lumec_parse(src)) in let cts = tv_cts(lumec_parse(src)) in let prog = nf_late(lumec_expand(src)) in let sigs = tv_sigs(prog) in let fs = tv_fns(prog, sigs) in let only = tv_get(input, "fn") in let sel = tv_pick(fs, only) in if only != "" and isnil(sel) == 1 then tv_finish("{\"ok\":false,\"tool\":\"ltv\",\"error\":\"function '" + only + "' is not a typed integer function of " + tv_jesc(srcp) + "\",\"validated\":0,\"rejected\":0,\"unsupported\":1,\"functions\":[{\"name\":\"" + only + "\",\"status\":\"unsupported\",\"reason\":\"not a typed integer function\"}]}", 1) else let cx = {fns: sigs, dens: tv_dens_ok(tv_dens(fs, fs, sigs, cts)), secrets: secrets, cts: cts, fs: fs, fl: tv_scan(asm, count(asm), 0, tv_names(fs), "", Nil, Nil), labs: if isnil(secrets) == 1 then Nil else tv_labs(asm, count(asm), 0, Nil), asm: asm, asmn: count(asm)} in let rs = tv_all(sel, cx.fl, cx) in let dir = tv_or(tv_get(input, "out"), root + "/build/certification/proofs") in let md = os_run("/bin/mkdir", Cons("-p", Cons(dir, Nil))) in let sh = tv_sha256(src) in let ah = tv_sha256(asm) in let ncert = tv_write_certs(rs, fs, dir, tv_stem(srcp), "; source " + srcp + " sha256 " + sh + "\n; assembly sha256 " + ah + "\n", "-- source " + srcp + " sha256 " + sh + "\n-- assembly sha256 " + ah + "\n") in let solver = tv_solver() in let sv = if solver == "" then {n: 0, bad: ""} else tv_solve(rs, dir, tv_stem(srcp), solver, work) in let ex = if tv_get(input, "exec") == "1" then tv_exec(root, src, rs, fs, work) else {n: 0, bad: ""} in let rej = tv_count(rs, "rejected") in let bad = if sv.bad != "" then sv.bad else ex.bad in let clean = if asmp == "" and bad == "" then fs_remove(asm_path) else 0 in tv_finish("{\"ok\":" + (if rej == 0 and bad == "" then "true" else "false") + ",\"tool\":\"ltv\",\"theorem\":\"trap equivalence (same message) + value equality in %rax + equal div/mod/call effects + frame discipline + [C0010] machine constant-time on @secret fn, closed over calls (the code of every routine reached by call or jmp is scanned), over the integers (no i64 overflow), runtime helpers as axioms; for a constant-time kernel (@secret + @no_alloc) the hypothesis is instead that every parameter is an immediate in [-2^62, 2^62), which the entry guard of the kernel enforces by faulting, and under it no operation overflows: ltv re-derives every range by its own interval analysis and rejects what it cannot derive\",\"source\":\"" + tv_jesc(srcp) + "\",\"source_sha256\":\"" + sh + "\",\"asm_sha256\":\"" + ah + "\",\"typed_integer_functions\":" + str(len(rs)) + ",\"validated\":" + str(tv_count(rs, "validated")) + ",\"rejected\":" + str(rej) + ",\"unsupported\":" + str(tv_count(rs, "unsupported")) + ",\"secret_functions\":" + str(tv_nsec(rs, "", 0)) + ",\"secret_validated\":" + str(tv_nsec(rs, "validated", 0)) + ",\"secret_rejected\":" + str(tv_nsec(rs, "rejected", 0)) + ",\"constant_time_kernels\":" + str(tv_nsec(rs, "", 1)) + ",\"constant_time_kernels_validated\":" + str(tv_nsec(rs, "validated", 1)) + ",\"proof_cases\":" + str(tv_sum_leaves(rs)) + ",\"boundary_vectors\":" + str(tv_sum_vecs(rs)) + ",\"kernel_rederived\":" + str(tv_sum_kern(rs)) + ",\"native_vectors\":" + str(ex.n) + ",\"certificates_written\":" + str(ncert * 2) + ",\"certificate_dir\":\"" + tv_jesc(dir) + "\",\"external_solver\":\"" + (if solver == "" then "none installed" else solver) + "\",\"external_solver_unsat\":" + str(sv.n) + ",\"lean_checked\":false,\"error\":\"" + tv_jesc(bad) + "\",\"functions\":[" + tv_json_fns(rs) + "]}", if rej == 0 and bad == "" then 0 else 1)
 ## a rejection still leaves the report on stdout; the status then comes from ctfail
 fn tv_finish(json, code) = if code == 0 then json else let w = fs_write_sync("/dev/stdout", json + "\n") in ctfail("ltv: translation validation FAILED (fail-closed); the report is on stdout\n")
+
+
+## =====================================================================================================================
+## Wave 14: constant-time kernels (`@secret` + `@no_alloc`) and the transitive [C0010] scan
+## =====================================================================================================================
+## A kernel is lowered by 05_codegen.src (lct_*) to straight-line code on immediate words (w = 2n + 1) with no tag test
+## and no overflow test. That is only correct when every value is an immediate, so the validator derives it ITSELF and
+## trusts no proof of the compiler:
+##   * hypotheses are path-condition literals `hge[p|c]` (p >= c) and `hle[p|c]` (p <= c). They are created in two
+##     places only: by the literal entry guard `andq $1, %rax; decq %rax; orq %rsp, %rax; movq (%rax), %rax` applied
+##     to the AND of canonical words (the code continues only when every such word is odd, i.e. every value is an
+##     immediate: [-2^62, 2^62 - 1]), and at the call of another kernel (its result lies in the interval ltv derives
+##     from that kernel's own AST; the kernel must itself validate, else the caller is rejected);
+##   * "t fits 63 bits" is then also accepted when the interval of the polynomial t, computed below from those
+##     literals, lies inside the immediate range. Each interval rule is a fact about 64-bit two's complement integers:
+##       x & y with y >= 0 is in [0, y];  x | y and x ^ y of x, y in [0, 2^k) are in [0, 2^k);  a bit operation of
+##       two immediates is an immediate (bits 62 and 63 agree in both operands, so they agree in the result);
+##       x >> K is monotone;  sums and products by endpoint arithmetic that never overflows (a product is formed only
+##       after |a| * |b| <= 2^62 is checked by division; anything larger is "unknown").
+##   * the AST side (tv_cden) carries the same obligation: every `+ - * +% -% *%` and bit_shl result must fit 63 bits
+##     by the same analysis under the hypothesis "parameters are immediates"; then wrapping and checked arithmetic are
+##     the same function and no overflow trap exists, so the theorem of a kernel has no "no i64 overflow" proviso.
+## When a range cannot be derived the word stays a raw TvM and the function is rejected (fail-closed), even if the
+## compiler proved the range another way.
+## New machine forms (only inside a kernel, cx.ct == 1; ordinary functions keep the old model unchanged):
+##   bits view      a word that is exactly 2u + t with u an immediate and t in {0, 1} (a canonical immediate has t = 1)
+##   andq/orq/xorq  2 * (u1 op u2) + (t1 op t2)          orq $1      2u + 1 (or 2 * (x >> 1) + 1 for an exact x)
+##   negq           ring negation                       sarq $K     u >> (K - 1) (or x >> K for an exact x)
+##   salq/shlq $K   multiplication by 2^K modulo 2^64   call        another kernel, arguments proven immediates
+## Two literal instruction sequences are modelled as one step each (any change to them leaves instructions that have no
+## model, which is a rejection): the entry guard, and the is-equal sequence
+##   xorq %rcx, %rax; movq %rax, %rcx; negq %rcx; orq %rcx, %rax; shrq $63, %rax; xorq $1, %rax
+## whose result is 1 exactly when the two inputs were equal ((x | -x) has its top bit set exactly when x != 0).
+## bit_not(a) is the polynomial -a - 1 and bit_shl(a, K) is a * 2^K on both sides; ct_select(m, a, b) denotes
+## b ^ ((a ^ b) & m) and ct_eq(a, b) the term ite(a - b == 0, 1, 0), in kernels and in ordinary code alike.
+
+## --- intervals: {ok, lo, hi}; ok == 1 means lo <= value <= hi, with both bounds inside [-2^62, 2^62] ---
+fn tv_lim() = 4611686018427387904
+fn tv_ivbad() = {ok: 0, lo: 0, hi: 0}
+fn tv_ivmk(lo, hi) = if lo < 0 - tv_lim() or hi > tv_lim() or lo > hi then tv_ivbad() else {ok: 1, lo: lo, hi: hi}
+fn tv_ivfull() = {ok: 1, lo: 0 - tv_lim(), hi: tv_lim() - 1}
+fn tv_ivfits(a) = if a.ok == 1 and a.hi < tv_lim() then 1 else 0
+fn tv_iabs(x) = if x < 0 then 0 - x else x
+## |a| * |b| <= 2^62 for a, b in [-2^62, 2^62], decided without forming the product
+fn tv_imulok(a, b) = if a == 0 or b == 0 then 1 else if tv_iabs(a) <= tv_lim() / tv_iabs(b) then 1 else 0
+fn tv_imin(a, b) = if a < b then a else b
+fn tv_imax(a, b) = if a > b then a else b
+fn tv_ivadd(a, b) = if a.ok == 0 or b.ok == 0 then tv_ivbad() else tv_ivmk(a.lo + b.lo, a.hi + b.hi)
+fn tv_ivmul(a, b) = if a.ok == 0 or b.ok == 0 then tv_ivbad() else if tv_imulok(a.lo, b.lo) == 0 or tv_imulok(a.lo, b.hi) == 0 or tv_imulok(a.hi, b.lo) == 0 or tv_imulok(a.hi, b.hi) == 0 then tv_ivbad() else tv_ivmk(tv_imin(tv_imin(a.lo * b.lo, a.lo * b.hi), tv_imin(a.hi * b.lo, a.hi * b.hi)), tv_imax(tv_imax(a.lo * b.lo, a.lo * b.hi), tv_imax(a.hi * b.lo, a.hi * b.hi)))
+## the smallest 2^k - 1 that is >= hi (0 <= hi <= 2^62)
+fn tv_ivmask(hi, m) = if m >= hi then m else tv_ivmask(hi, m + m + 1)
+fn tv_ivand(a, b) = if a.ok == 1 and b.ok == 1 and a.lo >= 0 and b.lo >= 0 then tv_ivmk(0, tv_imin(a.hi, b.hi)) else if b.ok == 1 and b.lo >= 0 then tv_ivmk(0, b.hi) else if a.ok == 1 and a.lo >= 0 then tv_ivmk(0, a.hi) else if tv_ivfits(a) == 1 and tv_ivfits(b) == 1 then tv_ivfull() else tv_ivbad()
+fn tv_ivorx(a, b) = if a.ok == 0 or b.ok == 0 then tv_ivbad() else if a.lo >= 0 and b.lo >= 0 then tv_ivmk(0, tv_ivmask(tv_imax(a.hi, b.hi), 0)) else if tv_ivfits(a) == 1 and tv_ivfits(b) == 1 then tv_ivfull() else tv_ivbad()
+fn tv_ivshr(a, q) = if a.ok == 0 or tv_pisc(q) == 0 or tv_pc0(q) < 0 or tv_pc0(q) > 63 then tv_ivbad() else tv_ivmk(bit_shr(a.lo, tv_pc0(q)), bit_shr(a.hi, tv_pc0(q)))
+fn tv_ivhull(a, b) = if a.ok == 0 or b.ok == 0 then tv_ivbad() else tv_ivmk(tv_imin(a.lo, b.lo), tv_imax(a.hi, b.hi))
+fn tv_ivbit(kd, a, b, q) = if kd == "and" then tv_ivand(a, b) else if kd == "or" or kd == "xor" then tv_ivorx(a, b) else if kd == "shr" then tv_ivshr(a, q) else tv_ivbad()
+## a hypothesis literal about the polynomial with key `ku`, in a path condition that is one conjunction
+fn tv_hyval(f) = match f
+    TfLit(kd, p, q) => tv_pc0(q)
+    _               => 0
+fn tv_hyb(cj, pre) = match cj
+    Nil        => {ok: 0, v: 0}
+    Cons(h, t) => if h.s == 1 and tv_starts(h.k, pre) == 1 then {ok: 1, v: tv_hyval(h.f)} else tv_hyb(t, pre)
+fn tv_hyiv2(lo, hi) = if lo.ok == 1 and hi.ok == 1 then tv_ivmk(lo.v, hi.v) else tv_ivbad()
+fn tv_hyiv(d, ku) = match d
+    Cons(cj, t) => if isnil(t) == 1 then tv_hyiv2(tv_hyb(cj, "hge[" + ku + "|"), tv_hyb(cj, "hle[" + ku + "|")) else tv_ivbad()
+    _           => tv_ivbad()
+fn tv_iva(a, d) = match a
+    TaVar(n)        => tv_hyiv(d, tv_pk(tv_patom(a)))
+    TaCall(n, ps)   => tv_hyiv(d, tv_pk(tv_patom(a)))
+    TaBit(kd, p, q) => tv_ivbit(kd, tv_ivp(p, d), tv_ivp(q, d), q)
+    TaIte(f, p, q)  => tv_ivhull(tv_ivp(p, d), tv_ivp(q, d))
+    _               => tv_ivbad()
+fn tv_ivm(m, d) = match m
+    Nil        => {ok: 1, lo: 1, hi: 1}
+    Cons(h, t) => tv_ivmul(tv_iva(h.a, d), tv_ivm(t, d))
+fn tv_ivterm(h, d) = if h.c > tv_lim() or h.c < 0 - tv_lim() then tv_ivbad() else tv_ivmul(tv_ivmk(h.c, h.c), tv_ivm(h.m, d))
+fn tv_ivp(p, d) = match p
+    Nil        => {ok: 1, lo: 0, hi: 0}
+    Cons(h, t) => tv_ivadd(tv_ivterm(h, d), tv_ivp(t, d))
+fn tv_hyp(kd, p, c) = TfLit(kd, p, tv_pc(c))
+fn tv_assume_rng(s, p, lo, hi) = tv_assume(tv_assume(s, tv_hyp("hge", p, lo)), tv_hyp("hle", p, hi))
+## the hypothesis "every parameter is an immediate" as one conjunction (the AST side starts from it)
+fn tv_ct_hy0(ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons(tv_lit_of(tv_hyp("hge", tv_patom(TaVar(h)), 0 - tv_lim())), Cons(tv_lit_of(tv_hyp("hle", tv_patom(TaVar(h)), tv_lim() - 1)), tv_ct_hy0(t)))
+
+## --- smart constructors shared by both sides ---
+fn tv_pow2(k) = if k <= 0 then 1 else 2 * tv_pow2(k - 1)
+fn tv_bitc(kd, x, y) = if kd == "and" then bit_and(x, y) else if kd == "or" then bit_or(x, y) else bit_xor(x, y)
+fn tv_bitp(kd, p, q) = if tv_pisc(p) == 1 and tv_pisc(q) == 1 then tv_pc(tv_bitc(kd, tv_pc0(p), tv_pc0(q))) else tv_patom(TaBit(kd, p, q))
+fn tv_noshr() = {ok: 0, v: Nil, j: 0}
+fn tv_shr_atom3(a) = match a
+    TaBit(kd, p, q) => if kd == "shr" and tv_pisc(q) == 1 then {ok: 1, v: p, j: tv_pc0(q)} else tv_noshr()
+    _               => tv_noshr()
+fn tv_shr_atom2(m) = match m
+    Cons(g, r) => if isnil(r) == 1 then tv_shr_atom3(g.a) else tv_noshr()
+    _          => tv_noshr()
+fn tv_shr_atom(u) = match u
+    Cons(h, t) => if isnil(t) == 1 and h.c == 1 then tv_shr_atom2(h.m) else tv_noshr()
+    _          => tv_noshr()
+fn tv_shrp2(u, k, r) = if r.ok == 1 and r.j >= 0 and r.j + k <= 63 then tv_patom(TaBit("shr", r.v, tv_pc(r.j + k))) else tv_patom(TaBit("shr", u, tv_pc(k)))
+## floor(u / 2^k): a constant folds, a shift of a shift is one shift (floor of a floor)
+fn tv_shrp(u, k) = if k <= 0 then u else if tv_pisc(u) == 1 then tv_pc(bit_shr(tv_pc0(u), if k > 63 then 63 else k)) else tv_shrp2(u, k, tv_shr_atom(u))
+fn tv_pscale_ok(p, n) = match p
+    Nil        => 1
+    Cons(h, t) => if h.c <= tv_lim() and h.c >= 0 - tv_lim() and tv_iabs(h.c) <= tv_lim() / n then tv_pscale_ok(t, n) else 0
+fn tv_cteq_val(p, q) = tv_pite(tv_eq(tv_psub(p, q)), tv_pc(1), Nil)
+fn tv_selraw(m, a, b) = tv_patom(TaBit("xor", b, tv_patom(TaBit("and", tv_patom(TaBit("xor", a, b)), m))))
+fn tv_p2(ps) = match ps
+    Cons(h, t) => tv_p1(t)
+    _          => Nil
+
+## --- machine forms of a kernel ---
+fn tv_nobits() = {ok: 0, u: Nil, t: 0}
+fn tv_ct_bits(v, d) = match v
+    TvW(p) => if tv_fitsk(p, d) == 1 then {ok: 1, u: p, t: 1} else tv_nobits()
+    TvM(m) => if tv_peven(m) == 1 and tv_fitsk(tv_phalf(m), d) == 1 then {ok: 1, u: tv_phalf(m), t: if tv_podd(m) == 1 then 1 else 0} else tv_nobits()
+    _      => tv_nobits()
+fn tv_ct_unk(s, r) = tv_ok(tv_setf(tv_setr(s, r, TvUnk), TgNone))
+fn tv_ct_put(s, r, v) = tv_ok(tv_setf(tv_setr(s, r, v), TgNone))
+fn tv_andl(v) = match v
+    TvW(p)     => {ok: 1, ps: Cons(p, Nil)}
+    TvAndL(ps) => {ok: 1, ps: ps}
+    _          => {ok: 0, ps: Nil}
+fn tv_ct_andl(l, w, b, s) = if l.ok == 1 and w.ok == 1 then tv_ct_put(s, b, TvAndL(app(l.ps, Cons(w.p, Nil)))) else tv_ct_unk(s, b)
+fn tv_ct_bit(kd, a, b, s) = let x = tv_ct_bits(tv_eget(s.rg, b), s.pc) in let y = tv_ct_bits(tv_eget(s.rg, a), s.pc) in if x.ok == 1 and y.ok == 1 then tv_ct_put(s, b, TvM(tv_padd(tv_pscale(tv_bitp(kd, x.u, y.u), 2), tv_pc(tv_bitc(kd, x.t, y.t))))) else if kd == "and" then tv_ct_andl(tv_andl(tv_eget(s.rg, b)), tv_wpoly(tv_eget(s.rg, a)), b, s) else tv_ct_unk(s, b)
+fn tv_ct_or1c(v, r, s) = match v
+    TvM(m) => if tv_fitsk(m, s.pc) == 1 then tv_ct_put(s, r, TvM(tv_padd(tv_pscale(tv_shrp(m, 1), 2), tv_pc(1)))) else tv_ct_unk(s, r)
+    _      => tv_ct_unk(s, r)
+fn tv_ct_or1b(v, x, r, s) = if x.ok == 1 then tv_ct_put(s, r, TvM(tv_padd(tv_pscale(x.u, 2), tv_pc(1)))) else tv_ct_or1c(v, r, s)
+fn tv_ct_or1(r, s) = tv_ct_or1b(tv_eget(s.rg, r), tv_ct_bits(tv_eget(s.rg, r), s.pc), r, s)
+fn tv_ct_neg(r, s) = let m = tv_asm(tv_eget(s.rg, r), s.pc) in if m.ok == 1 then tv_ct_put(s, r, TvM(tv_pneg(m.p))) else tv_ct_unk(s, r)
+fn tv_ct_sar3(k, v, r, s) = match v
+    TvM(m) => if tv_fitsk(m, s.pc) == 1 then tv_ct_put(s, r, TvM(tv_shrp(m, k))) else tv_ct_unk(s, r)
+    _      => tv_ct_unk(s, r)
+fn tv_ct_sar2(k, v, x, r, s) = if x.ok == 1 then tv_ct_put(s, r, TvM(tv_shrp(x.u, k - 1))) else tv_ct_sar3(k, v, r, s)
+fn tv_ct_sar(k, r, s) = tv_ct_sar2(k, tv_eget(s.rg, r), tv_ct_bits(tv_eget(s.rg, r), s.pc), r, s)
+fn tv_ct_shl(k, r, s) = let m = tv_asm(tv_eget(s.rg, r), s.pc) in if m.ok == 1 and tv_pscale_ok(m.p, tv_pow2(k)) == 1 then tv_ct_put(s, r, TvM(tv_pscale(m.p, tv_pow2(k)))) else tv_ct_unk(s, r)
+fn tv_ct_args(s, i, n) = if i >= n then {ok: 1, ps: Nil} else let a = tv_ct_bits(tv_arg_word(s, i), s.pc) in let r = tv_ct_args(s, i + 1, n) in if a.ok == 0 or a.t == 0 or r.ok == 0 then {ok: 0, ps: Nil} else {ok: 1, ps: Cons(a.u, r.ps)}
+fn tv_ct_call2(sym, sg, s, cx) = if sg.n < 0 or sg.ok == 0 then tv_bad("call of a kernel that has no integer signature") else let a = tv_ct_args(s, 0, sg.n) in if a.ok == 0 then tv_bad("kernel call argument is not proven to be an immediate integer") else let v = tv_patom(TaCall(sym, a.ps)) in let rg = tv_ct_range(sym, cx, cx.fuel) in let r = tv_ret(s, TvW(v), tv_padd(s.eff, tv_patom(TaEff("call." + sym, a.ps)))) in tv_ok(tv_assume_rng(r.st, v, rg.lo, rg.hi))
+fn tv_ct_call(sym, s, cx) = if tv_has(cx.cts, sym) == 0 then tv_bad("[C0010] machine constant-time violation in @secret fn: call of '" + sym + "', which is not a constant-time kernel") else tv_ct_call2(sym, tv_sig_get(cx.fns, sym), s, cx)
+fn tv_shcount(a) = if tv_isimm(a) == 1 then tv_imm(a) else 0 - 1
+fn tv_ct_step(i, s, cx) = let op = i.op in let a = i.a in let b = i.b in if (op == "andq" or op == "orq" or op == "xorq") and tv_greg(a) == 1 and tv_greg(b) == 1 then tv_ct_bit(slice(op, 0, count(op) - 1), a, b, s) else if op == "orq" and a == "$1" and tv_greg(b) == 1 then tv_ct_or1(b, s) else if op == "negq" and b == "" and tv_greg(a) == 1 then tv_ct_neg(a, s) else if op == "sarq" and tv_greg(b) == 1 and tv_shcount(a) >= 1 and tv_shcount(a) <= 63 then tv_ct_sar(tv_shcount(a), b, s) else if (op == "salq" or op == "shlq") and tv_greg(b) == 1 and tv_shcount(a) >= 1 and tv_shcount(a) <= 62 then tv_ct_shl(tv_shcount(a), b, s) else if op == "call" and b == "" then tv_ct_call(a, s, cx) else tv_step0(i, s, cx)
+
+## --- the two literal sequences ---
+fn tv_txt(ins, k) = match ins
+    Nil        => ""
+    Cons(h, t) => if k <= 0 then (if h.lab != "" then "" else h.txt) else tv_txt(t, k - 1)
+fn tv_has_pk(ps, k) = match ps
+    Nil        => 0
+    Cons(h, t) => if tv_pk(h) == k then 1 else tv_has_pk(t, k)
+fn tv_guard_miss(params, ps) = match params
+    Nil        => ""
+    Cons(h, t) => if tv_has_pk(ps, tv_pk(tv_patom(TaVar(h)))) == 1 then tv_guard_miss(t, ps) else h
+fn tv_guard_miss2(params, d) = match params
+    Nil        => ""
+    Cons(h, t) => if tv_ivfits(tv_hyiv(d, tv_pk(tv_patom(TaVar(h))))) == 1 then tv_guard_miss2(t, d) else h
+fn tv_assume_all(s, ps) = match ps
+    Nil        => s
+    Cons(p, t) => tv_assume_all(tv_assume_rng(s, p, 0 - tv_lim(), tv_lim() - 1), t)
+## The guard continues only when the AND of the words is odd, i.e. when each canonical word is odd, i.e. when each
+## value is an immediate; otherwise the load faults and the function neither returns nor reaches ctfail.
+fn tv_guard(s, cx) = let l = tv_andl(tv_eget(s.rg, "%rax")) in if l.ok == 0 then tv_bad("[C0010] machine constant-time violation in @secret fn: the entry guard tests a value that is not the AND of canonical parameter words") else let miss = tv_guard_miss(cx.params, l.ps) in if miss != "" then tv_bad("[C0010] machine constant-time violation in @secret fn: the fail-closed entry guard does not cover parameter '" + miss + "'") else tv_ok(tv_setf(tv_setr(tv_assume_all(s, l.ps), "%rax", TvUnk), TgNone))
+fn tv_cteq2(a, b, s, cx) = let wa = tv_ct_bits(a, s.pc) in let wb = tv_ct_bits(b, s.pc) in if cx.ct == 1 and wa.ok == 1 and wb.ok == 1 and wa.t == 1 and wb.t == 1 then tv_ok(tv_setf(tv_setr(tv_setr(s, "%rax", TvM(tv_cteq_val(wa.u, wb.u))), "%rcx", TvUnk), TgNone)) else tv_bad("is-equal sequence on operands that are neither two unboxed raw words nor two immediate words")
+fn tv_cteq(s, cx) = let a = tv_eget(s.rg, "%rax") in let b = tv_eget(s.rg, "%rcx") in let ra = tv_rawpoly(a) in let rb = tv_rawpoly(b) in if ra.ok == 1 and rb.ok == 1 then tv_ok(tv_setf(tv_setr(tv_setr(s, "%rax", TvRaw(tv_cteq_val(ra.p, rb.p))), "%rcx", TvUnk), TgNone)) else tv_cteq2(a, b, s, cx)
+fn tv_macro(i, rest, s, cx) = if i.txt == "andq $1, %rax" and cx.ct == 1 and tv_txt(rest, 0) == "decq %rax" and tv_txt(rest, 1) == "orq %rsp, %rax" and tv_txt(rest, 2) == "movq (%rax), %rax" then {n: 4, r: tv_guard(s, cx)} else if i.txt == "xorq %rcx, %rax" and tv_txt(rest, 0) == "movq %rax, %rcx" and tv_txt(rest, 1) == "negq %rcx" and tv_txt(rest, 2) == "orq %rcx, %rax" and tv_txt(rest, 3) == "shrq $63, %rax" and tv_txt(rest, 4) == "xorq $1, %rax" then {n: 6, r: tv_cteq(s, cx)} else {n: 0, r: tv_ok(s)}
+fn tv_run_mac(mc, i, rest, s, pend, seen, acc, cx) = if mc.n > 0 then tv_run_ins(mc.r, i, drop(rest, mc.n - 1), pend, seen, acc, cx) else tv_run_ins(tv_step(i, s, cx), i, rest, pend, seen, acc, cx)
+fn tv_has_guard(inss) = match inss
+    Nil        => 0
+    Cons(i, r) => if i.lab == "" and i.txt == "andq $1, %rax" and tv_txt(r, 0) == "decq %rax" and tv_txt(r, 1) == "orq %rsp, %rax" and tv_txt(r, 2) == "movq (%rax), %rax" then 1 else tv_has_guard(r)
+## __rt_ustk unboxes the integer on top of the stack in place and preserves every register (ordinary code: the mask
+## of ct_select)
+fn tv_call_ustk2(w, t, s) = if w.ok == 0 then tv_bad("__rt_ustk operand is not a canonical value") else tv_ok(tv_s(s.rg, s.sl, Cons(TvRaw(w.p), t), TgNone, s.pc, s.eff))
+fn tv_call_ustk(s) = match s.stk
+    Nil        => tv_bad("__rt_ustk with an empty expression stack")
+    Cons(h, t) => tv_call_ustk2(tv_wpoly(h), t, s)
+
+## --- denotation of a kernel: {v, e, hy, err}; hy is the hypothesis conjunction, threaded in evaluation order ---
+fn tv_cd(v, e, hy) = {v: v, e: e, hy: hy, err: ""}
+fn tv_cderr(msg) = {v: Nil, e: Nil, hy: Nil, err: msg}
+fn tv_cden_fit(v, e, hy, what) = if tv_ivfits(tv_ivp(v, Cons(hy, Nil))) == 1 then tv_cd(v, e, hy) else tv_cderr("the result of " + what + " is not proven to fit the 63-bit immediate range by the validator's own interval analysis")
+fn tv_ct_isarith(op) = if op == "+" or op == "-" or op == "*" or op == "+%" or op == "-%" or op == "*%" then 1 else 0
+fn tv_cden_bin2(op, a, b) = if b.err != "" then b else tv_cden_fit(if op == "+" or op == "+%" then tv_padd(a.v, b.v) else if op == "-" or op == "-%" then tv_psub(a.v, b.v) else tv_pmul(a.v, b.v), tv_padd(a.e, b.e), b.hy, "'" + op + "'")
+fn tv_cden_bin(op, a, r, env, cx) = if a.err != "" then a else if tv_ct_isarith(op) == 0 then tv_cderr("operator '" + op + "' outside the constant-time subset") else tv_cden_bin2(op, a, tv_cden(r, env, a.hy, cx))
+fn tv_cden_let2(dv, db) = if db.err != "" then db else tv_cd(db.v, tv_padd(dv.e, db.e), db.hy)
+fn tv_cden_let(nm, dv, b, env, cx) = if dv.err != "" then dv else tv_cden_let2(dv, tv_cden(b, Cons({n: nm, p: dv.v}, env), dv.hy, cx))
+fn tv_cden_args3(a, r) = if r.err != "" then r else {ps: Cons(a.v, r.ps), e: tv_padd(a.e, r.e), hy: r.hy, err: ""}
+fn tv_cden_args2(a, t, env, cx) = if a.err != "" then {ps: Nil, e: Nil, hy: Nil, err: a.err} else tv_cden_args3(a, tv_cden_args(t, env, a.hy, cx))
+fn tv_cden_args(args, env, hy, cx) = match args
+    Nil        => {ps: Nil, e: Nil, hy: hy, err: ""}
+    Cons(h, t) => tv_cden_args2(tv_cden(h, env, hy, cx), t, env, cx)
+fn tv_fs_get(fs, nm) = match fs
+    Nil        => Nil
+    Cons(f, t) => if f.nm == nm then Cons(f, Nil) else tv_fs_get(t, nm)
+## the interval of a kernel's result for all immediate arguments, from its own AST (kernels do not recurse; the fuel
+## only bounds a cycle the compiler would have rejected)
+fn tv_ct_range2(mf, cx, fuel) = match mf
+    Nil        => tv_ivfull()
+    Cons(f, t) => let d = tv_cden(f.body, tv_env0(f.ps), tv_ct_hy0(f.ps), {self: f.nm, fns: cx.fns, dens: cx.dens, frame: 0, params: f.ps, ct: 1, cts: cx.cts, fs: cx.fs, fuel: fuel - 1}) in if d.err != "" then tv_ivfull() else let iv = tv_ivp(d.v, Cons(d.hy, Nil)) in if tv_ivfits(iv) == 1 then iv else tv_ivfull()
+fn tv_ct_range(nm, cx, fuel) = if fuel <= 0 then tv_ivfull() else tv_ct_range2(tv_fs_get(cx.fs, nm), cx, fuel)
+fn tv_cden_kcall(nm, a, cx) = let sg = tv_sig_get(cx.fns, nm) in if sg.n != len(a.ps) then tv_cderr("call of kernel '" + nm + "' with a wrong number of arguments") else let v = tv_patom(TaCall(nm, a.ps)) in let rg = tv_ct_range(nm, cx, cx.fuel) in tv_cd(v, tv_padd(a.e, tv_patom(TaEff("call." + nm, a.ps))), app(a.hy, Cons(tv_lit_of(tv_hyp("hge", v, rg.lo)), Cons(tv_lit_of(tv_hyp("hle", v, rg.hi)), Nil))))
+fn tv_cden_shift(kd, p, q, a) = if tv_pisc(q) == 0 or tv_pc0(q) < 0 or tv_pc0(q) > 62 then tv_cderr("shift by an amount that is not an integer literal in range") else if kd == "shr" then tv_cd(tv_shrp(p, tv_pc0(q)), a.e, a.hy) else if tv_pc0(q) > 61 or tv_pscale_ok(p, tv_pow2(tv_pc0(q))) == 0 then tv_cderr("the result of bit_shl is not proven to fit the 63-bit immediate range by the validator's own interval analysis") else tv_cden_fit(tv_pscale(p, tv_pow2(tv_pc0(q))), a.e, a.hy, "bit_shl")
+fn tv_cden_call2(nm, a, cx) = if a.err != "" then tv_cderr(a.err) else let n = len(a.ps) in let kd = tv_den_bit_kd(nm) in if n == 2 and (kd == "and" or kd == "or" or kd == "xor") then tv_cd(tv_bitp(kd, tv_p0(a.ps), tv_p1(a.ps)), a.e, a.hy) else if n == 2 and (kd == "shl" or kd == "shr") then tv_cden_shift(kd, tv_p0(a.ps), tv_p1(a.ps), a) else if nm == "bit_not" and n == 1 then tv_cden_fit(tv_psub(tv_pneg(tv_p0(a.ps)), tv_pc(1)), a.e, a.hy, "bit_not") else if nm == "ct_eq" and n == 2 then tv_cd(tv_cteq_val(tv_p0(a.ps), tv_p1(a.ps)), a.e, a.hy) else if nm == "ct_select" and n == 3 then tv_cd(tv_bitp("xor", tv_p2(a.ps), tv_bitp("and", tv_bitp("xor", tv_p1(a.ps), tv_p2(a.ps)), tv_p0(a.ps))), a.e, a.hy) else if nm == cx.self then tv_cderr("self recursion") else if tv_has(cx.cts, nm) == 1 then tv_cden_kcall(nm, a, cx) else tv_cderr("call of '" + nm + "', which is not a constant-time kernel")
+fn tv_cden_var(nm, r, hy) = if r.ok == 1 then tv_cd(r.p, Nil, hy) else tv_cderr("name '" + nm + "' is not an integer local")
+fn tv_cden(x, env, hy, cx) = match x
+    Num(n)          => if tv_fits(n) == 1 then tv_cd(tv_pc(n), Nil, hy) else tv_cderr("integer literal outside the immediate range")
+    Var(nm)         => tv_cden_var(nm, tv_lookup(env, nm), hy)
+    Bin(op, l, r)   => tv_cden_bin(op, tv_cden(l, env, hy, cx), r, env, cx)
+    LetIn(nm, v, b) => tv_cden_let(nm, tv_cden(v, env, hy, cx), b, env, cx)
+    Call(nm, args)  => tv_cden_call2(nm, tv_cden_args(args, env, hy, cx), cx)
+    _               => tv_cderr("expression form outside the constant-time subset")
+fn tv_cden_top(f, cx) = let d = tv_cden(f.body, tv_env0(f.ps), tv_ct_hy0(f.ps), cx) in if d.err != "" then tv_derr(d.err) else tv_d(d.v, TfF, d.e, Nil)
+fn tv_den_fn(f, cx) = if cx.ct == 1 then tv_cden_top(f, cx) else tv_den(f.body, tv_env0(f.ps), cx)
+
+## --- [C0010], closed over calls: the code of a `@secret` function and of every routine it reaches by `call` or `jmp`
+##     (user functions and the runtime the compiler appends, all in the same assembly text) holds no conditional jump,
+##     no division, no memory access outside frame / stack / rip-relative data, no indirect transfer. A symbol with no
+##     code in the text is a rejection. The one other memory form is the literal guard load of a kernel. ---
+fn tv_ct_div_op(op) = if op == "idivq" or op == "divq" or op == "idivl" or op == "divl" or op == "idivw" or op == "divw" or op == "idivb" or op == "divb" then 1 else 0
+fn tv_ct_mem_bad(op, o) = if op == "leaq" or o == "" or tv_find(o, "(", 0) < 0 then 0 else if tv_find(o, ",", 0) >= 0 then 1 else if tv_ends(o, "(%rbp)") == 1 or tv_ends(o, "(%rsp)") == 1 or tv_ends(o, "(%rip)") == 1 then 0 else 1
+fn tv_ct_why(i) = if tv_ct_div_op(i.op) == 1 or (i.op == "call" and (i.a == "__rt_div" or i.a == "__rt_mod")) then "variable-latency division `" + i.txt + "`" else if (tv_starts(i.op, "j") == 1 and i.op != "jmp") or tv_starts(i.op, "loop") == 1 then "secret-dependent conditional branch `" + i.txt + "`" else if tv_starts(i.op, "rep") == 1 then "variable-time string instruction `" + i.txt + "`" else if tv_ct_mem_bad(i.op, i.a) == 1 or tv_ct_mem_bad(i.op, i.b) == 1 then "register-indexed/non-frame memory access (cache-timing leak) `" + i.txt + "`" else ""
+fn tv_labs(s, n, i, acc) = if i >= n then acc else let e = tv_nl(s, n, i) in tv_labs(s, n, e + 1, if e > i + 1 and at(s, i) != " " and at(s, e - 1) == ":" then Cons({nm: slicen(s, n, i, e - 1), at: e + 1}, acc) else acc)
+fn tv_lab_at(labs, nm) = match labs
+    Nil        => 0 - 1
+    Cons(h, t) => if h.nm == nm then h.at else tv_lab_at(t, nm)
+## st = {err, seen: symbols reached by call, n: instructions scanned, jl: jump targets followed in this routine,
+##       p1, p2, p3: the three previous instruction texts}
+fn tv_sc_err(st, msg) = {err: msg, seen: st.seen, n: st.n, jl: st.jl, p1: "", p2: "", p3: ""}
+fn tv_sc_pre(chain) = "[C0010] machine constant-time violation in @secret fn: " + (if tv_find(chain, ">", 0) >= 0 then chain + ": " else "")
+fn tv_sc_step(st, txt) = {err: "", seen: st.seen, n: st.n + 1, jl: st.jl, p1: txt, p2: st.p1, p3: st.p2}
+fn tv_sc_guard_ok(ins, cur, st, sx) = if ins.txt == "movq (%rax), %rax" and st.p1 == "orq %rsp, %rax" and st.p2 == "decq %rax" and st.p3 == "andq $1, %rax" and tv_has(sx.cts, cur) == 1 then 1 else 0
+fn tv_sc_sym(sym, chain, st, sx) = if tv_has(st.seen, sym) == 1 then st else let at0 = tv_lab_at(sx.labs, sym) in if at0 < 0 then tv_sc_err(st, tv_sc_pre(chain + " -> " + sym) + "call of a symbol that is not defined in the assembly, so its code cannot be inspected") else tv_sc_walk(at0, sym, chain + " -> " + sym, {err: "", seen: Cons(sym, st.seen), n: st.n, jl: Nil, p1: "", p2: "", p3: ""}, sx)
+fn tv_sc_call(ins, nx, cur, chain, st, sx) = if tv_starts(ins.a, "*") == 1 or ins.b != "" then tv_sc_err(st, tv_sc_pre(chain) + "indirect call `" + ins.txt + "`") else let st2 = tv_sc_sym(ins.a, chain, st, sx) in tv_sc_walk(nx, cur, chain, {err: st2.err, seen: st2.seen, n: st2.n + 1, jl: st.jl, p1: ins.txt, p2: st.p1, p3: st.p2}, sx)
+fn tv_sc_jmp(ins, cur, chain, st, sx) = if tv_starts(ins.a, "*") == 1 or ins.b != "" then tv_sc_err(st, tv_sc_pre(chain) + "indirect jump `" + ins.txt + "`") else if tv_has(st.jl, ins.a) == 1 then st else let at0 = tv_lab_at(sx.labs, ins.a) in if at0 < 0 then tv_sc_err(st, tv_sc_pre(chain) + "jump to a label that is not defined in the assembly `" + ins.txt + "`") else tv_sc_walk(at0, cur, chain, {err: "", seen: st.seen, n: st.n + 1, jl: Cons(ins.a, st.jl), p1: "", p2: "", p3: ""}, sx)
+fn tv_sc_ins(ins, nx, cur, chain, st, sx) = if ins.lab != "" then tv_sc_walk(nx, cur, chain, tv_sc_step(st, ""), sx) else if ins.op == "ret" then st else if tv_starts(ins.op, ".") == 1 or ins.op == "?" then tv_sc_walk(nx, cur, chain, st, sx) else if tv_sc_guard_ok(ins, cur, st, sx) == 1 then tv_sc_walk(nx, cur, chain, tv_sc_step(st, ins.txt), sx) else if tv_ct_why(ins) != "" then tv_sc_err(st, tv_sc_pre(chain) + tv_ct_why(ins)) else if ins.op == "call" then tv_sc_call(ins, nx, cur, chain, st, sx) else if ins.op == "jmp" then tv_sc_jmp(ins, cur, chain, st, sx) else tv_sc_walk(nx, cur, chain, tv_sc_step(st, ins.txt), sx)
+fn tv_sc_walk(i, cur, chain, st, sx) = if st.err != "" then st else if st.n > 100000 then tv_sc_err(st, tv_sc_pre(chain) + "the transitive scan exceeded its instruction budget") else if i >= sx.asmn then tv_sc_err(st, tv_sc_pre(chain) + "the code runs past the end of the assembly without `ret`") else let e = tv_nl(sx.asm, sx.asmn, i) in tv_sc_ins(tv_ins(slicen(sx.asm, sx.asmn, i, e)), e + 1, cur, chain, st, sx)
+fn tv_sc_fn(nm, cx0) = let at0 = tv_lab_at(cx0.labs, nm) in if at0 < 0 then {err: "", seen: Nil} else let st = tv_sc_walk(at0, nm, nm, {err: "", seen: Nil, n: 0, jl: Nil, p1: "", p2: "", p3: ""}, cx0) in {err: st.err, seen: rev(st.seen)}
+
+## --- boundary evaluation with exact overflow checks (the extremes -2^62 and 2^62 - 1 are evaluated, not skipped) ---
+fn tv_cadd(a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if b.v > 0 and a.v > 9223372036854775807 - b.v then tv_cv(0, 0) else if b.v < 0 and a.v < 0 - 9223372036854775807 - b.v then tv_cv(0, 0) else tv_cv(1, a.v + b.v)
+fn tv_cmul(a, b) = if a.ok == 0 or b.ok == 0 then tv_cv(0, 0) else if a.v == 0 or b.v == 0 then tv_cv(1, 0) else if a.v < 0 - 9223372036854775807 or b.v < 0 - 9223372036854775807 then tv_cv(0, 0) else if tv_cabs(a.v) > 9223372036854775807 / tv_cabs(b.v) then tv_cv(0, 0) else tv_cv(1, a.v * b.v)
+## st = {bad: mismatch text, n: vectors compared, lines: native call lines, exp: their expected output, cap: how many
+##       native lines to keep}
+fn tv_bst(bad, n, lines, exp, cap) = {bad: bad, n: n, lines: lines, exp: exp, cap: cap}
+fn tv_bnd2(v1, v2, env, st) = if v1.ok == 0 or v2.ok == 0 then st else if v1.v != v2.v then tv_bst("boundary evaluation: AST gives " + str(v1.v) + ", x86-64 model gives " + str(v2.v) + " at (" + tv_envshow(env) + ")", st.n, st.lines, st.exp, st.cap) else tv_bst("", st.n + 1, if len(st.lines) < st.cap then Cons(tv_envshow(env), st.lines) else st.lines, if len(st.lines) < st.cap then Cons(str(v1.v), st.exp) else st.exp, st.cap)
+fn tv_bnd1(g, env, cx, st) = let t1 = tv_cf(g.ts, env, cx, 4) in let t2 = tv_cf(g.ta, env, cx, 4) in if t1.ok == 0 or t2.ok == 0 then st else if t1.v != t2.v then tv_bst("boundary evaluation: trap behaviour differs at (" + tv_envshow(env) + ")", st.n, st.lines, st.exp, st.cap) else if t1.v == 1 then tv_bst("", st.n + 1, st.lines, st.exp, st.cap) else tv_bnd2(tv_cp(g.vs, env, cx, 4), tv_cp(g.va, env, cx, 4), env, st)
+fn tv_bnd(g, ps, tys, cands, nc, s, k, cx, st) = if k <= 0 or st.bad != "" then st else let vc = tv_vec(ps, tys, cands, nc, s) in tv_bnd(g, ps, tys, cands, nc, vc.s, k - 1, cx, tv_bnd1(g, vc.env, cx, st))
+## a kernel is also run on fixed vectors: the two extremes, negatives, and values around 2^32, rotated over the parameters
+fn tv_fix_vals() = Cons(0 - tv_lim(), Cons(tv_lim() - 1, Cons(0 - 1, Cons(0, Cons(1, Cons(4294967295, Cons(0 - 4294967296, Cons(1311768467463790320, Cons(0 - 81985529216486896, Nil)))))))))
+fn tv_fix_env(ps, vals, k, nv) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons({n: h, v: tv_ith(vals, k % nv), b: 0}, tv_fix_env(t, vals, k + 1, nv))
+fn tv_bnd_fixed(g, ps, vals, k, cx, st) = if k >= len(vals) or st.bad != "" then st else tv_bnd_fixed(g, ps, vals, k + 1, cx, tv_bnd1(g, tv_fix_env(ps, vals, k, len(vals)), cx, st))
+fn tv_cand_ct(acc, v) = if tv_fits(v) == 0 or tv_has(acc, v) == 1 then acc else Cons(v, acc)
+fn tv_cands_ct(cs, acc) = match cs
+    Nil        => acc
+    Cons(h, t) => tv_cands_ct(t, if tv_fits(h) == 1 then tv_cand_ct(tv_cand_ct(tv_cand_ct(acc, h), h - 1), h + 1) else acc)
+fn tv_validate3(f, g, cx) = let pr = tv_prove(g, Nil, 0) in if pr.ok == 0 then tv_res(f.nm, "rejected", pr.why, pr.n, 0, 0, Nil, Nil, g) else let cands = if cx.ct == 1 then tv_cands_ct(tv_consts(f.body, Cons(0, Cons(1, Cons(2, Cons(7, Cons(255, Cons(65536, Cons(0 - 3, Cons(tv_lim() - 1, Cons(0 - tv_lim(), Nil)))))))))), Nil) else tv_cands(tv_consts(f.body, Cons(0, Cons(1, Cons(2, Cons(7, Nil))))), Nil) in let b0 = if cx.ct == 1 then tv_bnd_fixed(g, f.ps, tv_fix_vals(), 0, cx, tv_bst("", 0, Nil, Nil, 28)) else tv_bst("", 0, Nil, Nil, 12) in let b = tv_bnd(g, f.ps, f.tys, cands, len(cands), 20261110 + count(f.nm), 160, cx, b0) in if b.bad != "" then tv_res(f.nm, "rejected", b.bad, pr.n, b.n, 0, Nil, Nil, g) else tv_res(f.nm, "validated", "", pr.n, b.n, if cx.ct == 1 then 0 else tv_kern(f.body, g.va), b.lines, b.exp, g)
+
+## --- one function, fail-closed: an arithmetic trap inside the validator (a coefficient that leaves 64 bits) is a
+##     rejection of that function, not a crash of the tool ---
+fn tv_cx(f, cx0, frame, ct) = {self: f.nm, fns: cx0.fns, dens: cx0.dens, frame: frame, params: f.ps, ct: ct, cts: cx0.cts, fs: cx0.fs, fuel: 8}
+fn tv_rej(f, why) = tv_res(f.nm, "rejected", why, 0, 0, 0, Nil, Nil, tv_g0())
+fn tv_validate1(f, fl, cx0, is_sec, is_ct, sc) = let cx1 = tv_cx(f, cx0, 0, is_ct) in let d = tv_den_fn(f, cx1) in if d.err != "" and is_sec == 0 then tv_res(f.nm, "unsupported", d.err, 0, 0, 0, Nil, Nil, tv_g0()) else if fl.ok == 0 then tv_rej(f, "the function is missing from the assembly") else let fr = tv_frame(fl.ls) in if fr.ok == 0 then tv_rej(f, "prologue is not `pushq %rbp; movq %rsp, %rbp`") else if fr.frame % 16 != 0 or fr.frame < 0 then tv_rej(f, "frame of " + str(fr.frame) + " bytes breaks the 16-byte stack alignment") else let ep = tv_epi(rev(fr.body)) in if ep.ok == 0 then tv_rej(f, "epilogue is not `movq %rbp, %rsp; popq %rbp; ret`") else let inss = tv_inss(ep.body) in if sc.err != "" then tv_rej(f, sc.err) else if is_ct == 1 and isnil(f.ps) == 0 and tv_has_guard(inss) == 0 then tv_rej(f, "[C0010] machine constant-time violation in @secret fn: constant-time kernel without the literal fail-closed entry guard `andq $1, %rax; decq %rax; orq %rsp, %rax; movq (%rax), %rax`") else if d.err != "" then (if is_ct == 1 then tv_rej(f, "constant-time kernel: " + d.err) else tv_res(f.nm, "unsupported", d.err, 0, 0, 0, Nil, Nil, tv_g0())) else tv_validate2(f, d, tv_run(inss, tv_s(tv_regs0(f.ps, 0), Nil, Nil, TgNone, Cons(Nil, Nil), Nil), Nil, Nil, {tp: Nil, tm: Nil, err: ""}, tv_cx(f, cx0, fr.frame, is_ct)), cx1)
+fn tv_guarded(f, fl, cx0, is_sec, is_ct, sc) = if __lume_try_begin() == 0 then tv_guarded2(tv_validate1(f, fl, cx0, is_sec, is_ct, sc)) else tv_rej(f, "the validator stopped on this function (fail-closed): " + __lume_try_msg())
+fn tv_guarded2(r) = let z = __lume_try_end() in r
+## a kernel is validated only together with the kernels it reaches: its own proof uses their result intervals
+fn tv_callee1(r, g, mf, t, cx0) = match mf
+    Nil         => tv_res(r.nm, "rejected", "constant-time kernel callee '" + g + "' is not a typed integer function", r.leaves, r.vecs, 0, Nil, Nil, r.g)
+    Cons(gf, x) => let v = tv_guarded(gf, tv_fn_lines(cx0.fl, g), cx0, 1, 1, tv_sc_fn(g, cx0)) in if v.status == "validated" then tv_callees_ok(r, t, cx0) else tv_res(r.nm, "rejected", "constant-time kernel callee '" + g + "' is not validated: " + v.why, r.leaves, r.vecs, 0, Nil, Nil, r.g)
+fn tv_callees_ok(r, seen, cx0) = match seen
+    Nil        => r
+    Cons(g, t) => if tv_has(cx0.cts, g) == 0 or g == r.nm then tv_callees_ok(r, t, cx0) else tv_callee1(r, g, tv_fs_get(cx0.fs, g), t, cx0)
+fn tv_validate(f, fl, cx0) = let is_sec = tv_has(cx0.secrets, f.nm) in let is_ct = tv_has(cx0.cts, f.nm) in let sc = if is_sec == 1 and fl.ok == 1 then tv_sc_fn(f.nm, cx0) else {err: "", seen: Nil} in let r = tv_guarded(f, fl, cx0, is_sec, is_ct, sc) in let r2 = if is_ct == 1 and r.status == "validated" then tv_callees_ok(r, sc.seen, cx0) else r in {nm: r2.nm, status: r2.status, why: r2.why, leaves: r2.leaves, vecs: r2.vecs, kern: r2.kern, lines: r2.lines, exp: r2.exp, g: r2.g, sec: is_sec, ct: is_ct, seen: sc.seen, trans: if is_sec == 1 and fl.ok == 1 and sc.err == "" then 1 else 0}
+fn tv_cts1(st, rest) = match st
+    OSig(nm, pubf, freef, pl, rty, fromp) => if freef / 128 % 2 == 1 and freef / 512 % 2 == 1 then Cons(nm, rest) else rest
+    _                                     => rest
+fn tv_cts(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => tv_cts1(h, tv_cts(t))
+fn tv_dens(fs, all, sigs, cts) = match fs
+    Nil        => Nil
+    Cons(f, t) => Cons({ok: 1, nm: f.nm, ps: f.ps, d: tv_den_fn(f, {self: f.nm, fns: sigs, dens: Nil, frame: 0, params: f.ps, ct: tv_has(cts, f.nm), cts: cts, fs: all, fuel: 8})}, tv_dens(t, all, sigs, cts))
+fn tv_all(fs, fl, cx) = match fs
+    Nil        => Nil
+    Cons(f, t) => Cons(tv_validate(f, tv_fn_lines(fl, f.nm), cx), tv_all(t, fl, cx))
+fn tv_jbool(b) = if b == 1 then "true" else "false"
+fn tv_jnames(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => "\"" + tv_jesc(h) + "\"" + (if isnil(t) == 1 then "" else ",") + tv_jnames(t)
+fn tv_json_fns(rs) = match rs
+    Nil        => ""
+    Cons(r, t) => "{\"name\":\"" + r.nm + "\",\"status\":\"" + r.status + "\",\"reason\":\"" + tv_jesc(r.why) + "\",\"proof_cases\":" + str(r.leaves) + ",\"boundary_vectors\":" + str(r.vecs) + ",\"kernel_rederived\":" + (if r.status == "validated" and r.kern == 1 then "true" else "false") + ",\"secret\":" + tv_jbool(r.sec) + ",\"constant_time_kernel\":" + tv_jbool(r.ct) + ",\"ct_checked_transitively\":" + tv_jbool(r.trans) + ",\"ct_callees_inspected\":[" + tv_jnames(r.seen) + "]}" + (if isnil(t) == 1 then "" else ",") + tv_json_fns(t)
+fn tv_nsec(rs, status, ct) = match rs
+    Nil        => 0
+    Cons(r, t) => (if r.sec == 1 and (status == "" or r.status == status) and (ct == 0 or r.ct == 1) then 1 else 0) + tv_nsec(t, status, ct)
+fn tv_smt_hyp(g) = if g.ct == 1 then "; Constant-time kernel (@secret + @no_alloc). Hypothesis H: every parameter is an immediate, i.e. lies in\n; [-2^62, 2^62) -- the entry guard of the kernel enforces it at run time by faulting on anything else -- and the\n; result of every callee kernel lies in the interval ltv derived from that kernel's own AST. ret_x86 is exactly H.\n; Claim under H: the code does not trap and returns the canonical word of the AST value. The range side conditions\n; that make the straight-line word arithmetic exact (no 64-bit wrap, no boxing) are re-derived by ltv's interval\n; analysis; they are NOT restated in this file, whose value terms treat the bit operations as uninterpreted.\n(assert ret_x86)\n" else ""
+fn tv_lean_hyp(g) = if g.ct == 1 then " (h_ct : " + tv_xf(g.ra, 1) + ")" else ""
+
+## --- SHA-256 (FIPS 180-4) with the native bit operations. The digest of the report is the same function as lsh256 of
+##     the compiler (which emulates the bit operations with arithmetic so that the frozen seed can build it), about
+##     thirty times faster: a validation run hashes the whole assembly text, runtime included. tv_gate compares both
+##     digests of a run with /usr/bin/sha256sum. ---
+fn tv_m32(x) = bit_and(x, 4294967295)
+fn tv_rotr(x, n) = bit_or(bit_shr(x, n), tv_m32(bit_shl(x, 32 - n)))
+fn tv_sh_byte(s, n, total, i) = if i < n then ord(at(s, i)) else if i == n then 128 else if i >= total - 8 then bit_and(bit_shr(n * 8, 8 * (total - 1 - i)), 255) else 0
+fn tv_sh_word(s, n, total, b) = if b + 4 <= n then ord(at(s, b)) * 16777216 + ord(at(s, b + 1)) * 65536 + ord(at(s, b + 2)) * 256 + ord(at(s, b + 3)) else tv_sh_byte(s, n, total, b) * 16777216 + tv_sh_byte(s, n, total, b + 1) * 65536 + tv_sh_byte(s, n, total, b + 2) * 256 + tv_sh_byte(s, n, total, b + 3)
+fn tv_sh_nth(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i <= 0 then h else tv_sh_nth(t, i - 1)
+fn tv_sh_s0(x) = bit_xor(bit_xor(tv_rotr(x, 7), tv_rotr(x, 18)), bit_shr(x, 3))
+fn tv_sh_s1(x) = bit_xor(bit_xor(tv_rotr(x, 17), tv_rotr(x, 19)), bit_shr(x, 10))
+fn tv_sh_wt(t, w, s, n, total, base) = if t < 16 then tv_sh_word(s, n, total, base + 4 * t) else tv_m32(tv_sh_s1(tv_sh_nth(w, 1)) + tv_sh_nth(w, 6) + tv_sh_s0(tv_sh_nth(w, 14)) + tv_sh_nth(w, 15))
+fn tv_sh_t1(e, f, g, h, k, wt) = tv_m32(h + bit_xor(bit_xor(tv_rotr(e, 6), tv_rotr(e, 11)), tv_rotr(e, 25)) + bit_xor(bit_and(e, f), bit_and(bit_xor(e, 4294967295), g)) + k + wt)
+fn tv_sh_t2(a, b, c) = tv_m32(bit_xor(bit_xor(tv_rotr(a, 2), tv_rotr(a, 13)), tv_rotr(a, 22)) + bit_xor(bit_xor(bit_and(a, b), bit_and(a, c)), bit_and(b, c)))
+fn tv_sh_rnd2(t, w, wt, st, t1, src) = tv_sh_rnd(t + 1, Cons(wt, w), {a: tv_m32(t1 + tv_sh_t2(st.a, st.b, st.c)), b: st.a, c: st.b, d: st.c, e: tv_m32(st.d + t1), f: st.e, g: st.f, h: st.g}, src)
+fn tv_sh_rnd1(t, w, wt, st, src) = tv_sh_rnd2(t, w, wt, st, tv_sh_t1(st.e, st.f, st.g, st.h, lsh_k(t), wt), src)
+fn tv_sh_rnd(t, w, st, src) = if t >= 64 then st else tv_sh_rnd1(t, w, tv_sh_wt(t, w, src.s, src.n, src.total, src.base), st, src)
+fn tv_sh_blocks(s, n, total, base, st) = if base >= total then st else let r = tv_sh_rnd(0, Nil, st, {s: s, n: n, total: total, base: base}) in tv_sh_blocks(s, n, total, base + 64, {a: tv_m32(st.a + r.a), b: tv_m32(st.b + r.b), c: tv_m32(st.c + r.c), d: tv_m32(st.d + r.d), e: tv_m32(st.e + r.e), f: tv_m32(st.f + r.f), g: tv_m32(st.g + r.g), h: tv_m32(st.h + r.h)})
+fn tv_sha256(s) = let n = count(s) in let total = ((n + 9 + 63) / 64) * 64 in let fin = tv_sh_blocks(s, n, total, 0, {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in lsh_hex32(fin.a) + lsh_hex32(fin.b) + lsh_hex32(fin.c) + lsh_hex32(fin.d) + lsh_hex32(fin.e) + lsh_hex32(fin.f) + lsh_hex32(fin.g) + lsh_hex32(fin.h)
 
 print tv_main(readall())

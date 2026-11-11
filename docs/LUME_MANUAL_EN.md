@@ -257,6 +257,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                     `cpu_write_cr3(v)`, `cpu_invlpg(va)`, `cpu_idt_init()`, `cpu_smp_boot_ap(v)`
   - 64-Bit Hardware Bitwise: `bit_and(a, b)`, `bit_or(a, b)`, `bit_xor(a, b)`, `bit_not(a)`,
                              `bit_shl(a, n)`, `bit_shr(a, n)`
+  - Constant-Time Intrinsics: `ct_select(mask, a, b)` (bit by bit: `a` where the mask bit is set, else `b`),
+                              `ct_eq(a, b)` (1 when equal, else 0); both are branch-free in a constant-time kernel
   - Block Memory, Integrity & O(1) Kernel State: `mem_copy(dst, src, len)`, `mem_set(dst, b, len)`,
     `mem_crc64(addr, len)` (64-bit FNV-1a anti-rootkit page integrity), `krn_slot_write(idx, val)`,
     `krn_slot_read(idx)` (zero-allocation 1024-slot kernel state table)
@@ -695,6 +697,16 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   63-bit immediate range, no record, constructor with fields, string or allocating builtin, recursion in tail
   position only. `realtime_gate` measures the result with `heap_stats()`: zero allocations over the accepted
   kernels. Limits: no worst-case stack depth in bytes is computed and nothing is timed; `@bound` is the cycle budget.
+- **Constant-time kernels (`@secret` + `@no_alloc`, `[C0011]`)**: a function that carries both attributes is lowered
+  to straight-line code on immediate integers: no tag test, no overflow test, no runtime call, no jump. `[C0011]`
+  rejects everything else: parameters and result are `int`; no `requires` (mask with `bit_and`; the kernel is total
+  over immediates); an `ensures` only when it is proven (it is never checked at run time, also under
+  `--keep-proven-checks`); the body uses `+ - * +% -% *%`, `bit_and` / `bit_or` / `bit_xor` / `bit_not`, `bit_shl` /
+  `bit_shr` by an integer literal, `ct_select`, `ct_eq` and calls of other kernels; no `if`, `match`, comparison,
+  `and` / `or`, `/`, `%`, recursion. Every arithmetic result must be proven inside the 63-bit immediate range for
+  all immediate arguments (`[E0210]`). An entry guard faults when an argument is not an immediate. `ltv` re-derives
+  the ranges itself and validates the machine code; `tv_gate` mutates it. Limits: "constant time" is the absence of
+  secret-dependent branches, divisions and memory accesses in the instruction sequence; no timing is measured.
 - **Multi-ISA kernel back ends (Domain `#117`)**: `larm64.src` and `lriscv.src` compile the integer kernel fragment
   (`int` functions, `+ - * / %`, comparisons, `and`/`or`, `if`, `let`, calls, `print`) to AArch64, RV64 and RV32
   images; `ltv_multiarch.src` validates every function image against the source. No image is released before the
@@ -706,8 +718,10 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - **Cryptography and TLS 1.3 (Domain `#119`, `use lcrypto_tls`)**: SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305,
   Ed25519, X25519, the TLS 1.3 key schedule, record layer and handshake state machine, all in Lume and checked
   against the official vectors by `crypto_tls_gate`. `ltv` adds `[C0010]`: the emitted code of a `@secret` function
-  may hold no conditional branch, division or memory access outside its frame. Limits: tested, not formally
-  verified; `[C0010]` does not look inside runtime helpers reached by `call`; no X.509 path validation.
+  may hold no conditional branch, division or memory access outside its frame, and neither may any routine it
+  reaches by `call` (the scan is transitive and names the call chain). Limits: tested, not formally
+  verified; a plain `@secret` function that uses `+` or a bit operation is rejected by `[C0010]` (its helpers
+  branch): write it as a constant-time kernel; no X.509 path validation.
 - **Incremental proof cache (Domain `#120`)**: one sealed record per function, keyed by the SHA-256 of its body,
   contracts, callee interfaces and prover version. A tampered record is refused (`[PC0002]`), a module the prover
   refutes is never stored (`[PC0003]`), `--require-all-hits` turns a miss into an error (`[PC0005]`).
@@ -859,7 +873,15 @@ print run_lumeputer_demo()
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy`, or `mem_set` targets `.text`/`.rodata` (`[0x8000..0x3FFFF]`), including symbolic/affine `base + off`. Use a safe DMA RAM buffer (`>= 0x40000`). |
 | `[K0006]` | Kernel Stack Safety  | Unbounded mutual recursion cycle (`f -> g -> f`) in `@freestanding` / `kernel_boot_entry` module. Use tail-loop state or bounded iteration. |
 | `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup on `secret_*` or inside `ct_*`. Use bitwise XOR/OR mask accumulation. |
+<<<<<<< HEAD
 | `[L0001]` | Lexer / Assembler    | Unterminated string literal in a source file (close it with a double quote); `lasm` uses the same code for an instruction or directive it does not know. |
+=======
+| `[C0010]` | Machine Constant-Time | `lume tv`: the emitted code of a `@secret fn`, or of a routine it reaches by `call`, holds a conditional branch, a division or a memory access outside frame and stack. Write the function as a constant-time kernel (`@secret` + `@no_alloc`). |
+| `[C0011]` | Constant-Time Kernel | A `@secret` + `@no_alloc` function has a `requires`, an unproven `ensures`, a conditional, comparison, `/` or `%`, a shift by a non-literal, recursion, a non-`int` type or a call of a function that is not a kernel. Use masks, `ct_select(mask, a, b)` and `ct_eq(a, b)`. |
+| `[Q0001]` | Quantum Linearity    | Non-linear `Qubit` duplication (No-Cloning violation) or reuse of measured qubit. Ensure each `Qubit` wire is consumed linearly. |
+| `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\dagger$ (`q_silq_qfree_verify`) before returning. |
+| `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
+>>>>>>> 43cd95a5cff0ef302e03869bf05ed49e7719d55f
 | `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
 | `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |

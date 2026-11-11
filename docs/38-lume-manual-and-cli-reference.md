@@ -257,6 +257,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
                     `cpu_write_cr3(v)`, `cpu_invlpg(va)`, `cpu_idt_init()`, `cpu_smp_boot_ap(v)`
   - 64-Bit Hardware Bitwise: `bit_and(a, b)`, `bit_or(a, b)`, `bit_xor(a, b)`, `bit_not(a)`,
                              `bit_shl(a, n)`, `bit_shr(a, n)`
+  - Constant-Time Intrinsics: `ct_select(mask, a, b)` (bit by bit: `a` where the mask bit is set, else `b`),
+                              `ct_eq(a, b)` (1 when equal, else 0); both are branch-free in a constant-time kernel
   - Block Memory, Integrity & O(1) Kernel State: `mem_copy(dst, src, len)`, `mem_set(dst, b, len)`,
     `mem_crc64(addr, len)` (64-bit FNV-1a anti-rootkit page integrity), `krn_slot_write(idx, val)`,
     `krn_slot_read(idx)` (zero-allocation 1024-slot kernel state table)
@@ -715,6 +717,8 @@ print run_chameleon_demo()
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy`, or `mem_set` targets `.text`/`.rodata` (`[0x8000..0x3FFFF]`), including symbolic/affine `base + off`. Use a safe DMA RAM buffer (`>= 0x40000`). |
 | `[K0006]` | Kernel Stack Safety  | Unbounded mutual recursion cycle (`f -> g -> f`) in `@freestanding` / `kernel_boot_entry` module. Use tail-loop state or bounded iteration. |
 | `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup on `secret_*` or inside `ct_*`. Use bitwise XOR/OR mask accumulation. |
+| `[C0010]` | Machine Constant-Time | `lume tv`: the emitted code of a `@secret fn`, or of a routine it reaches by `call`, holds a conditional branch, a division or a memory access outside frame and stack. Write the function as a constant-time kernel (`@secret` + `@no_alloc`). |
+| `[C0011]` | Constant-Time Kernel | A `@secret` + `@no_alloc` function has a `requires`, an unproven `ensures`, a conditional, comparison, `/` or `%`, a shift by a non-literal, recursion, a non-`int` type or a call of a function that is not a kernel. Use masks, `ct_select(mask, a, b)` and `ct_eq(a, b)`. |
 | `[Q0001]` | Quantum Linearity    | Non-linear `Qubit` duplication (No-Cloning violation) or reuse of measured qubit. Ensure each `Qubit` wire is consumed linearly. |
 | `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\dagger$ (`q_silq_qfree_verify`) before returning. |
 | `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
