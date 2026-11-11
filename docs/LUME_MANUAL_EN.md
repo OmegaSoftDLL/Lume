@@ -123,7 +123,7 @@ Lume supports `match` everywhere (top-level bodies, `let ... in`, `if`, call arg
 3. Fail-Closed Patterns & Bindings: Duplicate parameter/pattern/destructuring names,
    float patterns (`1.5 =>`), and unbraced same-line nested `match` fail closed with `[P0002]`.
 4. Never edit `compiler/stage1/lumec.src` directly: edit `compiler/stage1/lume/NN_*.src`
-   and run `scripts/amalgamate.sh`.
+   and run `build/bin/lume_make amalgamate`.
 
 # CHAPTER 3: TYPE SYSTEM, OWNERSHIP & DATA TYPES
 
@@ -579,14 +579,15 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check
   lume fmt <src.src> [--check|--stdout]  Canonical code formatter
   lume doc <src.src> [--json]            Generate module documentation & run doctests
-  lume repl [--stdio|--kernel]           Interactive Read-Eval-Prove-Print Loop
+  lume repl [--kernel|--json]            Interactive Read-Eval-Prove-Print Loop (`--kernel`: Jupyter kernel protocol)
   lume lsp / lume dap                    Language Server & Debug Adapter Protocol
   lume pkg init|check|lock|verify|tree   Content-addressed package manager
   lume registry publish|resolve|discover Verified component registry
 
 ## 8.2 Formal Verification, AI Agent & Evolution Commands (Waves 1-8)
   lume prove [--diff|--share] <src.src>  Run `QF_LIA` / Separation Logic theorem prover
-  lume certify / verify-cert <src.src>   Emit & verify standalone proof certificates
+  lume certify <src.src>                 Emit a standalone proof certificate (JSON on stdout)
+  lume verify-cert <certificate.json>    Verify a certificate with the minimal proof kernel
   lume agent <skeleton|cegis|prove> <f>  Compiler-as-Oracle AI synthesis
   lume patch-fn <src> <fn_name> <patch>  AST surgical single-function hot-patcher
   lume trace <src.src>                   Structured JSON execution trace
@@ -625,7 +626,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume ncm / next-concept / ncm-quantize / ncm-generate / ncm-solve [target] NCM-Lume Next-Concept Modeling Coarse-to-Fine Parallel Engine
   lume opentpu / tpu / otpu-asm / k-smooth / stream-se / tpu-scoreboard [target] OpenTPU-Lume Systolic AI Accelerator & ISA Engine
   lume continuum / nexus / billion-context / acp / ecc-shield / bend-laws / ai-memory / notebook / doory [target] Lume Continuum Nexus v1.0 (7 Reference Engines)
-  lume quantum-nexus / qfree / zx-calculus / surface-code / vqe [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
+  lume quantum-nexus / quantum-zx / quantum-stabilizer / quantum-qec / quantum-vqe / quantum-uncompute / silq / quizx / stim [target] Lume Quantum Nexus v1.0 (Silq qfree, QuiZX, Stim, Surface Code QEC, Catalyst VQE)
   lume chameleon|camaleao|polyglot|ffi-bridge [target_or_file] (or `lume chameleon`) Universal Chameleon Polyglot Interop Engine across 9 ecosystems (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`)
   lume unified-field|ufe|subsea [target]             Unified Field & Subsea/Offshore Engine in `std.gfx` (`ufe_dls_lambda_sq_milli`..`ufe_latency_shedder_step`, `subsea_catenary_top_tension_n`, `subsea_viv_screening_ok`, `subsea_miner_fatigue_safe_ok`, `marine_dnv_daf_floor_milli`, `marine_heavy_lift_feasible_ok`, `subsea_hyperbaric_decompression_safe_ok`, `subsea_well_kill_icp_kpa`, `subsea_b31g_corroded_pipe_safe_ok`)
   lume singularity|ote|transition-engine [target]    2nd-Order Dynamical Transition Engine, Singularity Boundary Omega & Bayes-SPC/CPM/k-Anonymity in `lchameleon.src` (`ote_select_damping_regime`..`ote_diagnose_primary_code`, `spc_beta_binomial_posterior_num`, `spc_cusum_upper_step_milli`, `ops_cpm_total_float_hours`, `analytics_k_anonymity_release_ok`, `analytics_pava_monotonic_pair_hi`)
@@ -844,21 +845,134 @@ print run_lumeputer_demo()
 | `[P0002]` | Parser / Syntax      | Unexpected token or nested unbraced `match`. Move `match` to top-level helper `fn f(x) = match x ...` or wrap in braces `match x { ... }`, and verify pure LF (`\n`) line endings. |
 | `[R0200]` | Name Resolution      | Call to undefined function or variable. Check spelling or add `use <module>` at top of file. |
 | `[R0201]` | Name Resolution      | A function reuses the name of a runtime routine (`count`, `at`, ...) or a prefix reserved for it (`__rt_`, `__gc_`, `__lume_`, `__c_`, `__k_`, `__r_`, `__isr_`, `__cpu_`, `__krn_`, `__net_`). Rename it. |
-| `[T0300]` | Type / Tensor Shape  | Type mismatch, currency mismatch (`money[BRL]` vs `money[USD]`), or tensor shape mismatch. |
+| `[T0300]` | Tensor Shape         | Tensor shape mismatch: an argument dimension differs from the parameter's, or the branches of an `if` disagree. Reshape the tensor. |
+| `[T2001]` | Type Check           | An operator applied to incompatible types (`int + str`, `money[BRL] + money[USD]`). Convert both operands to the same type. |
+| `[T2002]` | Type Check           | A function returns a type other than the one it declares. Fix the body or the declared return type. |
 | `[E0200]` | Algebraic Effects    | Impure operation (`io`, `fs`, `net`, `arena_new`, `embed`) called inside a `/ pure` function. Remove `/ pure` or add the required effect to the function signature. |
 | `[O0001]` | Ownership / Borrow   | Use-after-move, double-close of file handle, or conflicting mutable borrow (`mut`). Clone or restructure ownership scope. |
 | `[V0001]` | Contract / Law Proof | `requires`/`ensures` contract or `law` refuted by `QF_LIA` solver. Inspect the printed counterexample or run `lume heal <file.src>`. |
 | `[V0002]` | WCET Cycle Bound     | Function exceeds `@bound(cycles: N)` budget or uses unbounded recursion in `@interrupt`. |
 | `[I0003]` | Polyglot / C Interop | Unsafe or unsupported foreign declaration in `lume adapt c` or `lchameleon` (`unverified[T] -> verified[T]`). Add explicit `QF_LIA` bounds or `@repr(c)`. |
-| `[I0275]` | WASM Sandbox         | Disallowed host import (`env.*`, `proc_exit`) in `@wasm-sandbox` module. |
-| `[C0271]` | Comptime Embed       | `comptime embed("...")` path escapes project root (`..`) or file is missing. |
-| `[D0273]` | Table Schema         | `comptime table_schema(T)` called on a non-record type. |
+| `[I0275]` | WASM Sandbox         | A WebAssembly module handed to the capability sandbox imports an ungranted host capability (`path_open`, `sock_*`), declares memory outside `1..16` pages, or is malformed. |
+| `[C0271]` | Comptime Embed       | `comptime embed("...")`: the path is not a string, is empty, contains `..`, or names a missing file. |
+| `[D0273]` | Table Schema         | `comptime table_schema(T)`: `T` is not a nominal record type, or a column has an unsupported type or an invalid money currency. |
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy`, or `mem_set` targets `.text`/`.rodata` (`[0x8000..0x3FFFF]`), including symbolic/affine `base + off`. Use a safe DMA RAM buffer (`>= 0x40000`). |
 | `[K0006]` | Kernel Stack Safety  | Unbounded mutual recursion cycle (`f -> g -> f`) in `@freestanding` / `kernel_boot_entry` module. Use tail-loop state or bounded iteration. |
 | `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup on `secret_*` or inside `ct_*`. Use bitwise XOR/OR mask accumulation. |
-| `[Q0001]` | Quantum Linearity    | Non-linear `Qubit` duplication (No-Cloning violation) or reuse of measured qubit. Ensure each `Qubit` wire is consumed linearly. |
-| `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\dagger$ (`q_silq_qfree_verify`) before returning. |
-| `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
+| `[L0001]` | Lexer / Assembler    | Unterminated string literal in a source file (close it with a double quote); `lasm` uses the same code for an instruction or directive it does not know. |
 | `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
 | `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |
+
+# APPENDIX A: SYNOPSIS OF EVERY COMMAND
+
+Generated by the native driver from the table it dispatches on: a command, subcommand or option that is not
+listed here is refused (`unknown native driver command`, `unknown subcommand`, `unknown option`).
+`[--x <value>]` takes a value (`--x v` or `--x=v`). `lume <command> --help` prints the line of one command and
+`lume help --json` prints the whole table as JSON.
+
+  lume --version|version
+  lume --help|-h|help [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
+  lume manual|man|guide|manual-pt|man-pt|guia [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
+  lume describe|--describe [--json]
+  lume targets|--targets [--json]
+  lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
+  lume run [--memory] <source.src> [program-arguments]
+  lume test <source.src>...
+  lume check [--json] <source.src>
+  lume compile [--json] [--run] <source.src>
+  lume fmt [--check] [--stdout] <source.src>...
+  lume doc [--json] <source.src>
+  lume prove [--json] [--diff] [--share] [--compositional] <source.src> [new.src]
+  lume certify [--json] <source.src>
+  lume verify-cert [--json] [--check-source] [source.src] <certificate.json>
+  lume proof-cache <self-test|check|store> [--require-all-hits] [source.src] [cache-dir]
+  lume pkg <init|check|manifest|lock|verify|tree|check-rot> [dir]
+  lume pkg <publish|audit> (served by the POSIX shim, scripts/lume_legacy.sh)
+  lume registry <publish|resolve|discover> [--json] [--store <value>] [--target <value>] [--adapter <value>] [--source <value>] [--proof <value>] [--tests <value>] [--cid <value>] [--capability <value>] [--contract-signature <value>]
+  lume agent <check|compile|fill|prove|ast|expand|symbols|eval|witness|repair|impact|hashes|grammar|project|bind|skeleton|cegis|synthesize|trace|heal|morph|kernel|c-export|replay|lineage|patch|patch-fn|diff-semver|equiv|check-rot> [--json] <source.src> [arguments] (the name of any `sentience` command is accepted in place of the subcommand)
+  lume adapt <c|c-raw|rust|python|js|ts|node|go|java|csharp|dotnet|sql|openapi|polyglot|all> [--json] [--preprocess] [-o <value>] [--output <value>] [file]
+  lume lsp [--stdio] [--json] [source.src]
+  lume dap [--stdio] [--json] [source.src]
+  lume repl [--json] [--kernel] [source.src]
+  lume mcp [--json] <source.src>
+  lume intent <build|run|verify|status|clean> [--json] [--cache <value>] [-o <value>] [--output <value>] <file.intent>
+  lume mesh [--json] <request.mesh>
+  lume economy [--output <value>] [--artifacts <value>] [--self-test]
+  lume evolve <list|goals|budgets|propose|apply|grow|verify|status|check|approve> [--json] [--domain <value>] [--by <value>] [--sig <value>] [--target <value>] [--root <value>] [goal-or-proposal]
+  lume self <status|verify|update|prove|prove-all> [--json] [--prefix <value>] [--from <value>]
+  lume self-prove|prove-all|verify-all [--json]
+  lume capsule <seal|verify|replay|open> [-o <value>] <file> [arguments]
+  lume pack|unpack [-o <value>] <in>
+  lume package <apk|ipa|iso|uefi> [-o <value>] <source.src>
+  lume mir <target> <source.src>
+  lume genesis <app-name> [domain]
+  lume neural-kernel [--json] <source.src>
+  lume symbolize <file.lsym> <query>
+  lume patch-fn <source.src> <fn-name> <patch.src>
+  lume trace <source.src>
+  lume diff-semver <old.src> <new.src>
+  lume heal <source.src>
+  lume equiv <spec.src> <fast.src>
+  lume morph <legacy-file>
+  lume tv|translation-validate [--fn <value>] [--exec] [--json] <source.src>
+  lume mcdc [--fn <value>] [--budget <value>] [--exec] [--json] <source.src>
+  lume bundle <source.src>
+  lume safety-envelope|lockstep [--fn <value>] [--args <value>] [--budget <value>] [--timeout-ms <value>] [--reset] [--gate] [kernel.src]
+  lume tv-gate [--stride <value>]
+  lume soak|soak-battle|battle [--rounds <value>] [--procs <value>] [--seed <value>]
+  lume prover-fuzz [--n <value>] [--seed <value>]
+  lume qualify|qualification [--quick] [--sign-key <value>] [--verify]
+  lume realtime-gate
+  lume concurrency-gate
+  lume crypto-gate
+  lume multi-arch-gate
+  lume safetensors-gate
+  lume dwarf-cache-gate
+  lume cert-source-gate
+  lume bootstrap|zero-c|amalgamate|seed|clean
+  lume qwenputer|lumeputer|lumepu|weight-vm|in-weights-npu [exec|run] [--json] [--fn <value>] [--args <value>] [--budget <value>] [kernel.src] (values: sync|status)
+  lume ui-layout|@ui-layout [--json] [file] (values: sync|status)
+  lume unified-field|ufe|singularity|ote|transition-engine|net-sentinel|iec62443|conduite|omega-mesh|subsea [--json] [target] (values: sync|status)
+  lume consult [--json] [file] (values: sync|status)
+  lume laws|constitution|sanctuary [--json] [file] (values: sync|status)
+  lume replicate|swarm-evolve [--json] [file] (values: sync|status)
+  lume bios-core|firmware|kernel-core [--json] [file] (values: sync|status)
+  lume daemon-triad [--json] [file] (values: sync|status)
+  lume hot-evolve [--json] [file] (values: sync|status)
+  lume live-cockpit [--json] [file] (values: sync|status)
+  lume self-build [--json] [file] (values: sync|status)
+  lume reverse-engineer|reveng|decompile|reversa [--json] [target] (values: sync|status)
+  lume pingora|proxy|cdn|load-balancer [--json] [target] (values: sync|status)
+  lume egm|elephant-goldfish|goldfish-review|drift-report|heilmeier [--json] [target] (values: sync|status)
+  lume ncm|next-concept|ncm-quantize|ncm-generate|ncm-solve [--json] [target] (values: sync|status)
+  lume opentpu|tpu|otpu-asm|k-smooth|stream-se|tpu-scoreboard [--json] [target] (values: sync|status)
+  lume continuum|nexus|billion-context|acp|ecc-shield|agentshield|bend-laws|ai-memory|notebook|podcast|doory|canvas-crdt [--json] [target] (values: sync|status)
+  lume quantum-nexus|quantum-zx|quantum-stabilizer|quantum-qec|quantum-vqe|quantum-uncompute|silq|quizx|stim [--json] [target] (values: sync|status)
+  lume chameleon|camaleao|polyglot|ffi-bridge [--json] [target] (values: sync|status)
+  lume interface|portal|chat [--json] [text] (values: sync|status)
+  lume crypto-engine|cripto|blockchain [--json] [file] (values: sync|status)
+  lume sensory-cortex|peripherals [--json] [file] (values: sync|status)
+  lume file-indexer|pc-master|omni-reader [--json] [path] (values: sync|status)
+  lume wireshark|packet-dissect|switch-fabric|scada-ics|modbus|dnp3|iec104|iec61850 [--json] [file] (values: sync|status)
+  lume gfx|render-3d|scada-hmi|ied-protection [--json] [file] (values: sync|status)
+  lume memory [--json] [file] (values: sync|status)
+  lume recall [--json] [file-or-query] (values: sync|status)
+  lume synapse|orchestrate [--json] [source.src] (values: sync|status)
+  lume os-control|optimize|doctor|net-omni|network [--json] [file] (values: sync|status)
+  lume web-research|internet|search [--json] [query-or-url] (values: sync|status)
+  lume hive|central-core|ventral-core [--json] [file] (values: sync|status)
+  lume saturate-contracts [--json] [file] (values: sync|status)
+  lume fuse-mir-neural [--json] [file] (values: sync|status)
+  lume triad-orchestrate [--json] [file] (values: sync|status)
+  lume evolve-all [--json] [file] (values: sync|status)
+  lume multimodal|talk|voice|listen|vision [--json] [file] (values: sync|status)
+  lume awaken [--json] <source.src>
+  lume morph-ast [--json] <source.src>
+  lume quantum [--json] <source.src>
+  lume bio-dna [--json] <source.src>
+  lume cosmic-tmr [--json] <source.src>
+  lume hologram [--json] <source.src>
+  lume chronos [--json] <source.src>
+  lume omega-net [--json] <source.src>
+  lume llm-forge [--json] <source.src>

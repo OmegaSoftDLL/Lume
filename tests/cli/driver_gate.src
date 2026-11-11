@@ -172,6 +172,696 @@ fn dg_test_multiple(root) = let first = root + "/build/cli_tests_multi_a.src" in
 
 fn dg_fmt_multiple(root) = let first = root + "/build/cli_format_multi_a.src" in let second = root + "/build/cli_format_multi_b.src" in let first_written = fs_write_sync(first, "print 1+1\n") in let second_written = fs_write_sync(second, "print 2+2\n") in if first_written != 1 or second_written != 1 then "cannot write multiple-format fixtures" else let stdout = dg_exact(root, "fmt-multiple-stdout", Cons("fmt", Cons(first, Cons("--stdout", Cons(second, Nil)))), "print 1 + 1\nprint 2 + 2\n") in if stdout != "" then stdout else let rewritten = dg_run(root, Cons("fmt", Cons(first, Cons(second, Nil))), "fmt-multiple-rewrite") in if rewritten.status != 0 or fs_read_file(first) != "print 1 + 1\n" or fs_read_file(second) != "print 2 + 2\n" then "native multiple-file formatting failed: " + rewritten.errors else ""
 
-fn dg_dispatch(input) = let root = dg_root(input) in if root == "" then ctfail("native driver gate requires @root\n") else let problem = dg_main(root) in if problem != "" then ctfail("native driver gate failed: " + problem + "\n") else "native driver version, help, describe, targets, build, transitive bundling, run, argv, exit-code, test discovery, test failure, intent cache proofs, tamper rejection, real economic benchmark, and rejection checks passed"
+## =====================================================================================================================
+## cli_parity_gate (Wave 14): the command line and its documentation cannot drift apart.
+##
+## Source of truth: the command table of compiler/stage1/lume_driver.src, read through `lume help --json` (the same
+## rows ld_entry dispatches on). Run alone with a second stdin line `@only cli_parity`.
+##
+## What is proved, each with a negative control that must fire:
+##   1. FORWARD   every `lume <command> [subcommand] [--options]` occurrence of the help text (`lume --help`), of both
+##                exported manuals, of `lume describe`, of README.md, of skills/lume/SKILL.md and of the usage strings
+##                of lume_driver.src names a command of the table, only options of that command, and (for a command
+##                whose subcommands are closed) only its subcommands.
+##   2. REVERSE   every name, alias, option, subcommand and value of the table occurs in the help text and in each
+##                exported manual, attached to its own command.
+##   3. DISPATCH  every literal lume_driver.src compares an argument against is in the table; every handler key of the
+##                table has an arm in ld_run_handler and vice versa; every subcommand, value and option of the table is
+##                compared somewhere in the driver (or in the tool the row delegates to, as `"--x"` or as the request
+##                key `"x"` the generic tool handler sends, or in the POSIX shim).
+##   4. PROBES    every name answers `lume <name> --help`; every option is accepted by its command and an invented one
+##                is refused with `unknown option`; every subcommand of a closed command is accepted and an invented
+##                one refused. A list of real invocations (smoke) then runs the options that are cheap and free of side
+##                effects; the report names the options that were only probed for recognition.
+##   5. CODES     every `[X0000]` diagnostic code cited by a document is either provoked here on a real input or
+##                present in the source of the tool listed as its emitter; the codes of the help text must be provoked.
+##   6. MANUALS   docs/LUME_MANUAL_EN.md and docs/LUME_MANUAL_PT_BR.md equal what `lume manual --export` writes now.
+##   7. PATHS     a repository path, `build/bin/<tool>` or `<name>_gate` named by a document exists (cp_path_problem).
+##   8. EXIT      the exit statuses the documents state are the ones a real run returns (cp_exit_run).
+##
+## Extraction grammar (cp_extract):
+##   segment   plain mode (help text, manuals, describe, usage strings): every line.
+##             markdown mode (README.md, SKILL.md): every line inside a ``` fence, and every `code span` of the others.
+##   token     a maximal run of non-blank characters of a segment.
+##   mention   a token that is `lume` or `lume_driver`, optionally preceded by `./` or a path ending in `bin/` (leading
+##             ( " ' ` $ [ are ignored, nothing may follow the name), followed by a COMMAND token.
+##   COMMAND   alternatives separated by `|`, each `[--|-][@]lowercase[lowercase digit -]*` (trailing . , ; : ) " ' `
+##             ignored). ` / other` directly after it adds alternatives (`lume certify / verify-cert`).
+##   tail      the tokens after the command up to the first of && || ; | > >> < 2> 2>&1 # ## & / // - -- or the next
+##             mention. A tail token is cut into pieces at [ ] ( ) | , < > { } and quotes.
+##   option    a piece `-x...` or `--x...` (`[A-Za-z][A-Za-z0-9_-]*` after the dashes; `=value` is dropped). When the
+##             table says the option takes a value and the token ends with the option, the next token is its value
+##             (its `|` alternatives still count as documented values).
+##   target    the value of `--target` of `lume build` (`--target x`, `--target=x`, alternatives split at `|`), when
+##             it is spelled out (lowercase, digits, `-`, `_`; a <placeholder> is not): it must be a triple of
+##             `lume targets`, a target literal of the driver, or `safetensors`.
+##   first     the first tail token that is not an option or a value: its word-shaped pieces are the subcommand
+##             alternatives; a token wrapped in <...> or [...] without `|` is a placeholder (no alternatives).
+##   A command of mode L (lume run) keeps only the options before its first positional token.
+##   A mention the POSIX shim routes to scripts/lume_legacy.sh (the `case` of ./lume: surface `.lume` files, `pkg
+##   publish|audit`, `fmt` of a non-`.src` file) is checked against that script instead: each option must occur in it.
+## =====================================================================================================================
+fn cp_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => cp_rev(t, Cons(h, acc))
+
+fn cp_len(xs, n) = match xs
+    Nil        => n
+    Cons(_, t) => cp_len(t, n + 1)
+
+fn cp_has(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else cp_has(t, x)
+
+fn cp_append(xs, ys) = cp_rev(cp_rev(xs, Nil), ys)
+
+fn cp_any(xs, ys) = match xs
+    Nil        => 0
+    Cons(h, t) => if cp_has(ys, h) == 1 then 1 else cp_any(t, ys)
+
+fn cp_head(xs) = match xs
+    Nil        => ""
+    Cons(h, _) => h
+
+fn cp_uniq(xs, acc) = match xs
+    Nil        => cp_rev(acc, Nil)
+    Cons(h, t) => cp_uniq(t, if cp_has(acc, h) == 1 then acc else Cons(h, acc))
+
+fn cp_join(xs, sep) = match xs
+    Nil        => ""
+    Cons(h, t) => if cp_len(t, 0) == 0 then h else h + sep + cp_join(t, sep)
+
+fn cp_starts(s, p) = if count(s) < count(p) then 0 else if slice(s, 0, count(p)) == p then 1 else 0
+
+fn cp_ends(s, p) = if count(s) < count(p) then 0 else if slice(s, count(s) - count(p), count(s)) == p then 1 else 0
+
+fn cp_find(text, n, part, m, c0, i) = if i + m > n then n else if at(text, i) == c0 and slice(text, i, i + m) == part then i else cp_find(text, n, part, m, c0, i + 1)
+
+## the first index >= i where part occurs in text, or count(text)
+fn cp_index(text, part, i) = if part == "" then i else cp_find(text, count(text), part, count(part), at(part, 0), i)
+
+fn cp_contains(text, part) = if cp_index(text, part, 0) < count(text) then 1 else 0
+
+fn cp_clip(s) = if count(s) > 150 then slice(s, 0, 150) + "..." else s
+
+fn cp_eol(s, n, i) = if i >= n then n else if at(s, i) == "\n" then i else cp_eol(s, n, i + 1)
+
+fn cp_lines_acc(s, n, i, acc) = if i >= n then cp_rev(acc, Nil) else let e = cp_eol(s, n, i) in cp_lines_acc(s, n, e + 1, Cons(slice(s, i, e), acc))
+
+fn cp_lines(s) = cp_lines_acc(s, count(s), 0, Nil)
+
+fn cp_split_acc(s, n, sep, i, start, acc) = if i >= n then cp_rev(Cons(slice(s, start, n), acc), Nil) else if at(s, i) == sep then cp_split_acc(s, n, sep, i + 1, i + 1, Cons(slice(s, start, i), acc)) else cp_split_acc(s, n, sep, i + 1, start, acc)
+
+fn cp_split(s, sep) = if s == "" then Nil else cp_split_acc(s, count(s), sep, 0, 0, Nil)
+
+fn cp_is_low(c) = if c >= "a" and c <= "z" then 1 else 0
+
+fn cp_is_alpha(c) = if c >= "a" and c <= "z" or c >= "A" and c <= "Z" then 1 else 0
+
+fn cp_is_digit(c) = if c >= "0" and c <= "9" then 1 else 0
+
+fn cp_is_wordch(c) = if cp_is_alpha(c) == 1 or cp_is_digit(c) == 1 or c == "-" or c == "_" then 1 else 0
+
+fn cp_all_wordch(s, n, i) = if i >= n then 1 else if cp_is_wordch(at(s, i)) == 1 then cp_all_wordch(s, n, i + 1) else 0
+
+## [@]letter[letter digit - _]*
+fn cp_is_word(s) = let n = count(s) in let b = if n > 0 and at(s, 0) == "@" then 1 else 0 in if n <= b then 0 else if cp_is_alpha(at(s, b)) == 0 then 0 else cp_all_wordch(s, n, b + 1)
+
+fn cp_word_end(s, n, i) = if i < n and cp_is_wordch(at(s, i)) == 1 then cp_word_end(s, n, i + 1) else i
+
+## the option a piece spells (`--target=x` -> `--target`), or ""
+fn cp_flag_of(p) = let n = count(p) in if n < 2 or at(p, 0) != "-" then "" else let b = if at(p, 1) == "-" then 2 else 1 in if b >= n or cp_is_alpha(at(p, b)) == 0 then "" else slice(p, 0, cp_word_end(p, n, b))
+
+fn cp_is_ws(c) = if c == " " or c == "\t" or c == "\r" or c == "\n" then 1 else 0
+
+fn cp_tok_end(s, n, i) = if i >= n then i else if cp_is_ws(at(s, i)) == 1 then i else cp_tok_end(s, n, i + 1)
+
+fn cp_tokens_acc(s, n, i, acc) = if i >= n then cp_rev(acc, Nil) else if cp_is_ws(at(s, i)) == 1 then cp_tokens_acc(s, n, i + 1, acc) else let e = cp_tok_end(s, n, i) in cp_tokens_acc(s, n, e, Cons(slice(s, i, e), acc))
+
+fn cp_tokens(s) = cp_tokens_acc(s, count(s), 0, Nil)
+
+fn cp_is_delim(c) = if c == "[" or c == "]" or c == "(" or c == ")" or c == "|" or c == "," or c == "<" or c == ">" or c == "\"" or c == "'" or c == "`" or c == "{" or c == "}" then 1 else 0
+
+fn cp_pieces_acc(s, n, i, start, acc) = if i >= n then cp_rev(if start < n then Cons(slice(s, start, n), acc) else acc, Nil) else if cp_is_delim(at(s, i)) == 1 then cp_pieces_acc(s, n, i + 1, i + 1, if start < i then Cons(slice(s, start, i), acc) else acc) else cp_pieces_acc(s, n, i + 1, start, acc)
+
+fn cp_pieces(s) = cp_pieces_acc(s, count(s), 0, 0, Nil)
+
+fn cp_lstrip(s, n, i) = if i < n and (at(s, i) == "(" or at(s, i) == "\"" or at(s, i) == "'" or at(s, i) == "`" or at(s, i) == "$" or at(s, i) == "[") then cp_lstrip(s, n, i + 1) else slice(s, i, n)
+
+fn cp_rstrip(s, n) = if n > 0 and (at(s, n - 1) == "." or at(s, n - 1) == "," or at(s, n - 1) == ";" or at(s, n - 1) == ":" or at(s, n - 1) == ")" or at(s, n - 1) == "\"" or at(s, n - 1) == "'" or at(s, n - 1) == "`" or at(s, n - 1) == "]") then cp_rstrip(s, n - 1) else slice(s, 0, n)
+
+fn cp_last_slash(s, i) = if i < 0 then 0 - 1 else if at(s, i) == "/" then i else cp_last_slash(s, i - 1)
+
+## `lume`, `./lume`, `build/bin/lume_driver`, ... : nothing may follow the name
+fn cp_is_lume(tok) = let s = cp_lstrip(tok, count(tok), 0) in let k = cp_last_slash(s, count(s) - 1) + 1 in let b = slice(s, k, count(s)) in let p = slice(s, 0, k) in if b != "lume" and b != "lume_driver" then 0 else if p == "" or p == "./" or cp_ends(p, "bin/") == 1 then 1 else 0
+
+fn cp_all_cmdch(s, n, i) = if i >= n then 1 else if cp_is_low(at(s, i)) == 1 or cp_is_digit(at(s, i)) == 1 or at(s, i) == "-" then cp_all_cmdch(s, n, i + 1) else 0
+
+fn cp_is_cmdword(s) = let n = count(s) in let b0 = if n > 1 and at(s, 0) == "-" then (if at(s, 1) == "-" then 2 else 1) else 0 in let b = if b0 < n and at(s, b0) == "@" then b0 + 1 else b0 in if b >= n or cp_is_low(at(s, b)) == 0 then 0 else cp_all_cmdch(s, n, b + 1)
+
+fn cp_all_cmdwords(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if cp_is_cmdword(h) == 1 then cp_all_cmdwords(t) else 0
+
+## the command alternatives a token spells, or Nil when it is not a COMMAND token
+fn cp_cmd_alts(tok) = let s = cp_rstrip(tok, count(tok)) in let alts = cp_split(s, "|") in if cp_len(alts, 0) == 0 or cp_all_cmdwords(alts) == 0 then Nil else alts
+
+fn cp_stop_tok(x) = if x == "&&" or x == "||" or x == ";" or x == "|" or x == ">" or x == ">>" or x == "<" or x == "2>" or x == "2>&1" or x == "#" or x == "##" or x == "&" or x == "/" or x == "//" or x == "-" or x == "--" then 1 else 0
+
+fn cp_piece_flags(ps, acc) = match ps
+    Nil        => cp_rev(acc, Nil)
+    Cons(p, t) => let f = cp_flag_of(p) in cp_piece_flags(t, if f == "" then acc else Cons(f, acc))
+
+fn cp_piece_words(ps, acc) = match ps
+    Nil        => cp_rev(acc, Nil)
+    Cons(p, t) => let w = cp_rstrip(p, count(p)) in cp_piece_words(t, if cp_is_word(w) == 1 then Cons(w, acc) else acc)
+
+fn cp_piece_files(ps, acc) = match ps
+    Nil        => cp_rev(acc, Nil)
+    Cons(p, t) => let w = cp_rstrip(p, count(p)) in cp_piece_files(t, if count(w) > 2 and cp_contains(w, ".") == 1 and at(w, 0) != "-" then Cons(w, acc) else acc)
+
+fn cp_row_none() = {names: Nil, h: "", flags: Nil, fnames: Nil, subs: Nil, shim: Nil, vals: Nil, tool: "", m: "", via: ""}
+
+fn cp_row(tbl, name) = match tbl
+    Nil        => cp_row_none()
+    Cons(r, t) => if cp_has(r.names, name) == 1 then r else cp_row(t, name)
+
+fn cp_st(flags, first, fdone, alts, files, skip, cut) = {flags: flags, first: first, fdone: fdone, alts: alts, files: files, skip: skip, cut: cut}
+
+## one tail token that carries options
+fn cp_tail_flag(x, r, st, fl) = if st.cut == 1 then st else cp_st(cp_append(st.flags, fl), st.first, st.fdone, st.alts, st.files, if cp_len(fl, 0) == 1 and cp_has(r.flags, cp_head(fl) + "=") == 1 and cp_ends(cp_rstrip(x, count(x)), cp_head(fl)) == 1 then 1 else 0, st.cut)
+
+## one positional tail token
+fn cp_tail_pos(x, r, st, ps) = let wrapped = if (cp_starts(x, "<") == 1 or cp_starts(x, "[") == 1) and cp_contains(x, "|") == 0 then 1 else 0 in let words = if wrapped == 1 then Nil else cp_piece_words(ps, Nil) in cp_st(st.flags, if st.fdone == 0 then words else st.first, 1, if cp_contains(x, "|") == 1 then cp_append(st.alts, words) else st.alts, cp_append(st.files, cp_piece_files(ps, Nil)), 0, if cp_contains(r.m, "L") == 1 then 1 else st.cut)
+
+fn cp_tail(toks, r, st) = match toks
+    Nil        => st
+    Cons(x, t) => if cp_stop_tok(x) == 1 or cp_is_lume(x) == 1 then st else if st.skip == 1 then cp_tail(t, r, cp_st(st.flags, st.first, st.fdone, if cp_contains(x, "|") == 1 then cp_append(st.alts, cp_piece_words(cp_pieces(x), Nil)) else st.alts, st.files, 0, st.cut)) else let ps = cp_pieces(x) in let fl = cp_piece_flags(ps, Nil) in let nx = if cp_len(fl, 0) > 0 then cp_tail_flag(x, r, st, fl) else cp_tail_pos(x, r, st, ps) in if cp_ends(x, ";") == 1 then nx else cp_tail(t, r, nx)
+
+fn cp_more_cmds2(t, cmds, orig) = match t
+    Nil        => {cmds: cmds, rest: orig}
+    Cons(w, r) => let a = cp_cmd_alts(w) in if cp_len(a, 0) == 0 or cp_is_lume(w) == 1 then {cmds: cmds, rest: orig} else cp_more_cmds(r, cp_append(cmds, a))
+
+fn cp_more_cmds(toks, cmds) = match toks
+    Nil        => {cmds: cmds, rest: Nil}
+    Cons(x, t) => if x != "/" then {cmds: cmds, rest: toks} else cp_more_cmds2(t, cmds, toks)
+
+fn cp_all_triplech(s, n, i) = if i >= n then 1 else if cp_is_low(at(s, i)) == 1 or cp_is_digit(at(s, i)) == 1 or at(s, i) == "-" or at(s, i) == "_" then cp_all_triplech(s, n, i + 1) else 0
+
+fn cp_is_triple(s) = if count(s) < 3 or cp_is_low(at(s, 0)) == 0 then 0 else cp_all_triplech(s, count(s), 1)
+
+fn cp_triples(ps, acc) = match ps
+    Nil        => cp_rev(acc, Nil)
+    Cons(p, t) => let w = cp_rstrip(p, count(p)) in cp_triples(t, if cp_is_triple(w) == 1 then Cons(w, acc) else acc)
+
+## the concrete values a tail gives to `--target` (`--target x`, `--target=x`, alternatives split at `|`; a <placeholder> is none)
+fn cp_tail_targets2(t, acc) = match t
+    Nil        => acc
+    Cons(v, r) => cp_tail_targets(r, if (cp_starts(v, "<") == 1 or cp_starts(v, "[") == 1) and cp_contains(v, "|") == 0 then acc else cp_append(acc, cp_triples(cp_pieces(v), Nil)))
+
+fn cp_tail_targets(toks, acc) = match toks
+    Nil        => acc
+    Cons(x, t) => if cp_stop_tok(x) == 1 or cp_is_lume(x) == 1 then acc else let s = cp_lstrip(x, count(x), 0) in if cp_starts(s, "--target=") == 1 then cp_tail_targets(t, cp_append(acc, cp_triples(cp_pieces(slice(s, 9, count(s))), Nil))) else if cp_rstrip(s, count(s)) == "--target" then cp_tail_targets2(t, acc) else cp_tail_targets(t, acc)
+
+fn cp_mention(t, tbl, raw, acc) = match t
+    Nil        => acc
+    Cons(c, rest) => let alts = cp_cmd_alts(c) in if cp_len(alts, 0) == 0 then acc else let mc = cp_more_cmds(rest, alts) in let st = cp_tail(mc.rest, cp_row(tbl, cp_head(mc.cmds)), cp_st(Nil, Nil, 0, Nil, Nil, 0, 0)) in Cons({cmds: mc.cmds, flags: st.flags, first: st.first, alts: st.alts, files: st.files, raw: raw, targets: cp_tail_targets(mc.rest, Nil)}, acc)
+
+fn cp_scan(toks, tbl, raw, acc) = match toks
+    Nil        => acc
+    Cons(x, t) => if cp_is_lume(x) == 0 then cp_scan(t, tbl, raw, acc) else cp_scan(t, tbl, raw, cp_mention(t, tbl, raw, acc))
+
+fn cp_find_ch(s, n, i, c) = if i >= n then n else if at(s, i) == c then i else cp_find_ch(s, n, i + 1, c)
+
+fn cp_spans(s, n, i, acc) = let a = cp_find_ch(s, n, i, "`") in if a >= n then acc else let b = cp_find_ch(s, n, a + 1, "`") in if b >= n then acc else cp_spans(s, n, b + 1, Cons(slice(s, a + 1, b), acc))
+
+fn cp_ltrim(s, n, i) = if i < n and cp_is_ws(at(s, i)) == 1 then cp_ltrim(s, n, i + 1) else slice(s, i, n)
+
+fn cp_md_segments(lines, fenced, acc) = match lines
+    Nil        => cp_rev(acc, Nil)
+    Cons(h, t) => if cp_starts(cp_ltrim(h, count(h), 0), "```") == 1 then cp_md_segments(t, 1 - fenced, acc) else if fenced == 1 then cp_md_segments(t, fenced, Cons(h, acc)) else cp_md_segments(t, fenced, cp_spans(h, count(h), 0, acc))
+
+fn cp_segments(text, md) = if md == 1 then cp_md_segments(cp_lines(text), 0, Nil) else cp_lines(text)
+
+fn cp_seg_mentions(segs, tbl, acc) = match segs
+    Nil        => acc
+    Cons(s, t) => cp_seg_mentions(t, tbl, if cp_contains(s, "lume") == 1 then cp_scan(cp_tokens(s), tbl, s, acc) else acc)
+
+fn cp_extract(text, md, tbl) = cp_rev(cp_seg_mentions(cp_segments(text, md), tbl, Nil), Nil)
+
+## --- the table, from `lume help --json` (one command object per line) ---
+fn cp_jstr(line, key) = let k = "\"" + key + "\":\"" in let a = cp_index(line, k, 0) in if a >= count(line) then "" else let b = a + count(k) in slice(line, b, cp_index(line, "\"", b))
+
+fn cp_unquote(xs, acc) = match xs
+    Nil        => cp_rev(acc, Nil)
+    Cons(h, t) => cp_unquote(t, if count(h) >= 2 then Cons(slice(h, 1, count(h) - 1), acc) else acc)
+
+fn cp_jlist(line, key) = let k = "\"" + key + "\":[" in let a = cp_index(line, k, 0) in if a >= count(line) then Nil else let b = a + count(k) in cp_unquote(cp_split(slice(line, b, cp_index(line, "]", b)), ","), Nil)
+
+fn cp_noeq(xs, acc) = match xs
+    Nil        => cp_rev(acc, Nil)
+    Cons(h, t) => cp_noeq(t, Cons(if cp_ends(h, "=") == 1 then slice(h, 0, count(h) - 1) else h, acc))
+
+fn cp_trow(line) = let flags = cp_jlist(line, "flags") in {names: Cons(cp_jstr(line, "name"), cp_jlist(line, "aliases")), h: cp_jstr(line, "handler"), flags: flags, fnames: cp_noeq(flags, Nil), subs: cp_jlist(line, "subcommands"), shim: cp_jlist(line, "shim_subcommands"), vals: cp_jlist(line, "values"), tool: cp_jstr(line, "tool"), m: cp_jstr(line, "mode"), via: cp_jstr(line, "subcommands_from_handler")}
+
+fn cp_table(lines, acc) = match lines
+    Nil        => cp_rev(acc, Nil)
+    Cons(h, t) => cp_table(t, if cp_starts(h, "{\"name\":\"") == 1 then Cons(cp_trow(h), acc) else acc)
+
+fn cp_all_names(tbl, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => cp_all_names(t, cp_append(r.names, acc))
+
+fn cp_all_flags(tbl, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => cp_all_flags(t, cp_append(r.fnames, acc))
+
+fn cp_all_words(tbl, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => cp_all_words(t, cp_append(r.subs, cp_append(r.shim, cp_append(r.vals, acc))))
+
+fn cp_handlers(tbl, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => cp_handlers(t, if cp_has(acc, r.h) == 1 then acc else Cons(r.h, acc))
+
+fn cp_dup(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => if cp_has(t, h) == 1 then h else cp_dup(t)
+
+## --- forward: document -> table ---
+fn cp_any_ext(fs, exts) = match fs
+    Nil        => 0
+    Cons(f, t) => if cp_ext_in(f, exts) == 1 then 1 else cp_any_ext(t, exts)
+
+fn cp_ext_in(f, exts) = match exts
+    Nil        => 0
+    Cons(e, t) => if cp_ends(f, e) == 1 then 1 else cp_ext_in(f, t)
+
+fn cp_ext_surface() = Cons(".lume", Cons(".lbe", Cons(".intent", Cons(".so", Cons(".a", Nil)))))
+
+fn cp_ext_run() = Cons(".lume", Cons(".lbe", Cons(".intent", Cons(".lumb", Cons(".wasm", Cons(".ptx", Cons(".spvasm", Cons(".v", Cons(".vhd", Cons(".cortexm", Cons(".avr.elf", Cons(".xtensa.elf", Cons(".avr.hex", Cons(".avr.ihex", Cons(".xtensa.hex", Cons(".xtensa.ihex", Nil))))))))))))))))
+
+fn cp_src_ext() = Cons(".src", Nil)
+
+## 1 when the POSIX shim hands the invocation to scripts/lume_legacy.sh (mirrors the `case` of ./lume; cp_shim_ok
+## asserts that the shim still contains those patterns)
+fn cp_legacy(c, m) = if c == "build" or c == "check" or c == "test" then (if cp_any_ext(m.files, cp_src_ext()) == 0 and (cp_any_ext(m.files, cp_ext_surface()) == 1 or cp_has(m.flags, "--target") == 0 and cp_any_ext(m.files, Cons(".wasm", Nil)) == 1) then 1 else 0) else if c == "run" then (if cp_any_ext(m.files, cp_src_ext()) == 0 and cp_any_ext(m.files, cp_ext_run()) == 1 then 1 else 0) else if c == "fmt" then (if cp_len(m.files, 0) > 0 and cp_any_ext(m.files, cp_src_ext()) == 0 then 1 else 0) else if c == "pkg" then (if cp_has(m.first, "publish") == 1 or cp_has(m.first, "audit") == 1 then 1 else 0) else 0
+
+fn cp_shim_ok(shim) = if cp_contains(shim, "*.lume | *.lbe | *.intent | *.so | *.a) exec \"$LEGACY\" \"$@\" ;;") == 0 then "the build|check|test routing of ./lume changed: update cp_legacy" else if cp_contains(shim, "*.wasm) exec \"$LEGACY\" \"$@\" ;;") == 0 then "the .wasm routing of ./lume changed: update cp_legacy" else if cp_contains(shim, "publish | audit) exec \"$LEGACY\" \"$@\" ;;") == 0 then "the pkg routing of ./lume changed: update cp_legacy" else if cp_contains(shim, "*.lume | *.lbe | *.intent | *.lumb | *.wasm | *.ptx | *.spvasm | *.v | *.vhd | *.cortexm | *.avr.elf | *.xtensa.elf | *.avr.hex | *.avr.ihex | *.xtensa.hex | *.xtensa.ihex) exec \"$LEGACY\" \"$@\" ;;") == 0 then "the run routing of ./lume changed: update cp_legacy" else if cp_contains(shim, "fmt | -* | *.src) ;;") == 0 then "the fmt routing of ./lume changed: update cp_legacy" else ""
+
+fn cp_fwd_flags(fs, m, r, c, src, leg, lt, acc) = match fs
+    Nil        => acc
+    Cons(f, t) => cp_fwd_flags(t, m, r, c, src, leg, lt, if leg == 1 then (if cp_contains(lt, f) == 1 then acc else Cons(src + ": `lume " + c + " " + f + "` is routed to scripts/lume_legacy.sh, which has no such option, in: " + cp_clip(m.raw), acc)) else if cp_has(r.fnames, f) == 1 then acc else Cons(src + ": `lume " + c + "` has no option " + f + ", in: " + cp_clip(m.raw), acc))
+
+fn cp_sub_ok(tbl, r, w) = if cp_has(r.subs, w) == 1 or cp_has(r.shim, w) == 1 then 1 else if r.via == "" then 0 else let o = cp_row(tbl, w) in if o.h == r.via then 1 else 0
+
+fn cp_fwd_subs(ws, m, tbl, r, c, src, acc) = match ws
+    Nil        => acc
+    Cons(w, t) => cp_fwd_subs(t, m, tbl, r, c, src, if cp_sub_ok(tbl, r, w) == 1 then acc else Cons(src + ": `lume " + c + "` has no subcommand " + w + ", in: " + cp_clip(m.raw), acc))
+
+fn cp_fwd_targets(ts, m, tu, src, acc) = match ts
+    Nil        => acc
+    Cons(x, t) => cp_fwd_targets(t, m, tu, src, if cp_has(tu, x) == 1 then acc else Cons(src + ": `lume build --target " + x + "` names a target that neither `lume targets` nor the driver knows, in: " + cp_clip(m.raw), acc))
+
+fn cp_fwd_cmds(cmds, m, tbl, tu, src, lt, acc) = match cmds
+    Nil        => acc
+    Cons(c, t) => let r = cp_row(tbl, c) in cp_fwd_cmds(t, m, tbl, tu, src, lt, if r.h == "" then Cons(src + ": unknown command `lume " + c + "`, in: " + cp_clip(m.raw), acc) else cp_fwd_subs(if cp_contains(r.m, "S") == 1 then m.first else Nil, m, tbl, r, c, src, cp_fwd_flags(m.flags, m, r, c, src, cp_legacy(c, m), lt, if c == "build" then cp_fwd_targets(m.targets, m, tu, src, acc) else acc)))
+
+fn cp_fwd(ms, tbl, tu, src, lt, acc) = match ms
+    Nil        => acc
+    Cons(m, t) => cp_fwd(t, tbl, tu, src, lt, cp_fwd_cmds(m.cmds, m, tbl, tu, src, lt, acc))
+
+fn cp_count_legacy(ms, n) = match ms
+    Nil        => n
+    Cons(m, t) => cp_count_legacy(t, if cp_legacy(cp_head(m.cmds), m) == 1 then n + 1 else n)
+
+## --- reverse: table -> document ---
+fn cp_mine(ms, names, acc) = match ms
+    Nil        => acc
+    Cons(m, t) => cp_mine(t, names, if cp_any(m.cmds, names) == 1 then Cons(m, acc) else acc)
+
+fn cp_m_cmd(ms, x) = match ms
+    Nil        => 0
+    Cons(m, t) => if cp_has(m.cmds, x) == 1 then 1 else cp_m_cmd(t, x)
+
+fn cp_m_flag(ms, x) = match ms
+    Nil        => 0
+    Cons(m, t) => if cp_has(m.flags, x) == 1 then 1 else cp_m_flag(t, x)
+
+fn cp_m_word(ms, x) = match ms
+    Nil        => 0
+    Cons(m, t) => if cp_has(m.alts, x) == 1 or cp_has(m.first, x) == 1 then 1 else cp_m_word(t, x)
+
+fn cp_rv_names(xs, mine, src, acc) = match xs
+    Nil        => acc
+    Cons(x, t) => cp_rv_names(t, mine, src, if cp_m_cmd(mine, x) == 1 then acc else Cons(src + " does not mention the command `lume " + x + "`", acc))
+
+fn cp_rv_flags(xs, mine, nm, src, acc) = match xs
+    Nil        => acc
+    Cons(x, t) => cp_rv_flags(t, mine, nm, src, if cp_m_flag(mine, x) == 1 then acc else Cons(src + " does not mention the option " + x + " of `lume " + nm + "`", acc))
+
+fn cp_rv_words(xs, mine, nm, what, src, acc) = match xs
+    Nil        => acc
+    Cons(x, t) => cp_rv_words(t, mine, nm, what, src, if cp_m_word(mine, x) == 1 then acc else Cons(src + " does not mention the " + what + " " + x + " of `lume " + nm + "`", acc))
+
+fn cp_rv(tbl, ms, src, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => let mine = cp_mine(ms, r.names, Nil) in let nm = cp_head(r.names) in cp_rv(t, ms, src, cp_rv_words(r.vals, mine, nm, "value", src, cp_rv_words(r.shim, mine, nm, "subcommand", src, cp_rv_words(r.subs, mine, nm, "subcommand", src, cp_rv_flags(r.fnames, mine, nm, src, cp_rv_names(r.names, mine, src, acc))))))
+
+## --- dispatcher literals of lume_driver.src ---
+fn cp_lhs_start(s, i) = if i >= 0 and (cp_is_wordch(at(s, i)) == 1 or at(s, i) == "." or at(s, i) == "(" or at(s, i) == ")") then cp_lhs_start(s, i - 1) else i + 1
+
+fn cp_lstrip_paren(s) = if count(s) > 0 and at(s, 0) == "(" then cp_lstrip_paren(slice(s, 1, count(s))) else s
+
+## every `<lhs> == "<literal>"` and `<lhs> != "<literal>"` of a source text, as {lhs, lit}
+fn cp_cmp_lits(s, n, i, acc) = if i + 3 >= n then acc else if at(s, i) == "=" and at(s, i + 1) == " " and at(s, i + 2) == "\"" and i >= 3 and (at(s, i - 1) == "=" or at(s, i - 1) == "!") and at(s, i - 2) == " " then let e = cp_index(s, "\"", i + 3) in cp_cmp_lits(s, n, e + 1, Cons({lhs: cp_lstrip_paren(slice(s, cp_lhs_start(s, i - 3), i - 2)), lit: slice(s, i + 3, e)}, acc)) else cp_cmp_lits(s, n, i + 1, acc)
+
+fn cp_prev_nonspace(s, i) = if i < 0 then "" else if at(s, i) == " " then cp_prev_nonspace(s, i - 1) else at(s, i)
+
+fn cp_is_flag_lit(l) = let f = cp_flag_of(l) in if f == "" then 0 else if f == l or f + "=" == l then 1 else 0
+
+## every option-shaped string literal that follows `=` or `,` (a comparison or an argument of an option helper)
+fn cp_flag_lits(s, n, i, acc) = if i + 2 >= n then acc else if at(s, i) == "\"" and at(s, i + 1) == "-" and (i == 0 or at(s, i - 1) != "\\") then let e = cp_index(s, "\"", i + 1) in let lit = slice(s, i + 1, e) in let pc = cp_prev_nonspace(s, i - 1) in cp_flag_lits(s, n, e + 1, if (pc == "=" or pc == ",") and cp_is_flag_lit(lit) == 1 then Cons(cp_flag_of(lit), acc) else acc) else cp_flag_lits(s, n, i + 1, acc)
+
+## the left-hand sides that carry a command-line argument in lume_driver.src
+fn cp_lhs_argv(l) = if cp_starts(l, "os_arg_at(") == 1 or l == "cmd" or l == "command" or l == "action" or l == "act" or l == "mode" or l == "eco" or l == "kind" or l == "level" or l == "profile" or l == "h" then 1 else 0
+
+fn cp_lit_has(lits, lhs, lit) = match lits
+    Nil        => 0
+    Cons(x, t) => if x.lit == lit and (lhs == "" or x.lhs == lhs) then 1 else cp_lit_has(t, lhs, lit)
+
+fn cp_lits_of(lits, lhs, acc) = match lits
+    Nil        => acc
+    Cons(x, t) => cp_lits_of(t, lhs, if x.lhs == lhs and cp_has(acc, x.lit) == 0 then Cons(x.lit, acc) else acc)
+
+## A: an argument compared against a word the table does not list
+fn cp_dp_words(lits, words, acc) = match lits
+    Nil        => acc
+    Cons(x, t) => cp_dp_words(t, words, if cp_lhs_argv(x.lhs) == 1 and cp_is_word(x.lit) == 1 and cp_has(words, x.lit) == 0 then Cons("lume_driver.src compares " + x.lhs + " against \"" + x.lit + "\", which the command table does not list", acc) else acc)
+
+## B: an option literal the table does not list
+fn cp_dp_flags(fl, known, acc) = match fl
+    Nil        => acc
+    Cons(x, t) => cp_dp_flags(t, known, if cp_has(known, x) == 1 then acc else Cons("lume_driver.src handles the option " + x + ", which the command table does not list", acc))
+
+## C: handler keys, both ways
+fn cp_dp_missing(xs, ys, msg, acc) = match xs
+    Nil        => acc
+    Cons(x, t) => cp_dp_missing(t, ys, msg, if cp_has(ys, x) == 1 then acc else Cons(msg + x, acc))
+
+fn cp_dp_sentience(names, lits, acc) = match names
+    Nil        => acc
+    Cons(x, t) => cp_dp_sentience(t, lits, if cp_lit_has(lits, "cmd", x) == 1 then acc else Cons("the command table lists the sentience command " + x + ", which lume_driver.src never compares cmd against", acc))
+
+fn cp_tool_text(root, tool) = if tool == "" then "" else if fs_path_exists(root + "/compiler/stage1/" + tool + ".src") == 1 then fs_read_file(root + "/compiler/stage1/" + tool + ".src") else if fs_path_exists(root + "/tests/harness/" + tool + ".src") == 1 then fs_read_file(root + "/tests/harness/" + tool + ".src") else if fs_path_exists(root + "/scripts/" + tool + ".src") == 1 then fs_read_file(root + "/scripts/" + tool + ".src") else ""
+
+fn cp_dp_row_words(xs, lits, tooltext, nm, acc) = match xs
+    Nil        => acc
+    Cons(x, t) => cp_dp_row_words(t, lits, tooltext, nm, if cp_lit_has(lits, "", x) == 1 or cp_contains(tooltext, "\"" + x + "\"") == 1 then acc else Cons("the command table lists the word " + x + " for `lume " + nm + "`, which neither lume_driver.src nor its tool compares an argument against", acc))
+
+fn cp_dp_row_flags(xs, fl, tooltext, nm, acc) = match xs
+    Nil        => acc
+    Cons(x, t) => cp_dp_row_flags(t, fl, tooltext, nm, if cp_has(fl, x) == 1 or cp_contains(tooltext, "\"" + x + "\"") == 1 or cp_contains(tooltext, "\"" + x + "=\"") == 1 or count(x) > 3 and cp_starts(x, "--") == 1 and cp_contains(tooltext, "\"" + slice(x, 2, count(x)) + "\"") == 1 then acc else Cons("the command table lists the option " + x + " for `lume " + nm + "`, which neither lume_driver.src nor its tool handles", acc))
+
+fn cp_dp_shim(xs, shim, nm, acc) = match xs
+    Nil        => acc
+    Cons(x, t) => cp_dp_shim(t, shim, nm, if cp_contains(shim, x) == 1 then acc else Cons("the command table gives `lume " + nm + " " + x + "` to the POSIX shim, which does not name it", acc))
+
+fn cp_needs_tool(xs, lits) = match xs
+    Nil        => 0
+    Cons(x, t) => if cp_lit_has(lits, "", x) == 0 then 1 else cp_needs_tool(t, lits)
+
+fn cp_needs_tool_f(xs, fl) = match xs
+    Nil        => 0
+    Cons(x, t) => if cp_has(fl, x) == 0 then 1 else cp_needs_tool_f(t, fl)
+
+fn cp_dp_rows(root, tbl, lits, fl, shim, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => let nm = cp_head(r.names) in let tt = if cp_needs_tool(r.subs, lits) == 1 or cp_needs_tool(r.vals, lits) == 1 or cp_needs_tool_f(r.fnames, fl) == 1 then cp_tool_text(root, r.tool) else "" in cp_dp_rows(root, t, lits, fl, shim, cp_dp_shim(r.shim, shim, nm, cp_dp_row_flags(r.fnames, fl, tt, nm, cp_dp_row_words(r.vals, lits, tt, nm, cp_dp_row_words(r.subs, lits, tt, nm, acc)))))
+
+fn cp_names_of(tbl, hk, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => cp_names_of(t, hk, if r.h == hk then cp_append(r.names, acc) else acc)
+
+## all dispatcher checks over one driver source text
+fn cp_dispatch(root, src, tbl, shim, with_rows) = let n = count(src) in let lits = cp_cmp_lits(src, n, 0, Nil) in let fl = cp_uniq(cp_flag_lits(src, n, 0, Nil), Nil) in let names = cp_all_names(tbl, Nil) in let a = cp_dp_words(lits, cp_append(names, cp_all_words(tbl, Nil)), Nil) in let b = cp_dp_flags(fl, cp_append(names, cp_all_flags(tbl, Nil)), a) in let hsrc = cp_lits_of(lits, "hk", Nil) in let htab = cp_handlers(tbl, Nil) in let c = cp_dp_missing(hsrc, htab, "ld_run_handler has an arm for the handler key, which no row of the command table uses: ", b) in if with_rows == 0 then {bad: c, lits: cp_len(lits, 0), flags: cp_len(fl, 0), handlers: cp_len(hsrc, 0)} else let d = cp_dp_missing(htab, hsrc, "the command table uses a handler key ld_run_handler has no arm for: ", c) in let e = cp_dp_sentience(cp_names_of(tbl, "sentience", Nil), lits, d) in {bad: cp_dp_rows(root, tbl, lits, fl, shim, e), lits: cp_len(lits, 0), flags: cp_len(fl, 0), handlers: cp_len(hsrc, 0)}
+
+## the usage strings of the driver: every string literal that starts with `usage: `, `\n` turned into a line break
+fn cp_unescape_nl(s, n, i, start, acc) = if i + 1 >= n then acc + slice(s, start, n) else if at(s, i) == "\\" and at(s, i + 1) == "n" then cp_unescape_nl(s, n, i + 2, i + 2, acc + slice(s, start, i) + "\n") else cp_unescape_nl(s, n, i + 1, start, acc)
+
+fn cp_usage_text(src, i, acc) = let a = cp_index(src, "\"usage: ", i) in if a >= count(src) then acc else let e = cp_index(src, "\"", a + 1) in let body = slice(src, a + 1, e) in cp_usage_text(src, e + 1, acc + cp_unescape_nl(body, count(body), 0, 0, "") + "\n")
+
+## --- probes: every name, option and subcommand against the real binary ---
+fn cp_probe(root, args) = dg_run(root, args, "parity-probe")
+
+fn cp_pr_names(root, names, acc) = match names
+    Nil        => acc
+    Cons(x, t) => let r = cp_probe(root, Cons(x, Cons("--help", Nil))) in cp_pr_names(root, t, if r.status == 0 and cp_starts(r.output, "usage: lume ") == 1 and cp_contains(r.output, x) == 1 then acc else Cons("`lume " + x + " --help` did not print the synopsis of the command (status " + str(r.status) + "): " + cp_clip(r.output + r.errors), acc))
+
+fn cp_pr_flag_args(nm, f) = if cp_ends(f, "=") == 1 then Cons(nm, Cons(slice(f, 0, count(f) - 1), Cons("cli-parity-value", Cons("--help", Nil)))) else Cons(nm, Cons(f, Cons("--help", Nil)))
+
+fn cp_pr_flags(root, nm, flags, acc) = match flags
+    Nil        => acc
+    Cons(f, t) => let r = cp_probe(root, cp_pr_flag_args(nm, f)) in cp_pr_flags(root, nm, t, if r.status == 0 and cp_starts(r.output, "usage: lume ") == 1 then acc else Cons("`lume " + nm + "` does not accept its option " + f + " (status " + str(r.status) + "): " + cp_clip(r.errors), acc))
+
+fn cp_pr_subs(root, nm, subs, acc) = match subs
+    Nil        => acc
+    Cons(x, t) => let r = cp_probe(root, Cons(nm, Cons(x, Cons("--help", Nil)))) in cp_pr_subs(root, nm, t, if r.status == 0 and cp_starts(r.output, "usage: lume ") == 1 then acc else Cons("`lume " + nm + "` does not accept its subcommand " + x + " (status " + str(r.status) + "): " + cp_clip(r.errors), acc))
+
+fn cp_pr_row(root, tbl, r, acc) = let nm = cp_head(r.names) in let a = cp_pr_flags(root, nm, r.flags, acc) in let neg = cp_probe(root, Cons(nm, Cons("--cli-parity-no-such-option", Cons("--help", Nil)))) in let b = if neg.status != 0 and cp_contains(neg.errors, "unknown option --cli-parity-no-such-option") == 1 then a else Cons("`lume " + nm + " --cli-parity-no-such-option` was not refused with `unknown option` (status " + str(neg.status) + ")", a) in if cp_contains(r.m, "S") == 0 then b else let c = cp_pr_subs(root, nm, cp_append(r.subs, cp_append(r.shim, if r.via == "" then Nil else Cons(cp_head(cp_names_of(tbl, r.via, Nil)), Nil))), b) in let ns = cp_probe(root, Cons(nm, Cons("cli-parity-no-such-subcommand", Cons("--help", Nil)))) in if ns.status != 0 and cp_contains(ns.errors, "unknown subcommand cli-parity-no-such-subcommand") == 1 then c else Cons("`lume " + nm + " cli-parity-no-such-subcommand` was not refused with `unknown subcommand` (status " + str(ns.status) + ")", c)
+
+fn cp_pr_rows(root, tbl, rows, acc) = match rows
+    Nil        => acc
+    Cons(r, t) => cp_pr_rows(root, tbl, t, cp_pr_row(root, tbl, r, acc))
+
+fn cp_count_flags(tbl, n) = match tbl
+    Nil        => n
+    Cons(r, t) => cp_count_flags(t, n + cp_len(r.flags, 0))
+
+fn cp_count_subs(tbl, n) = match tbl
+    Nil        => n
+    Cons(r, t) => cp_count_subs(t, n + cp_len(r.subs, 0) + cp_len(r.shim, 0))
+
+fn cp_count_vals(tbl, n) = match tbl
+    Nil        => n
+    Cons(r, t) => cp_count_vals(t, n + cp_len(r.vals, 0))
+
+## --- smoke: real invocations with minimal inputs; every input and output is under build/ (the driver itself keeps
+## its content-addressed cache under $HOME for build / check / prove, as it does for the rest of this gate). The
+## sentience commands are never run here: they write under $HOME, so they are probed for recognition only. ---
+## A line `?tool command ...` runs only when build/bin/<tool> exists (ltv and lmcdc are not built by every CI job);
+## when it is skipped, its options stay in the recognition-only list of the report.
+fn cp_arg(root, x) = if cp_starts(x, "@/") == 1 then root + slice(x, 1, count(x)) else x
+
+fn cp_args_of(root, xs) = match xs
+    Nil        => Nil
+    Cons(x, t) => Cons(cp_arg(root, x), cp_args_of(root, t))
+
+fn cp_args(root, line) = cp_args_of(root, cp_split(line, " "))
+
+fn cp_smoke_lines() = cp_lines(cp_smoke_text())
+
+fn cp_smoke_text() = "help --json\n" +
+"help --pt syntax\n" +
+"describe --json\n" +
+"targets --json\n" +
+"manual --json\n" +
+"manual --pt types\n" +
+"manual --pt-br types\n" +
+"manual --pt-BR types\n" +
+"manual --pt_br types\n" +
+"manual --pt_BR types\n" +
+"manual --en types\n" +
+"manual --en-us types\n" +
+"manual --en-US types\n" +
+"manual --export @/build/cp_manual_types.md types\n" +
+"build @/build/cp_a.src -o @/build/cp_a1\n" +
+"build --target x86_64-linux-elf --memory --build-timeout-ms 600000 @/build/cp_a.src -o @/build/cp_a2\n" +
+"build --incremental @/build/cp_a.src -o @/build/cp_a3\n" +
+"build --protect standard --profile release @/build/cp_a.src -o @/build/cp_a4\n" +
+"build --protect max --lsym @/build/cp_a5.lsym @/build/cp_a.src -o @/build/cp_a5\n" +
+"build --dwarf --keep-proven-checks @/build/cp_a.src -o @/build/cp_a6\n" +
+"build -g --critical @/build/cp_a.src -o @/build/cp_a7\n" +
+"build --emit-c-header @/build/cp_c.h @/build/cp_c.src -o @/build/cp_c\n" +
+"run --memory @/build/cp_a.src\n" +
+"check --json @/build/cp_a.src\n" +
+"compile --json --run @/build/cp_a.src\n" +
+"fmt --check @/build/cp_f.src\n" +
+"fmt --stdout @/build/cp_f.src\n" +
+"doc --json @/build/cp_a.src\n" +
+"prove --json @/build/cp_a.src\n" +
+"prove --share @/build/cp_a.src\n" +
+"prove --diff @/build/cp_a.src @/build/cp_b.src\n" +
+"prove --compositional @/build/cp_base.src @/build/cp_derived.src\n" +
+"certify --json @/build/cp_a.src\n" +
+"verify-cert --json @/build/cp_cert.json\n" +
+"verify-cert --check-source @/build/cp_a.src @/build/cp_cert.json\n" +
+"agent check --json @/build/cp_a.src\n" +
+"adapt c --json @/build/cp_h.h\n" +
+"adapt c @/build/cp_h.h -o @/build/cp_h1.src\n" +
+"adapt c @/build/cp_h.h --output @/build/cp_h2.src\n" +
+"adapt c --preprocess @/build/cp_h.h\n" +
+"lsp --json @/build/cp_a.src\n" +
+"dap --json @/build/cp_a.src\n" +
+"repl --json @/build/cp_a.src\n" +
+"mcp --json @/build/cp_a.src\n" +
+"intent build @/examples/intent/verified_specs.intent --cache @/build/cp_intent1.cache.src --json\n" +
+"intent build @/examples/intent/verified_specs.intent --cache @/build/cp_intent2.cache.src -o @/build/cp_intent2\n" +
+"intent build @/examples/intent/verified_specs.intent --cache @/build/cp_intent3.cache.src --output @/build/cp_intent3\n" +
+"mesh --json @/tests/conformance/stage1/semantic_mesh/negotiate.mesh\n" +
+"neural-kernel --json @/build/cp_a.src\n" +
+"capsule seal @/build/cp_a.src -o @/build/cp_a.lcaps\n" +
+"package apk @/build/cp_a.src -o @/build/cp_a.apk\n" +
+"pack @/build/cp_a.src -o @/build/cp_a.pack\n" +
+"unpack @/build/cp_a.pack -o @/build/cp_a.unpacked\n" +
+"evolve verify --json\n" +
+"?lmcdc mcdc @/build/cp_a.src --fn clamp --budget 64 --exec --json\n" +
+"?ltv tv @/build/cp_a.src --fn clamp --exec --json\n"
+
+fn cp_smoke_fixtures(root) = fs_write_sync(root + "/build/cp_base.src", "fn base(x: int) -> int requires x >= 0 ensures result >= 0 = x\n") + fs_write_sync(root + "/build/cp_derived.src", "fn derived(y: int) -> int requires y >= 0 ensures result >= 0 = base(y)\n") + fs_write_sync(root + "/build/cp_a.src","fn clamp(x: int) -> int requires x >= 0 ensures result >= 0 = x\nprint clamp(5)\n") + fs_write_sync(root + "/build/cp_b.src", "fn clamp(x: int) -> int requires x >= 0 ensures result >= 0 = x\nprint clamp(6)\n") + fs_write_sync(root + "/build/cp_f.src", "print 2 + 3\n") + fs_write_sync(root + "/build/cp_h.h", "int64_t add(int64_t a, int64_t b);\n") + fs_write_sync(root + "/build/cp_c.src", "@export(\"C\")\npub fn lume_clamp_add(x: int, hi: int, bonus: int) -> int requires hi >= 0 ensures result >= 0 = if x < 0 then 0 else if x > hi then hi else x\nprint lume_clamp_add(5, 10, 1)\n")
+
+fn cp_rest(xs) = match xs
+    Nil        => Nil
+    Cons(_, t) => t
+
+fn cp_smoke_pairs(c, args, acc) = match args
+    Nil        => acc
+    Cons(x, t) => cp_smoke_pairs(c, t, if cp_flag_of(x) == "" then acc else Cons(c + " " + cp_flag_of(x), acc))
+
+fn cp_smoke_run(root, lines, st) = match lines
+    Nil        => st
+    Cons(h, t) => if h == "" then cp_smoke_run(root, t, st) else let args0 = cp_split(h, " ") in let args = if cp_starts(h, "?") == 1 then cp_rest(args0) else args0 in if cp_starts(h, "?") == 1 and fs_path_exists(root + "/build/bin/" + slice(cp_head(args0), 1, count(cp_head(args0)))) == 0 then cp_smoke_run(root, t, {bad: st.bad, pairs: st.pairs, ran: st.ran, skipped: st.skipped + 1}) else let r = dg_run(root, cp_args_of(root, args), "parity-smoke") in cp_smoke_run(root, t, {bad: if r.status == 0 and cp_contains(r.errors, "unknown option") == 0 then st.bad else Cons("smoke `lume " + h + "` failed with status " + str(r.status) + ": " + cp_clip(r.errors + r.output), st.bad), pairs: cp_smoke_pairs(cp_head(args), args, st.pairs), ran: st.ran + 1, skipped: st.skipped})
+
+## the options of the table no smoke line ran: they are probed for recognition only
+fn cp_unsmoked_flags(nm, names, flags, pairs, acc) = match flags
+    Nil        => acc
+    Cons(f, t) => cp_unsmoked_flags(nm, names, t, pairs, if cp_pair_any(names, f, pairs) == 1 then acc else Cons(nm + " " + f, acc))
+
+fn cp_pair_any(names, f, pairs) = match names
+    Nil        => 0
+    Cons(x, t) => if cp_has(pairs, x + " " + f) == 1 then 1 else cp_pair_any(t, f, pairs)
+
+fn cp_unsmoked(tbl, pairs, acc) = match tbl
+    Nil        => cp_rev(acc, Nil)
+    Cons(r, t) => cp_unsmoked(t, pairs, cp_unsmoked_flags(cp_head(r.names), r.names, r.fnames, pairs, acc))
+
+## --- diagnostic codes ---
+fn cp_dx(code, verb, name, text) = {code: code, verb: verb, name: name, text: text}
+
+## each entry is run for real: `lume <verb> build/cp_dx_<name>` must fail and print the code
+fn cp_dx_list() = Cons(cp_dx("K0005", "check", "k0005.src", "fn bad_wx(off: int) = let base = 32768 in mmio_volatile_write64(base + off, 42)\n"), Cons(cp_dx("K0006", "check", "k0006.src", "fn kernel_boot_entry() = 1\nfn ka(x: int) -> int = kb(x)\nfn kb(x: int) -> int = ka(x)\n"), Cons(cp_dx("C0009", "check", "c0009.src", "fn ct_bad_compare(secret_tag: int, guess: int) -> int = if secret_tag == guess then 1 else 0\n"), Cons(cp_dx("R0200", "check", "r0200.src", "fn f(x: int) -> int = nosuchfn(x)\nprint f(1)\n"), Cons(cp_dx("R0201", "check", "r0201.src", "fn count(x: int) -> int = x\nprint count(1)\n"), Cons(cp_dx("P0002", "check", "p0002.src", "fn f( = 1\nprint f()\n"), Cons(cp_dx("L0001", "check", "l0001.src", "print \"abc\n"), Cons(cp_dx("L0002", "check", "l0002.src", "print \"a\\qb\"\n"), Cons(cp_dx("T2002", "check", "t2002.src", "fn f(x: int) -> int = x + \"a\"\nprint f(1)\n"), Cons(cp_dx("E0200", "check", "e0200.src", "fn f(x: int) -> int / pure = let z = fs_write_sync(\"/tmp/x\", \"a\") in x\nprint f(1)\n"), Cons(cp_dx("E0210", "check", "e0210.src", "fn helper(a: int) -> int = a + 1\n@no_alloc\nfn r(a: int) -> int requires a >= 0 and a <= 10 = helper(a)\nprint r(1)\n"), Cons(cp_dx("O0001", "check", "o0001.src", "fn consume(own xs: [int]) -> int = match xs\n    Nil => 0\n    Cons(h, t) => h\nfn twice(own xs: [int]) -> int = consume(own xs) + consume(own xs)\nprint twice(own Cons(1, Nil))\n"), Cons(cp_dx("V0001", "prove", "v0001.src", "fn bad_inc(x: int) -> int ensures result > x = x\n"), Cons(cp_dx("V0002", "check", "v0002.src", "@bound(cycles: 4)\nfn w(x: int) -> int = x * x * x * x * x * x * x * x * x * x * x * x + x * x * x * x * x * x\nprint w(2)\n"), Cons(cp_dx("E0305", "build", "e0305.src", "fn chan_send_linear(ch, x) = x\nfn bad_sender() =\n    let msg = {id: 42, val: 99} in\n    let _sent = chan_send_linear(1, msg) in\n    msg.val\nprint bad_sender()\n"), Cons(cp_dx("E0306", "build", "e0306.src", "fn lock_acquire(k) = k\nfn leak() = lock_acquire(1)\nprint leak()\n"), Cons(cp_dx("I0003", "adapt", "i0003.h", "int64_t bad(\n"), Cons(cp_dx("T2001", "check", "t2001.src", "fn f(a: money[BRL], b: money[USD]) -> money[BRL] = a + b\n"), Nil))))))))))))))))))
+
+## codes a document may cite without a probe above: the tool that emits each one is named and its source must
+## contain the code (their behaviour is exercised by the gate of that tool, not by this one)
+fn cp_dx_emitters() = Cons({code: "C0010", file: "compiler/stage1/ltv.src"}, Cons({code: "C0271", file: "compiler/stage1/lume/03_comptime.src"}, Cons({code: "D0273", file: "compiler/stage1/lume/03_comptime.src"}, Cons({code: "I0275", file: "compiler/stage1/ltarget.src"}, Cons({code: "L0010", file: "compiler/stage1/lasm.src"}, Cons({code: "O0030", file: "compiler/stage1/lume/06b_phase3.src"}, Cons({code: "PC0002", file: "compiler/stage1/lproof_cache.src"}, Cons({code: "PC0003", file: "compiler/stage1/lproof_cache.src"}, Cons({code: "PC0005", file: "compiler/stage1/lproof_cache.src"}, Cons({code: "T0300", file: "compiler/stage1/lume/06b_phase3.src"}, Cons({code: "T0901", file: "compiler/stage1/ltarget.src"}, Cons({code: "T0902", file: "compiler/stage1/ltarget.src"}, Cons({code: "T0903", file: "compiler/stage1/ltarget.src"}, Cons({code: "T1002", file: "compiler/stage1/lcaas.src"}, Cons({code: "W0002", file: "compiler/stage1/lprotect.src"}, Nil)))))))))))))))
+
+fn cp_dx_args(root, d) = if d.verb == "adapt" then Cons("adapt", Cons("c", Cons(root + "/build/cp_dx_" + d.name, Nil))) else Cons(d.verb, Cons(root + "/build/cp_dx_" + d.name, Nil))
+
+fn cp_dx_run(root, ds, st) = match ds
+    Nil        => st
+    Cons(d, t) => let w = fs_write_sync(root + "/build/cp_dx_" + d.name, d.text) in let r = dg_run(root, cp_dx_args(root, d), "parity-dx") in cp_dx_run(root, t, if w == 1 and r.status != 0 and cp_contains(r.output + r.errors, d.code) == 1 then {bad: st.bad, ok: Cons(d.code, st.ok)} else {bad: Cons("diagnostic [" + d.code + "] was not produced by `lume " + d.verb + "` on its fixture (status " + str(r.status) + "): " + cp_clip(r.output + r.errors), st.bad), ok: st.ok})
+
+fn cp_dx_emit_ok(root, es, acc) = match es
+    Nil        => acc
+    Cons(e, t) => cp_dx_emit_ok(root, t, if fs_path_exists(root + "/" + e.file) == 1 and cp_contains(fs_read_file(root + "/" + e.file), e.code) == 1 then Cons(e.code, acc) else acc)
+
+fn cp_is_upper(c) = if c >= "A" and c <= "Z" then 1 else 0
+
+fn cp_upper_end(s, n, i) = if i < n and cp_is_upper(at(s, i)) == 1 then cp_upper_end(s, n, i + 1) else i
+
+fn cp_digit_end(s, n, i) = if i < n and cp_is_digit(at(s, i)) == 1 then cp_digit_end(s, n, i + 1) else i
+
+## every `[X0000]` (1 to 3 capitals, 4 digits) of a text
+fn cp_codes(s, n, i, acc) = let a = cp_find_ch(s, n, i, "[") in if a >= n then acc else let u = cp_upper_end(s, n, a + 1) in let d = cp_digit_end(s, n, u) in if u - a - 1 >= 1 and u - a - 1 <= 3 and d - u == 4 and d < n and at(s, d) == "]" then cp_codes(s, n, d + 1, if cp_has(acc, slice(s, a + 1, d)) == 1 then acc else Cons(slice(s, a + 1, d), acc)) else cp_codes(s, n, a + 1, acc)
+
+fn cp_dx_cited(codes, provoked, emitted, src, must_provoke, acc) = match codes
+    Nil        => acc
+    Cons(c, t) => cp_dx_cited(t, provoked, emitted, src, must_provoke, if cp_has(provoked, c) == 1 then acc else if must_provoke == 0 and cp_has(emitted, c) == 1 then acc else Cons(src + " cites the diagnostic code [" + c + "], which " + (if must_provoke == 1 then "this gate does not provoke (add a fixture to cp_dx_list)" else "this gate neither provokes nor finds in the source of a listed emitter"), acc))
+
+## --- repository paths, tools and gates a document names ---
+## A piece of a scanned segment that starts with a top-level source directory of the repository must exist (pieces
+## with a wildcard, a variable or `..` are skipped; `:line` and `#anchor` suffixes are cut). `build/bin/<name>` and a
+## bare `<name>_gate` must have a source: compiler/stage1/<name>.src, tests/harness/<name>.src, scripts/<name>.src, or
+## tests/cli/<x>.src for `native_<x>`.
+fn cp_path_prefixes() = Cons("compiler/", Cons("tests/", Cons("docs/", Cons("scripts/", Cons("stdlib/", Cons("examples/", Cons("evolve/", Cons("skills/", Cons("bootstrap/", Cons("editors/", Cons("grammar/", Nil)))))))))))
+
+fn cp_starts_any(s, ps) = match ps
+    Nil        => 0
+    Cons(p, t) => if cp_starts(s, p) == 1 then 1 else cp_starts_any(s, t)
+
+fn cp_cut_at(s, n, i) = if i >= n then s else if at(s, i) == ":" or at(s, i) == "#" then slice(s, 0, i) else cp_cut_at(s, n, i + 1)
+
+fn cp_path_clean(p) = let a = if cp_starts(p, "./") == 1 then slice(p, 2, count(p)) else p in let b = cp_cut_at(a, count(a), 0) in cp_rstrip(b, count(b))
+
+fn cp_all_lowid(s, n, i) = if i >= n then 1 else if cp_is_low(at(s, i)) == 1 or cp_is_digit(at(s, i)) == 1 or at(s, i) == "_" then cp_all_lowid(s, n, i + 1) else 0
+
+fn cp_tool_src(root, nm) = if fs_path_exists(root + "/compiler/stage1/" + nm + ".src") == 1 or fs_path_exists(root + "/tests/harness/" + nm + ".src") == 1 or fs_path_exists(root + "/scripts/" + nm + ".src") == 1 then 1 else if cp_starts(nm, "native_") == 1 and fs_path_exists(root + "/tests/cli/" + slice(nm, 7, count(nm)) + ".src") == 1 then 1 else if nm == "lumec" or nm == "lc" then fs_path_exists(root + "/compiler/stage1/lume/07_driver.src") else 0
+
+## "" when the piece names nothing checkable or names something that exists; otherwise what is missing
+fn cp_path_problem(root, base, p) = if count(p) < 4 or cp_contains(p, "*") == 1 or cp_contains(p, "$") == 1 or cp_contains(p, "..") == 1 or cp_contains(p, "%") == 1 then "" else if cp_starts(p, "build/bin/") == 1 then (let nm = slice(p, 10, count(p)) in if nm == "" or cp_all_lowid(nm, count(nm), 0) == 0 or cp_tool_src(root, nm) == 1 then "" else "the tool " + p + ", which has no source") else if cp_ends(p, "_gate") == 1 and cp_all_lowid(p, count(p), 0) == 1 then (if cp_tool_src(root, p) == 1 then "" else "the gate " + p + ", which has no source in tests/harness or tests/cli") else if cp_starts_any(p, cp_path_prefixes()) == 1 then (if fs_path_exists(root + "/" + p) == 1 or base != "" and fs_path_exists(root + "/" + base + p) == 1 then "" else "the path " + p + ", which does not exist") else ""
+
+fn cp_path_pieces(ps, acc) = match ps
+    Nil        => acc
+    Cons(p, t) => let c = cp_path_clean(p) in cp_path_pieces(t, if cp_has(acc, c) == 1 then acc else if cp_starts(c, "build/bin/") == 1 or cp_ends(c, "_gate") == 1 or cp_starts_any(c, cp_path_prefixes()) == 1 then Cons(c, acc) else acc)
+
+fn cp_path_tokens(toks, acc) = match toks
+    Nil        => acc
+    Cons(x, t) => cp_path_tokens(t, if cp_contains(x, "/") == 1 or cp_contains(x, "_gate") == 1 then cp_path_pieces(cp_pieces(x), acc) else acc)
+
+fn cp_path_segs(segs, acc) = match segs
+    Nil        => acc
+    Cons(s, t) => cp_path_segs(t, cp_path_tokens(cp_tokens(s), acc))
+
+fn cp_path_check(root, base, ps, src, acc) = match ps
+    Nil        => acc
+    Cons(p, t) => let pr = cp_path_problem(root, base, p) in cp_path_check(root, base, t, src, if pr == "" then acc else Cons(src + " names " + pr, acc))
+
+## --- one document ---
+fn cp_doc(root, base, name, text, md, tbl, tu, lt) = let ms = cp_extract(text, md, tbl) in let paths = cp_path_segs(cp_segments(text, md), Nil) in {name: name, ms: ms, bad: cp_path_check(root, base, paths, name, cp_fwd(ms, tbl, tu, name, lt, Nil)), n: cp_len(ms, 0), legacy: cp_count_legacy(ms, 0), codes: cp_codes(text, count(text), 0, Nil), np: cp_len(paths, 0)}
+
+fn cp_doc_line(d) = "  " + d.name + ": " + str(d.n) + " mentions (" + str(d.legacy) + " routed to the legacy script), " + str(cp_len(d.codes, 0)) + " diagnostic codes, " + str(d.np) + " repository paths / tools / gates, " + str(cp_len(d.bad, 0)) + " mismatches\n"
+
+## --- negative controls and extractor self-tests: the gate must be able to fail ---
+fn cp_self_md() = "Run `lume build --target x86_64-linux-elf main.src -o out` or `./lume pkg init|lock demo`.\n" + "The `lume` driver and `lume.toml` are not commands; `lume 1.1.0` neither, nor `lume <command> --help`.\n" + "```sh\n" + "$ build/bin/lume_driver prove --json a.src && lume fmt --check a.src | tee --log x\n" + "lume run prog.src --not-ours\n" + "lume certify / verify-cert a.src\n" + "```\n" + "outside code: lume frobnicate --zzz\n" + "`lume frobnicate x.src`, `lume build --no-such-flag x.src`, `lume pkg explode`, `lume check app.lume --legacy-only-zz`, `lume build --target no-such-triple x.src`, `lume build --target <triple> x.src`\n"
+
+fn cp_self_plain() = "  lume replicate / hive [--json] [sync|status]   Triad replication (see lume laws).\n" + "  the `lume` driver is not a mention, lume --version is, and so is `lume qualify --quick`\n"
+
+fn cp_has_part(xs, part) = match xs
+    Nil        => 0
+    Cons(h, t) => if cp_contains(h, part) == 1 then 1 else cp_has_part(t, part)
+
+fn cp_self_test(root, tbl, tu, help_ms, lt) = let md = cp_extract(cp_self_md(), 1, tbl) in let bad = cp_fwd(md, tbl, tu, "synthetic", lt, Nil) in let pl = cp_extract(cp_self_plain(), 0, tbl) in let m1 = cp_head_m(md) in let p1 = cp_head_m(pl) in if cp_len(md, 0) != 12 then "extractor self-test: expected 12 mentions in the synthetic markdown, found " + str(cp_len(md, 0)) else if cp_join(m1.cmds, ",") != "build" or cp_join(m1.flags, ",") != "--target,-o" then "extractor self-test: first mention is " + cp_join(m1.cmds, ",") + " " + cp_join(m1.flags, ",") else if cp_len(bad, 0) != 5 then "negative control: the synthetic document must yield exactly 5 mismatches, got " + str(cp_len(bad, 0)) + ": " + cp_join(bad, " | ") else if cp_has_part(bad, "unknown command `lume frobnicate`") == 0 then "negative control: a non-existent subcommand was not flagged" else if cp_has_part(bad, "`lume build` has no option --no-such-flag") == 0 then "negative control: a non-existent option was not flagged" else if cp_has_part(bad, "`lume pkg` has no subcommand explode") == 0 then "negative control: a non-existent pkg subcommand was not flagged" else if cp_has_part(bad, "`lume check --legacy-only-zz` is routed to scripts/lume_legacy.sh") == 0 then "negative control: an invented option of a shim-routed invocation was not flagged" else if cp_has_part(bad, "`lume build --target no-such-triple` names a target") == 0 then "negative control: a non-existent build target was not flagged" else if cp_join(m1.targets, ",") != "x86_64-linux-elf" then "extractor self-test: the --target value was read as " + cp_join(m1.targets, ",") else if cp_len(pl, 0) != 4 then "extractor self-test: expected 4 mentions in the synthetic plain text, found " + str(cp_len(pl, 0)) else if cp_join(p1.cmds, ",") != "replicate,hive" or cp_join(p1.flags, ",") != "--json" or cp_join(p1.alts, ",") != "sync,status" then "extractor self-test: the ` / ` alternation was read as " + cp_join(p1.cmds, ",") + " " + cp_join(p1.flags, ",") + " " + cp_join(p1.alts, ",") else let ghost = Cons({names: Cons("cli-parity-ghost", Nil), h: "ghost", flags: Cons("--ghost-flag", Nil), fnames: Cons("--ghost-flag", Nil), subs: Cons("ghost-sub", Nil), shim: Nil, vals: Nil, tool: "", m: "S", via: ""}, Nil) in let rv = cp_rv(ghost, help_ms, "help", Nil) in if cp_len(rv, 0) != 3 then "negative control: a table entry missing from the help text must yield 3 mismatches, got " + str(cp_len(rv, 0)) else let fake = "fn x(cmd, h, args) = if cmd == \"cli-parity-ghost\" then 1 else if h == \"--ghost-flag\" then 2 else ld_cb_opt(args, \"--ghost-opt\")\nfn y(hk) = if hk == \"ghost-handler\" then 1 else if os_arg_at(2) != \"ghost-sub\" then 2 else Cons(\"--child-tool-flag\", Nil)\n" in let dp = cp_dispatch(root, fake, tbl, "", 0) in if cp_len(dp.bad, 0) != 5 then "negative control: the synthetic dispatcher must yield 5 mismatches, got " + str(cp_len(dp.bad, 0)) + ": " + cp_join(dp.bad, " | ") else if cp_has_part(dp.bad, "compares cmd against \"cli-parity-ghost\"") == 0 or cp_has_part(dp.bad, "handles the option --ghost-flag") == 0 or cp_has_part(dp.bad, "handles the option --ghost-opt") == 0 or cp_has_part(dp.bad, "ghost-handler") == 0 or cp_has_part(dp.bad, "against \"ghost-sub\"") == 0 then "negative control: an undocumented dispatcher literal was not flagged: " + cp_join(dp.bad, " | ") else if cp_has_part(dp.bad, "--child-tool-flag") == 1 then "extractor self-test: an option handed to a child tool was taken for a dispatcher option" else let cited = cp_dx_cited(Cons("ZZ9999", Nil), Nil, Nil, "synthetic", 0, Nil) in if cp_len(cited, 0) != 1 then "negative control: an unknown diagnostic code was not flagged" else if cp_join(cp_codes(cp_self_codes(), count(cp_self_codes()), 0, Nil), ",") != "PC0002,E0210" then "extractor self-test: diagnostic codes were read as " + cp_join(cp_codes(cp_self_codes(), count(cp_self_codes()), 0, Nil), ",") else let pp = cp_path_check(root, "", cp_path_segs(Cons(cp_self_paths(), Nil), Nil), "synthetic", Nil) in if cp_len(pp, 0) != 3 or cp_has_part(pp, "compiler/stage1/cli_parity_no_such_file.src") == 0 or cp_has_part(pp, "build/bin/cli_parity_ghost_tool") == 0 or cp_has_part(pp, "the gate cli_parity_ghost_gate") == 0 then "negative control: the synthetic paths must yield 3 mismatches, got " + str(cp_len(pp, 0)) + ": " + cp_join(pp, " | ") else ""
+
+fn cp_self_paths() = "see `compiler/stage1/cli_parity_no_such_file.src`, tests/harness/<gate>.src, compiler/stage1/lume/0*.src, build/bin/cli_parity_ghost_tool, build/bin/lume_driver and cli_parity_ghost_gate; docs/LUME_MANUAL_EN.md:12 and (tests/cli/driver_gate.src) exist, native_driver_gate too"
+
+fn cp_self_codes() ="see [E0210] and [PC0002], not [x] or [ABCD1234] or [E12]"
+
+fn cp_head_m(ms) = match ms
+    Nil        => {cmds: Nil, flags: Nil, first: Nil, alts: Nil, files: Nil, raw: "", targets: Nil}
+    Cons(m, _) => m
+
+fn cp_list_text(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => cp_list_text(t, acc + "  - " + h + "\n")
+
+fn cp_manual_fresh(root, lang_flag, rel, acc) = let out = root + "/build/cp_export_" + lang_flag + ".md" in let r = dg_run(root, if lang_flag == "pt" then Cons("manual", Cons("--pt", Cons("--export", Cons(out, Nil)))) else Cons("manual", Cons("--export", Cons(out, Nil))), "parity-export") in if r.status != 0 then Cons("`lume manual --export` failed: " + cp_clip(r.errors), acc) else if fs_read_file(out) != fs_read_file(root + "/" + rel) then Cons(rel + " is not what `lume manual " + (if lang_flag == "pt" then "--pt " else "") + "--export " + rel + "` writes now: regenerate it", acc) else acc
+
+fn cp_tools_exist(root, tbl, acc) = match tbl
+    Nil        => acc
+    Cons(r, t) => cp_tools_exist(root, t, if r.tool == "" or fs_path_exists(root + "/compiler/stage1/" + r.tool + ".src") == 1 or fs_path_exists(root + "/tests/harness/" + r.tool + ".src") == 1 or fs_path_exists(root + "/scripts/" + r.tool + ".src") == 1 then acc else Cons("the command table gives `lume " + cp_head(r.names) + "` the tool " + r.tool + ", which has no source in compiler/stage1, tests/harness or scripts", acc))
+
+## the whole parity section: {bad: every mismatch, report: the measured counts}
+fn cp_main(root) = let tj = dg_run(root, Cons("help", Cons("--json", Nil)), "parity-table") in if tj.status != 0 then {bad: Cons("`lume help --json` failed: " + tj.errors, Nil), report: ""} else let tbl = cp_table(cp_lines(tj.output), Nil) in let names = cp_all_names(tbl, Nil) in if cp_len(tbl, 0) < 50 then {bad: Cons("`lume help --json` lists only " + str(cp_len(tbl, 0)) + " commands", Nil), report: ""} else if cp_dup(names) != "" then {bad: Cons("the command table lists the name " + cp_dup(names) + " twice", Nil), report: ""} else let shim = fs_read_file(root + "/lume") in let lt = fs_read_file(root + "/scripts/lume_legacy.sh") in let driver = fs_read_file(root + "/compiler/stage1/lume_driver.src") in let tj2 = dg_run(root, Cons("targets", Nil), "parity-targets") in let dlits = cp_cmp_lits(driver, count(driver), 0, Nil) in let tu = cp_append(cp_json_values(tj2.output, "\"triple\":\"", 0, Nil), cp_append(cp_lits_of(dlits, "target", Nil), if cp_lit_has(dlits, "", "safetensors") == 1 then Cons("safetensors", Nil) else Nil)) in let help = dg_run(root, Cons("--help", Nil), "parity-help") in let desc = dg_run(root, Cons("describe", Nil), "parity-describe") in let d_help = cp_doc(root, "", "help text (lume --help)", help.output, 0, tbl, tu, lt) in let d_desc = cp_doc(root, "", "lume describe", desc.output, 0, tbl, tu, lt) in let d_usage = cp_doc(root, "", "usage strings of lume_driver.src", cp_usage_text(driver, 0, ""), 0, tbl, tu, lt) in let d_en = cp_doc(root, "", "docs/LUME_MANUAL_EN.md", fs_read_file(root + "/docs/LUME_MANUAL_EN.md"), 0, tbl, tu, lt) in let d_pt = cp_doc(root, "", "docs/LUME_MANUAL_PT_BR.md", fs_read_file(root + "/docs/LUME_MANUAL_PT_BR.md"), 0, tbl, tu, lt) in let d_readme = cp_doc(root, "", "README.md", fs_read_file(root + "/README.md"), 1, tbl, tu, lt) in let d_skill = cp_doc(root, "skills/lume/", "skills/lume/SKILL.md", fs_read_file(root + "/skills/lume/SKILL.md"), 1, tbl, tu, lt) in let selft = cp_self_test(root, tbl, tu, d_help.ms, lt) in let shim_problem = cp_shim_ok(shim) in let fwd = cp_append(d_help.bad, cp_append(d_desc.bad, cp_append(d_usage.bad, cp_append(d_en.bad, cp_append(d_pt.bad, cp_append(d_readme.bad, d_skill.bad)))))) in let rv = cp_rv(tbl, d_help.ms, "the help text", cp_rv(tbl, d_en.ms, "docs/LUME_MANUAL_EN.md", cp_rv(tbl, d_pt.ms, "docs/LUME_MANUAL_PT_BR.md", Nil))) in let dp = cp_dispatch(root, driver, tbl, shim, 1) in let tools = cp_tools_exist(root, tbl, Nil) in let fresh = cp_manual_fresh(root, "en", "docs/LUME_MANUAL_EN.md", cp_manual_fresh(root, "pt", "docs/LUME_MANUAL_PT_BR.md", Nil)) in let pn = cp_pr_names(root, names, Nil) in let pr = cp_pr_rows(root, tbl, tbl, Nil) in let fx = cp_smoke_fixtures(root) in let cert = dg_run(root, Cons("certify", Cons(root + "/build/cp_a.src", Nil)), "parity-cert") in let fc = fs_write_sync(root + "/build/cp_cert.json", cert.output) in let sm =cp_smoke_run(root, cp_smoke_lines(), {bad: Nil, pairs: Nil, ran: 0, skipped: 0}) in let dx = cp_dx_run(root, cp_dx_list(), {bad: Nil, ok: Nil}) in let emitted = cp_dx_emit_ok(root, cp_dx_emitters(), Nil) in let cited = cp_dx_cited(d_help.codes, dx.ok, emitted, d_help.name, 1, cp_dx_cited(d_desc.codes, dx.ok, emitted, d_desc.name, 1, cp_dx_cited(d_en.codes, dx.ok, emitted, d_en.name, 0, cp_dx_cited(d_pt.codes, dx.ok, emitted, d_pt.name, 0, cp_dx_cited(d_readme.codes, dx.ok, emitted, d_readme.name, 0, cp_dx_cited(d_skill.codes, dx.ok, emitted, d_skill.name, 0, Nil)))))) in let unsmoked = cp_unsmoked(tbl, sm.pairs, Nil) in let ex = cp_exit_run(root, "overflow.src", "fn big(x: int) -> int = x * x * x * x\nprint big(9000000000)\n", 3, cp_exit_run(root, "index.src", "fn pick(xs, i) = xs[i]\nprint pick([1, 2, 3], 7)\n", 3, cp_exit_run(root, "ok.src", "print 40 + 2\n", 0, Nil))) in let bad = cp_append(if selft == "" then Nil else Cons(selft, Nil), cp_append(if shim_problem == "" then Nil else Cons(shim_problem, Nil), cp_append(fwd, cp_append(rv, cp_append(dp.bad, cp_append(tools, cp_append(fresh, cp_append(pn, cp_append(pr, cp_append(sm.bad, cp_append(ex, cp_append(dx.bad, cited)))))))))))) in {bad: bad, report: "cli_parity_gate: " + str(cp_len(tbl, 0)) + " table rows, " + str(cp_len(names, 0)) + " command names (aliases included), " + str(cp_count_flags(tbl, 0)) + " command/option pairs, " + str(cp_count_subs(tbl, 0)) + " subcommands, " + str(cp_count_vals(tbl, 0)) + " values, " + str(cp_len(cp_handlers(tbl, Nil), 0)) + " handler keys\n" + cp_doc_line(d_help) + cp_doc_line(d_desc) + cp_doc_line(d_usage) + cp_doc_line(d_en) + cp_doc_line(d_pt) + cp_doc_line(d_readme) + cp_doc_line(d_skill) + "  forward mismatches (document -> table; commands, options, subcommands, repository paths): " + str(cp_len(fwd, 0)) + "\n  reverse mismatches (table -> help text and both manuals): " + str(cp_len(rv, 0)) + "\n  build targets known to `lume targets` or the driver: " + str(cp_len(tu, 0)) + "\n  dispatcher: " + str(dp.lits) + " comparison literals, " + str(dp.flags) + " distinct option literals, " + str(dp.handlers) + " handler arms, " + str(cp_len(dp.bad, 0)) + " mismatches\n  probes: " + str(cp_len(names, 0)) + " names, " + str(cp_count_flags(tbl, 0)) + " options, " + str(cp_len(tbl, 0)) + " invented options refused, closed subcommands accepted and invented ones refused; " + str(cp_len(pn, 0) + cp_len(pr, 0)) + " failures\n  smoke: " + str(sm.ran) + " real invocations (" + str(sm.skipped) + " skipped: a line that starts with `?tool` runs only when build/bin/<tool> is built) covering " + str(cp_count_flags(tbl, 0) - cp_len(unsmoked, 0)) + " of the " + str(cp_count_flags(tbl, 0)) + " command/option pairs, " + str(cp_len(sm.bad, 0)) + " failures\n  recognition only (not run for real here): " + cp_join(unsmoked, ", ") + "\n  diagnostic codes: " + str(cp_len(dx.ok, 0)) + " provoked on real inputs (" + cp_join(cp_rev(dx.ok, Nil), " ") + "), " + str(cp_len(emitted, 0)) + " found in the source of their emitter (" + cp_join(cp_rev(emitted, Nil), " ") + "), " + str(cp_len(dx.bad, 0) + cp_len(cited, 0)) + " mismatches\n  documented exit statuses: 3 fixtures run (overflow trap 3, index trap 3, success 0), " + str(cp_len(ex, 0)) + " mismatches\n  exported manuals: " + str(cp_len(fresh, 0)) + " stale\n  negative controls and extractor self-tests: " + (if selft == "" then "passed" else "FAILED") + "\n  TOTAL MISMATCHES: " + str(cp_len(bad, 0)) + "\n"}
+
+## every value that follows `key` (up to the next double quote) in a JSON text
+fn cp_json_values(text, key, i, acc) = let a = cp_index(text, key, i) in if a >= count(text) then acc else let b = a + count(key) in let e = cp_index(text, "\"", b) in cp_json_values(text, key, e + 1, Cons(slice(text, b, e), acc))
+
+## exit statuses the documents state (skills/lume/SKILL.md: a checked-arithmetic overflow and an out-of-range `xs[i]`
+## trap with exit 3): each fixture is compiled and run for real
+fn cp_exit_run(root, name, text, want, acc) = let w = fs_write_sync(root + "/build/cp_exit_" + name, text) in let r = dg_run(root, Cons("run", Cons(root + "/build/cp_exit_" + name, Nil)), "parity-exit") in if w == 1 and r.status == want then acc else Cons("`lume run` of the fixture " + name + " exited with status " + str(r.status) + " where the documents say " + str(want), acc)
+
+fn cp_only(input) = cp_contains(input, "\n@only cli_parity")
+
+fn dg_dispatch(input) = let root = dg_root(input) in if root == "" then ctfail("native driver gate requires @root\n") else if cp_only(input) == 1 then (let p = cp_main(root) in if cp_len(p.bad, 0) != 0 then ctfail(p.report + "cli_parity_gate failed:\n" + cp_list_text(cp_rev(p.bad, Nil), "")) else p.report + "cli_parity_gate passed") else let problem = dg_main(root) in if problem != "" then ctfail("native driver gate failed: " + problem + "\n") else let p = cp_main(root) in if cp_len(p.bad, 0) != 0 then ctfail(p.report + "cli_parity_gate failed:\n" + cp_list_text(cp_rev(p.bad, Nil), "")) else "native driver version, help, describe, targets, build, transitive bundling, run, argv, exit-code, test discovery, test failure, intent cache proofs, tamper rejection, real economic benchmark, and rejection checks passed\n" + p.report + "cli_parity_gate passed"
 
 print dg_dispatch(readall())
