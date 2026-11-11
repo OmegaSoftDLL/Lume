@@ -2,29 +2,52 @@
 ##
 ## For every typed integer function of a module it
 ##   1. lists the decisions of the lowered AST the code generator receives (`nf_late(lumec_expand(src))`): the
-##      `requires` check, a runtime-checked `ensures`, every `if` condition, and every Boolean expression used as a value;
+##      `requires` check, a runtime-checked `ensures`, every `if` condition, and every Boolean expression used as a
+##      value, including those nested in the operands of a condition of another decision;
 ##   2. derives the obligations: each decision must evaluate to true and to false, and each atomic condition must be
 ##      shown to independently affect its decision with the value true and with the value false (masking MC/DC: the
 ##      condition was evaluated, and flipping it alone flips the outcome);
-##   3. searches input vectors built from the literals of the function, their neighbours and their negations, in three
-##      passes: (a) every parameter restricted to the candidates that satisfy the `requires` clauses about that
-##      parameter alone, exhaustively when the product is small and pseudo-randomly otherwise (this reaches the
-##      decisions of the body); (b) from a vector that satisfies `requires`, each parameter in turn swept over all
-##      candidates (this reaches "one clause of `requires` false, the others true"); (c) unrestricted pseudo-random
-##      vectors, twelve times the budget, while an obligation is still open, with a reference interpreter that records, per decision, the truth value of
-##      every condition, and keeps one witness vector per obligation;
+##   3. searches input vectors with a reference interpreter that records, per decision, the truth value of every
+##      condition, and keeps one witness vector per obligation. The candidates of passes (a)-(c) are the literals of
+##      the function not larger than 2^30 in magnitude, their neighbours and their negations:
+##      (a) every parameter restricted to the candidates that satisfy the `requires` clauses about that parameter
+##          alone, exhaustively when the product is small and pseudo-randomly otherwise (this reaches the decisions
+##          of the body);
+##      (b) from a vector that satisfies `requires`, each parameter in turn swept over all candidates (this reaches
+##          "one clause of `requires` false, the others true");
+##      (c) unrestricted pseudo-random vectors, twelve times the budget, while an obligation is still open;
+##      (d) while an obligation is still open, (a)-(c) again over EVERY literal whatever its magnitude, with the
+##          neighbours at distance 1 and 2 (a bound such as `sats <= 2100000000000000` or `days > 1000000000000`,
+##          and a chain such as `c <= 1000 and a > c`, are only reachable this way).
+##      The interpreter evaluates calls to typed integer functions, the directly recursive ones included, down to a
+##      call depth of 6; a vector that needs more, overflows or divides by zero is undefined and is discarded.
 ##   4. with @exec 1, runs every witness on the REAL binary (lumec + lasm, one process per vector, arguments through
 ##      argv so that no call is folded or refuted at compile time) and requires the value, or the contract trap, the
-##      interpreter predicted. A witness is a test case only if the machine agrees with it.
+##      interpreter predicted. A witness is a test case only if the machine agrees with it. What the machine confirms
+##      is the observable result of the vector (value or trap); which branch the object code took is not observed
+##      here (the correspondence between the lowered AST and the object code is the translation validator's job).
+## The witnesses come from this search only: the `test_*` functions of the module are not read.
 ## An obligation with no witness is reported as it is. Two kinds are classified, never silently dropped:
-##   theorem_false  the false outcome of a runtime-checked `ensures` (a contract violation of the function itself: it
-##                  cannot be reached by a correct body; the check is exercised by the false-theorem fuzzer instead);
-##   theorem_false  the same for the conclusion of a `law`: the function is a theorem the prover discharged;
+##   theorem_false  the false outcome of a CONCLUSION of a declared `law` (a decision in result position of the law's
+##                  body, e.g. `C` and `1 == 1` in `if H then C else 1 == 1`). lmcdc does not prove the law: the claim
+##                  "unreachable" is exactly the claim that the law holds, and rests on the prover's verdict for that
+##                  law (`lume prove`: lqualify requires every law and contract of a certified module to be proven,
+##                  none runtime-checked or refuted). Nothing else is in this class: not the hypothesis `H` of a law,
+##                  not a decision nested in a condition, not a function that is merely named `law_*`, and not the
+##                  false outcome of an `ensures` check the code generator kept (it kept it because the prover did
+##                  NOT discharge it; that outcome needs a witness, and counts as uncovered without one);
 ##   infeasible     the combination is contradictory and lcert's independent QF_LIA kernel proves it: for a
 ##                  conjunction, "condition i false while the others hold" is impossible when the other conditions
-##                  (and the function's `requires`) imply condition i; dually for a disjunction. Such a condition is
-##                  redundant or guards dead code, and is listed for review rather than counted as covered;
+##                  (and the function's `requires`, and the conditions of the `if` branches that enclose the
+##                  decision) imply condition i; dually for a disjunction. Such a condition is redundant or guards
+##                  dead code, and is listed with its proof term for review rather than counted as covered. The
+##                  clauses of `requires` are hypotheses only when the check has the generated shape at the root of
+##                  the body and no `let` of the body rebinds a parameter name; an enclosing condition is a
+##                  hypothesis only when it is a comparison of linear-form terms and no `let` in between rebinds
+##                  one of its variables;
 ##   uncovered      everything else: the search found no witness and no proof. It counts against the module.
+## Scope: typed int/bool functions whose body stays in the modelled forms and that do not call themselves. The report
+## gives `typed_integer_functions_in_source` next to `functions` (the analyzed ones); the difference is not measured.
 ##
 ## stdin:  @root <repo>   @src <file.src, self-contained>   [@fn <name>]   [@exec 1]   [@budget <vectors per function>]
 ## stdout: one JSON object; non-zero exit when a witness disagrees with the real machine.
@@ -127,28 +150,89 @@ fn mc_flip(vals, i) = match vals
 fn mc_det(c, vals, ran, i, out) = let v = mc_nth(vals, i) in if mc_nth(ran, i) != 1 or v == 2 then 0 else let f = (mc_bt(c, mc_flip(vals, i))).v in if f != 2 and f != out then 1 else 0
 
 ## --- static list of decisions {id, cls, c}; ids are AST paths, the same the tracing walk produces ---
-fn mc_decs(x, path, cls) = match x
-    Bin(op, l, r)   => if op == "and" or op == "or" or mc_iscmp(op) == 1 then Cons({id: path, cls: "value", c: x}, Nil) else app(mc_decs(l, path + "l", "value"), mc_decs(r, path + "r", "value"))
-    If(c, t, e2)    => Cons({id: path, cls: cls, c: c}, app(mc_decs(t, path + "t", "if"), mc_decs(e2, path + "e", "if")))
-    LetIn(nm, v, b) => app(mc_decs(v, path + "v", if nm == "_vreq_ok" then "requires" else if nm == "_vens_ok" then "ensures" else "if"), mc_decs(b, path + "b", "if"))
-    Call(nm, args)  => mc_decs_args(args, path, 0)
-    _               => Nil
-fn mc_decs_args(args, path, i) = match args
+## A decision is a contract check only when it has the shape the code generator emits, `if <cond> then 1 else
+## ctfail(..)`, bound to `_vreq_ok` at the root of the body (it then dominates every other decision, so its clauses
+## may serve as hypotheses) or to `_vens_ok`. A user binding that merely reuses one of the names is an ordinary `if`.
+fn mc_is_chk(v) = match v
+    If(c, t, e2) => mc_is_chk2(e2)
+    _            => 0
+fn mc_is_chk2(e2) = match e2
+    Call(nm, args) => if nm == "ctfail" then 1 else 0
+    _              => 0
+## A decision may sit inside a condition of another one, as in `(if a > 0 then 1 else 0) + (if b > 0 then 1 else 0)
+## >= 2`: the operands of every condition are searched too (ids `<decision>c<condition index>l|r|x`), and the tracing
+## walk records such a nested decision whenever the short-circuit evaluation really ran the condition that holds it.
+fn mc_hasdec(x) = match x
+    Bin(op, l, r)   => if op == "and" or op == "or" or mc_iscmp(op) == 1 then 1 else if mc_hasdec(l) == 1 then 1 else mc_hasdec(r)
+    If(c, t, e2)    => 1
+    LetIn(nm, v, b) => if mc_hasdec(v) == 1 then 1 else mc_hasdec(b)
+    Call(nm, args)  => mc_hasdec_l(args)
+    _               => 0
+fn mc_hasdec_l(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if mc_hasdec(h) == 1 then 1 else mc_hasdec_l(t)
+fn mc_decs_atoms(ats, path, i, ph) = match ats
     Nil        => Nil
-    Cons(h, t) => app(mc_decs(h, path + "a" + str(i), "value"), mc_decs_args(t, path, i + 1))
+    Cons(a, t) => app(mc_decs_atom(a, path + "c" + str(i), ph), mc_decs_atoms(t, path, i + 1, ph))
+fn mc_decs_atom(a, p, ph) = match a
+    Bin(op, l, r) => if mc_iscmp(op) == 1 then app(mc_decs(l, p + "l", "if", ph), mc_decs(r, p + "r", "if", ph)) else mc_decs(a, p + "x", "if", ph)
+    _             => mc_decs(a, p + "x", "if", ph)
+## Path hypotheses `ph`: what is known to hold whenever a decision is evaluated, because of the `if` branches that
+## enclose it. The then-branch of a pure conjunction of comparisons adds each of them; the else-branch of a single
+## comparison, or of a pure disjunction of comparisons, adds each negation. Only comparisons of linear-form terms
+## (literals, variables, + - *) are kept, a hypothesis is DROPPED (never invented) when in doubt, and a `let` that
+## binds a name drops every hypothesis that mentions it for its body. Each is {vs: variables, sx: kernel term}.
+fn mc_plain(x) = match x
+    Num(n)        => 1
+    Var(nm)       => 1
+    Bin(op, l, r) => if op == "+" or op == "-" or op == "*" then (if mc_plain(l) == 1 then mc_plain(r) else 0) else 0
+    _             => 0
+fn mc_plain_cmp(a) = match a
+    Bin(op, l, r) => if mc_iscmp(op) == 1 and mc_plain(l) == 1 then mc_plain(r) else 0
+    _             => 0
+fn mc_ph_atoms(ats, pol, ph) = match ats
+    Nil        => ph
+    Cons(a, t) => mc_ph_atoms(t, pol, if mc_plain_cmp(a) == 1 then Cons({vs: mc_vars(a, Nil), sx: " " + (if pol == 1 then mc_sx(a) else mc_sx_neg(a))}, ph) else ph)
+fn mc_ph_then(c, ph) = if mc_allop(c, "and") == 1 then mc_ph_atoms(mc_atoms(c), 1, ph) else ph
+fn mc_ph_else(c, ph) = if mc_allop(c, "or") == 1 then mc_ph_atoms(mc_atoms(c), 0, ph) else ph
+fn mc_ph_drop(ph, nm) = match ph
+    Nil        => Nil
+    Cons(h, t) => if mc_has(h.vs, nm) == 1 then mc_ph_drop(t, nm) else Cons(h, mc_ph_drop(t, nm))
+fn mc_ph_sx(ph) = match ph
+    Nil        => ""
+    Cons(h, t) => h.sx + mc_ph_sx(t)
+fn mc_decs(x, path, cls, ph) = match x
+    Bin(op, l, r)   => if op == "and" or op == "or" or mc_iscmp(op) == 1 then Cons({id: path, cls: "value", c: x, ph: ph}, mc_decs_atoms(mc_atoms(x), path, 0, ph)) else app(mc_decs(l, path + "l", "value", ph), mc_decs(r, path + "r", "value", ph))
+    If(c, t, e2)    => Cons({id: path, cls: cls, c: c, ph: ph}, app(mc_decs_atoms(mc_atoms(c), path, 0, ph), app(mc_decs(t, path + "t", "if", mc_ph_then(c, ph)), mc_decs(e2, path + "e", "if", mc_ph_else(c, ph)))))
+    LetIn(nm, v, b) => app(mc_decs(v, path + "v", if nm == "_vreq_ok" and path == "" and mc_is_chk(v) == 1 then "requires" else if nm == "_vens_ok" and mc_is_chk(v) == 1 then "ensures" else "if", ph), mc_decs(b, path + "b", "if", mc_ph_drop(ph, nm)))
+    Call(nm, args)  => mc_decs_args(args, path, 0, ph)
+    _               => Nil
+fn mc_decs_args(args, path, i, ph) = match args
+    Nil        => Nil
+    Cons(h, t) => app(mc_decs(h, path + "a" + str(i), "value", ph), mc_decs_args(t, path, i + 1, ph))
 
 ## --- tracing walk along one concrete evaluation: {st, v, recs: [{id, vals, ran, out}]} ---
 fn mc_w(st, v, recs) = {st: st, v: v, recs: recs}
 fn mc_rec(id, c, env, fs, fuel) = let vals = mc_atom_vals(mc_atoms(c), env, fs, fuel) in {id: id, c: c, vals: vals, ran: (mc_ran(c, vals, 1)).fl, out: (mc_bt(c, vals)).v}
 fn mc_walk(x, path, env, fs, fuel) = match x
-    Bin(op, l, r)   => if op == "and" or op == "or" or mc_iscmp(op) == 1 then mc_walk_dec(mc_rec(path, x, env, fs, fuel)) else mc_walk_bin(op, mc_walk(l, path + "l", env, fs, fuel), mc_walk(r, path + "r", env, fs, fuel))
+    Bin(op, l, r)   => if op == "and" or op == "or" or mc_iscmp(op) == 1 then mc_walk_dec(mc_rec(path, x, env, fs, fuel), path, env, fs, fuel) else mc_walk_bin(op, mc_walk(l, path + "l", env, fs, fuel), mc_walk(r, path + "r", env, fs, fuel))
     If(c, t, e2)    => mc_walk_if(mc_rec(path, c, env, fs, fuel), t, e2, path, env, fs, fuel)
     LetIn(nm, v, b) => mc_walk_let(nm, mc_walk(v, path + "v", env, fs, fuel), b, path, env, fs, fuel)
     Call(nm, args)  => if nm == "ctfail" then mc_w(0, 0, Nil) else mc_walk_call(mc_fn_get(fs, nm), mc_walk_args(args, path, 0, env, fs, fuel), fs, fuel)
     _               => let r = mc_val(x, env, fs, fuel) in mc_w(r.st, r.v, Nil)
-fn mc_walk_dec(rec) = if rec.out == 2 then mc_w(2, 0, Nil) else mc_w(1, rec.out, Cons(rec, Nil))
+## the records of the decisions nested in the conditions the evaluation ran
+fn mc_nest(ats, ran, p, i, env, fs, fuel) = match ats
+    Nil        => Nil
+    Cons(a, t) => app(if mc_nth(ran, i) == 1 and mc_hasdec_atom(a) == 1 then mc_nest_atom(a, p + "c" + str(i), env, fs, fuel) else Nil, mc_nest(t, ran, p, i + 1, env, fs, fuel))
+fn mc_hasdec_atom(a) = match a
+    Bin(op, l, r) => if mc_iscmp(op) == 1 then (if mc_hasdec(l) == 1 then 1 else mc_hasdec(r)) else mc_hasdec(a)
+    _             => mc_hasdec(a)
+fn mc_nest_atom(a, p, env, fs, fuel) = match a
+    Bin(op, l, r) => if mc_iscmp(op) == 1 then app((mc_walk(l, p + "l", env, fs, fuel)).recs, (mc_walk(r, p + "r", env, fs, fuel)).recs) else (mc_walk(a, p + "x", env, fs, fuel)).recs
+    _             => (mc_walk(a, p + "x", env, fs, fuel)).recs
+fn mc_walk_dec(rec, path, env, fs, fuel) = if rec.out == 2 then mc_w(2, 0, Nil) else mc_w(1, rec.out, Cons(rec, mc_nest(mc_atoms(rec.c), rec.ran, path, 0, env, fs, fuel)))
 fn mc_walk_bin(op, a, b) = if a.st != 1 then a else if b.st != 1 then mc_w(b.st, 0, app(a.recs, b.recs)) else let r = mc_arith(op, a.v, b.v) in mc_w(r.st, r.v, app(a.recs, b.recs))
-fn mc_walk_if(rec, t, e2, path, env, fs, fuel) = if rec.out == 2 then mc_w(2, 0, Nil) else let r = if rec.out == 1 then mc_walk(t, path + "t", env, fs, fuel) else mc_walk(e2, path + "e", env, fs, fuel) in mc_w(r.st, r.v, Cons(rec, r.recs))
+fn mc_walk_if(rec, t, e2, path, env, fs, fuel) = if rec.out == 2 then mc_w(2, 0, Nil) else let r = if rec.out == 1 then mc_walk(t, path + "t", env, fs, fuel) else mc_walk(e2, path + "e", env, fs, fuel) in mc_w(r.st, r.v, Cons(rec, app(mc_nest(mc_atoms(rec.c), rec.ran, path, 0, env, fs, fuel), r.recs)))
 fn mc_walk_let(nm, a, b, path, env, fs, fuel) = if a.st != 1 then a else let r = mc_walk(b, path + "b", Cons({n: nm, v: a.v}, env), fs, fuel) in mc_w(r.st, r.v, app(a.recs, r.recs))
 fn mc_walk_args(args, path, i, env, fs, fuel) = match args
     Nil        => {st: 1, vs: Nil, recs: Nil}
@@ -226,6 +310,12 @@ fn mc_clhead(cl) = match cl
 fn mc_cltail(cl) = match cl
     Nil        => Nil
     Cons(h, t) => t
+## pass (d): every literal of the body whatever its magnitude, with the neighbours at distance 1 and 2
+fn mc_candx_add(acc, v) = if mc_has(acc, v) == 1 then acc else Cons(v, acc)
+fn mc_candx5(acc, h) = if h > 4000000000000000000 or h < 0 - 4000000000000000000 then acc else mc_candx_add(mc_candx_add(mc_candx_add(mc_candx_add(mc_candx_add(acc, h), h - 1), h + 1), h - 2), h + 2)
+fn mc_cands_x(cs, acc) = match cs
+    Nil        => acc
+    Cons(h, t) => mc_cands_x(t, mc_candx5(mc_candx5(acc, h), 0 - h))
 ## the k-th vector of the exhaustive enumeration (mixed radix), or a pseudo-random one
 fn mc_vec_enum(ps, tys, cl, k) = match ps
     Nil        => Nil
@@ -241,7 +331,7 @@ fn mc_args(env) = match env
     Cons(h, t) => Cons(h.v, mc_args(t))
 ## st = {cov: covered keys, wit: [{args, st, v}], k, s}
 fn mc_try(f, fs, env, st, s) = let r = mc_walk(f.body, "", env, fs, 6) in if r.st == 2 then {cov: st.cov, wit: st.wit, k: st.k + 1, s: s} else let cov2 = mc_cov_recs(r.recs, st.cov) in {cov: cov2, wit: if len(cov2) > len(st.cov) then Cons({args: mc_args(env), st: r.st, v: r.v}, st.wit) else st.wit, k: st.k + 1, s: s}
-fn mc_search(f, fs, cl, total, exhaustive, need, st) = if st.k >= total or len(st.cov) >= need then st else let vr = if exhaustive == 1 then {env: mc_vec_enum(f.ps, f.tys, cl, st.k), s: st.s} else mc_vec_rand(f.ps, f.tys, cl, st.s) in mc_search(f, fs, cl, total, exhaustive, need, mc_try(f, fs, vr.env, st, vr.s))
+fn mc_search(f, fs, cl, total, exhaustive, need, off, st) = if st.k >= total or len(st.cov) >= need then st else let vr = if exhaustive == 1 then {env: mc_vec_enum(f.ps, f.tys, cl, st.k - off), s: st.s} else mc_vec_rand(f.ps, f.tys, cl, st.s) in mc_search(f, fs, cl, total, exhaustive, need, off, mc_try(f, fs, vr.env, st, vr.s))
 ## pass (b): from a vector that satisfies `requires`, sweep one parameter at a time over all candidates
 fn mc_base(wit) = match wit
     Nil        => {ok: 0, args: Nil}
@@ -272,9 +362,43 @@ fn mc_dec_text(ds, id) = match ds
 fn mc_key_id(k) = slice(k, 0, mc_index(k, "|", 0))
 fn mc_key_val(k) = slice(k, count(k) - 1, count(k))
 ## --- classification of an obligation without a witness ---
-fn mc_starts(s, pre) = if count(s) >= count(pre) and slice(s, 0, count(pre)) == pre then 1 else 0
-## the false outcome of a runtime-checked `ensures`, or of a law's conclusion, is unreachable by a correct body
-fn mc_is_thm_false(fnm, ds, k, cov) = if mc_dec_cls(ds, mc_key_id(k)) != "ensures" and mc_starts(fnm, "law_") == 0 then 0 else if mc_has(cov, mc_key_id(k) + "|o|0") == 1 then 0 else if mc_key_val(k) == "0" then 1 else 0
+## The false outcome of the conclusion of a declared `law` is a violation of the law. `concl` lists the conclusion
+## decisions of a law (Nil for any other function): the decisions in result position. A hypothesis (`if H then C else
+## 1 == 1`: the decision H) or a decision nested in a condition is NOT a conclusion: its false outcome is ordinary
+## control flow and needs a witness or a kernel proof. So does the false outcome of a kept `ensures` check: the code
+## generator drops an `ensures` its prover discharged, so one that is still in the lowered AST is unproven.
+fn mc_concl(x, path) = match x
+    Bin(op, l, r)   => if op == "and" or op == "or" or mc_iscmp(op) == 1 then Cons(path, if mc_allop(x, "and") == 1 then mc_concl_atoms(mc_atoms(x), path, 0) else Nil) else Nil
+    If(c, t, e2)    => app(mc_concl(t, path + "t"), mc_concl(e2, path + "e"))
+    LetIn(nm, v, b) => mc_concl(b, path + "b")
+    _               => Nil
+## In a conclusion that is a pure conjunction, a condition that is itself an `if` (or a `let`) is false exactly when
+## the decision in its result position is false, and then the whole conclusion is false: those decisions are
+## conclusions too (`A and (if p then B else C)`: B and C). The operands of a comparison are values, not conclusions.
+fn mc_concl_atoms(ats, path, i) = match ats
+    Nil        => Nil
+    Cons(a, t) => app(mc_concl_atom(a, path + "c" + str(i) + "x"), mc_concl_atoms(t, path, i + 1))
+fn mc_concl_atom(a, p) = match a
+    Bin(op, l, r) => Nil
+    _             => mc_concl(a, p)
+fn mc_laws(prog) = match prog
+    Nil        => Nil
+    Cons(h, t) => mc_laws2(h, t)
+fn mc_laws2(h, t) = match h
+    VLawDecl(nm, ps, b) => Cons("law_" + nm, mc_laws(t))
+    _                   => mc_laws(t)
+fn mc_is_thm_false(concl, ds, k, cov) = if mc_has(concl, mc_key_id(k)) == 0 then 0 else if mc_has(cov, mc_key_id(k) + "|o|0") == 1 then 0 else if mc_key_val(k) == "0" then 1 else 0
+## a `let` of the body rebinds a parameter name: the clauses of `requires` then speak about another variable than
+## the atoms of a later decision, and may not be used as hypotheses about them
+fn mc_rebinds(x, ps) = match x
+    Bin(op, l, r)   => if mc_rebinds(l, ps) == 1 then 1 else mc_rebinds(r, ps)
+    If(c, t, e2)    => if mc_rebinds(c, ps) == 1 then 1 else if mc_rebinds(t, ps) == 1 then 1 else mc_rebinds(e2, ps)
+    LetIn(nm, v, b) => if mc_has(ps, nm) == 1 then 1 else if mc_rebinds(v, ps) == 1 then 1 else mc_rebinds(b, ps)
+    Call(nm, args)  => mc_rebinds_l(args, ps)
+    _               => 0
+fn mc_rebinds_l(xs, ps) = match xs
+    Nil        => 0
+    Cons(h, t) => if mc_rebinds(h, ps) == 1 then 1 else mc_rebinds_l(t, ps)
 fn mc_sx_n(n) = if n < 0 then "(- 0 " + str(0 - n) + ")" else str(n)
 fn mc_sx(x) = match x
     Num(n)          => mc_sx_n(n)
@@ -298,7 +422,7 @@ fn mc_req_hyps(ds) = match ds
     Nil        => ""
     Cons(d, t) => if d.cls == "requires" and mc_allop(d.c, "and") == 1 then mc_others(mc_atoms(d.c), 0 - 1, 0, 1) else mc_req_hyps(t)
 fn mc_dec_get(ds, id) = match ds
-    Nil        => {id: "", cls: "", c: Num(0)}
+    Nil        => {id: "", cls: "", c: Num(0), ph: Nil}
     Cons(d, t) => if d.id == id then d else mc_dec_get(t, id)
 fn mc_key_idx(k) = let a = mc_index(k, "|", 0) in let b = mc_index(k, "|", a + 1) in slice(k, a + 1, b)
 fn mc_elem(xs, i) = match xs
@@ -309,21 +433,23 @@ fn mc_elem(xs, i) = match xs
 ##   "condition i false and determining" is impossible when the others imply condition i (it is redundant), and
 ##   "condition i true and determining" (equally: the decision true) is impossible when the others refute it.
 ## A disjunction is the dual, with the other conditions false.
-fn mc_inf_term(ds, k) = let d = mc_dec_get(ds, mc_key_id(k)) in let ats = mc_atoms(d.c) in let ix = mc_key_idx(k) in let v = mc_key_val(k) in let isand = mc_allop(d.c, "and") in let isor = mc_allop(d.c, "or") in let i = if ix != "o" then toint(ix) else if len(ats) == 1 or (isand == 1 and v == "1") or (isor == 1 and v == "0") then len(ats) - 1 else 0 - 1 in let rq = if d.cls == "requires" then "" else mc_req_hyps(ds) in if i < 0 then "" else if isand == 1 and (ix != "o" or len(ats) == 1 or v == "1") then "(implies (and (>= 0 0)" + rq + mc_others(ats, i, 0, 1) + ") " + (if v == "0" then mc_sx(mc_elem(ats, i)) else mc_sx_neg(mc_elem(ats, i))) + ")" else if isor == 1 then "(implies (and (>= 0 0)" + rq + mc_others(ats, i, 0, 0) + ") " + (if v == "1" then mc_sx_neg(mc_elem(ats, i)) else mc_sx(mc_elem(ats, i))) + ")" else ""
-fn mc_infeasible(ds, k) = let t = mc_inf_term(ds, k) in if t == "" then 0 else lk_prove_term(t)
-fn mc_tally(fnm, obls, ds, cov, acc) = match obls
+fn mc_inf_term(ds, k, noreq) = let d = mc_dec_get(ds, mc_key_id(k)) in let ats = mc_atoms(d.c) in let ix = mc_key_idx(k) in let v = mc_key_val(k) in let isand = mc_allop(d.c, "and") in let isor = mc_allop(d.c, "or") in let i = if ix != "o" then toint(ix) else if len(ats) == 1 or (isand == 1 and v == "1") or (isor == 1 and v == "0") then len(ats) - 1 else 0 - 1 in let rq = (if d.cls == "requires" or noreq == 1 then "" else mc_req_hyps(ds)) + mc_ph_sx(d.ph) in if i < 0 then "" else if isand == 1 and (ix != "o" or len(ats) == 1 or v == "1") then "(implies (and (>= 0 0)" + rq + mc_others(ats, i, 0, 1) + ") " + (if v == "0" then mc_sx(mc_elem(ats, i)) else mc_sx_neg(mc_elem(ats, i))) + ")" else if isor == 1 then "(implies (and (>= 0 0)" + rq + mc_others(ats, i, 0, 0) + ") " + (if v == "1" then mc_sx_neg(mc_elem(ats, i)) else mc_sx(mc_elem(ats, i))) + ")" else ""
+fn mc_infeasible(ds, k, noreq) = let t = mc_inf_term(ds, k, noreq) in if t == "" then 0 else lk_prove_term(t)
+fn mc_tally(cx, obls, ds, cov, acc) = match obls
     Nil        => acc
-    Cons(k, t) => if mc_has(cov, k) == 1 then mc_tally(fnm, t, ds, cov, {cv: acc.cv + 1, ens: acc.ens, inf: acc.inf, un: acc.un, list: acc.list, ilist: acc.ilist}) else if mc_is_thm_false(fnm, ds, k, cov) == 1 then mc_tally(fnm, t, ds, cov, {cv: acc.cv, ens: acc.ens + 1, inf: acc.inf, un: acc.un, list: acc.list, ilist: acc.ilist}) else if mc_infeasible(ds, k) == 1 then mc_tally(fnm, t, ds, cov, {cv: acc.cv, ens: acc.ens, inf: acc.inf + 1, un: acc.un, list: acc.list, ilist: Cons(k, acc.ilist)}) else mc_tally(fnm, t, ds, cov, {cv: acc.cv, ens: acc.ens, inf: acc.inf, un: acc.un + 1, list: Cons(k, acc.list), ilist: acc.ilist})
+    Cons(k, t) => if mc_has(cov, k) == 1 then mc_tally(cx, t, ds, cov, {cv: acc.cv + 1, ens: acc.ens, inf: acc.inf, un: acc.un, list: acc.list, ilist: acc.ilist}) else if mc_is_thm_false(cx.concl, ds, k, cov) == 1 then mc_tally(cx, t, ds, cov, {cv: acc.cv, ens: acc.ens + 1, inf: acc.inf, un: acc.un, list: acc.list, ilist: acc.ilist}) else if mc_infeasible(ds, k, cx.noreq) == 1 then mc_tally(cx, t, ds, cov, {cv: acc.cv, ens: acc.ens, inf: acc.inf + 1, un: acc.un, list: acc.list, ilist: Cons(k, acc.ilist)}) else mc_tally(cx, t, ds, cov, {cv: acc.cv, ens: acc.ens, inf: acc.inf, un: acc.un + 1, list: Cons(k, acc.list), ilist: acc.ilist})
 fn mc_conds(ds) = match ds
     Nil        => 0
     Cons(d, t) => len(mc_atoms(d.c)) + mc_conds(t)
-fn mc_unc_json(f, ds, ks, withproof) = match ks
+fn mc_unc_json(f, ds, ks, withproof, noreq) = match ks
     Nil        => ""
-    Cons(k, t) => "{\"function\":\"" + f + "\",\"obligation\":\"" + k + "\",\"class\":\"" + mc_dec_cls(ds, mc_key_id(k)) + "\",\"decision\":\"" + mc_jesc(mc_dec_text(ds, mc_key_id(k))) + "\"" + (if withproof == 1 then ",\"kernel_proof_term\":\"" + mc_jesc(mc_inf_term(ds, k)) + "\"" else "") + "}" + (if isnil(t) == 1 then "" else ",") + mc_unc_json(f, ds, t, withproof)
-fn mc_one(f, fs, budget) = let ds = mc_decs(f.body, "", "if") in let obls = mc_obls(ds) in let cands = mc_cands(mc_consts(f.body, Cons(0, Cons(1, Cons(2, Cons(7, Nil))))), Nil) in let cl = mc_cl(f.ps, cands, mc_req_atoms(ds), fs, 1) in let space = mc_space(f.tys, cl, budget) in let sta = mc_search(f, fs, cl, if space <= budget then space else budget, if space <= budget then 1 else 0, len(obls), {cov: Nil, wit: Nil, k: 0, s: 20261110 + count(f.nm)}) in let base = mc_base(sta.wit) in let st1 = if base.ok == 1 and len(sta.cov) < len(obls) then mc_sweep(f, fs, base.args, f.tys, 0, cands, sta) else sta in let ty1 = mc_tally(f.nm, obls, ds, st1.cov, {cv: 0, ens: 0, inf: 0, un: 0, list: Nil, ilist: Nil}) in let st = if ty1.un > 0 then mc_search(f, fs, mc_fill(f.ps, cands), st1.k + budget * 12, 0, len(obls), st1) else st1 in let ty = if st.k > st1.k then mc_tally(f.nm, obls, ds, st.cov, {cv: 0, ens: 0, inf: 0, un: 0, list: Nil, ilist: Nil}) else ty1 in {nm: f.nm, decisions: len(ds), conds: mc_conds(ds), obls: len(obls), cv: ty.cv, ens: ty.ens, inf: ty.inf, un: ty.un, unc: mc_unc_json(f.nm, ds, ty.list, 0), infl: mc_unc_json(f.nm, ds, ty.ilist, 1), wit: st.wit, tried: st.k, f: f}
-fn mc_all(sel, fs, budget) = match sel
+    Cons(k, t) => "{\"function\":\"" + f + "\",\"obligation\":\"" + k + "\",\"class\":\"" + mc_dec_cls(ds, mc_key_id(k)) + "\",\"decision\":\"" + mc_jesc(mc_dec_text(ds, mc_key_id(k))) + "\"" + (if withproof == 1 then ",\"kernel_proof_term\":\"" + mc_jesc(mc_inf_term(ds, k, noreq)) + "\"" else "") + "}" + (if isnil(t) == 1 then "" else ",") + mc_unc_json(f, ds, t, withproof, noreq)
+fn mc_ty0() = {cv: 0, ens: 0, inf: 0, un: 0, list: Nil, ilist: Nil}
+fn mc_ext(f, fs, ds, obls, cx, budget, st0) = let cl = mc_cl(f.ps, cx, mc_req_atoms(ds), fs, 1) in let space = mc_space(f.tys, cl, budget) in let sta = mc_search(f, fs, cl, st0.k + (if space <= budget then space else budget), if space <= budget then 1 else 0, len(obls), st0.k, st0) in let base = mc_base(sta.wit) in let stb = if base.ok == 1 and len(sta.cov) < len(obls) then mc_sweep(f, fs, base.args, f.tys, 0, cx, sta) else sta in mc_search(f, fs, mc_fill(f.ps, cx), stb.k + budget * 12, 0, len(obls), 0, stb)
+fn mc_one(f, fs, budget, laws) = let ds = mc_decs(f.body, "", "if", Nil) in let obls = mc_obls(ds) in let cx = {concl: if mc_has(laws, f.nm) == 1 then mc_concl(f.body, "") else Nil, noreq: mc_rebinds(f.body, f.ps)} in let consts = mc_consts(f.body, Cons(0, Cons(1, Cons(2, Cons(7, Nil))))) in let cands = mc_cands(consts, Nil) in let cl = mc_cl(f.ps, cands, mc_req_atoms(ds), fs, 1) in let space = mc_space(f.tys, cl, budget) in let sta = mc_search(f, fs, cl, if space <= budget then space else budget, if space <= budget then 1 else 0, len(obls), 0, {cov: Nil, wit: Nil, k: 0, s: 20261110 + count(f.nm)}) in let base = mc_base(sta.wit) in let st1 = if base.ok == 1 and len(sta.cov) < len(obls) then mc_sweep(f, fs, base.args, f.tys, 0, cands, sta) else sta in let ty1 = mc_tally(cx, obls, ds, st1.cov, mc_ty0()) in let st2 = if ty1.un > 0 then mc_search(f, fs, mc_fill(f.ps, cands), st1.k + budget * 12, 0, len(obls), 0, st1) else st1 in let ty2 = if st2.k > st1.k then mc_tally(cx, obls, ds, st2.cov, mc_ty0()) else ty1 in let st = if ty2.un > 0 then mc_ext(f, fs, ds, obls, mc_cands_x(consts, Nil), budget, st2) else st2 in let ty = if st.k > st2.k then mc_tally(cx, obls, ds, st.cov, mc_ty0()) else ty2 in {nm: f.nm, decisions: len(ds), conds: mc_conds(ds), obls: len(obls), cv: ty.cv, ens: ty.ens, inf: ty.inf, un: ty.un, unc: mc_unc_json(f.nm, ds, ty.list, 0, cx.noreq), infl: mc_unc_json(f.nm, ds, ty.ilist, 1, cx.noreq), wit: st.wit, tried: st.k, f: f}
+fn mc_all(sel, fs, budget, laws) = match sel
     Nil        => Nil
-    Cons(f, t) => Cons(mc_one(f, fs, budget), mc_all(t, fs, budget))
+    Cons(f, t) => Cons(mc_one(f, fs, budget, laws), mc_all(t, fs, budget, laws))
 
 ## --- the program: typed integer functions whose bodies stay inside the fragment ---
 fn mc_tyint(ty) = match ty
@@ -341,6 +467,9 @@ fn mc_sigs(prog) = match prog
 fn mc_sigs2(h, t) = match h
     Sig(nm, ps, tys, rt) => let ts = mc_tys(tys) in Cons({nm: nm, ok: if len(ps) == len(tys) and ts.ok == 1 and mc_tyint(rt) == 1 then 1 else 0, tys: ts.ns, rt: mc_tynm(rt)}, mc_sigs(t))
     _                    => mc_sigs(t)
+fn mc_sig_okn(sigs) = match sigs
+    Nil        => 0
+    Cons(h, t) => h.ok + mc_sig_okn(t)
 fn mc_sig_get(sigs, nm) = match sigs
     Nil        => {nm: "", ok: 0, tys: Nil, rt: "int"}
     Cons(h, t) => if h.nm == nm then h else mc_sig_get(t, nm)
@@ -356,12 +485,15 @@ fn mc_infrag(x, self, sigs) = match x
 fn mc_infrag_l(xs, self, sigs) = match xs
     Nil        => 1
     Cons(h, t) => if mc_infrag(h, self, sigs) == 1 then mc_infrag_l(t, self, sigs) else 0
-fn mc_fns(prog, sigs) = match prog
+## strict 1: the functions that are analyzed (no call to itself). strict 0: the functions the reference interpreter
+## may CALL, which adds the directly recursive ones; the fuel bounds their depth, and a vector that exhausts it is
+## undefined and discarded, exactly like an overflow.
+fn mc_fns(prog, sigs, strict) = match prog
     Nil        => Nil
-    Cons(h, t) => mc_fns2(h, t, sigs)
-fn mc_fns2(h, t, sigs) = match h
-    Fn(nm, ps, body) => let sg = mc_sig_get(sigs, nm) in if sg.ok == 1 and mc_infrag(body, nm, sigs) == 1 then Cons({ok: 1, nm: nm, ps: ps, tys: sg.tys, rt: sg.rt, body: body}, mc_fns(t, sigs)) else mc_fns(t, sigs)
-    _                => mc_fns(t, sigs)
+    Cons(h, t) => mc_fns2(h, t, sigs, strict)
+fn mc_fns2(h, t, sigs, strict) = match h
+    Fn(nm, ps, body) => let sg = mc_sig_get(sigs, nm) in if sg.ok == 1 and mc_infrag(body, if strict == 1 then nm else "", sigs) == 1 then Cons({ok: 1, nm: nm, ps: ps, tys: sg.tys, rt: sg.rt, body: body}, mc_fns(t, sigs, strict)) else mc_fns(t, sigs, strict)
+    _                => mc_fns(t, sigs, strict)
 fn mc_pick(fs, only) = match fs
     Nil        => Nil
     Cons(f, t) => if only == "" or f.nm == only then Cons(f, mc_pick(t, only)) else mc_pick(t, only)
@@ -408,7 +540,7 @@ fn mc_inf_all(rs) = match rs
 fn mc_fn_json(rs) = match rs
     Nil        => ""
     Cons(r, t) => "{\"name\":\"" + r.nm + "\",\"decisions\":" + str(r.decisions) + ",\"conditions\":" + str(r.conds) + ",\"obligations\":" + str(r.obls) + ",\"covered\":" + str(r.cv) + ",\"theorem_false\":" + str(r.ens) + ",\"infeasible_proved\":" + str(r.inf) + ",\"uncovered\":" + str(r.un) + ",\"witness_vectors\":" + str(len(r.wit)) + ",\"vectors_tried\":" + str(r.tried) + "}" + (if isnil(t) == 1 then "" else ",") + mc_fn_json(t)
-fn mc_main(input) = let root = mc_get(input, "root") in let srcp = mc_get(input, "src") in if root == "" or srcp == "" then ctfail("lmcdc: usage: @root <repo> and @src <file.src> are required on stdin\n") else if fs_path_exists(srcp) == 0 then ctfail("lmcdc: cannot read " + srcp + "\n") else let src = fs_read_file(srcp) in let prog = nf_late(lumec_expand(src)) in let sigs = mc_sigs(prog) in let fs = mc_fns(prog, sigs) in let rs = mc_all(mc_pick(fs, mc_get(input, "fn")), fs, toint(mc_or(mc_get(input, "budget"), "6000"))) in let s = mc_sum(rs, {fns: 0, decisions: 0, conds: 0, obls: 0, cv: 0, ens: 0, inf: 0, un: 0, wit: 0, full: 0}) in let ex = if mc_get(input, "exec") == "1" then mc_exec(root, src, rs, "/tmp/lume-mcdc." + str(os_getpid())) else {n: 0, traps: 0, bad: ""} in mc_finish("{\"ok\":" + (if ex.bad == "" then "true" else "false") + ",\"tool\":\"lmcdc\",\"criterion\":\"decision coverage + masking MC/DC over the lowered AST (requires, runtime-checked ensures, if conditions, Boolean values)\",\"source\":\"" + mc_jesc(srcp) + "\",\"functions\":" + str(s.fns) + ",\"functions_fully_covered\":" + str(s.full) + ",\"decisions\":" + str(s.decisions) + ",\"conditions\":" + str(s.conds) + ",\"obligations\":" + str(s.obls) + ",\"covered\":" + str(s.cv) + ",\"theorem_false_unreachable\":" + str(s.ens) + ",\"infeasible_proved_by_kernel\":" + str(s.inf) + ",\"uncovered\":" + str(s.un) + ",\"witness_vectors\":" + str(s.wit) + ",\"native_witnesses_agreeing\":" + str(ex.n) + ",\"native_contract_traps_confirmed\":" + str(ex.traps) + ",\"error\":\"" + mc_jesc(ex.bad) + "\",\"uncovered_list\":[" + mc_unc_all(rs) + "],\"infeasible_list\":[" + mc_inf_all(rs) + "],\"per_function\":[" + mc_fn_json(rs) + "]}", if ex.bad == "" then 0 else 1)
+fn mc_main(input) = let root = mc_get(input, "root") in let srcp = mc_get(input, "src") in if root == "" or srcp == "" then ctfail("lmcdc: usage: @root <repo> and @src <file.src> are required on stdin\n") else if fs_path_exists(srcp) == 0 then ctfail("lmcdc: cannot read " + srcp + "\n") else let src = fs_read_file(srcp) in let prog = nf_late(lumec_expand(src)) in let sigs = mc_sigs(prog) in let fs = mc_fns(prog, sigs, 1) in let rs = mc_all(mc_pick(fs, mc_get(input, "fn")), mc_fns(prog, sigs, 0), toint(mc_or(mc_get(input, "budget"), "6000")), mc_laws(parseprogram(src))) in let s = mc_sum(rs, {fns: 0, decisions: 0, conds: 0, obls: 0, cv: 0, ens: 0, inf: 0, un: 0, wit: 0, full: 0}) in let ex = if mc_get(input, "exec") == "1" then mc_exec(root, src, rs, "/tmp/lume-mcdc." + str(os_getpid())) else {n: 0, traps: 0, bad: ""} in mc_finish("{\"ok\":" + (if ex.bad == "" then "true" else "false") + ",\"tool\":\"lmcdc\",\"criterion\":\"decision coverage + masking MC/DC over the lowered AST (requires, runtime-checked ensures, if conditions, Boolean values)\",\"theorem_false_basis\":\"false outcome of the conclusion of a declared law; not proven by lmcdc, it rests on the proof status of that law\",\"source\":\"" + mc_jesc(srcp) + "\",\"typed_integer_functions_in_source\":" + str(mc_sig_okn(sigs)) + ",\"functions\":" + str(s.fns) + ",\"functions_fully_covered\":" + str(s.full) + ",\"decisions\":" + str(s.decisions) + ",\"conditions\":" + str(s.conds) + ",\"obligations\":" + str(s.obls) + ",\"covered\":" + str(s.cv) + ",\"theorem_false_unreachable\":" + str(s.ens) + ",\"infeasible_proved_by_kernel\":" + str(s.inf) + ",\"uncovered\":" + str(s.un) + ",\"witness_vectors\":" + str(s.wit) + ",\"native_witnesses_agreeing\":" + str(ex.n) + ",\"native_contract_traps_confirmed\":" + str(ex.traps) + ",\"error\":\"" + mc_jesc(ex.bad) + "\",\"uncovered_list\":[" + mc_unc_all(rs) + "],\"infeasible_list\":[" + mc_inf_all(rs) + "],\"per_function\":[" + mc_fn_json(rs) + "]}", if ex.bad == "" then 0 else 1)
 fn mc_finish(json, code) = if code == 0 then json else let w = fs_write_sync("/dev/stdout", json + "\n") in ctfail("lmcdc: a coverage witness disagrees with the real machine; the report is on stdout\n")
 
 print mc_main(readall())

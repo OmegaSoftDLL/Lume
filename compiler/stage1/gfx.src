@@ -28,7 +28,11 @@ fn fx_norm_deg(deg: int) -> int = let m = deg % 360 in if m < 0 then m + 360 els
 
 ## Bhaskara I parabolic sine approximation in `[-1000..1000]` for `deg in [0..360)`:
 ## `sin(x) ~= 4 * x * (180 - x) / (40500 - x * (180 - x))` with < 0.16% max error.
-fn fx_sin_half(x: int) -> int = let p = x * (180 - x) in let denom = 40500 - p in if denom <= 0 then 0 else (4000 * p + denom / 2) / denom
+## The denominator needs no guard: `x * (180 - x) = 8100 - (x - 90) * (x - 90) <= 8100` for every integer `x`, so
+## `denom >= 32400`. The former `if denom <= 0 then 0 else ..` test was dead code: no input could take its true arm.
+## (The inequality is nonlinear, outside what the prover decides, so it is not stated as a `law`;
+## `test_fx_sin_half_matches_guarded_form_on_sweep` checks it, and the old guarded form, on every `x` in `[-2000, 2000]`.)
+fn fx_sin_half(x: int) -> int = let p = x * (180 - x) in let denom = 40500 - p in (4000 * p + denom / 2) / denom
 
 fn fx_sin_deg(deg: int) -> int = let d = fx_norm_deg(deg) in if d <= 180 then fx_sin_half(d) else 0 - fx_sin_half(d - 180)
 
@@ -323,6 +327,17 @@ fn subsea_b31g_corroded_pipe_safe_ok(defect_depth_pct: int, op_pressure_bar: int
 ## ============================================================================
 
 fn test_fx_sqrt_and_trig_identities() = let sin0 = fx_sin_deg(0) in let cos0 = fx_cos_deg(0) in let sin90 = fx_sin_deg(90) in let cos90 = fx_cos_deg(90) in let sin30 = fx_sin_deg(30) in let sin45 = fx_sin_deg(45) in let cos45 = fx_cos_deg(45) in let norm_sq = (sin45 * sin45 + cos45 * cos45) / 1000 in fx_sqrt(0) == 0 and fx_sqrt(1000000) == 1000 and fx_sqrt(14400) == 120 and sin0 == 0 and cos0 == 1000 and sin90 == 1000 and cos90 == 0 and sin30 >= 498 and sin30 <= 502 and norm_sq >= 995 and norm_sq <= 1005
+
+## Structural-coverage boundary tests: both arms of `fx_sqrt` (`n < 4` and the Newton iteration), `fx_sin_half` at its
+## zeros, its peak and outside `[0, 180]` (the denominator stays positive there), and the second-law predicate on both
+## sides of its comparison, at the ends of the Carnot range (`0` and `1000`).
+fn test_fx_sqrt_sin_half_and_carnot_boundaries() = fx_sqrt(0 - 5) == 0 and fx_sqrt(1) == 1 and fx_sqrt(3) == 1 and fx_sqrt(4) == 2 and fx_sqrt(5) == 2 and fx_sqrt(15) == 3 and fx_sqrt(16) == 4 and fx_sin_half(0) == 0 and fx_sin_half(30) == 500 and fx_sin_half(90) == 1000 and fx_sin_half(180) == 0 and fx_sin_half(0 - 90) == 0 - 1499 and fx_sin_half(1000) == 0 - 3811 and 40500 - 90 * (180 - 90) == 32400 and ufe_carnot_efficiency_bound_ok(1000, 1000) == 1 and ufe_carnot_efficiency_bound_ok(1001, 1000) == 0 and ufe_carnot_efficiency_bound_ok(0, 0) == 1 and ufe_carnot_efficiency_bound_ok(1, 0) == 0
+
+## Untyped test helper (not a kernel): on every `x` of `[lo, hi]` the denominator of `fx_sin_half` is at least 32400
+## and the function equals its former guarded definition `if denom <= 0 then 0 else (4000 * p + denom / 2) / denom`.
+fn fx_sin_half_sweep(x, hi) = if x > hi then 1 else let p = x * (180 - x) in let denom = 40500 - p in if denom >= 32400 and fx_sin_half(x) == (if denom <= 0 then 0 else (4000 * p + denom / 2) / denom) then fx_sin_half_sweep(x + 1, hi) else 0
+
+fn test_fx_sin_half_matches_guarded_form_on_sweep() = fx_sin_half_sweep(0 - 2000, 2000) == 1
 
 fn test_rgba_pack_blend_and_hex() = let red_half = rgba_pack(255, 0, 0, 128) in let blue_bg = rgba_pack(0, 0, 255, 255) in let blended = rgba_blend(red_half, blue_bg) in let cyan = rgba_pack(0, 229, 255, 255) in rgba_r(blended) >= 126 and rgba_r(blended) <= 129 and rgba_b(blended) >= 126 and rgba_b(blended) <= 129 and rgba_a(blended) == 255 and rgba_to_hex(cyan) == "#00e5ff"
 
