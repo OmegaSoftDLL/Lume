@@ -175,7 +175,27 @@ see the Phase 1–5 entries in §5 for the current state.
   - the array / separation-logic theories are axioms bound to the canonical model definitions (checked structurally);
   - `lcert` re-derives the *term* it is given: it cannot check that a term matches a source file (that binding is
     `lcaas`'s), and its `terminates` obligation accepts a parameter tuple as a measure — treat it as attested, not proven;
-  - contracts over wrapping operators (`+%`, `-%`, `*%`), `match`, strings and lists are outside the fragment.
+  - contracts over wrapping operators (`+%`, `-%`, `*%`), `match`, strings and lists are outside the fragment;
+  - **(Wave 14) a value is an integer only on evidence.** Lume is gradually typed: `a + b` concatenates strings, `<`
+    orders them, and a declared `: int` is not enforced on a dynamically typed call path. The prover therefore starts
+    every parameter as an opaque handle and promotes it to an integer variable only where an evaluated expression
+    traps on anything else (`vev_*` in `06b_phase3.src`); two handles can still be ordered and compared. A declared
+    `int` is used as a second attempt, and then `lumec` guards the parameter on entry (`_vty_ok`). `lcaas` reports such
+    a contract as `proven` for the declared domain; the guard is what makes the elision safe in the compiled program;
+  - **(Wave 14) the certificate term is weaker than the verdict in two places.** The certificate-term builder of
+    `lcaas` (`cs_cert_clean_e`) and the source binder of `lcert` (`sb_simd`) read `simd_add4_i64(a, b)` as
+    `4 * (a + b)` with no range, and the builder inlines a call whose callee name is a parameter as the program
+    function of that name. The VERDICT of `lcaas` no longer uses that term where a contract can reach either
+    (`cs_w14_unclean`: only the compiler's engine counts, which needs `-2^61 <= a + b < 2^61` entailed), so
+    `lume prove` and `lumec` agree; but a hand-written certificate for a `simd_*4_i64` contract without a range is
+    still accepted by `lcert --check-source`. Open, in `lcert.src`;
+  - **(Wave 14) `lcaas` carries its own copy of the `@bound` cost model** (`cs_vwcet_*`), which still ignores `match`
+    arms and record fields: its `proofs` list says `budget_checked` for a function the compiler refuses with
+    `[V0002]` (the diagnostic is in the same report and `ok` is false). Open, in `lcaas.src`;
+  - **(Wave 14) a clause that traps is not a clause that fails.** `ensures x - 0 == x` is proven for an untyped `x`
+    (evaluating the clause is the evidence that `x` is an integer) and its check is elided, so `g("s")` returns where
+    the `--keep-proven-checks` build dies with a type error; the same holds for an `ensures` whose evaluation
+    overflows or divides by zero. A proven clause is never FALSE; it is not a guarantee that evaluating it succeeds.
 
 - The frozen seed checker deliberately retains flat per-module name resolution: it does not diagnose
   use-before-definition or out-of-scope references. This limitation is specific to

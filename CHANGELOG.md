@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security (Wave 14 hostile audit, round 1 -- prover, termination, effects, `@bound`)
+Each item is a reproducible unsound verdict of the released toolchain, with its reproducer among the fixed cases of
+`tests/harness/prover_fuzz.src` (`pf6_fixed_a` / `pf6_fixed_b`, run by `prover_fuzz_gate` and `claude_audit_gate`) and in
+`bootstrap/lume0/tests/run_native.src` (`w14_*`).
+- **The prover took every parameter for an integer.** `fn cat(a, b) ensures result == b + a = a + b` was `proven` and
+  its check elided; `cat("x", "y")` returned `"xy"`. `a + b` concatenates when an operand is a string, `<` orders two
+  strings, and a declared `: int` is not checked on a dynamically typed call path (`f(hd(xs))`). A name is now an
+  integer of the linear model only on EVIDENCE: an evaluated use that traps on every non-integer (`- * / %`, the
+  wrapping and bit operators, an ordering against an integer), on the path where that evaluation happened. Until then
+  it is a handle: it can be passed, projected, compared with itself and ORDERED against another handle (so
+  `imax(a, b)` is still proven, for strings too), and no arithmetic is built from it. A declared `int` parameter is a
+  second attempt only, and the compiler then guards the parameter on entry (`let _vty_ok = p - 0`).
+- **`total fn` over untyped values.** `total fn lp(a, b) terminates (b - a) = if a < b then lp(a + 1, b) else 0` was
+  accepted; `lp("a", "b")` never returns. Same rule as above, with the evidence of the path to each recursive call.
+- **`total fn` recursing through its own contract.** `total fn f(n) requires f(n) > 0 = 1` was "not recursive" and
+  overflowed the stack. A clause that reaches the function again is refused (`[A0002]`); a callee's clauses count as
+  part of that callee.
+- **`simd_add4_i64` / `simd_sub4_i64` were modelled as `4 * (a + b)` with no range.** The lanes wrap:
+  `requires a >= 0 ... ensures result >= 0` was proven and `f(2^61, 0)` returned `-2^63` with exit status 0. The model
+  now needs `-2^61 <= a + b < 2^61` entailed.
+- **Effects under `/ pure`.** (1) A callee defined ABOVE its caller's callee was invisible to the inference (the callee
+  body was inferred against the tail of the function list): `fn w() = <effect>`, `fn k() = w()`,
+  `fn top() / pure = k()` was accepted. (2) Nothing was seen more than 24 calls down. (3) A parameter or `let` named like
+  a pure program function hid an effectful closure (`fn h(g, x) / pure = g(x)`). (4) `with handler panic { ... }`
+  discharged the builtin effect of `os_exit`. (5) 72 runtime builtins that act on the world carried no effect at all
+  (`fs_write_hex_file`, `os_fork`, `os_monotonic_ns`, `printval`, `port_out8`, ...). All five are fixed; a declared row is
+  now checked against the primitive effects of everything the function can reach. Consequence, stated plainly: the
+  compiler's own passes were declared `/ pure` and are not (`lumec_check` reads the command line, `lumec_expand` reads
+  the files of `comptime embed`); `07_driver.src` now declares `/ {io}` and `/ {io, fs}`.
+- **`@bound(cycles: N)` did not count a `match` arm or a record field.** A 300000-step function passed
+  `@bound(cycles: 20)`. (A call through a parameter was already charged 100000 cycles; that path is only made explicit.)
+- **The compiler aborted with `integer overflow`** on `requires x - 9223372036854775807 - 1 >= 0` (the prover negated
+  the minimum integer).
+- **Lexer:** `12abc`, `1e3`, `0x1G`, `0b12`, `1_` lexed as a number followed by another token. Where that token was a
+  defined name or a digit the statement grammar accepted the pair (`print 12abc` printed 12, `print 0b12` printed 1);
+  otherwise the program died on an unrelated name error. `[L0003]` now.
+
+### Security (Wave 14 hostile audit, round 2 -- operand keys, `@secret`, the sampling refuter)
+Reproducers: `pf6_fixed_c`, `pf6_kernel` and `pf6_wide_check` in `tests/harness/prover_fuzz.src`; the compiler mutant
+`bv_key` of `claude_audit_gate`.
+- **One prover variable named two different bit operations.** The opaque term of `bit_and` / `bit_or` / `bit_xor`
+  joined the keys of its operands with `*`, the separator of a product, so `bit_and(a, b * c)` and
+  `bit_and(a * b, c)` were both the variable `bv_and(a*b*c)`:
+  `fn g(a: int, b: int, c: int) -> int ensures result == bit_and(a * b, c) = bit_and(a, b * c)` was `proven` by
+  `lumec` (check elided, `g(1, 2, 3)` returned 0 where the clause wants 2), by `lcaas`, and its proof term was
+  re-derived by the `lcert` kernel ("Lume Verified"). The operands are now separated by a comma in all three engines
+  (`vbv_key`, `lk_bv_key`).
+- **`@secret fn` returned a promise.** `ois_async` tested bit 128 of the function flags, which is `@secret`; `async fn`
+  is bit 256. `@secret fn f(a: int) -> int = a` printed `<opaque>` and `f(1) + 1` died with a type error, while an
+  `async fn` returned its plain value. Behaviour change to note: the value of a call of an `async fn` that is not
+  awaited is now a promise (`print s(3)` prints `<opaque>`; `block_on` / `.await` are unchanged).
+- **The sampling refuter built 16^n environments.** A function of eight parameters bounded 0..100 took `lumec` 4.9 s
+  with no `ensures` and more than 100 s with one; `lume prove` ran out of memory. Both engines now
+  keep the full product only up to 65536 environments and otherwise sample the diagonals (every parameter at its c-th
+  smallest / largest point, so the corners of a box of bounds are always tried) and a bounded sub-product. Measured
+  after the fix: 0.12 s for 8, 12 and 16 parameters; the false bound `result <= 100` is still refuted with `[V0001]`
+  at the corner `p1 = ... = p8 = 100`. The refuter only finds counterexamples: sampling less never proves anything.
+- **`lcaas` reported `proven` where `lumec` kept the check**, for a contract over `simd_add4_i64` / `simd_sub4_i64`
+  without a range and for a callee whose name is a parameter: its second attempt proves the cleaned certificate term,
+  which reads the intrinsic as `4 * (a + b)` and inlines the program function of that name. Where a contract can reach
+  either, only the verdict of the compiler's engine counts now (`cs_w14_unclean`).
+- `vnia_split_star` split an opaque key at a `*` inside its parentheses. Examined: that was incomplete, not unsound
+  (the two halves are unbalanced strings that no row mentions, so their lemmas constrain fresh variables only); it now
+  splits at depth 0.
+
 ### Security (Red Team Round 4 — prover, certificate kernel and assembler soundness)
 Each item below was a reproducible FALSE theorem reported as `proven` (the compiler elided the runtime check and the
 program printed a wrong answer), found by an oracle-checked fuzzer and by adversarial review. Every fix ships a

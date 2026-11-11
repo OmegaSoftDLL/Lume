@@ -203,6 +203,12 @@ Precedence, highest first (same row = same level, left-associative unless noted)
 15. `|>` (pipe)
 16. `= += -= …` (assignment; statement-level, yields `()`)
 
+**Stage 1 deviation (measured by the Wave 14 audit, not yet resolved).** The bootstrapped compiler and `lcaas` read a
+`not` at the head of a comparison as the negation of the WHOLE comparison: `not a < b` is `not (a < b)`, so
+`print not 0 < 2` prints 0 where row 2 above gives `(not 0) < 2`, which is 1. As an operand (`x + not y`) `not`
+applies to the postfix expression that follows it. The compiler and `lcaas` build the same tree for it
+(`(== (< a b) 0)`), so the compiled program and the `lume prove` verdict agree; write the parentheses.
+
 ### 4.1 Blocks as expressions
 A block's value is its last expression. `if c then_block elif c2 block else block` is an
 expression; all branches must have compatible types (or the `if` is used as a statement with

@@ -68,10 +68,13 @@ Model the one place the compiler does I/O — the driver (`compiler/stage1/lume/
 boundary — as an algebraic effect (`effect CompilerIO { fn read_source() -> str }`,
 `fn lumec_drive() / {CompilerIO} = lumec_compile(read_source())`, and
 `print with handler CompilerIO { fn read_source() -> str = readall() } in lumec_drive()`), mirrored
-in `compiler/stage1/data_parser.lume`, while marking all five core compiler pipeline passes
-(`lumec_lex`, `lumec_parse`, `lumec_check`, `lumec_expand`, `lumec_compile`) explicitly `/ pure` so
-any accidental effect leak in a pure pass is rejected at compile time with `[E0200]`. Covered by
-`compiler/stage1/compiler_effects_ok.src`.
+in `compiler/stage1/data_parser.lume`, while giving the five core compiler pipeline passes an explicit effect row so
+any accidental effect leak is rejected at compile time with `[E0200]`: `lumec_lex` and `lumec_parse` are `/ pure`,
+`lumec_check` is `/ {io}` (it reads the command line for `--keep-proven-checks`), `lumec_expand` and `lumec_compile`
+are `/ {io, fs}` (`comptime embed` reads files). Until Wave 14 all five were declared `/ pure`: the effect checker
+did not look further than 24 calls down and missed callees defined above their caller, so the claim was never
+established. Covered by `compiler/stage1/compiler_effects_ok.src` (a model of the boundary) and by the bootstrap
+itself (the rows above are checked on every self-compile).
 
 ## Stage D — Ownership / Perceus in the compiler (✅ Done)
 
