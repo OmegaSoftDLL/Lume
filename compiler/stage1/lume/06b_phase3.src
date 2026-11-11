@@ -3925,6 +3925,10 @@ fn tot_enforce(nm, ps, body, is_total, tc) = if is_total == 0 and isnil(tm_looku
 ## and `bit_shl` must be PROVEN to stay inside [-2^62, 2^62) under the `requires` clauses and the path conditions,
 ## and every integer parameter needs proven bounds (a boxed argument would make each operation on it allocate).
 ## Recursion is accepted in tail position only (it is lowered to a jump: constant stack).
+## Wave 14: `/` and `%` are range-checked like `+ - *` (`(-2^62) / (-1)` is 2^62: a boxed quotient), and under
+## `--keep-proven-checks` / `--critical` the kept run-time check of a PROVEN `ensures` is code of the function, so
+## its expressions are checked too (it could otherwise call a function that is not `@no_alloc`, or re-enter the
+## function in non-tail position).
 fn ois_noalloc(mflags) = mflags / 512 % 2
 fn na_fail(fnm, what, fix) = ctfail("lume: real-time error [E0210]: heap allocation forbidden inside `@no_alloc` hard real-time context: " + what + " in '" + fnm + "' (fix-it: " + fix + ")\n")
 fn na_lim() = 4611686018427387904
@@ -4010,7 +4014,7 @@ fn na_e(e, cx, hyps, lenv, tail, k) = match e
     Num(n)                     => if n >= na_lim() or n < 0 - na_lim() then na_fail(cx.fnm, "integer literal " + str(n) + " (it needs a 16-byte overflow cell)", "keep constants inside the 63-bit immediate range") else 0
     Var(x)                     => 0
     Str(s)                     => na_fail(cx.fnm, "string value", "strings are heap objects; use integer codes")
-    Bin(op, a, b)              => let z0 = na_e(a, cx, hyps, lenv, 0, k) in if op == "and" then na_branch(a, 0, b, cx, hyps, lenv, 0, k + 1) else if op == "or" then na_branch(a, 1, b, cx, hyps, lenv, 0, k + 1) else let z1 = na_e(b, cx, hyps, lenv, 0, k + 1) in if op == "+" or op == "-" or op == "*" or op == "+%" or op == "-%" or op == "*%" then na_arith(e, cx, hyps, lenv) else 0
+    Bin(op, a, b)              => let z0 = na_e(a, cx, hyps, lenv, 0, k) in if op == "and" then na_branch(a, 0, b, cx, hyps, lenv, 0, k + 1) else if op == "or" then na_branch(a, 1, b, cx, hyps, lenv, 0, k + 1) else let z1 = na_e(b, cx, hyps, lenv, 0, k + 1) in if op == "+" or op == "-" or op == "*" or op == "+%" or op == "-%" or op == "*%" or op == "/" or op == "%" then na_arith(e, cx, hyps, lenv) else 0
     If(c, t, e2)               => let z0 = na_e(c, cx, hyps, lenv, 0, k) in let z1 = na_branch(c, 0, t, cx, hyps, lenv, tail, k + 1) in na_branch(c, 1, e2, cx, hyps, lenv, tail, k + 2)
     LetIn(nm, v, b)            => let z0 = na_e(v, cx, hyps, lenv, 0, k) in na_let(nm, v, b, cx, hyps, lenv, tail, k + 1)
     VarIn(nm, v, b)            => let z0 = na_e(v, cx, hyps, lenv, 0, k) in na_let(nm, v, b, cx, hyps, lenv, tail, k + 1)
@@ -4033,7 +4037,7 @@ fn na_enss(enss, cx, hyps, lenv, k) = match enss
 fn na_params(ps, tys, hyps, nm) = match ps
     Nil        => 0
     Cons(p, r) => if na_is_bool_ty(ohd_ty(tys)) == 0 and na_range(vlin_var(p), hyps) == 0 then na_fail(nm, "parameter '" + p + "' has no proven bounds: an argument outside the 63-bit immediate range arrives boxed, and every operation on it allocates", "add 'requires lo <= " + p + " and " + p + " <= hi'") else na_params(r, ptl(tys), hyps, nm)
-fn na_chk_fn(nm, ps, body, msig, ot) = let tys = na_sig_tys(nm, ps, msig) in let lenv0 = vlin_init_env(ps) in let mvs = vsiglookup(nm, ot.vsigs) in let reqs = tot_reqs(mvs) in let enss = na_vs_enss(mvs) in let cx = {fnm: nm, fns: ot.fns, osigs: ot.osigs, vsigs: ot.vsigs} in let h0 = na_reqs(reqs, cx, Nil, lenv0, 1000) in let z2 = na_params(ps, tys, h0, nm) in let proven = if isnil(enss) == 1 then 1 else vqflia_prove_fn(ps, reqs, enss, body, ot.fns) in let z3 = if proven == 0 and afn_calls_self(nm, body) == 1 then na_fail(nm, "an unproven 'ensures' wraps the recursive call, which is then not a tail call (unbounded stack growth)", "strengthen the contract until it is proven") else 0 in let rs = vlin_var("?result") in let z4 = if proven == 1 then 0 else na_enss(enss, cx, Cons(vlin_add(rs, vlin_const(na_lim())), Cons(vlin_sub(vlin_const(na_lim() - 1), rs), h0)), Cons({k: "result", v: rs}, Cons({k: "ret", v: rs}, lenv0)), 2000) in na_e(body, cx, h0, lenv0, 1, 0)
+fn na_chk_fn(nm, ps, body, msig, ot) = let tys = na_sig_tys(nm, ps, msig) in let lenv0 = vlin_init_env(ps) in let mvs = vsiglookup(nm, ot.vsigs) in let reqs = tot_reqs(mvs) in let enss = na_vs_enss(mvs) in let cx = {fnm: nm, fns: ot.fns, osigs: ot.osigs, vsigs: ot.vsigs} in let h0 = na_reqs(reqs, cx, Nil, lenv0, 1000) in let z2 = na_params(ps, tys, h0, nm) in let proven = if isnil(enss) == 1 then 1 else if w12_keep_proven() == 1 then 0 else vqflia_prove_fn(ps, reqs, enss, body, ot.fns) in let z3 = if proven == 0 and afn_calls_self(nm, body) == 1 then na_fail(nm, (if w12_keep_proven() == 1 then "an 'ensures' whose run-time check is emitted (--keep-proven-checks)" else "an unproven 'ensures'") + " wraps the recursive call, which is then not a tail call (unbounded stack growth)", "strengthen the contract until it is proven") else 0 in let rs = vlin_var("?result") in let z4 = if proven == 1 then 0 else na_enss(enss, cx, Cons(vlin_add(rs, vlin_const(na_lim())), Cons(vlin_sub(vlin_const(na_lim() - 1), rs), h0)), Cons({k: "result", v: rs}, Cons({k: "ret", v: rs}, lenv0)), 2000) in na_e(body, cx, h0, lenv0, 1, 0)
 fn na_vs_enss(mvs) = match mvs
     Nil         => Nil
     Cons(v, r)  => v.enss
