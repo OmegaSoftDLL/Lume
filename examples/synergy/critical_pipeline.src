@@ -1,0 +1,42 @@
+## critical_pipeline.src -- the kernel module of the cross-module synergy gate (tests/harness/synergy_gate.src).
+##
+## One file goes through the whole chain: prove -> proof-cache -> certify -> verify-cert --check-source -> lstack ->
+## build --critical -g -> tv (+ ltv_rt, lsmt) -> mcdc -> safety-envelope (+ split bundle, neural cartridge) -> signed
+## evidence manifest (Ed25519 under an X.509 chain) -> polyglot boundary contract. The gate carries a byte-identical
+## copy of this text and refuses to run when the two differ. It has no `print` and no `use`: the safety envelope and
+## the validators take the file as it is. examples/synergy/critical_pipeline_demo.src is the program that runs it.
+##
+## By hand, from the repository root (see docs and `lume help` for each command):
+##   ./lume prove examples/synergy/critical_pipeline.src
+##   ./lume proof-cache store examples/synergy/critical_pipeline.src /tmp/pc && ./lume proof-cache check examples/synergy/critical_pipeline.src /tmp/pc
+##   ./lume certify examples/synergy/critical_pipeline.src > /tmp/cp.cert.json
+##   ./lume verify-cert --check-source examples/synergy/critical_pipeline.src /tmp/cp.cert.json
+##   ./lume build --critical -g examples/synergy/critical_pipeline_demo.src -o /tmp/cp_demo && /tmp/cp_demo
+##   ./lume tv examples/synergy/critical_pipeline.src --exec --json
+##   ./lume mcdc examples/synergy/critical_pipeline.src --exec
+##   ./lume safety-envelope examples/synergy/critical_pipeline.src --fn rate_limit --args 100,900,50 --reset
+##   ./lume build --target safetensors --entry rate_limit examples/synergy/critical_pipeline.src -o /tmp/cp.safetensors
+##
+## (i) control kernel: a slew-rate limiter. The command moves from `prev` towards `req` by at most `step` per cycle.
+@no_alloc
+@bound(cycles: 64)
+fn rate_limit(prev: int, req: int, step: int) -> int / pure requires prev >= 0 and prev <= 10000 and req >= 0 and req <= 10000 and step >= 1 and step <= 500 ensures result >= 0 and result <= 10000 and result - prev <= step and prev - result <= step = if req > prev + step then prev + step else if req < prev - step then prev - step else req
+## (ii) constant-time kernels (`@secret` + `@no_alloc`): straight-line code over immediates, no branch, no helper call.
+## 32-bit modular addition of two masked words.
+@secret
+@no_alloc
+fn ct_add32(a: int, b: int) -> int = bit_and(bit_and(a, 4294967295) + bit_and(b, 4294967295), 4294967295)
+## branch-free select: `a` when mask is all ones (-1), `b` when mask is 0.
+@secret
+@no_alloc
+fn ct_select32(mask: int, a: int, b: int) -> int = bit_xor(b, bit_and(mask, bit_xor(a, b)))
+## one step of a constant-time comparison: the accumulator stays 0 exactly while every pair of words was equal.
+@secret
+@no_alloc
+fn ct_cmp_step(acc: int, a: int, b: int) -> int = bit_or(acc, bit_xor(ct_add32(a, 0), ct_add32(b, 0)))
+## (iii) a law about (i): one cycle never raises the command by more than `step`.
+law rate_limit_monotone_step(prev: int, req: int, step: int) = if prev >= 0 and prev <= 10000 and req >= 0 and req <= 10000 and step >= 1 and step <= 500 then rate_limit(prev, req, step) <= prev + step else 1 == 1
+## (iv) composite: the actuator command saturates the request at 9000 before the limiter.
+@no_alloc
+@bound(cycles: 200)
+fn actuator_cmd(prev: int, req: int, step: int) -> int / pure requires prev >= 0 and prev <= 10000 and req >= 0 and req <= 10000 and step >= 1 and step <= 500 ensures result >= 0 and result <= 10000 = if req > 9000 then rate_limit(prev, 9000, step) else rate_limit(prev, req, step)
