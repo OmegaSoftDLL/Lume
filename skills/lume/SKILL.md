@@ -52,6 +52,17 @@ lume safety-envelope kernel.src --fn dose --args 700,500
 lume qualify            # developer evidence (TOR, TQP, RTM, signed dossier), not a qualification
 lume qualify --verify   # re-check the SHA-256 chain and Ed25519 signature of build/certification/
 
+# Wave 14 tools: stack bound, certificate checker, runtime-helper verifier, X.509, entropy, split bundle
+lume stack kernel.src --json            # worst-case stack bytes of the @no_alloc functions (exit 3 = a bound is rejected)
+lume smt-check build/certification/proofs/kernel__dose.smt2   # native check of an ltv certificate (only `unsat` passes)
+lume tv-rt kernel.src                   # the emitted integer runtime helpers against their specification
+lume x509 verify --chain leaf.der,ca.der --anchor root.der --now 1794398400   # exit 0 valid, 3 invalid
+lume x509 show cert.der                 # parsed fields (DER or PEM); Ed25519 chains only, no host name, no revocation
+lume entropy --bytes 32                 # OS random bytes, released only after the health checks
+lume safety-envelope kernel.src --fn dose --split build/split        # the two channels as standalone programs + manifest.json
+lume safety-envelope --split-verify build/split/manifest.json       # re-hash the bundle
+lume cli-parity                         # the command table, help text, manuals, README and this file may not drift
+
 # Industrial options (Waves 12-13)
 lume build -g app.src -o app                      # DWARF v4 line table and symbols
 lume build --critical app.src -o app              # keep the run-time checks of proven ensures
@@ -78,6 +89,8 @@ Rules that the Wave 12-13 checks enforce (write code that satisfies them the fir
   `bit_shr` by a literal, `ct_select(mask, a, b)`, `ct_eq(a, b)` and calls of other kernels; no `if` / `match` /
   comparison / `/` / `%` / recursion (`[C0011]`); mask operands with `bit_and` until every sum and product is
   proven inside 63 bits (`[E0210]`). It compiles to branch-free code that `lume tv` validates.
+- `lume stack` bounds the stack of a `@no_alloc` function on the emitted code. The `proven` bound is conditional on
+  the `[E0210]` range proofs; `all paths` is often `unbounded` (the slow path of `+` can box).
 - A value passed to `chan_send_linear` is gone (`[E0305]`); take locks in ascending rank and release them (`[E0306]`).
 - The AArch64 / RISC-V targets accept the integer kernel fragment only (`[T0901]`) and only sources `lumec` accepts
   (`[T0902]`).

@@ -460,6 +460,13 @@ Run the complete self-hosted verification and adversarial Red Team suite locally
 ./lume qualify                                            # 70 probes, module batteries and 16 gates behind the traceability matrix; writes the signed dossier to build/certification/ (about 40 minutes)
 ./lume qualify --verify                                   # re-check the SHA-256 chain and the Ed25519 signature of that dossier
 ./lume realtime-gate && ./lume concurrency-gate && ./lume crypto-gate && ./lume multi-arch-gate && ./lume safetensors-gate && ./lume dwarf-cache-gate && ./lume cert-source-gate   # Wave 12-13 acceptance gates
+./lume stack kernel.src --json                            # Wave 14: worst-case stack bytes of the @no_alloc functions, on the emitted x86-64 (exit 3 when a bound is rejected)
+./lume tv kernel.src && ./lume smt-check --dir build/certification/proofs   # re-check the SMT-LIB2 certificates of lume tv with the clean-room checker (exit 0 only when every file is unsat)
+./lume tv-rt kernel.src                                   # verify the emitted integer runtime helpers (the axioms of lume tv) by symbolic execution
+./lume x509 verify --chain leaf.der,ca.der --anchor root.der --now 1794398400   # X.509 v3 path validation, Ed25519 only, no host name / revocation (exit 0 valid, 3 invalid)
+./lume x509 show cert.der && ./lume entropy --bytes 32 --json   # parsed certificate fields; OS random bytes behind the health checks (they do not certify entropy)
+./lume safety-envelope kernel.src --fn dose --split build/split && ./lume safety-envelope --split-verify build/split/manifest.json   # export and re-hash the split bundle (docs/41-safety-envelope-split-bundle.md)
+./lume tv-rt-gate && ./lume smt-cert-gate && ./lume lcaas-scale-gate && ./lume cli-parity   # Wave 14 gates (source checkout)
 ./lume test compiler/stage1/lchameleon.src                # Universal Chameleon 9-ecosystem FFI, Singularity Boundary Omega, Bayesian SPC/PAVA, Wave 4 Tensor/Quire/Assimilator & Waves 5–10 LumePuter/LumePU/Octagon/Farkas/SSA-AVX512/VEX-EVEX-SIMD/IoUring-Kernel/Horner-DAG-AST/C-Header-Parser/Pass-Evolver/LASM-Diff/Adversarial-Prover/Mutation-Kill/Wheeler-DDC suite (19/19 tests, 200/200 proven obligations)
 ./lume test compiler/stage1/gfx.src                       # 2D/3D Graphics, Cyber-Physical UFE & Subsea/Marine Physics suite (9/9 in gfx.src + 6/6 in gfx_3d_hmi_ok.src, 77/77 proven obligations)
 ./lume test compiler/stage1/net.src                       # Industrial SCADA, IEC 61850, NetSentinel IEC 62443, Conduite & Omega-Mesh P2P suite (15/15 in net.src + 12/12 in net_scada_pro_ok.src, 68/68 proven obligations)
