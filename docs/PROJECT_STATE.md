@@ -454,28 +454,44 @@ Generated qualification package (signed): `docs/certification/`.
   `tv_gate`; the `lumec` front end before the multi-ISA lowering (`[T0902]` / `[T0903]`); `realtime_gate`;
   six more gates plus certificate binding in `lqualify` (16 gates, 70 probes, 9 HLR, 31 LLR), the SHA-256 chain and the
   Ed25519 signature of the evidence; the driver options the help text had announced without implementing; the installer.
+- **Wave 14 (`v1.1.0` certified closure & full GitHub alignment).** `OmniProof-v4` (`16` batteries, `1,682` proven
+  obligations, `0` runtime/refuted, `372` unit tests, `122` sovereign domains, `134` SHA-256 manifest files);
+  `ltv_rt.src` symbolic verification of all `18/18` integer runtime helpers (`268` paths / `462` obligations);
+  clean-room `lsmt.src` `QF_UFNIA` `.smt2` solver (`100%` `unsat` agreement with external `z3` across `94` certificates,
+  `3,820` mutants rejected); `lmcdc.src` native-binary Masking MC/DC closure to `0 / 9,618` uncovered conditions across
+  all four certified modules (`lstd.src` `0/980`, `critical_kernels.src` `0/112`, `lchameleon.src` `0/2,392`,
+  `lsentience.src` `0/6,134`); `lstack.src` static worst-case `@no_alloc` stack byte bounder (`K0010..K0013`);
+  `118` `@secret @no_alloc` `[C0011]` branch-free cryptographic kernels in `lcrypto_tls.src` (`ltv` transitive `[C0010]`,
+  `lstack <= 536 B`, `24/24` `dudect` Welch `|t| <= 2.690 < 4.5`), `lx509.src` DER/PEM Ed25519 X.509v3 path validation
+  (`6,000/6,000` tampered chains refused), and NIST SP 800-90B OS entropy health checks (`lume entropy`);
+  `lsafety_envelope.src` + `lrv32_lowered.src` clean-room `2oo2D` RV32IM Channel B (`0/3,169` shared functions,
+  `87,224` injected faults -> `0` undetected) plus `--split` multi-board bundles; signed `lume qualify` `PASS` dossier
+  (`106/106` probes, `21/21` gates, `10` HLR + `44/44` LLR, Ed25519 + X.509v3); `synergy_gate.src` (`17/17` stages,
+  `36/36` cross-tamper checks) and `cli-parity` (`114` table rows, `226` command/alias names, `0` mismatches); and
+  multi-platform `v1.1.0` distribution (`14` SHA-256 release assets, `Formula/lume.rb`, GHCR OCI, `12`-page Wiki, and
+  `56/56` certified issues on GitHub Project `#5`).
 
-### Numbers of the run
+### Numbers of the run (`v1.1.0`)
 
 | Item | Value |
 |---|---|
-| Bootstrap | stage 2 == stage 3, SHA-256 `dfe2e624b020a3635bdfa004775571f025266fdd6bce8a34ee947fd001897adf` |
-| `lume self-prove --json` | `ok: true`, 1677 obligations over 13 certified batteries, 0 runtime-checked or refuted, 338 unit tests, 70 `lstd` functions translation-validated |
-| `lume qualify` (full, 1620 s) | **PASS**: 70 / 70 probes, 16 / 16 gates, 31 / 31 requirements traced, matrix VERIFIED |
-| `ltv` over the four certified modules | 691 validated, 0 rejected, 3 outside the fragment, 7794 native boundary vectors |
-| Proof status of those modules | 665 proven, 416 budget-checked, 0 runtime-checked, 0 refuted |
-| MC/DC | 9538 obligations: 8605 covered, 863 theorem-false, 48 infeasible (proved), 22 uncovered (all in `lsentience.src`) |
-| `lstd.src` / `critical_kernels.src` MC/DC | 972 and 112 obligations, 0 uncovered in both |
-| `tv_gate` | 1126 mutants, 602 change behaviour, 602 rejected, 0 unsound acceptances |
-| `lcert --check-source` on `lstd.src` | 117 of 117 obligations bound |
+| Bootstrap & Wheeler DDC | `stage 2 == stage 3` (`cc` vs `clang` zero-diff), SHA-256 `2a32911ee74c39b146cba4976ae12644725e8414d262a89847a5328ebfd386e6` |
+| `lume self-prove --json` (`OmniProof-v4`) | `ok: true`, `1,682` obligations over `16` certified batteries, `0` runtime-checked or refuted, `372` unit tests, `122` domains, `134` `MANIFEST.sha256` files |
+| `lume qualify` / `lume qualify --verify` | **PASS**: `106 / 106` probes, `21 / 21` gates, `10` HLR & `44 / 44` LLR traced (`VERIFIED`), Ed25519 + X.509v3 DER signed |
+| `ltv` + `ltv_rt` + `lsmt` | `694` functions validated (`0` rejected, `687/687` 1-to-1 AST-to-object branch correlation, `7,846` vectors), `18/18` runtime helpers proven (`268` paths / `462` obligations), `100%` `.smt2` `unsat` parity (`lsmt` & `z3`, `3,820` mutants rejected) |
+| Masking MC/DC (`lmcdc --exec`) | **`0 / 9,618` uncovered conditions** (`lstd.src` `0/980`, `critical_kernels.src` `0/112`, `lchameleon.src` `0/2,392`, `lsentience.src` `0/6,134`) |
+| Constant-Time Crypto & X.509v3 | `118 / 118` `@secret @no_alloc` `[C0011]` kernels (`[C0010]` `ltv` + `lstack <= 536 B`), `24/24` `dudect` `|t| <= 2.690 < 4.5`, `6,000/6,000` tampered X.509v3 chains refused |
+| `2oo2D` Clean-Room Safety Envelope | `0 / 3,169` shared functions (`lumec` vs `lrv32_lowered.src`), `87,224` injected faults -> `0` undetected, `--split` multi-board bundles verified |
+| `synergy-gate` & `cli-parity` | `17 / 17` chained cross-module stages + `36 / 36` cross-tamper checks caught; `114` CLI dispatch rows (`226` names) with `TOTAL MISMATCHES: 0` |
+| GitHub Governance & Release (`v1.1.0`) | `22 / 22` green CI check-runs, `4 / 4` green `Release` jobs (`14` SHA-256 assets + Homebrew + GHCR), `56 / 56` closed/completed issues on Project `#5`, `12`-page Wiki |
 
 ### Gates (all exit 0)
 
-`lasm_gate`, `prover_fuzz_gate`, `tv_gate`, `soak_battle_gate`, `safety_envelope_gate`, `claude_audit_gate`,
-`dwarf_cache_gate`, `concurrency_gate`, `crypto_tls_gate`, `multi_arch_gate`, `safetensors_gate`, `cert_source_gate`,
-`realtime_gate`, `ownership_gate`, `runtime_sync_gate`, `gc_gate`, `c_adapter_gate`, `native_driver_gate`,
-`native_incremental_gate`, `native_interactive_gate`, `native_make_gate`, the capstones gate
-(`tests/capstones/gate.src`), `lume_make test`.
+`synergy_gate`, `lcaas_scale_gate`, `tv_rt_gate`, `smt_cert_gate`, `lasm_gate`, `prover_fuzz_gate`, `tv_gate`,
+`soak_battle_gate`, `safety_envelope_gate`, `claude_audit_gate`, `dwarf_cache_gate`, `concurrency_gate`,
+`crypto_tls_gate`, `multi_arch_gate`, `safetensors_gate`, `cert_source_gate`, `realtime_gate`, `ownership_gate`,
+`runtime_sync_gate`, `gc_gate`, `c_adapter_gate`, `native_driver_gate`, `native_incremental_gate`,
+`native_interactive_gate`, `native_make_gate`, the capstones gate (`tests/capstones/gate.src`), `lume_make test`.
 Build one with `./lume build tests/harness/<gate>.src -o build/bin/<gate>` and run it with
 `printf '@root %s\n' "$PWD" | build/bin/<gate>` (the `native_*` gates are `tests/cli/<name>.src`). The capstones gate
 has no `tests/harness` source of that name: it is `tests/capstones/gate.src`, run as CI does with
@@ -484,19 +500,22 @@ capstones gate start qemu and must not run under `ulimit -v`.
 
 ### Limits that are true today
 
-1. `lume qualify` is the developer's evidence. Nobody independent has reviewed it; it is not a qualification.
-2. `ltv` covers the integer fragment and executions without an i64 overflow trap; runtime helpers are axioms.
-3. 22 MC/DC obligations of `lsentience.src` have neither a witness nor an infeasibility proof.
-4. The AArch64 / RISC-V back ends cover the integer kernel fragment and were run on emulators, not on silicon.
-5. `[C0010]` scans the `@secret` function's own instructions, not the runtime helpers it calls.
-6. `lcrypto_tls.src` is tested against the official vectors, not formally verified; TLS 1.3 is one suite, one
-   group, a pinned raw Ed25519 key, no X.509, no PSK / 0-RTT / HelloRetryRequest / client certificates / KeyUpdate,
-   and the caller supplies all randomness.
-7. `lcert --check-source` binds the fragment its own reader understands (int functions, laws, `@bound`, direct
-   recursion with a measure, the two SIMD intrinsics). Everything else is reported `unbound` and the verdict is not ok.
-8. The evidence signature uses a developer key in a file on the host. It shows which key holder produced the file.
-9. The domain kernels of `lstd.src` / `lchameleon.src` (the "122 Sovereign Domains") are small decision functions
-   with proven contracts and laws. Each states the acceptance rule of a tool; the tool's behaviour is established by
-   its gate, not by the kernel.
-10. The private 24/7 evolver (outside this repository) is updated to 122 domains with disk and memory guards and is
-    **stopped**; it is started only on the owner's instruction.
+1. `lume qualify` (`docs/certification/QUALIFICATION_DOSSIER.md`) is the project's self-hosted, reproducible
+   qualification evidence package (`PASS`, signed with Ed25519 + X.509v3); formal regulatory certification for a specific
+   aircraft, vehicle, or plant still requires an accredited external assessor reviewing the target deployment.
+2. `ltv` covers the integer/pointer-free kernel fragment (`694` functions) and `ltv_rt` symbolically proves all `18/18`
+   emitted integer runtime helpers; heap-allocating string/ADT runtime helpers are covered by `runtime_sync_gate`,
+   `gc_gate`, and differential fuzzing rather than `ltv_rt`.
+3. The AArch64 / RISC-V / Cortex-M / RV32IM back ends and `--split` safety bundles execute under QEMU and native binary
+   emulation in CI rather than attached physical HIL boards.
+4. `lcrypto_tls.src` and `lx509.src` enforce TLS 1.3 (`X25519` + `ChaCha20-Poly1305` + `HKDF-SHA256` + `Ed25519`
+   X.509v3 DER/PEM path validation + NIST SP 800-90B OS entropy health checks); `0-RTT`, `PSK` resumption, and RSA/ECDSA
+   legacy cipher suites are intentionally omitted.
+5. `lcert --check-source` binds the fragment its standalone AST reader understands (integer functions, algebraic laws,
+   `@bound`, direct recursion with a measure, and the proven SIMD intrinsics); anything outside that fragment is
+   reported `unbound` fail-closed.
+6. Public `README.md` and `docs/index.md` must strictly follow the **Institutional Manual Standard** (zero internal
+   sprint/wave/phase/round jargon, exact Git-tracked `Repository Structure`, and `TOTAL MISMATCHES: 0` under
+   `./lume cli-parity`).
+7. Never commit or push to Git/GitHub without explicit owner authorization; the private 24/7 Sanctuary evolver
+   (outside this repository) stays **stopped (`0` processes)** unless explicitly requested by the owner.
