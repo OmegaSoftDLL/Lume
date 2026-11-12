@@ -6,27 +6,74 @@
 ##   OS entropy with a fail-closed health check, key generation, and X.509 v3 path validation for Ed25519 chains
 ##   (RFC 5280 / RFC 8410) with an X.509 mode of the handshake.
 ##
-## Bytes are lists of ints 0..255 (`lct_hex_to_bytes` / `lct_bytes_to_hex` convert). Lume integers are signed 64-bit
+## Bytes are lists of ints 0..255 (`lct_hex_to_bytes` / `lct_bytes_to_hex` convert); an element that is not an
+## immediate integer makes the entry guard of the kernel that receives it fault. Lume integers are signed 64-bit
 ## and `+ - *` trap on overflow, so 32-bit words are kept in 0..2^32-1 behind explicit masks, a 64-bit word of SHA-512
 ## is a pair of 32-bit halves (an integer outside -2^62 .. 2^62 - 1 is boxed on the heap, which made the timing of
 ## native 64-bit words depend on their value), Poly1305 runs on five 26-bit limbs and the field GF(2^255 - 19) of
 ## Ed25519 and X25519 on sixteen 16-bit limbs (the TweetNaCl layout), where every partial product fits.
 ##
-## Constant time: no branch, no table index and no division depends on a secret. Secret-dependent choices are
-## masked selections (`lct_fe_sel`), the Ed25519 scalar multiplication is a fixed 256-step ladder of add / double with
-## masked swaps, X25519 is a fixed 255-step Montgomery ladder with masked swaps and its all-zero check ORs every byte,
-## the scalar reduction mod L is a fixed 512-step shift / conditional-subtract with a masked select, and tags and
-## Finished values are compared by accumulating the XOR of every byte (`lct_ct_eq`). Branches only test public data:
-## lengths, loop counters, limb positions, handshake message types and states, and the final accept / reject bit.
-## That is the claim by construction, at source level. It is also MEASURED: tests/harness/crypto_tls_gate.src runs the
-## dudect method (fixed-vs-random input classes, Welch's t-test on cycle counts, |t| < 4.5) on the compiled code of
-## `lct_ct_eq`, a ChaCha20 block, a one-block Poly1305, `lct_fe_sel`, the scalar reduction step and clamp, one X25519
-## and one Ed25519 ladder step, SHA-256, SHA-512 (100,000 / 25,000 measurements per class) and a whole `lct_x25519`
-## (1,000 per class), next to two deliberately leaky functions it must detect. What the measurement is and is not:
-## an empirical test on one machine at those sample sizes, first-order only; it has no power against a leak smaller
-## than its resolution, it does not cover a function it does not list (HMAC / HKDF / the AEAD are compositions of
-## measured blocks, whole Ed25519 signing and the field inversion are not measured on their own), and it says nothing
-## about other CPUs, power or cache side channels. It found one real leak, in SHA-512 (see that section), now fixed.
+## Constant time, in three tiers (what is claimed, and on what evidence):
+##
+## 1. MACHINE-VERIFIED. Every arithmetic or bit operation on a secret value is inside one of the `lct_k_*` functions
+##    of the kernel section: `@secret` + `@no_alloc` constant-time kernels, compiled to straight-line x86-64 with no
+##    jump, no division, no memory access outside their own frame and no call except to another kernel. `ltv`
+##    validates the emitted code of each one against its AST and scans it, transitively over calls, for [C0010]
+##    violations. tests/harness/crypto_tls_gate.src runs lumec + ltv (with native boundary vectors) + lstack on this
+##    very file and requires: every kernel validated, 0 rejected, the kernels ltv validated == the `@secret`
+##    functions of this file, every kernel stack-bounded, and its negative controls rejected. The kernels cover:
+##      SHA-256 / SHA-512  big-endian words, the message schedule, the round (both new working variables), the
+##                         sigma functions and 64-bit additions on halves, the chaining additions; the HMAC pad xor
+##      ChaCha20           the quarter round (one kernel per output word, built on the add32 and xor-rotate
+##                         kernels), the final state additions, little-endian words and bytes, the keystream xor
+##      Poly1305           the clamp of r and 5 * r, message limb + h, the five product rows with their carries, the
+##                         partial reduction, the final carry chain, h + 5 - 2^130, the masked select, + s
+##      compare            the xor / or accumulation of `lct_ct_eq` and its final is-zero bit (tags, Finished
+##                         values, field equality), the X25519 all-zero check
+##      GF(2^255 - 19)     limb add / sub, the carry passes, the sixteen folded product columns of `lct_fe_mul`,
+##                         times 121665, the masked select behind every conditional swap (`lct_fe_sel`, hence
+##                         `lct_pt_sel`, both ladders and the scalar step), the swap masks, the canonical encoding
+##                         (subtract p, borrow, select), limbs from / to bytes
+##      scalars            the bits of a byte, the clamp, double / subtract L / select mod L, r + h * a
+##      entropy check      the or / xor accumulators, run length, occurrence count, max
+##      TLS                the per-record nonce (iv xor sequence number)
+##    What this tier does NOT say. (a) A kernel is total over the immediates and cuts its operands to proven ranges
+##    with masks; that those masks are the identity on the values the callers pass is NOT machine-checked. It rests
+##    on the invariants below, on `lct_kat_kernels` (every kernel-backed function against its plain `lct_ref_*`
+##    formula on pseudo-random and boundary inputs) and on the official vectors. Invariants: bytes are 0..255; 32-bit
+##    words are 0..2^32-1; Poly1305 h limbs are below 2^26 (limb 1 below 2^26 + 2^11), r limbs below 2^26 and 5 r
+##    below 2^29; a carried field element has limbs 1..15 in 0..65535 and limb 0 in -38..65573, at most three such
+##    are added or subtracted before a multiplication, so every limb at an add / sub / mul is below 2^18 in magnitude
+##    (the kernels accept +-2^26, the product columns +-2^25), column sums are below 2^46 and carries below 2^31 (the
+##    carry kernels accept +-2^60 and +-2^45); scalar limbs are below 2^24. (b) The theorem is about the instruction
+##    sequence: it assumes that `imul`, shifts and the other instructions take data-independent time on the CPU, and
+##    it says nothing about power, electromagnetic or cache-state channels.
+## 2. SOURCE-LEVEL CONSTANT TIME + dudect-MEASURED, NOT machine-verified: the glue around the kernels. Byte strings and
+##    limb vectors are lists and records, so the code that walks them, builds them and passes their elements to the
+##    kernels is ordinary compiled Lume (heap allocation, tag tests, the collector). By construction its branches
+##    test only public data: list structure and lengths, loop counters, limb positions, the `again` flag of the carry.
+##    This is `lct_cc_dround` / `lct_cc_block` / `lct_cc_xor`, `lct_p_run`, every list-level `lct_fe_*` function,
+##    `lct_pt_add`, both ladders, `lct_fe_inv` (a fixed exponentiation chain), `lct_sc_*`, the SHA / HMAC / HKDF
+##    drivers. The dudect section of the gate (fixed-vs-random classes, Welch's t-test on cycle counts, |t| < 4.5,
+##    two negative controls it must detect) measures them and every kernel family. That is an empirical, first-order
+##    test on one machine at 100,000 measurements per class (25,000 for whole SHA calls, 1,000 for a whole X25519):
+##    it has no power against a leak below its resolution and says nothing about other CPUs.
+## 3. NOT constant time, or not covered:
+##    * public by definition: lengths and padding counts, counters, the accept / reject bit of a comparison, the
+##      entropy verdict, signatures and public keys (`lct_pt_unpack_neg`, `lct_sc_lt_l` / `lct_sc_limbs`; the sign bit
+##      `lct_fe_parity` / `lct_xor_last` of a point encoding that is then published), X.509 / DER parsing; these use
+##      ordinary arithmetic and branches;
+##    * TLS framing of DECRYPTED data: `lct_tls13_strip` scans the inner plaintext for the content type with a
+##      branch per byte (the amount of zero padding is visible in time), and the handshake parsers branch on the
+##      types and lengths of decrypted handshake messages;
+##    * whole Ed25519 signing and the field inversion are not dudect targets on their own (their steps are);
+##    * hex conversion (`lct_hex_*`, `lct_bytes_to_hex`) is ordinary code: do not print secrets with it.
+## History. The first dudect gate found value-dependent boxing in a native 64-bit SHA-512 (fixed by the 32-bit halves).
+## Moving SHA-512 into kernels found a second instance, which the measurement had missed at 25,000 samples:
+## `bit_shl(half, 31)` in sigma0 left the immediate range when bit 31 of the half was set and the intermediate was
+## boxed (one heap allocation per set bit, i.e. dependent on bits of the hashed secret). The compiler refuses that
+## shift in a kernel ([E0210]); the kernels mask before they shift. `lct_ref_s512_s0` keeps the old form, as a test
+## oracle only.
 ##
 ## Randomness: `lct_os_random` reads the kernel CSPRNG (/dev/urandom); `lct_random_bytes_checked`, `lct_x25519_keygen`,
 ## `lct_ed25519_keygen` and the `lct_tls13_*_config*_os` constructors add a fail-closed health check that detects a
@@ -39,7 +86,7 @@
 ## no revocation: the exact list is at the X.509 section), no PSK / resumption / 0-RTT / HelloRetryRequest / client
 ## certificates / KeyUpdate.
 ##
-## `lct_kat_*` run the official vectors (extracted from the RFC texts and cross-checked against independent
+## `lct_kat_*` run the official vectors and `lct_kat_kernels` the kernel-versus-reference comparison (vectors extracted from the RFC texts and cross-checked against independent
 ## implementations when this file was generated; the X.509 vectors are the RFC 8410 example and chains made with
 ## OpenSSL, see their section); the unit tests and tests/harness/crypto_tls_gate.src call them.
 
@@ -77,7 +124,7 @@ fn lct_concat(xss) = match xss
     Cons(h, t) => lct_app(h, lct_concat(t))
 fn lct_xor_lists_acc(a, b, acc) = match a
     Nil        => lct_rev(acc)
-    Cons(h, t) => lct_xor_lists_acc(t, lct_tl(b), Cons(bit_xor(h, lct_hd(b)), acc))
+    Cons(h, t) => lct_xor_lists_acc(t, lct_tl(b), Cons(lct_k_xor(h, lct_hd(b)), acc))
 fn lct_xor_lists(a, b) = lct_xor_lists_acc(a, b, Nil)
 ## xor `mask` into the byte at position idx (the tamper tests use it)
 fn lct_flip(bs, idx, mask) = match bs
@@ -93,11 +140,13 @@ fn lct_b2h(bs, acc) = match bs
 fn lct_bytes_to_hex(bs) = lct_b2h(bs, "")
 fn lct_str_loop(s, i, acc) = if i < 0 then acc else lct_str_loop(s, i - 1, Cons(ord(at(s, i)), acc))
 fn lct_str_to_bytes(s) = lct_str_loop(s, count(s) - 1, Nil)
-## constant-time equality of two byte strings of public length: every byte is read, the differences are OR-ed
+## constant-time equality of two byte strings of public length: every byte is read, the differences are OR-ed in a
+## kernel, and the "no difference" bit comes from ct_eq, not from a comparison and a branch. That one bit, accept or
+## reject, is PUBLIC by definition (the caller acts on it): the secret / public boundary is the return of lct_ct_eq.
 fn lct_ct_acc(a, b, acc) = match a
     Nil        => acc
-    Cons(h, t) => lct_ct_acc(t, lct_tl(b), bit_or(acc, bit_xor(h, lct_hd(b))))
-fn lct_ct_eq(a, b) = if lct_len(a) != lct_len(b) then 0 else if lct_ct_acc(a, b, 0) == 0 then 1 else 0
+    Cons(h, t) => lct_ct_acc(t, lct_tl(b), lct_k_ct_step(acc, h, lct_hd(b)))
+fn lct_ct_eq(a, b) = if lct_len(a) != lct_len(b) then 0 else lct_k_is_zero(lct_ct_acc(a, b, 0))
 
 ## --- verified length / framing arithmetic (QF_LIA contracts and laws) -------------------------------------------
 fn lct_sha256_pad_zeros(left: int) -> int
@@ -133,19 +182,458 @@ law lct_tls13_record_overhead(data_len: int) = if data_len >= 0 and data_len <= 
 law lct_poly1305_limbs_cover_130_bits(k: int) = if k == 5 then 26 * k == 130 else 1 == 1
 law lct_ed25519_limbs_cover_256_bits(k: int) = if k == 16 then 16 * k == 256 else 1 == 1
 
+## --- constant-time kernels (`@secret` + `@no_alloc`): the secret-dependent arithmetic of this file ------------------------
+## Every function below is compiled to straight-line, branch-free x86-64 on immediate words behind a fail-closed entry
+## guard, and `ltv` validates its machine code against its AST ([C0010], closed over calls; crypto_tls_gate runs it on
+## this very file). A kernel is total over the immediates [-2^62, 2^62): the compiler and ltv each prove, by interval
+## analysis, that no intermediate leaves that range for ANY arguments, so every operand is first cut to a range by a
+## mask. The masks are the identity on the values the callers pass (the invariants are stated in the header);
+## `lct_kat_kernels` pins every kernel-backed function against its plain `lct_ref_*` formula. A signed limb x is cut
+## to [-2^k, 2^k) by bit_and(x, 2^k - 1) - bit_and(x, 2^k) (the low k bits minus the weight of bit k in two's
+## complement), which is x itself for every x in that range. An argument that is not an immediate integer (a boxed
+## 64-bit value, a pointer) makes the entry guard fault: byte and limb lists never hold one.
+## tag / Finished compare: one accumulation step, and the two final "all differences were zero" bits
+@secret
+@no_alloc
+fn lct_k_ct_step(acc: int, a: int, b: int) -> int = bit_or(acc, bit_xor(a, b))
+@secret
+@no_alloc
+fn lct_k_is_zero(acc: int) -> int
+    ensures result >= 0 and result <= 1
+= ct_eq(acc, 0)
+@secret
+@no_alloc
+fn lct_k_nonzero(acc: int) -> int
+    ensures result >= 0 and result <= 1
+= 1 - ct_eq(acc, 0)
+## keystream xor; the bytes of a word; a little-endian word of four bytes / a limb of two
+@secret
+@no_alloc
+fn lct_k_xor(a: int, b: int) -> int = bit_xor(a, b)
+@secret
+@no_alloc
+fn lct_k_byte0(w: int) -> int
+    ensures result >= 0 and result <= 255
+= bit_and(w, 255)
+@secret
+@no_alloc
+fn lct_k_byte1(w: int) -> int = bit_and(bit_shr(w, 8), 255)
+@secret
+@no_alloc
+fn lct_k_byte2(w: int) -> int = bit_and(bit_shr(w, 16), 255)
+@secret
+@no_alloc
+fn lct_k_byte3(w: int) -> int = bit_and(bit_shr(w, 24), 255)
+@secret
+@no_alloc
+fn lct_k_le32(a: int, b: int, c: int, d: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(a, 255) + bit_and(b, 255) * 256 + bit_and(c, 255) * 65536 + bit_and(d, 255) * 16777216
+@secret
+@no_alloc
+fn lct_k_le16(a: int, b: int) -> int
+    ensures result >= 0 and result <= 65535
+= bit_and(a, 255) + bit_and(b, 255) * 256
+@secret
+@no_alloc
+fn lct_k_le16_top(a: int, b: int) -> int
+    ensures result >= 0 and result <= 32767
+= bit_and(a, 255) + bit_and(b, 127) * 256
+## ChaCha20: addition mod 2^32, xor-then-rotate-left by 16 / 12 / 8 / 7, and the four outputs of the quarter round
+@secret
+@no_alloc
+fn lct_k_add32(a: int, b: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(bit_and(a, 4294967295) + bit_and(b, 4294967295), 4294967295)
+@secret
+@no_alloc
+fn lct_k_xrotl16(x: int, y: int) -> int = let v = bit_xor(bit_and(x, 4294967295), bit_and(y, 4294967295)) in bit_or(bit_and(bit_shl(v, 16), 4294967295), bit_shr(v, 16))
+@secret
+@no_alloc
+fn lct_k_xrotl12(x: int, y: int) -> int = let v = bit_xor(bit_and(x, 4294967295), bit_and(y, 4294967295)) in bit_or(bit_and(bit_shl(v, 12), 4294967295), bit_shr(v, 20))
+@secret
+@no_alloc
+fn lct_k_xrotl8(x: int, y: int) -> int = let v = bit_xor(bit_and(x, 4294967295), bit_and(y, 4294967295)) in bit_or(bit_and(bit_shl(v, 8), 4294967295), bit_shr(v, 24))
+@secret
+@no_alloc
+fn lct_k_xrotl7(x: int, y: int) -> int = let v = bit_xor(bit_and(x, 4294967295), bit_and(y, 4294967295)) in bit_or(bit_and(bit_shl(v, 7), 4294967295), bit_shr(v, 25))
+@secret
+@no_alloc
+fn lct_k_qr_a(a: int, b: int, c: int, d: int) -> int = let a1 = lct_k_add32(a, b) in let d1 = lct_k_xrotl16(d, a1) in let c1 = lct_k_add32(c, d1) in let b1 = lct_k_xrotl12(b, c1) in lct_k_add32(a1, b1)
+@secret
+@no_alloc
+fn lct_k_qr_d(a: int, b: int, c: int, d: int) -> int = let a1 = lct_k_add32(a, b) in let d1 = lct_k_xrotl16(d, a1) in let c1 = lct_k_add32(c, d1) in let b1 = lct_k_xrotl12(b, c1) in lct_k_xrotl8(d1, lct_k_add32(a1, b1))
+@secret
+@no_alloc
+fn lct_k_qr_c(a: int, b: int, c: int, d: int) -> int = let a1 = lct_k_add32(a, b) in let d1 = lct_k_xrotl16(d, a1) in let c1 = lct_k_add32(c, d1) in let b1 = lct_k_xrotl12(b, c1) in lct_k_add32(c1, lct_k_xrotl8(d1, lct_k_add32(a1, b1)))
+@secret
+@no_alloc
+fn lct_k_qr_b(a: int, b: int, c: int, d: int) -> int = let a1 = lct_k_add32(a, b) in let d1 = lct_k_xrotl16(d, a1) in let c1 = lct_k_add32(c, d1) in let b1 = lct_k_xrotl12(b, c1) in lct_k_xrotl7(b1, lct_k_add32(c1, lct_k_xrotl8(d1, lct_k_add32(a1, b1))))
+## Poly1305 clamp: the five 26-bit limbs of r with the RFC 8439 2.5 bits cleared, and 5 * limb
+@secret
+@no_alloc
+fn lct_k_p_r0(t0: int) -> int
+    ensures result >= 0 and result <= 67108863
+= bit_and(t0, 67108863)
+@secret
+@no_alloc
+fn lct_k_p_r1(t0: int, t1: int) -> int
+    ensures result >= 0 and result <= 67108611
+= bit_and(bit_or(bit_shr(bit_and(t0, 4294967295), 26), bit_shl(bit_and(t1, 4294967295), 6)), 67108611)
+@secret
+@no_alloc
+fn lct_k_p_r2(t1: int, t2: int) -> int
+    ensures result >= 0 and result <= 67092735
+= bit_and(bit_or(bit_shr(bit_and(t1, 4294967295), 20), bit_shl(bit_and(t2, 4294967295), 12)), 67092735)
+@secret
+@no_alloc
+fn lct_k_p_r3(t2: int, t3: int) -> int = bit_and(bit_or(bit_shr(bit_and(t2, 4294967295), 14), bit_shl(bit_and(t3, 4294967295), 18)), 66076671)
+@secret
+@no_alloc
+fn lct_k_p_r4(t3: int) -> int
+    ensures result >= 0 and result <= 1048575
+= bit_and(bit_shr(bit_and(t3, 4294967295), 8), 1048575)
+@secret
+@no_alloc
+fn lct_k_p_x5(r: int) -> int
+    ensures result >= 0 and result <= 335544315
+= bit_and(r, 67108863) * 5
+## Poly1305 accumulate: h limb + message limb (the limbs of the 16-byte block t0..t3, bit 128 in `hibit`)
+@secret
+@no_alloc
+fn lct_k_p_m0(h0: int, t0: int) -> int = bit_and(h0, 134217727) + bit_and(t0, 67108863)
+@secret
+@no_alloc
+fn lct_k_p_m1(h1: int, t0: int, t1: int) -> int = bit_and(h1, 134217727) + bit_and(bit_or(bit_shr(bit_and(t0, 4294967295), 26), bit_shl(bit_and(t1, 4294967295), 6)), 67108863)
+@secret
+@no_alloc
+fn lct_k_p_m2(h2: int, t1: int, t2: int) -> int = bit_and(h2, 134217727) + bit_and(bit_or(bit_shr(bit_and(t1, 4294967295), 20), bit_shl(bit_and(t2, 4294967295), 12)), 67108863)
+@secret
+@no_alloc
+fn lct_k_p_m3(h3: int, t2: int, t3: int) -> int = bit_and(h3, 134217727) + bit_and(bit_or(bit_shr(bit_and(t2, 4294967295), 14), bit_shl(bit_and(t3, 4294967295), 18)), 67108863)
+@secret
+@no_alloc
+fn lct_k_p_m4(h4: int, t3: int, hibit: int) -> int = bit_and(h4, 134217727) + bit_or(bit_shr(bit_and(t3, 4294967295), 8), bit_and(hibit, 16777216))
+## Poly1305 multiply: one row of h * r mod 2^130 - 5 plus the carry of the previous row; then the limbs of the partly reduced h
+@secret
+@no_alloc
+fn lct_k_p_row(h0: int, h1: int, h2: int, h3: int, h4: int, x0: int, x1: int, x2: int, x3: int, x4: int, dprev: int) -> int = bit_and(h0, 268435455) * bit_and(x0, 536870911) + bit_and(h1, 268435455) * bit_and(x1, 536870911) + bit_and(h2, 268435455) * bit_and(x2, 536870911) + bit_and(h3, 268435455) * bit_and(x3, 536870911) + bit_and(h4, 268435455) * bit_and(x4, 536870911) + bit_shr(bit_and(dprev, 2305843009213693951), 26)
+@secret
+@no_alloc
+fn lct_k_p_lo26(d: int) -> int
+    ensures result >= 0 and result <= 67108863
+= bit_and(d, 67108863)
+@secret
+@no_alloc
+fn lct_k_p_f0(d0: int, d4: int) -> int = bit_and(d0, 67108863) + bit_shr(bit_and(d4, 2305843009213693951), 26) * 5
+@secret
+@no_alloc
+fn lct_k_p_h1(d1: int, f0: int) -> int = bit_and(d1, 67108863) + bit_shr(bit_and(f0, 2305843009213693951), 26)
+## Poly1305 final reduction: the carry chain, h + 5 - 2^130, its sign mask, the masked select and the addition of s mod 2^128
+@secret
+@no_alloc
+fn lct_k_p_cadd(prev: int, h: int) -> int = bit_and(h, 134217727) + bit_shr(bit_and(prev, 2305843009213693951), 26)
+@secret
+@no_alloc
+fn lct_k_p_cadd5(prev: int, h: int) -> int = bit_and(h, 134217727) + bit_shr(bit_and(prev, 2305843009213693951), 26) * 5
+@secret
+@no_alloc
+fn lct_k_p_g0(a0: int) -> int = bit_and(a0, 67108863) + 5
+@secret
+@no_alloc
+fn lct_k_p_g4(g3: int, a4: int) -> int = bit_and(a4, 67108863) + bit_shr(bit_and(g3, 2305843009213693951), 26) - 67108864
+@secret
+@no_alloc
+fn lct_k_p_keep(g4: int) -> int = bit_shr(g4, 62)
+@secret
+@no_alloc
+fn lct_k_p_pick(keep: int, a: int, g: int) -> int = ct_select(keep, a, bit_and(g, 67108863))
+@secret
+@no_alloc
+fn lct_k_p_pick4(keep: int, a4: int, g4: int) -> int = ct_select(keep, a4, g4)
+@secret
+@no_alloc
+fn lct_k_p_w0(f0: int, f1: int, p0: int) -> int = bit_and(bit_or(bit_and(f0, 67108863), bit_shl(bit_and(f1, 134217727), 26)), 4294967295) + bit_and(p0, 4294967295)
+@secret
+@no_alloc
+fn lct_k_p_w1(f1: int, f2: int, p1: int, w0: int) -> int = bit_and(bit_or(bit_shr(bit_and(f1, 134217727), 6), bit_shl(bit_and(f2, 134217727), 20)), 4294967295) + bit_and(p1, 4294967295) + bit_shr(bit_and(w0, 17179869183), 32)
+@secret
+@no_alloc
+fn lct_k_p_w2(f2: int, f3: int, p2: int, w1: int) -> int = bit_and(bit_or(bit_shr(bit_and(f2, 134217727), 12), bit_shl(bit_and(f3, 134217727), 14)), 4294967295) + bit_and(p2, 4294967295) + bit_shr(bit_and(w1, 17179869183), 32)
+@secret
+@no_alloc
+fn lct_k_p_w3(f3: int, f4: int, p3: int, w2: int) -> int = bit_and(bit_or(bit_shr(bit_and(f3, 134217727), 18), bit_shl(bit_and(f4, 134217727), 8)), 4294967295) + bit_and(p3, 4294967295) + bit_shr(bit_and(w2, 17179869183), 32)
+## conditional swap / masked select (mask 0: x, mask -1: y) and the masks 0 - bit and bit - 1
+@secret
+@no_alloc
+fn lct_k_sel(mask: int, x: int, y: int) -> int = bit_xor(x, bit_and(mask, bit_xor(x, y)))
+@secret
+@no_alloc
+fn lct_k_mask_neg(b: int) -> int
+    ensures result >= 0 - 1 and result <= 0
+= 0 - bit_and(b, 1)
+@secret
+@no_alloc
+fn lct_k_mask_dec(b: int) -> int
+    ensures result >= 0 - 1 and result <= 0
+= bit_and(b, 1) - 1
+## GF(2^255 - 19), signed 16-bit limbs: limb add / sub, the carry pass, the sixteen folded product columns, times 121665
+@secret
+@no_alloc
+fn lct_k_fe_add(x: int, y: int) -> int
+    ensures result >= 0 - 134217728 and result <= 134217726
+= (bit_and(x, 67108863) - bit_and(x, 67108864)) + (bit_and(y, 67108863) - bit_and(y, 67108864))
+@secret
+@no_alloc
+fn lct_k_fe_sub(x: int, y: int) -> int
+    ensures result >= 0 - 134217727 and result <= 134217727
+= (bit_and(x, 67108863) - bit_and(x, 67108864)) - (bit_and(y, 67108863) - bit_and(y, 67108864))
+@secret
+@no_alloc
+fn lct_k_car_c(t: int, c: int) -> int = bit_shr((bit_and(t, 1152921504606846975) - bit_and(t, 1152921504606846976)) + (bit_and(c, 35184372088831) - bit_and(c, 35184372088832)) + 65535, 16)
+@secret
+@no_alloc
+fn lct_k_car_l(t: int, c: int) -> int
+    ensures result >= 0 and result <= 65535
+= bit_and((bit_and(t, 1152921504606846975) - bit_and(t, 1152921504606846976)) + (bit_and(c, 35184372088831) - bit_and(c, 35184372088832)) + 65535, 65535)
+@secret
+@no_alloc
+fn lct_k_car_0(t0: int, c15: int) -> int = bit_and(t0, 65535) + 38 * ((bit_and(c15, 35184372088831) - bit_and(c15, 35184372088832)) - 1)
+@secret
+@no_alloc
+fn lct_k_fe_m0(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y0 + 38 * (x1 * y15 + x2 * y14 + x3 * y13 + x4 * y12 + x5 * y11 + x6 * y10 + x7 * y9 + x8 * y8 + x9 * y7 + x10 * y6 + x11 * y5 + x12 * y4 + x13 * y3 + x14 * y2 + x15 * y1)
+@secret
+@no_alloc
+fn lct_k_fe_m1(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y1 + x1 * y0 + 38 * (x2 * y15 + x3 * y14 + x4 * y13 + x5 * y12 + x6 * y11 + x7 * y10 + x8 * y9 + x9 * y8 + x10 * y7 + x11 * y6 + x12 * y5 + x13 * y4 + x14 * y3 + x15 * y2)
+@secret
+@no_alloc
+fn lct_k_fe_m2(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y2 + x1 * y1 + x2 * y0 + 38 * (x3 * y15 + x4 * y14 + x5 * y13 + x6 * y12 + x7 * y11 + x8 * y10 + x9 * y9 + x10 * y8 + x11 * y7 + x12 * y6 + x13 * y5 + x14 * y4 + x15 * y3)
+@secret
+@no_alloc
+fn lct_k_fe_m3(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y3 + x1 * y2 + x2 * y1 + x3 * y0 + 38 * (x4 * y15 + x5 * y14 + x6 * y13 + x7 * y12 + x8 * y11 + x9 * y10 + x10 * y9 + x11 * y8 + x12 * y7 + x13 * y6 + x14 * y5 + x15 * y4)
+@secret
+@no_alloc
+fn lct_k_fe_m4(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y4 + x1 * y3 + x2 * y2 + x3 * y1 + x4 * y0 + 38 * (x5 * y15 + x6 * y14 + x7 * y13 + x8 * y12 + x9 * y11 + x10 * y10 + x11 * y9 + x12 * y8 + x13 * y7 + x14 * y6 + x15 * y5)
+@secret
+@no_alloc
+fn lct_k_fe_m5(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y5 + x1 * y4 + x2 * y3 + x3 * y2 + x4 * y1 + x5 * y0 + 38 * (x6 * y15 + x7 * y14 + x8 * y13 + x9 * y12 + x10 * y11 + x11 * y10 + x12 * y9 + x13 * y8 + x14 * y7 + x15 * y6)
+@secret
+@no_alloc
+fn lct_k_fe_m6(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y6 + x1 * y5 + x2 * y4 + x3 * y3 + x4 * y2 + x5 * y1 + x6 * y0 + 38 * (x7 * y15 + x8 * y14 + x9 * y13 + x10 * y12 + x11 * y11 + x12 * y10 + x13 * y9 + x14 * y8 + x15 * y7)
+@secret
+@no_alloc
+fn lct_k_fe_m7(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y7 + x1 * y6 + x2 * y5 + x3 * y4 + x4 * y3 + x5 * y2 + x6 * y1 + x7 * y0 + 38 * (x8 * y15 + x9 * y14 + x10 * y13 + x11 * y12 + x12 * y11 + x13 * y10 + x14 * y9 + x15 * y8)
+@secret
+@no_alloc
+fn lct_k_fe_m8(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y8 + x1 * y7 + x2 * y6 + x3 * y5 + x4 * y4 + x5 * y3 + x6 * y2 + x7 * y1 + x8 * y0 + 38 * (x9 * y15 + x10 * y14 + x11 * y13 + x12 * y12 + x13 * y11 + x14 * y10 + x15 * y9)
+@secret
+@no_alloc
+fn lct_k_fe_m9(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y9 + x1 * y8 + x2 * y7 + x3 * y6 + x4 * y5 + x5 * y4 + x6 * y3 + x7 * y2 + x8 * y1 + x9 * y0 + 38 * (x10 * y15 + x11 * y14 + x12 * y13 + x13 * y12 + x14 * y11 + x15 * y10)
+@secret
+@no_alloc
+fn lct_k_fe_m10(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y10 + x1 * y9 + x2 * y8 + x3 * y7 + x4 * y6 + x5 * y5 + x6 * y4 + x7 * y3 + x8 * y2 + x9 * y1 + x10 * y0 + 38 * (x11 * y15 + x12 * y14 + x13 * y13 + x14 * y12 + x15 * y11)
+@secret
+@no_alloc
+fn lct_k_fe_m11(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y11 + x1 * y10 + x2 * y9 + x3 * y8 + x4 * y7 + x5 * y6 + x6 * y5 + x7 * y4 + x8 * y3 + x9 * y2 + x10 * y1 + x11 * y0 + 38 * (x12 * y15 + x13 * y14 + x14 * y13 + x15 * y12)
+@secret
+@no_alloc
+fn lct_k_fe_m12(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y12 + x1 * y11 + x2 * y10 + x3 * y9 + x4 * y8 + x5 * y7 + x6 * y6 + x7 * y5 + x8 * y4 + x9 * y3 + x10 * y2 + x11 * y1 + x12 * y0 + 38 * (x13 * y15 + x14 * y14 + x15 * y13)
+@secret
+@no_alloc
+fn lct_k_fe_m13(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y13 + x1 * y12 + x2 * y11 + x3 * y10 + x4 * y9 + x5 * y8 + x6 * y7 + x7 * y6 + x8 * y5 + x9 * y4 + x10 * y3 + x11 * y2 + x12 * y1 + x13 * y0 + 38 * (x14 * y15 + x15 * y14)
+@secret
+@no_alloc
+fn lct_k_fe_m14(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y14 + x1 * y13 + x2 * y12 + x3 * y11 + x4 * y10 + x5 * y9 + x6 * y8 + x7 * y7 + x8 * y6 + x9 * y5 + x10 * y4 + x11 * y3 + x12 * y2 + x13 * y1 + x14 * y0 + 38 * (x15 * y15)
+@secret
+@no_alloc
+fn lct_k_fe_m15(a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int, a8: int, a9: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int, b0: int, b1: int, b2: int, b3: int, b4: int, b5: int, b6: int, b7: int, b8: int, b9: int, b10: int, b11: int, b12: int, b13: int, b14: int, b15: int) -> int = let x0 = (bit_and(a0, 33554431) - bit_and(a0, 33554432)) in let x1 = (bit_and(a1, 33554431) - bit_and(a1, 33554432)) in let x2 = (bit_and(a2, 33554431) - bit_and(a2, 33554432)) in let x3 = (bit_and(a3, 33554431) - bit_and(a3, 33554432)) in let x4 = (bit_and(a4, 33554431) - bit_and(a4, 33554432)) in let x5 = (bit_and(a5, 33554431) - bit_and(a5, 33554432)) in let x6 = (bit_and(a6, 33554431) - bit_and(a6, 33554432)) in let x7 = (bit_and(a7, 33554431) - bit_and(a7, 33554432)) in let x8 = (bit_and(a8, 33554431) - bit_and(a8, 33554432)) in let x9 = (bit_and(a9, 33554431) - bit_and(a9, 33554432)) in let x10 = (bit_and(a10, 33554431) - bit_and(a10, 33554432)) in let x11 = (bit_and(a11, 33554431) - bit_and(a11, 33554432)) in let x12 = (bit_and(a12, 33554431) - bit_and(a12, 33554432)) in let x13 = (bit_and(a13, 33554431) - bit_and(a13, 33554432)) in let x14 = (bit_and(a14, 33554431) - bit_and(a14, 33554432)) in let x15 = (bit_and(a15, 33554431) - bit_and(a15, 33554432)) in let y0 = (bit_and(b0, 33554431) - bit_and(b0, 33554432)) in let y1 = (bit_and(b1, 33554431) - bit_and(b1, 33554432)) in let y2 = (bit_and(b2, 33554431) - bit_and(b2, 33554432)) in let y3 = (bit_and(b3, 33554431) - bit_and(b3, 33554432)) in let y4 = (bit_and(b4, 33554431) - bit_and(b4, 33554432)) in let y5 = (bit_and(b5, 33554431) - bit_and(b5, 33554432)) in let y6 = (bit_and(b6, 33554431) - bit_and(b6, 33554432)) in let y7 = (bit_and(b7, 33554431) - bit_and(b7, 33554432)) in let y8 = (bit_and(b8, 33554431) - bit_and(b8, 33554432)) in let y9 = (bit_and(b9, 33554431) - bit_and(b9, 33554432)) in let y10 = (bit_and(b10, 33554431) - bit_and(b10, 33554432)) in let y11 = (bit_and(b11, 33554431) - bit_and(b11, 33554432)) in let y12 = (bit_and(b12, 33554431) - bit_and(b12, 33554432)) in let y13 = (bit_and(b13, 33554431) - bit_and(b13, 33554432)) in let y14 = (bit_and(b14, 33554431) - bit_and(b14, 33554432)) in let y15 = (bit_and(b15, 33554431) - bit_and(b15, 33554432)) in x0 * y15 + x1 * y14 + x2 * y13 + x3 * y12 + x4 * y11 + x5 * y10 + x6 * y9 + x7 * y8 + x8 * y7 + x9 * y6 + x10 * y5 + x11 * y4 + x12 * y3 + x13 * y2 + x14 * y1 + x15 * y0
+@secret
+@no_alloc
+fn lct_k_fe_x121665(x: int) -> int = (bit_and(x, 67108863) - bit_and(x, 67108864)) * 121665
+## canonical encoding: limb - limb of p - borrow (the last limb unmasked), its low 16 bits, the borrow out
+@secret
+@no_alloc
+fn lct_k_pk_m(x: int, k: int, bor: int) -> int = (bit_and(x, 67108863) - bit_and(x, 67108864)) - bit_and(k, 65535) - bit_and(bor, 1)
+@secret
+@no_alloc
+fn lct_k_pk_lo(x: int, k: int, bor: int) -> int
+    ensures result >= 0 and result <= 65535
+= bit_and((bit_and(x, 67108863) - bit_and(x, 67108864)) - bit_and(k, 65535) - bit_and(bor, 1), 65535)
+@secret
+@no_alloc
+fn lct_k_pk_b(x: int, k: int, bor: int) -> int = bit_and(bit_shr((bit_and(x, 67108863) - bit_and(x, 67108864)) - bit_and(k, 65535) - bit_and(bor, 1), 16), 1)
+## scalar handling: the bits of a byte, the clamp, the double / subtract-L step mod L on 24-bit limbs, r + h * a on bytes
+@secret
+@no_alloc
+fn lct_k_bit0(b: int) -> int
+    ensures result >= 0 and result <= 1
+= bit_and(b, 1)
+@secret
+@no_alloc
+fn lct_k_bit1(b: int) -> int = bit_and(bit_shr(b, 1), 1)
+@secret
+@no_alloc
+fn lct_k_bit2(b: int) -> int = bit_and(bit_shr(b, 2), 1)
+@secret
+@no_alloc
+fn lct_k_bit3(b: int) -> int = bit_and(bit_shr(b, 3), 1)
+@secret
+@no_alloc
+fn lct_k_bit4(b: int) -> int = bit_and(bit_shr(b, 4), 1)
+@secret
+@no_alloc
+fn lct_k_bit5(b: int) -> int = bit_and(bit_shr(b, 5), 1)
+@secret
+@no_alloc
+fn lct_k_bit6(b: int) -> int = bit_and(bit_shr(b, 6), 1)
+@secret
+@no_alloc
+fn lct_k_bit7(b: int) -> int = bit_and(bit_shr(b, 7), 1)
+@secret
+@no_alloc
+fn lct_k_clamp_lo(h: int) -> int
+    ensures result >= 0 and result <= 248
+= bit_and(h, 248)
+@secret
+@no_alloc
+fn lct_k_clamp_hi(h: int) -> int = bit_or(bit_and(h, 127), 64)
+@secret
+@no_alloc
+fn lct_k_sc_dbl_lo(x: int, cin: int) -> int
+    ensures result >= 0 and result <= 16777215
+= bit_and(bit_and(x, 16777215) * 2 + bit_and(cin, 1), 16777215)
+@secret
+@no_alloc
+fn lct_k_sc_dbl_c(x: int, cin: int) -> int = bit_shr(bit_and(x, 16777215) * 2 + bit_and(cin, 1), 24)
+@secret
+@no_alloc
+fn lct_k_sc_sub_lo(x: int, l: int, bor: int) -> int
+    ensures result >= 0 and result <= 16777215
+= bit_and(bit_and(x, 16777215) - bit_and(l, 16777215) - bit_and(bor, 1), 16777215)
+@secret
+@no_alloc
+fn lct_k_sc_sub_b(x: int, l: int, bor: int) -> int = bit_and(bit_shr(bit_and(x, 16777215) - bit_and(l, 16777215) - bit_and(bor, 1), 24), 1)
+@secret
+@no_alloc
+fn lct_k_sc_mac(ai: int, bj: int, acc: int) -> int = bit_and(ai, 255) * bit_and(bj, 255) + bit_and(acc, 4294967295)
+@secret
+@no_alloc
+fn lct_k_sc_add(x: int, y: int) -> int = bit_and(x, 4294967295) + bit_and(y, 255)
+@secret
+@no_alloc
+fn lct_k_c256_lo(x: int, c: int) -> int
+    ensures result >= 0 and result <= 255
+= bit_and(bit_and(x, 8589934591) + bit_and(c, 8589934591), 255)
+@secret
+@no_alloc
+fn lct_k_c256_c(x: int, c: int) -> int = bit_shr(bit_and(x, 8589934591) + bit_and(c, 8589934591), 8)
+## SHA-256: a big-endian word, W[t] + K[t], the message schedule word, and the two new working variables of a round
+@secret
+@no_alloc
+fn lct_k_be32(a: int, b: int, c: int, d: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(a, 255) * 16777216 + bit_and(b, 255) * 65536 + bit_and(c, 255) * 256 + bit_and(d, 255)
+@secret
+@no_alloc
+fn lct_k_s256_wk(w: int, k: int) -> int = bit_and(w, 4294967295) + bit_and(k, 4294967295)
+@secret
+@no_alloc
+fn lct_k_s256_w(w16: int, w15: int, w7: int, w2: int) -> int = let x15 = bit_and(w15, 4294967295) in let x2 = bit_and(w2, 4294967295) in bit_and(bit_and(w16, 4294967295) + bit_xor(bit_xor(bit_or(bit_shr(x15, 7), bit_shl(bit_and(x15, 127), 25)), bit_or(bit_shr(x15, 18), bit_shl(bit_and(x15, 262143), 14))), bit_shr(x15, 3)) + bit_and(w7, 4294967295) + bit_xor(bit_xor(bit_or(bit_shr(x2, 17), bit_shl(bit_and(x2, 131071), 15)), bit_or(bit_shr(x2, 19), bit_shl(bit_and(x2, 524287), 13))), bit_shr(x2, 10)), 4294967295)
+@secret
+@no_alloc
+fn lct_k_s256_a(a: int, b: int, c: int, e: int, f: int, g: int, h: int, x: int) -> int = let a1 = bit_and(a, 4294967295) in let b1 = bit_and(b, 4294967295) in let c1 = bit_and(c, 4294967295) in let e1 = bit_and(e, 4294967295) in let f1 = bit_and(f, 4294967295) in let g1 = bit_and(g, 4294967295) in let h1 = bit_and(h, 4294967295) in bit_and(h1 + bit_xor(bit_xor(bit_or(bit_shr(e1, 6), bit_shl(bit_and(e1, 63), 26)), bit_or(bit_shr(e1, 11), bit_shl(bit_and(e1, 2047), 21))), bit_or(bit_shr(e1, 25), bit_shl(bit_and(e1, 33554431), 7))) + bit_xor(g1, bit_and(e1, bit_xor(f1, g1))) + bit_and(x, 8589934591) + bit_xor(bit_xor(bit_or(bit_shr(a1, 2), bit_shl(bit_and(a1, 3), 30)), bit_or(bit_shr(a1, 13), bit_shl(bit_and(a1, 8191), 19))), bit_or(bit_shr(a1, 22), bit_shl(bit_and(a1, 4194303), 10))) + bit_or(bit_and(a1, b1), bit_and(c1, bit_or(a1, b1))), 4294967295)
+@secret
+@no_alloc
+fn lct_k_s256_e(d: int, e: int, f: int, g: int, h: int, x: int) -> int = let e1 = bit_and(e, 4294967295) in let f1 = bit_and(f, 4294967295) in let g1 = bit_and(g, 4294967295) in let h1 = bit_and(h, 4294967295) in bit_and(bit_and(d, 4294967295) + h1 + bit_xor(bit_xor(bit_or(bit_shr(e1, 6), bit_shl(bit_and(e1, 63), 26)), bit_or(bit_shr(e1, 11), bit_shl(bit_and(e1, 2047), 21))), bit_or(bit_shr(e1, 25), bit_shl(bit_and(e1, 33554431), 7))) + bit_xor(g1, bit_and(e1, bit_xor(f1, g1))) + bit_and(x, 8589934591), 4294967295)
+## SHA-512 on 32-bit halves: the four sigma functions, the 64-bit addition, the schedule word and the round
+@secret
+@no_alloc
+fn lct_k_s512_s0h(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(h, 1), bit_shl(bit_and(l, 1), 31)), bit_or(bit_shr(h, 8), bit_shl(bit_and(l, 255), 24))), bit_shr(h, 7))
+@secret
+@no_alloc
+fn lct_k_s512_s0l(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(l, 1), bit_shl(bit_and(h, 1), 31)), bit_or(bit_shr(l, 8), bit_shl(bit_and(h, 255), 24))), bit_or(bit_shr(l, 7), bit_shl(bit_and(h, 127), 25)))
+@secret
+@no_alloc
+fn lct_k_s512_s1h(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(h, 19), bit_shl(bit_and(l, 524287), 13)), bit_or(bit_shr(l, 29), bit_shl(bit_and(h, 536870911), 3))), bit_shr(h, 6))
+@secret
+@no_alloc
+fn lct_k_s512_s1l(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(l, 19), bit_shl(bit_and(h, 524287), 13)), bit_or(bit_shr(h, 29), bit_shl(bit_and(l, 536870911), 3))), bit_or(bit_shr(l, 6), bit_shl(bit_and(h, 63), 26)))
+@secret
+@no_alloc
+fn lct_k_s512_b0h(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(h, 28), bit_shl(bit_and(l, 268435455), 4)), bit_or(bit_shr(l, 2), bit_shl(bit_and(h, 3), 30))), bit_or(bit_shr(l, 7), bit_shl(bit_and(h, 127), 25)))
+@secret
+@no_alloc
+fn lct_k_s512_b0l(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(l, 28), bit_shl(bit_and(h, 268435455), 4)), bit_or(bit_shr(h, 2), bit_shl(bit_and(l, 3), 30))), bit_or(bit_shr(h, 7), bit_shl(bit_and(l, 127), 25)))
+@secret
+@no_alloc
+fn lct_k_s512_b1h(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(h, 14), bit_shl(bit_and(l, 16383), 18)), bit_or(bit_shr(h, 18), bit_shl(bit_and(l, 262143), 14))), bit_or(bit_shr(l, 9), bit_shl(bit_and(h, 511), 23)))
+@secret
+@no_alloc
+fn lct_k_s512_b1l(hi: int, lo: int) -> int = let h = bit_and(hi, 4294967295) in let l = bit_and(lo, 4294967295) in bit_xor(bit_xor(bit_or(bit_shr(l, 14), bit_shl(bit_and(h, 16383), 18)), bit_or(bit_shr(l, 18), bit_shl(bit_and(h, 262143), 14))), bit_or(bit_shr(h, 9), bit_shl(bit_and(l, 511), 23)))
+@secret
+@no_alloc
+fn lct_k_add64_h(ah: int, al: int, bh: int, bl: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(bit_and(ah, 4294967295) + bit_and(bh, 4294967295) + bit_shr(bit_and(al, 4294967295) + bit_and(bl, 4294967295), 32), 4294967295)
+@secret
+@no_alloc
+fn lct_k_s512_wl(al: int, bl: int, cl: int, dl: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(bit_and(al, 4294967295) + bit_and(bl, 4294967295) + bit_and(cl, 4294967295) + bit_and(dl, 4294967295), 4294967295)
+@secret
+@no_alloc
+fn lct_k_s512_wh(ah: int, bh: int, ch: int, dh: int, al: int, bl: int, cl: int, dl: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(bit_and(ah, 4294967295) + bit_and(bh, 4294967295) + bit_and(ch, 4294967295) + bit_and(dh, 4294967295) + bit_shr(bit_and(al, 4294967295) + bit_and(bl, 4294967295) + bit_and(cl, 4294967295) + bit_and(dl, 4294967295), 32), 4294967295)
+@secret
+@no_alloc
+fn lct_k_s512_t1l(hl: int, s1l: int, el: int, fl: int, gl: int, xl: int) -> int = let e1 = bit_and(el, 4294967295) in let f1 = bit_and(fl, 4294967295) in let g1 = bit_and(gl, 4294967295) in bit_and(hl, 4294967295) + bit_and(s1l, 4294967295) + bit_xor(g1, bit_and(e1, bit_xor(f1, g1))) + bit_and(xl, 4294967295)
+@secret
+@no_alloc
+fn lct_k_s512_t1h(hh: int, s1h: int, eh: int, fh: int, gh: int, xh: int, t1l: int) -> int = let e1 = bit_and(eh, 4294967295) in let f1 = bit_and(fh, 4294967295) in let g1 = bit_and(gh, 4294967295) in bit_and(bit_and(hh, 4294967295) + bit_and(s1h, 4294967295) + bit_xor(g1, bit_and(e1, bit_xor(f1, g1))) + bit_and(xh, 4294967295) + bit_shr(bit_and(t1l, 17179869183), 32), 4294967295)
+@secret
+@no_alloc
+fn lct_k_s512_t2l(s0l: int, al: int, bl: int, cl: int) -> int = let a1 = bit_and(al, 4294967295) in let b1 = bit_and(bl, 4294967295) in let c1 = bit_and(cl, 4294967295) in bit_and(s0l, 4294967295) + bit_or(bit_and(a1, b1), bit_and(c1, bit_or(a1, b1)))
+@secret
+@no_alloc
+fn lct_k_s512_t2h(s0h: int, ah: int, bh: int, ch: int, t2l: int) -> int = let a1 = bit_and(ah, 4294967295) in let b1 = bit_and(bh, 4294967295) in let c1 = bit_and(ch, 4294967295) in bit_and(s0h, 4294967295) + bit_or(bit_and(a1, b1), bit_and(c1, bit_or(a1, b1))) + bit_shr(bit_and(t2l, 17179869183), 32)
+@secret
+@no_alloc
+fn lct_k_s512_al(t1l: int, t2l: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(bit_and(t1l, 4294967295) + bit_and(t2l, 4294967295), 4294967295)
+@secret
+@no_alloc
+fn lct_k_s512_ah(t1h: int, t2h: int, t1l: int, t2l: int) -> int
+    ensures result >= 0 and result <= 4294967295
+= bit_and(bit_and(t1h, 4294967295) + bit_and(t2h, 17179869183) + bit_shr(bit_and(t1l, 4294967295) + bit_and(t2l, 4294967295), 32), 4294967295)
+## entropy health check (the bytes checked become keys): max of two counts, the run length, the occurrence count
+@secret
+@no_alloc
+fn lct_k_max(a: int, b: int) -> int = let x = bit_and(a, 4294967295) in let y = bit_and(b, 4294967295) in ct_select(0 - bit_and(bit_shr(x - y, 62), 1), y, x)
+@secret
+@no_alloc
+fn lct_k_ent_run(run: int, h: int, prev: int) -> int = bit_and(bit_and(run, 4294967295), 0 - ct_eq(h, prev)) + 1
+@secret
+@no_alloc
+fn lct_k_ent_cnt(c: int, h: int, v: int) -> int = bit_and(c, 4294967295) + ct_eq(h, v)
+@secret
+@no_alloc
+fn lct_k_eqbit(a: int, b: int) -> int
+    ensures result >= 0 and result <= 1
+= ct_eq(a, b)
+
 ## --- 32-bit words -------------------------------------------------------------------------------------------------
-fn lct_rotr32(x, n) = bit_or(bit_shr(x, n), bit_and(bit_shl(x, 32 - n), 4294967295))
-fn lct_rotl32(x, n) = bit_or(bit_and(bit_shl(x, n), 4294967295), bit_shr(x, 32 - n))
 fn lct_be32_1(bs, k, acc) = match bs
-    Cons(a, Cons(b, Cons(c, Cons(d, r)))) => lct_be32(r, k - 1, Cons(a * 16777216 + b * 65536 + c * 256 + d, acc))
+    Cons(a, Cons(b, Cons(c, Cons(d, r)))) => lct_be32(r, k - 1, Cons(lct_k_be32(a, b, c, d), acc))
     _                                     => {w: acc, rest: Nil}
 ## read k big-endian 32-bit words: {w: the words, LAST ONE FIRST, rest}
 fn lct_be32(bs, k, acc) = if k <= 0 then {w: acc, rest: bs} else lct_be32_1(bs, k, acc)
 fn lct_le32_take(bs) = match bs
-    Cons(a, Cons(b, Cons(c, Cons(d, r)))) => {v: a + b * 256 + c * 65536 + d * 16777216, rest: r}
+    Cons(a, Cons(b, Cons(c, Cons(d, r)))) => {v: lct_k_le32(a, b, c, d), rest: r}
     _                                     => {v: 0, rest: Nil}
-fn lct_be32_push(w, acc) = Cons(bit_shr(w, 24), Cons(bit_and(bit_shr(w, 16), 255), Cons(bit_and(bit_shr(w, 8), 255), Cons(bit_and(w, 255), acc))))
-fn lct_le32_push(w, acc) = Cons(bit_and(w, 255), Cons(bit_and(bit_shr(w, 8), 255), Cons(bit_and(bit_shr(w, 16), 255), Cons(bit_and(bit_shr(w, 24), 255), acc))))
+fn lct_be32_push(w, acc) = Cons(lct_k_byte3(w), Cons(lct_k_byte2(w), Cons(lct_k_byte1(w), Cons(lct_k_byte0(w), acc))))
+fn lct_le32_push(w, acc) = Cons(lct_k_byte0(w), Cons(lct_k_byte1(w), Cons(lct_k_byte2(w), Cons(lct_k_byte3(w), acc))))
 fn lct_be64_push(v, acc) = Cons(bit_and(bit_shr(v, 56), 255), Cons(bit_and(bit_shr(v, 48), 255), Cons(bit_and(bit_shr(v, 40), 255), Cons(bit_and(bit_shr(v, 32), 255), Cons(bit_and(bit_shr(v, 24), 255), Cons(bit_and(bit_shr(v, 16), 255), Cons(bit_and(bit_shr(v, 8), 255), Cons(bit_and(v, 255), acc))))))))
 fn lct_le64_push(v, acc) = Cons(bit_and(v, 255), Cons(bit_and(bit_shr(v, 8), 255), Cons(bit_and(bit_shr(v, 16), 255), Cons(bit_and(bit_shr(v, 24), 255), Cons(bit_and(bit_shr(v, 32), 255), Cons(bit_and(bit_shr(v, 40), 255), Cons(bit_and(bit_shr(v, 48), 255), Cons(bit_and(bit_shr(v, 56), 255), acc))))))))
 fn lct_nth(xs, i) = match xs
@@ -154,15 +642,15 @@ fn lct_nth(xs, i) = match xs
 
 ## --- SHA-256 (FIPS 180-4) -----------------------------------------------------------------------------------------
 ## the schedule is kept newest word first, so W[t-2], W[t-7], W[t-15], W[t-16] are at depths 1, 6, 14, 15
-fn lct_s256_expand(t, w) = if t >= 64 then w else let x15 = lct_nth(w, 14) in let x2 = lct_nth(w, 1) in lct_s256_expand(t + 1, Cons(bit_and(lct_nth(w, 15) + bit_xor(bit_xor(lct_rotr32(x15, 7), lct_rotr32(x15, 18)), bit_shr(x15, 3)) + lct_nth(w, 6) + bit_xor(bit_xor(lct_rotr32(x2, 17), lct_rotr32(x2, 19)), bit_shr(x2, 10)), 4294967295), w))
+fn lct_s256_expand(t, w) = if t >= 64 then w else lct_s256_expand(t + 1, Cons(lct_k_s256_w(lct_nth(w, 15), lct_nth(w, 14), lct_nth(w, 6), lct_nth(w, 1)), w))
 ## (W newest first) + (K last first) -> W[t] + K[t], oldest first
 fn lct_zip_add_rev(ws, ks, acc) = match ws
     Nil        => acc
-    Cons(w, r) => lct_zip_add_rev(r, lct_tl(ks), Cons(w + lct_hd(ks), acc))
+    Cons(w, r) => lct_zip_add_rev(r, lct_tl(ks), Cons(lct_k_s256_wk(w, lct_hd(ks)), acc))
 fn lct_s256_rounds(kw, a, b, c, d, e, f, g, h) = match kw
     Nil        => {a: a, b: b, c: c, d: d, e: e, f: f, g: g, h: h}
-    Cons(x, r) => let t1 = h + bit_xor(bit_xor(lct_rotr32(e, 6), lct_rotr32(e, 11)), lct_rotr32(e, 25)) + bit_xor(g, bit_and(e, bit_xor(f, g))) + x in let t2 = bit_xor(bit_xor(lct_rotr32(a, 2), lct_rotr32(a, 13)), lct_rotr32(a, 22)) + bit_or(bit_and(a, b), bit_and(c, bit_or(a, b))) in lct_s256_rounds(r, bit_and(t1 + t2, 4294967295), a, b, c, bit_and(d + t1, 4294967295), e, f, g)
-fn lct_s256_block(w16, st) = let r = lct_s256_rounds(lct_zip_add_rev(lct_s256_expand(16, w16), lct_sha256_k_rev(), Nil), st.a, st.b, st.c, st.d, st.e, st.f, st.g, st.h) in {a: bit_and(st.a + r.a, 4294967295), b: bit_and(st.b + r.b, 4294967295), c: bit_and(st.c + r.c, 4294967295), d: bit_and(st.d + r.d, 4294967295), e: bit_and(st.e + r.e, 4294967295), f: bit_and(st.f + r.f, 4294967295), g: bit_and(st.g + r.g, 4294967295), h: bit_and(st.h + r.h, 4294967295)}
+    Cons(x, r) => lct_s256_rounds(r, lct_k_s256_a(a, b, c, e, f, g, h, x), a, b, c, lct_k_s256_e(d, e, f, g, h, x), e, f, g)
+fn lct_s256_block(w16, st) = let r = lct_s256_rounds(lct_zip_add_rev(lct_s256_expand(16, w16), lct_sha256_k_rev(), Nil), st.a, st.b, st.c, st.d, st.e, st.f, st.g, st.h) in {a: lct_k_add32(st.a, r.a), b: lct_k_add32(st.b, r.b), c: lct_k_add32(st.c, r.c), d: lct_k_add32(st.d, r.d), e: lct_k_add32(st.e, r.e), f: lct_k_add32(st.f, r.f), g: lct_k_add32(st.g, r.g), h: lct_k_add32(st.h, r.h)}
 fn lct_s256_tail(bs, st) = if lct_isnil(bs) == 1 then st else let r = lct_be32(bs, 16, Nil) in lct_s256_tail(r.rest, lct_s256_block(r.w, st))
 fn lct_s256_run(bs, left, total, st) = if left >= 64 then (let r = lct_be32(bs, 16, Nil) in lct_s256_run(r.rest, left - 64, total, lct_s256_block(r.w, st))) else lct_s256_tail(lct_app(bs, Cons(128, lct_repeat(0, lct_sha256_pad_zeros(left), lct_be64_push(total * 8, Nil)))), st)
 fn lct_sha256(bs) = let n = lct_len(bs) in let st = lct_s256_run(bs, n, n, {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in lct_be32_push(st.a, lct_be32_push(st.b, lct_be32_push(st.c, lct_be32_push(st.d, lct_be32_push(st.e, lct_be32_push(st.f, lct_be32_push(st.g, lct_be32_push(st.h, Nil))))))))
@@ -171,24 +659,24 @@ fn lct_sha256(bs) = let n = lct_len(bs) in let st = lct_s256_run(bs, n, n, {a: 1
 ## A Lume integer carries 63 bits inline; a value outside -2^62 .. 2^62 - 1 is boxed on the heap. SHA-512 on native
 ## 64-bit words therefore allocated (and took time) according to the top two bits of every intermediate word -- of
 ## secret words when Ed25519 hashes its seed and nonce prefix. The dudect gate measured that dependence (|t| above 40
-## at 25,000 samples per class). On halves every value stays below 2^36 and every operation costs the same.
+## at 25,000 samples per class). On halves, inside the kernels, every value provably stays in the immediate range:
+## a half rotation is bit_or(bit_shr(a, n), bit_shl(bit_and(b, 2^n - 1), 32 - n)), masked BEFORE the shift (the
+## earlier bit_and(bit_shl(b, 32 - n), 2^32 - 1) boxed b * 2^31 for n = 1 when bit 31 of b was set).
 fn lct_w64(hi, lo) = {h: hi, l: lo}
-fn lct_add64(a, b) = let l = a.l + b.l in {h: bit_and(a.h + b.h + bit_shr(l, 32), 4294967295), l: bit_and(l, 4294967295)}
-## one half of a 64-bit rotation / shift right by n, 0 < n < 32: `a` shifted down, the low n bits of `b` shifted in on top
-fn lct_r64(a, b, n) = bit_or(bit_shr(a, n), bit_and(bit_shl(b, 32 - n), 4294967295))
+fn lct_add64(a, b) = {h: lct_k_add64_h(a.h, a.l, b.h, b.l), l: lct_k_add32(a.l, b.l)}
 ## sigma0 = ROTR 1 ^ ROTR 8 ^ SHR 7, sigma1 = ROTR 19 ^ ROTR 61 ^ SHR 6, Sigma0 = ROTR 28 ^ ROTR 34 ^ ROTR 39,
 ## Sigma1 = ROTR 14 ^ ROTR 18 ^ ROTR 41 (a rotation by 32 + m swaps the halves and rotates by m)
-fn lct_s512_s0(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_r64(h, l, 1), lct_r64(h, l, 8)), bit_shr(h, 7)), l: bit_xor(bit_xor(lct_r64(l, h, 1), lct_r64(l, h, 8)), lct_r64(l, h, 7))}
-fn lct_s512_s1(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_r64(h, l, 19), lct_r64(l, h, 29)), bit_shr(h, 6)), l: bit_xor(bit_xor(lct_r64(l, h, 19), lct_r64(h, l, 29)), lct_r64(l, h, 6))}
-fn lct_s512_b0(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_r64(h, l, 28), lct_r64(l, h, 2)), lct_r64(l, h, 7)), l: bit_xor(bit_xor(lct_r64(l, h, 28), lct_r64(h, l, 2)), lct_r64(h, l, 7))}
-fn lct_s512_b1(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_r64(h, l, 14), lct_r64(h, l, 18)), lct_r64(l, h, 9)), l: bit_xor(bit_xor(lct_r64(l, h, 14), lct_r64(l, h, 18)), lct_r64(h, l, 9))}
-fn lct_s512_expand(t, w) = if t >= 80 then w else let a = lct_nth(w, 15) in let b = lct_s512_s0(lct_nth(w, 14)) in let c = lct_nth(w, 6) in let d = lct_s512_s1(lct_nth(w, 1)) in let l = a.l + b.l + c.l + d.l in lct_s512_expand(t + 1, Cons({h: bit_and(a.h + b.h + c.h + d.h + bit_shr(l, 32), 4294967295), l: bit_and(l, 4294967295)}, w))
+fn lct_s512_s0(x) = {h: lct_k_s512_s0h(x.h, x.l), l: lct_k_s512_s0l(x.h, x.l)}
+fn lct_s512_s1(x) = {h: lct_k_s512_s1h(x.h, x.l), l: lct_k_s512_s1l(x.h, x.l)}
+fn lct_s512_b0(x) = {h: lct_k_s512_b0h(x.h, x.l), l: lct_k_s512_b0l(x.h, x.l)}
+fn lct_s512_b1(x) = {h: lct_k_s512_b1h(x.h, x.l), l: lct_k_s512_b1l(x.h, x.l)}
+fn lct_s512_expand(t, w) = if t >= 80 then w else let a = lct_nth(w, 15) in let b = lct_s512_s0(lct_nth(w, 14)) in let c = lct_nth(w, 6) in let d = lct_s512_s1(lct_nth(w, 1)) in lct_s512_expand(t + 1, Cons({h: lct_k_s512_wh(a.h, b.h, c.h, d.h, a.l, b.l, c.l, d.l), l: lct_k_s512_wl(a.l, b.l, c.l, d.l)}, w))
 fn lct_zip_addw_rev(ws, ks, acc) = match ws
     Nil        => acc
     Cons(w, r) => lct_zip_addw_rev(r, lct_tl(ks), Cons(lct_add64(w, lct_hd(ks)), acc))
 fn lct_s512_rounds(kw, a, b, c, d, e, f, g, h) = match kw
     Nil        => {a: a, b: b, c: c, d: d, e: e, f: f, g: g, h: h}
-    Cons(x, r) => let s1 = lct_s512_b1(e) in let s0 = lct_s512_b0(a) in let t1l = h.l + s1.l + bit_xor(g.l, bit_and(e.l, bit_xor(f.l, g.l))) + x.l in let t1h = bit_and(h.h + s1.h + bit_xor(g.h, bit_and(e.h, bit_xor(f.h, g.h))) + x.h + bit_shr(t1l, 32), 4294967295) in let t1m = bit_and(t1l, 4294967295) in let t2l = s0.l + bit_or(bit_and(a.l, b.l), bit_and(c.l, bit_or(a.l, b.l))) in let t2h = s0.h + bit_or(bit_and(a.h, b.h), bit_and(c.h, bit_or(a.h, b.h))) + bit_shr(t2l, 32) in let al = t1m + bit_and(t2l, 4294967295) in let el = d.l + t1m in lct_s512_rounds(r, {h: bit_and(t1h + t2h + bit_shr(al, 32), 4294967295), l: bit_and(al, 4294967295)}, a, b, c, {h: bit_and(d.h + t1h + bit_shr(el, 32), 4294967295), l: bit_and(el, 4294967295)}, e, f, g)
+    Cons(x, r) => let s1 = lct_s512_b1(e) in let s0 = lct_s512_b0(a) in let t1l = lct_k_s512_t1l(h.l, s1.l, e.l, f.l, g.l, x.l) in let t1h = lct_k_s512_t1h(h.h, s1.h, e.h, f.h, g.h, x.h, t1l) in let t2l = lct_k_s512_t2l(s0.l, a.l, b.l, c.l) in let t2h = lct_k_s512_t2h(s0.h, a.h, b.h, c.h, t2l) in lct_s512_rounds(r, {h: lct_k_s512_ah(t1h, t2h, t1l, t2l), l: lct_k_s512_al(t1l, t2l)}, a, b, c, {h: lct_k_add64_h(d.h, d.l, t1h, t1l), l: lct_k_add32(d.l, t1l)}, e, f, g)
 fn lct_s512_pair(ws, acc) = match ws
     Cons(lo, Cons(hi, r)) => lct_s512_pair(r, Cons(lct_w64(hi, lo), acc))
     _                     => acc
@@ -199,7 +687,7 @@ fn lct_w64_push(w, acc) = lct_be32_push(w.h, lct_be32_push(w.l, acc))
 fn lct_sha512(bs) = let n = lct_len(bs) in let st = lct_s512_run(bs, n, n, {a: lct_w64(1779033703, 4089235720), b: lct_w64(3144134277, 2227873595), c: lct_w64(1013904242, 4271175723), d: lct_w64(2773480762, 1595750129), e: lct_w64(1359893119, 2917565137), f: lct_w64(2600822924, 725511199), g: lct_w64(528734635, 4215389547), h: lct_w64(1541459225, 327033209)}) in lct_w64_push(st.a, lct_w64_push(st.b, lct_w64_push(st.c, lct_w64_push(st.d, lct_w64_push(st.e, lct_w64_push(st.f, lct_w64_push(st.g, lct_w64_push(st.h, Nil))))))))
 
 ## --- HMAC-SHA256 (RFC 2104) and HKDF-SHA256 (RFC 5869) ---------------------------------------------------------------
-fn lct_hmac_pad(key, c, n, acc) = if n <= 0 then lct_rev(acc) else lct_hmac_pad(lct_tl(key), c, n - 1, Cons(bit_xor(lct_hd(key), c), acc))
+fn lct_hmac_pad(key, c, n, acc) = if n <= 0 then lct_rev(acc) else lct_hmac_pad(lct_tl(key), c, n - 1, Cons(lct_k_xor(lct_hd(key), c), acc))
 fn lct_hmac_sha256(key, msg) = let k = if lct_len(key) > 64 then lct_sha256(key) else key in lct_sha256(lct_app(lct_hmac_pad(k, 92, 64, Nil), lct_sha256(lct_app(lct_hmac_pad(k, 54, 64, Nil), msg))))
 fn lct_hkdf_extract(salt, ikm) = lct_hmac_sha256(if lct_isnil(salt) == 1 then lct_zeros(32) else salt, ikm)
 fn lct_hkdf_x(prk, info, prev, i, left, out) = if left <= 0 then out else let t = lct_hmac_sha256(prk, lct_app(prev, lct_app(info, Cons(i, Nil)))) in lct_hkdf_x(prk, info, t, i + 1, left - 32, lct_app(out, t))
@@ -207,17 +695,17 @@ fn lct_hkdf_expand(prk, info, len) = lct_take(lct_hkdf_x(prk, info, Nil, 1, len,
 fn lct_hkdf(salt, ikm, info, len) = lct_hkdf_expand(lct_hkdf_extract(salt, ikm), info, len)
 
 ## --- ChaCha20 (RFC 8439 section 2.1 - 2.4) ----------------------------------------------------------------------------
-fn lct_cc_qr(a, b, c, d) = let a1 = bit_and(a + b, 4294967295) in let d1 = lct_rotl32(bit_xor(d, a1), 16) in let c1 = bit_and(c + d1, 4294967295) in let b1 = lct_rotl32(bit_xor(b, c1), 12) in let a2 = bit_and(a1 + b1, 4294967295) in let d2 = lct_rotl32(bit_xor(d1, a2), 8) in let c2 = bit_and(c1 + d2, 4294967295) in {a: a2, b: lct_rotl32(bit_xor(b1, c2), 7), c: c2, d: d2}
+fn lct_cc_qr(a, b, c, d) = {a: lct_k_qr_a(a, b, c, d), b: lct_k_qr_b(a, b, c, d), c: lct_k_qr_c(a, b, c, d), d: lct_k_qr_d(a, b, c, d)}
 ## one column round and one diagonal round
 fn lct_cc_dround(s) = let q0 = lct_cc_qr(s.x0, s.x4, s.x8, s.x12) in let q1 = lct_cc_qr(s.x1, s.x5, s.x9, s.x13) in let q2 = lct_cc_qr(s.x2, s.x6, s.x10, s.x14) in let q3 = lct_cc_qr(s.x3, s.x7, s.x11, s.x15) in let d0 = lct_cc_qr(q0.a, q1.b, q2.c, q3.d) in let d1 = lct_cc_qr(q1.a, q2.b, q3.c, q0.d) in let d2 = lct_cc_qr(q2.a, q3.b, q0.c, q1.d) in let d3 = lct_cc_qr(q3.a, q0.b, q1.c, q2.d) in {x0: d0.a, x1: d1.a, x2: d2.a, x3: d3.a, x4: d3.b, x5: d0.b, x6: d1.b, x7: d2.b, x8: d2.c, x9: d3.c, x10: d0.c, x11: d1.c, x12: d1.d, x13: d2.d, x14: d3.d, x15: d0.d}
 fn lct_cc_iter(s, n) = if n <= 0 then s else lct_cc_iter(lct_cc_dround(s), n - 1)
 ## the key and nonce as little-endian words
 fn lct_cc_key(key, nonce) = let a0 = lct_le32_take(key) in let a1 = lct_le32_take(a0.rest) in let a2 = lct_le32_take(a1.rest) in let a3 = lct_le32_take(a2.rest) in let a4 = lct_le32_take(a3.rest) in let a5 = lct_le32_take(a4.rest) in let a6 = lct_le32_take(a5.rest) in let a7 = lct_le32_take(a6.rest) in let n0 = lct_le32_take(nonce) in let n1 = lct_le32_take(n0.rest) in let n2 = lct_le32_take(n1.rest) in {k0: a0.v, k1: a1.v, k2: a2.v, k3: a3.v, k4: a4.v, k5: a5.v, k6: a6.v, k7: a7.v, n0: n0.v, n1: n1.v, n2: n2.v}
-fn lct_cc_block(ks, ctr) = let i = {x0: 1634760805, x1: 857760878, x2: 2036477234, x3: 1797285236, x4: ks.k0, x5: ks.k1, x6: ks.k2, x7: ks.k3, x8: ks.k4, x9: ks.k5, x10: ks.k6, x11: ks.k7, x12: bit_and(ctr, 4294967295), x13: ks.n0, x14: ks.n1, x15: ks.n2} in let s = lct_cc_iter(i, 10) in lct_le32_push(bit_and(s.x0 + i.x0, 4294967295), lct_le32_push(bit_and(s.x1 + i.x1, 4294967295), lct_le32_push(bit_and(s.x2 + i.x2, 4294967295), lct_le32_push(bit_and(s.x3 + i.x3, 4294967295), lct_le32_push(bit_and(s.x4 + i.x4, 4294967295), lct_le32_push(bit_and(s.x5 + i.x5, 4294967295), lct_le32_push(bit_and(s.x6 + i.x6, 4294967295), lct_le32_push(bit_and(s.x7 + i.x7, 4294967295), lct_le32_push(bit_and(s.x8 + i.x8, 4294967295), lct_le32_push(bit_and(s.x9 + i.x9, 4294967295), lct_le32_push(bit_and(s.x10 + i.x10, 4294967295), lct_le32_push(bit_and(s.x11 + i.x11, 4294967295), lct_le32_push(bit_and(s.x12 + i.x12, 4294967295), lct_le32_push(bit_and(s.x13 + i.x13, 4294967295), lct_le32_push(bit_and(s.x14 + i.x14, 4294967295), lct_le32_push(bit_and(s.x15 + i.x15, 4294967295), Nil))))))))))))))))
+fn lct_cc_block(ks, ctr) = let i = {x0: 1634760805, x1: 857760878, x2: 2036477234, x3: 1797285236, x4: ks.k0, x5: ks.k1, x6: ks.k2, x7: ks.k3, x8: ks.k4, x9: ks.k5, x10: ks.k6, x11: ks.k7, x12: bit_and(ctr, 4294967295), x13: ks.n0, x14: ks.n1, x15: ks.n2} in let s = lct_cc_iter(i, 10) in lct_le32_push(lct_k_add32(s.x0, i.x0), lct_le32_push(lct_k_add32(s.x1, i.x1), lct_le32_push(lct_k_add32(s.x2, i.x2), lct_le32_push(lct_k_add32(s.x3, i.x3), lct_le32_push(lct_k_add32(s.x4, i.x4), lct_le32_push(lct_k_add32(s.x5, i.x5), lct_le32_push(lct_k_add32(s.x6, i.x6), lct_le32_push(lct_k_add32(s.x7, i.x7), lct_le32_push(lct_k_add32(s.x8, i.x8), lct_le32_push(lct_k_add32(s.x9, i.x9), lct_le32_push(lct_k_add32(s.x10, i.x10), lct_le32_push(lct_k_add32(s.x11, i.x11), lct_le32_push(lct_k_add32(s.x12, i.x12), lct_le32_push(lct_k_add32(s.x13, i.x13), lct_le32_push(lct_k_add32(s.x14, i.x14), lct_le32_push(lct_k_add32(s.x15, i.x15), Nil))))))))))))))))
 fn lct_chacha20_block(key, counter, nonce) = lct_cc_block(lct_cc_key(key, nonce), counter)
 fn lct_cc_xor_take1(data, k, kr, acc) = match data
     Nil        => {rest: Nil, acc: acc}
-    Cons(d, r) => lct_cc_xor_take(r, kr, Cons(bit_xor(d, k), acc))
+    Cons(d, r) => lct_cc_xor_take(r, kr, Cons(lct_k_xor(d, k), acc))
 fn lct_cc_xor_take(data, kb, acc) = match kb
     Nil        => {rest: data, acc: acc}
     Cons(k, r) => lct_cc_xor_take1(data, k, r, acc)
@@ -226,11 +714,11 @@ fn lct_cc_xor(ks, ctr, data, acc) = if lct_isnil(data) == 1 then lct_rev(acc) el
 fn lct_chacha20_xor(key, counter, nonce, data) = lct_cc_xor(lct_cc_key(key, nonce), counter, data, Nil)
 
 ## --- Poly1305 (RFC 8439 section 2.5): h = (h + block) * r mod 2^130 - 5 on five 26-bit limbs -----------------------------
-fn lct_p_key(key) = let t0 = lct_le32_take(key) in let t1 = lct_le32_take(t0.rest) in let t2 = lct_le32_take(t1.rest) in let t3 = lct_le32_take(t2.rest) in let s0 = lct_le32_take(t3.rest) in let s1 = lct_le32_take(s0.rest) in let s2 = lct_le32_take(s1.rest) in let s3 = lct_le32_take(s2.rest) in let r1 = bit_and(bit_or(bit_shr(t0.v, 26), bit_shl(t1.v, 6)), 67108611) in let r2 = bit_and(bit_or(bit_shr(t1.v, 20), bit_shl(t2.v, 12)), 67092735) in let r3 = bit_and(bit_or(bit_shr(t2.v, 14), bit_shl(t3.v, 18)), 66076671) in let r4 = bit_and(bit_shr(t3.v, 8), 1048575) in {r0: bit_and(t0.v, 67108863), r1: r1, r2: r2, r3: r3, r4: r4, s1: r1 * 5, s2: r2 * 5, s3: r3 * 5, s4: r4 * 5, p0: s0.v, p1: s1.v, p2: s2.v, p3: s3.v}
-fn lct_p_block(h, k, t0, t1, t2, t3, hibit) = let h0 = h.h0 + bit_and(t0, 67108863) in let h1 = h.h1 + bit_and(bit_or(bit_shr(t0, 26), bit_shl(t1, 6)), 67108863) in let h2 = h.h2 + bit_and(bit_or(bit_shr(t1, 20), bit_shl(t2, 12)), 67108863) in let h3 = h.h3 + bit_and(bit_or(bit_shr(t2, 14), bit_shl(t3, 18)), 67108863) in let h4 = h.h4 + bit_or(bit_shr(t3, 8), hibit) in let d0 = h0 * k.r0 + h1 * k.s4 + h2 * k.s3 + h3 * k.s2 + h4 * k.s1 in let d1 = h0 * k.r1 + h1 * k.r0 + h2 * k.s4 + h3 * k.s3 + h4 * k.s2 + bit_shr(d0, 26) in let d2 = h0 * k.r2 + h1 * k.r1 + h2 * k.r0 + h3 * k.s4 + h4 * k.s3 + bit_shr(d1, 26) in let d3 = h0 * k.r3 + h1 * k.r2 + h2 * k.r1 + h3 * k.r0 + h4 * k.s4 + bit_shr(d2, 26) in let d4 = h0 * k.r4 + h1 * k.r3 + h2 * k.r2 + h3 * k.r1 + h4 * k.r0 + bit_shr(d3, 26) in let f0 = bit_and(d0, 67108863) + bit_shr(d4, 26) * 5 in {h0: bit_and(f0, 67108863), h1: bit_and(d1, 67108863) + bit_shr(f0, 26), h2: bit_and(d2, 67108863), h3: bit_and(d3, 67108863), h4: bit_and(d4, 67108863)}
+fn lct_p_key(key) = let t0 = lct_le32_take(key) in let t1 = lct_le32_take(t0.rest) in let t2 = lct_le32_take(t1.rest) in let t3 = lct_le32_take(t2.rest) in let s0 = lct_le32_take(t3.rest) in let s1 = lct_le32_take(s0.rest) in let s2 = lct_le32_take(s1.rest) in let s3 = lct_le32_take(s2.rest) in let r1 = lct_k_p_r1(t0.v, t1.v) in let r2 = lct_k_p_r2(t1.v, t2.v) in let r3 = lct_k_p_r3(t2.v, t3.v) in let r4 = lct_k_p_r4(t3.v) in {r0: lct_k_p_r0(t0.v), r1: r1, r2: r2, r3: r3, r4: r4, s1: lct_k_p_x5(r1), s2: lct_k_p_x5(r2), s3: lct_k_p_x5(r3), s4: lct_k_p_x5(r4), p0: s0.v, p1: s1.v, p2: s2.v, p3: s3.v}
+fn lct_p_block(h, k, t0, t1, t2, t3, hibit) = let h0 = lct_k_p_m0(h.h0, t0) in let h1 = lct_k_p_m1(h.h1, t0, t1) in let h2 = lct_k_p_m2(h.h2, t1, t2) in let h3 = lct_k_p_m3(h.h3, t2, t3) in let h4 = lct_k_p_m4(h.h4, t3, hibit) in let d0 = lct_k_p_row(h0, h1, h2, h3, h4, k.r0, k.s4, k.s3, k.s2, k.s1, 0) in let d1 = lct_k_p_row(h0, h1, h2, h3, h4, k.r1, k.r0, k.s4, k.s3, k.s2, d0) in let d2 = lct_k_p_row(h0, h1, h2, h3, h4, k.r2, k.r1, k.r0, k.s4, k.s3, d1) in let d3 = lct_k_p_row(h0, h1, h2, h3, h4, k.r3, k.r2, k.r1, k.r0, k.s4, d2) in let d4 = lct_k_p_row(h0, h1, h2, h3, h4, k.r4, k.r3, k.r2, k.r1, k.r0, d3) in let f0 = lct_k_p_f0(d0, d4) in {h0: lct_k_p_lo26(f0), h1: lct_k_p_h1(d1, f0), h2: lct_k_p_lo26(d2), h3: lct_k_p_lo26(d3), h4: lct_k_p_lo26(d4)}
 fn lct_p_run(bs, left, k, h) = if left >= 16 then (let a = lct_le32_take(bs) in let b = lct_le32_take(a.rest) in let c = lct_le32_take(b.rest) in let d = lct_le32_take(c.rest) in lct_p_run(d.rest, left - 16, k, lct_p_block(h, k, a.v, b.v, c.v, d.v, 16777216))) else if left > 0 then (let a = lct_le32_take(lct_app(bs, Cons(1, lct_zeros(15 - left)))) in let b = lct_le32_take(a.rest) in let c = lct_le32_take(b.rest) in let d = lct_le32_take(c.rest) in lct_p_block(h, k, a.v, b.v, c.v, d.v, 0)) else h
 ## full carry, then h - p is computed and selected by the sign mask (no branch on h), then s is added mod 2^128
-fn lct_p_finish(h, k) = let c1 = bit_shr(h.h1, 26) in let a1 = bit_and(h.h1, 67108863) in let b2 = h.h2 + c1 in let a2 = bit_and(b2, 67108863) in let b3 = h.h3 + bit_shr(b2, 26) in let a3 = bit_and(b3, 67108863) in let b4 = h.h4 + bit_shr(b3, 26) in let a4 = bit_and(b4, 67108863) in let b0 = h.h0 + bit_shr(b4, 26) * 5 in let a0 = bit_and(b0, 67108863) in let e1 = a1 + bit_shr(b0, 26) in let g0 = a0 + 5 in let g1 = e1 + bit_shr(g0, 26) in let g2 = a2 + bit_shr(g1, 26) in let g3 = a3 + bit_shr(g2, 26) in let g4 = a4 + bit_shr(g3, 26) - 67108864 in let keep = bit_shr(g4, 63) in let take = bit_xor(keep, 0 - 1) in let f0 = bit_or(bit_and(a0, keep), bit_and(bit_and(g0, 67108863), take)) in let f1 = bit_or(bit_and(e1, keep), bit_and(bit_and(g1, 67108863), take)) in let f2 = bit_or(bit_and(a2, keep), bit_and(bit_and(g2, 67108863), take)) in let f3 = bit_or(bit_and(a3, keep), bit_and(bit_and(g3, 67108863), take)) in let f4 = bit_or(bit_and(a4, keep), bit_and(g4, take)) in let w0 = bit_and(bit_or(f0, bit_shl(f1, 26)), 4294967295) + k.p0 in let w1 = bit_and(bit_or(bit_shr(f1, 6), bit_shl(f2, 20)), 4294967295) + k.p1 + bit_shr(w0, 32) in let w2 = bit_and(bit_or(bit_shr(f2, 12), bit_shl(f3, 14)), 4294967295) + k.p2 + bit_shr(w1, 32) in let w3 = bit_and(bit_or(bit_shr(f3, 18), bit_shl(f4, 8)), 4294967295) + k.p3 + bit_shr(w2, 32) in lct_le32_push(bit_and(w0, 4294967295), lct_le32_push(bit_and(w1, 4294967295), lct_le32_push(bit_and(w2, 4294967295), lct_le32_push(bit_and(w3, 4294967295), Nil))))
+fn lct_p_finish(h, k) = let a1 = lct_k_p_lo26(h.h1) in let b2 = lct_k_p_cadd(h.h1, h.h2) in let a2 = lct_k_p_lo26(b2) in let b3 = lct_k_p_cadd(b2, h.h3) in let a3 = lct_k_p_lo26(b3) in let b4 = lct_k_p_cadd(b3, h.h4) in let a4 = lct_k_p_lo26(b4) in let b0 = lct_k_p_cadd5(b4, h.h0) in let a0 = lct_k_p_lo26(b0) in let e1 = lct_k_p_cadd(b0, a1) in let g0 = lct_k_p_g0(a0) in let g1 = lct_k_p_cadd(g0, e1) in let g2 = lct_k_p_cadd(g1, a2) in let g3 = lct_k_p_cadd(g2, a3) in let g4 = lct_k_p_g4(g3, a4) in let keep = lct_k_p_keep(g4) in let f0 = lct_k_p_pick(keep, a0, g0) in let f1 = lct_k_p_pick(keep, e1, g1) in let f2 = lct_k_p_pick(keep, a2, g2) in let f3 = lct_k_p_pick(keep, a3, g3) in let f4 = lct_k_p_pick4(keep, a4, g4) in let w0 = lct_k_p_w0(f0, f1, k.p0) in let w1 = lct_k_p_w1(f1, f2, k.p1, w0) in let w2 = lct_k_p_w2(f2, f3, k.p2, w1) in let w3 = lct_k_p_w3(f3, f4, k.p3, w2) in lct_le32_push(w0, lct_le32_push(w1, lct_le32_push(w2, lct_le32_push(w3, Nil))))
 ## key: 32 bytes (r || s), one-time
 fn lct_poly1305(key, msg) = let k = lct_p_key(key) in lct_p_finish(lct_p_run(msg, lct_len(msg), k, {h0: 0, h1: 0, h2: 0, h3: 0, h4: 0}), k)
 fn lct_poly1305_keygen(key, nonce) = lct_take(lct_chacha20_block(key, 0, nonce), 32)
@@ -248,18 +736,15 @@ fn lct_aead_open_bytes(key, nonce, aad, sealed) = let n = lct_len(sealed) in if 
 ## --- Ed25519 (RFC 8032): GF(2^255 - 19) on sixteen 16-bit limbs ---------------------------------------------------------
 fn lct_fe_add(a, b) = match a
     Nil        => Nil
-    Cons(x, r) => Cons(x + lct_hd(b), lct_fe_add(r, lct_tl(b)))
+    Cons(x, r) => Cons(lct_k_fe_add(x, lct_hd(b)), lct_fe_add(r, lct_tl(b)))
 fn lct_fe_sub(a, b) = match a
     Nil        => Nil
-    Cons(x, r) => Cons(x - lct_hd(b), lct_fe_sub(r, lct_tl(b)))
-fn lct_fe_car_pass(o, cin, acc) = match o
-    Nil        => {l: acc, c: cin}
-    Cons(x, r) => let v = x + cin + 65536 in let c = bit_shr(v, 16) in lct_fe_car_pass(r, c - 1, Cons(v - c * 65536, acc))
-fn lct_fe_car_fix(l, c) = match l
-    Nil        => Nil
-    Cons(h, t) => Cons(h + 38 * c, t)
+    Cons(x, r) => Cons(lct_k_fe_sub(x, lct_hd(b)), lct_fe_sub(r, lct_tl(b)))
+fn lct_fe_car_pass(o, c, acc) = match o
+    Nil        => {l: acc, c: c}
+    Cons(x, r) => lct_fe_car_pass(r, lct_k_car_c(x, c), Cons(lct_k_car_l(x, c), acc))
 ## one carry pass; the carry out of limb 15 comes back into limb 0 times 38 (2^256 = 38 mod p)
-fn lct_fe_car(o) = let p = lct_fe_car_pass(o, 0, Nil) in lct_fe_car_fix(lct_rev(p.l), p.c)
+fn lct_fe_car(o) = let p = lct_fe_car_pass(o, 1, Nil) in Cons(lct_k_car_0(lct_hd(o), p.c), lct_tl(lct_rev(p.l)))
 fn lct_conv_row(ai, b, acc) = match b
     Nil         => Nil
     Cons(bj, r) => Cons(ai * bj + lct_hd(acc), lct_conv_row(ai, r, lct_tl(acc)))
@@ -274,32 +759,33 @@ fn lct_fe_fold(lo, hi) = match lo
     Nil        => Nil
     Cons(x, r) => Cons(x + 38 * lct_hd(hi), lct_fe_fold(r, lct_tl(hi)))
 ## the product, schoolbook reference: column sums, columns 16..30 folded back times 38 (2^256 = 38 mod p), two carry passes
-fn lct_fe_mul_ref(a, b) = let s = lct_split(lct_conv_loop(a, b, Nil, Nil), 16) in lct_fe_car(lct_fe_car(lct_fe_fold(s.a, s.b)))
-## the same sixteen folded column sums and the same two carry passes written out on named limbs (straight-line code,
-## no list traversal): limb for limb the value of lct_fe_mul_ref, which the known-answer tests compare it against
-fn lct_fe_car16(again, t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15) = let v0 = t0 + 65536 in let c0 = bit_shr(v0, 16) in let v1 = t1 + c0 + 65535 in let c1 = bit_shr(v1, 16) in let v2 = t2 + c1 + 65535 in let c2 = bit_shr(v2, 16) in let v3 = t3 + c2 + 65535 in let c3 = bit_shr(v3, 16) in let v4 = t4 + c3 + 65535 in let c4 = bit_shr(v4, 16) in let v5 = t5 + c4 + 65535 in let c5 = bit_shr(v5, 16) in let v6 = t6 + c5 + 65535 in let c6 = bit_shr(v6, 16) in let v7 = t7 + c6 + 65535 in let c7 = bit_shr(v7, 16) in let v8 = t8 + c7 + 65535 in let c8 = bit_shr(v8, 16) in let v9 = t9 + c8 + 65535 in let c9 = bit_shr(v9, 16) in let v10 = t10 + c9 + 65535 in let c10 = bit_shr(v10, 16) in let v11 = t11 + c10 + 65535 in let c11 = bit_shr(v11, 16) in let v12 = t12 + c11 + 65535 in let c12 = bit_shr(v12, 16) in let v13 = t13 + c12 + 65535 in let c13 = bit_shr(v13, 16) in let v14 = t14 + c13 + 65535 in let c14 = bit_shr(v14, 16) in let v15 = t15 + c14 + 65535 in let c15 = bit_shr(v15, 16) in if again == 1 then lct_fe_car16(0, v0 - c0 * 65536 + 38 * (c15 - 1), v1 - c1 * 65536, v2 - c2 * 65536, v3 - c3 * 65536, v4 - c4 * 65536, v5 - c5 * 65536, v6 - c6 * 65536, v7 - c7 * 65536, v8 - c8 * 65536, v9 - c9 * 65536, v10 - c10 * 65536, v11 - c11 * 65536, v12 - c12 * 65536, v13 - c13 * 65536, v14 - c14 * 65536, v15 - c15 * 65536) else Cons(v0 - c0 * 65536 + 38 * (c15 - 1), Cons(v1 - c1 * 65536, Cons(v2 - c2 * 65536, Cons(v3 - c3 * 65536, Cons(v4 - c4 * 65536, Cons(v5 - c5 * 65536, Cons(v6 - c6 * 65536, Cons(v7 - c7 * 65536, Cons(v8 - c8 * 65536, Cons(v9 - c9 * 65536, Cons(v10 - c10 * 65536, Cons(v11 - c11 * 65536, Cons(v12 - c12 * 65536, Cons(v13 - c13 * 65536, Cons(v14 - c14 * 65536, Cons(v15 - c15 * 65536, Nil))))))))))))))))
+fn lct_fe_mul_ref(a, b) = let s = lct_split(lct_conv_loop(a, b, Nil, Nil), 16) in lct_ref_fe_car(lct_ref_fe_car(lct_fe_fold(s.a, s.b)))
+## the same sixteen folded column sums (one kernel per column, lct_k_fe_m0 .. m15) and the same two carry passes on
+## named limbs (no list traversal): limb for limb the value of lct_fe_mul_ref, which the known-answer tests compare it against
+fn lct_fe_car16(again, t0, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15) = let c0 = lct_k_car_c(t0, 1) in let c1 = lct_k_car_c(t1, c0) in let c2 = lct_k_car_c(t2, c1) in let c3 = lct_k_car_c(t3, c2) in let c4 = lct_k_car_c(t4, c3) in let c5 = lct_k_car_c(t5, c4) in let c6 = lct_k_car_c(t6, c5) in let c7 = lct_k_car_c(t7, c6) in let c8 = lct_k_car_c(t8, c7) in let c9 = lct_k_car_c(t9, c8) in let c10 = lct_k_car_c(t10, c9) in let c11 = lct_k_car_c(t11, c10) in let c12 = lct_k_car_c(t12, c11) in let c13 = lct_k_car_c(t13, c12) in let c14 = lct_k_car_c(t14, c13) in let c15 = lct_k_car_c(t15, c14) in if again == 1 then lct_fe_car16(0, lct_k_car_0(t0, c15), lct_k_car_l(t1, c0), lct_k_car_l(t2, c1), lct_k_car_l(t3, c2), lct_k_car_l(t4, c3), lct_k_car_l(t5, c4), lct_k_car_l(t6, c5), lct_k_car_l(t7, c6), lct_k_car_l(t8, c7), lct_k_car_l(t9, c8), lct_k_car_l(t10, c9), lct_k_car_l(t11, c10), lct_k_car_l(t12, c11), lct_k_car_l(t13, c12), lct_k_car_l(t14, c13), lct_k_car_l(t15, c14)) else Cons(lct_k_car_0(t0, c15), Cons(lct_k_car_l(t1, c0), Cons(lct_k_car_l(t2, c1), Cons(lct_k_car_l(t3, c2), Cons(lct_k_car_l(t4, c3), Cons(lct_k_car_l(t5, c4), Cons(lct_k_car_l(t6, c5), Cons(lct_k_car_l(t7, c6), Cons(lct_k_car_l(t8, c7), Cons(lct_k_car_l(t9, c8), Cons(lct_k_car_l(t10, c9), Cons(lct_k_car_l(t11, c10), Cons(lct_k_car_l(t12, c11), Cons(lct_k_car_l(t13, c12), Cons(lct_k_car_l(t14, c13), Cons(lct_k_car_l(t15, c14), Nil))))))))))))))))
 fn lct_fe_mul_b(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b) = match b
-    Cons(b0, Cons(b1, Cons(b2, Cons(b3, Cons(b4, Cons(b5, Cons(b6, Cons(b7, Cons(b8, Cons(b9, Cons(b10, Cons(b11, Cons(b12, Cons(b13, Cons(b14, Cons(b15, r)))))))))))))))) => lct_fe_car16(1, a0 * b0 + 38 * (a1 * b15 + a2 * b14 + a3 * b13 + a4 * b12 + a5 * b11 + a6 * b10 + a7 * b9 + a8 * b8 + a9 * b7 + a10 * b6 + a11 * b5 + a12 * b4 + a13 * b3 + a14 * b2 + a15 * b1), a0 * b1 + a1 * b0 + 38 * (a2 * b15 + a3 * b14 + a4 * b13 + a5 * b12 + a6 * b11 + a7 * b10 + a8 * b9 + a9 * b8 + a10 * b7 + a11 * b6 + a12 * b5 + a13 * b4 + a14 * b3 + a15 * b2), a0 * b2 + a1 * b1 + a2 * b0 + 38 * (a3 * b15 + a4 * b14 + a5 * b13 + a6 * b12 + a7 * b11 + a8 * b10 + a9 * b9 + a10 * b8 + a11 * b7 + a12 * b6 + a13 * b5 + a14 * b4 + a15 * b3), a0 * b3 + a1 * b2 + a2 * b1 + a3 * b0 + 38 * (a4 * b15 + a5 * b14 + a6 * b13 + a7 * b12 + a8 * b11 + a9 * b10 + a10 * b9 + a11 * b8 + a12 * b7 + a13 * b6 + a14 * b5 + a15 * b4), a0 * b4 + a1 * b3 + a2 * b2 + a3 * b1 + a4 * b0 + 38 * (a5 * b15 + a6 * b14 + a7 * b13 + a8 * b12 + a9 * b11 + a10 * b10 + a11 * b9 + a12 * b8 + a13 * b7 + a14 * b6 + a15 * b5), a0 * b5 + a1 * b4 + a2 * b3 + a3 * b2 + a4 * b1 + a5 * b0 + 38 * (a6 * b15 + a7 * b14 + a8 * b13 + a9 * b12 + a10 * b11 + a11 * b10 + a12 * b9 + a13 * b8 + a14 * b7 + a15 * b6), a0 * b6 + a1 * b5 + a2 * b4 + a3 * b3 + a4 * b2 + a5 * b1 + a6 * b0 + 38 * (a7 * b15 + a8 * b14 + a9 * b13 + a10 * b12 + a11 * b11 + a12 * b10 + a13 * b9 + a14 * b8 + a15 * b7), a0 * b7 + a1 * b6 + a2 * b5 + a3 * b4 + a4 * b3 + a5 * b2 + a6 * b1 + a7 * b0 + 38 * (a8 * b15 + a9 * b14 + a10 * b13 + a11 * b12 + a12 * b11 + a13 * b10 + a14 * b9 + a15 * b8), a0 * b8 + a1 * b7 + a2 * b6 + a3 * b5 + a4 * b4 + a5 * b3 + a6 * b2 + a7 * b1 + a8 * b0 + 38 * (a9 * b15 + a10 * b14 + a11 * b13 + a12 * b12 + a13 * b11 + a14 * b10 + a15 * b9), a0 * b9 + a1 * b8 + a2 * b7 + a3 * b6 + a4 * b5 + a5 * b4 + a6 * b3 + a7 * b2 + a8 * b1 + a9 * b0 + 38 * (a10 * b15 + a11 * b14 + a12 * b13 + a13 * b12 + a14 * b11 + a15 * b10), a0 * b10 + a1 * b9 + a2 * b8 + a3 * b7 + a4 * b6 + a5 * b5 + a6 * b4 + a7 * b3 + a8 * b2 + a9 * b1 + a10 * b0 + 38 * (a11 * b15 + a12 * b14 + a13 * b13 + a14 * b12 + a15 * b11), a0 * b11 + a1 * b10 + a2 * b9 + a3 * b8 + a4 * b7 + a5 * b6 + a6 * b5 + a7 * b4 + a8 * b3 + a9 * b2 + a10 * b1 + a11 * b0 + 38 * (a12 * b15 + a13 * b14 + a14 * b13 + a15 * b12), a0 * b12 + a1 * b11 + a2 * b10 + a3 * b9 + a4 * b8 + a5 * b7 + a6 * b6 + a7 * b5 + a8 * b4 + a9 * b3 + a10 * b2 + a11 * b1 + a12 * b0 + 38 * (a13 * b15 + a14 * b14 + a15 * b13), a0 * b13 + a1 * b12 + a2 * b11 + a3 * b10 + a4 * b9 + a5 * b8 + a6 * b7 + a7 * b6 + a8 * b5 + a9 * b4 + a10 * b3 + a11 * b2 + a12 * b1 + a13 * b0 + 38 * (a14 * b15 + a15 * b14), a0 * b14 + a1 * b13 + a2 * b12 + a3 * b11 + a4 * b10 + a5 * b9 + a6 * b8 + a7 * b7 + a8 * b6 + a9 * b5 + a10 * b4 + a11 * b3 + a12 * b2 + a13 * b1 + a14 * b0 + 38 * (a15 * b15), a0 * b15 + a1 * b14 + a2 * b13 + a3 * b12 + a4 * b11 + a5 * b10 + a6 * b9 + a7 * b8 + a8 * b7 + a9 * b6 + a10 * b5 + a11 * b4 + a12 * b3 + a13 * b2 + a14 * b1 + a15 * b0)
+    Cons(b0, Cons(b1, Cons(b2, Cons(b3, Cons(b4, Cons(b5, Cons(b6, Cons(b7, Cons(b8, Cons(b9, Cons(b10, Cons(b11, Cons(b12, Cons(b13, Cons(b14, Cons(b15, r)))))))))))))))) => lct_fe_car16(1, lct_k_fe_m0(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m1(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m2(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m3(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m4(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m5(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m6(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m7(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m8(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m9(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m10(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m11(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m12(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m13(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m14(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15), lct_k_fe_m15(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15))
     _ => lct_fe_zero()
 fn lct_fe_mul(a, b) = match a
     Cons(a0, Cons(a1, Cons(a2, Cons(a3, Cons(a4, Cons(a5, Cons(a6, Cons(a7, Cons(a8, Cons(a9, Cons(a10, Cons(a11, Cons(a12, Cons(a13, Cons(a14, Cons(a15, r)))))))))))))))) => lct_fe_mul_b(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, b)
     _ => lct_fe_zero()
-## masked selection: mask == 0 gives a, mask == -1 gives b; the same instructions run either way
+## masked selection (the conditional swap of both ladders): mask == 0 gives a, mask == -1 gives b; one kernel call per
+## limb, the same instructions either way
 fn lct_fe_sel(a, b, mask) = match a
     Nil        => Nil
-    Cons(x, r) => Cons(bit_xor(x, bit_and(mask, bit_xor(x, lct_hd(b)))), lct_fe_sel(r, lct_tl(b), mask))
+    Cons(x, r) => Cons(lct_k_sel(mask, x, lct_hd(b)), lct_fe_sel(r, lct_tl(b), mask))
 fn lct_fe_pack_sub(t, i, bor, acc) = match t
     Nil        => {l: acc, b: bor}
-    Cons(x, r) => let m = x - (if i == 0 then 65517 else if i == 15 then 32767 else 65535) - bor in if i == 15 then {l: Cons(m, acc), b: bit_and(bit_shr(m, 16), 1)} else lct_fe_pack_sub(r, i + 1, bit_and(bit_shr(m, 16), 1), Cons(bit_and(m, 65535), acc))
+    Cons(x, r) => let k = if i == 0 then 65517 else if i == 15 then 32767 else 65535 in let b2 = lct_k_pk_b(x, k, bor) in if i == 15 then {l: Cons(lct_k_pk_m(x, k, bor), acc), b: b2} else lct_fe_pack_sub(r, i + 1, b2, Cons(lct_k_pk_lo(x, k, bor), acc))
 ## t - p, kept when it did not borrow
-fn lct_fe_pack_red(t) = let m = lct_fe_pack_sub(t, 0, 0, Nil) in lct_fe_sel(t, lct_rev(m.l), m.b - 1)
+fn lct_fe_pack_red(t) = let m = lct_fe_pack_sub(t, 0, 0, Nil) in lct_fe_sel(t, lct_rev(m.l), lct_k_mask_dec(m.b))
 fn lct_fe_bytes(t) = match t
     Nil        => Nil
-    Cons(x, r) => Cons(bit_and(x, 255), Cons(bit_and(bit_shr(x, 8), 255), lct_fe_bytes(r)))
+    Cons(x, r) => Cons(lct_k_byte0(x), Cons(lct_k_byte1(x), lct_fe_bytes(r)))
 ## the canonical 32-byte little-endian encoding
 fn lct_fe_pack(n) = lct_fe_bytes(lct_fe_pack_red(lct_fe_pack_red(lct_fe_car(lct_fe_car(lct_fe_car(n))))))
 fn lct_fe_unpack_l(bs, i) = match bs
-    Cons(a, Cons(b, r)) => Cons(a + (if i == 15 then bit_and(b, 127) else b) * 256, lct_fe_unpack_l(r, i + 1))
+    Cons(a, Cons(b, r)) => Cons(if i == 15 then lct_k_le16_top(a, b) else lct_k_le16(a, b), lct_fe_unpack_l(r, i + 1))
     _                   => Nil
 fn lct_fe_unpack(bs) = lct_fe_unpack_l(bs, 0)
 fn lct_fe_eq(a, b) = lct_ct_eq(lct_fe_pack(a), lct_fe_pack(b))
@@ -315,15 +801,15 @@ fn lct_fe_one() = Cons(1, lct_zeros(15))
 ## extended twisted Edwards points {x, y, z, t} with x * y = z * t
 fn lct_pt_add(p, q) = let a = lct_fe_mul(lct_fe_sub(p.y, p.x), lct_fe_sub(q.y, q.x)) in let b = lct_fe_mul(lct_fe_add(p.x, p.y), lct_fe_add(q.x, q.y)) in let c = lct_fe_mul(lct_fe_mul(p.t, q.t), lct_ed_d2()) in let d0 = lct_fe_mul(p.z, q.z) in let d = lct_fe_add(d0, d0) in let e = lct_fe_sub(b, a) in let f = lct_fe_sub(d, c) in let g = lct_fe_add(d, c) in let h = lct_fe_add(b, a) in {x: lct_fe_mul(e, f), y: lct_fe_mul(h, g), z: lct_fe_mul(g, f), t: lct_fe_mul(e, h)}
 fn lct_pt_sel(p, q, mask) = {x: lct_fe_sel(p.x, q.x, mask), y: lct_fe_sel(p.y, q.y, mask), z: lct_fe_sel(p.z, q.z, mask), t: lct_fe_sel(p.t, q.t, mask)}
-fn lct_bits8(b, i, acc) = if i >= 8 then acc else lct_bits8(b, i + 1, Cons(bit_and(bit_shr(b, i), 1), acc))
+fn lct_bits8(b, acc) = Cons(lct_k_bit7(b), Cons(lct_k_bit6(b), Cons(lct_k_bit5(b), Cons(lct_k_bit4(b), Cons(lct_k_bit3(b), Cons(lct_k_bit2(b), Cons(lct_k_bit1(b), Cons(lct_k_bit0(b), acc))))))))
 ## the bits of a little-endian byte string, most significant first
 fn lct_bits_msb(bs, acc) = match bs
     Nil        => acc
-    Cons(b, r) => lct_bits_msb(r, lct_bits8(b, 0, acc))
+    Cons(b, r) => lct_bits_msb(r, lct_bits8(b, acc))
 ## fixed ladder: every step swaps under a mask, adds, doubles and swaps back
 fn lct_pt_mul_loop(bits, p, q) = match bits
     Nil        => p
-    Cons(b, r) => let m = 0 - b in let p1 = lct_pt_sel(p, q, m) in let q1 = lct_pt_sel(q, p, m) in let q2 = lct_pt_add(q1, p1) in let p2 = lct_pt_add(p1, p1) in lct_pt_mul_loop(r, lct_pt_sel(p2, q2, m), lct_pt_sel(q2, p2, m))
+    Cons(b, r) => let m = lct_k_mask_neg(b) in let p1 = lct_pt_sel(p, q, m) in let q1 = lct_pt_sel(q, p, m) in let q2 = lct_pt_add(q1, p1) in let p2 = lct_pt_add(p1, p1) in lct_pt_mul_loop(r, lct_pt_sel(p2, q2, m), lct_pt_sel(q2, p2, m))
 fn lct_pt_mul(q, scalar) = lct_pt_mul_loop(lct_bits_msb(scalar, Nil), {x: lct_fe_zero(), y: lct_fe_one(), z: lct_fe_one(), t: lct_fe_zero()}, q)
 fn lct_pt_base() = {x: lct_ed_bx(), y: lct_ed_by(), z: lct_fe_one(), t: lct_fe_mul(lct_ed_bx(), lct_ed_by())}
 fn lct_pt_base_mul(scalar) = lct_pt_mul(lct_pt_base(), scalar)
@@ -338,25 +824,38 @@ fn lct_pt_unpack_neg(pk) = let y = lct_fe_unpack(pk) in let y2 = lct_fe_mul(y, y
 ## scalars mod L = 2^252 + 27742317777372353535851937790883648493, eleven 24-bit limbs
 fn lct_sc_dbl(acc, cin, out) = match acc
     Nil        => lct_rev(out)
-    Cons(x, r) => let v = x * 2 + cin in lct_sc_dbl(r, bit_shr(v, 24), Cons(bit_and(v, 16777215), out))
+    Cons(x, r) => lct_sc_dbl(r, lct_k_sc_dbl_c(x, cin), Cons(lct_k_sc_dbl_lo(x, cin), out))
 fn lct_sc_subl(a, l, bor, out) = match a
     Nil        => {l: lct_rev(out), b: bor}
-    Cons(x, r) => let v = x - lct_hd(l) - bor in lct_sc_subl(r, lct_tl(l), bit_and(bit_shr(v, 24), 1), Cons(bit_and(v, 16777215), out))
+    Cons(x, r) => lct_sc_subl(r, lct_tl(l), lct_k_sc_sub_b(x, lct_hd(l), bor), Cons(lct_k_sc_sub_lo(x, lct_hd(l), bor), out))
 ## acc < L  ->  (2 * acc + bit) mod L: double, subtract L, keep the difference unless it borrowed (masked select)
-fn lct_sc_step(acc, bit, l) = let d = lct_sc_dbl(acc, bit, Nil) in let s = lct_sc_subl(d, l, 0, Nil) in lct_fe_sel(s.l, d, 0 - s.b)
+fn lct_sc_step(acc, bit, l) = let d = lct_sc_dbl(acc, bit, Nil) in let s = lct_sc_subl(d, l, 0, Nil) in lct_fe_sel(s.l, d, lct_k_mask_neg(s.b))
 fn lct_sc_bits(bits, acc, l) = match bits
     Nil        => acc
     Cons(b, r) => lct_sc_bits(r, lct_sc_step(acc, b, l), l)
 fn lct_sc_bytes(ls) = match ls
     Nil        => Nil
-    Cons(x, r) => Cons(bit_and(x, 255), Cons(bit_and(bit_shr(x, 8), 255), Cons(bit_shr(x, 16), lct_sc_bytes(r))))
+    Cons(x, r) => Cons(lct_k_byte0(x), Cons(lct_k_byte1(x), Cons(lct_k_byte2(x), lct_sc_bytes(r))))
 ## reduce a little-endian byte string (any length, 64 bytes after SHA-512) mod L: one fixed step per input bit
 fn lct_sc_modl(bs) = lct_take(lct_sc_bytes(lct_sc_bits(lct_bits_msb(bs, Nil), lct_zeros(11), lct_ed_l24())), 32)
 fn lct_carry256(xs, c, out) = match xs
-    Nil        => lct_rev(Cons(bit_and(c, 255), out))
-    Cons(x, r) => let v = x + c in lct_carry256(r, bit_shr(v, 8), Cons(bit_and(v, 255), out))
+    Nil        => lct_rev(Cons(lct_k_byte0(c), out))
+    Cons(x, r) => lct_carry256(r, lct_k_c256_c(x, c), Cons(lct_k_c256_lo(x, c), out))
+## the schoolbook product of two byte strings (column sums below 2^21), plus r, then one carry pass to bytes
+fn lct_sc_mrow(ai, b, acc) = match b
+    Nil         => Nil
+    Cons(bj, r) => Cons(lct_k_sc_mac(ai, bj, lct_hd(acc)), lct_sc_mrow(ai, r, lct_tl(acc)))
+fn lct_sc_mstep(row, ar, b, out) = match row
+    Nil        => lct_rev(out)
+    Cons(h, t) => lct_sc_mloop(ar, b, t, Cons(h, out))
+fn lct_sc_mloop(a, b, acc, out) = match a
+    Nil         => lct_rev_acc(out, acc)
+    Cons(ai, r) => lct_sc_mstep(lct_sc_mrow(ai, b, acc), r, b, out)
+fn lct_sc_addr(p, r) = match p
+    Nil        => Nil
+    Cons(x, t) => Cons(lct_k_sc_add(x, lct_hd(r)), lct_sc_addr(t, lct_tl(r)))
 ## (r + h * a) mod L
-fn lct_sc_muladd(h, a, r) = lct_sc_modl(lct_carry256(lct_fe_add(lct_conv_loop(h, a, Nil, Nil), r), 0, Nil))
+fn lct_sc_muladd(h, a, r) = lct_sc_modl(lct_carry256(lct_sc_addr(lct_sc_mloop(h, a, Nil, Nil), r), 0, Nil))
 fn lct_sc_limbs(bs) = match bs
     Cons(a, Cons(b, Cons(c, r))) => Cons(a + b * 256 + c * 65536, lct_sc_limbs(r))
     Cons(a, Cons(b, Nil))        => Cons(a + b * 256, Nil)
@@ -367,7 +866,7 @@ fn lct_sc_lt_l(s) = (lct_sc_subl(lct_sc_limbs(s), lct_ed_l24(), 0, Nil)).b
 
 fn lct_ed_clamp_l(bs, i) = match bs
     Nil        => Nil
-    Cons(h, t) => if i == 0 then Cons(bit_and(h, 248), lct_ed_clamp_l(t, 1)) else if i == 31 then Cons(bit_or(bit_and(h, 127), 64), Nil) else Cons(h, lct_ed_clamp_l(t, i + 1))
+    Cons(h, t) => if i == 0 then Cons(lct_k_clamp_lo(h), lct_ed_clamp_l(t, 1)) else if i == 31 then Cons(lct_k_clamp_hi(h), Nil) else Cons(h, lct_ed_clamp_l(t, i + 1))
 ## {a: the clamped secret scalar, prefix: the nonce-derivation key}
 fn lct_ed25519_expand(seed) = let s = lct_split(lct_sha512(seed), 32) in {a: lct_ed_clamp_l(s.a, 0), prefix: s.b}
 fn lct_ed25519_public_key(seed) = lct_pt_pack(lct_pt_base_mul((lct_ed25519_expand(seed)).a))
@@ -378,16 +877,16 @@ fn lct_ed25519_verify2(up, pk, msg, rb, s) = if up.ok == 0 then 0 else lct_ct_eq
 fn lct_ed25519_verify(pk, msg, sig) = if lct_len(pk) != 32 or lct_len(sig) != 64 then 0 else let sp = lct_split(sig, 32) in if lct_sc_lt_l(sp.b) == 0 then 0 else lct_ed25519_verify2(lct_pt_unpack_neg(pk), pk, msg, sp.a, sp.b)
 
 ## --- X25519 (RFC 7748): Montgomery ladder on the u-coordinate, same field and limbs as Ed25519 -------------------------
-fn lct_fe_small(a, k) = match a
+fn lct_fe_x121665(a) = match a
     Nil        => Nil
-    Cons(x, r) => Cons(x * k, lct_fe_small(r, k))
+    Cons(x, r) => Cons(lct_k_fe_x121665(x), lct_fe_x121665(r))
 ## a * a24 with a24 = (486662 - 2) / 4 = 121665 (RFC 7748 section 5); limbs below 2^18 in magnitude stay below 2^35
-fn lct_fe_mul121665(a) = lct_fe_car(lct_fe_car(lct_fe_small(a, 121665)))
+fn lct_fe_mul121665(a) = lct_fe_car(lct_fe_car(lct_fe_x121665(a)))
 ## one ladder step per scalar bit, most significant first: (a : c) = [n]P and (b : d) = [n + 1]P are swapped under the
 ## mask 0 - bit, differentially added and doubled, and swapped back. The list of bits has a public length (255).
 fn lct_x25519_loop(bits, x, a, b, c, d) = match bits
     Nil         => {a: a, c: c}
-    Cons(r, rs) => let m = 0 - r in let a1 = lct_fe_sel(a, b, m) in let b1 = lct_fe_sel(b, a, m) in let c1 = lct_fe_sel(c, d, m) in let d1 = lct_fe_sel(d, c, m) in let e = lct_fe_add(a1, c1) in let a2 = lct_fe_sub(a1, c1) in let c2 = lct_fe_add(b1, d1) in let b2 = lct_fe_sub(b1, d1) in let d2 = lct_fe_mul(e, e) in let f = lct_fe_mul(a2, a2) in let a3 = lct_fe_mul(c2, a2) in let c3 = lct_fe_mul(b2, e) in let e2 = lct_fe_add(a3, c3) in let a4 = lct_fe_sub(a3, c3) in let b3 = lct_fe_mul(a4, a4) in let c4 = lct_fe_sub(d2, f) in let a5 = lct_fe_add(lct_fe_mul121665(c4), d2) in let c5 = lct_fe_mul(c4, a5) in let a6 = lct_fe_mul(d2, f) in let d3 = lct_fe_mul(b3, x) in let b4 = lct_fe_mul(e2, e2) in lct_x25519_loop(rs, x, lct_fe_sel(a6, b4, m), lct_fe_sel(b4, a6, m), lct_fe_sel(c5, d3, m), lct_fe_sel(d3, c5, m))
+    Cons(r, rs) => let m = lct_k_mask_neg(r) in let a1 = lct_fe_sel(a, b, m) in let b1 = lct_fe_sel(b, a, m) in let c1 = lct_fe_sel(c, d, m) in let d1 = lct_fe_sel(d, c, m) in let e = lct_fe_add(a1, c1) in let a2 = lct_fe_sub(a1, c1) in let c2 = lct_fe_add(b1, d1) in let b2 = lct_fe_sub(b1, d1) in let d2 = lct_fe_mul(e, e) in let f = lct_fe_mul(a2, a2) in let a3 = lct_fe_mul(c2, a2) in let c3 = lct_fe_mul(b2, e) in let e2 = lct_fe_add(a3, c3) in let a4 = lct_fe_sub(a3, c3) in let b3 = lct_fe_mul(a4, a4) in let c4 = lct_fe_sub(d2, f) in let a5 = lct_fe_add(lct_fe_mul121665(c4), d2) in let c5 = lct_fe_mul(c4, a5) in let a6 = lct_fe_mul(d2, f) in let d3 = lct_fe_mul(b3, x) in let b4 = lct_fe_mul(e2, e2) in lct_x25519_loop(rs, x, lct_fe_sel(a6, b4, m), lct_fe_sel(b4, a6, m), lct_fe_sel(c5, d3, m), lct_fe_sel(d3, c5, m))
 fn lct_x25519_raw(k, u) = let x = lct_fe_unpack(u) in let r = lct_x25519_loop(lct_tl(lct_bits_msb(lct_ed_clamp_l(k, 0), Nil)), x, lct_fe_one(), x, lct_fe_zero(), lct_fe_one()) in lct_fe_pack(lct_fe_mul(r.a, lct_fe_inv(r.c)))
 ## X25519(k, u), 32 bytes. The scalar is clamped (k[0] &= 248, k[31] &= 127, k[31] |= 64: the same clamp as Ed25519),
 ## bit 255 of u is masked, a non-canonical u is accepted and reduced mod p, as RFC 7748 section 5 requires. The inverse
@@ -396,8 +895,8 @@ fn lct_x25519(k, u) = if lct_len(k) != 32 or lct_len(u) != 32 then lct_zeros(32)
 ## the public key of a 32-byte private key: X25519(k, 9)
 fn lct_x25519_base(k) = lct_x25519(k, Cons(9, lct_zeros(31)))
 ## Diffie-Hellman with the all-zero check of RFC 7748 section 6.1 / RFC 8446 section 7.4.2: {ok, secret}. Every byte of
-## the result is OR-ed and the accept bit comes from the sign of (or - 1); nothing branches on the secret itself.
-fn lct_x25519_shared(k, peer_u) = let s = lct_x25519(k, peer_u) in {ok: 1 + bit_shr(lct_ct_acc(s, Nil, 0) - 1, 63), secret: s}
+## the result is OR-ed in a kernel and the accept bit is 1 - ct_eq(or, 0); nothing branches on the secret itself.
+fn lct_x25519_shared(k, peer_u) = let s = lct_x25519(k, peer_u) in {ok: lct_k_nonzero(lct_ct_acc(s, Nil, 0)), secret: s}
 
 ## --- TLS 1.3 key schedule (RFC 8446 section 7.1) -----------------------------------------------------------------------
 fn lct_tls13_hkdf_label(len, label, ctx) = let full = lct_str_to_bytes("tls13 " + label) in Cons(len / 256, Cons(len % 256, Cons(lct_len(full), lct_app(full, Cons(lct_len(ctx), ctx)))))
@@ -672,31 +1171,32 @@ fn lct_tls13_holds_nothing(st) = let s = st.sec in let c = st.cfg in let r = st.
 ## WHAT THIS MEANS: the checks detect a dead, stuck or grossly degenerate source (constant output, long runs, one value
 ## dominating, a read that repeats). They do NOT measure or certify entropy: a counter, a fixed pseudo-random sequence
 ## or a seeded-but-predictable generator passes all of them. The security of the output rests on the kernel CSPRNG.
-## The counting is done with masks (no branch on a byte value), since the bytes checked become keys.
+## The counting is done in constant-time kernels (no branch on a byte value), since the bytes checked become keys;
+## only the verdict is compared and branched on.
 ## `lct_random_bytes_checked(n)` -> {ok, err, bytes} reads two blocks of max(n, 512) bytes, so that every check above
 ## (the 512-byte window included) runs on every draw, applies `lct_entropy_check2` and returns the first n bytes of the
 ## second block, or nothing (fail closed). A healthy source is refused about once per 10^9 draws (9.3e-10); retry then.
 fn lct_os_read_acc(n, acc) = if n <= 0 then {ok: 1, bytes: acc} else let b = fs_read_byte("/dev/urandom", 0) in if b < 0 or b > 255 then {ok: 0, bytes: Nil} else lct_os_read_acc(n - 1, Cons(b, acc))
 fn lct_os_random(n) = if n < 0 or n > 1048576 then {ok: 0, bytes: Nil} else lct_os_read_acc(n, Nil)
 ## 1 when a == b, for non-negative ints, without a branch
-fn lct_eqbit(a, b) = bit_and(bit_shr(bit_xor(a, b) - 1, 63), 1)
-## max(a, b) without a branch
-fn lct_max_ct(a, b) = a + bit_and(b - a, 0 - bit_and(bit_shr(a - b, 63), 1))
+fn lct_eqbit(a, b) = lct_k_eqbit(a, b)
+## max(a, b) without a branch, for counts below 2^32
+fn lct_max_ct(a, b) = lct_k_max(a, b)
 fn lct_ent_or(bs, acc) = match bs
     Nil        => acc
-    Cons(h, t) => lct_ent_or(t, bit_or(acc, h))
+    Cons(h, t) => lct_ent_or(t, lct_k_ct_step(acc, h, 0))
 fn lct_ent_or_xor(bs, v, acc) = match bs
     Nil        => acc
-    Cons(h, t) => lct_ent_or_xor(t, v, bit_or(acc, bit_xor(h, v)))
+    Cons(h, t) => lct_ent_or_xor(t, v, lct_k_ct_step(acc, h, v))
 ## the longest run of one value
 fn lct_ent_maxrun(bs, prev, run, mx) = match bs
     Nil        => mx
-    Cons(h, t) => let r = bit_and(run, 0 - lct_eqbit(h, prev)) + 1 in lct_ent_maxrun(t, h, r, lct_max_ct(mx, r))
+    Cons(h, t) => let r = lct_k_ent_run(run, h, prev) in lct_ent_maxrun(t, h, r, lct_k_max(mx, r))
 fn lct_ent_apt_cnt(bs, v, left, c) = match bs
     Nil        => {c: c, rest: Nil}
-    Cons(h, t) => if left <= 1 then {c: c + lct_eqbit(h, v), rest: t} else lct_ent_apt_cnt(t, v, left - 1, c + lct_eqbit(h, v))
+    Cons(h, t) => if left <= 1 then {c: lct_k_ent_cnt(c, h, v), rest: t} else lct_ent_apt_cnt(t, v, left - 1, lct_k_ent_cnt(c, h, v))
 ## the largest count of a window's first byte within its window, over the complete 512-byte windows
-fn lct_ent_apt_max(bs, n, mx) = if n < 512 then mx else let r = lct_ent_apt_cnt(lct_tl(bs), lct_hd(bs), 511, 1) in lct_ent_apt_max(r.rest, n - 512, lct_max_ct(mx, r.c))
+fn lct_ent_apt_max(bs, n, mx) = if n < 512 then mx else let r = lct_ent_apt_cnt(lct_tl(bs), lct_hd(bs), 511, 1) in lct_ent_apt_max(r.rest, n - 512, lct_k_max(mx, r.c))
 fn lct_ent_rct_cutoff() = 6
 fn lct_ent_apt_cutoff() = 19
 law lct_ent_rct_cutoff_covers_alpha(c: int) = if c == 6 then 8 * (c - 1) >= 40 and 8 * (c - 2) < 40 else 1 == 1
@@ -714,7 +1214,7 @@ fn lct_x25519_keygen() = let r = lct_random_bytes_checked(32) in if r.ok == 0 th
 fn lct_ed25519_keygen() = let r = lct_random_bytes_checked(32) in if r.ok == 0 then {ok: 0, err: r.err, seed: Nil, pk: Nil} else {ok: 1, err: 0, seed: r.bytes, pk: lct_ed25519_public_key(r.bytes)}
 ## 1 when a caller-supplied random or private key is degenerate: empty, or every byte equal (all-zero included).
 ## The TLS constructors and `lct_tls13_*_start` refuse such values; no branch depends on a byte value.
-fn lct_weak_secret(bs) = if lct_ent_or_xor(bs, lct_hd(bs), 0) == 0 then 1 else 0
+fn lct_weak_secret(bs) = lct_k_is_zero(lct_ent_or_xor(bs, lct_hd(bs), 0))
 
 ## --- X.509 v3 certificates (RFC 5280) signed with Ed25519 (RFC 8410): strict DER and path validation ----------------
 ## What IS checked, by `lct_x509_parse` (one certificate) and `lct_x509_verify_chain` (a path):
@@ -1076,6 +1576,166 @@ fn lct_kat_hs_rej_client(k0, x) = let c1 = x.c1 in let c2 = x.c2 in let c3 = x.c
 fn lct_kat_hs_rej_server(k0, x) = let s0 = lct_kat_hs_server(0) in let s1 = x.s1 in let sc = x.sc in let crand = lct_kat_hs_crand() in let cpub = lct_kat_hs_c_pub() in let e_ver = lct_tls13_ext(43, [2, 3, 4]) in let e_grp = lct_tls13_ext(10, [0, 2, 0, 29]) in let e_sig = lct_tls13_ext(13, [0, 2, 8, 7]) in let e_ks = lct_tls13_ext(51, lct_vec16(Cons(0, Cons(29, lct_vec16(cpub))))) in let e_rpk = lct_tls13_ext(20, [1, 2]) in let k1 = lct_kat_hs_reject(k0, "reject: ClientHello without TLS_CHACHA20_POLY1305_SHA256", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello_ex(crand, Nil, [19, 1, 19, 2], lct_tls13_client_exts(cpub)))), 40) in let k2 = lct_kat_hs_reject(k1, "reject: ClientHello offering only TLS 1.2 in supported_versions", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello_ex(crand, Nil, [19, 3], lct_concat([lct_tls13_ext(43, [2, 3, 3]), e_grp, e_sig, e_ks, e_rpk])))), 70) in let k3 = lct_kat_hs_reject(k2, "reject: ClientHello without supported_versions", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello_ex(crand, Nil, [19, 3], lct_concat([e_grp, e_sig, e_ks, e_rpk])))), 70) in let k4 = lct_kat_hs_reject(k3, "reject: ClientHello with an all-zero key_share", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello(crand, Nil, lct_zeros(32)))), 47) in let k5 = lct_kat_hs_reject(k4, "reject: ClientHello without key_share", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello_ex(crand, Nil, [19, 3], lct_concat([e_ver, e_grp, e_sig, e_rpk])))), 109) in let k6 = lct_kat_hs_reject(k5, "reject: ClientHello with a secp256r1 share only (would need HelloRetryRequest)", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello_ex(crand, Nil, [19, 3], lct_concat([e_ver, e_grp, e_sig, lct_tls13_ext(51, lct_vec16(Cons(0, Cons(23, lct_vec16(Cons(4, lct_zeros(64))))))), e_rpk])))), 40) in let k7 = lct_kat_hs_reject(k6, "reject: ClientHello without the raw-public-key certificate type", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello_ex(crand, Nil, [19, 3], lct_concat([e_ver, e_grp, e_sig, e_ks])))), 43) in let k8 = lct_kat_hs_reject(k7, "reject: ClientHello with a duplicated extension", lct_tls13_feed(s0, lct_tls13_plain_record(22, lct_tls13_client_hello_ex(crand, Nil, [19, 3], lct_concat([e_ver, e_grp, e_sig, e_ks, e_rpk, e_grp])))), 50) in let k9 = lct_kat_hs_reject(k8, "reject: ServerHello sent to a server", lct_tls13_feed(s0, lct_tls13_plain_record(22, sc.sh)), 10) in let k9b = lct_kat_hs_reject(k9, "reject: change_cipher_spec before any ClientHello", lct_tls13_feed(s0, [20, 3, 3, 0, 1, 1]), 10) in let ck = lct_hs_keys(sc.c_hs) in let cfin = lct_tls13_finished(sc.c_hs, lct_sha256(sc.t4)) in let k10 = lct_kat_hs_reject(k9b, "reject: tampered client Finished", lct_tls13_feed(s1, lct_tls13_record_seal(ck.key, ck.iv, 0, 22, lct_flip(cfin, 35, 128))), 51) in let k11 = lct_kat_hs_reject(k10, "reject: client application data before its Finished", lct_tls13_feed(s1, lct_tls13_record_seal(ck.key, ck.iv, 0, 23, [1, 2, 3])), 10) in let k12 = lct_kat_hs_reject(k11, "reject: a second ClientHello in the clear after the flight", lct_tls13_feed_all(s1, (x.c1).out), 10) in let k13 = lct_kat_hs_reject(k12, "reject: unrequested client Certificate", lct_tls13_feed(s1, lct_tls13_record_seal(ck.key, ck.iv, 0, 22, lct_tls13_certificate_empty())), 10) in let m = lct_tls13_send(x.c7, [1, 2, 3]) in let s3 = lct_tls13_feed_all(x.s2, (m.st).out) in let k14 = lct_kat_hs_reject(k13, "reject: replayed application record", lct_tls13_feed_all(s3, (m.st).out), 20) in let k15 = lct_kat_int(k14, "reject: the honest client Finished is accepted by the same server state (control)", (lct_tls13_feed(s1, lct_tls13_record_seal(ck.key, ck.iv, 0, 22, cfin))).state, 16) in let cbad = lct_tls13_feed(x.c6, lct_kat_hs_rec(sc, 3, lct_flip(sc.fin, 10, 1))) in let told = lct_tls13_feed_all(s1, cbad.out) in lct_kat_int(k15, "reject: the client's decrypt_error alert reaches the server and ends it", told.state * 1000 + told.peer_alert * 10 + lct_tls13_holds_nothing(told), 99511)
 fn lct_kat_tls13_handshake_rejects() = let x = lct_kat_hs_ctx() in lct_kat_hs_rej_server(lct_kat_hs_rej_client(lct_kat_new(), x), x)
 
+## --- plain references of the kernel-backed functions (TEST ORACLES, not used by any production path) ---------------------
+## The definitions these functions had before the secret-dependent arithmetic moved into the constant-time kernels,
+## unchanged except for the `lct_ref_` prefix: ordinary `+ - * bit_*` on values that stay in the immediate range.
+## `lct_kat_kernels` compares each kernel-backed function with its reference on pseudo-random and boundary inputs.
+fn lct_ref_rotl32(x, n) = bit_or(bit_and(bit_shl(x, n), 4294967295), bit_shr(x, 32 - n))
+fn lct_ref_le32_take(bs) = match bs
+    Cons(a, Cons(b, Cons(c, Cons(d, r)))) => {v: a + b * 256 + c * 65536 + d * 16777216, rest: r}
+    _                                     => {v: 0, rest: Nil}
+fn lct_ref_le32_push(w, acc) = Cons(bit_and(w, 255), Cons(bit_and(bit_shr(w, 8), 255), Cons(bit_and(bit_shr(w, 16), 255), Cons(bit_and(bit_shr(w, 24), 255), acc))))
+fn lct_ref_ct_acc(a, b, acc) = match a
+    Nil        => acc
+    Cons(h, t) => lct_ref_ct_acc(t, lct_tl(b), bit_or(acc, bit_xor(h, lct_hd(b))))
+fn lct_ref_cc_qr(a, b, c, d) = let a1 = bit_and(a + b, 4294967295) in let d1 = lct_ref_rotl32(bit_xor(d, a1), 16) in let c1 = bit_and(c + d1, 4294967295) in let b1 = lct_ref_rotl32(bit_xor(b, c1), 12) in let a2 = bit_and(a1 + b1, 4294967295) in let d2 = lct_ref_rotl32(bit_xor(d1, a2), 8) in let c2 = bit_and(c1 + d2, 4294967295) in {a: a2, b: lct_ref_rotl32(bit_xor(b1, c2), 7), c: c2, d: d2}
+fn lct_ref_p_key(key) = let t0 = lct_ref_le32_take(key) in let t1 = lct_ref_le32_take(t0.rest) in let t2 = lct_ref_le32_take(t1.rest) in let t3 = lct_ref_le32_take(t2.rest) in let s0 = lct_ref_le32_take(t3.rest) in let s1 = lct_ref_le32_take(s0.rest) in let s2 = lct_ref_le32_take(s1.rest) in let s3 = lct_ref_le32_take(s2.rest) in let r1 = bit_and(bit_or(bit_shr(t0.v, 26), bit_shl(t1.v, 6)), 67108611) in let r2 = bit_and(bit_or(bit_shr(t1.v, 20), bit_shl(t2.v, 12)), 67092735) in let r3 = bit_and(bit_or(bit_shr(t2.v, 14), bit_shl(t3.v, 18)), 66076671) in let r4 = bit_and(bit_shr(t3.v, 8), 1048575) in {r0: bit_and(t0.v, 67108863), r1: r1, r2: r2, r3: r3, r4: r4, s1: r1 * 5, s2: r2 * 5, s3: r3 * 5, s4: r4 * 5, p0: s0.v, p1: s1.v, p2: s2.v, p3: s3.v}
+fn lct_ref_p_block(h, k, t0, t1, t2, t3, hibit) = let h0 = h.h0 + bit_and(t0, 67108863) in let h1 = h.h1 + bit_and(bit_or(bit_shr(t0, 26), bit_shl(t1, 6)), 67108863) in let h2 = h.h2 + bit_and(bit_or(bit_shr(t1, 20), bit_shl(t2, 12)), 67108863) in let h3 = h.h3 + bit_and(bit_or(bit_shr(t2, 14), bit_shl(t3, 18)), 67108863) in let h4 = h.h4 + bit_or(bit_shr(t3, 8), hibit) in let d0 = h0 * k.r0 + h1 * k.s4 + h2 * k.s3 + h3 * k.s2 + h4 * k.s1 in let d1 = h0 * k.r1 + h1 * k.r0 + h2 * k.s4 + h3 * k.s3 + h4 * k.s2 + bit_shr(d0, 26) in let d2 = h0 * k.r2 + h1 * k.r1 + h2 * k.r0 + h3 * k.s4 + h4 * k.s3 + bit_shr(d1, 26) in let d3 = h0 * k.r3 + h1 * k.r2 + h2 * k.r1 + h3 * k.r0 + h4 * k.s4 + bit_shr(d2, 26) in let d4 = h0 * k.r4 + h1 * k.r3 + h2 * k.r2 + h3 * k.r1 + h4 * k.r0 + bit_shr(d3, 26) in let f0 = bit_and(d0, 67108863) + bit_shr(d4, 26) * 5 in {h0: bit_and(f0, 67108863), h1: bit_and(d1, 67108863) + bit_shr(f0, 26), h2: bit_and(d2, 67108863), h3: bit_and(d3, 67108863), h4: bit_and(d4, 67108863)}
+fn lct_ref_p_finish(h, k) = let c1 = bit_shr(h.h1, 26) in let a1 = bit_and(h.h1, 67108863) in let b2 = h.h2 + c1 in let a2 = bit_and(b2, 67108863) in let b3 = h.h3 + bit_shr(b2, 26) in let a3 = bit_and(b3, 67108863) in let b4 = h.h4 + bit_shr(b3, 26) in let a4 = bit_and(b4, 67108863) in let b0 = h.h0 + bit_shr(b4, 26) * 5 in let a0 = bit_and(b0, 67108863) in let e1 = a1 + bit_shr(b0, 26) in let g0 = a0 + 5 in let g1 = e1 + bit_shr(g0, 26) in let g2 = a2 + bit_shr(g1, 26) in let g3 = a3 + bit_shr(g2, 26) in let g4 = a4 + bit_shr(g3, 26) - 67108864 in let keep = bit_shr(g4, 63) in let take = bit_xor(keep, 0 - 1) in let f0 = bit_or(bit_and(a0, keep), bit_and(bit_and(g0, 67108863), take)) in let f1 = bit_or(bit_and(e1, keep), bit_and(bit_and(g1, 67108863), take)) in let f2 = bit_or(bit_and(a2, keep), bit_and(bit_and(g2, 67108863), take)) in let f3 = bit_or(bit_and(a3, keep), bit_and(bit_and(g3, 67108863), take)) in let f4 = bit_or(bit_and(a4, keep), bit_and(g4, take)) in let w0 = bit_and(bit_or(f0, bit_shl(f1, 26)), 4294967295) + k.p0 in let w1 = bit_and(bit_or(bit_shr(f1, 6), bit_shl(f2, 20)), 4294967295) + k.p1 + bit_shr(w0, 32) in let w2 = bit_and(bit_or(bit_shr(f2, 12), bit_shl(f3, 14)), 4294967295) + k.p2 + bit_shr(w1, 32) in let w3 = bit_and(bit_or(bit_shr(f3, 18), bit_shl(f4, 8)), 4294967295) + k.p3 + bit_shr(w2, 32) in lct_ref_le32_push(bit_and(w0, 4294967295), lct_ref_le32_push(bit_and(w1, 4294967295), lct_ref_le32_push(bit_and(w2, 4294967295), lct_ref_le32_push(bit_and(w3, 4294967295), Nil))))
+fn lct_ref_fe_add(a, b) = match a
+    Nil        => Nil
+    Cons(x, r) => Cons(x + lct_hd(b), lct_ref_fe_add(r, lct_tl(b)))
+fn lct_ref_fe_sub(a, b) = match a
+    Nil        => Nil
+    Cons(x, r) => Cons(x - lct_hd(b), lct_ref_fe_sub(r, lct_tl(b)))
+fn lct_ref_fe_car_pass(o, cin, acc) = match o
+    Nil        => {l: acc, c: cin}
+    Cons(x, r) => let v = x + cin + 65536 in let c = bit_shr(v, 16) in lct_ref_fe_car_pass(r, c - 1, Cons(v - c * 65536, acc))
+fn lct_ref_fe_car_fix(l, c) = match l
+    Nil        => Nil
+    Cons(h, t) => Cons(h + 38 * c, t)
+fn lct_ref_fe_car(o) = let p = lct_ref_fe_car_pass(o, 0, Nil) in lct_ref_fe_car_fix(lct_rev(p.l), p.c)
+fn lct_ref_fe_sel(a, b, mask) = match a
+    Nil        => Nil
+    Cons(x, r) => Cons(bit_xor(x, bit_and(mask, bit_xor(x, lct_hd(b)))), lct_ref_fe_sel(r, lct_tl(b), mask))
+fn lct_ref_fe_pack_sub(t, i, bor, acc) = match t
+    Nil        => {l: acc, b: bor}
+    Cons(x, r) => let m = x - (if i == 0 then 65517 else if i == 15 then 32767 else 65535) - bor in if i == 15 then {l: Cons(m, acc), b: bit_and(bit_shr(m, 16), 1)} else lct_ref_fe_pack_sub(r, i + 1, bit_and(bit_shr(m, 16), 1), Cons(bit_and(m, 65535), acc))
+fn lct_ref_fe_pack_red(t) = let m = lct_ref_fe_pack_sub(t, 0, 0, Nil) in lct_ref_fe_sel(t, lct_rev(m.l), m.b - 1)
+fn lct_ref_fe_bytes(t) = match t
+    Nil        => Nil
+    Cons(x, r) => Cons(bit_and(x, 255), Cons(bit_and(bit_shr(x, 8), 255), lct_ref_fe_bytes(r)))
+fn lct_ref_fe_unpack_l(bs, i) = match bs
+    Cons(a, Cons(b, r)) => Cons(a + (if i == 15 then bit_and(b, 127) else b) * 256, lct_ref_fe_unpack_l(r, i + 1))
+    _                   => Nil
+fn lct_ref_fe_small(a, k) = match a
+    Nil        => Nil
+    Cons(x, r) => Cons(x * k, lct_ref_fe_small(r, k))
+fn lct_ref_bits8(b, i, acc) = if i >= 8 then acc else lct_ref_bits8(b, i + 1, Cons(bit_and(bit_shr(b, i), 1), acc))
+fn lct_ref_sc_dbl(acc, cin, out) = match acc
+    Nil        => lct_rev(out)
+    Cons(x, r) => let v = x * 2 + cin in lct_ref_sc_dbl(r, bit_shr(v, 24), Cons(bit_and(v, 16777215), out))
+fn lct_ref_sc_subl(a, l, bor, out) = match a
+    Nil        => {l: lct_rev(out), b: bor}
+    Cons(x, r) => let v = x - lct_hd(l) - bor in lct_ref_sc_subl(r, lct_tl(l), bit_and(bit_shr(v, 24), 1), Cons(bit_and(v, 16777215), out))
+fn lct_ref_sc_step(acc, bit, l) = let d = lct_ref_sc_dbl(acc, bit, Nil) in let s = lct_ref_sc_subl(d, l, 0, Nil) in lct_ref_fe_sel(s.l, d, 0 - s.b)
+fn lct_ref_sc_bytes(ls) = match ls
+    Nil        => Nil
+    Cons(x, r) => Cons(bit_and(x, 255), Cons(bit_and(bit_shr(x, 8), 255), Cons(bit_shr(x, 16), lct_ref_sc_bytes(r))))
+fn lct_ref_carry256(xs, c, out) = match xs
+    Nil        => lct_rev(Cons(bit_and(c, 255), out))
+    Cons(x, r) => let v = x + c in lct_ref_carry256(r, bit_shr(v, 8), Cons(bit_and(v, 255), out))
+fn lct_ref_ed_clamp_l(bs, i) = match bs
+    Nil        => Nil
+    Cons(h, t) => if i == 0 then Cons(bit_and(h, 248), lct_ref_ed_clamp_l(t, 1)) else if i == 31 then Cons(bit_or(bit_and(h, 127), 64), Nil) else Cons(h, lct_ref_ed_clamp_l(t, i + 1))
+fn lct_ref_rotr32(x, n) = bit_or(bit_shr(x, n), bit_and(bit_shl(x, 32 - n), 4294967295))
+fn lct_ref_be32_1(bs, k, acc) = match bs
+    Cons(a, Cons(b, Cons(c, Cons(d, r)))) => lct_ref_be32(r, k - 1, Cons(a * 16777216 + b * 65536 + c * 256 + d, acc))
+    _                                     => {w: acc, rest: Nil}
+fn lct_ref_be32(bs, k, acc) = if k <= 0 then {w: acc, rest: bs} else lct_ref_be32_1(bs, k, acc)
+fn lct_ref_be32_push(w, acc) = Cons(bit_shr(w, 24), Cons(bit_and(bit_shr(w, 16), 255), Cons(bit_and(bit_shr(w, 8), 255), Cons(bit_and(w, 255), acc))))
+fn lct_ref_s256_expand(t, w) = if t >= 64 then w else let x15 = lct_nth(w, 14) in let x2 = lct_nth(w, 1) in lct_ref_s256_expand(t + 1, Cons(bit_and(lct_nth(w, 15) + bit_xor(bit_xor(lct_ref_rotr32(x15, 7), lct_ref_rotr32(x15, 18)), bit_shr(x15, 3)) + lct_nth(w, 6) + bit_xor(bit_xor(lct_ref_rotr32(x2, 17), lct_ref_rotr32(x2, 19)), bit_shr(x2, 10)), 4294967295), w))
+fn lct_ref_zip_add_rev(ws, ks, acc) = match ws
+    Nil        => acc
+    Cons(w, r) => lct_ref_zip_add_rev(r, lct_tl(ks), Cons(w + lct_hd(ks), acc))
+fn lct_ref_s256_rounds(kw, a, b, c, d, e, f, g, h) = match kw
+    Nil        => {a: a, b: b, c: c, d: d, e: e, f: f, g: g, h: h}
+    Cons(x, r) => let t1 = h + bit_xor(bit_xor(lct_ref_rotr32(e, 6), lct_ref_rotr32(e, 11)), lct_ref_rotr32(e, 25)) + bit_xor(g, bit_and(e, bit_xor(f, g))) + x in let t2 = bit_xor(bit_xor(lct_ref_rotr32(a, 2), lct_ref_rotr32(a, 13)), lct_ref_rotr32(a, 22)) + bit_or(bit_and(a, b), bit_and(c, bit_or(a, b))) in lct_ref_s256_rounds(r, bit_and(t1 + t2, 4294967295), a, b, c, bit_and(d + t1, 4294967295), e, f, g)
+fn lct_ref_s256_block(w16, st) = let r = lct_ref_s256_rounds(lct_ref_zip_add_rev(lct_ref_s256_expand(16, w16), lct_sha256_k_rev(), Nil), st.a, st.b, st.c, st.d, st.e, st.f, st.g, st.h) in {a: bit_and(st.a + r.a, 4294967295), b: bit_and(st.b + r.b, 4294967295), c: bit_and(st.c + r.c, 4294967295), d: bit_and(st.d + r.d, 4294967295), e: bit_and(st.e + r.e, 4294967295), f: bit_and(st.f + r.f, 4294967295), g: bit_and(st.g + r.g, 4294967295), h: bit_and(st.h + r.h, 4294967295)}
+fn lct_ref_add64(a, b) = let l = a.l + b.l in {h: bit_and(a.h + b.h + bit_shr(l, 32), 4294967295), l: bit_and(l, 4294967295)}
+fn lct_ref_r64(a, b, n) = bit_or(bit_shr(a, n), bit_and(bit_shl(b, 32 - n), 4294967295))
+fn lct_ref_s512_s0(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_ref_r64(h, l, 1), lct_ref_r64(h, l, 8)), bit_shr(h, 7)), l: bit_xor(bit_xor(lct_ref_r64(l, h, 1), lct_ref_r64(l, h, 8)), lct_ref_r64(l, h, 7))}
+fn lct_ref_s512_s1(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_ref_r64(h, l, 19), lct_ref_r64(l, h, 29)), bit_shr(h, 6)), l: bit_xor(bit_xor(lct_ref_r64(l, h, 19), lct_ref_r64(h, l, 29)), lct_ref_r64(l, h, 6))}
+fn lct_ref_s512_b0(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_ref_r64(h, l, 28), lct_ref_r64(l, h, 2)), lct_ref_r64(l, h, 7)), l: bit_xor(bit_xor(lct_ref_r64(l, h, 28), lct_ref_r64(h, l, 2)), lct_ref_r64(h, l, 7))}
+fn lct_ref_s512_b1(x) = let h = x.h in let l = x.l in {h: bit_xor(bit_xor(lct_ref_r64(h, l, 14), lct_ref_r64(h, l, 18)), lct_ref_r64(l, h, 9)), l: bit_xor(bit_xor(lct_ref_r64(l, h, 14), lct_ref_r64(l, h, 18)), lct_ref_r64(h, l, 9))}
+fn lct_ref_s512_expand(t, w) = if t >= 80 then w else let a = lct_nth(w, 15) in let b = lct_ref_s512_s0(lct_nth(w, 14)) in let c = lct_nth(w, 6) in let d = lct_ref_s512_s1(lct_nth(w, 1)) in let l = a.l + b.l + c.l + d.l in lct_ref_s512_expand(t + 1, Cons({h: bit_and(a.h + b.h + c.h + d.h + bit_shr(l, 32), 4294967295), l: bit_and(l, 4294967295)}, w))
+fn lct_ref_zip_addw_rev(ws, ks, acc) = match ws
+    Nil        => acc
+    Cons(w, r) => lct_ref_zip_addw_rev(r, lct_tl(ks), Cons(lct_ref_add64(w, lct_hd(ks)), acc))
+fn lct_ref_s512_rounds(kw, a, b, c, d, e, f, g, h) = match kw
+    Nil        => {a: a, b: b, c: c, d: d, e: e, f: f, g: g, h: h}
+    Cons(x, r) => let s1 = lct_ref_s512_b1(e) in let s0 = lct_ref_s512_b0(a) in let t1l = h.l + s1.l + bit_xor(g.l, bit_and(e.l, bit_xor(f.l, g.l))) + x.l in let t1h = bit_and(h.h + s1.h + bit_xor(g.h, bit_and(e.h, bit_xor(f.h, g.h))) + x.h + bit_shr(t1l, 32), 4294967295) in let t1m = bit_and(t1l, 4294967295) in let t2l = s0.l + bit_or(bit_and(a.l, b.l), bit_and(c.l, bit_or(a.l, b.l))) in let t2h = s0.h + bit_or(bit_and(a.h, b.h), bit_and(c.h, bit_or(a.h, b.h))) + bit_shr(t2l, 32) in let al = t1m + bit_and(t2l, 4294967295) in let el = d.l + t1m in lct_ref_s512_rounds(r, {h: bit_and(t1h + t2h + bit_shr(al, 32), 4294967295), l: bit_and(al, 4294967295)}, a, b, c, {h: bit_and(d.h + t1h + bit_shr(el, 32), 4294967295), l: bit_and(el, 4294967295)}, e, f, g)
+fn lct_ref_s512_block(w32, st) = let r = lct_ref_s512_rounds(lct_ref_zip_addw_rev(lct_ref_s512_expand(16, lct_rev(lct_s512_pair(w32, Nil))), lct_sha512_k_rev(), Nil), st.a, st.b, st.c, st.d, st.e, st.f, st.g, st.h) in {a: lct_ref_add64(st.a, r.a), b: lct_ref_add64(st.b, r.b), c: lct_ref_add64(st.c, r.c), d: lct_ref_add64(st.d, r.d), e: lct_ref_add64(st.e, r.e), f: lct_ref_add64(st.f, r.f), g: lct_ref_add64(st.g, r.g), h: lct_ref_add64(st.h, r.h)}
+fn lct_ref_eqbit(a, b) = bit_and(bit_shr(bit_xor(a, b) - 1, 63), 1)
+fn lct_ref_max_ct(a, b) = a + bit_and(b - a, 0 - bit_and(bit_shr(a - b, 63), 1))
+fn lct_ref_ent_or(bs, acc) = match bs
+    Nil        => acc
+    Cons(h, t) => lct_ref_ent_or(t, bit_or(acc, h))
+fn lct_ref_ent_or_xor(bs, v, acc) = match bs
+    Nil        => acc
+    Cons(h, t) => lct_ref_ent_or_xor(t, v, bit_or(acc, bit_xor(h, v)))
+fn lct_ref_ent_maxrun(bs, prev, run, mx) = match bs
+    Nil        => mx
+    Cons(h, t) => let r = bit_and(run, 0 - lct_ref_eqbit(h, prev)) + 1 in lct_ref_ent_maxrun(t, h, r, lct_ref_max_ct(mx, r))
+fn lct_ref_ent_apt_cnt(bs, v, left, c) = match bs
+    Nil        => {c: c, rest: Nil}
+    Cons(h, t) => if left <= 1 then {c: c + lct_ref_eqbit(h, v), rest: t} else lct_ref_ent_apt_cnt(t, v, left - 1, c + lct_ref_eqbit(h, v))
+fn lct_ref_ent_apt_max(bs, n, mx) = if n < 512 then mx else let r = lct_ref_ent_apt_cnt(lct_tl(bs), lct_hd(bs), 511, 1) in lct_ref_ent_apt_max(r.rest, n - 512, lct_ref_max_ct(mx, r.c))
+fn lct_ref_weak_secret(bs) = if lct_ref_ent_or_xor(bs, lct_hd(bs), 0) == 0 then 1 else 0
+fn lct_ref_xor_lists_acc(a, b, acc) = match a
+    Nil        => lct_rev(acc)
+    Cons(h, t) => lct_ref_xor_lists_acc(t, lct_tl(b), Cons(bit_xor(h, lct_hd(b)), acc))
+fn lct_ref_xor_lists(a, b) = lct_ref_xor_lists_acc(a, b, Nil)
+fn lct_ref_sc_muladd_pre(h, a, r) = lct_ref_carry256(lct_ref_fe_add(lct_conv_loop(h, a, Nil, Nil), r), 0, Nil)
+fn lct_ref_ct_eq(a, b) = if lct_len(a) != lct_len(b) then 0 else if lct_ref_ct_acc(a, b, 0) == 0 then 1 else 0
+fn lct_ref_x25519_ok(s) = 1 + bit_shr(lct_ref_ct_acc(s, Nil, 0) - 1, 63)
+fn lct_ref_fe_mul121665(a) = lct_ref_fe_car(lct_ref_fe_car(lct_ref_fe_small(a, 121665)))
+fn lct_ref_fe_pack(n) = lct_ref_fe_bytes(lct_ref_fe_pack_red(lct_ref_fe_pack_red(lct_ref_fe_car(lct_ref_fe_car(lct_ref_fe_car(n))))))
+## deterministic test inputs (public): xorshift32, a word with the two extremes mixed in, lists of (random & mask) - bias
+fn lct_kt_rng(x) = let a = bit_and(bit_xor(x, bit_shl(x, 13)), 4294967295) in let b = bit_xor(a, bit_shr(a, 17)) in bit_and(bit_xor(b, bit_shl(b, 5)), 4294967295)
+fn lct_kt_edge(y, mask) = if y % 16 == 0 then 0 else if y % 16 == 1 then mask else bit_and(bit_shr(y, 4), mask)
+fn lct_kt_list(x, n, mask, bias, acc) = if n <= 0 then {l: acc, x: x} else let y = lct_kt_rng(x) in lct_kt_list(y, n - 1, mask, bias, Cons(lct_kt_edge(y, mask) - bias, acc))
+fn lct_kt_ne(a, b) = if a == b then 0 else 1
+## 1 when two integer lists differ (plain comparison)
+fn lct_kt_diff(a, b) = match a
+    Nil        => if lct_isnil(b) == 1 then 0 else 1
+    Cons(h, t) => if lct_isnil(b) == 1 then 1 else if h != lct_hd(b) then 1 else lct_kt_diff(t, lct_tl(b))
+fn lct_kt_qr(x, n, bad) = if n <= 0 then bad else let a = lct_kt_rng(x) in let b = lct_kt_rng(a) in let c = lct_kt_rng(b) in let d = lct_kt_rng(c) in let a1 = lct_kt_edge(a, 4294967295) in let b1 = lct_kt_edge(b, 4294967295) in let c1 = lct_kt_edge(c, 4294967295) in let d1 = lct_kt_edge(d, 4294967295) in let p = lct_cc_qr(a1, b1, c1, d1) in let q = lct_ref_cc_qr(a1, b1, c1, d1) in lct_kt_qr(d, n - 1, bad + (if p.a == q.a and p.b == q.b and p.c == q.c and p.d == q.d then 0 else 1))
+fn lct_kt_words(x, n, bad) = if n <= 0 then bad else let y = lct_kt_rng(x) in let z = lct_kt_rng(y) in let a = lct_kt_edge(y, 4294967295) in let b = lct_kt_edge(z, 4294967295) in let t = lct_le32_push(a, Nil) in lct_kt_words(z, n - 1, bad + lct_kt_ne(lct_k_add32(a, b), bit_and(a + b, 4294967295)) + lct_kt_ne(lct_k_xor(a, b), bit_xor(a, b)) + lct_kt_diff(t, lct_ref_le32_push(a, Nil)) + lct_kt_ne((lct_le32_take(t)).v, a) + lct_kt_ne((lct_ref_le32_take(t)).v, a))
+fn lct_kt_pkey(k) = [k.r0, k.r1, k.r2, k.r3, k.r4, k.s1, k.s2, k.s3, k.s4, k.p0, k.p1, k.p2, k.p3]
+fn lct_kt_ph(h) = [h.h0, h.h1, h.h2, h.h3, h.h4]
+## the accumulator of Poly1305 on its invariant range: limbs below 2^26, limb 1 below 2^26 + 2^11
+fn lct_kt_h(x) = let a = lct_kt_list(x, 6, 67108863, 0, Nil) in {h: {h0: lct_nth(a.l, 0), h1: lct_nth(a.l, 1) + bit_and(lct_nth(a.l, 5), 2047), h2: lct_nth(a.l, 2), h3: lct_nth(a.l, 3), h4: lct_nth(a.l, 4)}, x: a.x}
+fn lct_kt_poly(x, n, bad) = if n <= 0 then bad else let kb = lct_kt_list(x, 32, 255, 0, Nil) in let k = lct_p_key(kb.l) in let kr = lct_ref_p_key(kb.l) in let h = lct_kt_h(kb.x) in let t = lct_kt_list(h.x, 4, 4294967295, 0, Nil) in let hb = if n % 2 == 0 then 16777216 else 0 in let t0 = lct_nth(t.l, 0) in let t1 = lct_nth(t.l, 1) in let t2 = lct_nth(t.l, 2) in let t3 = lct_nth(t.l, 3) in lct_kt_poly(t.x, n - 1, bad + lct_kt_diff(lct_kt_pkey(k), lct_kt_pkey(kr)) + lct_kt_diff(lct_kt_ph(lct_p_block(h.h, k, t0, t1, t2, t3, hb)), lct_kt_ph(lct_ref_p_block(h.h, kr, t0, t1, t2, t3, hb))) + lct_kt_diff(lct_p_finish(h.h, k), lct_ref_p_finish(h.h, kr)))
+## the final reduction around p = 2^130 - 5 and at the largest accumulator: h0 = 2^26 - 8 .. 2^26 - 1 under all-ones upper limbs
+fn lct_kt_pfin_edge(i, bad) = if i >= 16 then bad else let k = lct_p_key(lct_sha256([i])) in let kr = lct_ref_p_key(lct_sha256([i])) in let h = {h0: 67108863 - i % 8, h1: 67108863 + (if i >= 8 then 2047 else 0), h2: 67108863, h3: 67108863, h4: 67108863} in lct_kt_pfin_edge(i + 1, bad + lct_kt_diff(lct_p_finish(h, k), lct_ref_p_finish(h, kr)) + lct_kt_diff(lct_kt_ph(lct_p_block(h, k, 4294967295, 4294967295, 4294967295, 4294967295, 16777216)), lct_kt_ph(lct_ref_p_block(h, kr, 4294967295, 4294967295, 4294967295, 4294967295, 16777216))))
+fn lct_kt_cmp(x, n, bad) = if n <= 0 then bad else let a = lct_kt_list(x, 1 + n % 33, 255, 0, Nil) in let b = lct_kt_list(a.x, 1 + n % 33, 4294967295, 2147483648, Nil) in let y = lct_kt_rng(b.x) in let c = lct_rev(lct_flip(a.l, y % (1 + n % 33), 1 + y % 255)) in let d = lct_rev(c) in lct_kt_cmp(y, n - 1, bad + lct_kt_ne(lct_ct_eq(a.l, a.l), 1) + lct_kt_ne(lct_ct_eq(a.l, d), 0) + lct_kt_ne(lct_ct_eq(a.l, c), lct_ref_ct_eq(a.l, c)) + lct_kt_ne(lct_ct_acc(a.l, b.l, 0), lct_ref_ct_acc(a.l, b.l, 0)) + lct_kt_ne(lct_k_nonzero(lct_ct_acc(a.l, a.l, 0)), 0) + lct_kt_ne(lct_k_nonzero(lct_ct_acc(a.l, d, 0)), lct_ref_x25519_ok(lct_xor_lists(a.l, d))) + lct_kt_ne(lct_k_nonzero(lct_ct_acc(lct_zeros(32), Nil, 0)), lct_ref_x25519_ok(lct_zeros(32))))
+## field elements as the ladders feed them: sixteen signed limbs in [-2^18, 2^18)
+fn lct_kt_fe(x, n, bad) = if n <= 0 then bad else let a = lct_kt_list(x, 16, 524287, 262144, Nil) in let b = lct_kt_list(a.x, 16, 524287, 262144, Nil) in lct_kt_fe(b.x, n - 1, bad + lct_kt_diff(lct_fe_add(a.l, b.l), lct_ref_fe_add(a.l, b.l)) + lct_kt_diff(lct_fe_sub(a.l, b.l), lct_ref_fe_sub(a.l, b.l)) + lct_kt_diff(lct_fe_sel(a.l, b.l, 0), a.l) + lct_kt_diff(lct_fe_sel(a.l, b.l, 0 - 1), b.l) + lct_kt_diff(lct_fe_sel(a.l, b.l, lct_k_mask_neg(n % 2)), lct_ref_fe_sel(a.l, b.l, 0 - n % 2)) + lct_kt_diff(lct_fe_sel(a.l, b.l, lct_k_mask_dec(n % 2)), lct_ref_fe_sel(a.l, b.l, n % 2 - 1)))
+## the carry pass on column sums up to 2^46 in magnitude, a * 121665, and the canonical encoding
+fn lct_kt_car(x, n, bad) = if n <= 0 then bad else let a = lct_kt_list(x, 16, 524287, 262144, Nil) in let b = lct_kt_list(a.x, 16, 4294967295, 2147483648, Nil) in let big = lct_ref_fe_add(lct_ref_fe_small(b.l, 16384), a.l) in let by = lct_kt_list(b.x, 32, 255, 0, Nil) in lct_kt_car(by.x, n - 1, bad + lct_kt_diff(lct_fe_car(big), lct_ref_fe_car(big)) + lct_kt_diff(lct_fe_car(lct_fe_car(big)), lct_ref_fe_car(lct_ref_fe_car(big))) + lct_kt_diff(lct_fe_car(a.l), lct_ref_fe_car(a.l)) + lct_kt_diff(lct_fe_mul121665(a.l), lct_ref_fe_mul121665(a.l)) + lct_kt_diff(lct_fe_pack(a.l), lct_ref_fe_pack(a.l)) + lct_kt_diff(lct_fe_pack(big), lct_ref_fe_pack(big)) + lct_kt_diff(lct_fe_unpack(by.l), lct_ref_fe_unpack_l(by.l, 0)) + lct_kt_diff(lct_fe_pack(lct_fe_unpack(by.l)), lct_ref_fe_pack(lct_ref_fe_unpack_l(by.l, 0))))
+## the encodings of p - 1, p, p + 1, 2p - 1, 2p, 2^256 - 1 and 0 (the conditional subtraction on both sides of each borrow)
+fn lct_kt_pack_edge() = let p = Cons(65517, lct_app(lct_repeat(65535, 14, Nil), [32767])) in let p2 = Cons(65498, lct_app(lct_repeat(65535, 14, Nil), [65535])) in let one = lct_fe_one() in let ff = lct_repeat(65535, 16, Nil) in lct_kt_diff(lct_fe_pack(p), lct_ref_fe_pack(p)) + lct_kt_diff(lct_fe_pack(lct_ref_fe_sub(p, one)), lct_ref_fe_pack(lct_ref_fe_sub(p, one))) + lct_kt_diff(lct_fe_pack(lct_ref_fe_add(p, one)), lct_ref_fe_pack(lct_ref_fe_add(p, one))) + lct_kt_diff(lct_fe_pack(p2), lct_ref_fe_pack(p2)) + lct_kt_diff(lct_fe_pack(lct_ref_fe_sub(p2, one)), lct_ref_fe_pack(lct_ref_fe_sub(p2, one))) + lct_kt_diff(lct_fe_pack(ff), lct_ref_fe_pack(ff)) + lct_kt_diff(lct_fe_pack(lct_fe_zero()), lct_ref_fe_pack(lct_fe_zero())) + lct_kt_ne(lct_bytes_to_hex(lct_fe_pack(p)), "0000000000000000000000000000000000000000000000000000000000000000") + lct_kt_ne(lct_bytes_to_hex(lct_fe_pack(lct_ref_fe_add(p2, one))), "0100000000000000000000000000000000000000000000000000000000000000")
+## lct_fe_mul against the schoolbook reference on signed limbs in [-2^18, 2^18), and on the two extreme elements
+fn lct_kt_mul(x, n, bad) = if n <= 0 then bad else let a = lct_kt_list(x, 16, 524287, 262144, Nil) in let b = lct_kt_list(a.x, 16, 524287, 262144, Nil) in lct_kt_mul(b.x, n - 1, bad + lct_kt_diff(lct_fe_mul(a.l, b.l), lct_fe_mul_ref(a.l, b.l)) + lct_kt_diff(lct_fe_mul(a.l, a.l), lct_fe_mul_ref(a.l, a.l)))
+fn lct_kt_mul_edge() = let hi = lct_repeat(262143, 16, Nil) in let lo = lct_repeat(0 - 262144, 16, Nil) in lct_kt_diff(lct_fe_mul(hi, hi), lct_fe_mul_ref(hi, hi)) + lct_kt_diff(lct_fe_mul(lo, lo), lct_fe_mul_ref(lo, lo)) + lct_kt_diff(lct_fe_mul(hi, lo), lct_fe_mul_ref(hi, lo)) + lct_kt_diff(lct_fe_mul(lo, hi), lct_fe_mul_ref(lo, hi))
+fn lct_kt_bits(b, bad) = if b >= 256 then bad else lct_kt_bits(b + 1, bad + lct_kt_diff(lct_bits8(b, Nil), lct_ref_bits8(b, 0, Nil)))
+fn lct_kt_sc(x, n, bad) = if n <= 0 then bad else let a = lct_kt_list(x, 11, 16777215, 0, Nil) in let b = lct_kt_list(a.x, 32, 255, 0, Nil) in let l = lct_ed_l24() in let s = lct_sc_subl(a.l, l, n % 2, Nil) in let sr = lct_ref_sc_subl(a.l, l, n % 2, Nil) in lct_kt_sc(b.x, n - 1, bad + lct_kt_diff(lct_sc_dbl(a.l, n % 2, Nil), lct_ref_sc_dbl(a.l, n % 2, Nil)) + lct_kt_diff(s.l, sr.l) + lct_kt_ne(s.b, sr.b) + lct_kt_diff(lct_sc_step(a.l, n % 2, l), lct_ref_sc_step(a.l, n % 2, l)) + lct_kt_diff(lct_sc_bytes(a.l), lct_ref_sc_bytes(a.l)) + lct_kt_diff(lct_ed_clamp_l(b.l, 0), lct_ref_ed_clamp_l(b.l, 0)))
+fn lct_kt_muladd(x, n, bad) = if n <= 0 then bad else let h = lct_kt_list(x, 32, 255, 0, Nil) in let a = lct_kt_list(h.x, 32, 255, 0, Nil) in let r = lct_kt_list(a.x, 32, 255, 0, Nil) in lct_kt_muladd(r.x, n - 1, bad + lct_kt_diff(lct_carry256(lct_sc_addr(lct_sc_mloop(h.l, a.l, Nil, Nil), r.l), 0, Nil), lct_ref_sc_muladd_pre(h.l, a.l, r.l)))
+fn lct_kt_muladd_edge() = let f = lct_repeat(255, 32, Nil) in lct_kt_diff(lct_carry256(lct_sc_addr(lct_sc_mloop(f, f, Nil, Nil), f), 0, Nil), lct_ref_sc_muladd_pre(f, f, f))
+fn lct_kt_st256(l) = {a: lct_nth(l, 0), b: lct_nth(l, 1), c: lct_nth(l, 2), d: lct_nth(l, 3), e: lct_nth(l, 4), f: lct_nth(l, 5), g: lct_nth(l, 6), h: lct_nth(l, 7)}
+fn lct_kt_l256(s) = [s.a, s.b, s.c, s.d, s.e, s.f, s.g, s.h]
+fn lct_kt_st512(l) = {a: lct_w64(lct_nth(l, 0), lct_nth(l, 1)), b: lct_w64(lct_nth(l, 2), lct_nth(l, 3)), c: lct_w64(lct_nth(l, 4), lct_nth(l, 5)), d: lct_w64(lct_nth(l, 6), lct_nth(l, 7)), e: lct_w64(lct_nth(l, 8), lct_nth(l, 9)), f: lct_w64(lct_nth(l, 10), lct_nth(l, 11)), g: lct_w64(lct_nth(l, 12), lct_nth(l, 13)), h: lct_w64(lct_nth(l, 14), lct_nth(l, 15))}
+fn lct_kt_l512(s) = lct_w64_push(s.a, lct_w64_push(s.b, lct_w64_push(s.c, lct_w64_push(s.d, lct_w64_push(s.e, lct_w64_push(s.f, lct_w64_push(s.g, lct_w64_push(s.h, Nil))))))))
+## one compression of SHA-256 and of SHA-512 on a random block and a random chaining value, and the big-endian words
+fn lct_kt_sha(x, n, bad) = if n <= 0 then bad else let w = lct_kt_list(x, 32, 4294967295, 0, Nil) in let s = lct_kt_list(w.x, 16, 4294967295, 0, Nil) in let by = lct_kt_list(s.x, 64, 255, 0, Nil) in let w16 = lct_take(w.l, 16) in lct_kt_sha(by.x, n - 1, bad + lct_kt_diff(lct_kt_l256(lct_s256_block(w16, lct_kt_st256(s.l))), lct_kt_l256(lct_ref_s256_block(w16, lct_kt_st256(s.l)))) + lct_kt_diff(lct_kt_l512(lct_s512_block(w.l, lct_kt_st512(s.l))), lct_kt_l512(lct_ref_s512_block(w.l, lct_kt_st512(s.l)))) + lct_kt_diff((lct_be32(by.l, 16, Nil)).w, (lct_ref_be32(by.l, 16, Nil)).w) + lct_kt_diff(lct_be32_push(lct_hd(w.l), Nil), lct_ref_be32_push(lct_hd(w.l), Nil)))
+## the entropy counters and the list xor on strings with long runs (values 0 .. 3) and on random bytes
+fn lct_kt_ent(x, n, bad) = if n <= 0 then bad else let a = lct_kt_list(x, 600, 3, 0, Nil) in let b = lct_kt_list(a.x, 600, 255, 0, Nil) in lct_kt_ent(b.x, n - 1, bad + lct_kt_ne(lct_ent_maxrun(a.l, 256, 0, 0), lct_ref_ent_maxrun(a.l, 256, 0, 0)) + lct_kt_ne(lct_ent_apt_max(a.l, 600, 0), lct_ref_ent_apt_max(a.l, 600, 0)) + lct_kt_ne(lct_ent_maxrun(b.l, 256, 0, 0), lct_ref_ent_maxrun(b.l, 256, 0, 0)) + lct_kt_ne(lct_ent_apt_max(b.l, 600, 0), lct_ref_ent_apt_max(b.l, 600, 0)) + lct_kt_ne(lct_ent_or(b.l, 0), lct_ref_ent_or(b.l, 0)) + lct_kt_ne(lct_ent_or_xor(a.l, 1, 0), lct_ref_ent_or_xor(a.l, 1, 0)) + lct_kt_ne(lct_weak_secret(lct_take(a.l, 2)), lct_ref_weak_secret(lct_take(a.l, 2))) + lct_kt_diff(lct_xor_lists(a.l, b.l), lct_ref_xor_lists(a.l, b.l)))
+## every kernel-backed function against its plain reference: the number of mismatches of each family must be 0.
+## `scale` multiplies the number of pseudo-random inputs (the unit test runs scale 1, the acceptance gate scale 10).
+fn lct_kat_kernels_n(scale) = let k0 = lct_kat_new() in let k1 = lct_kat_int(k0, "kernels: ChaCha20 quarter round vs the plain quarter round", lct_kt_qr(20261111, 400 * scale, 0), 0) in let k2 = lct_kat_int(k1, "kernels: add32, xor, little-endian words vs plain arithmetic", lct_kt_words(77, 400 * scale, 0), 0) in let k3 = lct_kat_int(k2, "kernels: Poly1305 clamp, block and finish vs the plain functions", lct_kt_poly(4242, 200 * scale, 0), 0) in let k4 = lct_kat_int(k3, "kernels: Poly1305 final reduction around p and at the largest accumulator", lct_kt_pfin_edge(0, 0), 0) in let k5 = lct_kat_int(k4, "kernels: constant-time compare and all-zero check vs the plain ones", lct_kt_cmp(99, 200 * scale, 0), 0) in let k6 = lct_kat_int(k5, "kernels: field add, sub and masked select vs the plain ones", lct_kt_fe(1234567, 200 * scale, 0), 0) in let k7 = lct_kat_int(k6, "kernels: field carry, times 121665, pack and unpack vs the plain ones", lct_kt_car(7654321, 60 * scale, 0), 0) in let k8 = lct_kat_int(k7, "kernels: canonical encoding at p - 1, p, p + 1, 2p - 1, 2p, 2^256 - 1, 0", lct_kt_pack_edge(), 0) in let k9 = lct_kat_int(k8, "kernels: field multiplication vs the schoolbook reference", lct_kt_mul(31337, 60 * scale, 0), 0) in let k10 = lct_kat_int(k9, "kernels: field multiplication at the extreme limbs", lct_kt_mul_edge(), 0) in let k11 = lct_kat_int(k10, "kernels: bits of every byte value", lct_kt_bits(0, 0), 0) in let k12 = lct_kat_int(k11, "kernels: scalar double, subtract L, step, bytes and clamp vs the plain ones", lct_kt_sc(555, 200 * scale, 0), 0) in let k13 = lct_kat_int(k12, "kernels: r + h * a on bytes vs the plain product", lct_kt_muladd(808, 20 * scale, 0), 0) in let k14 = lct_kat_int(k13, "kernels: r + h * a with every byte 255", lct_kt_muladd_edge(), 0) in let k15 = lct_kat_int(k14, "kernels: SHA-256 and SHA-512 compression, big-endian words vs the plain ones", lct_kt_sha(2718, 20 * scale, 0), 0) in lct_kat_int(k15, "kernels: entropy counters and list xor vs the plain ones", lct_kt_ent(1618, 4 * scale, 0), 0)
+fn lct_kat_kernels() = lct_kat_kernels_n(1)
+
 ## --- entropy, X.509 and X.509-mode handshake tests ---------------------------------------------------------------------
 ## X.509 test vectors. `lct_x509v_rfc8410` is the example certificate of RFC 8410 section 10.2 (an X25519 subject key
 ## certified with Ed25519); its signature verifies under the RFC 8410 section 10.1 public key (`lct_x509v_rfc8410_key`),
@@ -1235,5 +1895,6 @@ fn test_lct_x509_civil_dates_exhaustive_1950_2049() = let k = lct_kat_x509_dates
 fn test_lct_x509_tls13_handshake_and_rejections() = let k = lct_kat_x509_tls() in k.err == "" and k.n == lct_kat_expected("x509_tls")
 fn test_lct_x509_corruption_fuzz_accepts_nothing() = let r = lct_kat_x509_fuzz(lct_str_to_bytes("lume x509 fuzz: unit test"), 48) in r.accepted == 0 and r.n == 48 and r.same == 0 and r.e_parse >= 1 and r.e_sig >= 1 and r.e_parse + r.e_sig + r.e_other == 48
 ## number of checks each known-answer group must pass (the gate compares against these)
-fn lct_kat_expected(group) = if group == "sha256" then 8 else if group == "sha512" then 6 else if group == "hmac" then 7 else if group == "hkdf" then 9 else if group == "chacha20" then 14 else if group == "poly1305" then 16 else if group == "aead" then 25 else if group == "ed25519" then 31 else if group == "ed25519_quick" then 5 else if group == "tls13" then 47 else if group == "x25519" then 23 else if group == "x25519_1000" then 1 else if group == "handshake" then 43 else if group == "handshake_rejects" then 45 else if group == "entropy" then 48 else if group == "x509" then 122 else if group == "x509_dates" then 21 else if group == "x509_tls" then 39 else 0
+fn test_lct_kernels_match_plain_references() = let k = lct_kat_kernels() in k.err == "" and k.n == lct_kat_expected("kernels")
+fn lct_kat_expected(group) = if group == "sha256" then 8 else if group == "sha512" then 6 else if group == "hmac" then 7 else if group == "hkdf" then 9 else if group == "chacha20" then 14 else if group == "poly1305" then 16 else if group == "aead" then 25 else if group == "ed25519" then 31 else if group == "ed25519_quick" then 5 else if group == "tls13" then 47 else if group == "x25519" then 23 else if group == "x25519_1000" then 1 else if group == "handshake" then 43 else if group == "handshake_rejects" then 45 else if group == "entropy" then 48 else if group == "x509" then 122 else if group == "x509_dates" then 21 else if group == "x509_tls" then 39 else if group == "kernels" then 16 else 0
 fn lct_sha256_million_a_hex() = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
