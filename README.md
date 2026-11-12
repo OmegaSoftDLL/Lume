@@ -1,9 +1,9 @@
 <h1>
   <img src="docs/assets/lume-mascot-badge.svg" alt="Lumi — Official Lume Chameleon Mascot" width="84" height="84" align="left" />
-  Lume — Sovereign Systems, AI &amp; Quantum Programming Language
+  Lume — Formally Verified Systems, AI &amp; Quantum Programming Language
 </h1>
 
-**Mathematically Proven by Compiler (`OmniProof-v4`: `QF_LIA` / `QF_NIA` / `lcert` / `ltv` / `lsmt`) · Self-Hosted Zero-C Steady State (`stage2 == stage3`) · `118` `[C0011]` Constant-Time Crypto Kernels · `2oo2D` Clean-Room Safety Envelope · 9-Ecosystem Chameleon FFI · 27 Target Architectures**
+**Compile-Time Mathematical Verification (`OmniProof-v4`: `QF_LIA` / `QF_NIA` / `lcert` / `ltv` / `lsmt`) · 100% Self-Hosted Zero-C Compiler (`stage2 == stage3`) · `118` `[C0011]` Constant-Time Crypto Kernels · `2oo2D` Clean-Room Safety Envelope · 9-Ecosystem Chameleon FFI · 27 Target Architectures**
 
 <br clear="left"/>
 
@@ -11,20 +11,18 @@
 
 [![CI](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml/badge.svg)](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/release-v1.1.0-blue)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0)
-[![Zero-C Steady State](https://img.shields.io/badge/steady--state-100%25%20Lume%20%28Zero--C%29-success)](docs/PROJECT_STATE.md)
-[![Qualification Dossier](https://img.shields.io/badge/Qualification%20Dossier-PASS%20%28106%2F106%20Probes%20%C2%B7%2021%2F21%20Gates%20%C2%B7%200%2F9%2C618%20Uncovered%20MC%2FDC%29-success)](docs/certification/QUALIFICATION_DOSSIER.md)
-[![Acceptance Matrix](https://img.shields.io/badge/acceptance%20matrix-24%2F24%20PASS-brightgreen)](docs/acceptance-matrix.md)
-[![Red Team & Hostile Audit](https://img.shields.io/badge/Claude%20%2B%20Red%20Team%20R1--R4%20%2B%20Wave%2014%20Audit-100%25%20Remediated-brightgreen)](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md)
-[![OmniProof-v4 Formal Verification](https://img.shields.io/badge/OmniProof--v4-1%2C682%20Proofs%20%C2%B7%20372%20Tests%20%C2%B7%20122%20Domains-00b4d8)](#wave-14-zero-defect-qualification-clean-room-verification--synergy)
-[![Chameleon Polyglot](https://img.shields.io/badge/chameleon%20polyglot-9%20ecosystems%20%5BI0003%5D-00d2ff)](#universal-chameleon-polyglot-interop-engine-9-ecosystems)
+[![Zero-C Self-Hosted](https://img.shields.io/badge/self--hosted-100%25%20Lume%20%28Zero--C%29-success)](docs/PROJECT_STATE.md)
+[![OmniProof-v4](https://img.shields.io/badge/OmniProof--v4-1%2C682%20Proofs%20%C2%B7%20372%20Tests%20%C2%B7%20122%20Domains-00b4d8)](#formal-verification-binary-assurance--safety-certification)
+[![Tool Qualification Dossier](https://img.shields.io/badge/Qualification%20Dossier-PASS%20%28106%2F106%20Probes%20%C2%B7%2021%2F21%20Gates%20%C2%B7%200%2F9%2C618%20Uncovered%20MC%2FDC%29-success)](docs/certification/QUALIFICATION_DOSSIER.md)
+[![Constant-Time Crypto](https://img.shields.io/badge/Constant--Time%20Crypto-118%20%5BC0011%5D%20Kernels%20%C2%B7%20X.509v3%20%C2%B7%20TLS%201.3-16a34a)](#constant-time-cryptography-x509v3-pki--tls-13)
+[![Chameleon Polyglot](https://img.shields.io/badge/Chameleon%20FFI-9%20Ecosystems%20%5BI0003%5D-00d2ff)](#universal-chameleon-polyglot-interoperability-9-ecosystems)
+[![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](#27-universal-targets--system-packagers)
 [![LumeLabs R&D](https://img.shields.io/badge/LumeLabs-7%20R%26D%20Divisions-8b5cf6)](LUMELABS.md)
-[![Projects & Roadmap](https://img.shields.io/badge/projects-v1.1.0%20Board-10b981)](PROJECTS.md)
-[![Community & Discussions](https://img.shields.io/badge/community-EN%20%26%20PT--BR-38bdf8)](COMMUNITY.md)
-[![Targets](https://img.shields.io/badge/targets-27%20architectures-orange)](docs/26-targets.md)
+[![Community](https://img.shields.io/badge/community-EN%20%26%20PT--BR-38bdf8)](COMMUNITY.md)
 [![Open in GitHub Codespaces](https://img.shields.io/badge/GitHub%20Codespaces-Open%201--Click%20IDE-181717?logo=github)](https://codespaces.new/OmegaSoftDLL/Lume?quickstart=1)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](#license)
 
-[**Installation**](#installation--terminal-setup-lume-command) · [**Quickstart**](#quickstart) · [**Qualification Dossier (`PASS`)**](docs/certification/QUALIFICATION_DOSSIER.md) · [**Auditoria & Certificação (`PT-BR`)**](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md) · [**Wave 14 Closure**](#wave-14-zero-defect-qualification-clean-room-verification--synergy) · [**LumeLabs (`LUMELABS.md`)**](LUMELABS.md) · [**Projects & Roadmap (`PROJECTS.md`)**](PROJECTS.md) · [**Community (`COMMUNITY.md`)**](COMMUNITY.md) · [**Wiki**](https://github.com/OmegaSoftDLL/lume/wiki) · [**Discussions**](https://github.com/OmegaSoftDLL/lume/discussions) · [**Chameleon Polyglot (`9` Ecosystems)**](#universal-chameleon-polyglot-interop-engine-9-ecosystems) · [**Cyber-Physical UFE + Singularity $\Omega$ + IEC 62443**](#sovereign-cyber-physical-7-dof-robotics-singularity-boundary-ω--iec-62443-engines) · [**Claude & Red Team Audit (`EN` / `PT-BR`)**](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md) · [**Memory Saga (`31.8×`)**](#memory-saga--4-tier-atomic-memory-compactor-evolution) · [**Memory Dossier (`EN` / `PT-BR`)**](docs/39-memory-saga-and-atomic-compactor-dossier.md) · [**Technical Paper (`v1.1.0`)**](docs/LUME_TECHNICAL_PAPER.md) · [**Built-In Manual (`EN` / `PT-BR`)**](#built-in-bilingual-programmers-manual) · [**27 Compilation Targets**](#27-universal-targets--packagers) · [**Domain Engines**](#verified-domain--quantum-engines)
+[**Overview**](#overview--what-lume-is--how-it-is-built) · [**Installation**](#installation--toolchain-setup) · [**Quickstart**](#quickstart) · [**Compiler & Assurance Pipeline**](#how-lume-works--compiler--mutual-assurance-pipeline) · [**Memory Architecture (`31.8×`)**](#memory-architecture--4-tier-atomic-compactor) · [**Qualification & Safety (`PASS`)**](docs/certification/QUALIFICATION_DOSSIER.md) · [**Audit Report (`PT-BR`)**](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md) · [**Chameleon Polyglot (`9` Ecosystems)**](#universal-chameleon-polyglot-interoperability-9-ecosystems) · [**AI, Cyber-Physical & Quantum**](#ai-neural-execution-cyber-physical--quantum-engines) · [**27 Targets**](#27-universal-targets--system-packagers) · [**Repository Structure**](#repository-structure) · [**Verification Gates**](#verification--quality-gates-100-lume-generates-lume) · [**Manual (`EN` / `PT-BR`)**](#built-in-bilingual-manual--developer-tooling)
 
 <br/>
 
@@ -34,78 +32,83 @@
 
 ---
 
-## About Lume — Sovereign Architecture at a Glance
+## Overview — What Lume Is & How It Is Built
 
 <img src="docs/assets/lume-mascot.jpg" alt="Lumi — Official Lume Bioluminescent Chameleon Mascot" width="240" align="right" />
 
-**Lume (`v1.1.0`, Edition 2026 — Wave 14 Qualified)** is a statically typed, formally verified **systems, artificial intelligence, and quantum programming language** created by **Ricardo Bueno ([`@OmegaSoftDLL`](https://github.com/OmegaSoftDLL))**. Its entire production toolchain is written 100% in Lume itself, operates in a mathematically proven **Zero-C steady state (`stage2 == stage3`)**, and ships with **`OmniProof-v4`** (**`1,682` formal obligations across `16` batteries**, **`372` unit tests**, **`122` sovereign domains `#0..#121`**) plus an X.509v3 + Ed25519-signed **`lume qualify` `PASS` dossier** (**`106/106` probes**, **`21/21` gates**, **`10` HLR + `44/44` LLR `VERIFIED`**, **`694` functions translation-validated by `ltv`**, **`18/18` runtime helpers verified by `ltv_rt`**, **`100%` `.smt2` checked by clean-room `lsmt` & `z3`**, **`0/9,618` uncovered MC/DC**, **`118` `[C0011]` constant-time crypto kernels**, and **`2oo2D` clean-room RV32IM lockstep**).
+**Lume (`v1.1.0`, Edition 2026)** is a statically typed, formally verified **systems, artificial intelligence, cyber-physical, and quantum programming language** created by **Ricardo Bueno ([`@OmegaSoftDLL`](https://github.com/OmegaSoftDLL))**. Lume is designed from first principles to be written fluently by both human engineers and autonomous AI systems while enforcing machine-checked mathematical correctness from source contracts down to emitted native machine code.
 
-> 🇧🇷 **Em Português (`pt-BR`):** A **Lume (`v1.1.0` — Wave 14 Qualificada)** é uma linguagem de programação soberana para **sistemas críticos, inteligência artificial e computação quântica**, 100% auto-hospedada em código nativo (**Zero-C**, `stage2 == stage3` bit a bit em `~3,8s`), com provador **`OmniProof-v4`** (**`1.682` obrigações formais em `16` baterias**, **`372` testes unitários**, **`122` domínios soberanos `#0..#121`**), dossiê **`lume qualify` `PASS`** assinado via Ed25519 + X.509v3 (**`106/106` sondas**, **`21/21` gates**, **`10` HLR + `44/44` LLR `VERIFIED`**, **`694` funções validadas em código de máquina por `ltv`**, **`18/18` helpers de runtime verificados por `ltv_rt`**, **`100%` dos `.smt2` auditados por `lsmt` *clean-room* e `z3`**, **`0/9.618` condições MC/DC descobertas**), **`118` kernels criptográficos *constant-time* `[C0011]`**, envelope de segurança **`2oo2D` Canal B RV32IM *clean-room* (`0/3.169` funções do compilador)**, compactador atômico de memória (**`31,8×` mais rápido** e **`2.733×` menos RAM**), **Camaleão Poliglota para 9 ecossistemas (`[I0003]`)** e **27 arquiteturas nativas**.
+Unlike conventional toolchains that rely on external C/C++ compiler backends, third-party assemblers, or unverified runtime libraries, **Lume's entire production toolchain is written 100% in Lume itself**:
+
+1. **Auditable Seed & Diverse Double-Compilation (`bootstrap/lume0/`):** Bootstrap begins from a minimal, frozen ~4.8k-LoC C11 interpreter and ELF64 emitter locked by `bootstrap/lume0/SEED_FREEZE.sha256`. Using **David A. Wheeler's Diverse Double-Compilation (DDC)**, compiling the self-hosted compiler from independent C compilers (`cc` and `clang`) converges to the exact same SHA-256 native compiler binary (`0` byte difference).
+2. **Zero-C Self-Hosted Fixpoint (`lumec1 == lumec2 == lumec3`):** In steady state, Lume compiles, assembles, links, formats, tests, proves, and packages itself in **`~3.8 s`** with all external C compilers and system assemblers/linkers blocked (`lume zero-c`), verified across **`134` SHA-256-locked manifest files** (`MANIFEST.sha256`) and **`114` table-driven CLI commands (`226` command & alias names, `0` parity drift)**.
+3. **Clean-Room Mutual Verification:** No single component is trusted in isolation. Compiler proofs (`lcaas.src`) are re-checked by a standalone zero-compiler-import proof kernel (`lcert.src`); emitted x86-64, AArch64, and RISC-V machine code is verified against AST semantics by symbolic translation validators (`ltv.src`, `ltv_multiarch.src`) and runtime-helper verifiers (`ltv_rt.src`); `.smt2` proof obligations are independently discharged by both a clean-room native solver (`lsmt.src`) and external `z3`; structural coverage is confirmed on native binaries by a Masking MC/DC engine (`lmcdc.src`, **`0/9,618` uncovered conditions**); and critical kernels execute in **`2oo2D` dual-channel lockstep** (`lsafety_envelope.src`) against a clean-room RV32IM compiler (`lrv32_lowered.src`) sharing **`0/3,169` functions** with `lumec`.
+
+> 🇧🇷 **Resumo em Português (`pt-BR`):** A **Lume (`v1.1.0`, Edição 2026)** é uma linguagem de programação estaticamente tipada e formalmente verificada para **sistemas críticos, inteligência artificial, controle ciberfísico e computação quântica**, 100% auto-hospedada em código nativo (**Zero-C**, ponto fixo bit a bit `stage2 == stage3` em `~3,8 s` e verificada por *Diverse Double-Compilation*). Reúne provador matemático embarcado **`OmniProof-v4`** (**`1.682` obrigações formais provadas em `16` baterias**, **`0` refutadas ou pendentes em runtime**, **`372` testes unitários**, **`122` domínios soberanos**), validação simbólica de código de máquina (`ltv` em **`694` funções** + `ltv_rt` nos **`18/18` helpers de runtime** + checador `.smt2` *clean-room* `lsmt` & `z3`), **`0/9.618` condições MC/DC descobertas**, **`118` kernels criptográficos *constant-time* `[C0011]`** (TLS 1.3, X.509v3 Ed25519 e entropia NIST SP 800-90B), envelope **`2oo2D` *clean-room* RV32IM**, compactador atômico de memória (**`31,8×` mais rápido** e **`2.733×` menos RAM**), interoperabilidade poliglota **Camaleão para 9 ecossistemas (`[I0003]`)**, dossiê de qualificação assinado (**`lume qualify` `PASS`: `106/106` sondas e `21/21` gates**) e compilação direta para **27 arquiteturas**.
 
 <br clear="right"/>
 
-| Sovereign Pillar | Core Engine (`compiler/stage1/`) | Verified Guarantee & Production Evidence |
+### Architectural Pillars at a Glance
+
+| Pillar | Core Implementation (`compiler/stage1/`) | Verified Technical Guarantee |
 | :--- | :--- | :--- |
-| **1. Zero-C Self-Hosted Fixpoint** | `lumec`, `lasm`, `lmod`, `lfmt`, `ltest`, `lume_driver`, `lcli` | Compiles itself bit-for-bit (`stage2 == stage3`, `0 diff`) in **`~3.8s`** with C compilers blocked (`lume zero-c`), **`134` verified `MANIFEST.sha256` files**, and **`114`-row / `226`-name `lume cli-parity` (`0` mismatches)** |
-| **2. Embedded `OmniProof-v4` Prover & Clean-Room Verification Hub** | `lcaas.src` + `lcert.src` + `ltv.src` + `ltv_rt.src` + `lsmt.src` + `lmcdc.src` + `lstack.src` + `formal/lean/LumeCore.lean` | `QF_LIA` Fourier-Motzkin + cutting planes + Farkas dual certificates, `QF_NIA` Horner/Bernstein + native AST `x * x` square-completion, `QF_BV` bit-shift bounds, Inductive Graph DAG ranking, `QF_FP_Interval`, `Posit-Quire`, Separation Logic, `@bound` WCET `[V0002]`, `@no_alloc` `[E0210]` + `lstack` worst-case stack byte bounds, `@secret` `[C0009]` + `[C0011]` CT kernels, **`694` functions translation-validated by `ltv` (`687/687` object-code branch correlation)**, **`18/18` runtime helpers verified by `ltv_rt`**, **`100%` `.smt2` `unsat` checked by clean-room `lsmt` & `z3`**, and **`0/9,618` uncovered MC/DC** (**`1,682` formal obligations across `16` batteries**, **`0` runtime-checked or refuted**, **`372` unit tests**, **`122` sovereign domains `#0..#121`**) |
-| **3. 4-Tier Atomic Memory Compactor** | `runtime_core.lume` + `own_flow.src` (Perceus + 43-class GC) | `0 B` 63-bit tagged ints & 7-byte inline SSO, `24 B` `Cons`, `32 B` records, `LZ1` cold-arena compactor (**`31.8×` faster**, **`2,733×` less heap**) |
-| **4. Universal Chameleon, Singularity $\Omega$, Wave 4 & Waves 5–14 `LumePuter`/`LumePU` & Critical Assurance** | `lchameleon.src` (`lume chameleon` / `singularity` / `ote` / `lumeputer` / `lumepu` / `qwenputer`) | **9 ecosystems** (`[I0003]` `unverified[T] -> verified[T]`), **2nd-Order Dynamical Transition Engine** ($\tau_{\max}=T_m/4$, Power Triangle, 9 leverage prescriptions), **Bayesian SPC/CUSUM/CPM/PAVA**, **Tensor/Posit-Quire/QF_FP_Interval + GPU Tensor Cores**, **Autonomous Ecosystem Assimilator + Omni-Stdlib ACID B+Tree/MVCC**, **Wave 5 `LumePuter`/`LumePU` Weight-Compiled `RV32IM_Zba + BMAC + VX VMAT` In-Weights VM & Zero-Drift Gated-DeltaNet RAM**, **Wave 6 `LumePuter` Recursive Stack `.lweights` Compiler, Relational Octagon/Interval Loop Prover & Incremental Interface Cache v2**, **Wave 7 `LumePuter` Trap/CSR (`ecall`/`mret`) & In-Weights `lcert` Verifier, Farkas Lemma Linear Dual Certificate & Exact Bit-Shift (`shl`) Linear Bounds, `#334` Fail-Closed FFI Callback Arena Epoch Guard & `#407` AI-First Fuzzy Symbol/Arity Repair**, **Wave 8 Deep SSA/Chaitin RegAlloc/Interprocedural Inline/AVX-512 Auto-Vectorizer (`ssa_chaitin_register_spill_cost`, `ssa_interprocedural_inline_gain`, `avx512_autovec_loop_speedup_lanes`), Automated OS/Socket/CUDA `io_uring` Zero-Copy FFI Bridge (`ffi_auto_header_abi_layout_ok`, `io_uring_zero_copy_ring_submit`), Non-Linear Horner/Bernstein Envelope & Inductive Graph DAG Rank Prover (`prover_nonlinear_horner_lower_bound`, `prover_inductive_graph_dag_rank_ok`), and Structural Compiler Pass & Prover Rule Self-Evolution Gate (`compiler_pass_evolve_verified_promote`)**, **Wave 9 Real x86-64 VEX (`AVX2` `%ymm0..%ymm15`) & EVEX (`AVX-512` `%zmm0..%zmm15`) Machine-Code Encoding in `lasm.src` + Hardware SIMD Intrinsics (`simd_add4_i64`, `simd_sub4_i64`, `simd_xor4_i64`, `vex_simd_hardware_add4_sum`), Real Linux Kernel `io_uring` Syscalls (`os_io_uring_setup` = 425, `os_io_uring_enter` = 426, `os_io_uring_register` = 427, `io_uring_kernel_syscall_sqe_batch_safe`), Native AST `x * x` Quadratic Horner Square-Completion Prover (`ast_native_horner_quadratic_eval`, `ast_native_quadratic_square_completion_law`), and Industrial C Header Preprocessor & Auto-Parser (`lume adapt c --preprocess <header.h>` / `lume adapt c-raw <header.h>`, `c_header_preprocessor_macro_strip_ok`)**, and **Wave 10–14 Critical Production-Assurance, Clean-Room Verification & MC/DC Closure (`#108` `LASM_Differential_Assembler_Oracle`, `#109` `Adversarial_Prover_False_Theorem_Fuzzer`, `#110` `Gate_Mutation_Testing_Kill_Verifier`, `#111` `Wheeler_Diverse_Double_Compilation_DDC`, and `#112..#121` Certification, Multi-Arch Kernel, Crypto/TLS & Synergy Domains)** (**`256` certified obligations: `160` proven + `96` `@bound`**, **`160/160` `ltv`-validated**, **`0/2,392` uncovered MC/DC**, **`19/19` tests**, **`122` domains `#0..#121`**) |
-| **5. Cyber-Physical UFE, Subsea & IEC 62443 OT** | `gfx.src` (`lume ufe` / `lume subsea`) + `net.src` (`lume iec62443` / `lume conduite` / `lume omega-mesh`) + `gui.src` (`@ui-layout`) | **7-DOF DLS robotics**, 3D Laplace SOR, $5\sigma$ + Joseph EKF, IAPWS-IF97 + Carnot, **Subsea Catenary, VIV, Palmgren-Miner, DNV Heavy-Lift DAF, Bühlmann ZH-L16C, Well-Kill & ASME B31G** (**`77/77` proofs**), **Purdue `L0..L4`/`L3.5` DMZ, Conduite HA/GOOSE/Storm & Omega-Mesh P2P/DHT/Raft/TOFU** (**`68/68` proofs**), and `@ui-layout` (`ui_split_conservation_law`) |
-| **6. 27 Targets, Qualification `PASS`, `[C0011]` CT Crypto & `2oo2D` Safety Envelope** | `ltarget.src` + `lqualify.src` + `lcrypto_tls.src` + `lx509.src` + `lsafety_envelope.src` + `tests/harness/synergy_gate.src` | Native `ELF64`, `PE32+`, Clean **Win64 Native GUI** (`33,792 B` with Lumi icon), `Mach-O 64`, `AArch64`/`RV64`/`RV32` bare-metal kernels (`ltv_multiarch.src`), `WASM32`, `CUDA PTX`, `SPIR-V`, `Verilog/VHDL`, `6 Quantum`, **`lume qualify` `PASS` (`106/106` probes, `21/21` gates, `10` HLR + `44/44` LLR `VERIFIED`)**, **`17/17` `lume synergy-gate` stages + `36/36` cross-tamper rejections**, **`118` `@secret @no_alloc` `[C0011]` CT crypto kernels (`[C0010]` `ltv` + `24`-target `dudect` + `Ed25519 X.509v3` + NIST SP 800-90B OS entropy)**, and **`2oo2D` clean-room RV32IM Channel B (`0/3,169` compiler functions) + `--split` multi-board bundle** |
+| **1. Self-Hosted Zero-C Compiler & Assembler** | `lume/01_lexer.src` .. `07_driver.src`, `lasm.src`, `lmod.src`, `lfmt.src`, `ltest.src`, `lume_driver.src`, `lcli.src` | Bit-identical triple-bootstrap fixpoint (`stage2 == stage3`, `0 diff`); native ELF64/PE32+/Mach-O/VEX/EVEX/DWARF v4 assembler byte-verified against GNU `as` across **`39,968` instructions**; **`114`-row CLI parity (`0` mismatches)** |
+| **2. Multi-Theory Theorem Prover & Proof Kernel** | `06_typecheck.src`, `06b_phase3.src`, `lcaas.src`, `lcert.src`, `lproof_cache.src` | `QF_LIA` (Fourier-Motzkin, cutting planes, Farkas dual certificates), `QF_NIA` (Horner/Bernstein envelopes, native quadratic square-completion), `QF_BV` bit-shifts, relational octagons, DAG/loop ranking, `@bound` WCET (`[V0002]`), Separation Logic, `< 10 ms` SHA-256 proof cache, and independent `lcert --check-source` AST binding (`[K0005]`, `[K0006]`) |
+| **3. Binary Assurance, MC/DC & `2oo2D` Lockstep** | `ltv.src`, `ltv_rt.src`, `lsmt.src`, `ltv_multiarch.src`, `lmcdc.src`, `lstack.src`, `lsafety_envelope.src`, `lrv32_lowered.src`, `lqualify.src` | **`694` functions** translation-validated (`687/687` 1-to-1 AST-to-object branch correlation), **`18/18` runtime helpers** verified (`268` paths / `462` obligations), **`100%` `.smt2` `unsat`** in `lsmt` & `z3`, static `@no_alloc` stack bounds (`lstack`), **`0/9,618` uncovered MC/DC**, clean-room RV32IM Channel B (`87,224` injected faults → `0` false negatives), and signed **`lume qualify` `PASS`** (`106/106` probes, `21/21` gates) |
+| **4. Ownership, Perceus Reuse & 4-Tier Memory** | `own_flow.src`, `runtime_core.lume`, `arena.src`, `capsule.src` | Affine `own` / `&T` / `&mut T` borrow & alias safety, compile-time Perceus cell reuse, 63-bit unboxed integers & 7-byte inline UTF-8 strings (`0 B` heap), `24 B` `Cons`, `32 B` shared-shape records, 43-class segregated Mark & Lazy-Sweep GC, and demand-paged `LZ1` cold-arena compaction (**`31.8×` faster**, **`2,733×` lower RAM**) |
+| **5. Constant-Time Cryptography, X.509v3 & TLS 1.3** | `lcrypto_tls.src`, `lx509.src`, `lprotect.src`, `protect.src` | **`118` `@secret @no_alloc` `[C0011]` constant-time kernels** lowered branch-free (`cmov`) and machine-verified (`[C0010]` `ltv` + `lstack` max `536 B` + `24`-target `dudect` Welch `\|t\| <= 2.690 < 4.5`), SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305, X25519, Ed25519, TLS 1.3, DER/PEM X.509v3 (`6,000/6,000` tampered chains refused), and NIST SP 800-90B entropy health checks |
+| **6. Polyglot FFI, Differentiable AI, Cyber-Physical & 27 Targets** | `lchameleon.src`, `tensor.src`, `nn.src`, `lneural_cartridge.src`, `lume_llm_core.src`, `gfx.src`, `net.src`, `lume_quantum_nexus_engine.src`, `ltarget.src` | **9-ecosystem `[I0003]` Chameleon FFI** (with built-in C header preprocessor & Linux `io_uring` syscalls `425..427`), shape-checked tensors + reverse/forward autodiff + `.safetensors` / `LumePuter` weight-compiled neural VMs, 7-DOF robotics / Subsea / Singularity $\Omega$ / IEC 62443 OT / Omega-Mesh P2P, linear-qubit Quantum Nexus, and **27 compilation targets** |
 
 ---
 
-## Memory Saga & 4-Tier Atomic Memory Compactor Evolution
+## How Lume Works — Compiler & Mutual Assurance Pipeline
 
-<div align="center">
+Every Lume source program (`.src`) passes through a deterministic, mutually-auditing compilation and verification chain (continuously exercised end-to-end across **`17/17` stages** and **`36/36` cross-tamper checks** by `lume synergy-gate`):
 
-![Lume Memory Saga & 4-Tier Atomic Memory Compactor Evolution](docs/assets/lume-memory-evolution-animated.svg)
-
-📄 **[Read the Complete Benchmark & Architecture Dossier (English)](docs/39-memory-saga-and-atomic-compactor-dossier.md)** · 🇧🇷 **[Ler o Dossiê Completo da Saga da Memória (Português `pt-BR`)](docs/LUME_MEMORY_SAGA_DOSSIER_PT_BR.md)** · ⚙️ **[Runtime & Collector Spec](docs/38-memory-management.md)**
-
-</div>
-
-Lume's native x86-64 runtime ([`compiler/stage1/runtime_core.lume`](compiler/stage1/runtime_core.lume)) combines a **43-size-class segregated Mark & Lazy-Sweep Collector** (`MADV_DONTNEED` physical page release), **Rust-grade Ownership v2 & proven-unique Perceus reuse** ([`compiler/stage1/own_flow.src`](compiler/stage1/own_flow.src)), and a **4-Tier Atomic Memory Compactor**:
-
-1. **Stage 0 — Content-Addressed `.rodata` Literals & Zero-Arity Singletons:** Deduplicated immutable string literals, constructor descriptors, and shared `Nil`/`None` singletons (`0 B` heap cost, eliminating `285 MB` of repeated `mkstr` allocations during self-compilation).
-2. **Level 1 — 64-Bit Tagged Register Word (`0–1` Cycle Pack/Unpack):**
-   - `...iiii1`: 63-bit signed integers unboxed directly inside the 64-bit register word (`0 B` heap; values using the 64th bit transparently spill to a `16 B` cell, and overflow past 64 bits traps via hardware `jo __rt_ovf`).
-   - `...ss|lll|010`: Short strings up to **7 UTF-8 bytes (`at`, `chr`, identifiers, tokens) packed inline inside the 64-bit word (`0 B` heap)** — outperforming Rust's `String` (`24 B` + heap allocation) and eliminating `74.9%–94.9%` of dynamic short string allocations.
-3. **Level 2 — Compact ADT Cells & Shared-Shape Records:** `Cons(int, tail)` shrunk from `80 B` to **`24 B`** (`-70%`); 3-field records shrunk from `160 B` to **`32 B`** (`-80%`) with interned field keys (`cmpq` pointer equality instead of `streq`).
-4. **Level 3 — Cold Arena Demand-Paged `LZ1` Compactor (`mem_pack`, `arena_freeze`, `.lcaps`/`.lumb`):** Compresses cold arenas and bytecode/capsule blobs at **`~355 MB/s` pack / `~975 MB/s` unpack** with a 64-bit integrity checksum (verified against `1,500` corrupted fuzz blobs), **transparent lazy page thaw on first touch (`PROT_NONE` + `SIGSEGV` page restoration)**, and fail-closed rejection on `@secret` data (`[C0009]` *Decomp+Time* defense) and `@bound` WCET functions (`[V0002]`).
-
-### Complete 3-Generation Benchmark Evolution Matrix (Intel Core Ultra 5 135U, WSL2 x86-64)
-
-| Workload | Gen 1: Baseline | Gen 2: Round 5 (GC + Own v2) | **Gen 3: Round 6 (Atomic Compactor)** | Speedup & Allocs | RAM Reduction |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **`b_loop` (`100M` iters)** | `4,800 MB` | `2,796 ms` · `68 MB` (`200M`) | **`88 ms` · `0.39 MB` (`1` alloc!)** | **`31.8×` · `-99.9999%` allocs** | **`174×` (`-99.4%`)** |
-| **Full C Seed Bootstrap** | `194.8 s` · `12.7 GB` | `200.0 s` · `2.5 GB` | **`22.0 s` · `537 MB`** | **`9.0×` faster chain** | **`23.6×` (`-95.8%`)** |
-| **Seed $\rightarrow$ `lumec.src`** | `102.0 s` · `12.5 GB` | `5.5 s` · `472 MB` | **`5.5 s` · `472 MB`** | **`18.5×` faster** | **`26.5×` (`-96.2%`)** |
-| **`lumec` (`stage2 == 3`)** | `1,820 ms` · `1,165 MB` | `1,908 ms` · `228 MB` | **`445 ms` · `115 MB` (`1.01 MB` ELF)** | **`4.3×` · ELF `-34%`** | **`10.1×` (`-90.1%`)** |
-| **`b_rec` (`20M` 3-field)** | `6,000 MB` | `3,270 ms` · `67 MB` (`240M`) | **`429 ms` · `66 MB` (`20M` allocs)** | **`7.6×` · `12×` fewer allocs** | **64 MiB GC cap** |
-| **`b_match` (`20M` ADT)** | Unbounded | `1,617 ms` · `72 MB` (`80M`) | **`235 ms` · `68 MB` (`20M` allocs)** | **`6.9×` · `4×` fewer allocs** | **64 MiB GC cap** |
-| **`b_list` (`30M` `Cons`)** | Unbounded | `2,747 ms` · `239 MB` (`180M`) | **`480 ms` · `67 MB` (`30M` allocs)** | **`5.7×` · `6×` fewer allocs** | **`3.6×` (`-72%`)** |
-| **`b_str` (Strings)** | `5,090 ms` · `6.0 GB` | `679 ms` · `74 MB` (`42.6M`) | **`131 ms` · `2.2 MB` (`17` allocs!)** | **`5.2×` (`38.8×` vs Gen 1)** | **`2,733×` (`-99.96%`)** |
-| **`b_fib` (`fib(38)`)** | `1,190 ms` | `1,042 ms` | **`273 ms`** | **`3.8×` (`4.4×` vs Gen 1)** | **`0 B` heap** |
-| **410-Test Suite** | `> 600 s` · `12.7 GB` | `529 s` · `2.49 GB` (`404`) | **`136 s` · `537 MB` (`410/410`)** | **`3.9×` (`0` fail)** | **`23.6×` (`-95.8%`)** |
+```text
+  Source (.src) + Contracts (requires / ensures / invariant / law / @bound / @no_alloc / @secret)
+        │
+        ▼
+  [1] Frontend & Hygienic Comptime  ──► 01_lexer.src · 02_parser.src · 03_comptime.src · 04_parser_decls.src
+        │   O(N) slicen scanner, hardened string interpolation, fail-closed contract parser [V0001]
+        ▼
+  [2] Type, Ownership, Effect & Taint Analysis  ──► 06_typecheck.src · own_flow.src · name_flow.src · 06b_phase3.src
+        │   Hindley-Milner inference [T0300], affine moves [O0001..O0030], / pure isolation [E0200],
+        │   @no_alloc real-time [E0210], linear channels & lock ranks [E0305, E0306], @secret taint [C0009],
+        │   branch-free @secret @no_alloc constant-time kernel enforcement [C0011]
+        ▼
+  [3] Static Theorem Prover & Independent Proof Kernel  ──► lcaas.src ◄──► lcert.src (--check-source) + lproof_cache.src
+        │   QF_LIA + Farkas duals, QF_NIA Horner/square-completion, QF_BV shifts, Octagons, Separation Logic;
+        │   every obligation bound to source SHA-256 and AST [K0005, K0006]
+        ▼
+  [4] Native Code Generation & Direct Binary Assembly  ──► 05_codegen.src + runtime_core.lume ──► lasm.src / ltarget.src
+        │   Perceus reuse, SRA, DWARF v4 (-g), --critical check retention, AVX2 VEX / AVX-512 EVEX SIMD,
+        │   27 target architectures (ELF64, PE32+, Win64 GUI, Mach-O 64, AArch64, RV64/RV32, WASM, PTX, SPIR-V, RTL, QASM3)
+        ▼
+  [5] Post-Codegen Binary Assurance & Safety Envelope
+        ├── lume tv        (ltv.src / ltv_multiarch.src) : Symbolic machine-code equivalence & [C0010] CT check
+        ├── lume tv-rt     (ltv_rt.src)                  : Symbolic proof of all 18 emitted integer runtime helpers
+        ├── lume smt-check (lsmt.src + z3)               : Clean-room QF_UFNIA .smt2 certificate verification
+        ├── lume stack     (lstack.src)                  : Exact worst-case stack byte bound on emitted assembly
+        ├── lume mcdc      (lmcdc.src)                   : Native-binary Masking MC/DC witness execution + lcert pruning
+        └── lume safety-envelope (lsafety_envelope.src)  : 2oo2D lockstep vs clean-room RV32IM Channel B + --split bundle
+```
 
 ---
 
-## Installation & Terminal Setup (`lume` Command)
+## Installation & Toolchain Setup
 
-### 1. Linux, macOS & WSL (Bash / Zsh)
+### 1. Linux, macOS & WSL (One-Line Installer)
 
-Run the one-line installer and register `~/.lume/bin` permanently in your shell profile so typing `lume` works directly in every terminal window:
+Install the prebuilt, SHA-256-verified toolchain into `~/.lume` and add `~/.lume/bin` to your shell `PATH`:
 
 ```sh
 curl -fsSL https://github.com/OmegaSoftDLL/lume/releases/latest/download/install.sh | sh
 
-# Enable `lume` immediately in current terminal + permanently in ~/.bashrc and ~/.zshrc
 export PATH="$HOME/.lume/bin:$PATH"
 grep -qxF 'export PATH="$HOME/.lume/bin:$PATH"' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.lume/bin:$PATH"' >> ~/.bashrc
 [ -f ~/.zshrc ] && (grep -qxF 'export PATH="$HOME/.lume/bin:$PATH"' ~/.zshrc || echo 'export PATH="$HOME/.lume/bin:$PATH"' >> ~/.zshrc)
 
-# Verify installation
 lume --version
 lume self verify
 lume self-prove
@@ -118,17 +121,17 @@ brew install OmegaSoftDLL/lume/lume
 lume --version
 ```
 
-### 3. Windows x64 (PowerShell — Direct `lume` Command)
-
-Download the release archive and add `$HOME\.lume\bin` to your **persistent Windows User `PATH`** so you can type `lume` directly in any PowerShell or Command Prompt window:
+### 3. Windows x64 (PowerShell)
 
 ```powershell
-# 1. Download and extract Lume v1.1.0 to $HOME\.lume
+# Option A: One-line PowerShell installer
+irm https://github.com/OmegaSoftDLL/lume/releases/latest/download/install.ps1 | iex
+
+# Option B: Direct archive extraction + persistent User PATH setup
 Invoke-WebRequest -Uri "https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-windows-x86_64.tar.gz" -OutFile "lume-win64.tar.gz"
 mkdir "$HOME\.lume" -Force | Out-Null
 tar -xzf lume-win64.tar.gz --strip-components=1 -C "$HOME\.lume"
 
-# 2. Add $HOME\.lume\bin to current session AND permanently to your Windows User PATH
 $lumeBin = "$HOME\.lume\bin"
 $env:PATH = "$lumeBin;$env:PATH"
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -136,43 +139,46 @@ if ($userPath -notlike "*$lumeBin*") {
     [Environment]::SetEnvironmentVariable("Path", "$lumeBin;$userPath", "User")
 }
 
-# 3. Run `lume` directly from PowerShell!
 lume --version
 lume self verify
-lume evolve list
 ```
 
-### 4. Official Prebuilt Archives (`v1.1.0`)
+### 4. OCI Container Image (GitHub Container Registry)
+
+```sh
+docker pull ghcr.io/omegasoftdll/lume:v1.1.0
+docker run --rm ghcr.io/omegasoftdll/lume:v1.1.0 --version
+```
+
+### 5. Prebuilt Release Archives (`v1.1.0`)
 
 | Platform / Architecture | Archive |
 | :--- | :--- |
-| **Linux x86-64** | [`lume-v1.1.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-x86_64.tar.gz) |
+| **Linux x86-64 (`ELF64`)** | [`lume-v1.1.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-x86_64.tar.gz) |
 | **Linux ARM64 (`aarch64`)** | [`lume-v1.1.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-aarch64.tar.gz) |
 | **Linux RISC-V 64 (`riscv64`)** | [`lume-v1.1.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-riscv64.tar.gz) |
-| **macOS Apple Silicon (`M1/M2/M3/M4`)** | [`lume-v1.1.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-aarch64.tar.gz) |
+| **macOS Apple Silicon (`aarch64`)** | [`lume-v1.1.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-aarch64.tar.gz) |
 | **macOS Intel (`x86_64`)** | [`lume-v1.1.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-x86_64.tar.gz) |
 | **Windows x64 (`PE32+`)** | [`lume-v1.1.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-windows-x86_64.tar.gz) |
-| **SHA-256 Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/SHA256SUMS) |
+| **Cryptographic Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/SHA256SUMS) |
 
-### 5. Teach Your AI Assistant to Program in Lume (`skills/lume`)
+### 6. AI Coding Agent Skill (`skills/lume`) & IDE Extensions (`editors/`)
 
-Lume ships with an official, self-contained **AI Agent Skill ([`skills/lume/`](skills/lume/SKILL.md))** compatible with **Antigravity (AGY)**, **Claude Code**, **Cursor**, **Codex**, **Windsurf**, and **`skills.sh`**. Once installed, your AI coding agent immediately knows how to write, prove (`lume prove`), certify (`lume certify`), compile (`lume build`), and evolve (`lume consult`, `lume evolve`, `lume reveng`, `lume neural-kernel`) programs in Lume:
+Lume ships with an official **AI Agent Skill ([`skills/lume/SKILL.md`](skills/lume/SKILL.md))** for **Antigravity (AGY)**, **Claude Code**, **Cursor**, **Codex**, and **Windsurf**, alongside official editor plugins in [`editors/vscode-lume`](editors/vscode-lume) and [`editors/openidea-lume`](editors/openidea-lume):
 
-#### Install via `skills.sh` CLI (Cross-Platform)
 ```sh
+# Install via skills.sh CLI
 npx skills add OmegaSoftDLL/lume@lume -g -y
-```
 
-#### Install Directly on Linux / macOS / WSL
-```sh
+# Or copy directly on Linux / macOS / WSL
 mkdir -p ~/.agents/skills ~/.gemini/config/skills ~/.claude/skills
 cp -r skills/lume ~/.agents/skills/lume
 cp -r skills/lume ~/.gemini/config/skills/lume
 cp -r skills/lume ~/.claude/skills/lume
 ```
 
-#### Install Directly on Windows (PowerShell)
 ```powershell
+# Or copy directly on Windows PowerShell
 New-Item -ItemType Directory -Path "$HOME\.agents\skills", "$HOME\.gemini\config\skills", "$HOME\.claude\skills" -Force | Out-Null
 Copy-Item -Path ".\skills\lume" -Destination "$HOME\.agents\skills\lume" -Recurse -Force
 Copy-Item -Path ".\skills\lume" -Destination "$HOME\.gemini\config\skills\lume" -Recurse -Force
@@ -183,7 +189,7 @@ Copy-Item -Path ".\skills\lume" -Destination "$HOME\.claude\skills\lume" -Recurs
 
 ## Quickstart
 
-Create `hello.src`:
+### 1. Functional & Verified Application Code (`hello.src`)
 
 ```lume
 const BONUS: int = 10
@@ -193,80 +199,156 @@ fn scale_and_bonus(x: int, factor: int) -> int
   ensures result >= x + BONUS
 = (x * factor) + BONUS
 
+law scale_monotone(x: int) =
+  if x >= 0 then scale_and_bonus(x, 2) >= x + BONUS else 1 == 1
+
 fn classify_list(xs) =
-    let head_val = match xs
-        Nil        => 0
-        Cons(h, _) => h
-    in head_val |> scale_and_bonus(2)
+  let head_val = match xs
+    Nil        => 0
+    Cons(h, _) => h
+  in head_val |> scale_and_bonus(2)
 
 fn test_classify() =
-    let (a, b) = (15, 25) in
-    let st = {count: a, total: b} in
-    let st2 = { st with count: st.count + 5 } in
-    classify_list(Cons(st2.count, Nil)) == 50
+  let (a, b) = (15, 25) in
+  let st = {count: a, total: b} in
+  let st2 = { st with count: st.count + 5 } in
+  classify_list(Cons(st2.count, Nil)) == 50
 
 print f"Verified result: {classify_list(Cons(20, Nil))}"
 ```
 
-Run, test, prove, certify, and compile to native machine code:
+```sh
+lume run hello.src                                       # -> Verified result: 50
+lume test hello.src                                      # -> 1 passed, 0 failed
+lume prove hello.src                                     # -> {"ok":true, ... "status":"proven"}
+lume certify hello.src > hello.cert.json                 # -> emit SHA-256-bound proof certificate
+lume verify-cert --check-source hello.src hello.cert.json # -> independent proof kernel + AST check
+lume build hello.src -o hello                            # -> standalone native binary
+```
+
+### 2. Hard Real-Time (`@no_alloc`) & Constant-Time (`@secret @no_alloc`) Kernels (`kernel.src`)
+
+```lume
+# Zero-allocation hard real-time actuator clamp ([E0210] verified, bounded stack & WCET)
+@no_alloc
+@bound(32)
+fn clamp_dose(dose: int, lo: int, hi: int) -> int
+  requires dose >= 0 and dose <= 10000 and lo >= 0 and lo <= hi and hi <= 5000
+  ensures result >= lo and result <= hi
+= if dose < lo then lo else if dose > hi then hi else dose
+
+# Branch-free constant-time cryptographic mux ([C0011] source check + [C0010] machine-code check)
+@secret
+@no_alloc
+fn ct_mux_u32(mask: int, a: int, b: int) -> int =
+  let ma = bit_and(a, 4294967295) in
+  let mb = bit_and(b, 4294967295) in
+  ct_select(ct_eq(bit_and(mask, 1), 1), ma, mb)
+
+print clamp_dose(700, 100, 500)
+```
 
 ```sh
-lume run hello.src                  # -> Verified result: 50
-lume test hello.src                 # -> 1 passed, 0 failed
-lume prove hello.src                # -> {"ok":true, ... "status":"proven"}
-lume certify hello.src              # -> Lume Verified certificate JSON
-lume build hello.src -o hello       # -> standalone native ELF64 / Mach-O / PE64 binary
+lume prove kernel.src                                    # Static QF_LIA, @bound [V0002], @no_alloc [E0210] & [C0011]
+lume stack kernel.src --json                             # Worst-case stack bytes on emitted x86-64 assembly
+lume tv kernel.src --exec                                # Symbolic x86-64 equivalence + transitive [C0010] CT check
+lume mcdc kernel.src --exec                              # Decision + Masking MC/DC witness execution on native binary
+lume safety-envelope kernel.src --fn clamp_dose --args 700,100,500   # 2oo2D lockstep (x86-64 vs clean-room RV32IM)
+lume build --critical -g kernel.src -o kernel            # Retain proven runtime checks + emit DWARF v4 debug info
 ```
 
 ---
 
-## Language Ergonomics & Core Syntax
+## Core Language Design & Ergonomics
 
-Lume pairs formal verification with concise functional and systems syntax:
-
-| Feature | Syntax in `.src` (Lume-Core) | Compiler & Prover Support |
+| Language Capability | Syntax & Semantics | Compiler, Runtime & Prover Enforcement |
 | :--- | :--- | :--- |
-| **String Interpolation** | `f"total={x + y}"`, `"total=${x + y}"`, `"{x:04x}"` | Hardened `02_parser.src`/`lcaas.src`/`lfmt.src` (`isbadholech`, `isjsblock`, `/ {ffi}` literal brace guard, $O(1)$ `strplainchunk` scanner, `win64_gui_and_interp_regression_ok.src` `8/8`) |
-| **Pipe Operator (`\|>`)** | `x \|> scale(10) \|> encode` | Left-associative binary operator lowered to direct calls |
-| **Functional Record Update** | `{ st with count: st.count + 1 }` | Preserves unmodified fields; reduced symbolically in `lcaas` and `lcert` |
-| **Nested & Braced `match`** | `let y = match xs ...` or `match x { ... }` | Indentation-aware `ispipe` + `arm_dedent` and braced arms |
-| **Top-Level `const`** | `const MAX_BYTES: int = 4096` | Substituted across functions, `requires` / `ensures` contracts, and `law` declarations |
-| **Destructuring Bindings** | `let (a, b) = pair`, `let {x, y} = pt` | Supported in `let ... in` expressions and imperative `var` statements (`Cons(h, t)`) |
-| **Wrapping Arithmetic** | `a +% b`, `a -% b`, `a *% b` | Explicit 64-bit two's-complement modular arithmetic (distinct from checked `+`, `-`, `*`) |
-| **Scalar Replacement (`SRA`)** | `let p = {a: x, b: y} in p.a + p.b` | Promotes non-escaping records to stack slots with zero heap allocation |
+| **Refinement Contracts & Laws** | `requires P`, `ensures Q`, `invariant I`, `law L(...) = ...` | Discharged at compile time by `QF_LIA` / `QF_NIA` / `QF_BV` / Separation Logic; fail-closed contract parser (`[V0001]`) |
+| **Affine Ownership & Perceus Reuse** | `own x`, `&x`, `&mut x`, `rc[T]`, `arc[T]`, `weak[T]`, `arena` | Compile-time move/borrow/alias checking (`[O0001]`..`[O0030]`) with in-place Perceus constructor reuse (`pat_scrutinee_safe`) |
+| **Algebraic Effects & Capabilities** | `fn f() -> int / pure`, `fn g() / {io, net, fs, ffi}` | Pure functions cannot invoke ambient capabilities or bypass isolation via handlers (`[E0200]`) |
+| **Hard Real-Time & WCET Budgets** | `@no_alloc fn`, `@bound(N)`, `@interrupt` | Rejects heap allocation, unbounded recursion, and 63-bit integer spill (`[E0210]`, `[V0002]`); stack-bounded by `lume stack` |
+| **Constant-Time Secret Types** | `@secret fn`, `@secret @no_alloc fn`, `ct_select`, `ct_eq` | Forbids secret-dependent branches, divisions, memory indices, and compression (`[C0009]`, `[C0011]`); machine-verified (`[C0010]`) |
+| **Linear Concurrency & Lock Ranks** | `chan_send_linear`, ranked mutex acquisition | Prevents post-send linear channel aliasing (`[E0305]`) and out-of-order lock deadlocks (`[E0306]`) |
+| **Checked vs. Wrapping Arithmetic** | Checked `+`, `-`, `*`, `/`, `%` vs. wrapping `+%`, `-%`, `*%` | Hardware overflow traps (`exit 3`) on checked arithmetic; explicit 64-bit modular semantics on `+%`, `-%`, `*%` |
+| **Exact Financial Decimals & Tables** | `decimal`, `money`, `table[T]`, `query`, B+Tree WAL | Base-10 scaled arithmetic with zero IEEE-754 rounding drift and ACID write-ahead logging (`decimal.src`, `table.src`, `db.src`) |
+| **Hardened String Interpolation** | `f"sum={x + y}"`, `"{x:04x}"` | Rejects injection/JS blocks in interpolation holes and scans plain literal chunks in $O(1)$ without per-char heap churn |
+| **Pipes, Records & SRA** | `x \|> f(10)`, `{ st with k: v }`, `let (a, b) = pair` | Left-associative pipes, functional record updates, destructuring, and Scalar Replacement of Aggregates (`0 B` heap) |
+| **Hardware SIMD & Bare-Metal Systems** | `simd_add4_i64`, `@freestanding`, `@repr(c)`, `@packed`, `@mmio` | Native `AVX2` VEX / `AVX-512` EVEX encoding in `lasm.src` and zero-GC Ring-0 MBR/Long-Mode `.kernel` image generation |
+| **Intent Synthesis (`.intent`)** | `@intent Name`, hole `= _` under `requires` / `ensures` | Synthesizes provably correct implementations from formal postconditions with `V0005` SHA-256 cache tamper detection |
 
 ---
 
-## Built-In Bilingual Programmer's Manual
+## Memory Architecture & 4-Tier Atomic Compactor
 
-Lume embeds a 10-chapter programmer's manual in both **English (`en`)** and **Portuguese (`pt-BR`)** directly inside the CLI binary:
+<div align="center">
 
-```sh
-lume manual                      # Table of contents (English)
-lume manual --pt                 # Indice completo em Portugues (pt-BR)
-lume manual syntax               # Chapter 2: Syntax & Language Ergonomics
-lume manual --pt sintaxe         # Capitulo 2: Sintaxe e Ergonomia
-lume manual contracts            # Chapter 4: Formal Verification (QF_LIA / QF_NIA)
-lume manual stdlib               # Chapter 6: Standard Library & Domain Engines (including 6.2.1 Chameleon)
-lume manual chameleon            # Jump directly to Universal Chameleon Polyglot Interop Engine (EN)
-lume manual --pt camaleao        # Ir direto ao Motor Universal Camaleao Poliglota (pt-BR)
-lume manual targets              # Chapter 7: 27 Universal Targets & Packagers
-lume manual commands             # Chapter 8: Complete CLI Reference
-lume manual all                  # Full 10-chapter manual
-lume manual --export MANUAL.md   # Export full Markdown manual to disk
-```
+![Lume Memory Saga & 4-Tier Atomic Memory Compactor Evolution](docs/assets/lume-memory-evolution-animated.svg)
 
-Pre-exported manuals in the repository:
-- **English Manual:** [`docs/LUME_MANUAL_EN.md`](docs/LUME_MANUAL_EN.md)
-- **Portuguese Manual (`pt-BR`):** [`docs/LUME_MANUAL_PT_BR.md`](docs/LUME_MANUAL_PT_BR.md)
+📄 **[Memory Architecture & Benchmark Dossier (EN)](docs/39-memory-saga-and-atomic-compactor-dossier.md)** · 🇧🇷 **[Dossiê da Arquitetura de Memória (`PT-BR`)](docs/LUME_MEMORY_SAGA_DOSSIER_PT_BR.md)** · ⚙️ **[Runtime & Collector Specification](docs/38-memory-management.md)**
+
+</div>
+
+Lume's native runtime ([`compiler/stage1/runtime_core.lume`](compiler/stage1/runtime_core.lume), shared identically between `lumec` and the Stage-0 assembly oracle) combines **compile-time Perceus ownership reuse** ([`compiler/stage1/own_flow.src`](compiler/stage1/own_flow.src)), a **43-size-class segregated non-moving Mark & Lazy-Sweep Collector** (`mmap` 64 KiB chunks with `MADV_DONTNEED` physical page return), and a **4-tier value representation**:
+
+1. **Tier 0 — Content-Addressed `.rodata` Literals & Zero-Arity Singletons:** Deduplicated string literals, static constructor/record descriptors, and shared `Nil`/`None` singletons (`0 B` heap allocation).
+2. **Tier 1 — 64-Bit Tagged Register Words (`0–1` Cycle Pack/Unpack):**
+   - `...iiii1`: **63-bit signed integers** unboxed directly in registers (`0 B` heap; full 64-bit edge values spill transparently to a `16 B` atomic cell, and 64-bit signed overflow traps cleanly via hardware `jo __rt_ovf`).
+   - `...ss|lll|010`: **Short UTF-8 strings up to 7 bytes** (`at`, `chr`, short keys, tokens) stored inline inside the 64-bit register word (`0 B` heap), eliminating `74.9%–94.9%` of dynamic short-string allocations.
+3. **Tier 2 — Compact ADT Cells & Interned-Shape Records:** `Cons(head, tail)` occupies **`24 B`** (`-70%` vs. boxed layouts); 3-field records occupy **`32 B`** (`-80%`) using static shape descriptors for $O(1)$ pointer-equality field lookup.
+4. **Tier 3 — Cold-Arena Demand-Paged `LZ1` Compactor (`lume pack` / `lume unpack`, `arena_freeze`):** Compresses cold arenas and `.lcaps`/`.lumb` capsules at **`~355 MB/s` pack / `~975 MB/s` unpack** with a 64-bit integrity checksum, `PROT_NONE` + `SIGSEGV` transparent lazy page restoration on touch, and fail-closed compile-time refusal on `@secret` data (`[C0009]`) and `@bound` WCET paths (`[V0002]`).
+
+### Production Memory & Throughput Benchmarks (Intel Core Ultra 5 135U, WSL2 x86-64)
+
+| Workload | Unoptimized Baseline | Segregated GC + Ownership | **4-Tier Atomic Memory Runtime** | Speedup & Allocation Delta | RAM Reduction |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`b_loop` (`100M` iterations)** | `4,800 MB` | `2,796 ms` · `68 MB` (`200M`) | **`88 ms` · `0.39 MB` (`1` alloc)** | **`31.8×` · `-99.9999%` allocs** | **`174×` (`-99.4%`)** |
+| **Full C11 Seed Bootstrap** | `194.8 s` · `12.7 GB` | `200.0 s` · `2.5 GB` | **`22.0 s` · `537 MB`** | **`9.0×` faster bootstrap** | **`23.6×` (`-95.8%`)** |
+| **Seed $\rightarrow$ `lumec.src`** | `102.0 s` · `12.5 GB` | `5.5 s` · `472 MB` | **`5.5 s` · `472 MB`** | **`18.5×` faster** | **`26.5×` (`-96.2%`)** |
+| **Self-Compile (`stage2 == stage3`)** | `1,820 ms` · `1,165 MB` | `1,908 ms` · `228 MB` | **`445 ms` · `115 MB` (`1.01 MB` ELF)** | **`4.3×` · ELF `-34%`** | **`10.1×` (`-90.1%`)** |
+| **`b_rec` (`20M` 3-field records)** | `6,000 MB` | `3,270 ms` · `67 MB` (`240M`) | **`429 ms` · `66 MB` (`20M` allocs)** | **`7.6×` · `12×` fewer allocs** | **64 MiB GC cap** |
+| **`b_match` (`20M` ADT matches)** | Unbounded | `1,617 ms` · `72 MB` (`80M`) | **`235 ms` · `68 MB` (`20M` allocs)** | **`6.9×` · `4×` fewer allocs** | **64 MiB GC cap** |
+| **`b_list` (`30M` `Cons` cells)** | Unbounded | `2,747 ms` · `239 MB` (`180M`) | **`480 ms` · `67 MB` (`30M` allocs)** | **`5.7×` · `6×` fewer allocs** | **`3.6×` (`-72%`)** |
+| **`b_str` (String processing)** | `5,090 ms` · `6.0 GB` | `679 ms` · `74 MB` (`42.6M`) | **`131 ms` · `2.2 MB` (`17` allocs)** | **`38.8×` vs. baseline** | **`2,733×` (`-99.96%`)** |
+| **`b_fib` (`fib(38)`)** | `1,190 ms` | `1,042 ms` | **`273 ms`** | **`4.4×` vs. baseline** | **`0 B` heap** |
+| **410-Test Conformance Suite** | `> 600 s` · `12.7 GB` | `529 s` · `2.49 GB` (`404`) | **`136 s` · `537 MB` (`410/410`)** | **`3.9×` (`0` failures)** | **`23.6×` (`-95.8%`)** |
 
 ---
 
-## Universal Chameleon Polyglot Interop Engine (9 Ecosystems)
+## Formal Verification, Binary Assurance & Safety Certification
+
+Lume provides an end-to-end developer qualification and binary verification suite aligned with high-assurance engineering workflows (**DO-178C / DO-330**, **IEC 61508**, **ISO 26262**, and **IEC 62304**):
+
+- **Embedded `OmniProof-v4` Suite (`lume self-prove`):** Live verification of **`1,682` formal mathematical obligations across `16` proof batteries** (`0` runtime-checked or refuted), **`372` unit tests**, **`70` `lstd.src` functions translation-validated (`426` proof cases)**, and **`122` sovereign domains**.
+- **Symbolic Machine-Code Translation Validation (`ltv.src`, `ltv_rt.src`, `ltv_multiarch.src`, `lsmt.src`):**
+  - Validates **`694` compiled functions** directly from emitted x86-64, AArch64, and RISC-V assembly against source AST semantics (`0` rejected, `7,846` native boundary vectors, **`687/687` 1-to-1 AST-to-object branch correlation**, `600/600` codegen mutants killed).
+  - Symbolically verifies all **`18/18` integer runtime helpers** (`lume tv-rt`: `268` paths / `462` obligations) so arithmetic helpers are proven theorems rather than trusted axioms.
+  - Emits `.smt2` `QF_UFNIA` proof obligations checked `unsat` with **`100%` agreement** across both Lume's clean-room native solver (`lume smt-check`, rejecting `3,820` mutants) and external `z3`.
+- **Zero Uncovered MC/DC & Worst-Case Stack Bounds (`lmcdc.src`, `lstack.src`):**
+  - Achieves **`0/9,618` uncovered Masking MC/DC conditions** executed on real native binaries with `lcert`-proven dead-branch pruning across all 4 certified core modules (`compiler/stage1/lstd.src` `0/980`, `examples/safety_envelope/critical_kernels.src` `0/112`, `compiler/stage1/lchameleon.src` `0/2,392`, and `compiler/stage1/lsentience.src` `0/6,134`).
+  - Computes exact static worst-case stack byte bounds (`lume stack`) over emitted assembly for `@no_alloc` call DAGs, failing closed (`exit 3`) on any unbounded frame or cycle.
+- **`2oo2D` Clean-Room Dual-Channel Lockstep Envelope (`lsafety_envelope.src`, `lrv32_lowered.src`):**
+  - Channel A executes native host code (`x86-64`, `AArch64`, or `RV64`); Channel B compiles `.src` directly to bare-metal `RV32IM` through an independent clean-room compiler sharing **`0/3,169` functions** with `lumec` (`87,224` injected bit-flips, RAM/register/ROM upsets, and compiler mutants → **`0` undetected faults**).
+  - Exports standalone multi-board split bundles with SHA-256 manifests and framed voting (`lume safety-envelope --split` / `--split-verify` / `--split-run`, documented in [`docs/41-safety-envelope-split-bundle.md`](docs/41-safety-envelope-split-bundle.md)).
+- **Signed Tool Qualification Dossier (`lume qualify` — `PASS`):**
+  - Executes **`106/106` probes** and **`21/21` end-to-end gates** tracing **`10` High-Level Requirements (HLR) and `44/44` Low-Level Requirements (LLR)** (`VERIFIED`), emitting [`docs/certification/TOR_TOOL_OPERATIONAL_REQUIREMENTS.md`](docs/certification/TOR_TOOL_OPERATIONAL_REQUIREMENTS.md), [`docs/certification/TQP_TOOL_QUALIFICATION_PLAN.md`](docs/certification/TQP_TOOL_QUALIFICATION_PLAN.md), [`docs/certification/RTM_TRACEABILITY_MATRIX.md`](docs/certification/RTM_TRACEABILITY_MATRIX.md), and [`docs/certification/QUALIFICATION_DOSSIER.md`](docs/certification/QUALIFICATION_DOSSIER.md) signed with Ed25519 and X.509v3 (`docs/certification/QUALIFICATION_SIGNING_CERT.der`, re-verified by `lume qualify --verify`).
+
+---
+
+## Constant-Time Cryptography, X.509v3 PKI & TLS 1.3
+
+[`compiler/stage1/lcrypto_tls.src`](compiler/stage1/lcrypto_tls.src) and [`compiler/stage1/lx509.src`](compiler/stage1/lx509.src) implement a pure-Lume, formally bounded cryptographic and transport security stack:
+
+- **`118` Verified Constant-Time Kernels (`@secret @no_alloc` `[C0011]`):** Lowered branch-free (`cmov`), verified free of secret-dependent branches or memory accesses at the machine-code level across all transitive `call` targets (`lume tv` `[C0010]`, `1,068/1,068` CT mutants killed), stack-bounded by `lume stack` (`max 536 B`), and empirically validated across **`24/24` `dudect` Welch $t$-test targets (`|t| <= 2.690 < 4.5`)**.
+- **Primitives & RFC 8446 TLS 1.3:** FIPS 180-4 SHA-256 & SHA-512, HMAC, HKDF, RFC 8439 ChaCha20-Poly1305 AEAD, RFC 7748 X25519 ECDH, RFC 8032 Ed25519 signatures, and authenticated TLS 1.3 client/server key schedule, transcript binding, and AEAD record protection.
+- **Strict X.509v3 Path Validation & OS Entropy Health (`lume x509`, `lume entropy`):** Deterministic DER/PEM Ed25519 X.509v3 certificate chain validator (`BasicConstraints`, `KeyUsage`, validity window, cryptographic chain signatures; **`6,000/6,000` tampered certificate chains rejected**) and NIST SP 800-90B repetition-count / adaptive-proportion health checks over OS CSPRNG entropy.
+
+---
+
+## Universal Chameleon Polyglot Interoperability (9 Ecosystems)
 
 <img src="docs/assets/lume-chameleon-emblem.jpg" alt="Lumi — Universal Chameleon Polyglot Lambda Emblem" width="220" align="right" />
 
-Just as **Lumi (Lume's Bioluminescent Crystal Chameleon mascot)** adapts to any environment while preserving its mathematical core, **`compiler/stage1/lchameleon.src`** (`28/28` proven `QF_LIA` obligations across the 9 polyglot FFI bridges — `256/256` total certified obligations across Waves 5–14, `160/160` `ltv`-validated, `0/2,392` uncovered MC/DC, `19/19` unit tests, `Lume Verified ✓`) allows Lume to interoperate with, wrap, or transpile from **9 major language ecosystems** without sacrificing memory safety or proof soundness. Every foreign value enters Lume as an untrusted `unverified[T]` handle inside the `/ {ffi}` capability effect and must pass a fail-closed **`[I0003]` `QF_LIA` refinement guard** before promotion to `verified[T]`.
+Implemented in [`compiler/stage1/lchameleon.src`](compiler/stage1/lchameleon.src) (`256/256` certified obligations, `160/160` `ltv`-validated, `0/2,392` uncovered MC/DC, `19/19` unit tests), Lume's **Chameleon Polyglot Engine** generates fail-closed FFI bridges and transpiles legacy modules across **9 ecosystems**. Every foreign value enters Lume as an untrusted `unverified[T]` handle inside the `/ {ffi}` effect and must satisfy a compile-time **`[I0003]` `QF_LIA` refinement contract** (plus FFI callback arena epoch guards) before promotion to `verified[T]`.
 
 <br clear="right"/>
 
@@ -276,156 +358,98 @@ Just as **Lumi (Lume's Bioluminescent Crystal Chameleon mascot)** adapts to any 
 
 </div>
 
-| Ecosystem ID | Target Language & Runtime ABI | `[I0003]` Formal Boundary Guard & Zero-Copy Mechanism | CLI Command |
+| Ecosystem ID | Target Runtime & ABI | `[I0003]` Formal Boundary Contract & Zero-Copy Mechanism | CLI Command |
 | :--- | :--- | :--- | :--- |
-| **`c_abi`** | **C / C++ (`System V AMD64` / `Win64` / `AAPCS64`)** | `@repr(c)` layout + `ptr != 0`, `align_ok == 1`, `len >= 0 && len <= cap` | `lume adapt c <header.h>` |
-| **`rust_cdylib`** | **Rust (`Cargo cdylib` / `#[repr(C)]` / `extern "C"`)** | Affine `own` / `&T` Perceus lifetime parity (`panic = "abort"` boundary) | `lume adapt rust <lib.rs>` |
-| **`python_capi`** | **Python 3.12+ (`PyObject*` / `ctypes` / `DLPack`)** | `Py_IncRef`/`Py_DecRef` balance + **DLPack zero-copy `NDArray` tensor bridge** (`shape_dim >= 1`) | `lume adapt python <mod.py>` |
-| **`node_napi_wasm`** | **Node.js / TypeScript (`N-API v9` & `WASM32`)** | Linear memory page guard (`offset + len <= wasm_pages * 65536`, `[I0275]`) | `lume adapt js <index.d.ts>` |
-| **`go_cshared`** | **Go (`-buildmode=c-shared` / `cgo`)** | `runtime.Pinner` verification (no unpinned Go heap pointers across FFI) | `lume adapt go <pkg.go>` |
-| **`java_jni`** | **Java / Kotlin (`JNIEnv*` & `JDK 22+ Panama FFM`)** | `PushLocalFrame`/`PopLocalFrame` capacity guard + `MemorySegment` bounds | `lume adapt java <Api.java>` |
-| **`dotnet_pinvoke`** | **C# / .NET 8+ (`P/Invoke` & `NativeAOT`)** | `fixed` / `GCHandle.Alloc(Pinned)` blittable struct layout verification | `lume adapt dotnet <Api.cs>` |
-| **`sql_relational`** | **SQL (`PostgreSQL` / `SQLite` / `DuckDB` DDL & DML)** | Schema-to-`table[T]` lifting with `decimal` precision & ACID WAL invariants | `lume adapt sql <schema.sql>` |
-| **`openapi_rpc`** | **OpenAPI 3.1 / JSON-Schema / gRPC Protobuf** | RFC 8446 TLS 1.3 transport + bounded payload length (`0 < body <= max_bytes`) | `lume adapt openapi <api.yaml>` |
+| **`c_abi`** | **C / C++ (`SysV AMD64` / `Win64` / `AAPCS64`)** | Built-in C header preprocessor (`--preprocess`), `@repr(c)` layout, `ptr != 0`, alignment & `[0..cap]` bounds | `lume adapt c --preprocess <h>` |
+| **`rust_cdylib`** | **Rust (`cdylib` / `#[repr(C)]` / `extern "C"`)** | Affine `own` / `&T` Perceus lifetime parity and `panic = "abort"` FFI boundary isolation | `lume adapt rust <lib.rs>` |
+| **`python_capi`** | **Python 3.12+ (`PyObject*` / `DLPack`)** | Reference-count balance + **DLPack zero-copy `NDArray` tensor bridge** (`shape_dim >= 1`) | `lume adapt python <mod.py>` |
+| **`node_napi_wasm`** | **Node.js / TypeScript (`N-API v9` & `WASM32`)** | Linear memory page-bound verification (`offset + len <= wasm_pages * 65536`, `[I0275]`) | `lume adapt js <index.d.ts>` |
+| **`go_cshared`** | **Go (`-buildmode=c-shared` / `cgo`)** | `runtime.Pinner` enforcement forbidding unpinned Go heap pointers across FFI | `lume adapt go <pkg.go>` |
+| **`java_jni`** | **Java / Kotlin (`JNI` & `JDK 22+ Panama FFM`)** | `PushLocalFrame` / `PopLocalFrame` capacity balance and `MemorySegment` bounds | `lume adapt java <Api.java>` |
+| **`dotnet_pinvoke`** | **C# / .NET 8+ (`P/Invoke` & `NativeAOT`)** | `GCHandle.Alloc(Pinned)` blittable struct layout and marshaling verification | `lume adapt dotnet <Api.cs>` |
+| **`sql_relational`** | **SQL (`PostgreSQL` / `SQLite` / `DuckDB`)** | DDL/DML schema lifting to typed `table[T]` with exact `decimal` scale & ACID WAL invariants | `lume adapt sql <schema.sql>` |
+| **`openapi_rpc`** | **OpenAPI 3.1 / JSON-Schema / gRPC** | Authenticated TLS 1.3 transport + bounded payload contracts (`0 < body <= max_bytes`) | `lume adapt openapi <api.yaml>` |
 
 ```sh
-lume chameleon                         # List all 9 verified polyglot ecosystems & [I0003] status
-lume chameleon python                  # Inspect Python C-API + DLPack zero-copy tensor bridge
-lume camaleao rust                     # Alias in Portuguese (pt-BR) for Rust cdylib bridge
-lume polyglot                          # Alias for lume chameleon
-lume ffi-bridge                        # Alias for lume chameleon
-lume adapt <eco> [file]                # Generate [I0003] fail-closed Lume-Core adapter for <c|rust|python|js|go|java|dotnet|sql|openapi>
-lume morph <legacy_file>               # Transpile C/Python/JS/Rust/Go/SQL into verified Lume-Core (.src)
-lume repl                              # Interactive REPL (:chameleon, :camaleao, :ufe, :singularity, :iec62443 commands)
+lume chameleon                                # Inspect all 9 verified ecosystems & [I0003] contract status
+lume adapt c --preprocess include/api.h       # Preprocess C macros/typedefs and emit fail-closed [I0003] Lume bindings
+lume adapt python model_bridge.py             # Inspect Python C-API + DLPack zero-copy tensor adapter
+lume morph legacy_service.py                  # Transpile legacy C/Python/JS/Rust/Go/SQL into verified Lume (.src)
 ```
 
 ---
 
-## Sovereign Cyber-Physical, 7-DOF Robotics, Singularity Boundary Ω & IEC 62443 Engines
+## AI, Neural Execution, Cyber-Physical & Quantum Engines
 
-Lume `v1.1.0` embeds a formally verified **Cyber-Physical Control, 7-DOF Robotics, Subsea & Marine Engineering, Dynamical Singularity ($\Omega$), Bayesian SPC/CUSUM/PAVA Analytics, Posit-Quire / `QF_FP_Interval` Tensor Cores, Autonomous Ecosystem Assimilator, Waves 5–14 `LumePuter`/`LumePU` Weight-Compiled `RV32IM_Zba + BMAC + VX VMAT` Recursive Stack `.lweights` VM, Trap/CSR (`ecall`/`mret`) & In-Weights `lcert` Verifier, Zero-Drift Gated-DeltaNet RAM, Relational Octagon/Interval/Farkas-Dual/Bit-Shift/Horner-Bernstein/Inductive-Graph/AST-Quadratic Prover, Incremental Interface Cache v2, `#334` FFI Callback Arena Epoch Guard, `#407` AI-First Fuzzy Symbol/Arity Repair, Deep SSA/Chaitin RegAlloc/AVX2-VEX & AVX-512-EVEX Hardware SIMD, Automated OS/POSIX/CUDA + Real Linux Kernel `io_uring` Syscalls, Industrial C Header Preprocessor/Parser, Structural Compiler Pass Self-Evolver, Wave 10 Critical Production-Assurance Suite (`#108` LASM vs GNU `as` Differential Oracle, `#109` Adversarial False-Theorem Fuzzer, `#110` Gate Mutation Kill Verifier & `#111` Wheeler Diverse Double-Compilation DDC) & Waves 11–14 Clean-Room Certification, Multi-Arch Kernel, Crypto/TLS & Synergy Domains (`122` sovereign domains `#0..#121`), and IEC 62443 OT & Omega-Mesh P2P Security** stack directly in its self-hosted standard library (`std.gfx`, `lchameleon.src`, and `std.net`), discharging **`401` formal `QF_LIA` / `@bound` WCET obligations** and **`61` unit tests** across those three modules (**`1,682` total formal obligations across `16` batteries** and **`372` unit tests** in `./lume self-prove` `OmniProof-v4`):
+Lume includes self-hosted, mathematically verified domain engines across `compiler/stage1/` and `examples/apps/`:
 
-| Cyber-Physical Pillar | Module & CLI Entrypoint | Formally Proven Capabilities (`QF_LIA` + `lcert` Verified) | Proof & Test Count |
-| :--- | :--- | :--- | :--- |
-| **Pillar 1 · Unified Field Engine (`UFE`) & Subsea / Marine Physics** | `compiler/stage1/gfx.src` (`lume unified-field` / `lume ufe` / `lume subsea`) | 7-DOF DLS singularity-free kinematics (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`), 3D Harmonic Laplace Red-Black SOR solver & maximum principle (`ufe_laplace_sor_step_milli`, `ufe_harmonic_maximum_principle_law`), GNRON swirl attenuation (`ufe_gnron_swirl_scale_milli`), capsule self-collision (`ufe_self_collision_capsule_ok`), bare-metal IEEE-754 finite register guard (`ufe_ieee754_f32_finite_guard`), dual-state EKF $5\sigma$ Mahalanobis gate + Joseph covariance positivity + valve stiction + RUL (`ufe_ekf_mahalanobis_5sigma_ok`, `ufe_ekf_joseph_cov_pos_milli`, `ufe_actuator_stiction_detect`, `ufe_actuator_rul_hours`), multi-robot swarm separation (`ufe_swarm_separation_ok`), IAPWS-IF97 steam regions + wet-steam guard + Carnot bound (`ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_carnot_efficiency_bound_ok`), 1 kHz `LatencyMonitor` (`ufe_latency_shedder_step`), **Subsea Catenary & API RP 1111 / DNV-OS-F101 stress** (`subsea_catenary_top_tension_n`, `subsea_catenary_tdp_bend_ok`, `subsea_combined_longitudinal_stress_ok`), **Free-Span VIV (`DNV-RP-F105`) & Palmgren-Miner Fatigue (`DNV-RP-C203`)** (`subsea_viv_screening_ok`, `subsea_miner_fatigue_safe_ok`), **Offshore Heavy-Lift DAF Floor (`DNV-ST-N001` / `DNV-ST-H001`)** (`marine_dnv_daf_floor_milli`, `marine_heavy_lift_feasible_ok`), **Hyperbaric Bühlmann ZH-L16C Decompression** (`subsea_hyperbaric_decompression_safe_ok`), **Wait & Weight Well-Kill Sheet** (`subsea_well_kill_icp_kpa`, `subsea_well_kill_mud_sg_milli`), and **ASME B31G Corroded Pipeline Burst Guard** (`subsea_b31g_corroded_pipe_safe_ok`) | **`77/77` proofs · `15/15` tests** |
-| **Pillar 2 · 2nd-Order Dynamical Transition Engine, Singularity Boundary $\Omega$ (`OTE`), Bayesian SPC, Wave 4 & Waves 5–14 `LumePuter`/`LumePU` & Critical Assurance** | `compiler/stage1/lchameleon.src` (`lume singularity` / `lume ote` / `lume lumeputer` / `lume lumepu` / `lume qwenputer`) | Counter-phase Singularity Boundary $\Omega$ theorem $\tau_{\max} = T_m/4$ (`ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_singularity_margin_zone`), Nyquist aliasing guard (`ote_nyquist_status_code`), dual underdamped ($0<\zeta<1$) / overdamped ($1\le\zeta\le 100$ via $t_{80}/t_{20}$) regime selector & quantitative $\zeta$ estimator (`ote_select_damping_regime`, `ote_estimate_zeta_milli`), Operational Power Triangle ($S, P, Q, \cos\Phi$) conservation & phase coherence (`ote_power_factor_milli`, `ote_reactive_waste_ratio_milli`, `ote_phase_coherence_ok`), cascade $3\times$ bandwidth decoupling (`ote_cascade_bandwidth_decoupled_ok`), quantitative gain retuning (`ote_retune_kp_scale_milli`), 9 physical-leverage-ordered normative prescriptions (`ote_diagnose_primary_code`), **Bayesian Beta-Binomial Conjugate SPC Posterior** (`spc_beta_binomial_posterior_num`), **Page's Tabular Upper CUSUM Drift Detector** (`spc_cusum_upper_step_milli`), **Critical Path Method (CPM) Total Float** (`ops_cpm_total_float_hours`), **$k$-Anonymity & Monotonic PAVA Isotonic Regression** (`analytics_k_anonymity_release_ok`, `analytics_pava_monotonic_pair_hi`), **BF16/FP16 Finite Guard, `Posit-Quire` Exact Dot-Product Accumulator, `QF_FP_Interval` Enclosure & GPU Tensor Core MMA / FlashAttention-3 Tiling** (`fp_bf16_is_finite_ok`, `fp_fp16_is_finite_ok`, `fp_quire_exact_dot_accum`, `fp_interval_add_lo`, `fp_interval_add_hi`, `fp_tensor_core_mma_m16n8k16_waves`, `fp_flash_attention_o1_sram_tiles`), **Autonomous Supply-Chain Assimilator & Omni-Stdlib ACID B+Tree/MVCC** (`pkg_assimilate_purity_gate_ok`, `pkg_omni_stdlib_btree_split_mid`, `pkg_omni_stdlib_mvcc_visibility_ok`), **Wave 5 `LumePuter`/`LumePU` Weight-Compiled `RV32IM_Zba + BMAC + VX VMAT` In-Weights VM & Zero-Drift Gated-DeltaNet RAM** (`lumeputer_swiglu_exact_relu_unit`..`lumeputer_compile_rv32_vx_to_weights_layers`, `--target lumeputer-rv32im-weights`), **Wave 6 Recursive Stack `.lweights` Compiler, Relational Octagon/Interval Loop Prover & Incremental Interface Cache v2** (`lumeputer_stack_push_frame_sp`, `lumeputer_compile_src_bundle_lweights`, `prover_octagon_transitive_upper`, `prover_loop_ranking_steps_remaining`, `incremental_module_iface_digest`, `incremental_can_reuse_downstream_mod`), **Wave 7 Trap/CSR (`ecall`/`mret`) & In-Weights `lcert` Verifier, Farkas Lemma Linear Dual Certificate & Exact Bit-Shift (`shl`) Linear Bounds, `#334` Fail-Closed FFI Callback Arena Epoch Guard & `#407` AI-First Fuzzy Symbol/Arity Repair** (`lumeputer_ecall_save_mepc`, `lumeputer_mret_restore_pc`, `lumeputer_inweights_lcert_check`, `prover_farkas_dual_rhs_sum`, `prover_farkas_unsat_witness_ok`, `prover_bitshift_shl_exact_bound`, `ffi_callback_arena_epoch_safe`, `diag_fuzzy_repair_distance_score`, `diag_fuzzy_repair_suggest_ok`), **Wave 8 Deep SSA/Chaitin RegAlloc/Interprocedural Inline/AVX-512 Auto-Vectorizer, Automated OS/Socket/CUDA `io_uring` Zero-Copy FFI Bridge, Non-Linear Horner/Bernstein & Inductive Graph DAG Prover, and Structural Compiler Pass Self-Evolver** (`ssa_chaitin_register_spill_cost`, `ssa_interprocedural_inline_gain`, `avx512_autovec_loop_speedup_lanes`, `ffi_auto_header_abi_layout_ok`, `io_uring_zero_copy_ring_submit`, `prover_nonlinear_horner_lower_bound`, `prover_inductive_graph_dag_rank_ok`, `compiler_pass_evolve_verified_promote`), **Wave 9 Real x86-64 VEX (`AVX2` `%ymm0..%ymm15`) & EVEX (`AVX-512` `%zmm0..%zmm15`) Machine-Code Encoding + Hardware SIMD Intrinsics, Real Linux Kernel `io_uring` Syscalls (`425..427`), Native AST `x * x` Quadratic Horner Square-Completion Prover & Industrial C Header Preprocessor/Auto-Parser** (`simd_add4_i64`, `simd_sub4_i64`, `simd_xor4_i64`, `vex_simd_hardware_add4_sum`, `os_io_uring_setup`, `os_io_uring_enter`, `os_io_uring_register`, `io_uring_kernel_syscall_sqe_batch_safe`, `ast_native_horner_quadratic_eval`, `ast_native_quadratic_square_completion_law`, `c_header_preprocessor_macro_strip_ok`), and **Wave 10–14 Critical Production-Assurance & Clean-Room MC/DC Closure** (`lasm_vs_gnu_as_differential_byte_eq`, `lasm_differential_Mismatch_rejected_law`, `prover_adversarial_false_theorem_rejected`, `prover_unsound_acceptance_rejected_law`, `mutation_testing_kill_ratio_verified`, `mutation_surviving_mutant_rejected_law`, `ddc_diverse_double_compilation_bit_identical`, `ddc_bootstrap_divergence_rejected_law`) | **`256/256` obligations (`160` proven + `96` `@bound`, `160/160` `ltv`, `0/2,392` uncovered MC/DC) · `19/19` tests** |
-| **Pillar 3 · NetSentinel IEC 62443, Conduite HA/GOOSE/Storm & Omega-Mesh P2P** | `compiler/stage1/net.src` (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh`) | Purdue Model (`L0..L4`) & DMZ (`L3.5`) conduit enforcement (`iec62443_purdue_conduit_ok`), OT default-drop firewall policy audit (`netsentinel_fw_policy_audit_ok`), structural read-only DCS guard (`ot_readonly_dcs_guard`), tri-state telemetry quality (`ot_tristate_quality_code`), finite `1e12` sentinel clamping (`ot_finite_sentinel_clamp`), **Conduite Admin Idle Timeout, HA Failover Parity, Monotonic Severity Escalation, IEC 61850 GOOSE `stNum`/`sqNum` Transition, Posture Traffic Confirmation & Broadcast Storm Mitigation** (`conduit_admin_timeout_ok`, `conduit_ha_failover_parity_ok`, `conduit_severity_escalate_rank`, `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, `netsentinel_broadcast_storm_code`), and **Omega-Mesh P2P Frame Bounds, Atomic NAT Dual-Bucket Rate Deduction, Kademlia DHT Healing Rank, Raft Majority Quorum & Log Backtrack, TOFU Fingerprint Pinning & Multiplexed Channel Quota** (`mesh_frame_bounds_ok`, `mesh_atomic_dual_rate_deduct`, `mesh_dht_healing_rank`, `mesh_raft_quorum_ok`, `mesh_raft_backtrack_index`, `mesh_tofu_verify_code`, `mesh_channel_mux_quota_ok`) | **`68/68` proofs · `27/27` tests** |
-
-```sh
-lume unified-field                     # Run Sovereign Unified Field & Subsea Engine (7-DOF DLS, Laplace SOR, EKF, IAPWS-IF97, Catenary, VIV, Heavy-Lift, ZH-L16C, Well-Kill, B31G)
-lume singularity                       # Run 2nd-Order Dynamical Transition Engine, Singularity Boundary Omega, Bayesian SPC, CUSUM, CPM Float & k-Anonymous PAVA
-lume net-sentinel                      # Run NetSentinel IEC 62443 Purdue L0..L4/L3.5 DMZ, Conduite HA/GOOSE/Storm & Omega-Mesh P2P/DHT/Raft/TOFU verifier
-lume ui-layout                         # Inspect declarative @ui-layout 4-pane Win64 PE32+ (1412694337 / 1412698308) & Web/WASM lowering
-```
-
----
-
-## Architecture & Verification Matrix
-
-| Milestone | Core Capabilities (`compiler/stage1/`) | Verification Evidence |
+| Domain | Modules & CLI Entrypoints | Capabilities & Verified Proofs |
 | :--- | :--- | :--- |
-| **Stage 0 Seed** | Frozen C11 bootstrap interpreter (`bootstrap/lume0/`), LBE binary AST, `lume0 asm` ELF64 writer | `393/393` conformance · `168/168` ASan/UBSan |
-| **Phase 1 — Self-Host** | Self-hosted `lumec`, `lasm`, `lmod`, Zero-C fixpoint (`stage2 == stage3`) | `zero_c.src` (`15/15`) · `0 diff` |
-| **Phase 2 — Data & Meta** | Comptime `C1–C4`, Hygienic Macros `M1–M2`, Data `D1–D4` (`decimal`, `table`, `query`, `money`, WAL), HM Inference `F1–F4`, Single CLI `T1–T3`, Self-Evolution `E1–E3` | `decimal.src`, `table.src`, `query.src`, `lfmt.src`, `lmod.src`, `lcaas.src`, `levolve.src` |
-| **Phase 3 — Safety & Proofs** | Ownership `O1–O4` (`own`, `mut`, `from`, `rc` / `arc` / `weak`, `arena`), AI Authoring `A1–A3`, Effects & Perceus `K1–K3`, Concurrency `S1–S3`, `QF_LIA` / `QF_NIA` Prover & `law` `V1–V3` | `ownership.src`, `concurrency.src`, `actor.src`, `qflia_ok.src`, `intent_oracle_ok.src` |
-| **Phase 4 — Differentiable & AI** | Shape-checked `tensor[DType, ...]`, Autodiff (`grad`, `jvp`, `vjp`), `@schedule(...)` `kernel fn` -> CUDA PTX 8.0 & SPIR-V 1.6, `.safetensors` & `.onnx` (`nn.src`), Datalog, `std.prob`, LIF `std.neuro` | `tensor.src`, `nn.src`, `ai_runtime.src`, `apps/mnist/`, `apps/agent/` |
-| **Phase 5 — Systems & Kernels** | `@repr(c)`, `@packed`, `@bits`, `@mmio`, Fail-closed `lume adapt c`, Freestanding Kernels `K0–K9` (`@freestanding`, `.kernel` writer, `@interrupt`, `@bound` WCET `[V0002]`, `cap[Page]`), 27 Targets, `lcert.src`, Lean 4 (`LumeCore.lean`), P33 Protection | `apps/lume_os/`, `ltarget.src`, `lcert.src`, `lprotect.src` |
-| **Wave 11 — Certification tools** | `ltv` (translation validation of emitted x86-64), `lmcdc` (decision + MC/DC with witnesses executed on the native binary), `lsafety_envelope` (`2oo2D` lockstep with clean-room RV32IM Channel B), soak ledger, `lqualify` (TOR / TQP / RTM / dossier) | `tv_gate`, `safety_envelope_gate`, `soak_battle_gate`, `docs/certification/` |
-| **Waves 12–13 — Industrial tools & closure** | `@no_alloc` `[E0210]`, `--keep-proven-checks`, linear channels `[E0305]` / lock ranks `[E0306]`, DWARF v4, incremental proof cache, `lcrypto_tls` (SHA-2, HMAC, HKDF, ChaCha20-Poly1305, Ed25519, X25519, TLS 1.3 handshake + records), AArch64 / RV64 / RV32 kernel back ends with `ltv_multiarch`, `.safetensors` neural cartridges, `lcert --check-source`, `[C0010]`, signed qualification evidence | `realtime_gate`, `concurrency_gate`, `dwarf_cache_gate`, `crypto_tls_gate`, `multi_arch_gate`, `safetensors_gate`, `cert_source_gate`, [`docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md`](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md) |
-| **Wave 14 — Zero-Defect Qualification, Clean-Room Verification, `[C0011]` CT Crypto & Synergy** | `OmniProof-v4` (`1,682` obligations / `16` batteries / `372` tests / `122` domains `#0..#121`), `ltv` hub (`694` fns, `687/687` object-code branch correlation), `ltv_rt` (`18/18` runtime helpers), clean-room `lsmt` & `z3` (`100%` `.smt2` `unsat`), `0/9,618` uncovered MC/DC, `lstack` stack analyzer, `118` `@secret @no_alloc` `[C0011]` CT crypto kernels + `24`-target `dudect` + `lx509` (`Ed25519 X.509v3`) + NIST SP 800-90B OS entropy, `lsafety_envelope` clean-room RV32IM Channel B (`0/3,169` compiler fns) + `--split` multi-board bundle, `lume synergy-gate` (`17/17` stages + `36/36` cross-tamper rejections), `lqualify` **`PASS`** (`106/106` probes, `21/21` gates, `10` HLR + `44/44` LLR `VERIFIED`) | `tv_rt_gate`, `smt_cert_gate`, `lcaas_scale_gate`, `synergy_gate`, `native_driver_gate`, [`docs/certification/QUALIFICATION_DOSSIER.md`](docs/certification/QUALIFICATION_DOSSIER.md), [`docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md`](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md) |
-| **Waves 1–14 & Hostile Audit** | Incremental cache, Arenas, E-Capsules, `--memory` profiler, `lume symbolize`, P35, WASM sandbox (`[I0275]`), OS async runtime, B+Tree ACID WAL (`db.src`), TLS 1.3 (`net.src`), X11/Web GUI (`gui.src`), `LumeMIR` SSA, APK / IPA / ISO / UEFI, `genesis`, `heal`, `equiv`, `morph`, `neural-kernel`, Quantum Nexus, **Claude + Red Team R1–R4 + Wave 14 Hostile Audit R1–R3** | `acceptance/matrix.json` (`24/24 PASS`), `claude_audit_gate.src`, `prover_fuzz_gate` |
+| **Differentiable AI, Weight-Compiled `LumePuter` & Local LLM Core** | `tensor.src`, `nn.src`, `lneural_cartridge.src`, `lchameleon.src` (`lume lumeputer`), `lume_opentpu_engine.src` (`lume opentpu`), `lume_ncm_engine.src` (`lume ncm`), `lume_llm_core.src` | Compile-time shape-checked tensors, forward/reverse autodiff (`grad`, `jvp`, `vjp`), `@schedule(...)` `kernel fn` lowering to CUDA PTX 8.0 & Vulkan SPIR-V 1.6, `.safetensors` neural cartridges (`--target safetensors`) & `LumePuter` weight-compiled `RV32IM_Zba` + Gated-DeltaNet execution (`--target lumeputer-rv32im-weights`), `Posit-Quire` exact dot products, `openTPU` systolic MXU (`23/23` proofs), `MS-RVQ` Next-Concept Modeling (`19/19` proofs), and 1-bit Bonsai / 1.58-bit ternary MAC + Liquid `LFM3` 24 kHz audio budgeting + 3-tier hybrid LLM routing (`41/41` proofs with `examples/apps/sovereign_llm_router`) |
+| **Cyber-Physical Control (`UFE`), 7-DOF Robotics & Subsea Engineering** | `gfx.src` (`lume unified-field` / `lume ufe` / `lume subsea`), `gui.src` (`lume ui-layout`) | 7-DOF singularity-free Damped Least-Squares kinematics, 3D Harmonic Laplace Red-Black SOR solver, $5\sigma$ Mahalanobis + Joseph-form EKF, actuator stiction & RUL estimation, IAPWS-IF97 steam thermodynamics & Carnot bounds, 1 kHz deterministic load shedding, DNV/API subsea catenary & bending stress, VIV & Palmgren-Miner fatigue, heavy-lift DAF floor, Bühlmann ZH-L16C hyperbaric decompression, Wait & Weight well-kill, ASME B31G pipeline burst guard (**`77/77` proofs, `15/15` tests**), and conservation-proven `@ui-layout` |
+| **Dynamical Singularity Boundary ($\Omega$) & Statistical Process Control** | `lchameleon.src` (`lume singularity` / `lume ote`) | Dual-regime underdamped/overdamped 2nd-order step identification ($\zeta \in (0, 100]$), Operational Power Triangle ($S, P, Q, \cos\Phi$), counter-phase Singularity Boundary theorem $\tau_{\max} = T_m/4$, Nyquist aliasing guard, cascade $3\times$ bandwidth decoupling, Bayesian Beta-Binomial conjugate SPC, Page's tabular CUSUM, CPM float, and $k$-anonymous monotonic PAVA |
+| **Industrial OT Security (`IEC 62443`), Mesh Networking & Edge Proxy** | `net.src` (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh`), `lume_pingora_proxy_engine.src` (`lume pingora`), `lume_continuum_nexus_engine.src` (`lume continuum`) | Purdue `L0..L4` & `L3.5` DMZ conduit isolation, default-drop OT firewall auditing, read-only DCS guard, IEC 61850 GOOSE `stNum`/`sqNum` transition verification, HA failover parity, Omega-Mesh P2P framing, Kademlia DHT healing, Raft quorum/backtrack & TOFU pinning (**`68/68` proofs, `27/27` tests**), TinyUFO + Ketama P2C TLS 1.3 edge proxy (`14/14` proofs), and CRDT/ACP context engine (`27/27` proofs) |
+| **Quantum Computing, Binary Recovery & Ledger Verification** | `lume_quantum_nexus_engine.src` (`lume quantum-nexus`), `lume_crypto_blockchain_engine.src` (`lume crypto-engine`), `lume_reversa_engine.src` (`lume reversa`), `lume_egm_engine.src` (`lume egm`) | Linear `Qubit` no-cloning type checker, automatic $U^\dagger$ ancilla uncomputation, ZX-calculus spider fusion, $O(n^2)$ Clifford stabilizer simulator, `[[9, 1, 3]]` surface-code QEC decoder, parameter-shift VQE/QAOA (`15/15` tests), HD wallets & AMM/CEI ledger proofs (`10/10` tests), ELF/PE/Mach-O/WASM-to-`LumeMIR` binary lifter (`13/13` proofs), and 5-stage specification anti-drift auditor (`15/15` proofs) |
+| **Verified Production Capstones (`examples/apps/`)** | `pix_fraud_trace`, `dfe_pix_bacen`, `brasil_public_id`, `verified_accounting`, `sentry_uav_guard`, `omniroute_guard`, `zero_breach_forensics`, `p0_rtc_kernel`, `p0_tenant_ledger`, `lume_os` | Real-world verified applications covering BACEN Pix `CobV`/MED fraud recovery, SEFAZ NF-e 4.00 & EC 87/2015 DIFAL, July 2026 Alphanumeric CNPJ Modulo-11, double-entry accounting, Ring-0 UAV geofencing, confidential LLM circuit breaking, STIX 2.1 endpoint spyware triage, multi-tenant ledgers, and bare-metal OS kernels |
 
 ---
 
-## Wave 14 — Zero-Defect Qualification, Clean-Room Verification & Synergy
+## 27 Universal Targets & System Packagers
 
-Wave 14 closes every remaining certification, machine-code verification, constant-time cryptography, architectural diversity, and cross-module integration gap in the `v1.1.0` toolchain:
-
-- **`OmniProof-v4` & Signed Qualification `PASS` (`compiler/stage1/lqualify.src`):** `./lume self-prove` verifies **`1,682` formal obligations across `16` batteries** (`0` runtime-checked or refuted), **`372` unit tests**, **`122` sovereign domains (`#0..#121`)**, and **`134` `MANIFEST.sha256` files**. `./lume qualify` achieves **`PASS`** across **`106/106` probes**, **`21/21` end-to-end gates**, and **`10` HLR + `44/44` LLR (`VERIFIED`)**, emitting [`docs/certification/QUALIFICATION_DOSSIER.md`](docs/certification/QUALIFICATION_DOSSIER.md) signed with Ed25519 and X.509v3 (`docs/certification/QUALIFICATION_SIGNING_CERT.der`, verified by `./lume qualify --verify`).
-- **Machine-Code Translation Validation, Runtime Helper Proofs & Clean-Room SMT (`ltv.src`, `ltv_rt.src`, `lsmt.src`):** **`694` functions** are translation-validated from `.src` to emitted x86-64 (`0` rejected, `7,846` native boundary vectors, **`687/687` 1-to-1 AST-to-object branch correlation**), **`18/18` integer runtime helpers** are symbolically verified by `lume tv-rt` (`268` paths / `462` obligations), and **`100%` of `.smt2` certificates** are independently checked `unsat` by both clean-room `lume smt-check` (`lsmt.src`, `3,820` mutants rejected) and external `z3`.
-- **Zero Uncovered MC/DC & Static Stack Bounds (`lmcdc.src`, `lstack.src`):** **`0/9,618` uncovered MC/DC conditions** executed on native binaries across all 4 certified modules (`compiler/stage1/lstd.src` `0/980`, `examples/safety_envelope/critical_kernels.src` `0/112`, `compiler/stage1/lchameleon.src` `0/2,392`, `compiler/stage1/lsentience.src` `0/6,134`), paired with `lume stack` worst-case x86-64 stack byte analysis for `@no_alloc` `[E0210]` kernels.
-- **`118` `[C0011]` Constant-Time Crypto Kernels, `Ed25519 X.509v3` & NIST SP 800-90B Entropy (`lcrypto_tls.src`, `lx509.src`):** **`118/118` `@secret @no_alloc` `[C0011]` kernels** in `compiler/stage1/lcrypto_tls.src` pass transitive `[C0010]` machine-code constant-time validation and `lstack` bounding (max `536 B`), **`24/24` `dudect` Welch $t$-test targets** stay within `|t| <= 2.690 < 4.5`, `lume x509 verify` / `lume x509 show` enforces Ed25519 X.509v3 path validation (`6,000/6,000` tampered chains rejected), and `lume entropy` runs NIST SP 800-90B repetition-count and adaptive-proportion health checks on OS entropy.
-- **`2oo2D` Clean-Room RV32IM Channel B & Multi-Board Split Bundle (`lsafety_envelope.src`, `lrv32_lowered.src`):** Channel B executes on a clean-room RV32IM image sharing **`0/3,169` compiler functions** in the tool bundle (`87,224` injected faults → `0` false negatives) and exports cross-architecture multi-board bundles via `lume safety-envelope` `--split` / `--split-verify` / `--split-run` (`docs/41-safety-envelope-split-bundle.md`).
-- **100% Cross-Module Synergy & CLI Parity (`tests/harness/synergy_gate.src`, `tests/cli/driver_gate.src`):** `lume synergy-gate` chains **`17/17` pipeline stages** on `examples/synergy/critical_pipeline.src` (`lcaas` → `lcert` → `lproof_cache` → `lumec --critical` → `ltv` → `ltv_rt` → `lsmt` → `lstack` → `lmcdc` → `lx509` + `lcrypto_tls` → `lsafety_envelope` → `ltv_multiarch`) and rejects **`36/36` cross-tamper scenarios** (`0` undetected), while `lume cli-parity` verifies **`114` table rows / `226` command & alias names** with `0` mismatches.
-- **Full Audit & Certification Dossiers:** [`docs/certification/QUALIFICATION_DOSSIER.md`](docs/certification/QUALIFICATION_DOSSIER.md) (English) · [`docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md`](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md) (`pt-BR`).
-
----
-
-## Verified Domain & Quantum Engines
-
-Lume includes self-hosted, formally verified domain engines in `compiler/stage1/`:
-
-1. **Quantum Nexus Engine (`compiler/stage1/lume_quantum_nexus_engine.src` — `15/15` tests, `Lume Verified ✓`):**
-   - **Linear `Qubit` Type Checker & Automatic $U^\dagger$ Uncomputation:** Enforces Quantum No-Cloning and No-Measurement-Reuse, and verifies automatic adjoint uncomputation of ancilla wires (`qfree_safe == 1`).
-   - **Graphical ZX-Calculus & Clifford+T Optimizer:** Performs spider fusion ($Z(\alpha) \circ Z(\beta) \to Z(\alpha + \beta)$), phase teleportation, and non-Clifford $T$-gate reduction.
-   - **Stabilizer Tableau Simulator & Surface Code `[[9, 1, 3]]` QEC Decoder:** Simulates Clifford stabilizer tableaux in $O(n^2)$ and decodes all `27/27` single-qubit Pauli $X, Y, Z$ errors ($d = 2t + 1$).
-   - **Variational Quantum Algorithms & Neutral-Atom FPQA Routing:** Parameter-shift VQE, QAOA MaxCut, Neutral-Atom 2D Acousto-Optic Deflector (`AOD`) monotone row/column routing, and the `qasm3-quantum` compilation target.
-2. **Cryptographic & Quantitative Ledger Engine (`compiler/stage1/lume_crypto_blockchain_engine.src` — `10/10` tests, `Lume Verified ✓`):**
-   - FIPS 180-4 SHA-256, Ed25519, Secp256k1, BIP-32/39/44 HD Wallets, UTXO Merkle ledger, CEI reentrancy analysis, Constant-Product AMM ($x \cdot y = k$), and Kelly Criterion risk sizing.
-3. **Binary Dissection & Specification Recovery Engine (`compiler/stage1/lume_reversa_engine.src` — `4/4` tests, `13/13` proofs, `Lume Verified ✓`):**
-   - Lifts ELF64, PE64, UEFI, Mach-O, and WASM binaries to SSA `LumeMIR` and generates architecture dependency graphs.
-4. **Edge Proxy & CDN Engine (`compiler/stage1/lume_pingora_proxy_engine.src` — `4/4` tests, `14/14` proofs, `Lume Verified ✓`):**
-   - TinyUFO 3-queue (`Small`/`Main`/`Ghost`) + TinyLFU cache admission, Ketama consistent hashing with Power-of-Two-Choices (`P2C`) failover, sliding-window rate limiting, and stampede coalescing over RFC 8446 TLS 1.3.
-5. **Architecture Review & Anti-Drift Engine (`compiler/stage1/lume_egm_engine.src` — `4/4` tests, `15/15` proofs, `Lume Verified ✓`):**
-   - Stateless 5-stage code review (`R1..R5`) and bidirectional specification-to-implementation drift verification.
-6. **Multi-Scale Next-Concept Modeling Engine (`compiler/stage1/lume_ncm_engine.src` — `4/4` tests, `19/19` proofs, `Lume Verified ✓`):**
-   - Multi-Scale Residual Vector Quantization (`MS-RVQ`), tied codebook embeddings, block-diagonal scale-causal masks, and Classifier-Free Guidance (`CFG`).
-7. **Systolic AI Accelerator & ISA Engine (`compiler/stage1/lume_opentpu_engine.src` — `4/4` tests, `23/23` proofs, `Lume Verified ✓`):**
-   - 20-instruction `openTPU ISA v1` assembler and weight-stationary MXU systolic simulator, two-level `QACT` + `FP4` quantization, *K-Smoothing* outlier migration, and RTL equivalence checking.
-8. **Context & Distributed State Engine (`compiler/stage1/lume_continuum_nexus_engine.src` — `4/4` tests, `27/27` proofs, `Lume Verified ✓`):**
-   - Tree superposition (`bend`/`fold`), Active Context Pruning (`ACP`), quota-aware multi-provider routing, and `LWW-Element-Set` CRDT state convergence.
-9. **Pix Fraud Graph Tracer & BACEN MED Recovery Engine (`examples/apps/pix_fraud_trace/main.src` — `1/1` test, `9/9` proofs, `Lume Verified ✓`):**
-   - Zero-float basis-point temporal graph expansion (`JANELA_RASTREIO_SEG=86400s`, `PROFUNDIDADE_MAX_SALTOS=5`), weighted suspicion scoring (`40% * repasse + 50% * rapidez + 10% * pequeno`), composite hop risk evaluation (`pix_trace_hop_risk_bps`), automatic classification of Money Mule (`Laranja` / `Conta de Passagem`) and Cash-Out (`Saque`) accounts, and formally proven Central Bank MED precautionary block conservation (`pix_med_conservation_law`, `pix_med_cap_law`).
-10. **SENTRY UAV Trajectory Forecaster & Ring-0 Geofence Guard (`examples/apps/sentry_uav_guard/main.src` — `1/1` test, `9/9` proofs, `Lume Verified ✓`):**
-    - Deterministic linear trajectory forecaster (`SIGNAL`), monotonically calibrated 95% bivariate confidence radius (`PROBE`, `uav_radius_monotonic_law`), worst-case floor guard (`uav_safe_altitude_guard_mm`), and mathematically proven airspace altitude envelope enforcement (`uav_geofence_ceiling_law`, `uav_geofence_floor_law`, `uav_safe_altitude_envelope_law`).
-11. **Formally Verified Double-Entry Accounting & Fiscal Split Engine (`examples/apps/verified_accounting/main.src` — `1/1` test, `7/7` proofs, `Lume Verified ✓`):**
-    - Compile-time proof of the Fundamental Double-Entry Accounting Identity (`Ativo == Passivo + Patrimonio_Liquido`, zero cent imbalance `double_entry_zero_imbalance_law`), bounded retention guard (`clamped_retention_bounds_law`), and exact basis-point tax retention (`fiscal_split_conservation_law`).
-12. **SEFAZ DFe (NF-e/NFC-e) & BACEN Pix API (`CobV` & `Devolucao`) Engine (`examples/apps/dfe_pix_bacen/main.src` — `1/1` test, `11/11` proofs, `Lume Verified ✓`):**
-    - Formally proven SEFAZ Layout 4.00 invoice valuation (`vNF = (vProd - vDesc) + vST + vFrete + vIPI`), EC 87/2015 interstate DIFAL + FCP split (`dfe_difal_total`, `dfe_fcp_total`, `dfe_difal_with_fcp_total`), and Central Bank `bacen/pix-api` `CobV` settlement (`pix_cobv_positive_settlement_law`) and clamped anti-over-refund conservation (`pix_devolucao_safe_refund_cap_law`, `pix_devolucao_conservation_law`).
-13. **OmniRoute Multi-LLM Circuit Breaker & Sovereignty Guard (`examples/apps/omniroute_guard/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
-    - Resilient multi-provider AI gateway routing (`Primary Cloud -> Secondary Fallback -> Sovereign Local LLM`) with mathematically proven confidentiality isolation (`omniroute_confidential_sovereignty_law`), hard micro-credit budget caps (`omniroute_budget_conservation_law`), and concurrent pre-attempt in-flight token reservation (`omniroute_concurrent_inflight_safety_law`).
-14. **Brazilian Public Registry & Modulo-11 Verifier (`examples/apps/brasil_public_id/main.src` — `1/1` test, `9/9` proofs, `Lume Verified ✓`):**
-    - Formally verified Receita Federal / SEFAZ Modulo-11 check digit arithmetic (`0 <= dv <= 9`), Receita Federal / SERPRO July 2026 Alphanumeric CNPJ character valuation (`cnpj_alnum_char_value`, `cnpj_alnum_monotonic_law`), 44-digit NF-e Access Key structural verification (`nfe_access_key_exact_44_digits_law`), and QSA corporate equity conservation (`qsa_equity_conservation_law`).
-15. **Zero-Breach Forensic Anti-Spyware Triage Oracle (`examples/apps/zero_breach_forensics/main.src` — `1/1` test, `8/8` proofs, `Lume Verified ✓`):**
-    - Formally verified mobile/endpoint spyware triage oracle (`Pegasus`, `Predator`, `Candiru`, `Graphite` IOCs) enforcing zero-network isolation (`zbt_netguard_isolated`), fail-closed `PARTIAL_UNKNOWN` verdicts on incomplete checks (`zbt_fail_closed_never_clean_law`), strict non-escalation of heuristic leads (`zbt_heuristics_alone_never_compromised_law`), and STIX 2.1 indicator revocation safety (`zbt_withdrawn_stix_never_active_law`).
-16. **Sovereign 1-Bit/Ternary LLM Core & 3-Tier Hybrid Router (`compiler/stage1/lume_llm_core.src` — `21/21` proofs & `examples/apps/sovereign_llm_router/main.src` — `20/20` proofs, `Lume Verified ✓`):**
-    - Zero-float 1-bit (`{-1, +1}`, PrismML Bonsai) and 1.58-bit ternary (`{-1, 0, +1}`, BitNet b1.58) integer MAC engine with 5-trit byte packing, Liquid AI `LFM3` $O(1)$ state-space recurrence and `LiquidCodec` 24 kHz audio frame budgeting, `DSpark` speculative decoding verifier, fail-closed MoE SSD admission guard (`llm_moe_admission_guard`), and 3-tier hybrid routing (`Tier 0` Pure Lume Core -> `Tier 1` Local `Gemma4-E2B`/`Ministral-3B-Q4`/`Bonsai-1bit` -> `Tier 2` Cloud API Key) with `QF_LIA` anti-hallucination price/contract repair.
-17. **Universal Chameleon Polyglot Interop Engine (`compiler/stage1/lchameleon.src` — `256/256` certified obligations (`160` proven + `96` `@bound`, `160/160` `ltv`-validated, `0/2,392` uncovered MC/DC), `19/19` unit tests including Singularity $\Omega$, Bayesian SPC/PAVA, Wave 4 Tensor/Quire/Assimilator & Waves 5–14 `LumePuter`/`LumePU`/Farkas/FFI-Callback/Fuzzy-Repair/SSA-AVX512/VEX-EVEX-SIMD/IoUring-Kernel/Horner-DAG-AST/C-Header-Parser/Pass-Evolver/LASM-Diff/Adversarial-Prover/Mutation-Kill/Wheeler-DDC, `Lume Verified ✓`):**
-    - Commands `lume chameleon [eco]`, `lume camaleao`, `lume polyglot`, `lume ffi-bridge`, `lume adapt <c|c-raw|rust|python|js|go|java|dotnet|sql|openapi> [file]`, `lume adapt c --preprocess <header.h>`, and `lume morph <file>` across 9 verified ecosystems (`c_abi`, `rust_cdylib`, `python_capi` with DLPack zero-copy tensors, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, and `openapi_rpc`) with `[I0003]` fail-closed `QF_LIA` boundary contracts (`unverified[T] -> verified[T]` under `/ {ffi}`), `#334` fail-closed FFI callback arena epoch guards (`ffi_callback_arena_epoch_safe`), automated OS/Socket/CUDA `io_uring` zero-copy FFI bindings + real Linux kernel `io_uring` syscalls (`os_io_uring_setup` = 425, `os_io_uring_enter` = 426, `os_io_uring_register` = 427, `io_uring_kernel_syscall_sqe_batch_safe`), and industrial C header preprocessor & auto-parser (`c_header_preprocessor_macro_strip_ok`).
-18. **Sovereign Unified Field & Subsea Engineering Engine (`lume unified-field` / `lume ufe` / `lume subsea` in `compiler/stage1/gfx.src` — `77/77` proven obligations, `15/15` unit tests, `Lume Verified ✓`):**
-    - 7-DOF singularity-free Damped Least-Squares inverse kinematics (`ufe_dls_lambda_sq_milli`, `ufe_dls_safe_denom_milli`), 3D Harmonic Laplace Red-Black SOR solver & maximum principle (`ufe_laplace_sor_step_milli`, `ufe_harmonic_maximum_principle_law`), GNRON non-conservative swirl attenuation (`ufe_gnron_swirl_scale_milli`), link-capsule self-collision clearance (`ufe_self_collision_capsule_ok`), hardware IEEE-754 finite register guard (`ufe_ieee754_f32_finite_guard`), dual-state actuator EKF with $5\sigma$ Mahalanobis gate + Joseph covariance positivity + valve stiction detector + RUL estimator (`ufe_ekf_mahalanobis_5sigma_ok`, `ufe_ekf_joseph_cov_pos_milli`, `ufe_actuator_stiction_detect`, `ufe_actuator_rul_hours`), multi-robot swarm separation (`ufe_swarm_separation_ok`), IAPWS-IF97 thermodynamic steam regions & wet-steam erosion guard + Carnot bound (`ufe_if97_region_select`, `ufe_turbine_wet_steam_guard`, `ufe_carnot_efficiency_bound_ok`), deterministic 1 kHz `LatencyMonitor` (`ufe_latency_shedder_step`), Subsea Catenary & API RP 1111 / DNV-OS-F101 stress (`subsea_catenary_top_tension_n`, `subsea_catenary_tdp_bend_ok`, `subsea_combined_longitudinal_stress_ok`), Free-Span VIV & Palmgren-Miner fatigue (`subsea_viv_screening_ok`, `subsea_miner_fatigue_safe_ok`), Offshore Heavy-Lift DAF floor (`marine_dnv_daf_floor_milli`, `marine_heavy_lift_feasible_ok`), Hyperbaric Bühlmann ZH-L16C decompression (`subsea_hyperbaric_decompression_safe_ok`), Wait & Weight Well-Kill (`subsea_well_kill_icp_kpa`, `subsea_well_kill_mud_sg_milli`), and ASME B31G corroded pipeline burst guard (`subsea_b31g_corroded_pipe_safe_ok`).
-19. **2nd-Order Dynamical Transition Engine, Singularity Boundary $\Omega$, Bayesian SPC & Zero-Limitation Waves 4–14 (`lume singularity` / `lume ote` / `lume transition-engine` / `lume lumeputer` in `compiler/stage1/lchameleon.src` — `256/256` certified obligations, `19/19` unit tests, `122` domains `#0..#121`, `Lume Verified ✓`):**
-    - Dual-regime step-response identification & quantitative $\zeta$ estimator (`ote_select_damping_regime`, `ote_estimate_zeta_milli` across underdamped $0 < \zeta < 1$ and critically/overdamped $1 \le \zeta \le 100$ via $t_{80}/t_{20}$ rise-time ratio), Operational Power Triangle ($S, P, Q, \cos\Phi$) & phase coherence (`ote_power_factor_milli`, `ote_reactive_waste_ratio_milli`, `ote_phase_coherence_ok`), Singularity Boundary $\Omega$ ($\tau_{\max} = T_m/4$, `ote_singularity_tau_max_ms`, `ote_omega_boundary_crossed`, `ote_singularity_margin_zone`), Nyquist aliasing guard (`ote_nyquist_status_code`), cascade bandwidth decoupling (`ote_cascade_bandwidth_decoupled_ok`), gain retuning (`ote_retune_kp_scale_milli`), 9 normative prescriptions ordered by physical leverage (`ote_diagnose_primary_code`), Bayesian Beta-Binomial conjugate SPC (`spc_beta_binomial_posterior_num`), Page's tabular upper CUSUM (`spc_cusum_upper_step_milli`), CPM total float (`ops_cpm_total_float_hours`), $k$-anonymous monotonic PAVA (`analytics_k_anonymity_release_ok`, `analytics_pava_monotonic_pair_hi`), BF16/FP16 finite exponent guards (`fp_bf16_is_finite_ok`, `fp_fp16_is_finite_ok`), `Posit-Quire` exact order-independent dot product (`fp_quire_exact_dot_accum`), `QF_FP_Interval` enclosure arithmetic (`fp_interval_add_lo`, `fp_interval_add_hi`), GPU Tensor Core `m16n8k16` MMA wave scheduler & FlashAttention-3 $O(1)$ SRAM tiling (`fp_tensor_core_mma_m16n8k16_waves`, `fp_flash_attention_o1_sram_tiles`), Autonomous Supply-Chain Ecosystem Assimilator (`pkg_assimilate_purity_gate_ok`), Omni-Stdlib ACID B+Tree split & MVCC snapshot visibility (`pkg_omni_stdlib_btree_split_mid`, `pkg_omni_stdlib_mvcc_visibility_ok`), Waves 5–7 `LumePuter`/`LumePU` weight-compiled `RV32IM_Zba + BMAC + VX VMAT` VM, Trap/CSR (`ecall`/`mret`) + In-Weights `lcert` verifier, Octagon/Farkas/Bit-Shift/Cache-v2 prover & `#334`/`#407` guards, Wave 8 Deep SSA/Chaitin RegAlloc/Interprocedural Inline/AVX-512 Auto-Vectorizer (`ssa_chaitin_register_spill_cost`, `ssa_interprocedural_inline_gain`, `avx512_autovec_loop_speedup_lanes`), Automated OS/Socket/CUDA `io_uring` Zero-Copy FFI Bridge (`ffi_auto_header_abi_layout_ok`, `io_uring_zero_copy_ring_submit`), Non-Linear Horner/Bernstein Envelope & Inductive Graph DAG Rank Prover (`prover_nonlinear_horner_lower_bound`, `prover_inductive_graph_dag_rank_ok`), Structural Compiler Pass Self-Evolution Gate (`compiler_pass_evolve_verified_promote`), **Wave 9 Real x86-64 VEX (`AVX2` `%ymm0..%ymm15`) & EVEX (`AVX-512` `%zmm0..%zmm15`) Machine-Code Encoding + Hardware SIMD Intrinsics (`simd_add4_i64`, `simd_sub4_i64`, `simd_xor4_i64`, `vex_simd_hardware_add4_sum`), Real Linux Kernel `io_uring` Syscalls (`os_io_uring_setup` = 425, `os_io_uring_enter` = 426, `os_io_uring_register` = 427, `io_uring_kernel_syscall_sqe_batch_safe`), Native AST `x * x` Quadratic Horner Square-Completion Prover (`ast_native_horner_quadratic_eval`, `ast_native_quadratic_square_completion_law` in `06b_phase3.src` and `lcaas.src`), and Industrial C Header Preprocessor & Auto-Parser (`lume adapt c --preprocess <header.h>` / `lume adapt c-raw <header.h>`, `c_header_preprocessor_macro_strip_ok`)**, and **Wave 10 Critical Production-Assurance & Independent Verification Suite (`#108` `LASM_Differential_Assembler_Oracle` `lasm_vs_gnu_as_differential_byte_eq` / `lasm_differential_Mismatch_rejected_law`, `#109` `Adversarial_Prover_False_Theorem_Fuzzer` `prover_adversarial_false_theorem_rejected` / `prover_unsound_acceptance_rejected_law`, `#110` `Gate_Mutation_Testing_Kill_Verifier` `mutation_testing_kill_ratio_verified` / `mutation_surviving_mutant_rejected_law`, and `#111` `Wheeler_Diverse_Double_Compilation_DDC` `ddc_diverse_double_compilation_bit_identical` / `ddc_bootstrap_divergence_rejected_law`)**.
-20. **NetSentinel IEC 62443, Conduite HA/GOOSE/Storm & Omega-Mesh P2P (`lume net-sentinel` / `lume iec62443` / `lume conduite` / `lume omega-mesh` in `compiler/stage1/net.src` — `68/68` proven obligations, `27/27` unit tests, `Lume Verified ✓`):**
-    - Purdue Model (`L0..L4`) & DMZ (`L3.5`) conduit isolation guard (`iec62443_purdue_conduit_ok`), OT firewall policy audit (`netsentinel_fw_policy_audit_ok`), structural read-only DCS guard (`ot_readonly_dcs_guard`), tri-state telemetry quality (`ot_tristate_quality_code`), finite `1e12` sentinel clamping (`ot_finite_sentinel_clamp`), Conduite admin timeout, HA failover parity, severity escalation, IEC 61850 GOOSE state transition, posture traffic confirmation & broadcast storm mitigation (`conduit_admin_timeout_ok`, `conduit_ha_failover_parity_ok`, `conduit_severity_escalate_rank`, `ot_goose_state_transition_code`, `netsentinel_posture_traffic_confirmed`, `netsentinel_broadcast_storm_code`), and Omega-Mesh P2P frame bounds, atomic NAT dual-bucket rate deduction, Kademlia DHT healing rank, Raft quorum & log backtrack, TOFU verification & channel mux quota (`mesh_frame_bounds_ok`, `mesh_atomic_dual_rate_deduct`, `mesh_dht_healing_rank`, `mesh_raft_quorum_ok`, `mesh_raft_backtrack_index`, `mesh_tofu_verify_code`, `mesh_channel_mux_quota_ok`).
-
----
-
-## 27 Universal Targets & Packagers
-
-Lume compiles directly from `.src` to **27 target triples** (`ISA ⊥ Container ⊥ OS/ABI`) via `lumec`, `lasm`, and `ltarget` (`16/16` target tests):
+Lume compiles `.src` programs directly across **27 target triples** (`ISA × Container × OS/ABI`) plus neural weight cartridges and one-command mobile/bootable system images via `lumec`, `lasm`, `larm64`, `lriscv`, and `ltarget`:
 
 ```sh
-lume targets                                              # List all 27 target triples
-lume build --target x86_64-linux-elf app.src -o app       # Native Linux ELF64
-lume build --target x86_64-windows-pe app.src -o app.exe  # Native Windows PE32+ (kernel32.dll IAT)
-lume build --target x86_64-windows-gui app.src -o gui.exe # Clean Generic Win64 Native GUI (Subsystem 2, zero Notepad++ strings, hMenu=0, Segoe UI -12, wide buttons, 4 WS_CLIPSIBLINGS | WS_THICKFRAME | WS_HSCROLL | WS_VSCROLL panes with LB_SETHORIZONTALEXTENT = 680)
-lume build --target aarch64-macos-macho app.src -o app    # Native Apple Silicon Mach-O 64 (16 KB aligned)
+lume targets                                              # List all supported target triples
+lume build --target x86_64-linux-elf app.src -o app       # Native Linux x86-64 ELF64
+lume build --target aarch64-linux-elf app.src -o app      # Native Linux ARM64 ELF64
+lume build --target riscv64-linux-elf app.src -o app      # Native Linux RISC-V RV64IM ELF64
+lume build --target riscv32-none-elf kernel.src -o k.rv32 # Bare-metal RISC-V RV32IM kernel (ltv_multiarch verified)
+lume build --target x86_64-windows-pe app.src -o app.exe  # Native Windows x64 PE32+ console executable
+lume build --target x86_64-windows-gui app.src -o gui.exe # Clean Generic Win64 Native GUI (PE32+ Subsystem 2)
+lume build --target aarch64-macos-macho app.src -o app    # Native Apple Silicon Mach-O 64 (16 KiB page-aligned)
 lume build --target x86_64-macos-macho app.src -o app     # Native macOS Intel Mach-O 64
-lume build --target aarch64-linux-elf app.src -o app      # Native ARM64 ELF64
-lume build --target riscv64-linux-elf app.src -o app      # Native RISC-V RV64IM ELF64
-lume build --target wasm32-wasi app.src -o app.wasm       # WebAssembly WASI (with @wasm-sandbox [I0275])
-lume build --target nvptx64-nvidia-cuda k.src -o k.ptx    # NVIDIA CUDA PTX 8.0
-lume build --target spirv64-vulkan-compute k.src -o k.spv # Vulkan SPIR-V 1.6
-lume build --target verilog-rtl k.src -o k.v              # IEEE 1364-2005 Synthesizable Verilog RTL
-lume build --target vhdl-rtl k.src -o k.vhd               # IEEE 1076-2008 Synthesizable VHDL RTL
-lume build --target qasm3-quantum q.src -o q.qasm         # OpenQASM 3.0 Quantum Circuit
-lume build --target dna-quaternary d.src -o d.dna         # Homopolymer-Free Quaternary DNA (A,C,G,T)
-lume package apk app.src -o app.apk                       # One-command Android APK package
-lume package ipa app.src -o app.ipa                       # One-command iOS IPA package
-lume package iso kernel.src -o lume_os.iso                # One-command Bootable BIOS/El-Torito ISO
-lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE32+ Boot Application
+lume build --target wasm32-wasi app.src -o app.wasm       # WebAssembly WASI (with [I0275] linear memory sandbox)
+lume build --target safetensors --entry f k.src -o f.safetensors # Verified neural weight cartridge
+lume build --target nvptx64-nvidia-cuda k.src -o k.ptx    # NVIDIA CUDA PTX 8.0 compute kernel
+lume build --target spirv64-vulkan-compute k.src -o k.spv # Vulkan SPIR-V 1.6 compute shader
+lume build --target verilog-rtl k.src -o k.v              # IEEE 1364-2005 synthesizable Verilog RTL
+lume build --target vhdl-rtl k.src -o k.vhd               # IEEE 1076-2008 synthesizable VHDL RTL
+lume build --target qasm3-quantum q.src -o q.qasm         # OpenQASM 3.0 quantum circuit
+lume build --target dna-quaternary d.src -o d.dna         # Homopolymer-free quaternary DNA archive
+lume package apk app.src -o app.apk                       # Android APK package
+lume package ipa app.src -o app.ipa                       # iOS IPA package
+lume package iso kernel.src -o lume_os.iso                # Bootable BIOS / El-Torito OS image
+lume package uefi kernel.src -o BOOTX64.EFI               # UEFI x86-64 PE32+ boot application
 ```
+
+---
+
+## Built-In Bilingual Manual & Developer Tooling
+
+Lume embeds a complete 10-chapter programmer's manual in **English (`en`)** and **Brazilian Portuguese (`pt-BR`)**, along with native JSON-RPC **LSP**, **DAP** (with DWARF v4 & `stepBack` replay), **MCP**, and **REPL** servers:
+
+```sh
+lume manual                        # Table of contents (English)
+lume manual --pt                   # Indice completo em Portugues (pt-BR)
+lume manual syntax                 # Syntax & language ergonomics
+lume manual contracts              # Formal verification (QF_LIA / QF_NIA / @no_alloc / @secret)
+lume manual stdlib                 # Standard library, Chameleon FFI & domain engines
+lume manual targets                # 27 compilation targets & system packagers
+lume manual commands               # Complete CLI reference
+lume manual all                    # Print full 10-chapter manual
+lume manual --export MANUAL.md     # Export Markdown manual to disk
+
+lume repl                          # Interactive REPL (:chameleon, :no-alloc, :dwarf, :lockstep, :qualify)
+lume lsp --stdio                   # Language Server Protocol over stdio
+lume dap --stdio                   # Debug Adapter Protocol over stdio
+lume mcp app.src                   # Model Context Protocol server for AI agents
+lume fmt --check app.src           # Canonical deterministic formatter
+lume doc --json app.src            # Structured documentation & contract extractor
+```
+
+Pre-exported manuals in the repository:
+- **English Manual:** [`docs/LUME_MANUAL_EN.md`](docs/LUME_MANUAL_EN.md)
+- **Portuguese Manual (`pt-BR`):** [`docs/LUME_MANUAL_PT_BR.md`](docs/LUME_MANUAL_PT_BR.md)
 
 ---
 
@@ -433,85 +457,116 @@ lume package uefi kernel.src -o BOOTX64.EFI               # One-command UEFI PE3
 
 ```text
 .
-├── lume                                # Bootstrap launcher -> execs native build/bin/lume_driver
-├── Formula/lume.rb                     # Official Homebrew formula (macOS ARM64/x86_64 & Linux)
-├── bootstrap/lume0/                    # Frozen Stage-0 C11 seed (~4.8k LoC, SEED_FREEZE.sha256)
+├── lume                                      # Thin POSIX bootstrap launcher -> execs native build/bin/lume_driver
+├── VERSION                                   # Canonical release version (1.1.0)
+├── MANIFEST.sha256                           # Cryptographic SHA-256 inventory verified by `lume self verify` (134 files)
+├── Formula/lume.rb                           # Official Homebrew formula (macOS Apple Silicon/Intel & Linux)
+├── .github/workflows/                        # CI (17 jobs), CodeQL, Linguist grammar check & multi-platform Release (4 jobs)
+├── bootstrap/lume0/                          # Frozen C11 bootstrap seed (~4.8k LoC, SEED_FREEZE.sha256) & Stage-0 conformance
 ├── compiler/stage1/
-│   ├── lume/                           # Self-hosted compiler passes (01_lexer .. 07_driver)
-│   ├── lasm.src                        # Self-hosted x86-64 assembler, ELF64/Mach-O/PE64 & .kernel writer
-│   ├── lcaas.src                       # Compiler-as-a-Service, QF_LIA/QF_NIA/SL prover, heal/equiv/morph, MCP
-│   ├── lcert.src                       # Standalone zero-compiler-import proof certificate kernel (--check-source)
-│   ├── ltv.src / ltv_rt.src / lsmt.src # x86-64 translation validator, runtime helper prover & clean-room SMT-LIB2 checker
-│   ├── ltv_multiarch.src / lstack.src  # AArch64/RV64/RV32 kernel validator & static x86-64 stack bound analyzer
-│   ├── lmcdc.src / lproof_cache.src    # Native binary MC/DC engine (0/9,618 uncovered) & incremental proof cache
-│   ├── lsafety_envelope.src            # 2oo2D lockstep monitor + clean-room RV32IM Channel B (lrv32_lowered.src) & --split
-│   ├── lcrypto_tls.src / lx509.src     # 118 [C0011] CT crypto kernels, TLS 1.3, Ed25519 X.509v3 & NIST SP 800-90B entropy
-│   ├── lqualify.src                    # Signed Qualification Dossier & traceability harness (106/106 probes, 21/21 gates)
-│   ├── lchameleon.src                  # 9-ecosystem [I0003] polyglot FFI, Singularity Omega, LumePuter & Waves 4-14
-│   ├── ltarget.src                     # 27 universal targets, LumeMIR SSA, APK/IPA/ISO/UEFI & neural-kernel
-│   ├── lume_driver.src                 # Native single-binary CLI driver, 114-row dispatch table & OmniProof-v4 self-prove
-│   ├── lcli.src                        # CLI control plane (version, help, describe, pkg, evolve)
-│   ├── lmanual.src                     # Built-in 10-chapter bilingual manual (EN & PT-BR)
-│   ├── lsentience.src                  # Autonomous verification, orchestration & memory modules
-│   ├── lgenesis.src                    # Full-stack multi-target application synthesizer
-│   ├── lprotect.src / protect.src      # P33 software protection, MBA obfuscation, secret scanner & symbolize
-│   └── std & domain modules            # fs, bytes, map, arena, capsule, db, net, gfx, gui, nn, tensor, quantum...
-├── skills/lume/                        # Official AI Agent Skill (SKILL.md, references/, verified_showcase.src)
-├── editors/                            # Official VS Code LSP bridge (vscode-lume) & OpenIDEA plugin (openidea-lume)
+│   ├── lume/                                 # Modular self-hosted compiler passes -> amalgamated to compiler/stage1/lumec.src
+│   │   ├── 01_lexer.src                      #   O(N) slicen scanner & lexical diagnostics ([L0002], [L0003])
+│   │   ├── 02_parser.src                     #   Pratt/layout expression parser & hardened string interpolation
+│   │   ├── 03_comptime.src                   #   Deterministic compile-time evaluation & hygienic macro expansion
+│   │   ├── 04_parser_decls.src               #   Top-level declarations, attributes ([P0002]) & contract parser ([V0001])
+│   │   ├── 05_codegen.src                    #   x86-64 native codegen, Perceus RC, SRA, DWARF v4, --critical, VEX/EVEX SIMD
+│   │   ├── 06_typecheck.src                  #   Hindley-Milner type inference ([T0300])
+│   │   ├── 06b_phase3.src                    #   Ownership, effects, @no_alloc [E0210], @secret [C0009]/[C0011] & QF_LIA/QF_NIA prover
+│   │   └── 07_driver.src                     #   Compiler pipeline entry point & diagnostic formatting
+│   ├── runtime_core.lume                     # Single-source x86-64 runtime, 43-class mark-sweep GC & 4-tier tagged values
+│   ├── own_flow.src / name_flow.src          # Affine ownership/borrow dataflow & lexical resolution passes
+│   ├── lasm.src / larm64.src / lriscv.src    # Native x86-64 (ELF/PE/Mach-O/VEX/EVEX/DWARF), AArch64 & RISC-V assemblers/backends
+│   ├── lkir.src / ltarget.src                # Kernel IR, 27 universal targets, LumeMIR SSA & APK/IPA/ISO/UEFI packagers
+│   ├── lcaas.src / lproof_cache.src          # Compiler-as-a-Service JSON oracle, multi-theory prover & SHA-256 proof cache
+│   ├── lcert.src                             # Zero-compiler-import proof certificate kernel (`--check-source` [K0005], [K0006])
+│   ├── ltv.src / ltv_rt.src / ltv_multiarch.src # Symbolic x86-64, runtime-helper (18/18) & AArch64/RISC-V translation validators
+│   ├── lsmt.src / lstack.src / lmcdc.src     # Clean-room SMT-LIB2 checker, @no_alloc stack analyzer & native Masking MC/DC engine
+│   ├── lsafety_envelope.src / lrv32_lowered.src # 2oo2D lockstep voter, clean-room RV32IM Channel B compiler & --split bundles
+│   ├── lcrypto_tls.src / lx509.src           # 118 [C0011] constant-time crypto kernels, TLS 1.3, Ed25519 X.509v3 & SP 800-90B
+│   ├── lqualify.src / levidence.src          # Signed tool qualification harness (TOR, TQP, RTM, dossier) & renewable evidence
+│   ├── lume_driver.src / lcli.src            # Native 114-row table-driven CLI driver, `OmniProof-v4` & package/evolve control plane
+│   ├── lmod.src / lfmt.src / ltest.src / ldoc.src # Native module bundler, canonical formatter, test runner & doc extractor
+│   ├── linteractive.src / lmanual.src        # Native LSP, DAP, REPL/Jupyter kernel & built-in 10-chapter EN/PT-BR manual
+│   ├── lchameleon.src                        # 9-ecosystem [I0003] polyglot FFI, Singularity Omega, SPC & LumePuter weight VM
+│   ├── lneural_cartridge.src / lume_llm_core.src # Verified `.safetensors` neural cartridges & 1-bit/ternary/LFM3 LLM core
+│   ├── lprotect.src / protect.src            # Binary symbol obfuscation, constant-time tag helpers & `.lsym` symbolizer
+│   ├── lregistry.src / lmesh.src / levolve.src / lsentience.src # Verified CID registry, semantic mesh, governance & domain hub
+│   ├── lume_*_engine.src                     # Self-hosted Quantum, Crypto/Ledger, Reversa, Pingora, EGM, NCM, OpenTPU & Continuum engines
+│   └── lstd, fs, bytes, map, db, decimal, table, query, arena, capsule, concurrency, actor, los, net, gfx, gui, tensor, nn
+├── stdlib/                                   # Surface `.lume` standard library modules (`std.lume`, `crypto.lume`)
+├── scripts/                                  # Native Lume build/install/CI tools (`amalgamate.src`, `bootstrap.src`, `lume_make.src`, `zero_c.src`, `install.src`, `docs_ci.src`, `linguist_grammar.src`)
+├── tests/
+│   ├── harness/                              # 24 native Lume verification gates (`synergy_gate.src`, `claude_audit_gate.src`, `tv_gate.src`, `tv_rt_gate.src`, `smt_cert_gate.src`, `safety_envelope_gate.src`, `crypto_tls_gate.src`, `multi_arch_gate.src`, `realtime_gate.src`, `concurrency_gate.src`, `cert_source_gate.src`, `dwarf_cache_gate.src`, `safetensors_gate.src`, `lcaas_scale_gate.src`, `prover_fuzz_gate.src`, `soak_battle_gate.src`, `ownership_gate.src`, `runtime_sync_gate.src`, `gc_gate.src`, `lasm_gate.src`, `c_adapter_gate.src`)
+│   ├── cli/                                  # CLI parity, incremental build, interactive LSP/DAP/REPL, arena & evolve gates (`driver_gate.src` .. `make_gate.src`)
+│   ├── conformance/ & fixtures/              # Language, compiler, negative diagnostic & cross-target conformance suites
+│   └── capstones/, memory/, registry/, economic_benchmark/, acceptance_matrix/, llm_gen_eval/
 ├── examples/
-│   ├── 01_hello.lume .. 09_*.lume      # Surface Lume tour
-│   ├── safety_envelope/ & synergy/     # Certified 2oo2D safety kernels & 17-stage cross-module critical pipeline
-│   └── apps/                           # Capstones: inventory, job_server, mnist, agent, p0_tenant_ledger,
-│                                       #            p0_rtc_kernel, supply_chain_demo, lume_os,
-│                                       #            pix_fraud_trace, sentry_uav_guard, verified_accounting,
-│                                       #            dfe_pix_bacen, omniroute_guard, brasil_public_id,
-│                                       #            zero_breach_forensics, sovereign_llm_router
-├── tests/harness/claude_audit_gate.src # 100% pure-Lume Claude + Red Team (R1-R4) + Wave 14 hostile audit & 4-way fuzzer
-├── tests/harness/synergy_gate.src      # 17/17 cross-module synergy stages + 36/36 cross-tamper rejections
-├── acceptance/matrix.json              # Track A/L Acceptance Matrix (24/24 PASS, 0 UNKNOWN, 0 FAIL)
-├── formal/lean/LumeCore.lean           # Mechanized Lean 4 formalization of Lume-Core soundness
-├── grammar/lume.ebnf                   # Complete formal grammar
-├── docs/certification/                 # Signed Wave 14 Qualification Dossier, TOR, TQP, RTM & X.509v3 cert
-└── docs/                               # Architecture, specification, manuals & wave-by-wave audits
+│   ├── 01_hello.lume .. 09_stdlib.lume       # Guided tour of surface `.lume` syntax
+│   ├── safety_envelope/ & synergy/           # Certified `2oo2D` safety kernels (`critical_kernels.src`) & 17-stage `critical_pipeline.src`
+│   ├── intent/ & interop/                    # `.intent` synthesis specs & polyglot FFI examples
+│   └── apps/                                 # 16 verified end-to-end applications (`pix_fraud_trace`, `dfe_pix_bacen`, `brasil_public_id`, `verified_accounting`, `sentry_uav_guard`, `omniroute_guard`, `sovereign_llm_router`, `zero_breach_forensics`, `p0_rtc_kernel`, `p0_tenant_ledger`, `lume_os`, `mnist`, `agent`, `inventory`, `job_server`, `supply_chain_demo`)
+├── docs/
+│   ├── certification/                        # Ed25519 + X.509v3 signed Qualification Dossier (`PASS`), TOR, TQP, RTM & evidence JSON
+│   ├── LUME_MANUAL_EN.md & LUME_MANUAL_PT_BR.md # Exported 10-chapter bilingual programmer's manuals
+│   └── Technical specifications, memory architecture dossier (`docs/39-*.md`), split-bundle spec (`docs/41-*.md`) & audit reports
+├── skills/lume/                              # Official distributable AI Agent Skill (`SKILL.md`, `references/`, `verified_showcase.src`)
+├── editors/                                  # VS Code extension (`vscode-lume/lsp_bridge.src`) & OpenIDEA plugin (`openidea-lume`)
+├── contrib/                                  # GitHub Linguist samples (`contrib/linguist/`) & TextMate grammar (`Lume.tmLanguage.json`)
+├── evolve/                                   # Ed25519 maintainer keys, budgets, goals & signed evolution proposals
+├── grammar/lume.ebnf                         # Complete formal EBNF grammar
+├── acceptance/matrix.json                    # Machine-verified capability acceptance matrix (`24/24 PASS`)
+└── wiki/                                     # Mirror of official GitHub Wiki documentation
 ```
 
 ---
 
 ## Verification & Quality Gates (`100% Lume Generates Lume`)
 
-Run the complete self-hosted verification and adversarial Red Team suite locally (zero Python or external test runners):
+Every compiler fixpoint check, formal proof battery, binary translation validator, MC/DC analyzer, constant-time audit, fault-injection campaign, and CLI parity gate runs **100% natively through `./lume`** with zero Python or external test frameworks:
 
 ```sh
-./lume self-prove                                         # OmniProof-v4: 16 proof batteries; every figure measured live (1,682 formal obligations, 0 runtime-checked or refuted, 372 unit tests, 122 sovereign domains #0..#121, 70 lstd functions translation-validated)
-./lume qualify                                            # PASS: 106/106 probes, 4 MC/DC-certified modules (0/9,618 uncovered), 10 HLR + 44/44 LLR VERIFIED, and 21/21 gates; writes Ed25519 + X.509v3 signed dossier (~22 minutes)
-./lume qualify --verify                                   # Re-check the SHA-256 chain, Ed25519 signature & X.509v3 signing certificate of the dossier
-./lume realtime-gate && ./lume concurrency-gate && ./lume crypto-gate && ./lume multi-arch-gate && ./lume safetensors-gate && ./lume dwarf-cache-gate && ./lume cert-source-gate   # Wave 12-13 acceptance gates
-./lume stack kernel.src --json                            # Wave 14: worst-case stack bytes of @no_alloc functions on emitted x86-64 (exit 3 when a bound is rejected)
-./lume tv kernel.src && ./lume smt-check --dir build/certification/proofs   # Re-check the SMT-LIB2 certificates of lume tv with clean-room lsmt (exit 0 only when every file is unsat)
-./lume tv-rt kernel.src                                   # Symbolically verify all 18/18 emitted integer runtime helpers (268 paths / 462 obligations)
-./lume x509 verify --chain leaf.der,ca.der --anchor root.der --now 1794398400   # Ed25519 X.509v3 path validation (exit 0 valid, 3 invalid; 6,000/6,000 tampered chains rejected)
-./lume x509 show cert.der && ./lume entropy --bytes 32 --json   # Parsed X.509v3 fields & OS CSPRNG bytes behind NIST SP 800-90B health checks
-./lume safety-envelope kernel.src --fn dose --split build/split && ./lume safety-envelope --split-verify build/split/manifest.json   # Export & verify multi-board 2oo2D split bundle (docs/41-safety-envelope-split-bundle.md)
-./lume tv-rt-gate && ./lume smt-cert-gate && ./lume lcaas-scale-gate && ./lume synergy-gate && ./lume cli-parity   # Wave 14 clean-room, synergy (17/17 stages + 36/36 tamper rejections) & CLI parity gates
-./lume test compiler/stage1/lchameleon.src                # Universal Chameleon 9-ecosystem FFI, Singularity Boundary Omega, Bayesian SPC/PAVA & Waves 4-14 suite (19/19 tests, 256/256 certified obligations, 0/2,392 uncovered MC/DC)
-./lume test compiler/stage1/gfx.src                       # 2D/3D Graphics, Cyber-Physical UFE & Subsea/Marine Physics suite (9/9 in gfx.src + 6/6 in gfx_3d_hmi_ok.src, 77/77 proven obligations)
-./lume test compiler/stage1/net.src                       # Industrial SCADA, IEC 61850, NetSentinel IEC 62443, Conduite & Omega-Mesh P2P suite (15/15 in net.src + 12/12 in net_scada_pro_ok.src, 68/68 proven obligations)
-./lume test compiler/stage1/win64_gui_and_interp_regression_ok.src # Win64 GUI & O(1) string interpolation regression suite (8/8)
-./lume test compiler/stage1/lume_quantum_nexus_engine.src # Quantum Nexus unit & proof suite (15/15)
-./lume test compiler/stage1/ltarget.src                   # 27 universal targets & quantum emitters (16/16)
-./lume test compiler/stage1/lmanual.src                   # Bilingual manual suite (3/3)
-build/bin/lume_make bootstrap                             # Triple self-build fixpoint (stage2 == stage3)
-build/bin/lume_make zero-c                                # Prove steady-state compilation with C compilers blocked
-build/bin/lume_make test                                  # Frozen Stage-0 conformance suite via native Lume runner
-build/bin/lume_make asan                                  # Stage-0 under AddressSanitizer & UBSan via native Lume runner
-./lume build tests/harness/claude_audit_gate.src -o build/claude_audit_gate && printf '@root %s\n' "$(pwd)" | build/claude_audit_gate
+# 1. Self-Hosted Bootstrap Fixpoint, Zero-C Steady State & Manifest Integrity
+./lume amalgamate                                         # Assemble compiler/stage1/lume/*.src -> compiler/stage1/lumec.src
+./lume bootstrap                                          # Verify triple self-build fixpoint (lumec1 == lumec2 == lumec3, 0 diff)
+./lume zero-c                                             # Verify full self-compilation with cc/clang/as/ld blocked
+./lume self verify                                        # Verify SHA-256 integrity of all 134 installed manifest files
+./lume cli-parity                                         # Verify 0 drift across 114 CLI rows, --help, manuals, README & SKILL.md
+
+# 2. Embedded OmniProof-v4, Cross-Module Synergy & Acceptance Gates
+./lume self-prove                                         # 16 batteries: 1,682 formal proofs (0 runtime/refuted), 372 tests, 122 domains
+./lume synergy-gate                                       # 17-stage cross-module critical pipeline + 36/36 tamper rejections
+./lume realtime-gate && ./lume concurrency-gate && ./lume crypto-gate
+./lume multi-arch-gate && ./lume safetensors-gate && ./lume dwarf-cache-gate && ./lume cert-source-gate
+
+# 3. Machine-Code Translation Validation, Clean-Room SMT, Stack Bounds & MC/DC
+./lume tv examples/safety_envelope/critical_kernels.src --exec
+./lume tv-rt examples/safety_envelope/critical_kernels.src
+./lume smt-check --dir build/certification/proofs
+./lume stack examples/safety_envelope/critical_kernels.src --json
+./lume mcdc examples/safety_envelope/critical_kernels.src --exec
+./lume tv-gate && ./lume tv-rt-gate && ./lume smt-cert-gate && ./lume lcaas-scale-gate
+
+# 4. 2oo2D Clean-Room Safety Envelope, X.509v3 PKI & NIST SP 800-90B Entropy
+./lume safety-envelope --gate                             # 87,224-fault injection campaign across x86-64 & clean-room RV32IM Channel B
+./lume safety-envelope examples/safety_envelope/critical_kernels.src --fn safe_actuator_cmd --split build/split
+./lume safety-envelope --split-verify build/split/manifest.json
+./lume x509 show docs/certification/QUALIFICATION_SIGNING_CERT.der
+./lume entropy --bytes 32 --json
+
+# 5. Signed Tool Qualification Dossier, Adversarial Fuzzing & Domain Test Suites
+./lume qualify --verify                                   # Verify SHA-256 hash chain, Ed25519 signature & X.509v3 cert of the dossier
+./lume qualify                                            # Re-run full 106-probe, 21-gate, 4-module MC/DC qualification campaign
+./lume prover-fuzz                                        # Adversarial false-theorem fuzzer across lumec, lcaas & lcert
+./lume soak                                               # Multi-process soak campaign with hash-chained telemetry ledger
+./lume test compiler/stage1/lchameleon.src compiler/stage1/gfx.src compiler/stage1/net.src compiler/stage1/ltarget.src compiler/stage1/lume_quantum_nexus_engine.src
+./lume build tests/harness/claude_audit_gate.src -o build/bin/claude_audit_gate && printf '@root %s\n' "$(pwd)" | build/bin/claude_audit_gate
 ```
 
-📄 **Signed Qualification Dossier & Bilingual Audit Reports:**
-- **Wave 14 Tool Qualification Dossier (`PASS`, EN):** [`docs/certification/QUALIFICATION_DOSSIER.md`](docs/certification/QUALIFICATION_DOSSIER.md)
-- **Wave 11–14 Hostile Audit & Certification Report (`pt-BR`):** [`docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md`](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md)
-- **Claude + Red Team Remediation Report (EN):** [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md)
-- **Relatório de Remediação e Red Team (`pt-BR`):** [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md)
+📄 **Qualification Dossier & Technical Audit Reports:**
+- **Signed Tool Qualification Dossier (`PASS`, EN):** [`docs/certification/QUALIFICATION_DOSSIER.md`](docs/certification/QUALIFICATION_DOSSIER.md)
+- **Independent Audit & Qualification Report (`pt-BR`):** [`docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md`](docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md)
+- **Security Remediation & Red-Team Report (EN / `pt-BR`):** [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT.md) · [`docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md`](docs/LUME_REMEDIATION_AND_REDTEAM_REPORT_PT_BR.md)
+- **Language Technical Paper (EN / `pt-BR`):** [`docs/LUME_TECHNICAL_PAPER.md`](docs/LUME_TECHNICAL_PAPER.md) · [`docs/LUME_TECHNICAL_PAPER_PT_BR.md`](docs/LUME_TECHNICAL_PAPER_PT_BR.md)
 
 ---
 
@@ -531,16 +586,16 @@ build/bin/lume_make asan                                  # Stage-0 under Addres
 
 ---
 
-## Contributors & AI-Assisted Engineering Co-Pilots
+## Contributors & Engineering Co-Pilots
 
 | Contributor | Role & Focus |
 | :--- | :--- |
 | **[Ricardo Bueno (`@OmegaSoftDLL`)](https://github.com/OmegaSoftDLL)** | Creator, Language Architect & Principal Systems Engineer |
-| **Claude (AI-Assisted Engineering & Formal Verification Co-Pilot)** | Self-Hosted Compiler, Formal Verification (`QF_LIA` / `QF_NIA` / Separation Logic) & Runtime Engineering |
-| **Kimi (AI-Assisted Engineering & Conformance Co-Pilot)** | Phase 0 Consolidation, Incremental Module Cache, Memory Arenas & Conformance Engineering |
-| **AGY — Antigravity (AI-Assisted Engineering & Autonomous Verification Co-Pilot)** | Compiler Performance Optimization, Multi-Platform Release Packaging & Autonomous Verification |
+| **Claude (AI-Assisted Engineering & Formal Verification Co-Pilot)** | Self-Hosted Compiler, Formal Verification (`QF_LIA` / `QF_NIA` / Separation Logic), Binary Assurance & Certification Tooling |
+| **Kimi (AI-Assisted Engineering & Conformance Co-Pilot)** | Incremental Module Cache, Memory Arenas & Conformance Engineering |
+| **AGY — Antigravity (AI-Assisted Engineering & Autonomous Verification Co-Pilot)** | Runtime Memory Compactor, Multi-Platform Release Engineering & Autonomous Verification |
 
-> *Note: AI coding assistants listed under "AI-Assisted Engineering & Formal Verification Co-Pilots" were used as pair-programming tools under human architectural direction and do not imply organizational endorsement by their respective vendors.*
+> *Note: AI coding assistants listed above were used as pair-programming tools under human architectural direction and do not imply organizational endorsement by their respective vendors.*
 
 ---
 

@@ -360,6 +360,55 @@ fn i64_lt(a: int, b: int) -> bool
         return false
     (a - b) < 0
 
+fn w64_half(x: int) -> int = if x >= 0 then x else (x + 1) + 9223372036854775807
+fn w64_lo48(x: int) -> int = w64_half(x) % 281474976710656
+fn w64_hi16(x: int) -> int = (w64_half(x) / 281474976710656) + (if x >= 0 then 0 else 32768)
+
+fn w64_pack48(lo48: int, hi16: int) -> int
+    if hi16 < 32768
+        lo48 + (hi16 * 281474976710656)
+    else
+        let h = lo48 + ((hi16 - 32768) * 281474976710656)
+        (h - 9223372036854775807) - 1
+
+fn w64_add(a: int, b: int) -> int
+    let s_lo = w64_lo48(a) + w64_lo48(b)
+    let r_lo = s_lo % 281474976710656
+    let carry = s_lo / 281474976710656
+    let r_hi = (w64_hi16(a) + w64_hi16(b) + carry) % 65536
+    w64_pack48(r_lo, r_hi)
+
+fn w64_sub(a: int, b: int) -> int
+    let s_lo = w64_lo48(a) + (281474976710655 - w64_lo48(b)) + 1
+    let r_lo = s_lo % 281474976710656
+    let carry = s_lo / 281474976710656
+    let r_hi = (w64_hi16(a) + (65535 - w64_hi16(b)) + carry) % 65536
+    w64_pack48(r_lo, r_hi)
+
+fn w64_mul(a: int, b: int) -> int
+    let alo = w64_lo48(a)
+    let blo = w64_lo48(b)
+    let a0 = alo % 65536
+    let a1 = (alo / 65536) % 65536
+    let a2 = alo / 4294967296
+    let a3 = w64_hi16(a)
+    let b0 = blo % 65536
+    let b1 = (blo / 65536) % 65536
+    let b2 = blo / 4294967296
+    let b3 = w64_hi16(b)
+    let p0 = a0 * b0
+    let r0 = p0 % 65536
+    let c0 = p0 / 65536
+    let p1 = (a0 * b1) + (a1 * b0) + c0
+    let r1 = p1 % 65536
+    let c1 = p1 / 65536
+    let p2 = (a0 * b2) + (a1 * b1) + (a2 * b0) + c1
+    let r2 = p2 % 65536
+    let c2 = p2 / 65536
+    let p3 = (a0 * b3) + (a1 * b2) + (a2 * b1) + (a3 * b0) + c2
+    let r3 = p3 % 65536
+    w64_pack48(r0 + (r1 * 65536) + (r2 * 4294967296), r3)
+
 fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
     if rv_int(deval_try_get(env, "$try_failed")) != 0
         return VInt(n: 0)
@@ -616,6 +665,9 @@ fn deval(e: DExpr, env: map[str, RV], fns: map[str, DStmt]) -> RV
                 "+"  => VInt(n: a + b)
                 "-"  => VInt(n: a - b)
                 "*"  => VInt(n: a * b)
+                "+%" => VInt(n: w64_add(a, b))
+                "-%" => VInt(n: w64_sub(a, b))
+                "*%" => VInt(n: w64_mul(a, b))
                 "/"  => VInt(n: if b == 0 then 0 else a / b)
                 "%"  => VInt(n: if b == 0 then 0 else a % b)
                 "<"  => VInt(n: if i64_lt(a, b) then 1 else 0)
