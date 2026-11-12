@@ -1,37 +1,40 @@
 <h1>
-  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Lumi — Lume Mascot" width="76" height="76" align="left" />
-  Lume v1.1.0 — Official Sovereign Wiki &amp; Architecture Encyclopedia
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Lumi — Official Lume Chameleon Mascot" width="76" height="76" align="left" />
+  Lume v1.1.0 — Official Language Manual &amp; Architecture Encyclopedia
 </h1>
 <br clear="left"/>
 
 <div align="center">
 
-**The Self-Hosted, Formally Verified, Zero-C Systems, Polyglot, AI & Quantum Programming Language**
+**Compile-Time Mathematical Verification (`OmniProof-v4`) · 100% Self-Hosted Zero-C Compiler (`stage2 == stage3`) · `118` `[C0011]` Constant-Time Crypto Kernels · `2oo2D` Clean-Room Safety Envelope · 9-Ecosystem Chameleon FFI · 27 Target Architectures**
 
-[![Release v1.1.0](https://img.shields.io/badge/release-v1.1.0_(2026_Edition)-10b981?style=for-the-badge&logo=github)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0)
+[![Release v1.1.0](https://img.shields.io/badge/release-v1.1.0_(Edition_2026)-10b981?style=for-the-badge&logo=github)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0)
 [![Self-Hosted Fixpoint](https://img.shields.io/badge/bootstrap-stage2_%3D%3D_stage3_(Zero--C)-38bdf8?style=for-the-badge)](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml)
-[![OmniProof v3](https://img.shields.io/badge/OmniProof_v3-582_Obligations_%2F_155_Tests-a855f7?style=for-the-badge)](https://github.com/OmegaSoftDLL/lume/blob/main/tests/harness/claude_audit_gate.src)
-[![Chameleon Polyglot](https://img.shields.io/badge/Chameleon_%2B_OTE_%2B_SPC-68%2F68_Verified_%5BI0003%5D-f59e0b?style=for-the-badge)](Universal-Chameleon-Polyglot-Engine)
+[![OmniProof-v4](https://img.shields.io/badge/OmniProof--v4-1%2C682_Proofs_%C2%B7_372_Tests_%C2%B7_122_Domains-00b4d8?style=for-the-badge)](Formal-Verification-and-Prover)
+[![Qualification Dossier](https://img.shields.io/badge/Qualification_Dossier-PASS_(106%2F106_Probes_%C2%B7_0%2F9%2C618_MC%2FDC)-16a34a?style=for-the-badge)](Binary-Assurance-Crypto-and-Qualification)
+[![Chameleon Polyglot](https://img.shields.io/badge/Chameleon_FFI-9_Ecosystems_%5BI0003%5D_(256%2F256_Proofs)-f59e0b?style=for-the-badge)](Universal-Chameleon-Polyglot-Engine)
 
 <br />
 
-<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-social-banner.jpg" alt="Official Lume v1.1.0 Social & Architecture Hero Banner" width="100%" />
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-social-banner.jpg" alt="Official Lume v1.1.0 Social &amp; Architecture Banner" width="100%" />
 
 <br />
 
-<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-hero-animated.svg" alt="Lume v1.1.0 Animated Sovereign Architecture Banner" width="100%" />
+<img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-hero-animated.svg" alt="Lume v1.1.0 Live Programming, Formal Verification &amp; 27-Target Native Compilation" width="100%" />
 
 </div>
 
 ---
 
-## Welcome to the Official Lume Knowledge Base
+## Overview — What Lume Is &amp; How It Is Engineered
 
-**Lume** is a next-generation systems, polyglot interoperability, formal verification, autonomous AI, and post-quantum programming language engineered from first principles around a single invariant:
+**Lume (`v1.1.0`, Edition 2026)** is a statically typed, formally verified **systems, artificial intelligence, cyber-physical, and quantum programming language** created by **Ricardo Bueno ([`@OmegaSoftDLL`](https://github.com/OmegaSoftDLL))**. Lume is engineered from first principles so both human systems engineers and autonomous AI agents can write expressive high-level code whose mathematical contracts, memory discipline, constant-time cryptography, and emitted native machine code are verified end to end.
 
-> **"No binary should ever be emitted unless its safety, memory discipline, worst-case execution bounds, and foreign-boundary contracts are mathematically proven by the compiler itself — with zero external C compilers, linkers, or SMT solvers."**
+**Lume's entire production toolchain is written 100% in Lume itself (`compiler/stage1/`)**:
 
-Meet **Lumi**, our official sovereign chameleon mascot! Just as a chameleon adapts effortlessly to any environment while maintaining acute 360-degree vision, Lume's **Universal Chameleon Polyglot Engine** (`lchameleon.src`) bridges **9 major programming ecosystems** (`C/C++`, `Rust`, `Python DLPack`, `Node.js/WASM`, `Go`, `Java/JVM`, `C#/.NET`, `SQL`, and `OpenAPI/gRPC`) under fail-closed `QF_LIA` arithmetic refinement proofs (`[I0003]: unverified[T] -> verified[T]`).
+1. **Auditable Seed &amp; Diverse Double-Compilation (`bootstrap/lume0/`):** Bootstrap starts from a frozen ~4.8k-LoC C11 interpreter and ELF64 emitter locked by `bootstrap/lume0/SEED_FREEZE.sha256`. Under **David A. Wheeler's Diverse Double-Compilation (DDC)**, building the self-hosted compiler via independent C compilers (`cc` and `clang`) converges to the exact same SHA-256 native compiler binary (`0` byte difference).
+2. **Zero-C Self-Hosted Steady State (`lumec1 == lumec2 == lumec3`):** Lume compiles, assembles, links, formats, tests, proves, and packages itself in **`~3.8 s`** with `cc`, `clang`, `as`, and `ld` completely blocked (`lume zero-c`), verified across **`134` SHA-256-locked manifest files** (`MANIFEST.sha256`) and **`114` table-driven CLI commands (`226` command &amp; alias names, `0` parity drift)**.
+3. **Clean-Room Mutual Assurance:** Compiler obligations (`lcaas.src`) are independently checked by a zero-compiler-import proof kernel (`lcert.src --check-source`); emitted x86-64, AArch64, and RISC-V assembly is symbolically validated against AST semantics (`ltv.src`, `ltv_rt.src`, `ltv_multiarch.src`) and exported to `.smt2` certificates checked `unsat` by both Lume's clean-room solver (`lsmt.src`) and external `z3`; structural binary coverage reaches **`0/9,618` uncovered Masking MC/DC conditions** (`lmcdc.src`); critical functions execute in **`2oo2D` dual-channel lockstep** (`lsafety_envelope.src`) against a clean-room RV32IM compiler (`lrv32_lowered.src`) sharing **`0/3,169` functions** with `lumec`; and the entire chain is attested by an Ed25519 + X.509v3-signed **Tool Qualification Dossier (`lume qualify` — `PASS`)**.
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-showcase.svg" alt="Lume Universal Chameleon 9-Ecosystem Polyglot Interop Engine" width="100%" />
@@ -43,97 +46,120 @@ Meet **Lumi**, our official sovereign chameleon mascot! Just as a chameleon adap
 
 <div align="center">
 
-| Lumi — 3D Bioluminescent Chameleon Mascot | 9-Ecosystem Chameleon Polyglot Emblem | Official 3D App &amp; Desktop GUI Icon | Vector Crest &amp; Favicon |
+| Lumi — Bioluminescent Chameleon Mascot | 9-Ecosystem Chameleon Lambda Emblem | Official 3D App &amp; Desktop GUI Icon | Harmonized Vector Crest |
 | :---: | :---: | :---: | :---: |
-| <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot.jpg" alt="Lumi — 3D Bioluminescent Chameleon Mascot" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-emblem.jpg" alt="9-Ecosystem Chameleon Polyglot Emblem" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-icon.jpg" alt="Official 3D App & Desktop GUI Icon" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Vector Crest & Favicon" width="150" /> |
+| <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot.jpg" alt="Lumi — Bioluminescent Chameleon Mascot" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-chameleon-emblem.jpg" alt="9-Ecosystem Chameleon Polyglot Emblem" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-icon.jpg" alt="Official 3D App &amp; Desktop GUI Icon" width="210" /> | <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-mascot-badge.svg" alt="Vector Crest &amp; Favicon" width="150" /> |
 | `docs/assets/lume-mascot.jpg` | `docs/assets/lume-chameleon-emblem.jpg` | `docs/assets/lume-icon.jpg` (`lume.ico`) | `docs/assets/lume-mascot-badge.svg` |
 
 </div>
 
 ---
 
-## Complete Wiki Directory
+## Complete Wiki Directory (10 Institutional Chapters)
 
-| Wiki Page | Description | Key Topics |
+| Wiki Page | Focus Area | Key Verified Capabilities |
 | :--- | :--- | :--- |
-| **[Installation & Setup](Installation-and-Setup)** | One-line installation across Linux, macOS, Windows & WSL2 | `install.sh`, `install.ps1`, Homebrew, GHCR Docker, `lume self-prove` |
-| **[Language Tour & Ergonomics](Language-Tour-and-Ergonomics)** | Expressive ML/Rust/Zig-inspired syntax & zero-boilerplate idioms | `fn`, `\|>` pipes, `{ r with f: v }`, hardened `f"..."`, Perceus `own`/`mut` |
-| **[Formal Verification & Prover](Formal-Verification-and-Prover)** | Embedded `QF_LIA` / `QF_NIA` / `QF_BV` / Separation Logic & WCET | `requires`, `ensures`, `law`, `@bound(cycles)`, `@secret` `[C0009]`, `lcert` |
-| **[Universal Chameleon Engine](Universal-Chameleon-Polyglot-Engine)** | Zero-copy polyglot FFI & schema synthesis across 9 ecosystems | `lume chameleon`, `lume adapt`, `lume morph`, `[I0003]` boundary proofs |
-| **[27 Compilation Targets](27-Universal-Compilation-Targets)** | Direct machine-code, GPU, FPGA, WebAssembly & Quantum emission | ELF64, PE32+, Win64 GUI (`x86_64-windows-gui`), Mach-O, PTX, SPIR-V, QASM |
-| **[Memory Saga & Atomic Compactor](Memory-Saga-and-Atomic-Compactor)** | How Lume achieved a **2,733x RAM reduction** & **31.8x speedup** | `.rodata` interning, 63-bit tagged int + 7B SSO, `24B` `Cons`, `LZ1` arena |
-| **[LumeLabs & Community Hub](LumeLabs-and-Community-Hub)** | Official R&D divisions, RFC governance, Projects & Discussions | 7 LumeLabs tracks, Project Roadmap, Good First Issues, Security policy |
-| **[Guia Completo (PT-BR)](Guia-Completo-PT-BR)** | Documentacao oficial completa em Portugues do Brasil | Instalacao, sintaxe, provas formais `QF_LIA`, Camaleao Poliglota e Win64 GUI |
+| **[Installation &amp; Setup](Installation-and-Setup)** | Cross-platform setup, containers, AI skills &amp; source bootstrap | `install.sh`, `install.ps1`, Homebrew, GHCR OCI, `skills/lume`, `134` manifest files, `lume qualify --verify` |
+| **[Language Tour &amp; Ergonomics](Language-Tour-and-Ergonomics)** | Contracts, affine ownership, effects, real-time &amp; CT types | `requires`/`ensures`/`invariant`/`law`, `own`/`&T`/`&mut T`, `/ pure` `[E0200]`, `@no_alloc` `[E0210]`, `@secret` `[C0011]`, `.intent` |
+| **[Formal Verification &amp; Prover](Formal-Verification-and-Prover)** | Embedded `OmniProof-v4` multi-theory solver &amp; `lcert` kernel | `1,682` proofs, `372` tests, `122` domains; `QF_LIA` Farkas duals, `QF_NIA` Horner/Bernstein, `< 10 ms` cache, `--check-source` |
+| **[Binary Assurance, Crypto &amp; Qualification](Binary-Assurance-Crypto-and-Qualification)** | Machine-code TV, clean-room SMT, MC/DC, CT crypto &amp; `2oo2D` | `694` `ltv` fns, `18/18` `ltv_rt`, `100%` `.smt2` `unsat`, `0/9,618` MC/DC, `118` `[C0011]` CT kernels, `87,224`-fault `2oo2D`, `lume qualify` `PASS` |
+| **[Memory Saga &amp; Atomic Compactor](Memory-Saga-and-Atomic-Compactor)** | 4-Tier runtime, Perceus cell reuse &amp; demand-paged `LZ1` | **`31.8×` faster** `b_loop`, **`2,733×` less RAM** `b_str`, 63b unboxed int + 7B inline UTF-8, `24 B` `Cons`, 43-class GC |
+| **[Universal Chameleon Engine](Universal-Chameleon-Polyglot-Engine)** | 9-ecosystem `[I0003]` FFI, `LumePuter` VM &amp; Singularity $\Omega$ | `256/256` proofs, `160/160` `ltv`, `0/2,392` MC/DC, C `--preprocess`, DLPack zero-copy, epoch guards, Bayesian SPC/CUSUM/PAVA |
+| **[27 Compilation Targets](27-Universal-Compilation-Targets)** | Native OS binaries, Win64 GUI, GPU, RTL, neural &amp; quantum | ELF64, PE32+, `33,792` B Win64 GUI, Mach-O, ARM64, RV64/RV32, WASM, `.safetensors`, PTX, SPIR-V, Verilog/VHDL, QASM3, APK/IPA/ISO/UEFI |
+| **[LumeLabs &amp; Community Hub](LumeLabs-and-Community-Hub)** | 7 research divisions, `v1.2.0` hardware horizon &amp; governance | Silicon `2oo2D` lockstep, HSM signing, Lean 4 metatheory, multi-node Omega-Mesh, EN/PT-BR community RFCs |
+| **[Guia Completo (PT-BR)](Guia-Completo-PT-BR)** | Manual institucional completo em Português do Brasil | Instalação, sintaxe, `OmniProof-v4`, garantia binária `ltv`/`lmcdc`, `118` kernels CT, `2oo2D`, memória 4-Tier, Camaleão e 27 alvos |
 
 ---
 
-## Six Architectural Pillars at a Glance
+## Compiler &amp; Mutual Assurance Pipeline
 
 ```mermaid
-flowchart TB
-    SRC["Lume Source (.src / .lume)"] --> LEX["01_lexer + 02_parser\nHardened String Interpolation & Effect Rows"]
-    LEX --> PRV["03_prover (Embedded OmniProof v3)\nQF_LIA + QF_NIA + QF_BV + Separation Logic + WCET + @secret"]
-    PRV --> PER["Perceus Linear Reuse & 4-Tier Atomic Memory Compactor\n63-bit Tagged Int + 7B SSO + 24B Cons + LZ1 Cold Arena"]
-    PER --> CHM["Universal Chameleon Polyglot Engine (lchameleon.src)\n9 Ecosystems Verified under [I0003] Boundary Contracts"]
-    PER --> TGT["27 Native Targets (05_codegen + lasm + ltarget)\nELF64 / PE32+ / Win64 GUI / Mach-O / RISC-V / WASM / PTX / SPIR-V / RTL / Quantum"]
-    CHM --> CRT["Proof-Carrying Certificate (.lcert)\nSHA-256 + Ed25519 + Hybrid ML-DSA-65"]
-    TGT --> CRT
+flowchart TD
+    SRC["Source (.src) + Contracts (requires / ensures / invariant / law / @bound / @no_alloc / @secret)"] --> FE["1. Frontend & Comptime (01_lexer .. 04_parser_decls)"]
+    FE --> TY["2. Type, Ownership, Effect & Secret Analysis (06_typecheck · own_flow · 06b_phase3)"]
+    TY --> PRV["3. OmniProof-v4 Theorem Prover & Proof Cache (lcaas · lproof_cache < 10 ms)"]
+    PRV --> KRN["Independent Zero-Import Proof Kernel (lcert --check-source [K0005, K0006])"]
+    PRV --> CG["4. Native Codegen & Direct Assemblers (05_codegen · lasm · larm64 · lriscv · ltarget)"]
+    CG --> TV["Symbolic Binary Assurance (ltv 694 fns · ltv_rt 18/18 · lsmt + z3 100% unsat)"]
+    CG --> MCDC["Structural Coverage & Stack Bounds (lmcdc 0/9,618 uncovered · lstack)"]
+    CG --> ENV["2oo2D Lockstep Envelope (lsafety_envelope vs clean-room lrv32_lowered)"]
+    KRN --> QUAL["Signed Tool Qualification Dossier (lume qualify PASS · 106/106 Probes · 21/21 Gates)"]
+    TV --> QUAL
+    MCDC --> QUAL
+    ENV --> QUAL
 ```
 
-1. **100% Self-Hosted Zero-C Steady State (`stage2 == stage3`):** The `lumec` compiler (`compiler/stage1/lume/01_lexer.src` .. `07_driver.src`) and `lasm` native assembler emit ELF64, PE32+, and Mach-O 64 binaries directly from Lume source without invoking `gcc`, `clang`, `as`, or `ld`.
-2. **Embedded OmniProof v3 Theorem Prover (`03_prover.src`):** Decides linear integer arithmetic (`QF_LIA`), nonlinear polynomial witnesses (`QF_NIA`), bitvectors (`QF_BV`), heap separation logic, `@bound(cycles: N)` WCET budgets (`[V0002]`), and `@secret` constant-time side-channel freedom (`[C0009]`) in milliseconds.
-3. **4-Tier Atomic Memory Compactor:** Combines Perceus reference counting with compile-time `.rodata` string/list interning, 63-bit tagged integers, 7-byte inline SSO strings, compact `24-byte` `Cons` cells, and an `LZ1` cold-arena compactor (`36.9 KB` peak heap across the entire self-hosted build).
-4. **Universal Chameleon Polyglot, Singularity $\Omega$ &amp; Bayesian SPC Engine (`lchameleon.src`, `68/68` obligations):** Synthesizes mathematically verified bidirectional bridges across 9 ecosystems (`c_abi`, `rust_cdylib`, `python_capi`, `node_napi_wasm`, `go_cshared`, `java_jni`, `dotnet_pinvoke`, `sql_relational`, `openapi_rpc`), plus the **2nd-Order Dynamical Transition Engine (`OTE` / Singularity Boundary $\Omega$: $\tau_{\max} = T_m/4$)** and **Empirical-Bayes Beta-Binomial SPC, Page's Tabular CUSUM, CPM Float &amp; $k$-Anonymous PAVA Isotonic Regression**.
-5. **27 Universal Compilation Targets (`ltarget.src`), Cyber-Physical UFE/Subsea (`77/77`) &amp; NetSentinel/Conduíte/Omega-Mesh (`68/68`):** Including the **Clean Generic Win64 Native GUI Backend** (`--target x86_64-windows-gui`, standalone `33,792`-byte PE32+ GUI with declarative `@ui-layout`), 7-Layer Unified Field &amp; Subsea/Marine Physics (`lume unified-field` / `lume subsea`: Catenary, VIV, Miner Fatigue, DNV Crane DAF, Bühlmann ZH-L16C, Well Kill, ASME B31G), and OT/HA Firewall + Sovereign Mesh/Raft/DHT (`lume iec62443` / `lume conduite` / `lume omega-mesh`).
-6. **Claude Opus 5.5 + Sovereign Red-Team + Waves 1–3 Verified (`143/143`):** Every commit passes `tests/harness/claude_audit_gate.src` (`21` Claude Opus 5.5 audit issues + `64` Red-Team Round 1/2/3 checks + `58` Waves 1/2/3 Cyber-Physical/Subsea/Conduíte/Mesh checks + 4-way differential fuzzer) and `lume self-prove` (**`557` formal obligations**, **`154` unit tests**, **`99` manifest files**).
+| Pillar | Core Modules (`compiler/stage1/`) | Machine-Verified Guarantee |
+| :--- | :--- | :--- |
+| **1. Zero-C Self-Hosted Compiler** | `lume/01_lexer.src` .. `07_driver.src`, `lasm.src`, `lmod.src`, `lcli.src` | `lumec == lumec2 == lumec3` (`0 diff`) + Wheeler DDC (`cc` vs `clang`); `lasm` byte-identical against GNU `as` across **`39,968` instructions**; **`114`-row CLI parity (`0` mismatches)** |
+| **2. `OmniProof-v4` &amp; `lcert` Kernel** | `06_typecheck.src`, `06b_phase3.src`, `lcaas.src`, `lcert.src`, `lproof_cache.src` | **`1,682` obligations across `16` batteries** (`0` runtime/refuted), `372` tests, `122` domains; `QF_LIA` Farkas duals, `QF_NIA` Horner/square-completion, `< 10 ms` proof cache, `lcert --check-source` |
+| **3. Binary Assurance, MC/DC &amp; `2oo2D`** | `ltv.src`, `ltv_rt.src`, `lsmt.src`, `lmcdc.src`, `lstack.src`, `lsafety_envelope.src`, `lrv32_lowered.src`, `lqualify.src` | **`694` `ltv` functions** (`687/687` branch correlation), **`18/18` runtime helpers**, **`100%` `.smt2` `unsat`**, **`0/9,618` uncovered MC/DC**, `87,224`-fault `2oo2D` RV32IM lockstep, signed **`lume qualify` `PASS`** |
+| **4. 4-Tier Atomic Memory Runtime** | `own_flow.src`, `runtime_core.lume`, `arena.src`, `capsule.src` | `.rodata` singletons, 63-bit unboxed ints + 7-byte inline UTF-8 (`0 B` heap), `24 B` `Cons`, `32 B` records, Perceus reuse, 43-class GC, demand-paged `LZ1` (**`31.8×` faster**, **`2,733×` less RAM**) |
+| **5. Constant-Time Crypto &amp; TLS 1.3** | `lcrypto_tls.src`, `lx509.src`, `lprotect.src`, `protect.src` | **`118` `@secret @no_alloc` `[C0011]` branch-free kernels** (`ltv` `[C0010]`, `lstack <= 536 B`, `24/24` `dudect` `\|t\| <= 2.690 < 4.5`), TLS 1.3, Ed25519 X.509v3 (`6,000/6,000` tamper rejections), SP 800-90B entropy |
+| **6. Chameleon FFI, AI, OT &amp; 27 Targets** | `lchameleon.src`, `lneural_cartridge.src`, `lume_llm_core.src`, `gfx.src`, `net.src`, `lume_quantum_nexus_engine.src`, `ltarget.src` | **9-ecosystem `[I0003]` FFI** (`256/256` obligations), `.safetensors` &amp; `LumePuter` weight VMs, 7-DOF/Subsea (`77/77`), Singularity $\Omega$, IEC 62443/Omega-Mesh (`68/68`), Quantum Nexus, and **27 targets** |
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-memory-evolution-animated.svg" alt="Lume 3-Generation Memory Evolution Benchmark" width="100%" />
+  <img src="https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/docs/assets/lume-memory-evolution-animated.svg" alt="Lume Memory Saga &amp; 4-Tier Atomic Memory Compactor Benchmark Dashboard" width="100%" />
 </div>
 
 ---
 
-## Quickstart in 30 Seconds
+## Quickstart in 60 Seconds
 
 ### 1. Install Lume `v1.1.0`
 
-**Linux, macOS & WSL2:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/scripts/install.sh | sh
+**Linux, macOS &amp; WSL2:**
+```sh
+curl -fsSL https://github.com/OmegaSoftDLL/lume/releases/latest/download/install.sh | sh
+export PATH="$HOME/.lume/bin:$PATH"
 ```
 
-**Windows (PowerShell):**
+**Homebrew (macOS &amp; Linux):**
+```sh
+brew install OmegaSoftDLL/lume/lume
+```
+
+**Windows x64 (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/OmegaSoftDLL/lume/main/scripts/install.ps1 | iex
+irm https://github.com/OmegaSoftDLL/lume/releases/latest/download/install.ps1 | iex
 ```
 
-### 2. Verify Your Sovereign Toolchain
+### 2. Verify Toolchain Integrity &amp; Qualification Dossier
 
-```bash
+```sh
 lume --version
-lume self verify
-lume self-prove
-lume chameleon
+lume self verify         # Verify SHA-256 digests of all 134 manifest files
+lume self-prove          # Run OmniProof-v4 (16 batteries, 1,682 proofs, 372 tests, 122 domains)
+lume qualify --verify    # Verify Ed25519 signature + X.509v3 chain of Qualification Dossier
 ```
 
-### 3. Write, Prove, and Compile Your First Verified Program
+### 3. Write, Prove, Certify &amp; Validate Machine Code (`kernel.src`)
 
 ```lume
-law conservation_of_funds(balance: int, amount: int) =
-    ((balance - amount) + amount) == balance
+@no_alloc
+@bound(32)
+fn clamp_dose(dose: int, lo: int, hi: int) -> int
+  requires dose >= 0 and dose <= 10000 and lo >= 0 and lo <= hi and hi <= 5000
+  ensures result >= lo and result <= hi
+= if dose < lo then lo else if dose > hi then hi else dose
 
-@bound(cycles: 32)
-pub fn safe_transfer(balance: int, amount: int) -> int / pure
-    requires balance >= 0 and amount >= 0 and amount <= balance
-    ensures result == balance - amount and result >= 0
-=
-    balance - amount
+@secret
+@no_alloc
+fn ct_mux_u32(mask: int, a: int, b: int) -> int =
+  let ma = bit_and(a, 4294967295) in
+  let mb = bit_and(b, 4294967295) in
+  ct_select(ct_eq(bit_and(mask, 1), 1), ma, mb)
 
-print safe_transfer(1000, 250)
+print clamp_dose(700, 100, 500)
 ```
 
-```bash
-lume prove transfer.lume     # Proves QF_LIA contracts + WCET @bound(cycles: 32)
-lume build transfer.lume     # Emits native standalone binary (Zero-C)
-lume certify transfer.lume   # Generates cryptographic .lcert proof bundle
+```sh
+lume prove kernel.src                                    # QF_LIA, @bound [V0002], @no_alloc [E0210] & [C0011]
+lume certify kernel.src > kernel.cert.json               # Emit SHA-256-bound proof certificate
+lume verify-cert --check-source kernel.src kernel.cert.json # Independent lcert kernel + AST check
+lume stack kernel.src --json                             # Exact worst-case stack byte bound
+lume tv kernel.src --exec                                # Symbolic x86-64 equivalence + [C0010] CT check
+lume mcdc kernel.src --exec                              # Native-binary Masking MC/DC witness execution
+lume safety-envelope kernel.src --fn clamp_dose --args 700,100,500 # 2oo2D lockstep vs clean-room RV32IM
+lume build --critical -g kernel.src -o kernel            # Standalone native binary + DWARF v4 debug info
 ```
