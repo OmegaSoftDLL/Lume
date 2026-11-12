@@ -2,7 +2,7 @@ class Lume < Formula
   desc "Self-hosted, formally verified systems, AI, and quantum programming language"
   homepage "https://github.com/OmegaSoftDLL/lume"
   version "1.1.0"
-  license "MIT"
+  license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?

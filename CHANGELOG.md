@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Wave 14 -- clean-room verification, `[C0011]` constant-time crypto kernels, `2oo2D` split envelope, cross-module synergy & qualification `PASS`)
+- **`OmniProof-v4` & signed Tool Qualification Dossier `PASS` (`compiler/stage1/lqualify.src`, `compiler/stage1/lume_driver.src`):**
+  `lume self-prove` runs `16` self-hosted proof batteries discharging `1,682` formal obligations (`0` runtime-checked or
+  refuted), `372` unit tests, `122` sovereign evolution domains (`#0..#121`), and `134` verified `MANIFEST.sha256`
+  files. `lume qualify` achieves `PASS` across `106/106` diagnostic/adversarial probes, `21/21` end-to-end verification
+  gates, and `10` HLR + `44/44` LLR (`VERIFIED`), emitting `docs/certification/QUALIFICATION_DOSSIER.md` signed with
+  Ed25519 and X.509v3 (`docs/certification/QUALIFICATION_SIGNING_CERT.der`, verified by `lume qualify --verify`) alongside
+  `docs/RELATORIO_AUDITORIA_E_CERTIFICACAO_CLAUDE_PT_BR.md`.
+- **Translation-validation hub, runtime helper verification & clean-room SMT checker (`compiler/stage1/ltv.src`, `compiler/stage1/ltv_rt.src`, `compiler/stage1/lsmt.src`):**
+  `lume tv` validates `694` functions from `.src` down to emitted x86-64 (`0` rejected, `7,846` native boundary vectors,
+  `687/687` 1-to-1 AST-to-object branch correlation). `lume tv-rt` (`tv_rt_gate` / `lume tv-rt-gate`) symbolically
+  verifies all `18/18` integer runtime helpers across `268` paths / `462` obligations. `lume smt-check`
+  (`smt_cert_gate` / `lume smt-cert-gate`) checks `100%` of `.smt2` proof obligations with a self-contained clean-room
+  `QF_LIA`/`QF_BV` solver in full `unsat` agreement with external `z3` (`94` certificates, `3,820` mutants rejected).
+- **Complete native MC/DC closure & static stack byte analyzer (`compiler/stage1/lmcdc.src`, `compiler/stage1/lstack.src`):**
+  `lume mcdc` reaches `0/9,618` uncovered MC/DC conditions on compiled native binaries across all four certified modules
+  (`compiler/stage1/lstd.src` `0/980`, `examples/safety_envelope/critical_kernels.src` `0/112`,
+  `compiler/stage1/lchameleon.src` `0/2,392`, and `compiler/stage1/lsentience.src` `0/6,134`). `lume stack` statically
+  bounds worst-case stack bytes on emitted x86-64 for `@no_alloc` `[E0210]` kernels (`K0010..K0013` diagnostics on frame
+  overflow, indirect calls, stack cycles, or dynamic `rsp`), paired with p99.99 jitter measurement in
+  `tests/harness/realtime_gate.src`.
+- **`118` `[C0011]` constant-time crypto kernels, `Ed25519 X.509v3` & NIST SP 800-90B OS entropy (`compiler/stage1/lcrypto_tls.src`, `compiler/stage1/lx509.src`):**
+  `118/118` `@secret @no_alloc` `[C0011]` branch-free cryptographic kernels in `compiler/stage1/lcrypto_tls.src` pass
+  transitive `[C0010]` machine-code constant-time validation and `lstack` stack bounding (max `536 B`), backed by a
+  `24`-target `dudect` Welch $t$-test harness (`|t| <= 2.690 < 4.5`). `lume x509 verify` and `lume x509 show` enforce
+  Ed25519 X.509v3 DER/PEM path validation (`6,000/6,000` tampered certificate chains rejected) and X.509v3 TLS 1.3 peer
+  authentication; `lume entropy` wraps OS CSPRNG reads behind NIST SP 800-90B repetition-count and adaptive-proportion
+  health checks.
+- **`2oo2D` clean-room RV32IM Channel B & multi-board split bundle (`compiler/stage1/lsafety_envelope.src`, `compiler/stage1/lrv32_lowered.src`):**
+  Channel B executes on a clean-room RV32IM image sharing `0/3,169` compiler functions in the gate bundle (`87,224`
+  injected faults -> `0` false negatives) and supports multi-board cross-architecture bundle generation, hash/signature
+  verification, and split frame execution (`--split`, `--split-verify`, `--split-run`, documented in
+  `docs/41-safety-envelope-split-bundle.md`).
+- **Cross-module synergy gate, scale gate & CLI parity (`tests/harness/synergy_gate.src`, `tests/harness/lcaas_scale_gate.src`, `tests/cli/driver_gate.src`):**
+  `lume synergy-gate` (`synergy_gate`) executes `17/17` chained cross-module stages on
+  `examples/synergy/critical_pipeline.src` (`lcaas` -> `lcert` -> `lproof_cache` -> `lumec --critical` -> `ltv` ->
+  `ltv_rt` -> `lsmt` -> `lstack` -> `lmcdc` -> `lx509` + `lcrypto_tls` -> `lsafety_envelope` -> `ltv_multiarch`) and
+  rejects `36/36` cross-tamper scenarios (`0` undetected). `lume lcaas-scale-gate` (`lcaas_scale_gate`) verifies deep
+  `lcaas` scaling, and `lume cli-parity` (`native_driver_gate`) checks `114` dispatch-table rows (`226` command/alias
+  names) across `9` documentation and CLI surfaces with `0` mismatches.
+
+### Security (Wave 14 hostile audit, round 3 -- `[C0011]` precedence, interprocedural `@secret` taint, JSON brace escapes, source-tree hygiene & `lcert` integration)
+- **`R3-1` (`[C0011]` vs `[C0009]` precedence on `@secret @no_alloc` kernels):** Both `compiler/stage1/lume/06b_phase3.src`
+  and `compiler/stage1/lcaas.src` delegate `@secret @no_alloc` functions directly to `ctk_chk_fn` rather than running the
+  generic `@secret` branch check first, ensuring secret-dependent `if` / `match` / `&&` / `||` inside constant-time
+  kernels deterministically emit `[C0011]` (aligned with `synergy_gate` tamper probes `T-E2` and `T-E3`).
+- **`R3-2` & `R3-2b` (interprocedural `@secret` taint & branch-free primitives):** Added cycle-guarded interprocedural
+  `@secret` taint propagation (`[C0009]`) through unannotated helper callees in `compiler/stage1/lume/06b_phase3.src` and
+  `compiler/stage1/lcaas.src`, `secret_*` / `ct_*` taint roots on `@asm` kernels in `compiler/stage1/ltv.src`,
+  branch-free `bit_and` / `bit_xor` / `bit_or` MBA helpers in `compiler/stage1/protect.src`, and promoted
+  `ct_tag_xor_diff` in `compiler/stage1/lume_crypto_blockchain_engine.src` to a branch-free `@secret @no_alloc` kernel
+  validated by `ltv` `[C0010]`.
+- **`R3-3`..`R3-5` (JSON string-interpolation brace escapes & structural validation):** Fixed depth-0 `"}}"` brace
+  collapses in `tests/harness/safety_envelope_gate.src`, `compiler/stage1/lchameleon.src` (`lume chameleon --json`),
+  `compiler/stage1/lsentience.src` (`lume crypto-engine --json`), and `tests/cli/driver_gate.src` (`dg_mcp_call`),
+  enforced end-to-end by tail-recursive `json_well_formed` parsers in `compiler/stage1/lqualify.src`,
+  `tests/harness/safety_envelope_gate.src`, and `tests/cli/driver_gate.src`.
+- **`R3-6` (clean-tree invariant under `--json` domain commands):** `lume quantum-nexus --json` writes its temporary
+  pulse artifact to `/tmp/lume_quantum_pulse.qbin` rather than leaving untracked artifacts in `compiler/stage1/`.
+- **Real `lcert` kernel invocation & driver soundness:** `lume certify` invokes the standalone `compiler/stage1/lcert.src`
+  kernel for its `"kernel_verified"` verdict (never hardcoded), `compiler/stage1/lcert.src` supports disequality
+  splitting alongside `06b_phase3.src` and `lcaas.src`, `compiler/stage1/ltv.src` enforces mandatory JSON report fields,
+  bundle-cache digests hash transitive imports, `lume test` isolates concurrent temp binaries by PID, and
+  `build` / `check` / `prove` / `certify` / `test` / `run` never write to `$HOME`.
+
 ### Security (Wave 14 hostile audit, round 1 -- prover, termination, effects, `@bound`)
 Each item is a reproducible unsound verdict of the released toolchain, with its reproducer among the fixed cases of
 `tests/harness/prover_fuzz.src` (`pf6_fixed_a` / `pf6_fixed_b`, run by `prover_fuzz_gate` and `claude_audit_gate`) and in
