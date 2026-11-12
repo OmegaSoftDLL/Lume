@@ -3099,9 +3099,9 @@ fn cs_odiagnose_stmt1(s0, rest, osigs, sigs, kt, moved) = match s0
     ExprS(v)         => let dk = cs_kchk_fn("<main>", 0, v, kt) in let ds = cs_schk_conc_e(v, "<main>", 0, Nil, Nil) in let r = cs_ochke(v, {fnm: "<main>", pubf: 0, freef: 0, halloc: 0, bparams: Nil, mvars: Nil, origins: Nil, osigs: osigs, oa: oa_new(osigs, kt.otypes, sigs, v)}, moved) in cs_app(dk, cs_app(ds, cs_app(r.diags, cs_odiagnose_stmts(rest, osigs, sigs, kt, r.moved))))
     _                => cs_odiagnose_stmts(rest, osigs, sigs, kt, moved)
 
-fn cs_diagnose_stmts(prog, tt) = match prog
+fn cs_diagnose_stmts(prog, tt, ctcx) = match prog
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_diagnose_stmt(h, tt), cs_diagnose_stmts(t, tt))
+    Cons(h, t) => cs_app(cs_diagnose_stmt(h, tt, ctcx), cs_diagnose_stmts(t, tt, ctcx))
 fn cs_k5_is_phys_write_fn(cnm) = cnm == "mmio_volatile_write8" or cnm == "mmio_volatile_write16" or cnm == "mmio_volatile_write32" or cnm == "mmio_volatile_write64" or cnm == "mem_copy" or cnm == "mem_set"
 fn cs_k5_lookup_env(nm, env) = match env
     Nil        => {ok: 0, v: 0}
@@ -3141,67 +3141,122 @@ fn cs_c9_secret_params(ps) = match ps
     Nil        => Nil
     Cons(p, r) => if p == "secret" or cs_startswith(p, "secret_") == 1 then Cons(p, cs_c9_secret_params(r)) else cs_c9_secret_params(r)
 fn cs_c9_init_secrets(nm, ps) = let sp = cs_c9_secret_params(ps) in if cs_startswith(nm, "ct_") == 1 then (if cs_isnil(sp) == 0 then sp else ps) else sp
-fn cs_c9_mentions_secret_args(xs, svars) = match xs
-    Nil        => 0
-    Cons(h, t) => if cs_c9_mentions_secret(h, svars) == 1 then 1 else cs_c9_mentions_secret_args(t, svars)
-fn cs_c9_mentions_secret_rec(xs, svars) = match xs
-    Nil        => 0
-    Cons(h, t) => if cs_c9_mentions_secret(h.val, svars) == 1 then 1 else cs_c9_mentions_secret_rec(t, svars)
-fn cs_c9_mentions_secret(e, svars) = match e
-    Var(x)          => cs_omem(x, svars)
-    Bin(op, l, r)   => if cs_c9_mentions_secret(l, svars) == 1 then 1 else cs_c9_mentions_secret(r, svars)
-    If(c, t, e2)    => if cs_c9_mentions_secret(c, svars) == 1 then 1 else if cs_c9_mentions_secret(t, svars) == 1 then 1 else cs_c9_mentions_secret(e2, svars)
-    LetIn(nm, v, b) => let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else svars in if cs_c9_mentions_secret(v, svars) == 1 then 1 else cs_c9_mentions_secret(b, sv2)
-    VarIn(nm, v, b) => let sv2 = if cs_c9_mentions_secret(v, svars) == 1 then Cons(nm, svars) else svars in if cs_c9_mentions_secret(v, svars) == 1 then 1 else cs_c9_mentions_secret(b, sv2)
-    Call(cnm, args) => cs_c9_mentions_secret_args(args, svars)
-    Field(o, k)     => cs_c9_mentions_secret(o, svars)
-    Rec(items)      => cs_c9_mentions_secret_rec(items, svars)
-    RecT(tn, items) => cs_c9_mentions_secret_rec(items, svars)
-    OwnE(inner)     => cs_c9_mentions_secret(inner, svars)
-    MutE(inner)     => cs_c9_mentions_secret(inner, svars)
-    CT(inner)       => cs_c9_mentions_secret(inner, svars)
-    AwaitE(inner)   => cs_c9_mentions_secret(inner, svars)
-    SpawnE(inner)   => cs_c9_mentions_secret(inner, svars)
-    ScopeE(snm, b)  => cs_c9_mentions_secret(b, svars)
+fn cs_c9_is_declass_call(cnm) = cnm == "secret_expose_bytes" or cnm == "secret_zeroize" or cnm == "secret_show" or cnm == "secret_is_zeroized"
+fn cs_c9_is_std_secret_fn(cnm) = cnm == "secret_new" or cs_c9_is_declass_call(cnm)
+fn cs_is_pack_call(nm) = nm == "mem_pack" or nm == "__lume_mem_pack" or nm == "arena_freeze" or nm == "arena_compact" or nm == "__lume_arena_freeze"
+fn cs_cz_secret_fns(osigs) = match osigs
+    Nil        => Nil
+    Cons(h, t) => if h.freef / 128 % 2 == 1 then Cons(h.nm, cs_cz_secret_fns(t)) else cs_cz_secret_fns(t)
+fn cs_cz_ctk_fns(osigs) = match osigs
+    Nil        => Nil
+    Cons(h, t) => if h.freef / 128 % 2 == 1 and h.freef / 512 % 2 == 1 then Cons(h.nm, cs_cz_ctk_fns(t)) else cs_cz_ctk_fns(t)
+fn cs_mk_ctcx(osigs, ft) = {sf: cs_cz_secret_fns(osigs), ctkf: cs_cz_ctk_fns(osigs), ft: ft}
+fn cs_c9_is_spine_pat(p) = match p
+    PWild           => 1
+    PBind(v)        => 1
+    PCons(tag, sub) => if tag == "Nil" and cs_isnil(sub) == 1 then 1 else if tag == "Cons" then cs_c9_is_spine_pats(sub) else 0
     _               => 0
-fn cs_c9_is_mem_idx_call(cnm, args, svars) = if (cnm == "at" or cnm == "slice" or cnm == "slicen") and cs_len(args) >= 2 then cs_c9_mentions_secret(cs_astsecond(args), svars) else if (cnm == "mmio_volatile_read8" or cnm == "mmio_volatile_read16" or cnm == "mmio_volatile_read32" or cnm == "mmio_volatile_read64" or cs_k5_is_phys_write_fn(cnm) == 1) and cs_isnil(args) == 0 then cs_c9_mentions_secret(cs_asthead(args), svars) else 0
-fn cs_c9_chk_ct_args(xs, svars, fnm) = match xs
+fn cs_c9_is_spine_pats(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if cs_c9_is_spine_pat(h) == 1 then cs_c9_is_spine_pats(t) else 0
+fn cs_c9_has_list_ctor_pat(p) = match p
+    PCons(tag, sub) => if tag == "Nil" or tag == "Cons" then 1 else 0
+    _               => 0
+fn cs_c9_arms_all_spine(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if cs_c9_is_spine_pat(h.pat) == 1 then cs_c9_arms_all_spine(t) else 0
+fn cs_c9_arms_any_list(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_c9_has_list_ctor_pat(h.pat) == 1 then 1 else cs_c9_arms_any_list(t)
+fn cs_c9_is_spine_arms(xs) = if cs_c9_arms_any_list(xs) == 1 and cs_c9_arms_all_spine(xs) == 1 then 1 else 0
+fn cs_c9_join_key(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => if cs_isnil(t) == 1 then h else h + "," + cs_c9_join_key(t)
+fn cs_c9_pair_sv(ps, args, svars, ctcx, rseen) = match ps
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h, svars, fnm), cs_c9_chk_ct_args(t, svars, fnm))
-fn cs_c9_chk_ct_rec(xs, svars, fnm) = match xs
+    Cons(p, r) => cs_c9_pair_sv1(p, r, args, svars, ctcx, rseen)
+fn cs_c9_pair_sv1(p, r, args, svars, ctcx, rseen) = match args
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.val, svars, fnm), cs_c9_chk_ct_rec(t, svars, fnm))
-fn cs_c9_chk_ct_arms(xs, svars, fnm) = match xs
+    Cons(a, t) => let rest = cs_c9_pair_sv(r, t, svars, ctcx, rseen) in if cs_c9_mentions_secret_cx(a, svars, ctcx, rseen) == 1 then Cons(p, rest) else rest
+fn cs_c9_fn_ps(fn0) = match fn0
+    Fn(nm, ps, body) => ps
+    _                => Nil
+fn cs_c9_fn_body(fn0) = match fn0
+    Fn(nm, ps, body) => body
+    _                => Num(0)
+fn cs_c9_call_ret_sec_mf(cnm, mf, args, svars, ctcx, rseen) = match mf
+    Nil          => 1
+    Cons(fn0, r) => let fps = cs_c9_fn_ps(fn0) in let csv = cs_c9_pair_sv(fps, args, svars, ctcx, rseen) in if cs_isnil(csv) == 1 then 0 else let rkey = cnm + ":" + cs_c9_join_key(csv) in if cs_omem(rkey, rseen) == 1 then 0 else cs_c9_mentions_secret_cx(cs_c9_fn_body(fn0), cs_app(csv, cs_c9_init_secrets(cnm, fps)), ctcx, Cons(rkey, rseen))
+fn cs_c9_call_mentions_secret(cnm, args, svars, ctcx, rseen) = if cnm == "secret_new" then 1 else if cs_c9_is_declass_call(cnm) == 1 or cnm == "len" or cnm == "isnil" then 0 else if cs_omem(cnm, ctcx.sf) == 1 then (if cs_omem(cnm, ctcx.ctkf) == 0 or cs_isnil(args) == 1 then 1 else cs_c9_mentions_secret_args_cx(args, svars, ctcx, rseen)) else if cs_c9_mentions_secret_args_cx(args, svars, ctcx, rseen) == 0 then 0 else cs_c9_call_ret_sec_mf(cnm, cs_fnlookup(cnm, ctcx.ft), args, svars, ctcx, rseen)
+fn cs_c9_mentions_secret_args_cx(xs, svars, ctcx, rseen) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_c9_mentions_secret_cx(h, svars, ctcx, rseen) == 1 then 1 else cs_c9_mentions_secret_args_cx(t, svars, ctcx, rseen)
+fn cs_c9_mentions_secret_rec_cx(xs, svars, ctcx, rseen) = match xs
+    Nil        => 0
+    Cons(h, t) => if cs_c9_mentions_secret_cx(h.val, svars, ctcx, rseen) == 1 then 1 else cs_c9_mentions_secret_rec_cx(t, svars, ctcx, rseen)
+fn cs_c9_mentions_secret_arms_cx(xs, svars, sc_sec, ctcx, rseen) = match xs
+    Nil        => 0
+    Cons(h, t) => let sv2 = if sc_sec == 1 then cs_app(cs_ps_pat_binds(h.pat), svars) else svars in if cs_c9_mentions_secret_cx(h.body, sv2, ctcx, rseen) == 1 then 1 else cs_c9_mentions_secret_arms_cx(t, svars, sc_sec, ctcx, rseen)
+fn cs_c9_mentions_secret_cx(e, svars, ctcx, rseen) = match e
+    Var(x)          => cs_omem(x, svars)
+    Bin(op, l, r)   => if cs_c9_mentions_secret_cx(l, svars, ctcx, rseen) == 1 then 1 else cs_c9_mentions_secret_cx(r, svars, ctcx, rseen)
+    If(c, t, e2)    => if cs_c9_mentions_secret_cx(c, svars, ctcx, rseen) == 1 then 1 else if cs_c9_mentions_secret_cx(t, svars, ctcx, rseen) == 1 then 1 else cs_c9_mentions_secret_cx(e2, svars, ctcx, rseen)
+    Match(sc, arms) => let scs = cs_c9_mentions_secret_cx(sc, svars, ctcx, rseen) in if scs == 1 and cs_c9_is_spine_arms(arms) == 0 then 1 else cs_c9_mentions_secret_arms_cx(arms, svars, scs, ctcx, rseen)
+    LetIn(nm, v, b) => let vsec = cs_c9_mentions_secret_cx(v, svars, ctcx, rseen) in let sv2 = if vsec == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_c9_mentions_secret_cx(b, sv2, ctcx, rseen)
+    VarIn(nm, v, b) => let vsec = cs_c9_mentions_secret_cx(v, svars, ctcx, rseen) in let sv2 = if vsec == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_c9_mentions_secret_cx(b, sv2, ctcx, rseen)
+    Call(cnm, args) => cs_c9_call_mentions_secret(cnm, args, svars, ctcx, rseen)
+    Field(o, k)     => cs_c9_mentions_secret_cx(o, svars, ctcx, rseen)
+    Rec(items)      => cs_c9_mentions_secret_rec_cx(items, svars, ctcx, rseen)
+    RecT(tn, items) => cs_c9_mentions_secret_rec_cx(items, svars, ctcx, rseen)
+    OwnE(inner)     => cs_c9_mentions_secret_cx(inner, svars, ctcx, rseen)
+    MutE(inner)     => cs_c9_mentions_secret_cx(inner, svars, ctcx, rseen)
+    CT(inner)       => cs_c9_mentions_secret_cx(inner, svars, ctcx, rseen)
+    AwaitE(inner)   => cs_c9_mentions_secret_cx(inner, svars, ctcx, rseen)
+    SpawnE(inner)   => cs_c9_mentions_secret_cx(inner, svars, ctcx, rseen)
+    ScopeE(snm, b)  => cs_c9_mentions_secret_cx(b, svars, ctcx, rseen)
+    _               => 0
+fn cs_c9_mentions_secret(e, svars) = cs_c9_mentions_secret_cx(e, svars, {sf: Nil, ctkf: Nil, ft: Nil}, Nil)
+fn cs_c9_is_mem_idx_call(cnm, args, svars, ctcx) = if (cnm == "at" or cnm == "slice" or cnm == "slicen") and cs_len(args) >= 2 then cs_c9_mentions_secret_cx(cs_astsecond(args), svars, ctcx, Nil) else if (cnm == "mmio_volatile_read8" or cnm == "mmio_volatile_read16" or cnm == "mmio_volatile_read32" or cnm == "mmio_volatile_read64" or cs_k5_is_phys_write_fn(cnm) == 1) and cs_isnil(args) == 0 then cs_c9_mentions_secret_cx(cs_asthead(args), svars, ctcx, Nil) else 0
+fn cs_c9_chk_callee_mf(cnm, mf, args, svars, ctcx, seen) = match mf
+    Nil          => Nil
+    Cons(fn0, r) => let fps = cs_c9_fn_ps(fn0) in let csv = cs_c9_pair_sv(fps, args, svars, ctcx, Nil) in if cs_isnil(csv) == 1 then Nil else let ckey = cnm + ":" + cs_c9_join_key(csv) in if cs_omem(ckey, seen) == 1 then Nil else cs_c9_chk_ct_e(cs_c9_fn_body(fn0), cs_app(csv, cs_c9_init_secrets(cnm, fps)), cnm, ctcx, Cons(ckey, seen))
+fn cs_c9_chk_ct_args(xs, svars, fnm, ctcx, seen) = match xs
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.body, svars, fnm), cs_c9_chk_ct_arms(t, svars, fnm))
-fn cs_c9_chk_ct_hops(xs, svars, fnm) = match xs
+    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h, svars, fnm, ctcx, seen), cs_c9_chk_ct_args(t, svars, fnm, ctcx, seen))
+fn cs_c9_chk_ct_rec(xs, svars, fnm, ctcx, seen) = match xs
     Nil        => Nil
-    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.body, svars, fnm), cs_c9_chk_ct_hops(t, svars, fnm))
-fn cs_c9_chk_ct_e(e, svars, fnm) = match e
-    If(c, t, e2)               => let d0 = if cs_c9_mentions_secret(c, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: branch condition in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking bv_xor/bv_and/bv_or/bv_shr instead of branching on secrets"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(t, svars, fnm), cs_c9_chk_ct_e(e2, svars, fnm)))
-    Match(sc, arms)            => let d0 = if cs_c9_mentions_secret(sc, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking instead of pattern matching on secrets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_arms(arms, svars, fnm))
-    Bin(op, l, r)              => let d0 = if (op == "/" or op == "%" or op == "and" or op == "or") and (cs_c9_mentions_secret(l, svars) == 1 or cs_c9_mentions_secret(r, svars) == 1) then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value", "use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(l, svars, fnm), cs_c9_chk_ct_e(r, svars, fnm)))
-    Call(cnm, args)            => let d0 = if cs_c9_is_mem_idx_call(cnm, args, svars) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information", "avoid indexing memory or strings by secret offsets"), Nil) else Nil in cs_app(d0, cs_c9_chk_ct_args(args, svars, fnm))
-    LetIn(nm, v, b)            => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
-    VarIn(nm, v, b)            => let d0 = cs_c9_chk_ct_e(v, svars, fnm) in let sv2 = if cs_c9_taints_let(fnm, v, svars) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm))
-    Rec(items)                 => cs_c9_chk_ct_rec(items, svars, fnm)
-    RecT(tn, items)            => cs_c9_chk_ct_rec(items, svars, fnm)
-    Field(o, fld)              => cs_c9_chk_ct_e(o, svars, fnm)
-    OwnE(inner)                => cs_c9_chk_ct_e(inner, svars, fnm)
-    MutE(inner)                => cs_c9_chk_ct_e(inner, svars, fnm)
-    CT(inner)                  => cs_c9_chk_ct_e(inner, svars, fnm)
-    AwaitE(inner)              => cs_c9_chk_ct_e(inner, svars, fnm)
-    DeferE(c, b)               => cs_app(cs_c9_chk_ct_e(c, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
-    ErrDeferE(c, b)            => cs_app(cs_c9_chk_ct_e(c, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
-    WithAllocE(a, b)           => cs_app(cs_c9_chk_ct_e(a, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
-    WithHandlerE(en, hs, b)    => cs_app(cs_c9_chk_ct_hops(hs, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm))
-    ScopeE(snm, b)             => cs_c9_chk_ct_e(b, svars, fnm)
-    SpawnE(inner)              => cs_c9_chk_ct_e(inner, svars, fnm)
-    ShardE(vnm, lo, hi, b)     => cs_app(cs_c9_chk_ct_e(lo, svars, fnm), cs_app(cs_c9_chk_ct_e(hi, svars, fnm), cs_c9_chk_ct_e(b, svars, fnm)))
-    LambdaE(ps, tys, rt, body) => cs_c9_chk_ct_e(body, svars, fnm)
+    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.val, svars, fnm, ctcx, seen), cs_c9_chk_ct_rec(t, svars, fnm, ctcx, seen))
+fn cs_c9_chk_ct_arms(xs, svars, sc_sec, fnm, ctcx, seen) = match xs
+    Nil        => Nil
+    Cons(h, t) => let sv2 = if sc_sec == 1 then cs_app(cs_ps_pat_binds(h.pat), svars) else svars in cs_app(cs_c9_chk_ct_e(h.body, sv2, fnm, ctcx, seen), cs_c9_chk_ct_arms(t, svars, sc_sec, fnm, ctcx, seen))
+fn cs_c9_chk_ct_hops(xs, svars, fnm, ctcx, seen) = match xs
+    Nil        => Nil
+    Cons(h, t) => cs_app(cs_c9_chk_ct_e(h.body, svars, fnm, ctcx, seen), cs_c9_chk_ct_hops(t, svars, fnm, ctcx, seen))
+fn cs_c9_chk_ct_e(e, svars, fnm, ctcx, seen) = match e
+    If(c, t, e2)               => let d0 = if cs_c9_mentions_secret_cx(c, svars, ctcx, Nil) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: branch condition in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking bv_xor/bv_and/bv_or/bv_shr instead of branching on secrets"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(t, svars, fnm, ctcx, seen), cs_c9_chk_ct_e(e2, svars, fnm, ctcx, seen)))
+    Match(sc, arms)            => let sc_sec = cs_c9_mentions_secret_cx(sc, svars, ctcx, Nil) in let d0 = if sc_sec == 1 and cs_c9_is_spine_arms(arms) == 0 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: match scrutinee in '" + fnm + "' depends on a secret value, leaking timing side-channel information", "use constant-time bitwise masking instead of pattern matching on secrets"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(sc, svars, fnm, ctcx, seen), cs_c9_chk_ct_arms(arms, svars, sc_sec, fnm, ctcx, seen)))
+    Bin(op, l, r)              => let d0 = if (op == "/" or op == "%" or op == "and" or op == "or") and (cs_c9_mentions_secret_cx(l, svars, ctcx, Nil) == 1 or cs_c9_mentions_secret_cx(r, svars, ctcx, Nil) == 1) then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: variable-latency or short-circuit operator '" + op + "' in '" + fnm + "' operates on a secret value", "use constant-time bitwise operations bv_xor/bv_and/bv_or/bv_shr"), Nil) else Nil in cs_app(d0, cs_app(cs_c9_chk_ct_e(l, svars, fnm, ctcx, seen), cs_c9_chk_ct_e(r, svars, fnm, ctcx, seen)))
+    Call(cnm, args)            => let d0 = if cs_c9_is_mem_idx_call(cnm, args, svars, ctcx) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: secret-dependent memory/table index in '" + cnm + "' inside '" + fnm + "' leaks cache-timing side-channel information", "avoid indexing memory or strings by secret offsets"), Nil) else if cs_is_pack_call(cnm) == 1 and cs_c9_mentions_secret_args_cx(args, svars, ctcx, Nil) == 1 then Cons(cs_mkdiag("C0009", "constant_time", "constant-time error: '" + cnm + "' in '" + fnm + "' would compress secret data: decompression time depends on the bytes and leaks them (Decomp+Time)", "arena_mark_secret keeps an arena uncompressed"), Nil) else Nil in let da = cs_c9_chk_ct_args(args, svars, fnm, ctcx, seen) in let dc = if cs_c9_is_std_secret_fn(cnm) == 1 or cs_omem(cnm, ctcx.sf) == 1 then Nil else if cs_c9_mentions_secret_args_cx(args, svars, ctcx, Nil) == 0 then Nil else cs_c9_chk_callee_mf(cnm, cs_fnlookup(cnm, ctcx.ft), args, svars, ctcx, seen) in cs_app(d0, cs_app(da, dc))
+    LetIn(nm, v, b)            => let d0 = cs_c9_chk_ct_e(v, svars, fnm, ctcx, seen) in let sv2 = if cs_c9_taints_let(fnm, v, svars, ctcx) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm, ctcx, seen))
+    VarIn(nm, v, b)            => let d0 = cs_c9_chk_ct_e(v, svars, fnm, ctcx, seen) in let sv2 = if cs_c9_taints_let(fnm, v, svars, ctcx) == 1 then Cons(nm, svars) else cs_orem(nm, svars) in cs_app(d0, cs_c9_chk_ct_e(b, sv2, fnm, ctcx, seen))
+    Rec(items)                 => cs_c9_chk_ct_rec(items, svars, fnm, ctcx, seen)
+    RecT(tn, items)            => cs_c9_chk_ct_rec(items, svars, fnm, ctcx, seen)
+    Field(o, fld)              => cs_c9_chk_ct_e(o, svars, fnm, ctcx, seen)
+    OwnE(inner)                => cs_c9_chk_ct_e(inner, svars, fnm, ctcx, seen)
+    MutE(inner)                => cs_c9_chk_ct_e(inner, svars, fnm, ctcx, seen)
+    CT(inner)                  => cs_c9_chk_ct_e(inner, svars, fnm, ctcx, seen)
+    AwaitE(inner)              => cs_c9_chk_ct_e(inner, svars, fnm, ctcx, seen)
+    DeferE(c, b)               => cs_app(cs_c9_chk_ct_e(c, svars, fnm, ctcx, seen), cs_c9_chk_ct_e(b, svars, fnm, ctcx, seen))
+    ErrDeferE(c, b)            => cs_app(cs_c9_chk_ct_e(c, svars, fnm, ctcx, seen), cs_c9_chk_ct_e(b, svars, fnm, ctcx, seen))
+    WithAllocE(a, b)           => cs_app(cs_c9_chk_ct_e(a, svars, fnm, ctcx, seen), cs_c9_chk_ct_e(b, svars, fnm, ctcx, seen))
+    WithHandlerE(en, hs, b)    => cs_app(cs_c9_chk_ct_hops(hs, svars, fnm, ctcx, seen), cs_c9_chk_ct_e(b, svars, fnm, ctcx, seen))
+    ScopeE(snm, b)             => cs_c9_chk_ct_e(b, svars, fnm, ctcx, seen)
+    SpawnE(inner)              => cs_c9_chk_ct_e(inner, svars, fnm, ctcx, seen)
+    ShardE(vnm, lo, hi, b)     => cs_app(cs_c9_chk_ct_e(lo, svars, fnm, ctcx, seen), cs_app(cs_c9_chk_ct_e(hi, svars, fnm, ctcx, seen), cs_c9_chk_ct_e(b, svars, fnm, ctcx, seen)))
+    LambdaE(ps, tys, rt, body) => cs_c9_chk_ct_e(body, svars, fnm, ctcx, seen)
     _                          => Nil
-fn cs_c9_taints_let(fnm, v, svars) = cs_c9_mentions_secret(v, svars)
-fn cs_c9_chk_fn(nm, ps, body) = let svars = cs_c9_init_secrets(nm, ps) in if cs_isnil(svars) == 1 then Nil else cs_c9_chk_ct_e(body, svars, nm)
+fn cs_c9_taints_let(fnm, v, svars, ctcx) = cs_c9_mentions_secret_cx(v, svars, ctcx, Nil)
+fn cs_c9_chk_fn(nm, ps, body, ctcx) = let svars = if cs_omem(nm, ctcx.sf) == 1 then ps else cs_c9_init_secrets(nm, ps) in cs_c9_chk_ct_e(body, svars, nm, ctcx, Nil)
 fn cs_k6_fn_calls(target, e) = match e
     Call(cnm, args) => if cnm == target then 1 else cs_k6_fn_calls_args(target, args)
     Bin(op, l, r)   => if cs_k6_fn_calls(target, l) == 1 then 1 else cs_k6_fn_calls(target, r)
@@ -3236,13 +3291,13 @@ fn cs_k6_chk_mutual_args(xs, fnm, ft) = match xs
 fn cs_k6_chk_mutual_arms(xs, fnm, ft) = match xs
     Nil        => Nil
     Cons(h, t) => cs_app(cs_k6_chk_mutual_e(h.body, fnm, ft), cs_k6_chk_mutual_arms(t, fnm, ft))
-fn cs_k5_chk_fn(nm, ps, body, ft) = let d0 = cs_c9_chk_fn(nm, ps, body) in let d1 = cs_app(d0, cs_k5_chk_wx_e(body, Nil, nm)) in if cs_isnil(cs_fnlookup("kernel_boot_entry", ft)) == 0 then cs_app(d1, cs_k6_chk_mutual_e(body, nm, ft)) else d1
-fn cs_diagnose_stmt(s0, tt) = match s0
-    Fn(nm, ps, body) => let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: cs_fn_lenv(cs_siglookup(nm, tt.sigs))} in cs_app(cs_k5_chk_fn(nm, ps, body, tt.ft), cs_app(cs_chk_ret(nm, body, tt2), cs_chk_expr(body, tt2)))
-    Print(v)         => cs_chk_expr(v, tt)
-    ExprS(v)         => cs_chk_expr(v, tt)
+fn cs_k5_chk_fn(nm, ps, body, ft, ctcx) = let d0 = if cs_omem(nm, ctcx.ctkf) == 1 then Nil else cs_c9_chk_fn(nm, ps, body, ctcx) in let d1 = cs_app(d0, cs_k5_chk_wx_e(body, Nil, nm)) in if cs_isnil(cs_fnlookup("kernel_boot_entry", ft)) == 0 then cs_app(d1, cs_k6_chk_mutual_e(body, nm, ft)) else d1
+fn cs_diagnose_stmt(s0, tt, ctcx) = match s0
+    Fn(nm, ps, body) => let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: cs_fn_lenv(cs_siglookup(nm, tt.sigs))} in cs_app(cs_k5_chk_fn(nm, ps, body, tt.ft, ctcx), cs_app(cs_chk_ret(nm, body, tt2), cs_chk_expr(body, tt2)))
+    Print(v)         => cs_app(cs_c9_chk_ct_e(v, Nil, "<main>", ctcx, Nil), cs_chk_expr(v, tt))
+    ExprS(v)         => cs_app(cs_c9_chk_ct_e(v, Nil, "<main>", ctcx, Nil), cs_chk_expr(v, tt))
     _                => Nil
-fn cs_diagnose(prog0) = let ft0 = cs_buildft(prog0) in let gnms = cs_n4_collect_grads_prog(prog0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let prog = cs_app(gfns, prog0) in let tt = cs_tcollect(prog) in let osigs = cs_ocollects(prog) in let vsigs = cs_vcollect_vsigs(prog) in let laws = cs_vcollect_laws(prog) in let kb = cs_kmemo_build(prog, cs_kcollect_effdecls(prog), tt.ft, cs_kcollect_effsigs(prog)) in let kt = {ksigs: cs_kcollect_effsigs(prog), kmemo: kb.kmemo, kx: kb.kx, kx0: kb.kx0, edecls: cs_kcollect_effdecls(prog), caps: cs_kcollect_caps(prog), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(prog), ft: tt.ft} in let hr = cs_collect_holes_stmts(prog, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, prog)) in let prog2 = cs_fill_prog_holes(prog, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, prog)) in let vr = cs_vprove_all(prog2) in cs_app(cs_p35_diags(osigs, prog0), cs_app(d_ad, cs_app(cs_diagnose_stmts(prog2, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(prog2, osigs, tt.sigs, kt, Nil))))))
+fn cs_diagnose(prog0) = let ft0 = cs_buildft(prog0) in let gnms = cs_n4_collect_grads_prog(prog0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let prog = cs_app(gfns, prog0) in let tt = cs_tcollect(prog) in let osigs = cs_ocollects(prog) in let ctcx = cs_mk_ctcx(osigs, tt.ft) in let vsigs = cs_vcollect_vsigs(prog) in let laws = cs_vcollect_laws(prog) in let kb = cs_kmemo_build(prog, cs_kcollect_effdecls(prog), tt.ft, cs_kcollect_effsigs(prog)) in let kt = {ksigs: cs_kcollect_effsigs(prog), kmemo: kb.kmemo, kx: kb.kx, kx0: kb.kx0, edecls: cs_kcollect_effdecls(prog), caps: cs_kcollect_caps(prog), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(prog), ft: tt.ft} in let hr = cs_collect_holes_stmts(prog, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, prog)) in let prog2 = cs_fill_prog_holes(prog, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, prog)) in let vr = cs_vprove_all(prog2) in cs_app(cs_p35_diags(osigs, prog0), cs_app(d_ad, cs_app(cs_diagnose_stmts(prog2, tt, ctcx), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(prog2, osigs, tt.sigs, kt, Nil))))))
 
 ## --- C3 generic erasure & C1/C2/M1/M2 comptime + hygienic macro expansion ---
 fn cs_gcfs(pl) = match pl
@@ -3473,7 +3528,7 @@ fn caas_compile(src) = caas_compile_in(src, src)
 ## an analysis that stops is reported, never a reply cut short
 fn caas_compile_in(src, whole) = if __lume_try_begin() == 0 then let r = caas_compile_run(src, whole) in let z = __lume_try_end() in r else caas_compile_stopped(__lume_try_msg())
 fn caas_compile_stopped(msg) = {ok: 0, diagnostics: Cons(cs_mkdiag("E0002", "oracle", "an analysis stopped: " + cs_real_text(msg), "report this with the program that caused it"), Nil), holes: Nil, proofs: Nil, symbols: Nil, ast: Nil, ast_sexpr: "", expanded: Nil, expanded_sexpr: "", asm: "", result: ""}
-fn caas_compile_run(src, whole) = let pf = cs_parse_full(src) in let ast0 = pf.prog in let syntax_diags = cs_syntax_merge(pf.fail, cs_app(pf.diags, cs_unclosed_param_diags(ast0))) in let real = if pf.fail == "" then cs_real_compile(whole) else {ok: 1, asm: "", msg: ""} in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kb = cs_kmemo_build(ast, cs_kcollect_effdecls(ast), tt.ft, cs_kcollect_effsigs(ast)) in let kt = {ksigs: cs_kcollect_effsigs(ast), kmemo: kb.kmemo, kx: kb.kx, kx0: kb.kx0, edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(ast), ft: tt.ft} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast0)) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast)) in let vr = cs_vprove_plus_term(ast_filled, vsigs, invs, wcets, osigs) in let diags = cs_diags_spanned(src, cs_real_verdict(real, cs_app(syntax_diags, cs_app(cs_name_phase(real, whole), cs_app(cs_p35_diags_mode(osigs, ast0, cs_startswith(src, "## @strict_p35")), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil)))))))), if src == whole then 1 else 0)) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
+fn caas_compile_run(src, whole) = let pf = cs_parse_full(src) in let ast0 = pf.prog in let syntax_diags = cs_syntax_merge(pf.fail, cs_app(pf.diags, cs_unclosed_param_diags(ast0))) in let real = if pf.fail == "" then cs_real_compile(whole) else {ok: 1, asm: "", msg: ""} in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kb = cs_kmemo_build(ast, cs_kcollect_effdecls(ast), tt.ft, cs_kcollect_effsigs(ast)) in let kt = {ksigs: cs_kcollect_effsigs(ast), kmemo: kb.kmemo, kx: kb.kx, kx0: kb.kx0, edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(ast), ft: tt.ft} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast0)) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast)) in let vr = cs_vprove_plus_term(ast_filled, vsigs, invs, wcets, osigs) in let diags = cs_diags_spanned(src, cs_real_verdict(real, cs_app(syntax_diags, cs_app(cs_name_phase(real, whole), cs_app(cs_p35_diags_mode(osigs, ast0, cs_startswith(src, "## @strict_p35")), cs_app(d_ad, cs_app(cs_diagnose_stmts(ast_filled, tt, cs_mk_ctcx(osigs, tt.ft)), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil)))))))), if src == whole then 1 else 0)) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
 
 fn caas_check(src) = caas_compile(src)
 fn caas_fill(src) = (caas_compile(src)).holes

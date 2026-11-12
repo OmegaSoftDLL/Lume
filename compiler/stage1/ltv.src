@@ -1043,11 +1043,16 @@ fn tv_rt_first(xs) = match xs
     Cons(h, t) => h
 fn tv_rt_judge(asm, v, used) = if v.ok == 1 then tv_rt_st("verified", v, used, "") else if isnil(used) == 1 and tv_contains_at(asm, "\n    .kernel\n", 0) == 1 then tv_rt_st("freestanding-unverified", v, used, "") else tv_rt_st("rejected", v, used, "runtime helper verification FAILED on the validated assembly (ltv_rt): " + v.err + (if isnil(used) == 1 then "" else "; validated code calls `" + tv_rt_first(used) + "`"))
 fn tv_rt(asm, labs, rs, fl) = let hs = tv_rt_names(tvr_helpers()) in let used = tv_rt_used(rs, fl, hs, Nil) in if tv_rt_present(labs, hs) == 0 then tv_rt_st("absent", {n_helpers: 0, n_paths: 0, n_obl: 0}, used, if isnil(used) == 1 then "" else "validated code calls the runtime helper `" + tv_rt_first(used) + "`, but the assembly holds no runtime: the helper's code cannot be verified") else tv_rt_judge(asm, tv_rt_try(asm), used)
+fn tv_has_secret_param(ps) = match ps
+    Nil        => 0
+    Cons(p, r) => if p == "secret" or tv_starts(p, "secret_") == 1 then 1 else tv_has_secret_param(r)
+fn tv_add_uniq(nm, rest) = if tv_has(rest, nm) == 1 then rest else Cons(nm, rest)
 fn tv_secrets(prog) = match prog
     Nil        => Nil
     Cons(h, t) => tv_secrets1(h, tv_secrets(t))
 fn tv_secrets1(st, rest) = match st
-    OSig(nm, pubf, freef, pl, rty, fromp) => if freef / 128 % 2 == 1 then Cons(nm, rest) else rest
+    OSig(nm, pubf, freef, pl, rty, fromp) => if freef / 128 % 2 == 1 then tv_add_uniq(nm, rest) else rest
+    Fn(nm, ps, body)                      => if tv_starts(nm, "ct_") == 1 or tv_has_secret_param(ps) == 1 then tv_add_uniq(nm, rest) else rest
     _                                     => rest
 fn tv_is_prom_body(e) = match e
     Call(nm, args)  => if nm == "__lume_promise_new" then 1 else 0
