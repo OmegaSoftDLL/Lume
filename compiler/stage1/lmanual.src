@@ -574,7 +574,7 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  lume diff-semver <old.src> <new.src>   Mathematical SemVer bump analyzer\n" +
 "  lume symbolize <file.lsym> <query>     P33 obfuscated symbol/address resolver\n" +
 "  lume capsule seal|replay <file>        Tamper-evident execution capsule V2\n" +
-"  lume pack / lume unpack <in> -o <out>  LZ1 atomic cold-arena & capsule block compressor\n" +
+"  lume pack / lume unpack <in> -o <out>  Compactor for cold arenas and capsules: LZ4 block format behind a 20-byte `LZ1` header (not an LZ4 frame)\n" +
 "  lume genesis <app_name> [domain]       Full-stack + 8-target autonomous app synthesizer\n" +
 "  lume heal <src.src>                    Counterexample-driven contract self-healer\n" +
 "  lume equiv <spec.src> <fast.src>       Formal algorithmic equivalence prover\n" +
@@ -646,8 +646,9 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  its watchdog, channel B halted inside the cycle budget (`@bound(cycles: N)` x 16, or `--budget`) without a trap,\n" +
 "  `ltv` validated the kernel, and the two words are equal. Every other case latches `SAFE_STATE_TRIP` in the\n" +
 "  hash-chained log `build/certification/safety_envelope_events.jsonl` until `--reset`. Real level: channel B is a\n" +
-"  software RV32IM interpreter on the same host (design diversity, not physical independence); the front end is\n" +
-"  common to both channels; the monitor domain is i32 (a kernel that leaves it trips).\n" +
+"  software RV32IM interpreter on the same host (design diversity, not physical independence); since Wave 14\n" +
+"  channel B compiles the kernel with its own clean-room front end (see the Wave 14 section below), but both\n" +
+"  channels still read the same kernel text; the monitor domain is i32 (a kernel that leaves it trips).\n" +
 "- **`lume qualify` (Domain `#114`)** runs 70 probes, the module batteries (ltv, lmcdc, proof status) and 16 gates,\n" +
 "  checks the bidirectional traceability matrix (every requirement needs a parent, an existing source file, a passing\n" +
 "  positive test, a passing negative test and a passing mutation gate or proof) and writes the dossier. It is the\n" +
@@ -672,7 +673,8 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  must be unable to reach a heap allocation: `int`/`bool` parameters with proven bounds, `+ - *` proven inside the\n" +
 "  63-bit immediate range, no record, constructor with fields, string or allocating builtin, recursion in tail\n" +
 "  position only. `realtime_gate` measures the result with `heap_stats()`: zero allocations over the accepted\n" +
-"  kernels. Limits: no worst-case stack depth in bytes is computed and nothing is timed; `@bound` is the cycle budget.\n" +
+"  kernels. Limits: nothing is timed; `@bound` is the cycle budget. The worst-case stack depth in bytes is computed\n" +
+"  separately, on the emitted code, by `lume stack` (Wave 14 section below).\n" +
 "- **Constant-time kernels (`@secret` + `@no_alloc`, `[C0011]`)**: a function that carries both attributes is lowered\n" +
 "  to straight-line code on immediate integers: no tag test, no overflow test, no runtime call, no jump. `[C0011]`\n" +
 "  rejects everything else: parameters and result are `int`; no `requires` (mask with `bit_and`; the kernel is total\n" +
@@ -697,7 +699,8 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  may hold no conditional branch, division or memory access outside its frame, and neither may any routine it\n" +
 "  reaches by `call` (the scan is transitive and names the call chain). Limits: tested, not formally\n" +
 "  verified; a plain `@secret` function that uses `+` or a bit operation is rejected by `[C0010]` (its helpers\n" +
-"  branch): write it as a constant-time kernel; no X.509 path validation.\n" +
+"  branch): write it as a constant-time kernel; X.509 path validation covers Ed25519 chains only (`lume x509 verify`,\n" +
+"  Wave 14 section below).\n" +
 "- **Incremental proof cache (Domain `#120`)**: one sealed record per function, keyed by the SHA-256 of its body,\n" +
 "  contracts, callee interfaces and prover version. A tampered record is refused (`[PC0002]`), a module the prover\n" +
 "  refutes is never stored (`[PC0003]`), `--require-all-hits` turns a miss into an error (`[PC0005]`).\n" +
@@ -712,12 +715,79 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  host (`/root/.lume/keys/qualification_ed25519.seed` or `--sign-key`): it shows who produced the file, it is not an\n" +
 "  independent attestation.\n" +
 "\n" +
+"### Wave 14 Commands (stack bound, certificate checker, runtime-helper verifier, X.509, split bundle)\n" +
+"  lume stack <src.src> [--fn <f,g>] [--asm <file.s>] [--critical] [--json]   Worst-case stack bytes of `@no_alloc` functions on the emitted x86-64 text (`lstack`)\n" +
+"  lume smt-check <cert.smt2>... [--dir <dir>] [--raw] [--budget <n>] [--verbose]   Check the SMT-LIB2 certificates of `lume tv` with the native checker (`lsmt`)\n" +
+"  lume tv-rt <src.src> [--asm <file.s>] [--canon]   Verify the emitted integer runtime helpers against their specification (`ltv_rt`)\n" +
+"  lume x509 verify --chain <leaf.der,ca.der> --anchor <root.der> --now <unix-seconds>   X.509 v3 path validation (Ed25519); exit 0 valid, 3 invalid\n" +
+"  lume x509 show <certificate>               Parsed fields of one certificate (DER or PEM) as JSON\n" +
+"  lume entropy [--bytes <n>] [--source <device>] [--json]   Health-checked bytes of the OS random source\n" +
+"  lume safety-envelope <kernel.src> --fn <f> --split <outdir>   Export the split bundle (the two channels as standalone programs)\n" +
+"  lume safety-envelope --split-run --manifest <m> --seq <n> --args <a,b,..> --cmd-a <cmd> --cmd-b <cmd> [--cmd-c <cmd>] [--frame-timeout-ms <n>]\n" +
+"                                             Vote over the exported programs through the frame protocol\n" +
+"  lume safety-envelope --split-verify <manifest.json>   Re-hash the artifacts of a bundle against its manifest\n" +
+"  lume safety-envelope <kernel.src> --fn <f> --args <a,b,..> [--inject <kind:params>] [--log <file>] [--work <dir>] [--ltv <path>] [--ltv-timeout-ms <n>]\n" +
+"                                             The other protocol options of the lockstep run (`--inject` is a test instrument, recorded in the log)\n" +
+"  lume tv-rt-gate [--stride <n>]             Mutation gate of `ltv_rt` (`tv_rt_gate`)\n" +
+"  lume smt-cert-gate [--require-z3] [--solver <none>] [--chameleon] [--sites <n>] [--corpus <dir>]   Gate of `lsmt` (`smt_cert_gate`; z3 is the ground truth when installed)\n" +
+"  lume lcaas-scale-gate [--full] [--modes <a,b>] [--fams <x,y>] [--reps <k>] [--timeout <ms>] [--lcaas <path>]   Complexity regression gate of `lcaas` (`lcaas_scale_gate`)\n" +
+"  lume cli-parity                            The command-line parity gate alone (needs a source checkout)\n" +
+"\n" +
+"- **`lstack` (worst-case stack)**: for each `@no_alloc` function, the maximum over every path of the control-flow\n" +
+"  graph of the EMITTED text of the bytes used below the entry `%rsp`, return addresses and callees included; the\n" +
+"  runtime routines the function reaches are analysed by the same rules, not assumed. Two bounds are reported:\n" +
+"  `all paths` (often `unbounded`, because the slow path of `+` can box its result) and `proven`, which removes\n" +
+"  exactly the slow-path edges that the `[E0210]` range proofs make dead and lists each removal as an assumption.\n" +
+"  Limits: the proven bound is conditional on those proofs (the tool does not re-prove them); a caller outside\n" +
+"  `@no_alloc` code can pass a boxed integer; signal frames are outside the model; a call cycle or a path into the\n" +
+"  allocator is `unbounded`. Exit status 3 when a function is rejected.\n" +
+"- **`lsmt` (certificate checker)**: a decision procedure that shares no code with `ltv`, `lcert` or the compiler\n" +
+"  (polynomial normal form, congruence, case split over the integers). Only `unsat` passes: `unknown`,\n" +
+"  `unsupported`, `malformed` and `forged` are failures. In certificate mode the script must have the exact shape of\n" +
+"  an `ltv` claim (`--raw` refutes any script of the subset). Limits: `unsat` establishes that the certificate TEXT\n" +
+"  is a valid refutation, not that the text describes the source and the assembly (that binding is `ltv`'s); the\n" +
+"  procedure is incomplete by design (budget, non-linear terms as opaque atoms).\n" +
+"- **`ltv_rt` (runtime helpers)**: the integer helpers `ltv` takes as axioms (`mkint`, `addv`, `__rt_sub`,\n" +
+"  `__rt_mul`, `__rt_div`, `__rt_mod`, the wrapping forms, `cmpv`, `eqv`, the unboxing helpers) are verified on the\n" +
+"  emitted text by symbolic execution over all inputs of the modelled cases; anything outside the model is a\n" +
+"  rejection. What stays an axiom: the allocator contract, the trap tail that does not return, and the listed\n" +
+"  x86-64 facts. `--canon` adds the experiment that shows which helpers rely on the canonical-form invariant.\n" +
+"- **X.509 and entropy (`use lcrypto_tls`)**: `lume x509 verify` validates a path (leaf first, each certificate\n" +
+"  issued by the next) against pinned anchors at the instant `--now`: strict DER, validity periods,\n" +
+"  basicConstraints, keyUsage, path length, name chaining and Ed25519 signatures. Limits: Ed25519 only (RSA and\n" +
+"  ECDSA certificates are refused), at most 8 certificates, no host name matching, no revocation, no name\n" +
+"  constraints or policies; the tool has no clock, the caller supplies `--now`. `lume entropy` reads `/dev/urandom`\n" +
+"  and releases bytes only when the health checks pass (all zero, all equal, repetition count, adaptive proportion,\n" +
+"  identical consecutive reads): they detect a dead or stuck source, they do NOT measure or certify entropy.\n" +
+"- **Clean-room channel B**: the monitor channel of `lume safety-envelope` shares no front end with `lumec`. Its\n" +
+"  lexer, parser, typed checker and RV32IM code generator are written from the language definition inside\n" +
+"  `lsafety_envelope.src`, which does not link the compiler (the gate checks that on the bundle of the tool), and\n" +
+"  it compiles every `requires` / `ensures` into a run-time check. Where the specification and `lumec` differ the\n" +
+"  kernel is refused. Limits: both channels are given the same kernel text and the same language definition (a\n" +
+"  wrong specification is implemented twice); the same team wrote both; integer / bool kernel fragment only; i32\n" +
+"  monitor domain.\n" +
+"- **Split bundle** (`docs/41-safety-envelope-split-bundle.md`): `--split` writes channel A as x86-64, AArch64 and\n" +
+"  RV64 programs, channel B as a bare-metal RV32IM image, and `manifest.json` with the size and SHA-256 of each.\n" +
+"  `--split-run` sends one request frame to each command and votes on the response frames (CRC, sequence, kernel id,\n" +
+"  argument echo, status, exact result); a missing, late, malformed or replayed frame is a trip, latched in the\n" +
+"  event log. Real level: executed on this host and under QEMU (`qemu-aarch64`, `qemu-riscv64`,\n" +
+"  `qemu-system-riscv32`), not on silicon; two processes on one host are not two boards; the voter and its log are\n" +
+"  a single point. The AArch64 / RV64 programs exist only for kernels inside the `lkir` fragment (the manifest\n" +
+"  records why otherwise).\n" +
+"- **Driver cache and concurrent runs**: `lume build`, `lume run`, `lume test`, `lume check`, `lume prove` and\n" +
+"  `lume certify` keep their cache in `build/driver-cache` of the checkout (hash-checked entries, published by\n" +
+"  rename), use per-process scratch names and write nothing under the home directory, so several drivers can work\n" +
+"  in one checkout. The key of a cached bundle is the SHA-256 of every bundled module.\n" +
+"- **`lume pack`**: the body is the LZ4 block format; the file starts with a 20-byte header (magic `LZ1`, original\n" +
+"  length, checksum) and is not an LZ4 frame.\n" +
+"\n" +
 "## 8.4 Universal Module Orchestrator (`LumeSynapse`) & Proactive Memory\n" +
 "- `lume synapse <file.src>` (or `lume orchestrate <file.src>`): Coordinates all Lume\n" +
 "  organs (`lmod`, `lumec`, `lasm`, `lcaas`, `lcert`, `ltest`, `lprotect`, `lsentience`)\n" +
-"  via the real-time shared blackboard (`synapse_bus.json`), performing Cross-Organ\n" +
-"  Omni-Warming (`prove -> check`, `certify -> prove + check`) and Compiler <-> Auto-Heal\n" +
-"  Synaptic Reflex (`synapse_last_diagnostic.json`).\n" +
+"  via the shared blackboard (`synapse_bus.json`) of the sentience memory under the home directory.\n" +
+"  Since Wave 14 the plain commands (`lume build`, `lume run`, `lume test`, `lume check`, `lume prove`,\n" +
+"  `lume certify`) do not write that memory: their cache is `build/driver-cache` inside the checkout, and\n" +
+"  `lume check` and `lume prove` share one cached oracle answer per bundle.\n" +
 "- `lume recall <file.src>`: Queries the O(1) content-addressed proactive memory cache\n" +
 "  protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and\n" +
 "  20x faster builds).\n" +
@@ -1392,7 +1462,7 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "  lume trace <src.src>                   Rastreamento estruturado de execucao em JSON\n" +
 "  lume diff-semver <antigo> <novo>       Calcula impacto SemVer (MAJOR/MINOR/PATCH)\n" +
 "  lume symbolize <arq.lsym> <consulta>   Desofusca simbolos e enderecos P33\n" +
-"  lume pack / lume unpack <in> -o <out>  Compressor atomico de blocos LZ1 e capsulas\n" +
+"  lume pack / lume unpack <in> -o <out>  Compactador de arenas frias e capsulas: formato de bloco LZ4 atras de um cabecalho `LZ1` de 20 bytes (nao e um frame LZ4)\n" +
 "  lume genesis <nome_app> [dominio]      Sintetiza sistema full-stack para 8 alvos\n" +
 "  lume heal <src.src>                    Autocura contratos violados usando contraexemplos\n" +
 "  lume equiv <spec.src> <fast.src>       Prova equivalencia algoritmica e superotimiza\n" +
@@ -1454,8 +1524,9 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "  do watchdog, o canal B parou dentro do orcamento de ciclos (`@bound(cycles: N)` x 16, ou `--budget`) sem trap, o\n" +
 "  `ltv` validou o kernel e as duas palavras sao iguais. Qualquer outro caso trava `SAFE_STATE_TRIP` no log encadeado\n" +
 "  `build/certification/safety_envelope_events.jsonl` ate `--reset`. Nivel real: o canal B e um interpretador RV32IM em\n" +
-"  software no mesmo host (diversidade de projeto, nao independencia fisica); o front-end e comum aos dois canais; o\n" +
-"  dominio do monitor e i32 (um kernel que sai dele entra em estado seguro).\n" +
+"  software no mesmo host (diversidade de projeto, nao independencia fisica); desde a Onda 14 o canal B compila o\n" +
+"  kernel com um front-end proprio, clean-room (veja a secao da Onda 14 abaixo), mas os dois canais ainda leem o\n" +
+"  mesmo texto do kernel; o dominio do monitor e i32 (um kernel que sai dele entra em estado seguro).\n" +
 "- **`lume qualify` (Dominio `#114`)** roda 70 sondas, as baterias de modulo (ltv, lmcdc, estado das provas) e 16 gates,\n" +
 "  confere a matriz de rastreabilidade bidirecional (todo requisito precisa de pai, arquivo-fonte existente, teste\n" +
 "  positivo passando, teste negativo passando e gate de mutacao ou prova passando) e grava o dossie. E o pacote de\n" +
@@ -1479,8 +1550,9 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "- **`@no_alloc` (Dominio `#116`, `[E0210]`)**: a funcao e toda funcao que ela chama (o cheque e transitivo) nao\n" +
 "  podem alcancar alocacao no heap: parametros `int`/`bool` com limites provados, `+ - *` provados dentro da faixa\n" +
 "  imediata de 63 bits, nenhum record, construtor com campos, string ou builtin que aloca, recursao so em posicao de\n" +
-"  cauda. O `realtime_gate` mede o resultado com `heap_stats()`: zero alocacoes nos kernels aceitos. Limites: nao se\n" +
-"  calcula profundidade maxima de pilha em bytes e nada e cronometrado; `@bound` e o orcamento de ciclos.\n" +
+"  cauda. O `realtime_gate` mede o resultado com `heap_stats()`: zero alocacoes nos kernels aceitos. Limites: nada\n" +
+"  e cronometrado; `@bound` e o orcamento de ciclos. A profundidade maxima de pilha em bytes e calculada a parte,\n" +
+"  sobre o codigo emitido, pelo `lume stack` (secao da Onda 14 abaixo).\n" +
 "- **Kernels constant-time (`@secret` + `@no_alloc`, `[C0011]`)**: uma funcao com os dois atributos e baixada para\n" +
 "  codigo em linha reta sobre inteiros imediatos: sem teste de tag, sem teste de overflow, sem chamada de runtime,\n" +
 "  sem salto. O `[C0011]` rejeita o resto: parametros e resultado `int`; sem `requires` (mascare com `bit_and`; o\n" +
@@ -1507,7 +1579,7 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "  o mesmo vale para toda rotina que ela alcanca por `call` (a varredura e transitiva e nomeia a cadeia).\n" +
 "  Limites: testado, nao verificado formalmente; uma funcao `@secret` comum que usa `+` ou operacao de bit e\n" +
 "  rejeitada pelo `[C0010]` (os helpers dela desviam): escreva-a como kernel constant-time;\n" +
-"  sem validacao de cadeia X.509.\n" +
+"  a validacao de cadeia X.509 cobre apenas cadeias Ed25519 (`lume x509 verify`, secao da Onda 14 abaixo).\n" +
 "- **Cache incremental de provas (Dominio `#120`)**: um registro selado por funcao, indexado pelo SHA-256 do corpo,\n" +
 "  dos contratos, das interfaces dos chamados e da versao do provador. Registro adulterado e recusado (`[PC0002]`),\n" +
 "  modulo refutado pelo provador nunca e gravado (`[PC0003]`), `--require-all-hits` transforma miss em erro (`[PC0005]`).\n" +
@@ -1522,12 +1594,80 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "  arquivo no host (`/root/.lume/keys/qualification_ed25519.seed` ou `--sign-key`): ela mostra quem produziu o\n" +
 "  arquivo, nao e um atestado independente.\n" +
 "\n" +
+"### Comandos da Onda 14 (limite de pilha, verificador de certificados, verificador do runtime, X.509, split bundle)\n" +
+"  lume stack <src.src> [--fn <f,g>] [--asm <file.s>] [--critical] [--json]   Bytes de pilha no pior caso das funcoes `@no_alloc`, sobre o x86-64 emitido (`lstack`)\n" +
+"  lume smt-check <cert.smt2>... [--dir <dir>] [--raw] [--budget <n>] [--verbose]   Confere os certificados SMT-LIB2 do `lume tv` com o verificador nativo (`lsmt`)\n" +
+"  lume tv-rt <src.src> [--asm <file.s>] [--canon]   Verifica os helpers inteiros do runtime emitidos contra a especificacao (`ltv_rt`)\n" +
+"  lume x509 verify --chain <leaf.der,ca.der> --anchor <root.der> --now <unix-seconds>   Validacao de caminho X.509 v3 (Ed25519); exit 0 valido, 3 invalido\n" +
+"  lume x509 show <certificate>               Campos de um certificado (DER ou PEM) em JSON\n" +
+"  lume entropy [--bytes <n>] [--source <device>] [--json]   Bytes da fonte aleatoria do SO, liberados apos os testes de saude\n" +
+"  lume safety-envelope <kernel.src> --fn <f> --split <outdir>   Exporta o split bundle (os dois canais como programas independentes)\n" +
+"  lume safety-envelope --split-run --manifest <m> --seq <n> --args <a,b,..> --cmd-a <cmd> --cmd-b <cmd> [--cmd-c <cmd>] [--frame-timeout-ms <n>]\n" +
+"                                             Vota sobre os programas exportados pelo protocolo de frames\n" +
+"  lume safety-envelope --split-verify <manifest.json>   Recalcula o hash dos artefatos de um bundle contra o manifesto\n" +
+"  lume safety-envelope <kernel.src> --fn <f> --args <a,b,..> [--inject <kind:params>] [--log <file>] [--work <dir>] [--ltv <path>] [--ltv-timeout-ms <n>]\n" +
+"                                             As demais opcoes do protocolo do lockstep (`--inject` e instrumento de teste, registrado no log)\n" +
+"  lume tv-rt-gate [--stride <n>]             Gate de mutacao do `ltv_rt` (`tv_rt_gate`)\n" +
+"  lume smt-cert-gate [--require-z3] [--solver <none>] [--chameleon] [--sites <n>] [--corpus <dir>]   Gate do `lsmt` (`smt_cert_gate`; o z3 e a verdade de referencia quando instalado)\n" +
+"  lume lcaas-scale-gate [--full] [--modes <a,b>] [--fams <x,y>] [--reps <k>] [--timeout <ms>] [--lcaas <path>]   Gate de regressao de complexidade do `lcaas` (`lcaas_scale_gate`)\n" +
+"  lume cli-parity                            O gate de paridade da linha de comando, sozinho (precisa de um checkout do fonte)\n" +
+"\n" +
+"- **`lstack` (pilha no pior caso)**: para cada funcao `@no_alloc`, o maximo, sobre todo caminho do grafo de fluxo\n" +
+"  de controle do texto EMITIDO, dos bytes usados abaixo do `%rsp` de entrada, incluindo enderecos de retorno e\n" +
+"  chamados; as rotinas de runtime alcancadas sao analisadas pelas mesmas regras, nao presumidas. Dois limites sao\n" +
+"  reportados: `all paths` (muitas vezes `unbounded`, porque o caminho lento do `+` pode alocar) e `proven`, que\n" +
+"  remove exatamente as arestas de caminho lento que as provas de faixa do `[E0210]` tornam mortas e lista cada\n" +
+"  remocao como uma premissa. Limites: o limite `proven` e condicional a essas provas (a ferramenta nao as refaz);\n" +
+"  um chamador fora de codigo `@no_alloc` pode passar um inteiro boxed; frames de sinal ficam fora do modelo; um\n" +
+"  ciclo de chamadas ou um caminho ate o alocador e `unbounded`. Status de saida 3 quando uma funcao e rejeitada.\n" +
+"- **`lsmt` (verificador de certificados)**: um procedimento de decisao que nao compartilha codigo com o `ltv`, o\n" +
+"  `lcert` ou o compilador (forma normal polinomial, congruencia, divisao de casos sobre os inteiros). So `unsat`\n" +
+"  passa: `unknown`, `unsupported`, `malformed` e `forged` sao falhas. No modo certificado o script precisa ter a\n" +
+"  forma exata de uma afirmacao do `ltv` (`--raw` refuta qualquer script do subconjunto). Limites: `unsat`\n" +
+"  estabelece que o TEXTO do certificado e uma refutacao valida, nao que o texto descreve o fonte e o assembly\n" +
+"  (esse vinculo e do `ltv`); o procedimento e incompleto por projeto (orcamento, termos nao lineares como atomos).\n" +
+"- **`ltv_rt` (helpers do runtime)**: os helpers inteiros que o `ltv` toma como axiomas (`mkint`, `addv`,\n" +
+"  `__rt_sub`, `__rt_mul`, `__rt_div`, `__rt_mod`, as formas com wrap, `cmpv`, `eqv`, os helpers de unboxing) sao\n" +
+"  verificados no texto emitido por execucao simbolica sobre todas as entradas dos casos modelados; o que fica fora\n" +
+"  do modelo e rejeicao. Continuam axiomas: o contrato do alocador, a cauda de trap que nao retorna e os fatos de\n" +
+"  x86-64 listados. `--canon` acrescenta o experimento que mostra quais helpers dependem do invariante canonico.\n" +
+"- **X.509 e entropia (`use lcrypto_tls`)**: o `lume x509 verify` valida um caminho (folha primeiro, cada\n" +
+"  certificado emitido pelo seguinte) contra ancoras fixadas, no instante `--now`: DER estrito, validade,\n" +
+"  basicConstraints, keyUsage, comprimento de caminho, encadeamento de nomes e assinaturas Ed25519. Limites: apenas\n" +
+"  Ed25519 (certificados RSA e ECDSA sao recusados), no maximo 8 certificados, sem conferencia de nome de host, sem\n" +
+"  revogacao, sem name constraints nem politicas; a ferramenta nao tem relogio, quem chama fornece `--now`. O\n" +
+"  `lume entropy` le `/dev/urandom` e so libera bytes quando os testes de saude passam (tudo zero, tudo igual,\n" +
+"  contagem de repeticao, proporcao adaptativa, leituras consecutivas identicas): eles detectam fonte morta ou\n" +
+"  travada, NAO medem nem certificam entropia.\n" +
+"- **Canal B clean-room**: o canal monitor do `lume safety-envelope` nao compartilha front-end com o `lumec`. O\n" +
+"  lexer, o parser, o checker tipado e o gerador de codigo RV32IM dele sao escritos a partir da definicao da\n" +
+"  linguagem dentro de `lsafety_envelope.src`, que nao liga o compilador (o gate confere isso no bundle da\n" +
+"  ferramenta), e todo `requires` / `ensures` vira cheque em tempo de execucao. Onde a especificacao e o `lumec`\n" +
+"  divergem, o kernel e recusado. Limites: os dois canais recebem o mesmo texto do kernel e a mesma definicao da\n" +
+"  linguagem (uma especificacao errada e implementada duas vezes); a mesma equipe escreveu os dois; apenas o\n" +
+"  fragmento de kernel inteiro / bool; dominio i32 no monitor.\n" +
+"- **Split bundle** (`docs/41-safety-envelope-split-bundle.md`): `--split` grava o canal A como programas x86-64,\n" +
+"  AArch64 e RV64, o canal B como imagem RV32IM bare-metal, e `manifest.json` com tamanho e SHA-256 de cada um.\n" +
+"  `--split-run` envia um frame de requisicao a cada comando e vota sobre os frames de resposta (CRC, sequencia, id\n" +
+"  do kernel, eco dos argumentos, status, resultado exato); frame ausente, atrasado, malformado ou repetido e trip,\n" +
+"  travado no log de eventos. Nivel real: executado neste host e sob QEMU (`qemu-aarch64`, `qemu-riscv64`,\n" +
+"  `qemu-system-riscv32`), nao em silicio; dois processos em um host nao sao duas placas; o votador e o log dele\n" +
+"  sao um ponto unico. Os programas AArch64 / RV64 so existem para kernels dentro do fragmento do `lkir` (o\n" +
+"  manifesto registra o motivo quando nao).\n" +
+"- **Cache do driver e execucoes concorrentes**: `lume build`, `lume run`, `lume test`, `lume check`, `lume prove`\n" +
+"  e `lume certify` mantem o cache em `build/driver-cache` do checkout (entradas conferidas por hash, publicadas por\n" +
+"  rename), usam nomes de rascunho por processo e nao gravam nada no diretorio home; assim varios drivers podem\n" +
+"  trabalhar no mesmo checkout. A chave de um bundle em cache e o SHA-256 de todo modulo incluido.\n" +
+"- **`lume pack`**: o corpo e o formato de bloco LZ4; o arquivo comeca com um cabecalho de 20 bytes (magica `LZ1`,\n" +
+"  tamanho original, checksum) e nao e um frame LZ4.\n" +
+"\n" +
 "## 8.4 Orquestrador Universal de Modulos (`LumeSynapse`) e Memoria Proativa\n" +
 "- `lume synapse <arq.src>` (ou `lume orchestrate <arq.src>`): Coordena todos os modulos\n" +
 "  da Lume (`lmod`, `lumec`, `lasm`, `lcaas`, `lcert`, `ltest`, `lprotect`, `lsentience`)\n" +
-"  como um unico organismo vivo atraves do barramento em tempo real (`synapse_bus.json`),\n" +
-"  com Alimentacao Cruzada Instantanea (`prove -> check`, `certify -> prove + check`) e\n" +
-"  Reflexo Sinaptico Compilador <-> Autocura (`synapse_last_diagnostic.json`).\n" +
+"  atraves do barramento compartilhado (`synapse_bus.json`) da memoria de senciencia no diretorio home.\n" +
+"  Desde a Onda 14 os comandos comuns (`lume build`, `lume run`, `lume test`, `lume check`, `lume prove`,\n" +
+"  `lume certify`) nao gravam essa memoria: o cache deles e `build/driver-cache` dentro do checkout, e\n" +
+"  `lume check` e `lume prove` compartilham uma resposta do oraculo em cache por bundle.\n" +
 "- `lume recall <arq.src>`: Consulta a Memoria Soberana Proativa O(1) com selos\n" +
 "  criptograficos `.sha256` anti-adulteracao (provas ate 91x mais rapidas e builds 20x\n" +
 "  mais rapidos).\n" +

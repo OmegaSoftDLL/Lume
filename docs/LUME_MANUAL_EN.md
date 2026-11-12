@@ -596,7 +596,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume diff-semver <old.src> <new.src>   Mathematical SemVer bump analyzer
   lume symbolize <file.lsym> <query>     P33 obfuscated symbol/address resolver
   lume capsule seal|replay <file>        Tamper-evident execution capsule V2
-  lume pack / lume unpack <in> -o <out>  LZ1 atomic cold-arena & capsule block compressor
+  lume pack / lume unpack <in> -o <out>  Compactor for cold arenas and capsules: LZ4 block format behind a 20-byte `LZ1` header (not an LZ4 frame)
   lume genesis <app_name> [domain]       Full-stack + 8-target autonomous app synthesizer
   lume heal <src.src>                    Counterexample-driven contract self-healer
   lume equiv <spec.src> <fast.src>       Formal algorithmic equivalence prover
@@ -670,8 +670,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   its watchdog, channel B halted inside the cycle budget (`@bound(cycles: N)` x 16, or `--budget`) without a trap,
   `ltv` validated the kernel, and the two words are equal. Every other case latches `SAFE_STATE_TRIP` in the
   hash-chained log `build/certification/safety_envelope_events.jsonl` until `--reset`. Real level: channel B is a
-  software RV32IM interpreter on the same host (design diversity, not physical independence); the front end is
-  common to both channels; the monitor domain is i32 (a kernel that leaves it trips).
+  software RV32IM interpreter on the same host (design diversity, not physical independence); since Wave 14
+  channel B compiles the kernel with its own clean-room front end (see the Wave 14 section below), but both
+  channels still read the same kernel text; the monitor domain is i32 (a kernel that leaves it trips).
 - **`lume qualify` (Domain `#114`)** runs 70 probes, the module batteries (ltv, lmcdc, proof status) and 16 gates,
   checks the bidirectional traceability matrix (every requirement needs a parent, an existing source file, a passing
   positive test, a passing negative test and a passing mutation gate or proof) and writes the dossier. It is the
@@ -696,7 +697,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   must be unable to reach a heap allocation: `int`/`bool` parameters with proven bounds, `+ - *` proven inside the
   63-bit immediate range, no record, constructor with fields, string or allocating builtin, recursion in tail
   position only. `realtime_gate` measures the result with `heap_stats()`: zero allocations over the accepted
-  kernels. Limits: no worst-case stack depth in bytes is computed and nothing is timed; `@bound` is the cycle budget.
+  kernels. Limits: nothing is timed; `@bound` is the cycle budget. The worst-case stack depth in bytes is computed
+  separately, on the emitted code, by `lume stack` (Wave 14 section below).
 - **Constant-time kernels (`@secret` + `@no_alloc`, `[C0011]`)**: a function that carries both attributes is lowered
   to straight-line code on immediate integers: no tag test, no overflow test, no runtime call, no jump. `[C0011]`
   rejects everything else: parameters and result are `int`; no `requires` (mask with `bit_and`; the kernel is total
@@ -721,7 +723,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   may hold no conditional branch, division or memory access outside its frame, and neither may any routine it
   reaches by `call` (the scan is transitive and names the call chain). Limits: tested, not formally
   verified; a plain `@secret` function that uses `+` or a bit operation is rejected by `[C0010]` (its helpers
-  branch): write it as a constant-time kernel; no X.509 path validation.
+  branch): write it as a constant-time kernel; X.509 path validation covers Ed25519 chains only (`lume x509 verify`,
+  Wave 14 section below).
 - **Incremental proof cache (Domain `#120`)**: one sealed record per function, keyed by the SHA-256 of its body,
   contracts, callee interfaces and prover version. A tampered record is refused (`[PC0002]`), a module the prover
   refutes is never stored (`[PC0003]`), `--require-all-hits` turns a miss into an error (`[PC0005]`).
@@ -736,12 +739,79 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   host (`/root/.lume/keys/qualification_ed25519.seed` or `--sign-key`): it shows who produced the file, it is not an
   independent attestation.
 
+### Wave 14 Commands (stack bound, certificate checker, runtime-helper verifier, X.509, split bundle)
+  lume stack <src.src> [--fn <f,g>] [--asm <file.s>] [--critical] [--json]   Worst-case stack bytes of `@no_alloc` functions on the emitted x86-64 text (`lstack`)
+  lume smt-check <cert.smt2>... [--dir <dir>] [--raw] [--budget <n>] [--verbose]   Check the SMT-LIB2 certificates of `lume tv` with the native checker (`lsmt`)
+  lume tv-rt <src.src> [--asm <file.s>] [--canon]   Verify the emitted integer runtime helpers against their specification (`ltv_rt`)
+  lume x509 verify --chain <leaf.der,ca.der> --anchor <root.der> --now <unix-seconds>   X.509 v3 path validation (Ed25519); exit 0 valid, 3 invalid
+  lume x509 show <certificate>               Parsed fields of one certificate (DER or PEM) as JSON
+  lume entropy [--bytes <n>] [--source <device>] [--json]   Health-checked bytes of the OS random source
+  lume safety-envelope <kernel.src> --fn <f> --split <outdir>   Export the split bundle (the two channels as standalone programs)
+  lume safety-envelope --split-run --manifest <m> --seq <n> --args <a,b,..> --cmd-a <cmd> --cmd-b <cmd> [--cmd-c <cmd>] [--frame-timeout-ms <n>]
+                                             Vote over the exported programs through the frame protocol
+  lume safety-envelope --split-verify <manifest.json>   Re-hash the artifacts of a bundle against its manifest
+  lume safety-envelope <kernel.src> --fn <f> --args <a,b,..> [--inject <kind:params>] [--log <file>] [--work <dir>] [--ltv <path>] [--ltv-timeout-ms <n>]
+                                             The other protocol options of the lockstep run (`--inject` is a test instrument, recorded in the log)
+  lume tv-rt-gate [--stride <n>]             Mutation gate of `ltv_rt` (`tv_rt_gate`)
+  lume smt-cert-gate [--require-z3] [--solver <none>] [--chameleon] [--sites <n>] [--corpus <dir>]   Gate of `lsmt` (`smt_cert_gate`; z3 is the ground truth when installed)
+  lume lcaas-scale-gate [--full] [--modes <a,b>] [--fams <x,y>] [--reps <k>] [--timeout <ms>] [--lcaas <path>]   Complexity regression gate of `lcaas` (`lcaas_scale_gate`)
+  lume cli-parity                            The command-line parity gate alone (needs a source checkout)
+
+- **`lstack` (worst-case stack)**: for each `@no_alloc` function, the maximum over every path of the control-flow
+  graph of the EMITTED text of the bytes used below the entry `%rsp`, return addresses and callees included; the
+  runtime routines the function reaches are analysed by the same rules, not assumed. Two bounds are reported:
+  `all paths` (often `unbounded`, because the slow path of `+` can box its result) and `proven`, which removes
+  exactly the slow-path edges that the `[E0210]` range proofs make dead and lists each removal as an assumption.
+  Limits: the proven bound is conditional on those proofs (the tool does not re-prove them); a caller outside
+  `@no_alloc` code can pass a boxed integer; signal frames are outside the model; a call cycle or a path into the
+  allocator is `unbounded`. Exit status 3 when a function is rejected.
+- **`lsmt` (certificate checker)**: a decision procedure that shares no code with `ltv`, `lcert` or the compiler
+  (polynomial normal form, congruence, case split over the integers). Only `unsat` passes: `unknown`,
+  `unsupported`, `malformed` and `forged` are failures. In certificate mode the script must have the exact shape of
+  an `ltv` claim (`--raw` refutes any script of the subset). Limits: `unsat` establishes that the certificate TEXT
+  is a valid refutation, not that the text describes the source and the assembly (that binding is `ltv`'s); the
+  procedure is incomplete by design (budget, non-linear terms as opaque atoms).
+- **`ltv_rt` (runtime helpers)**: the integer helpers `ltv` takes as axioms (`mkint`, `addv`, `__rt_sub`,
+  `__rt_mul`, `__rt_div`, `__rt_mod`, the wrapping forms, `cmpv`, `eqv`, the unboxing helpers) are verified on the
+  emitted text by symbolic execution over all inputs of the modelled cases; anything outside the model is a
+  rejection. What stays an axiom: the allocator contract, the trap tail that does not return, and the listed
+  x86-64 facts. `--canon` adds the experiment that shows which helpers rely on the canonical-form invariant.
+- **X.509 and entropy (`use lcrypto_tls`)**: `lume x509 verify` validates a path (leaf first, each certificate
+  issued by the next) against pinned anchors at the instant `--now`: strict DER, validity periods,
+  basicConstraints, keyUsage, path length, name chaining and Ed25519 signatures. Limits: Ed25519 only (RSA and
+  ECDSA certificates are refused), at most 8 certificates, no host name matching, no revocation, no name
+  constraints or policies; the tool has no clock, the caller supplies `--now`. `lume entropy` reads `/dev/urandom`
+  and releases bytes only when the health checks pass (all zero, all equal, repetition count, adaptive proportion,
+  identical consecutive reads): they detect a dead or stuck source, they do NOT measure or certify entropy.
+- **Clean-room channel B**: the monitor channel of `lume safety-envelope` shares no front end with `lumec`. Its
+  lexer, parser, typed checker and RV32IM code generator are written from the language definition inside
+  `lsafety_envelope.src`, which does not link the compiler (the gate checks that on the bundle of the tool), and
+  it compiles every `requires` / `ensures` into a run-time check. Where the specification and `lumec` differ the
+  kernel is refused. Limits: both channels are given the same kernel text and the same language definition (a
+  wrong specification is implemented twice); the same team wrote both; integer / bool kernel fragment only; i32
+  monitor domain.
+- **Split bundle** (`docs/41-safety-envelope-split-bundle.md`): `--split` writes channel A as x86-64, AArch64 and
+  RV64 programs, channel B as a bare-metal RV32IM image, and `manifest.json` with the size and SHA-256 of each.
+  `--split-run` sends one request frame to each command and votes on the response frames (CRC, sequence, kernel id,
+  argument echo, status, exact result); a missing, late, malformed or replayed frame is a trip, latched in the
+  event log. Real level: executed on this host and under QEMU (`qemu-aarch64`, `qemu-riscv64`,
+  `qemu-system-riscv32`), not on silicon; two processes on one host are not two boards; the voter and its log are
+  a single point. The AArch64 / RV64 programs exist only for kernels inside the `lkir` fragment (the manifest
+  records why otherwise).
+- **Driver cache and concurrent runs**: `lume build`, `lume run`, `lume test`, `lume check`, `lume prove` and
+  `lume certify` keep their cache in `build/driver-cache` of the checkout (hash-checked entries, published by
+  rename), use per-process scratch names and write nothing under the home directory, so several drivers can work
+  in one checkout. The key of a cached bundle is the SHA-256 of every bundled module.
+- **`lume pack`**: the body is the LZ4 block format; the file starts with a 20-byte header (magic `LZ1`, original
+  length, checksum) and is not an LZ4 frame.
+
 ## 8.4 Universal Module Orchestrator (`LumeSynapse`) & Proactive Memory
 - `lume synapse <file.src>` (or `lume orchestrate <file.src>`): Coordinates all Lume
   organs (`lmod`, `lumec`, `lasm`, `lcaas`, `lcert`, `ltest`, `lprotect`, `lsentience`)
-  via the real-time shared blackboard (`synapse_bus.json`), performing Cross-Organ
-  Omni-Warming (`prove -> check`, `certify -> prove + check`) and Compiler <-> Auto-Heal
-  Synaptic Reflex (`synapse_last_diagnostic.json`).
+  via the shared blackboard (`synapse_bus.json`) of the sentience memory under the home directory.
+  Since Wave 14 the plain commands (`lume build`, `lume run`, `lume test`, `lume check`, `lume prove`,
+  `lume certify`) do not write that memory: their cache is `build/driver-cache` inside the checkout, and
+  `lume check` and `lume prove` share one cached oracle answer per bundle.
 - `lume recall <file.src>`: Queries the O(1) content-addressed proactive memory cache
   protected by `.sha256` cryptographic anti-tamper seals (up to 91x faster proofs and
   20x faster builds).
@@ -934,7 +1004,12 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
   lume tv|translation-validate [--fn <value>] [--exec] [--json] <source.src>
   lume mcdc [--fn <value>] [--budget <value>] [--exec] [--json] <source.src>
   lume bundle <source.src>
-  lume safety-envelope|lockstep [--fn <value>] [--args <value>] [--budget <value>] [--timeout-ms <value>] [--reset] [--gate] [kernel.src]
+  lume safety-envelope|lockstep [--fn <value>] [--args <value>] [--budget <value>] [--timeout-ms <value>] [--ltv <value>] [--ltv-timeout-ms <value>] [--log <value>] [--work <value>] [--inject <value>] [--reset] [--gate] [--split <value>] [--split-run] [--manifest <value>] [--seq <value>] [--cmd-a <value>] [--cmd-b <value>] [--cmd-c <value>] [--frame-timeout-ms <value>] [--split-verify <value>] [kernel.src]
+  lume stack [--fn <value>] [--asm <value>] [--critical] [--json] [source.src]
+  lume smt-check [--dir <value>] [--raw] [--budget <value>] [--verbose] [--json] [certificate.smt2]...
+  lume tv-rt [--asm <value>] [--canon] [--json] [source.src]
+  lume x509 <verify|show> [--chain <value>] [--anchor <value>] [--now <value>] [--json] [certificate]
+  lume entropy [--bytes <value>] [--source <value>] [--json]
   lume tv-gate [--stride <value>]
   lume soak|soak-battle|battle [--rounds <value>] [--procs <value>] [--seed <value>]
   lume prover-fuzz [--n <value>] [--seed <value>]
@@ -946,6 +1021,10 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
   lume safetensors-gate
   lume dwarf-cache-gate
   lume cert-source-gate
+  lume tv-rt-gate [--stride <value>]
+  lume smt-cert-gate [--require-z3] [--solver <value>] [--chameleon] [--sites <value>] [--corpus <value>]
+  lume lcaas-scale-gate [--full] [--modes <value>] [--fams <value>] [--reps <value>] [--timeout <value>] [--lcaas <value>]
+  lume cli-parity
   lume bootstrap|zero-c|amalgamate|seed|clean
   lume qwenputer|lumeputer|lumepu|weight-vm|in-weights-npu [exec|run] [--json] [--fn <value>] [--args <value>] [--budget <value>] [kernel.src] (values: sync|status)
   lume ui-layout|@ui-layout [--json] [file] (values: sync|status)

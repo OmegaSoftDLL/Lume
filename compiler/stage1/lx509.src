@@ -1,0 +1,200 @@
+## lx509.src -- the command-line face of the X.509 path validation and of the OS entropy source of lcrypto_tls.src
+## (`lume x509 verify`, `lume x509 show`, `lume entropy`). Every verdict printed here is computed by lcrypto_tls
+## (`lct_x509_parse`, `lct_x509_verify_chain`, `lct_entropy_check2`); this file only reads files, calls it and prints.
+##
+## stdin: `@cmd verify`  `@chain <a.der>[,<b.der>...]` (repeatable; the leaf first, each certificate issued by the next)
+##                       `@anchor <root.der>` (repeatable; at least one)   `@now <unix seconds>`
+##        `@cmd show`    `@cert <file>`
+##        `@cmd entropy` `[@bytes <n>]` (1..65536, default 32)   `[@source <device>]` (default /dev/urandom)   `[@json 1]`
+## A certificate file is DER, or PEM (`-----BEGIN CERTIFICATE-----` blocks, RFC 7468; a PEM file may hold several
+## certificates, taken in order). A file over 65536 bytes is refused before it is read.
+## stdout: one JSON object (`entropy` without `@json 1`: the bytes as one line of hexadecimal).
+## Exit status: 0 = the chain is valid / the certificate parsed / the draw passed the health check;
+##              3 = the JSON on stdout says why not (`ok` is false); a usage or file error exits 3 with the reason on
+##                  stderr and nothing on stdout.
+##
+## Real level and limits (they are those of lcrypto_tls.src, section "X.509 v3 certificates"):
+##   * Ed25519 signatures only (RFC 8410); RSA / ECDSA certificates are refused ("unsupported signature algorithm").
+##   * A path is at most 8 certificates. No host name matching, no revocation (CRL / OCSP), no name constraints, no
+##     policy processing; a critical extension other than basicConstraints / keyUsage is refused.
+##   * `--now` is supplied by the caller: the tool has no clock of its own, so "valid" means "valid at that instant".
+##   * `entropy` reads the kernel CSPRNG (two blocks of max(n, 512) bytes) and applies the SP 800-90B style health
+##     checks of `lct_entropy_check2` (all zero, all equal, repetition count, adaptive proportion, identical reads).
+##     They detect a dead or stuck source. They do NOT measure or certify entropy.
+##   * PEM decoding is strict on the alphabet and the padding of each block; text outside the blocks is ignored.
+use lcrypto_tls
+
+fn lx_line_end(s, n, i) = if i >= n or at(s, i) == "\n" then i else lx_line_end(s, n, i + 1)
+
+fn lx_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lx_rev(t, Cons(h, acc))
+
+fn lx_strip_cr(s) = if count(s) > 0 and at(s, count(s) - 1) == "\r" then slice(s, 0, count(s) - 1) else s
+
+## every value of the stdin lines `@key value`, in order
+fn lx_all_at(s, n, key, i, acc) = if i >= n then lx_rev(acc, Nil) else let e = lx_line_end(s, n, i) in let k = count(key) in lx_all_at(s, n, key, e + 1, if e - i > k + 2 and slice(s, i, i + k + 2) == "@" + key + " " then Cons(lx_strip_cr(slice(s, i + k + 2, e)), acc) else acc)
+
+fn lx_all(s, key) = lx_all_at(s, count(s), key, 0, Nil)
+
+fn lx_first(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+
+fn lx_get(s, key) = lx_first(lx_all(s, key))
+
+fn lx_split_commas(s, n, i, start, acc) = if i >= n then lx_rev(if start < n then Cons(slice(s, start, n), acc) else acc, Nil) else if at(s, i) == "," then lx_split_commas(s, n, i + 1, i + 1, if start < i then Cons(slice(s, start, i), acc) else acc) else lx_split_commas(s, n, i + 1, start, acc)
+
+fn lx_append(xs, ys) = lx_rev(lx_rev(xs, Nil), ys)
+
+## the file names of every `@chain a,b` line, flattened in order
+fn lx_paths(vals, acc) = match vals
+    Nil        => acc
+    Cons(h, t) => lx_paths(t, lx_append(acc, lx_split_commas(h, count(h), 0, 0, Nil)))
+
+fn lx_all_digits(s, n, i) = if i >= n then 1 else if at(s, i) >= "0" and at(s, i) <= "9" then lx_all_digits(s, n, i + 1) else 0
+
+## a decimal natural number of at most 15 digits, or -1
+fn lx_nat(s) = if count(s) < 1 or count(s) > 15 or lx_all_digits(s, count(s), 0) == 0 then 0 - 1 else toint(s)
+
+## --- files -------------------------------------------------------------------------------------------------------------
+fn lx_max_file() = 65536
+
+## 1 when the file has more than lx_max_file() bytes (one probe, nothing is read past it)
+fn lx_too_big(path) = if fs_read_byte(path, lx_max_file()) >= 0 then 1 else 0
+
+## the bytes of a file, first to last: {ok, bytes}; ok == 0 when the file cannot be read, is empty or is too big
+fn lx_read_acc(path, i, acc) = let b = fs_read_byte(path, i) in if b < 0 then lx_rev(acc, Nil) else lx_read_acc(path, i + 1, Cons(b, acc))
+
+fn lx_read(path) = if path == "" or fs_path_exists(path) == 0 or fs_read_byte(path, 0) < 0 or lx_too_big(path) == 1 then {ok: 0, bytes: Nil} else {ok: 1, bytes: lx_read_acc(path, 0, Nil)}
+
+## --- PEM (RFC 7468) and base64 (RFC 4648 section 4) ---------------------------------------------------------------------
+## the 6-bit value of a base64 character code, 64 for `=`, -1 for anything else
+fn lx_b64_val(o) = if o >= 65 and o <= 90 then o - 65 else if o >= 97 and o <= 122 then o - 71 else if o >= 48 and o <= 57 then o + 4 else if o == 43 then 62 else if o == 47 then 63 else if o == 61 then 64 else 0 - 1
+
+fn lx_is_space(o) = if o == 10 or o == 13 or o == 32 or o == 9 then 1 else 0
+
+## the 6-bit values of a base64 text with white space dropped; {ok, vs (reversed), n}
+fn lx_b64_vals(bs, acc, n) = match bs
+    Nil        => {ok: 1, vs: acc, n: n}
+    Cons(o, t) => if lx_is_space(o) == 1 then lx_b64_vals(t, acc, n) else let v = lx_b64_val(o) in if v < 0 then {ok: 0, vs: Nil, n: 0} else lx_b64_vals(t, Cons(v, acc), n + 1)
+
+## quanta of four values, taken from the reversed list (so the last quantum, the only one that may be padded, comes
+## first: `last` is 1 for it). A padded quantum must have zero bits in the positions it does not use.
+fn lx_b64_quanta(rv, acc, last) = if lct_isnil(rv) == 1 then {ok: 1, bytes: acc} else let r1 = lct_tl(rv) in let r2 = lct_tl(r1) in let r3 = lct_tl(r2) in if lct_isnil(r1) == 1 or lct_isnil(r2) == 1 or lct_isnil(r3) == 1 then {ok: 0, bytes: Nil} else lx_b64_q(lct_hd(r3), lct_hd(r2), lct_hd(r1), lct_hd(rv), lct_tl(r3), acc, last)
+
+fn lx_b64_q(a, b, c, d, rest, acc, last) = if a == 64 or b == 64 then {ok: 0, bytes: Nil} else if c == 64 and d == 64 then (if last == 0 or bit_and(b, 15) != 0 then {ok: 0, bytes: Nil} else lx_b64_quanta(rest, Cons(a * 4 + bit_shr(b, 4), acc), 0)) else if c == 64 then {ok: 0, bytes: Nil} else if d == 64 then (if last == 0 or bit_and(c, 3) != 0 then {ok: 0, bytes: Nil} else lx_b64_quanta(rest, Cons(a * 4 + bit_shr(b, 4), Cons(bit_and(b, 15) * 16 + bit_shr(c, 2), acc)), 0)) else lx_b64_quanta(rest, Cons(a * 4 + bit_shr(b, 4), Cons(bit_and(b, 15) * 16 + bit_shr(c, 2), Cons(bit_and(c, 3) * 64 + d, acc))), 0)
+
+## {ok, bytes}: the strict decoding of a base64 text given as character codes (white space allowed between characters)
+fn lx_b64_decode(bs) = let v = lx_b64_vals(bs, Nil, 0) in if v.ok == 0 or v.n == 0 or v.n % 4 != 0 then {ok: 0, bytes: Nil} else lx_b64_quanta(v.vs, Nil, 1)
+
+fn lx_str_codes(s, i, acc) = if i < 0 then acc else lx_str_codes(s, i - 1, Cons(ord(at(s, i)), acc))
+
+fn lx_codes(s) = lx_str_codes(s, count(s) - 1, Nil)
+
+## 1 when the list bs starts with the list p; lx_drop removes n elements
+fn lx_starts(bs, p) = if lct_isnil(p) == 1 then 1 else if lct_isnil(bs) == 1 then 0 else if lct_hd(bs) == lct_hd(p) then lx_starts(lct_tl(bs), lct_tl(p)) else 0
+
+fn lx_drop(bs, n) = if n <= 0 or lct_isnil(bs) == 1 then bs else lx_drop(lct_tl(bs), n - 1)
+
+fn lx_pem_begin() = lx_codes("-----BEGIN CERTIFICATE-----")
+
+fn lx_pem_end() = lx_codes("-----END CERTIFICATE-----")
+
+## the codes up to the END line: {ok, body (reversed), rest}
+fn lx_pem_body(bs, endm, acc) = match bs
+    Nil        => {ok: 0, body: Nil, rest: Nil}
+    Cons(o, t) => if o == 45 then (if lx_starts(bs, endm) == 1 then {ok: 1, body: acc, rest: lx_drop(bs, 25)} else {ok: 0, body: Nil, rest: Nil}) else lx_pem_body(t, endm, Cons(o, acc))
+
+## every certificate of a PEM text, in order: {ok, certs}; a BEGIN without its END or a block that is not base64 fails
+fn lx_pem_scan(bs, bm, endm, acc) = match bs
+    Nil        => {ok: 1, certs: lx_rev(acc, Nil)}
+    Cons(o, t) => if o == 45 and lx_starts(bs, bm) == 1 then lx_pem_block(lx_pem_body(lx_drop(bs, 27), endm, Nil), bm, endm, acc) else lx_pem_scan(t, bm, endm, acc)
+
+fn lx_pem_block(b, bm, endm, acc) = if b.ok == 0 then {ok: 0, certs: Nil} else let d = lx_b64_decode(lx_rev(b.body, Nil)) in if d.ok == 0 then {ok: 0, certs: Nil} else lx_pem_scan(b.rest, bm, endm, Cons(d.bytes, acc))
+
+## the certificates of one file: a DER file is one certificate (its first byte is the SEQUENCE tag 0x30, which no PEM
+## text starts with); anything else must be PEM with at least one block. {ok, certs, why}
+fn lx_certs_of_bytes(bs) = if lct_isnil(bs) == 1 then {ok: 0, certs: Nil, why: "empty"} else if lct_hd(bs) == 48 then {ok: 1, certs: Cons(bs, Nil), why: ""} else let p = lx_pem_scan(bs, lx_pem_begin(), lx_pem_end(), Nil) in if p.ok == 0 then {ok: 0, certs: Nil, why: "malformed PEM"} else if lct_isnil(p.certs) == 1 then {ok: 0, certs: Nil, why: "neither DER nor PEM"} else {ok: 1, certs: p.certs, why: ""}
+
+fn lx_certs_of_file(path) = let r = lx_read(path) in if r.ok == 0 then {ok: 0, certs: Nil, why: "cannot read (missing, empty or over 65536 bytes)"} else lx_certs_of_bytes(r.bytes)
+
+## the certificates of several files, concatenated in order: {ok, certs, why}
+fn lx_certs_of_files(paths, acc) = match paths
+    Nil        => {ok: 1, certs: acc, why: ""}
+    Cons(p, t) => let c = lx_certs_of_file(p) in if c.ok == 0 then {ok: 0, certs: Nil, why: p + ": " + c.why} else lx_certs_of_files(t, lx_append(acc, c.certs))
+
+fn lx_anchors(certs) = match certs
+    Nil        => Nil
+    Cons(c, t) => Cons(lct_x509_anchor_cert(c), lx_anchors(t))
+
+## --- reports -----------------------------------------------------------------------------------------------------------
+fn lx_bool(b) = if b == 1 then "true" else "false"
+
+fn lx_kalg_name(k) = if k == 1 then "Ed25519" else if k == 2 then "X25519" else "none"
+
+fn lx_verify_json(r, n_chain, n_anchors, now) = "{\"ok\":" + lx_bool(r.ok) + ",\"command\":\"x509-verify\",\"verdict\":\"" + (if r.ok == 1 then "valid" else "invalid") + "\",\"err\":" + str(r.err) + ",\"err_name\":\"" + lct_x509_err_name(r.err) + "\",\"at\":" + str(r.at) + ",\"depth\":" + str(r.depth) + ",\"chain_certificates\":" + str(n_chain) + ",\"trust_anchors\":" + str(n_anchors) + ",\"now\":" + str(now) + ",\"leaf_key\":\"" + lct_bytes_to_hex(r.leaf_key) + "\",\"leaf_subject_der\":\"" + lct_bytes_to_hex(r.leaf_subject) + "\",\"signature_algorithm\":\"Ed25519\",\"not_checked\":\"host name, revocation, name constraints, policies\"}"
+
+fn lx_show_json(p, n_bytes) = "{\"ok\":" + lx_bool(if p.err == 0 then 1 else 0) + ",\"command\":\"x509-show\",\"err\":" + str(p.err) + ",\"err_name\":\"" + lct_x509_err_name(p.err) + "\",\"der_bytes\":" + str(n_bytes) + (if p.err != 0 then "" else ",\"version\":" + str(p.ver) + ",\"serial\":\"" + lct_bytes_to_hex(p.serial) + "\",\"issuer_der\":\"" + lct_bytes_to_hex(p.issuer) + "\",\"subject_der\":\"" + lct_bytes_to_hex(p.subject) + "\",\"not_before\":" + str(p.nb) + ",\"not_after\":" + str(p.na) + ",\"self_issued\":" + lx_bool(lct_x509_self_issued(p)) + ",\"public_key_algorithm\":\"" + lx_kalg_name(p.kalg) + "\",\"public_key\":\"" + lct_bytes_to_hex(p.key) + "\",\"basic_constraints\":" + lx_bool(p.has_bc) + ",\"ca\":" + lx_bool(p.ca) + ",\"path_len\":" + str(p.pathlen) + ",\"key_usage_present\":" + lx_bool(p.has_ku) + ",\"key_usage_bits\":" + str(p.ku) + ",\"signature\":\"" + lct_bytes_to_hex(p.sig) + "\",\"signature_algorithm\":\"Ed25519\",\"signature_checked\":false") + "}"
+
+## {code, out, err}: what to print and the exit status
+fn lx_res(code, out, err) = {code: code, out: out, err: err}
+
+fn lx_usage() = "lx509: usage on stdin: @cmd verify + @chain <a.der[,b.der...]> + @anchor <root.der> + @now <unix seconds> | @cmd show + @cert <file> | @cmd entropy [@bytes <n>] [@source <device>] [@json 1]\n"
+
+fn lx_verify(input) = let cps = lx_paths(lx_all(input, "chain"), Nil) in let aps = lx_paths(lx_all(input, "anchor"), Nil) in let now = lx_nat(lx_get(input, "now")) in if lct_isnil(cps) == 1 then lx_res(3, "", "lume x509 verify: --chain <a.der[,b.der...]> is required (the leaf first)\n") else if lct_isnil(aps) == 1 then lx_res(3, "", "lume x509 verify: --anchor <root.der> is required (a pinned trust anchor; nothing is trusted by default)\n") else if now < 0 then lx_res(3, "", "lume x509 verify: --now <unix seconds> is required (the instant the validity periods are checked against)\n") else let ch = lx_certs_of_files(cps, Nil) in let an = lx_certs_of_files(aps, Nil) in if ch.ok == 0 then lx_res(3, "", "lume x509 verify: chain file " + ch.why + "\n") else if an.ok == 0 then lx_res(3, "", "lume x509 verify: anchor file " + an.why + "\n") else let r = lct_x509_verify_chain(ch.certs, lx_anchors(an.certs), now) in lx_res(if r.ok == 1 then 0 else 3, lx_verify_json(r, lct_len(ch.certs), lct_len(an.certs), now), "")
+
+fn lx_show(input) = let path = lx_get(input, "cert") in if path == "" then lx_res(3, "", "lume x509 show: a certificate file is required\n") else let c = lx_certs_of_file(path) in if c.ok == 0 then lx_res(3, "", "lume x509 show: " + path + ": " + c.why + "\n") else let der = lct_hd(c.certs) in let p = lct_x509_parse(der) in lx_res(if p.err == 0 then 0 else 3, lx_show_json(p, lct_len(der)), "")
+
+## --- entropy -----------------------------------------------------------------------------------------------------------
+## n bytes of a source, one `fs_read_byte` each (a character device ignores the offset, a regular file is read in order)
+fn lx_src_read(path, n, i, acc) = if i >= n then {ok: 1, bytes: lx_rev(acc, Nil)} else let b = fs_read_byte(path, i) in if b < 0 or b > 255 then {ok: 0, bytes: Nil} else lx_src_read(path, n, i + 1, Cons(b, acc))
+
+fn lx_block(n) = if n < 512 then 512 else n
+
+## the health-checked draw: {ok, err, bytes}; the decision is lcrypto_tls's (`lct_random_from_reads`), the default
+## source goes through `lct_random_bytes_checked` itself
+fn lx_draw(source, n) = if source == "" or source == "/dev/urandom" then lct_random_bytes_checked(n) else if fs_path_exists(source) == 0 then {ok: 0, err: 1, bytes: Nil} else let a = lx_src_read(source, lx_block(n), 0, Nil) in lct_random_from_reads(a, lx_src_read(source, lx_block(n), 0, Nil), n)
+
+fn lx_entropy_json(r, n, source) = "{\"ok\":" + lx_bool(r.ok) + ",\"command\":\"entropy\",\"source\":\"" + source + "\",\"bytes\":" + str(n) + ",\"health\":\"" + lct_entropy_err_name(r.err) + "\",\"err\":" + str(r.err) + ",\"checked_bytes\":" + str(2 * lx_block(n)) + ",\"checks\":\"all zero, all equal, repetition count, adaptive proportion (512-byte windows), identical consecutive reads\",\"certifies_entropy\":false,\"hex\":\"" + lct_bytes_to_hex(r.bytes) + "\"}"
+
+fn lx_entropy(input) = let raw = lx_get(input, "bytes") in let n = if raw == "" then 32 else lx_nat(raw) in let source = if lx_get(input, "source") == "" then "/dev/urandom" else lx_get(input, "source") in if n < 1 or n > 65536 then lx_res(3, "", "lume entropy: --bytes expects a number in 1..65536\n") else let r = lx_draw(source, n) in if lx_get(input, "json") == "1" then lx_res(if r.ok == 1 then 0 else 3, lx_entropy_json(r, n, source), "") else if r.ok == 1 then lx_res(0, lct_bytes_to_hex(r.bytes), "") else lx_res(3, "", "lume entropy: the source " + source + " failed the health check (" + lct_entropy_err_name(r.err) + "); no bytes are released\n")
+
+fn lx_main(input) = let cmd = lx_get(input, "cmd") in if cmd == "verify" then lx_verify(input) else if cmd == "show" then lx_show(input) else if cmd == "entropy" then lx_entropy(input) else lx_res(3, "", lx_usage())
+
+fn lx_finish(r) = if r.code == 0 then r.out else let w = if r.out == "" then 1 else fs_write_sync("/dev/stdout", r.out + "\n") in let e = if r.err == "" then 1 else fs_write_sync("/dev/stderr", r.err) in os_exit(r.code)
+
+## --- unit tests --------------------------------------------------------------------------------------------------------
+fn lx_t_b64(text) = lx_b64_decode(lx_codes(text))
+
+fn lx_t_str(bs, acc) = match bs
+    Nil        => acc
+    Cons(b, t) => lx_t_str(t, acc + chr(b))
+
+## RFC 4648 section 10 test vectors
+fn test_lx509_base64_rfc4648() = if lx_t_str((lx_t_b64("Zg==")).bytes, "") == "f" and lx_t_str((lx_t_b64("Zm8=")).bytes, "") == "fo" and lx_t_str((lx_t_b64("Zm9v")).bytes, "") == "foo" and lx_t_str((lx_t_b64("Zm9vYg==")).bytes, "") == "foob" and lx_t_str((lx_t_b64("Zm9vYmE=")).bytes, "") == "fooba" and lx_t_str((lx_t_b64("Zm9vYmFy")).bytes, "") == "foobar" and lx_t_str((lx_t_b64("Zm9v\nYmFy\r\n")).bytes, "") == "foobar" then 1 else 0
+
+## malformed base64 is refused: bad length, bad character, padding in the middle, non-zero bits under the padding
+fn test_lx509_base64_rejects() = if (lx_t_b64("")).ok == 0 and (lx_t_b64("Zm9")).ok == 0 and (lx_t_b64("Zm9*")).ok == 0 and (lx_t_b64("Zg==Zm9v")).ok == 0 and (lx_t_b64("Zh==")).ok == 0 and (lx_t_b64("Zm9=")).ok == 0 and (lx_t_b64("=m9v")).ok == 0 and (lx_t_b64("Z===")).ok == 0 and (lx_t_b64("Zm=v")).ok == 0 then 1 else 0
+
+fn lx_t_b64_ch(v) = at("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", v)
+
+fn lx_t_b64_enc(bs, acc) = if lct_isnil(bs) == 1 then acc else let a = lct_hd(bs) in let r1 = lct_tl(bs) in if lct_isnil(r1) == 1 then acc + lx_t_b64_ch(bit_shr(a, 2)) + lx_t_b64_ch(bit_and(a, 3) * 16) + "==" else let b = lct_hd(r1) in let r2 = lct_tl(r1) in if lct_isnil(r2) == 1 then acc + lx_t_b64_ch(bit_shr(a, 2)) + lx_t_b64_ch(bit_and(a, 3) * 16 + bit_shr(b, 4)) + lx_t_b64_ch(bit_and(b, 15) * 4) + "=" else let c = lct_hd(r2) in lx_t_b64_enc(lct_tl(r2), acc + lx_t_b64_ch(bit_shr(a, 2)) + lx_t_b64_ch(bit_and(a, 3) * 16 + bit_shr(b, 4)) + lx_t_b64_ch(bit_and(b, 15) * 4 + bit_shr(c, 6)) + lx_t_b64_ch(bit_and(c, 63)))
+
+fn lx_t_pem(der) = "-----BEGIN CERTIFICATE-----\n" + lx_t_b64_enc(der, "") + "\n-----END CERTIFICATE-----\n"
+
+## a PEM file with two certificates and text around them gives back the two DER encodings, in order; a block without
+## its END line, and a block with a character outside the alphabet, are refused
+fn test_lx509_pem_roundtrip() = let a = lct_x509v_rfc8410() in let b = lct_x509v_root() in let two = lx_certs_of_bytes(lx_codes("subject=demo\n" + lx_t_pem(a) + "\n" + lx_t_pem(b))) in let cut = lx_certs_of_bytes(lx_codes("-----BEGIN CERTIFICATE-----\nMIIB\n")) in let bad = lx_certs_of_bytes(lx_codes("-----BEGIN CERTIFICATE-----\nMI!B\n-----END CERTIFICATE-----\n")) in let none = lx_certs_of_bytes(lx_codes("hello\n")) in if two.ok == 1 and lct_len(two.certs) == 2 and lct_bytes_eq(lct_hd(two.certs), a) == 1 and lct_bytes_eq(lct_hd(lct_tl(two.certs)), b) == 1 and cut.ok == 0 and bad.ok == 0 and none.ok == 0 and (lx_certs_of_bytes(a)).ok == 1 then 1 else 0
+
+## the request parser: repeated and comma-separated @chain values keep their order; numbers are strict
+fn test_lx509_request() = let ps = lx_paths(lx_all("@cmd verify\n@chain a.der,b.der\n@chain c.der\r\n@now 12\n", "chain"), Nil) in if lct_len(ps) == 3 and lx_first(ps) == "a.der" and lx_first(lct_tl(lct_tl(ps))) == "c.der" and lx_nat("1794398400") == 1794398400 and lx_nat("12x") == 0 - 1 and lx_nat("") == 0 - 1 and lx_nat("-5") == 0 - 1 then 1 else 0
+
+## the verdict JSON of a valid chain names the leaf key, and a dead source is refused by the draw
+fn test_lx509_verdicts() = let r = lct_x509_verify_chain(Cons(lct_x509v_leaf(), Cons(lct_x509v_inter(), Nil)), Cons(lct_x509_anchor_cert(lct_x509v_root()), Nil), lct_kx_now()) in let j = lx_verify_json(r, 2, 1, lct_kx_now()) in let dead = lx_draw("/dev/zero", 32) in if r.ok == 1 and lx_contains(j, "\"verdict\":\"valid\"") == 1 and lx_contains(j, "\"depth\":" + str(r.depth)) == 1 and lx_contains(j, lct_bytes_to_hex(r.leaf_key)) == 1 and (fs_path_exists("/dev/zero") == 0 or dead.ok == 0 and dead.err == 2) then 1 else 0
+
+fn lx_contains_at(s, p, i) = if i + count(p) > count(s) then 0 else if slice(s, i, i + count(p)) == p then 1 else lx_contains_at(s, p, i + 1)
+
+fn lx_contains(s, p) = lx_contains_at(s, p, 0)
+
+print lx_finish(lx_main(readall()))
