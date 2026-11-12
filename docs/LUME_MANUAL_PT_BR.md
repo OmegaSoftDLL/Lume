@@ -856,15 +856,9 @@ print run_lumeputer_demo()
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy` ou `mem_set` aponta para `.text`/`.rodata` (`[0x8000..0x3FFFF]`), inclusive `base + off` simbolico. Use endereco seguro de RAM (`>= 0x40000`). |
 | `[K0006]` | Pilha de Kernel      | Ciclo de recursao mutua ilimitada (`f -> g -> f`) em modulo `@freestanding` / `kernel_boot_entry`. Use loop tail-call ou iteracao limitada. |
 | `[C0009]` | Cripto Constant-Time | Branch `if`/`match`, divisao `/` ou `%` ou curto-circuito `and`/`or` dependente de segredo (`secret_*` ou funcao `ct_*`). Use acumulacao bitwise XOR/OR em tempo constante. |
-<<<<<<< HEAD
-| `[L0001]` | Lexico / Montador    | Literal de string nao terminado em um arquivo fonte (feche com aspas duplas); o `lasm` usa o mesmo codigo para instrucao ou diretiva desconhecida. |
-=======
 | `[C0010]` | Constant-Time de Maquina | `lume tv`: o codigo emitido de uma `@secret fn`, ou de uma rotina que ela alcanca por `call`, tem desvio condicional, divisao ou acesso a memoria fora de frame e pilha. Escreva a funcao como kernel constant-time (`@secret` + `@no_alloc`). |
 | `[C0011]` | Kernel Constant-Time | Funcao `@secret` + `@no_alloc` com `requires`, `ensures` nao provado, condicional, comparacao, `/` ou `%`, shift por nao-literal, recursao, tipo que nao e `int` ou chamada de funcao que nao e kernel. Use mascaras, `ct_select(mask, a, b)` e `ct_eq(a, b)`. |
-| `[Q0001]` | Linearidade Quantica | Violacao de `No-Cloning` (duplicacao de `Qubit`) ou reuso de qubit medido. Consuma cada fio `Qubit` linearmente. |
-| `[Q0002]` | Uncompute `qfree`    | Fio ancilla nao descomputado em funcao `qfree` (`anc_leaked > 0`). Aplique o adjunto $U^\dagger$ (`q_silq_qfree_verify`) antes de retornar. |
-| `[L0001]` | Formatacao / Lint    | Codigo fora do padrao canonico; execute `lume fmt <arq.src>`. |
->>>>>>> 43cd95a5cff0ef302e03869bf05ed49e7719d55f
+| `[L0001]` | Lexico / Montador    | Literal de string nao terminado em um arquivo fonte (feche com aspas duplas); o `lasm` usa o mesmo codigo para instrucao ou diretiva desconhecida. |
 | `[L0010]` | Ligacao              | Um simbolo definido duas vezes na mesma imagem, o que mandaria chamadas para a rotina errada. |
 | `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |

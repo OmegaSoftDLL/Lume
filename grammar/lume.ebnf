@@ -12,9 +12,12 @@
 letter      = ? Unicode XID_Start ? | "_" ;
 digit       = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 ident       = letter , { letter | digit } | "`" , { ? any char except "`" ? } , "`" ;
-int_lit     = dec_lit | "0x" , hex_digit , { hex_digit | "_" } | "0b" , bin_digit , { bin_digit | "_" }
-            | "0o" , oct_digit , { oct_digit | "_" } ;
-dec_lit     = digit , { digit | "_" } ;
+(* A "_" separates two digits: never first, last or doubled. The radix prefixes are lowercase only. A literal ends at a
+   character that is neither one of its digits nor part of a name: `2a`, `1_`, `0X1F`, `0x1G` are errors (L0003),
+   never a number followed by another token (spec 1.4, 19.4). *)
+int_lit     = dec_lit | "0x" , hex_digit , { [ "_" ] , hex_digit } | "0b" , bin_digit , { [ "_" ] , bin_digit }
+            | "0o" , oct_digit , { [ "_" ] , oct_digit } ;
+dec_lit     = digit , { [ "_" ] , digit } ;
 float_lit   = dec_lit , "." , dec_lit , [ exponent ] | dec_lit , exponent ;
 exponent    = ( "e" | "E" ) , [ "+" | "-" ] , dec_lit ;
 char_lit    = "'" , ( ? char ? | escape ) , "'" ;
@@ -29,6 +32,7 @@ interp      = "{" , expr , [ ":" , fmt_spec ] , "}" ;
 fmt_spec    = { ? any char except "}" ? } ;
 date_lit    = digit digit digit digit , "-" , digit digit , "-" , digit digit , "d" ;      (* [Stage 2] *)
 duration_lit= dec_lit , [ "." , dec_lit ] , ( "ns" | "us" | "ms" | "s" | "m" | "h" | "d" ) ; (* [Stage 2] *)
+(* "#[" ... "]#" nests and may span lines; unterminated is L0004. Inside a line comment "#[" has no meaning. *)
 comment     = "#" , { ? any ? } , NEWLINE | "#[" , { ? any ? | comment } , "]#" ;
 doc_comment = "##" , { ? any ? } , NEWLINE ;
 
@@ -41,7 +45,13 @@ item        = { doc_comment } , { attribute } , [ visibility ] ,
               ( use_decl | fn_decl | type_decl | trait_decl | impl_decl | const_decl
               | mod_decl | macro_decl | effect_decl | extern_decl ) ;
 visibility  = "pub" , [ "(" , "crate" , ")" ] ;
-attribute   = "@" , ident , [ "(" , [ attr_arg , { "," , attr_arg } ] , ")" ] , [ NEWLINE ] ;
+(* The attribute names are a closed set (spec 19.6); an unknown name is P0004 with a did-you-mean. *)
+attribute   = "@" , attr_name , [ "(" , [ attr_arg , { "," , attr_arg } ] , ")" ] , [ NEWLINE ] ;
+attr_name   = "bound" | "no_alloc" | "secret" | "freestanding" | "interrupt" | "export" | "protect"
+            | "gc" | "soa" | "capability" | "grant" | "link" | "need"
+            | "repr" | "schedule" | "autotune" | "derive" | "inline" | "noinline" | "cold" | "deprecated" | "test"
+            | "bench" | "target" | "mmio" | "bits" | "packed" | "panic" | "no_std" | "gpu" | "extension" ;
+                                                              (* second and third row: reserved, no effect in Stage 1 *)
 attr_arg    = expr | ident , ":" , expr ;
 
 use_decl    = "use" , use_path , NEWLINE ;
@@ -165,7 +175,10 @@ expr        = pipe_expr ;
 pipe_expr   = or_expr , { "|>" , or_expr } ;
 or_expr     = and_expr , { ( "or" | "||" ) , and_expr } ;
 and_expr    = coalesce_expr , { ( "and" | "&&" ) , coalesce_expr } ;
-coalesce_expr = cmp_expr , [ "??" , coalesce_expr ] ;
+coalesce_expr = not_expr , [ "??" , coalesce_expr ] ;
+(* `not` is one level looser than a comparison and one tighter than `and`: `not a < b` is `not (a < b)` (spec 4,
+   19.1). As the operand of an arithmetic or comparison operator it takes one postfix expression (unary_expr). *)
+not_expr    = "not" , not_expr | cmp_expr ;
 cmp_expr    = range_expr , [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not" , "in" | "is" ) , range_expr
                            | "as" , [ "!" | "?" ] , type ] ;
 range_expr  = bitor_expr , [ ( ".." | "..=" ) , [ bitor_expr ] ] | ( ".." | "..=" ) , bitor_expr ;
@@ -176,7 +189,7 @@ shift_expr  = add_expr , { ( "<<" | ">>" ) , add_expr } ;
 add_expr    = mul_expr , { ( "+" | "-" | "+%" | "-%" | "+|" | "-|" | "+?" | "-?" | ".+" | ".-" ) , mul_expr } ;
 mul_expr    = pow_expr , { ( "*" | "/" | "%" | "@" | ".*" | "./" ) , pow_expr } ;
 pow_expr    = unary_expr , [ "**" , pow_expr ] ;
-unary_expr  = ( "-" | "not" | "!" | "~" | "own" | "mut" | "&" ) , unary_expr | postfix_expr ;
+unary_expr  = ( "-" | "!" | "~" | "own" | "mut" | "&" ) , unary_expr | "not" , postfix_expr | postfix_expr ;
 postfix_expr= primary , { "(" , [ args ] , ")" | "[" , index_arg , "]" | "." , ident | "." , dec_lit
                         | "?." , ident | "?" | "." , "await" } ;
 index_arg   = expr | [ expr ] , ( ".." | "..=" ) , [ expr ] ;
@@ -226,3 +239,19 @@ grad_expr   = ( "grad" | "vjp" | "jvp" | "vmap" | "jit" ) , "(" , expr , [ "," ,
 
 (* ---------- Script mode ---------- *)
 (* A module with no `fn main` and with top-level stmts is executed top to bottom. *)
+
+(* ---------- Lume-Core (`.src`, compiled by lumec; spec 19) ---------- *)
+(* Lume-Core has no NEWLINE / INDENT / DEDENT tokens: inside an item a line break is white space, and an expression
+   runs on to the first token that cannot continue it (a line that starts with a binary operator continues the line
+   before it). The line matters in three places only: a call "(" or an index "[" is postfix only on the line of its
+   operand; `let x = v` without `in` needs its body on a new line; and a top-level item starts on a new line
+   (`print 1 2` is P0003, not two statements). Each core_item below starts on a new line. *)
+
+core_module = { core_item } ;
+core_item   = { attribute } , [ "pub" ] , [ "total" ] , "fn" , ident , "(" , [ core_params ] , ")" ,
+              [ "->" , type ] , [ "/" , ( "pure" | effect_row ) ] , { core_contract } , "=" , expr
+            | [ "pub" ] , "law" , ident , "(" , [ core_params ] , ")" , "=" , expr
+            | "type" , ident , "=" , type_def | "print" , expr | expr ;
+core_params = core_param , { "," , core_param } ;
+core_param  = [ "own" | "mut" | "comptime" ] , ident , [ ":" , type ] ;
+core_contract = ( "requires" | "ensures" ) , expr | "terminates" , "(" , expr , { "," , expr } , ")" ;

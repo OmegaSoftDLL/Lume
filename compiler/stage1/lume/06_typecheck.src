@@ -19,6 +19,160 @@
 ## (no `type` declaration) enable argument checking but NOT the F1 constructor/record declaration checks, so a
 ## program that only annotates `int`/`str` never gets a false "constructor not declared".
 fn tcheck(prog) = if tanydecl(prog) == 0 and tanysig(prog) == 0 then prog else tcheckforce(prog, tcollect(prog))
+
+## --- STRICT TYPING OF FULLY ANNOTATED FUNCTIONS (spec 19.5) -----------------------------------------------------
+## The gradual checker above never flags what it cannot name, and it lets a bool stand for an int. That is right for
+## untyped code and wrong for the critical subset: `fn f(a: int) -> int = if a then 1 else 0`, a comparison returned
+## from `-> int`, `let x: int = <bool>` and `1.0 + a` all compiled, although each contradicts an annotation the author
+## wrote. A function is FULLY ANNOTATED when every parameter has a type and the return type is declared. Inside such a
+## function (its body, its `requires` / `ensures` clauses) the scalars `int`, `bool` and `str` do not convert:
+##   [T0601] the condition of an `if` is not a bool            [T0602] the body's value is not the declared return type
+##   [T0603] an argument is not the callee's parameter type    [T0604] an operator is applied to operands it does not take
+##   [T0605] `let x: T = v` where v is not a T                  [T0606] the branches of an `if` / `match` differ
+##   [T0607] a `requires` / `ensures` / `law` clause is not a bool
+## Everything is decided from what is written: literals, annotated parameters, annotated `let`s, the declared return
+## type of a callee, the operators. An expression whose type is not known that way ("" below) is never flagged, so a
+## function that is not fully annotated, and every top-level statement, keeps the gradual behaviour exactly.
+## `not x` is `(== x 0)` in the tree, so `== 0` on a bool is the one mixed comparison that is accepted.
+## The pass runs on the parsed program, BEFORE the verifier (lumec_check): the verifier consumes the contract and law
+## nodes, and a clause that is not a bool has to be a type error, not a proof attempt over an ill-typed formula.
+## Types here: "int", "bool", "str", "dec" (a decimal literal), "!" (`ctfail`: no value), "" (unknown).
+## `al` maps a declared alias or refinement of a scalar (`type Name = str`, `type Pos = int where ...`) to that scalar.
+fn tsx_alias(n, al) = match al
+    Nil        => ""
+    Cons(h, t) => if h.k == n then h.v else tsx_alias(n, t)
+fn tsx_ty(ty, al) = match ty
+    TyName(n)       => if n == "int" or n == "bool" or n == "str" then n else tsx_alias(n, al)
+    TyRefine(b, pr) => tsx_ty(b, al)
+    _               => ""
+fn tsx_tys(tys, al) = match tys
+    Nil        => Nil
+    Cons(h, t) => Cons(tsx_ty(h, al), tsx_tys(t, al))
+fn tsx_aliases(prog, acc) = match prog
+    Nil        => acc
+    Cons(h, t) => tsx_aliases(t, tsx_aliases1(h, acc))
+fn tsx_aliases1(h, acc) = match h
+    TypeRefineS(nm, base, pr) => let b = tsx_ty(base, acc) in if b == "" then acc else Cons({k: nm, v: b}, acc)
+    _                         => acc
+fn tsx_full_tys(tys) = match tys
+    Nil        => 1
+    Cons(h, t) => if isany(h) == 1 then 0 else tsx_full_tys(t)
+fn tsx_sigs(prog, al, acc) = match prog
+    Nil        => acc
+    Cons(h, t) => tsx_sigs(t, al, tsx_sigs1(h, al, acc))
+fn tsx_sigs1(h, al, acc) = match h
+    Sig(nm, ps, tys, rt) => Cons({fname: nm, pn: ps, pt: tsx_tys(tys, al), rt: tsx_ty(rt, al), allp: tsx_full_tys(tys), full: if tsx_full_tys(tys) == 1 and isany(rt) == 0 then 1 else 0}, acc)
+    _                    => acc
+fn tsx_laws(prog, acc) = match prog
+    Nil        => acc
+    Cons(h, t) => tsx_laws(t, tsx_laws1(h, acc))
+fn tsx_laws1(h, acc) = match h
+    VLawDecl(nm, ps, body) => Cons("law_" + nm, acc)
+    _                      => acc
+fn tsx_look(nm, ss) = match ss
+    Nil        => Nil
+    Cons(h, t) => if h.fname == nm then ss else tsx_look(nm, t)
+fn tsx_env(pns, pts) = match pns
+    Nil        => Nil
+    Cons(p, r) => tsx_env2(p, r, pts)
+fn tsx_env2(p, r, pts) = match pts
+    Nil          => Cons({k: p, v: ""}, tsx_env(r, Nil))
+    Cons(ty, tr) => Cons({k: p, v: ty}, tsx_env(r, tr))
+fn tsx_var(nm, env) = match env
+    Nil        => if nm == "true" or nm == "false" then "bool" else ""
+    Cons(h, t) => if h.k == nm then h.v else tsx_var(nm, t)
+fn tsx_bound(nm, env) = match env
+    Nil        => 0
+    Cons(h, t) => if h.k == nm then 1 else tsx_bound(nm, t)
+fn tsx_shadow(names, env) = match names
+    Nil        => env
+    Cons(h, t) => Cons({k: h, v: ""}, tsx_shadow(t, env))
+fn tsx_snd(a, b) = b
+fn tsx_norm(t) = if t == "!" then "" else t
+fn tsx_show(t) = if t == "dec" then "decimal" else t
+fn tsx_fail(cx, code, msg) = ctfail("lume: type error [" + code + "]: in the fully annotated function '" + cx.fname + "': " + msg + "\n")
+fn tsx_isarith(op) = op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%"
+fn tsx_isord(op) = op == "<" or op == ">" or op == "<=" or op == ">="
+fn tsx_iszero(e) = match e
+    Num(n) => if n == 0 then 1 else 0
+    _      => 0
+fn tsx_opfail(op, ta, tb, cx, why) = tsx_fail(cx, "T0604", "operator '" + op + "' is applied to " + (if ta == "" then "a value" else tsx_show(ta)) + " and " + (if tb == "" then "a value" else tsx_show(tb)) + "; " + why)
+fn tsx_bin(op, b, ta, tb, cx) = if op == "and" or op == "or" then (if ta == "int" or ta == "str" or ta == "dec" or tb == "int" or tb == "str" or tb == "dec" then tsx_opfail(op, ta, tb, cx, "it takes two bools (fix-it: write the comparison, e.g. `x != 0`)") else "bool") else if op == "==" or op == "!=" then (if ta == "" or tb == "" or ta == tb then "bool" else if op == "==" and ta == "bool" and tsx_iszero(b) == 1 then "bool" else tsx_opfail(op, ta, tb, cx, "both sides of a comparison have the same type; nothing converts implicitly")) else if tsx_isord(op) then (if ta == "bool" or tb == "bool" then tsx_opfail(op, ta, tb, cx, "an ordering compares two ints or two strs") else if ta != "" and tb != "" and ta != tb then tsx_opfail(op, ta, tb, cx, "both sides of a comparison have the same type; nothing converts implicitly") else "bool") else if op == "+" then (if ta == "bool" or tb == "bool" then tsx_opfail(op, ta, tb, cx, "'+' adds two ints or joins two strs (fix-it: `if b then 1 else 0` turns a bool into an int)") else if ta != "" and tb != "" and ta != tb then tsx_opfail(op, ta, tb, cx, if ta == "dec" or tb == "dec" then "an int and a decimal literal do not mix; the program would stop at run time with 'arithmetic needs integers'" else "'+' adds two ints or joins two strs; nothing converts implicitly (fix-it: `str(n)` turns an int into a str)") else if ta == tb then ta else "") else if tsx_isarith(op) then (if ta == "bool" or ta == "str" or tb == "bool" or tb == "str" then tsx_opfail(op, ta, tb, cx, "arithmetic takes two ints (fix-it: `if b then 1 else 0` turns a bool into an int)") else if ta != "" and tb != "" and ta != tb then tsx_opfail(op, ta, tb, cx, "an int and a decimal literal do not mix; the program would stop at run time with 'arithmetic needs integers'") else if ta == "int" and tb == "int" then "int" else if ta == "dec" and tb == "dec" then "dec" else "") else ""
+fn tsx_cond(tc, cx) = if tc == "int" or tc == "str" or tc == "dec" then tsx_fail(cx, "T0601", "the condition of 'if' has type " + tsx_show(tc) + ", not bool (fix-it: write the comparison, e.g. `x != 0`)") else 0
+fn tsx_join(a, b, what, cx) = if a == "!" then b else if b == "!" then a else if a == "" or b == "" then "" else if a == b then a else tsx_fail(cx, "T0606", "the branches of '" + what + "' have types " + tsx_show(a) + " and " + tsx_show(b) + " (fix-it: make every branch the same type; `if b then 1 else 0` turns a bool into an int)")
+fn tsx_ann(tv, ann, cx) = if ann != "" and tv != "" and tv != ann then tsx_fail(cx, "T0605", "a 'let' annotated " + ann + " is given a value of type " + tsx_show(tv)) else if ann != "" then ann else tv
+fn tsx_builtin(nm) = if nm == "count" or nm == "ord" or nm == "toint" then "int" else if nm == "str" or nm == "chr" then "str" else ""
+fn tsx_v(e, env, cx) = tsx_norm(tsx_e(e, env, cx))
+fn tsx_e(e, env, cx) = match e
+    Num(n)          => "int"
+    Str(s)          => "str"
+    Var(nm)         => tsx_var(nm, env)
+    Bin(op, a, b)   => tsx_bin(op, b, tsx_v(a, env, cx), tsx_v(b, env, cx), cx)
+    If(c, t, e2)    => if ttyann_str(e2) != "" then tsx_ann(tsx_v(t, env, cx), tsx_ty(tydec(ttyann_str(e2)), cx.al), cx) else tsx_if(tsx_cond(tsx_v(c, env, cx), cx), tsx_e(t, env, cx), tsx_e(e2, env, cx), cx)
+    LetIn(nm, v, b) => tsx_e(b, Cons({k: nm, v: tsx_v(v, env, cx)}, env), cx)
+    VarIn(nm, v, b) => tsx_snd(tsx_e(v, env, cx), tsx_e(b, Cons({k: nm, v: ""}, env), cx))
+    Match(sc, arms) => tsx_snd(tsx_e(sc, env, cx), tsx_arms(arms, env, cx, "!"))
+    Call(nm, args)  => if nm == "_tyann_" then "" else if nm == "ctfail" then tsx_snd(tsx_argtys(args, env, cx), "!") else if tsx_bound(nm, env) == 1 then tsx_snd(tsx_argtys(args, env, cx), "") else tsx_call(nm, tsx_argtys(args, env, cx), tsx_look(nm, cx.sigs), cx)
+    Rec(items)      => if is_dec_rec_items(items) == 1 then "dec" else tsx_snd(tsx_items(items, env, cx), "")
+    RecT(tn, items) => tsx_snd(tsx_items(items, env, cx), "")
+    Field(o, nm)    => tsx_snd(tsx_e(o, env, cx), "")
+    CT(inner)       => tsx_e(inner, env, cx)
+    OwnE(inner)     => tsx_e(inner, env, cx)
+    MutE(inner)     => tsx_e(inner, env, cx)
+    ScopeE(snm, b)  => tsx_e(b, env, cx)
+    LambdaE(ps, tys, rt, body) => tsx_snd(tsx_e(body, app(tsx_env(ps, tsx_tys(tys, cx.al)), env), cx), "")
+    _               => ""
+fn tsx_if(z, tt, te, cx) = tsx_join(tt, te, "if", cx)
+fn tsx_items(xs, env, cx) = match xs
+    Nil        => 0
+    Cons(h, t) => tsx_snd(tsx_e(h.val, env, cx), tsx_items(t, env, cx))
+fn tsx_arms(arms, env, cx, acc) = match arms
+    Nil        => acc
+    Cons(h, t) => tsx_arms(t, env, cx, tsx_join(acc, tsx_e(h.body, tsx_shadow(oa_pat_names(h.pat), env), cx), "match", cx))
+fn tsx_argtys(args, env, cx) = match args
+    Nil        => Nil
+    Cons(h, t) => Cons(tsx_v(h, env, cx), tsx_argtys(t, env, cx))
+fn tsx_call(nm, tys, m, cx) = match m
+    Nil         => tsx_builtin(nm)
+    Cons(sg, r) => tsx_snd(tsx_chkargs(nm, 1, tys, sg.pn, sg.pt, cx), sg.rt)
+fn tsx_chkargs(nm, i, tys, pns, pts, cx) = match tys
+    Nil          => 0
+    Cons(ta, tr) => tsx_chkargs2(nm, i, ta, tr, pns, pts, cx)
+fn tsx_chkargs2(nm, i, ta, tr, pns, pts, cx) = match pts
+    Nil          => 0
+    Cons(tp, pr) => if tp != "" and ta != "" and ta != tp then tsx_fail(cx, "T0603", "argument " + str(i) + " of '" + nm + "' has type " + tsx_show(ta) + " but parameter '" + phd(pns) + "' is declared " + tp) else tsx_chkargs(nm, i + 1, tr, ptl(pns), pr, cx)
+## the declared return type against every leaf of the body: a branch that does not fit is not excused by one that does
+fn tsx_ret(e, env, cx, rt) = match e
+    If(c, t, e2)    => if ttyann_str(e2) != "" then tsx_ret2(tsx_e(e, env, cx), cx, rt) else tsx_snd(tsx_cond(tsx_v(c, env, cx), cx), tsx_snd(tsx_ret(t, env, cx, rt), tsx_ret(e2, env, cx, rt)))
+    LetIn(nm, v, b) => tsx_ret(b, Cons({k: nm, v: tsx_v(v, env, cx)}, env), cx, rt)
+    Match(sc, arms) => tsx_snd(tsx_e(sc, env, cx), tsx_ret_arms(arms, env, cx, rt))
+    _               => tsx_ret2(tsx_e(e, env, cx), cx, rt)
+fn tsx_ret_arms(arms, env, cx, rt) = match arms
+    Nil        => 0
+    Cons(h, t) => tsx_snd(tsx_ret(h.body, tsx_shadow(oa_pat_names(h.pat), env), cx, rt), tsx_ret_arms(t, env, cx, rt))
+fn tsx_ret2(tb, cx, rt) = if rt == "" or tb == "" or tb == "!" or tb == rt then 0 else tsx_fail(cx, "T0602", "the body has type " + tsx_show(tb) + " but the function is declared to return " + rt + (if rt == "int" and tb == "bool" then " (fix-it: declare '-> bool', or write `if <condition> then 1 else 0`)" else if rt == "bool" and tb == "int" then " (fix-it: declare '-> int', or return a comparison / `true` / `false`)" else ""))
+fn tsx_clause(kind, e, env, cx) = let t = tsx_v(e, env, cx) in if t == "int" or t == "str" or t == "dec" then tsx_fail(cx, "T0607", "a '" + kind + "' clause has type " + tsx_show(t) + ", not bool (fix-it: write the comparison, e.g. `x != 0`)") else 0
+fn tsx_clauses(kind, es, env, cx) = match es
+    Nil        => 0
+    Cons(h, t) => tsx_snd(tsx_clause(kind, h, env, cx), tsx_clauses(kind, t, env, cx))
+fn tsx_mem(nm, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else tsx_mem(nm, t)
+fn tsx_fn(nm, body, m, sigs, laws, al) = match m
+    Nil         => 0
+    Cons(sg, r) => if tsx_mem(nm, laws) == 1 then (if sg.allp == 1 then tsx_clause("law", body, tsx_env(sg.pn, sg.pt), {fname: nm, sigs: sigs, al: al}) else 0) else if sg.full == 0 then 0 else tsx_ret(body, tsx_env(sg.pn, sg.pt), {fname: nm, sigs: sigs, al: al}, sg.rt)
+fn tsx_contract(nm, reqs, enss, m, sigs, al) = match m
+    Nil         => 0
+    Cons(sg, r) => if sg.full == 0 then 0 else let env = tsx_env(sg.pn, sg.pt) in let cx = {fname: nm, sigs: sigs, al: al} in tsx_snd(tsx_clauses("requires", reqs, env, cx), tsx_clauses("ensures", enss, Cons({k: "result", v: sg.rt}, env), cx))
+fn tsx_stmts(prog, sigs, laws, al) = match prog
+    Nil        => 0
+    Cons(h, t) => tsx_snd(tsx_stmt(h, sigs, laws, al), tsx_stmts(t, sigs, laws, al))
+fn tsx_stmt(h, sigs, laws, al) = match h
+    Fn(nm, ps, body)                 => tsx_fn(nm, body, tsx_look(nm, sigs), sigs, laws, al)
+    VContractSig(nm, ps, reqs, enss) => tsx_contract(nm, reqs, enss, tsx_look(nm, sigs), sigs, al)
+    _                                => 0
+fn tsx_prog(prog) = let al = tsx_aliases(prog, Nil) in let sigs = tsx_sigs(prog, al, Nil) in if isnil(sigs) == 1 then 0 else tsx_stmts(prog, sigs, tsx_laws(prog, Nil), al)
+fn tsx_gate(prog) = tsx_snd(tsx_prog(prog), prog)
 fn tany_tier_args(xs) = match xs
     Nil        => 0
     Cons(h, t) => if tany_tier_e(h) == 1 then 1 else tany_tier_args(t)
@@ -355,10 +509,15 @@ fn tis_concrete_ty(ty, tt) = match ty
     _            => 1
 fn tbranch_compat(a, b, tt) = if tis_concrete_ty(a, tt) == 0 or tis_concrete_ty(b, tt) == 0 then 1 else if tcompat(a, b) == 1 or tcompat(b, a) == 1 then 1 else if tisdec(a) == 1 and tisdec(b) == 1 then 1 else 0
 fn tchkbin(op, a, b, tt) = let ka = tknownl(a, tt, tt.lenv) in let kb = tknownl(b, tt, tt.lenv) in if tis_concrete_ty(ka, tt) == 0 or tis_concrete_ty(kb, tt) == 0 then 0 else if op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%" then (if tisstr(ka) == 1 or tisstr(kb) == 1 or tisbool(ka) == 1 or tisbool(kb) == 1 or tbranch_compat(ka, kb, tt) == 0 then ctfail("lume: type error [T0001]: operator '" + op + "' cannot be applied to '" + tystr(ka) + "' and '" + tystr(kb) + "'\n") else 0) else if op == "+" or op == "<" or op == ">" or op == "<=" or op == ">=" then (if (tisstr(ka) == 1 and tisstr(kb) == 0) or (tisstr(ka) == 0 and tisstr(kb) == 1) or tisbool(ka) == 1 or tisbool(kb) == 1 or tbranch_compat(ka, kb, tt) == 0 then ctfail("lume: type error [T0001]: operator '" + op + "' cannot be applied to '" + tystr(ka) + "' and '" + tystr(kb) + "'\n") else 0) else if op == "==" or op == "!=" then (if (tisstr(ka) == 1 and tisstr(kb) == 0) or (tisstr(ka) == 0 and tisstr(kb) == 1) or tbranch_compat(ka, kb, tt) == 0 then ctfail("lume: type error [T0001]: operator '" + op + "' cannot be applied to '" + tystr(ka) + "' and '" + tystr(kb) + "'\n") else 0) else 0
+## `let _vty_ok = p - 0` is the guard the verifier puts in front of a function whose proof used the declared type of
+## `p` (vty_wrap, 06b_phase3.src): it traps on a value that is not an integer. A parameter declared `bool` gets the same
+## guard (a bool is 0 or 1 at run time), and the operator check below then refused the compiler's own `bool - int`
+## with [T0001]: a typed function with a bool parameter and a proven contract did not compile. The guard is not user
+## code and is not checked.
 fn tchke(e, tt) = match e
     Bin(op, a, b)   => tchkbin(op, a, b, tt) + tchke(a, tt) + tchke(b, tt)
     If(c, t, e2)    => if ttyann_str(e2) != "" then tchke(t, tt) + tchk_tyann(t, ttyann_str(e2), tt) else (let km = tknownl(e, tt, tt.lenv) in 0) + tchke(c, tt) + tchke(t, tt) + tchke(e2, tt)
-    LetIn(nm, v, b)            => tchke(v, tt) + tchke(b, tletbind(tt, nm, v))
+    LetIn(nm, v, b)            => (if nm == "_vty_ok" then 0 else tchke(v, tt)) + tchke(b, tletbind(tt, nm, v))
     VarIn(nm, v, b)            => tchke(v, tt) + tchke(b, tletbind(tt, nm, v))
     Call(nm, args)             => tchkquerycall(nm, args, tt) + tchk_tier_conc_call(nm, args, tt) + tchkcall(nm, args, tt) + tchkeargsc(nm, args, tglookup(nm, tt.gsigs), tt) + tchkinferargs(nm, args, tt) + tchk_letpoly_call(nm, args, tt)
     Var(nm)                    => tchkvar(nm, tt)

@@ -19,7 +19,8 @@ Notation: `code` for syntax; *italics* for metavariables; "MUST/SHOULD" as in RF
 
 ### 1.2 Comments
 - `# text` to end of line. `## text` is a **doc comment** attached to the next item.
-- `#[ … ]#` block comments, nestable.
+- `#[ … ]#` block comments, nestable; they may span lines. An unterminated one is a lexical error (`L0004`).
+  (Implemented by both front ends since Wave 14: `lumec` used to read `#[` as a line comment; see §19.3.)
 
 ### 1.3 Identifiers and keywords
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`, plus Unicode letters (XID_Start/XID_Continue).
@@ -37,6 +38,9 @@ Notation: `code` for syntax; *italics* for metavariables; "MUST/SHOULD" as in RF
 ### 1.4 Literals
 - **Integers**: `42`, `1_000_000`, `0xFF`, `0b1010`, `0o755`. Untyped: adopt the context type;
   default `int` (`i64`). A literal that does not fit its type is an error (`L0010`).
+  The radix prefixes are lowercase (`0X1F`, `0B11`, `0O17` are not literals). A `_` separates two digits: it is
+  never first, last or doubled (`1_`, `1__0`, `0x_F`, `0xF_`). A literal ends at a character that is neither one of
+  its digits nor part of a name: `2a`, `12abc`, `0x1G` are errors, not a number followed by a name (`L0003`, §19.4).
 - **Floats**: `3.14`, `1e-9`, `2.5e3`. Default `f64`.
 - **Decimals**: any numeric literal in a `decimal` context is exact: `price * 0.10` with `price:
   decimal(12,2)` is decimal arithmetic. A float literal in decimal context is parsed exactly as
@@ -187,7 +191,7 @@ Precedence, highest first (same row = same level, left-associative unless noted)
 
 1. Postfix: call `f(x)`, index `a[i]`, field `a.b`, method/UFCS `a.f(x)`, `?` (propagate),
    `?.` (optional chain), `.await` **[Stage 3]**
-2. Unary: `-x`, `not x`, `~x`, `own x`, `mut x`, `&x` (explicit borrow, rarely needed)
+2. Unary: `-x`, `~x`, `own x`, `mut x`, `&x` (explicit borrow, rarely needed)
 3. `**` (right-assoc)
 4. `* / %`
 5. `+ -`
@@ -197,17 +201,20 @@ Precedence, highest first (same row = same level, left-associative unless noted)
 9. `|`
 10. `..` `..=` (ranges; non-associative)
 11. `== != < <= > >= in is as` (non-associative: `a < b < c` is a parse error)
-12. `??` (right-assoc)
-13. `and` / `&&`
-14. `or` / `||`
-15. `|>` (pipe)
-16. `= += -= …` (assignment; statement-level, yields `()`)
+12. `not` (prefix; `not not x` is allowed)
+13. `??` (right-assoc)
+14. `and` / `&&`
+15. `or` / `||`
+16. `|>` (pipe)
+17. `= += -= …` (assignment; statement-level, yields `()`)
 
-**Stage 1 deviation (measured by the Wave 14 audit, not yet resolved).** The bootstrapped compiler and `lcaas` read a
-`not` at the head of a comparison as the negation of the WHOLE comparison: `not a < b` is `not (a < b)`, so
-`print not 0 < 2` prints 0 where row 2 above gives `(not 0) < 2`, which is 1. As an operand (`x + not y`) `not`
-applies to the postfix expression that follows it. The compiler and `lcaas` build the same tree for it
-(`(== (< a b) 0)`), so the compiled program and the `lume prove` verdict agree; write the parentheses.
+**`not` binds looser than a comparison and tighter than `and`** (row 12, as in Python): `not a < b` is
+`not (a < b)`, `not a == b and c` is `(not (a == b)) and c`. Earlier drafts of this table listed `not` with unary
+minus, which made `not 0 < 2` mean `(not 0) < 2`; the implementations never read it that way, no source of the
+repository relies on that reading, and a reader of `if not x < limit` expects the negated comparison, so the table
+was corrected (Wave 14; conformance: `w14_not_precedence`). Where a `not` is written as the operand of an
+arithmetic or comparison operator (`a == not b`, `x + not y`) it applies to the one postfix expression that
+follows it; write parentheses for anything larger. Details and the tree that is built: §19.1.
 
 ### 4.1 Blocks as expressions
 A block's value is its last expression. `if c then_block elif c2 block else block` is an
@@ -694,3 +701,137 @@ streams them.
   implementation conforms to v0.1 if it passes the Stage-tagged subset for its stage.
 - Reserved for future editions: `yield` semantics, `shape` types, `effect` declarations,
   `@gc` regions, `realtime` WCET, hardware generation (`std.hw`).
+
+---
+
+## 19. Lume-Core as compiled by `lumec` (normative for `.src`, Stage 1)
+
+The sections above describe the surface language. The self-hosted compiler `lumec` (and `lcaas`, which runs the same
+front end) compiles **Lume-Core**, the expression language of the `.src` files: `fn name(params) = expr`, `let .. in`,
+`if .. then .. else`, `match`, records, `law`, contracts. Where Lume-Core is narrower or more precise than the surface
+rules, this section is the rule; every item names its diagnostic and its conformance test
+(`bootstrap/lume0/tests/run_native.src`, run by `build/bin/lume_make test`; the fail-closed sources are in
+`tests/conformance/stage1/fail_closed/`). The decisions were taken in Wave 14 against one principle: *what a reader
+of the source expects, and what existing certified code relies on*.
+
+### 19.1 `not`
+`not` is a prefix operator one level looser than the comparisons and one level tighter than `and` (§4, row 12).
+`not a < b` is `not (a < b)`; `not not x` is `x` as a truth value; `not a and b` is `(not a) and b`. The tree that
+is built for `not e` is `(== e 0)`, in the compiler and in the prover alike, so a program and its proof read the
+same thing. As the operand of an arithmetic or comparison operator (`a == not b`) a `not` takes exactly the
+postfix expression that follows it. Test: `w14_not_precedence`.
+
+### 19.2 Lines and statements
+Lume-Core is free-form inside an item: **a line break is white space**. An expression runs on to the first token
+that cannot continue it, so
+
+```
+fn total(a, b) = a
+    + b            ## one expression: a + b
+```
+
+and a line that starts with a binary operator (`+ - * / % == != < <= > >= and or |>`) always continues the
+expression before it. Three places are tied to the line:
+
+- a call parenthesis or an index bracket is postfix only on the line of its operand (`f` newline `(x)` is the value
+  `f` followed by a new expression);
+- `let x = v` without `in` needs its body on a new line;
+- **a top-level item starts on a new line.** `print 1 2`, or `fn f() = 1 fn g() = 2`, is one line with two
+  statements and is an error (`P0003`); they used to be accepted as two statements. A stray closing token or
+  operator keeps its own `P0002`.
+
+The arms of a layout `match` are recognised by their column (the column of the first arm). Tests:
+`w14_statement_rule`, `fail_closed/P0003_two_statements.src`.
+
+### 19.3 Comments
+`#` starts a comment that ends with the line (`##` by convention). `#[` starts a **block comment** that ends at
+the matching `]#`; block comments nest and may span lines; inside a `#` / `##` line comment `#[` has no meaning. An
+unterminated block comment is `L0004` and names the position where it opened. Tests: `w14_block_comment`,
+`fail_closed/L0004_unterminated_block_comment.src`.
+
+### 19.4 Integer literals
+Decimal `42`, `1_000_000`; `0x1F`, `0b1010`, `0o755` with **lowercase** prefixes. An underscore separates two digits
+of the literal. Everything else that starts with a digit is `L0003` and is never split into two tokens: an uppercase
+prefix (`0X1F`, `0B11`, `0O17`), a leading, trailing or doubled underscore (`0x_F`, `1_`, `1__0`), a digit glued to a
+name (`2a`, `12abc`, `1e3`, `0x1G`, `0b12`), a prefix without digits (`0x`), and a literal outside the 64-bit range.
+Tests: `w14_int_literals`.
+
+### 19.5 Types: gradual by default, strict where everything is annotated
+A function without annotations is dynamically typed, and a partly annotated one is checked where a type is evident
+(`T0001`), exactly as before. A function is **fully annotated** when every parameter has a type and the return type
+is declared; that is the critical subset, and inside it (the body, the `requires` / `ensures` clauses, and the body
+of a `law` whose parameters are all annotated) `int`, `bool` and `str` do not convert into one another:
+
+| Code | Rejected |
+|---|---|
+| `T0601` | the condition of an `if` is an `int` / `str` (`if n then ..`) |
+| `T0602` | the body does not have the declared return type (`-> int = a < b`, `-> bool = 1`) |
+| `T0603` | an argument does not have the declared type of the callee's parameter |
+| `T0604` | an operator on operands it does not take: arithmetic on a `bool` or a `str`, `and` / `or` on an `int`, an `int` compared with a `bool`, an `int` mixed with a decimal literal (`1.0 + a`) |
+| `T0605` | `let x: T = v` where `v` is not a `T` |
+| `T0606` | the branches of an `if` / `match` have different types |
+| `T0607` | a `requires` / `ensures` / `law` clause is not a `bool` |
+
+The types are read from what is written: literals, the annotated parameters and `let`s, the declared return type of a
+callee, the operators, `count` / `ord` / `toint` (`int`) and `str` / `chr` (`str`); a `type N = int` alias or
+refinement counts as its base. An expression whose type is not known that way is never flagged, so the rule has no
+false positive on untyped values flowing through a typed function. `not b` is `b == 0`, the one comparison of a
+`bool` with an `int` literal that is accepted. `if b then 1 else 0` turns a `bool` into an `int`; a comparison turns
+an `int` into a `bool`. Tests: `w14_strict_types`.
+
+### 19.6 Attributes
+An attribute is `@name` or `@name(args)` on the line(s) before the item. The names with a meaning in `lumec`:
+`@bound(cycles: n)`, `@no_alloc`, `@secret`, `@freestanding`, `@interrupt`, `@export`, `@protect` (before `fn`,
+`pub fn`, `total fn`, `pub total fn` and `extern .. fn`), `@gc` / `@soa` (before `type`), `@capability` / `@grant`,
+`@link` / `@need` (module level). The names this specification reserves for later stages are read and have no
+effect in Stage 1: `@repr @schedule @autotune @derive @inline @noinline @cold @deprecated @test @bench @target @mmio
+@bits @packed @panic @no_std @gpu @extension`. **Any other name is an error (`P0004`)** with a did-you-mean for a
+near miss (`@no_aloc` -> `@no_alloc`, `@secert` -> `@secret`): a misspelt safety attribute used to be dropped without
+a word. A function attribute in front of an item it cannot qualify (`@no_alloc` before `type`, before `law`, before
+`kernel fn`) is `P0004` too, and an attribute above `extern .. fn` now reaches the function (it used to be parsed
+and dropped). `@overflow` is not supported (`P0002`: write `+% -% *%`). Tests: `w14_attributes`.
+
+### 19.7 Effects and totality
+- `ctfail(msg)` stops the program with a message and exit status 3. It is not an effect: a function declared
+  `/ pure` may call it (stopping is how a pure function reports a violated precondition).
+- A `total fn` has to terminate. Direct recursion needs a measure (`terminates (m1, m2, ..)`, lexicographic) that
+  is proven to decrease; **mutual recursion between `total` functions is always refused (`A0002`)**: only direct
+  recursion carries a measure. Tests: `w14_pure_ctfail_total_mutual`.
+
+### 19.8 Bit operations and shifts
+`bit_and`, `bit_or`, `bit_xor`, `bit_not` work on the 64-bit two's-complement value. `bit_shl(a, k)` and
+`bit_shr(a, k)` (also spelt `bv_shl` / `bv_shr`) are **defined for 0 <= k <= 63**: `bit_shr` is arithmetic (it
+propagates the sign, `bit_shr(-8, 1)` is `-4`, `bit_shr(-8, 63)` is `-1`), `bit_shl` drops the bits that leave the
+word (`bit_shl(1, 63)` is the smallest integer; it never traps on the value). **A count outside 0..63 stops the
+program**, as a division by zero does: a literal count is a compile-time error (`C0012`), a computed one is the
+run-time error `lume: shift count outside 0..63` (exit status 3). The machine would take the count modulo 64
+(`bit_shl(1, 64)` was `1`), which no evaluator of the tool chain models. The prover gives a shift a value for
+counts 0..62 and no value otherwise (a contract that depends on it stays `runtime_checked`); `lcaas` folds counts
+0..63 and reports the others. `@secret` code takes literal counts only (`C0011`). `emit(v)` writes a string, or the
+low byte of the integer `v`; any other value is the run-time type error. Tests: `w14_shift_range`, `w14_emit_byte`.
+
+### 19.9 Contracts: what `proven` means
+`requires` is checked at run time on every call. `ensures` is checked at run time unless it is **proven**, and
+`--keep-proven-checks` (`--critical`) keeps the check of a proven clause as well. `proven` therefore means: *on every
+execution that reaches the check, the check passes*. That is two things, and the prover establishes both:
+
+1. the clause cannot evaluate to false (QF_LIA / Fourier-Motzkin over the paths of the body), and
+2. **the clause evaluates**: its own evaluation cannot stop the program. On each path the evidence is the path's
+   (the `requires`, the body that ran, the earlier clauses), never the clause's own:
+   - an operand of arithmetic or of `< <= > >=` is an integer on that evidence (`==` / `!=` take any value);
+   - `+ - *` stay inside the 64-bit range: the term is a constant, the value of one variable, a value the path
+     already computed, or is proven between `-MAX` and `MAX` from the hypotheses;
+   - a divisor is proven `> 0` or `< -1`; a shift count is proven inside `0..63`;
+   - a call of a program function, a field read or an arithmetic operation may be repeated in the words in which
+     the path evaluated it; another call of a program function, a field without evidence, a string operation are
+     not shown to evaluate.
+
+A clause that fails (2) is `runtime_checked`: its check is compiled in every build, so the default build and
+`--keep-proven-checks` agree on every input, including the inputs on which the clause stops the program (a type
+error, an overflow, a division by zero in the clause). Before Wave 14 such a clause was `proven`:
+`fn g(x) ensures x - 0 == x = x` returned from `g("s")` in the default build and stopped under
+`--keep-proven-checks`. `refuted` (a counterexample was found: `V0001`) and `budget_checked` (`@bound`, one
+structural cost model shared by `lumec` and `lcaas`: `V0002`) are unchanged. A proof certificate
+(`lume certify` / `lume verify-cert`) states (1) over the mathematical integers; only
+`lume verify-cert --check-source <file.src> <certificate.json>` binds a certificate to a source, and its kernel
+does not re-derive (2). Tests: `tests/harness/prover_fuzz.src` (`clause_*` cases), `tests/harness/realtime_gate.src`.

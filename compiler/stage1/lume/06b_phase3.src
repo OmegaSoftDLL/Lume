@@ -1632,9 +1632,13 @@ fn vfm_part_zer(v, hyps) = match hyps
     Nil        => Nil
     Cons(h, t) => if vlin_coeff(v, h.cs) == 0 then Cons(h, vfm_part_zer(v, t)) else vfm_part_zer(v, t)
 
+## The two rows are scaled by cn / g and cp / g (g their gcd), the smallest positive multipliers that cancel v. Scaling
+## by cn and cp themselves is the same row times g, and it left the 64-bit range (the pair was then dropped) as soon
+## as a constant was large: `3a + 4b - 2^63 >= 0` with `-3a - 5b + MAX >= 0` could not be added.
+fn vfm_gcd(a, b) = if b == 0 then a else vfm_gcd(b, a % b)
 fn vfm_pair1(v, p, cp, negs) = match negs
     Nil        => Nil
-    Cons(n, r) => let c0n = vlin_coeff(v, n.cs) in if c0n == vlin_min_int() then Cons(vlin_err(), vfm_pair1(v, p, cp, r)) else let cn = 0 - c0n in Cons(vlin_add_raw(vlin_scale_raw(cn, p), vlin_scale_raw(cp, n)), vfm_pair1(v, p, cp, r))
+    Cons(n, r) => let c0n = vlin_coeff(v, n.cs) in if c0n == vlin_min_int() then Cons(vlin_err(), vfm_pair1(v, p, cp, r)) else let cn = 0 - c0n in let g = vfm_gcd(cn, cp) in Cons(vlin_add_raw(vlin_scale_raw(cn / g, p), vlin_scale_raw(cp / g, n)), vfm_pair1(v, p, cp, r))
 
 fn vfm_pairs(v, pos, negs) = match pos
     Nil        => Nil
@@ -1944,6 +1948,7 @@ fn vty_decl1(st, rest) = match st
     Sig(n, ps, ts, rt)       => Cons(st, rest)
     TypeRefineS(nm, bty, pr) => Cons(st, rest)
     VLawDecl(nm, ps, body)   => Cons(st, rest)
+    VContractSig(nm, ps, reqs, enss) => Cons(st, rest)
     _                        => rest
 fn vty_prog_m(m) = match m
     Nil        => Nil
@@ -2230,9 +2235,242 @@ fn vprove_goals_all(enss, hyps, lenv, fns, d) = match enss
     Nil        => 1
     Cons(h, t) => if vprove_goal(h, hyps, lenv, fns, d) == 1 then vprove_goals_all(t, hyps, lenv, fns, d) else 0
 
+## --- DEFINEDNESS OF A CHECKED CLAUSE (spec 19.9) -------------------------------------------------------------------
+## vprove_goal shows that an `ensures` clause cannot come out FALSE: its refutation starts from "the clause was
+## evaluated and is false", so a clause whose own evaluation TRAPS was never contradicted. `fn g(x) ensures x - 0 == x
+## = x` was `proven`, the default build dropped the check and `g("s")` returned, while `--keep-proven-checks` stopped
+## in the check with a type error; `ensures x * x >= 0` and `ensures a / b * 0 == 0` trapped the same way on an overflow
+## and on b == 0. A `proven` clause has to mean "the kept check passes on every execution that reaches it", so the
+## clause must also be shown to EVALUATE on every path that reaches it (vdf_leaf, at the three leaves of vprove_body):
+##   * the evidence is that of the path, never the clause's own: the `requires` (always checked at run time), the body
+##     that ran, the clauses before this one. An operand of arithmetic or of an ordering has to be an integer on that
+##     evidence (a linear term without a handle); `==` / `!=` take anything;
+##   * `+ - *` must stay inside the 64-bit range: the term is a constant, or the value of one variable, or equal to a
+##     value the path already computed (the result, a `let` or a condition of the body, a `requires`: `ev`), or
+##     Fourier-Motzkin proves -MAX <= term <= MAX from the hypotheses and from `v <= MAX` for those values
+##     (v >= MIN is not a row the model can hold, so a lower bound has to come from a `requires`);
+##   * `/` and `%` need a divisor proven > 0 or < -1; a shift needs a count proven inside 0..63; `+% -% *%` and the
+##     other bit operations need integers only;
+##   * `and` / `or` / `if` evaluate their second part under the first, as the run time does; a quantifier's predicate
+##     is checked for every index of its range;
+##   * a call of a program function, a field read or an arithmetic operation that the path already evaluated in the
+##     same words evaluates again (vdf_seen);
+##   * another call of a program function evaluates when the callee has no contract, does not recurse, and its body
+##     evaluates with the arguments in place (vdf_ucall); `str(v)` always does, `count(s)` and `+` on a string do;
+##   * anything else (a callee with a contract, a recursive one, a field without evidence) is
+##     not shown to evaluate. The clause then stays `runtime_checked`: its check is compiled in every build, so the two
+##     builds agree on every input. This is a refusal to drop a check, never a wrong verdict.
+fn vdf_cx(hyps, lenv, fns, d, ev) = {hyps: hyps, lenv: lenv, fns: fns, d: d, ev: ev}
+fn vdf_lin(e, cx) = vlin_expr(e, cx.hyps, cx.lenv, cx.fns, cx.d)
+fn vdf_int(e, cx) = let l = vdf_lin(e, cx) in if l.ok == 1 and vlin_has_h(l.cs) == 0 then 1 else 0
+fn vdf_cs_zero(cs) = match cs
+    Nil        => 1
+    Cons(h, t) => if h.c == 0 then vdf_cs_zero(t) else 0
+fn vdf_same(a, b) = let dl = vlin_sub(a, b) in if dl.ok == 1 and dl.c0 == 0 and vdf_cs_zero(dl.cs) == 1 then 1 else 0
+fn vdf_known(l, ev) = match ev
+    Nil        => 0
+    Cons(h, t) => if vdf_same(l, h) == 1 then 1 else vdf_known(l, t)
+fn vdf_ident_at(k, i, n) = if i >= n then 1 else if isalnum(at(k, i)) then vdf_ident_at(k, i + 1, n) else 0
+fn vdf_ident(k) = let n = count(k) in if n == 0 then 0 else if isalpha(at(k, 0)) then vdf_ident_at(k, 1, n) else 0
+fn vdf_lone(l) = if l.c0 == 0 and len(l.cs) == 1 and (phd_cs(l.cs)).c == 1 and vdf_ident((phd_cs(l.cs)).k) == 1 then 1 else 0
+## the values the path has computed: every integer term bound in an environment (the result, the `let`s of the body)
+fn vdf_ev_env(lenv, acc) = match lenv
+    Nil        => acc
+    Cons(h, t) => vdf_ev_env(t, if (h.v).ok == 3 then Cons(h.v, acc) else if (h.v).ok == 1 and isnil((h.v).cs) == 0 and vlin_has_h((h.v).cs) == 0 then Cons(h.v, acc) else acc)
+## The integer terms an evaluated expression computed on the way: every `+ - *` node in a position that is always
+## evaluated (an operand of arithmetic or of a comparison, an argument of a call, the value of a `let`, the condition of
+## an `if`; of `and` / `or` only the first operand). `tru` == 1 reads a clause that came out true: both operands of
+## its `and`s ran. Each one that is an integer term of the model is a value that exists, so it is inside the range.
+fn vdf_terms(e, tru, q, acc) = match e
+    Bin(op, a, b)   => if op == "and" then vdf_terms(a, tru, q, if tru == 1 then vdf_terms(b, 1, q, acc) else acc) else if op == "or" then vdf_terms(a, 0, q, acc) else vdf_node(e, q, vdf_term1(op, e, q, vdf_terms(b, 0, q, vdf_terms(a, 0, q, acc))))
+    If(c, t, e2)    => vdf_terms(c, 0, q, acc)
+    LetIn(nm, v, b) => vdf_terms(v, 0, q, acc)
+    Call(cnm, args) => if cnm == "forall_range" or cnm == "exists_range" or cnm == "old" or cnm == "ctfail" then acc else vdf_node(e, q, vdf_terms_args(args, q, acc))
+    Field(o, fld)   => vdf_node(e, q, vdf_terms(o, 0, q, acc))
+    OwnE(i)         => vdf_terms(i, 0, q, acc)
+    MutE(i)         => vdf_terms(i, 0, q, acc)
+    CT(i)           => vdf_terms(i, 0, q, acc)
+    _               => acc
+## A call of a program function, a field read and an arithmetic operation that the path evaluated are kept as they are
+## written ({ok: 3, e}): the same expression over the same parameters evaluates again (contracts are pure), so a
+## clause may repeat it, whatever the types of its operands turned out to be.
+## "The same parameters" is checked on both sides: an expression that mentions a name bound by a `let` (of the body
+## or of the clause) or `result` is never kept and never matched.
+fn vdf_isparam(h) = if vlin_lone_h(h.v) == 1 and vlin_unh((phd_cs((h.v).cs)).k) == h.k then 1 else 0
+fn vdf_free_ok(e, lenv) = match lenv
+    Nil        => 1
+    Cons(h, t) => if count(h.k) >= 1 and at(h.k, 0) != "?" and vdf_isparam(h) == 0 and vmentions(e, h.k) == 1 then 0 else vdf_free_ok(e, t)
+fn vdf_node_kind(e, fns) = match e
+    Call(cnm, args) => if isnil(vfnlookup(cnm, fns)) == 0 then 1 else 0
+    Field(o, fld)   => vdf_node_var(o)
+    Bin(op, a, b)   => if op == "+" or vev_arith(op) == 1 then 1 else 0
+    _               => 0
+fn vdf_node_var(o) = match o
+    Var(x) => 1
+    _      => 0
+fn vdf_node(e, q, acc) = if vdf_node_kind(e, q.fns) == 1 and vdf_free_ok(e, q.lenv) == 1 then Cons({ok: 3, c0: 0, cs: Nil, e: e}, acc) else acc
+fn vdf_seen_in(e, ev) = match ev
+    Nil        => 0
+    Cons(h, t) => if h.ok == 3 then (if h.e == e then 1 else vdf_seen_in(e, t)) else vdf_seen_in(e, t)
+fn vdf_seen(e, cx) = if vdf_node_kind(e, cx.fns) == 1 and vdf_free_ok(e, cx.lenv) == 1 then vdf_seen_in(e, cx.ev) else 0
+fn vdf_terms_args(args, q, acc) = match args
+    Nil        => acc
+    Cons(h, t) => vdf_terms_args(t, q, vdf_terms(h, 0, q, acc))
+fn vdf_term1(op, e, q, acc) = if op == "+" or op == "-" or op == "*" then (let l = vlin_expr(e, q.hyps, q.lenv, q.fns, q.d) in if l.ok == 1 and isnil(l.cs) == 0 and vlin_has_h(l.cs) == 0 then Cons(l, acc) else acc) else acc
+fn vdf_q(hyps, lenv, fns, d) = {hyps: hyps, lenv: lenv, fns: fns, d: d}
+## the terms as "?ev" entries of an environment ("?ev" is not a name, so nothing looks them up; vdf_ev_env reads them)
+fn vdf_ev_ent(ls, tail) = match ls
+    Nil        => tail
+    Cons(h, t) => Cons({k: "?ev", v: h}, vdf_ev_ent(t, tail))
+fn vdf_ev_push(e, tru, hyps, lenv, fns, d, tail) = if vlin_env_marked(lenv) == 0 then tail else vdf_ev_ent(vdf_terms(e, tru, vdf_q(hyps, lenv, fns, d), Nil), tail)
+fn vdf_ev_reqs(reqs, hyps, lenv, fns, tail) = match reqs
+    Nil        => tail
+    Cons(h, t) => vdf_ev_push(h, 1, hyps, lenv, fns, 0, vdf_ev_reqs(t, hyps, lenv, fns, tail))
+## a record literal as the result: `result.<key>` / `ret.<key>` read a field the literal has
+fn vdf_items_terms(items, q, acc) = match items
+    Nil        => acc
+    Cons(h, t) => vdf_items_terms(t, q, Cons({ok: 3, c0: 0, cs: Nil, e: Field(Var("result"), h.key)}, Cons({ok: 3, c0: 0, cs: Nil, e: Field(Var("ret"), h.key)}, vdf_terms(h.val, 0, q, acc))))
+## `p <= MAX` for every parameter the path has integer evidence of
+fn vdf_param_facts(lenv, hyps, acc) = match lenv
+    Nil        => acc
+    Cons(h, t) => vdf_param_facts(t, hyps, if vlin_lone_h(h.v) == 1 and vev_has(vlin_unh((phd_cs((h.v).cs)).k), hyps) == 1 then vdf_upper(vlin_var(vlin_unh((phd_cs((h.v).cs)).k)), acc) else acc)
+fn vdf_upper(l, acc) = let r = vlin_sub(vlin_const(vlin_max_int()), l) in if r.ok == 1 then Cons(r, acc) else acc
+fn vdf_ev_facts(ev, acc) = match ev
+    Nil        => acc
+    Cons(h, t) => vdf_ev_facts(t, vdf_upper(h, acc))
+## The range of a term is decided on its linear form, with the rows written here: `l <= MAX` is the refutation of
+## `l - MAX - 1 >= 0`. A constant of the term that only helps (<= 0 for the upper bound, >= 0 for the lower) is dropped
+## first, so the row always fits the model (`-MAX - 1` is the smallest constant it can hold). First from the
+## hypotheses of the path alone, then with `v <= MAX` for the values the path computed, then also for the parameters
+## (every row with MAX is one more chance for Fourier-Motzkin to leave the 64-bit range and give up); each time with
+## the products.
+fn vdf_strip(l) = {ok: 1, c0: 0, cs: l.cs}
+fn vdf_refute2(row, hy) = if vfm_check_unsat(Cons(row, hy)) == 1 then 1 else vfm_check_unsat(Cons(row, vnia_enrich_hyps(Cons(row, Nil), hy)))
+fn vdf_refute(row, hy, facts) = if row.ok != 1 then 0 else if vdf_refute2(row, hy) == 1 then 1 else if vdf_refute2(row, facts.f1) == 1 then 1 else vdf_refute2(row, facts.f2)
+fn vdf_range(e, l, cx) = let hy = app(vcollect_div_hyps_e(e, cx.hyps, cx.lenv, cx.fns, cx.d), cx.hyps) in let facts = {f1: vdf_ev_facts(cx.ev, hy), f2: vdf_ev_facts(cx.ev, vdf_param_facts(cx.lenv, cx.hyps, hy))} in if vdf_below(if l.c0 <= 0 then vdf_strip(l) else l, hy, facts) == 1 then vdf_below(vlin_scale_raw(0 - 1, if l.c0 >= 0 then vdf_strip(l) else l), hy, facts) else 0
+## m <= 2^62 or, failing that, m <= MAX: Fourier-Motzkin adds the constants of the rows it combines and gives up when a
+## sum leaves the 64-bit range, which happens next to MAX; the smaller bound decides every term that is not that large.
+fn vdf_below(m, hy, facts) = if vdf_refute(vlin_add_raw(m, vlin_const(0 - 4611686018427387904 - 1)), hy, facts) == 1 then 1 else vdf_refute(vlin_add_raw(m, vlin_const(vlin_min_int())), hy, facts)
+fn vdf_iscmp(op) = if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=" then 1 else 0
+fn vdf_iswrap(op) = if op == "+%" or op == "-%" or op == "*%" then 1 else 0
+fn vdf_isbit2(cnm) = if cnm == "bit_and" or cnm == "bit_or" or cnm == "bit_xor" or cnm == "bv_and" or cnm == "bv_or" or cnm == "bv_xor" then 1 else 0
+fn vdf_isshift(cnm) = if cnm == "bit_shl" or cnm == "bit_shr" or cnm == "bv_shl" or cnm == "bv_shr" then 1 else 0
+fn vdf_ints(args, cx) = match args
+    Nil        => 1
+    Cons(h, t) => if vdf(h, cx) == 1 and vdf_int(h, cx) == 1 then vdf_ints(t, cx) else 0
+fn vdf_nonzero(b, cx) = if vprove_goal(Bin(">", b, Num(0)), cx.hyps, cx.lenv, cx.fns, cx.d) == 1 then 1 else vprove_goal(Bin("<", b, Num(0 - 1)), cx.hyps, cx.lenv, cx.fns, cx.d)
+fn vdf_count(k, cx) = if vprove_goal(Bin(">=", k, Num(0)), cx.hyps, cx.lenv, cx.fns, cx.d) == 1 then vprove_goal(Bin("<=", k, Num(63)), cx.hyps, cx.lenv, cx.fns, cx.d) else 0
+fn vdf_arith(op, a, b, e, cx) = if vdf(a, cx) == 0 or vdf(b, cx) == 0 then 0 else if op == "+" and (vdf_isstr(a) == 1 or vdf_isstr(b) == 1) then 1 else if vdf_int(a, cx) == 0 or vdf_int(b, cx) == 0 then 0 else if vdf_iswrap(op) == 1 then 1 else if op == "/" or op == "%" then vdf_nonzero(b, cx) else if op == "+" or op == "-" or op == "*" then (let l = vdf_lin(e, cx) in if l.ok != 1 or vlin_has_h(l.cs) == 1 then 0 else if isnil(l.cs) == 1 or vdf_lone(l) == 1 or vdf_known(l, cx.ev) == 1 then 1 else vdf_range(e, l, cx)) else 0
+## An ordering takes two integers or two strings. Two values of unknown type (handles) may be ordered when the path
+## already ordered them against each other (a row over both handles: an evaluated `<`), or the same one against itself.
+fn vdf_ordrow(ka, kb, hyps) = match hyps
+    Nil        => 0
+    Cons(h, t) => if h.ok == 1 and vlin_has_h(h.cs) == 1 and vlin_coeff(ka, h.cs) != 0 and vlin_coeff(kb, h.cs) != 0 then 1 else vdf_ordrow(ka, kb, t)
+fn vdf_ordh(la, lb, hyps) = if vlin_lone_h(la) == 1 and vlin_lone_h(lb) == 1 then vdf_ordrow((phd_cs(la.cs)).k, (phd_cs(lb.cs)).k, hyps) else 0
+fn vdf_cmp(op, a, b, cx) = if vdf(a, cx) == 0 or vdf(b, cx) == 0 then 0 else if op == "==" or op == "!=" then 1 else if vdf_int(a, cx) == 1 and vdf_int(b, cx) == 1 then 1 else vdf_ordh(vdf_lin(a, cx), vdf_lin(b, cx), cx.hyps)
+fn vdf_under(r, cx) = if r.ok == 1 then vdf_cx(app(r.hyps, cx.hyps), cx.lenv, cx.fns, cx.d, cx.ev) else cx
+fn vdf_and(a, b, cx) = if vdf_bool(a, cx) == 0 then 0 else vdf_bool(b, vdf_under(vcond_pos(a, cx.hyps, cx.lenv, cx.fns, cx.d), cx))
+fn vdf_or(a, b, cx) = if vdf_bool(a, cx) == 0 then 0 else vdf_bool(b, vdf_under(vcond_neg(a, cx.hyps, cx.lenv, cx.fns, cx.d), cx))
+fn vdf_pick(e, cx, isb) = if isb == 1 then vdf_bool(e, cx) else vdf(e, cx)
+fn vdf_if(c, t, e2, cx, isb) = if vdf_bool(c, cx) == 0 then 0 else if vdf_pick(t, vdf_under(vcond_pos(c, cx.hyps, cx.lenv, cx.fns, cx.d), cx), isb) == 0 then 0 else vdf_pick(e2, vdf_under(vcond_neg(c, cx.hyps, cx.lenv, cx.fns, cx.d), cx), isb)
+fn vdf_let(nm, v, b, cx, isb) = if vdf(v, cx) == 0 then 0 else let lv = vdf_lin(v, cx) in if lv.ok != 1 or vlin_has_h(lv.cs) == 1 then 0 else vdf_pick(b, vdf_cx(cx.hyps, Cons({k: nm, v: lv}, cx.lenv), cx.fns, cx.d, Cons(lv, cx.ev)), isb)
+fn vdf_quant(args, cx) = let vnm = n4_var_name(ohd_e(args)) in let lo_e = ohd_e(ptl(args)) in let hi_e = ohd_e(ptl(ptl(args))) in if vnm == "" or vdf(lo_e, cx) == 0 or vdf(hi_e, cx) == 0 or vdf_int(lo_e, cx) == 0 or vdf_int(hi_e, cx) == 0 then 0 else let lv = vlin_var("?q" + str(len(cx.hyps)) + "." + str(cx.d) + "." + vnm) in vdf_bool(ohd_e(ptl(ptl(ptl(args)))), vdf_cx(Cons(vlin_sub(lv, vdf_lin(lo_e, cx)), Cons(vlin_sub(vdf_lin(hi_e, cx), lv), cx.hyps)), Cons({k: vnm, v: lv}, cx.lenv), cx.fns, cx.d + 1, cx.ev))
+## A call of a program function that the path did not evaluate: it evaluates when its arguments do, the callee carries
+## no contract of its own (a `requires` or an unproven `ensures` of the callee is a check that could stop the program),
+## does not call itself, and its body, with the arguments in place of the parameters, evaluates (two levels deep).
+fn vdf_contract1(st, nm) = match st
+    VContractSig(n, ps, reqs, enss) => if n == nm then 1 else 0
+    _                               => 0
+fn vdf_has_contract(nm, sts) = match sts
+    Nil        => 0
+    Cons(h, t) => if vdf_contract1(h, nm) == 1 then 1 else vdf_has_contract(nm, t)
+fn vdf_args_ok(args, cx) = match args
+    Nil        => 1
+    Cons(h, t) => if vdf(h, cx) == 1 then vdf_args_ok(t, cx) else 0
+fn vdf_ucall(cnm, args, mf, cx) = match mf
+    Nil        => 0
+    Cons(f, r) => if cx.d >= 2 or len(f.ps) != len(args) or afn_calls_self(cnm, f.body) == 1 or tot_param_call(f.ps, f.body) != "" or isnil(vty_prog(cx.fns)) == 1 or vdf_has_contract(cnm, vty_prog(cx.fns)) == 1 or vdf_args_ok(args, cx) == 0 then 0 else vdf(vtemp_subst_ps(f.body, f.ps, args), vdf_cx(cx.hyps, cx.lenv, cx.fns, cx.d + 1, cx.ev))
+## a value that is a string as written: a literal, `str(..)`, `chr(..)`, a `+` with one of those (`+` then concatenates)
+fn vdf_isstr(e) = match e
+    Str(s)          => 1
+    Call(cnm, args) => if cnm == "str" or cnm == "chr" then 1 else 0
+    Bin(op, a, b)   => if op == "+" then (if vdf_isstr(a) == 1 then 1 else vdf_isstr(b)) else 0
+    _               => 0
+## A clause of f that calls f itself (`ensures (n > 0 and f(n - 1) == ..) or ..`): the kept check re-enters the
+## function, whose own kept check runs again. It evaluates, by induction on a natural-number measure, when
+##   * the arguments evaluate, and one integer parameter strictly decreases and stays >= 0 at the call (the measure);
+##   * every `requires` of f, at the arguments, evaluates and is proven (the callee's precondition check passes);
+##   * the body of f evaluates for EVERY input that satisfies the `requires` (vdf of the body from the `requires`
+##     alone: the inner call runs the body on other values than the ones this path ran it on).
+## The inner check then passes: it cannot be false (the clauses are proven for every input) and its own evaluation is
+## this same argument one step down the measure. "?self" is the entry of the function under proof in its environment.
+fn vdf_self(lenv) = match lenv
+    Nil        => Nil
+    Cons(h, t) => if h.k == "?self" then lenv else vdf_self(t)
+fn vdf_param_free(p, lenv) = match lenv
+    Nil        => 0
+    Cons(h, t) => if h.k == p then vdf_isparam(h) else vdf_param_free(p, t)
+fn vdf_self_reqs(reqs, ps, args, cx) = match reqs
+    Nil        => 1
+    Cons(h, t) => let r = vtemp_subst_ps(h, ps, args) in if vdf_bool(r, cx) == 1 and vprove_goal(r, cx.hyps, cx.lenv, cx.fns, cx.d) == 1 then vdf_self_reqs(t, ps, args, cx) else 0
+fn vdf_self_measure(ps, args, cx) = match ps
+    Nil        => 0
+    Cons(p, r) => vdf_self_measure1(p, r, args, cx)
+fn vdf_self_measure1(p, r, args, cx) = match args
+    Nil         => 0
+    Cons(a, ar) => if vdf_param_free(p, cx.lenv) == 1 and vdf_int(a, cx) == 1 and vdf_int(Var(p), cx) == 1 and vprove_goal(Bin("<", a, Var(p)), cx.hyps, cx.lenv, cx.fns, cx.d) == 1 and vprove_goal(Bin(">=", a, Num(0)), cx.hyps, cx.lenv, cx.fns, cx.d) == 1 then 1 else vdf_self_measure(r, ar, cx)
+fn vdf_self_body(se, fns) = let lenv = vlin_env_h(se.ps) in let rh = vprove_reqs_hyps_i(se.reqs, lenv, fns, Nil) in if rh.ok != 1 then 0 else vdf(se.body, vdf_cx(rh.hyps, lenv, fns, 0, vdf_ev_env(vdf_ev_reqs(se.reqs, rh.hyps, lenv, fns, Nil), Nil)))
+fn vdf_selfcall(args, f, m, cx) = match m
+    Nil         => 0
+    Cons(se, r) => if f.ps == se.ps and f.body == se.body and len(args) == len(se.ps) and cx.d < 2 and vdf_args_ok(args, cx) == 1 and vdf_self_measure(se.ps, args, cx) == 1 and vdf_self_reqs(se.reqs, se.ps, args, cx) == 1 then vdf_self_body(se, cx.fns) else 0
+fn vdf_ucall0(cnm, args, mf, cx) = match mf
+    Nil        => 0
+    Cons(f, r) => if vdf_selfcall(args, f, vdf_self(cx.lenv), cx) == 1 then 1 else vdf_ucall(cnm, args, mf, cx)
+fn vdf_call(cnm, args, cx) = if vlin_bound(cnm, cx.lenv) == 1 then 0 else if isnil(vfnlookup(cnm, cx.fns)) == 0 then vdf_ucall0(cnm, args, vfnlookup(cnm, cx.fns), cx) else if cnm == "str" and len(args) == 1 then vdf(ohd_e(args), cx) else if cnm == "count" and len(args) == 1 then (if vdf_isstr(ohd_e(args)) == 1 then vdf(ohd_e(args), cx) else 0) else if cnm == "old" and len(args) == 1 then vdf(ohd_e(args), cx) else if (cnm == "forall_range" or cnm == "exists_range") and len(args) == 4 then vdf_quant(args, cx) else if vdf_isbit2(cnm) == 1 and len(args) == 2 then vdf_ints(args, cx) else if cnm == "bit_not" and len(args) == 1 then vdf_ints(args, cx) else if vdf_isshift(cnm) == 1 and len(args) == 2 then (if vdf_ints(args, cx) == 1 then vdf_count(ohd_e(ptl(args)), cx) else 0) else 0
+## e in a position that reads a value
+fn vdf(e, cx) = match e
+    Num(n)          => 1
+    Str(s)          => 1
+    Var(nm)         => if nm == "true" or nm == "false" then 1 else vlin_bound(nm, cx.lenv)
+    Bin(op, a, b)   => if op == "and" or op == "or" or vdf_iscmp(op) == 1 then vdf_bool(e, cx) else if vdf_seen(e, cx) == 1 then 1 else vdf_arith(op, a, b, e, cx)
+    If(c, t, e2)    => vdf_if(c, t, e2, cx, 0)
+    LetIn(nm, v, b) => vdf_let(nm, v, b, cx, 0)
+    Call(cnm, args) => if vdf_seen(e, cx) == 1 then 1 else vdf_call(cnm, args, cx)
+    Field(o, fld)   => if vdf_int(e, cx) == 1 then 1 else vdf_seen(e, cx)
+    OwnE(i)         => vdf(i, cx)
+    MutE(i)         => vdf(i, cx)
+    CT(i)           => vdf(i, cx)
+    _               => 0
+## e in a position that tests a value: a comparison, a connective, a literal, or an integer the path has evidence of
+fn vdf_bool(e, cx) = match e
+    Num(n)          => 1
+    Bin(op, a, b)   => if op == "and" then vdf_and(a, b, cx) else if op == "or" then vdf_or(a, b, cx) else if vdf_iscmp(op) == 1 then vdf_cmp(op, a, b, cx) else if vdf(e, cx) == 1 then vdf_int(e, cx) else 0
+    If(c, t, e2)    => vdf_if(c, t, e2, cx, 1)
+    LetIn(nm, v, b) => vdf_let(nm, v, b, cx, 1)
+    Var(nm)         => if nm == "true" or nm == "false" then 1 else if vlin_bound(nm, cx.lenv) == 1 then vdf_int(e, cx) else 0
+    Call(cnm, args) => if (cnm == "forall_range" or cnm == "exists_range") and len(args) == 4 then vdf_call(cnm, args, cx) else if vdf(e, cx) == 1 then vdf_int(e, cx) else 0
+    _               => if vdf(e, cx) == 1 then vdf_int(e, cx) else 0
+## the clauses are checked in order, each one only when those before it held
+fn vdf_all(enss, cx) = match enss
+    Nil        => 1
+    Cons(h, t) => if vdf_bool(h, cx) == 0 then 0 else vdf_all(t, vdf_under(vcond_pos(h, cx.hyps, cx.lenv, cx.fns, cx.d), cx))
+## `Call("?defonly")` at the head of the clause list (not a name a program can write) asks for the walk over the paths
+## of the body with the definedness check alone: vqflia_defined_fn, for a caller that proves the clauses another way.
+fn vdf_only(enss) = match enss
+    Cons(Call(cnm, args), t) => if cnm == "?defonly" then 1 else 0
+    _                        => 0
+## `lt`: the integer terms the leaf expression of the body computed (vdf_terms)
+fn vdf_leaf(enss, hyps, penv, lenv, lt, fns, d) = if vdf_only(enss) == 1 then vdf_all(ptl(enss), vdf_cx(hyps, penv, fns, d, vdf_ev_env(penv, vdf_ev_env(lenv, lt)))) else if vprove_goals_all(enss, hyps, penv, fns, d) == 1 then vdf_all(enss, vdf_cx(hyps, penv, fns, d, vdf_ev_env(penv, vdf_ev_env(lenv, lt)))) else 0
+
+## a `let` whose value hides a conditional (`let d = dist(a, b) in ..` with an `if` inside dist) is split on it, as a
+## body is (vprove_body_lifted): the walk used to stop there, so such a function was proved by lcaas alone (through
+## the certificate term) and the paths of its body were never available to the definedness check.
+fn vprove_body_let_cl(nm, v2, b, hyps, lenv, ctx) = match v2
+    If(c, t, e2) => vprove_body_let(nm, v2, b, hyps, lenv, ctx)
+    _            => 0
 fn vprove_body_let(nm, v, b, hyps, lenv, ctx) = match v
     If(c, t, e2) => if vnorm_if_changed(c) == 1 then vprove_body_let(nm, vnorm_if(c, t, e2), b, hyps, lenv, ctx) else let rp = vcond_pos(c, hyps, lenv, ctx.fns, ctx.d) in let rn = vcond_neg(c, hyps, lenv, ctx.fns, ctx.d) in if rp.ok == 1 and rn.ok == 1 and vprove_body_let(nm, t, b, app(rp.hyps, hyps), lenv, ctx) == 1 and vprove_body_let(nm, e2, b, app(rn.hyps, hyps), lenv, ctx) == 1 then 1 else 0
-    _            => let gfn = n4_is_grad_let(v) in if gfn != "" then vprove_body(n4_subst_call(b, nm, "__ad_grad_" + gfn), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else if vis_struct_expr(v) == 1 then vprove_body(vtemp_subst_var(b, nm, v), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else let hy = app(vev_new(v, 2, hyps, lenv, ctx.fns, ctx.d), hyps) in let lv = vlin_expr(v, hy, lenv, ctx.fns, ctx.d) in if lv.ok == 0 then 0 else vprove_body(b, app(vcollect_div_hyps_e(v, hy, lenv, ctx.fns, ctx.d), hy), Cons({k: nm, v: lv}, Cons({k: "?let", v: vlin_err()}, lenv)), ctx.enss, ctx.fns, ctx.d)
+    _            => let gfn = n4_is_grad_let(v) in if gfn != "" then vprove_body(n4_subst_call(b, nm, "__ad_grad_" + gfn), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else if vis_struct_expr(v) == 1 then vprove_body(vtemp_subst_var(b, nm, v), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else let hy = app(vev_new(v, 2, hyps, lenv, ctx.fns, ctx.d), hyps) in let lv = vlin_expr(v, hy, lenv, ctx.fns, ctx.d) in if lv.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_let_cl(nm, vlift_e(v, lenv, ctx.fns, 0), b, Cons(vlift_mark(), hyps), lenv, ctx)) else vprove_body(b, app(vcollect_div_hyps_e(v, hy, lenv, ctx.fns, ctx.d), hy), Cons({k: nm, v: lv}, vdf_ev_push(v, 0, hy, lenv, ctx.fns, ctx.d, Cons({k: "?let", v: vlin_err()}, lenv))), ctx.enss, ctx.fns, ctx.d)
 
 ## `result.<field>` / `ret.<field>` bindings for a record-literal result; a field that is not an integer term is left unbound
 fn vrec_penv(items, hyps, lenv, cx, acc) = match items
@@ -2249,10 +2487,10 @@ fn vprove_body(body, hyps, lenv, enss, fns, d) = match body
     VarIn(nm, v, b) => vprove_body_let(nm, v, b, hyps, lenv, {enss: enss, fns: fns, d: d})
     DeferE(c, b)    => vprove_body(b, hyps, lenv, enss, fns, d)
     ErrDeferE(c, b) => vprove_body(b, hyps, lenv, enss, fns, d)
-    If(c, t, e2)    => if vnorm_if_changed(c) == 1 then vprove_body(vnorm_if(c, t, e2), hyps, lenv, enss, fns, d) else let rp = vcond_pos(c, hyps, lenv, fns, d) in let rn = vcond_neg(c, hyps, lenv, fns, d) in if rp.ok == 0 or rn.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_cl(vlift_e(c, lenv, fns, 0), t, e2, {hyps: Cons(vlift_mark(), hyps), lenv: lenv, enss: enss, fns: fns, d: d})) else if rp.ok == 1 and rn.ok == 1 and vprove_body_alts(vne_alts(c, 0, rp, hyps, lenv, {fns: fns, d: d}), t, hyps, lenv, {enss: enss, fns: fns, d: d}) == 1 and vprove_body_alts(vne_alts(c, 1, rn, hyps, lenv, {fns: fns, d: d}), e2, hyps, lenv, {enss: enss, fns: fns, d: d}) == 1 then 1 else 0
-    Rec(items)      => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in vprove_goals_all(enss, hy, vrec_penv(items, hy, lenv, {fns: fns, d: d}, vlin_env_base(lenv, lenv)), fns, d)
-    RecT(tn, items) => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in vprove_goals_all(enss, hy, vrec_penv(items, hy, lenv, {fns: fns, d: d}, vlin_env_base(lenv, lenv)), fns, d)
-    _               => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in let dhyps = app(vcollect_div_hyps_e(body, hy, lenv, fns, d), hy) in let lb = vlin_expr(body, dhyps, lenv, fns, d) in if lb.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_lifted(vlift_e(body, lenv, fns, 0), Cons(vlift_mark(), hyps), lenv, {enss: enss, fns: fns, d: d})) else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, vlin_env_base(lenv, lenv))) in vprove_goals_all(enss, dhyps, penv, fns, d)
+    If(c, t, e2)    => if vnorm_if_changed(c) == 1 then vprove_body(vnorm_if(c, t, e2), hyps, lenv, enss, fns, d) else let rp = vcond_pos(c, hyps, lenv, fns, d) in let rn = vcond_neg(c, hyps, lenv, fns, d) in if rp.ok == 0 or rn.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_cl(vlift_e(c, lenv, fns, 0), t, e2, {hyps: Cons(vlift_mark(), hyps), lenv: lenv, enss: enss, fns: fns, d: d})) else if rp.ok == 1 and rn.ok == 1 and vprove_body_alts(vne_alts(c, 0, rp, hyps, lenv, {fns: fns, d: d}), t, hyps, vdf_ev_push(c, 0, app(rp.hyps, hyps), lenv, fns, d, lenv), {enss: enss, fns: fns, d: d}) == 1 and vprove_body_alts(vne_alts(c, 1, rn, hyps, lenv, {fns: fns, d: d}), e2, hyps, vdf_ev_push(c, 0, app(rn.hyps, hyps), lenv, fns, d, lenv), {enss: enss, fns: fns, d: d}) == 1 then 1 else 0
+    Rec(items)      => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in vdf_leaf(enss, hy, vrec_penv(items, hy, lenv, {fns: fns, d: d}, vlin_env_base(lenv, lenv)), lenv, vdf_items_terms(items, vdf_q(hy, lenv, fns, d), Nil), fns, d)
+    RecT(tn, items) => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in vdf_leaf(enss, hy, vrec_penv(items, hy, lenv, {fns: fns, d: d}, vlin_env_base(lenv, lenv)), lenv, vdf_items_terms(items, vdf_q(hy, lenv, fns, d), Nil), fns, d)
+    _               => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in let dhyps = app(vcollect_div_hyps_e(body, hy, lenv, fns, d), hy) in let lb = vlin_expr(body, dhyps, lenv, fns, d) in if lb.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_lifted(vlift_e(body, lenv, fns, 0), Cons(vlift_mark(), hyps), lenv, {enss: enss, fns: fns, d: d})) else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, vlin_env_base(lenv, lenv))) in vdf_leaf(enss, dhyps, penv, lenv, vdf_terms(body, 0, vdf_q(dhyps, lenv, fns, d), Nil), fns, d)
 
 fn vprove_req1(req, rest_reqs, hyps, ctx) = match req
     Bin(op, a, b) => if op == "and" then vprove_req1(a, Cons(b, rest_reqs), hyps, ctx) else if op == "or" then (if vprove_req1(a, rest_reqs, hyps, ctx) == 1 and vprove_req1(b, rest_reqs, hyps, ctx) == 1 then 1 else 0) else let r1 = vcond_pos(req, hyps, ctx.lenv, ctx.fns, 0) in if r1.ok == 0 then 0 else vprove_with_reqs(rest_reqs, app(r1.hyps, hyps), ctx)
@@ -2263,16 +2501,28 @@ fn vprove_with_reqs(reqs, hyps, ctx) = match reqs
     Cons(h, t) => vprove_req1(h, t, hyps, ctx)
 
 ## Every parameter starts as a handle: what the clauses and the body evaluate is the only evidence of an integer.
-fn vqflia_prove_fn_ty(ty, ps, reqs, enss, body, fns) = let lenv = vlin_env_h(ps) in let h0 = vev_init(ty, ps) in let rh = vprove_reqs_hyps_i(reqs, lenv, fns, h0) in if rh.ok == 1 then vprove_body(body, rh.hyps, lenv, enss, fns, 0) else vprove_with_reqs(reqs, h0, {body: body, lenv: lenv, enss: enss, fns: fns})
+fn vqflia_prove_fn_ty(ty, ps, reqs, enss, body, fns) = let lenv = Cons({k: "?self", v: vlin_err(), ps: ps, reqs: reqs, body: body}, vlin_env_h(ps)) in let h0 = vev_init(ty, ps) in let rh = vprove_reqs_hyps_i(reqs, lenv, fns, h0) in if rh.ok == 1 then vprove_body(body, rh.hyps, vdf_ev_reqs(reqs, rh.hyps, lenv, fns, lenv), enss, fns, 0) else vprove_with_reqs(reqs, h0, {body: body, lenv: lenv, enss: enss, fns: fns})
 ## 0: not proven. 1: proven from evaluated evidence alone. 2: proven with the declared `int` types of the parameters,
 ## which holds for the compiled program only because vwrap_fn_c1 then guards them (vty_wrap).
 fn vqflia_prove_fn_k(ps, reqs, enss, body, fns) = if isnil(enss) == 1 then 0 else if vqflia_prove_fn_ty(Nil, ps, reqs, enss, body, fns) == 1 then 1 else let ty = vty_find(ps, body, fns) in if isnil(ty) == 1 then 0 else if vqflia_prove_fn_ty(ty, ps, reqs, enss, body, fns) == 1 then 2 else 0
 fn vqflia_prove_fn(ps, reqs, enss, body, fns) = if vqflia_prove_fn_k(ps, reqs, enss, body, fns) >= 1 then 1 else 0
+## 1 when every clause is shown to evaluate on every path of the body that reaches it, from evaluated evidence alone
+## (no declared type: the caller of this entry gets no vty_wrap guard). lcaas asks it before it reports `proven` for a
+## contract it proved through the certificate term, so that `proven` means the same thing in both tools.
+## When the walk cannot follow the body (records through calls, destructuring), the clauses may still evaluate whatever
+## the body did: from the `requires` alone, with `result` a value of unknown type (vdf_reqs_only).
+fn vdf_reqs_only(ps, reqs, enss, fns) = let lenv = vlin_env_h(ps) in let rh = vprove_reqs_hyps_i(reqs, lenv, fns, Nil) in if rh.ok != 1 then 0 else let penv = Cons({k: "result", v: vlin_handle("result")}, Cons({k: "ret", v: vlin_handle("ret")}, lenv)) in vdf_all(enss, vdf_cx(rh.hyps, penv, fns, 0, vdf_ev_env(vdf_ev_reqs(reqs, rh.hyps, lenv, fns, Nil), Nil)))
+fn vqflia_defined_fn(ps, reqs, enss, body, fns) = if isnil(enss) == 1 then 0 else if vqflia_prove_fn_ty(Nil, ps, reqs, Cons(Call("?defonly", Nil), enss), body, fns) == 1 then 1 else vdf_reqs_only(ps, reqs, enss, fns)
 
 ## The sign split of a one-parameter law is a split of an INTEGER: it is tried only when every complete evaluation of
 ## the law forces that parameter to be one.
 ## A law is a statement, not code whose check is elided: its parameters range over their declared types.
-fn vqflia_prove_law(ps, body, fns) = let lenv = vlin_env_h(ps) in let h0 = vev_init(vty_find(ps, body, fns), ps) in if vprove_goal(body, h0, lenv, fns, 0) == 1 then 1 else if len(ps) == 1 and (isnil(h0) == 0 or vev_in(phd(ps), vev_forced(body, vev_cx(Nil, lenv, fns, 0), Nil, Nil)) == 1) then let p0 = vlin_var(phd(ps)) in let hneg = Cons(vlin_sub(vlin_const(0 - 1), p0), Cons(vev_mark(phd(ps)), Nil)) in let hpos = Cons(p0, Cons(vev_mark(phd(ps)), Nil)) in if vprove_goal(body, hneg, lenv, fns, 0) == 1 and vprove_goal(body, hpos, lenv, fns, 0) == 1 then 1 else 0 else 0
+## vty_find scans the whole program for the declarations of (ps, body): a caller that knows which law it is proving
+## (lcaas does: the `Sig` follows the `VLawDecl`) passes the declared-int parameters and skips the scan. With one scan
+## per law, proving N laws took time in N * N (measured by lcaas_scale_gate: 2400 laws, 3.9 s; 13.7 times the 600-law
+## time where the compiler itself was 6.9 times).
+fn vqflia_prove_law(ps, body, fns) = vqflia_prove_law_ty(vty_find(ps, body, fns), ps, body, fns)
+fn vqflia_prove_law_ty(ty, ps, body, fns) = let lenv = vlin_env_h(ps) in let h0 = vev_init(ty, ps) in if vprove_goal(body, h0, lenv, fns, 0) == 1 then 1 else if len(ps) == 1 and (isnil(h0) == 0 or vev_in(phd(ps), vev_forced(body, vev_cx(Nil, lenv, fns, 0), Nil, Nil)) == 1) then let p0 = vlin_var(phd(ps)) in let hneg = Cons(vlin_sub(vlin_const(0 - 1), p0), Cons(vev_mark(phd(ps)), Nil)) in let hpos = Cons(p0, Cons(vev_mark(phd(ps)), Nil)) in if vprove_goal(body, hneg, lenv, fns, 0) == 1 and vprove_goal(body, hpos, lenv, fns, 0) == 1 then 1 else 0 else 0
 
 fn vneg_goal_hyps(g, hyps, lenv, fns, d) = match g
     Bin(op, a, b) => if op == "and" then app(vneg_goal_hyps(a, hyps, lenv, fns, d), vneg_goal_hyps(b, hyps, lenv, fns, d)) else if op == "==" then app((vcond_cmp_pos(">", vlin_expr(a, hyps, lenv, fns, d), vlin_expr(b, hyps, lenv, fns, d))).hyps, (vcond_cmp_pos("<", vlin_expr(a, hyps, lenv, fns, d), vlin_expr(b, hyps, lenv, fns, d))).hyps) else (vcond_neg(g, hyps, lenv, fns, d)).hyps
@@ -2878,9 +3128,15 @@ fn vwcet_call(cnm, mf, fns, d) = match mf
     Nil        => if lis_zip_call(cnm) == 1 or cnm == "_call" or ostarts(cnm, "__closure_call_") == 1 then 100000 else 0
     Cons(f, r) => if afn_calls_self(cnm, f.body) == 1 then 100000 else vwcet_e(f.body, fns, d - 1)
 
-fn vwcet_chk_fn(nm, ps, body, ot) = let bound = vwcet_lookup(nm, ot.wcets) in if bound <= 0 then 0 else let lp = if afn_calls_self(nm, body) == 1 then vwcet_loop(nm, ps, body, bound, ot) else 0 in if lp == 1 then 1 else if lp < 0 then ctfail("lume: wcet budget error [V0002]: function '" + nm + "' is a loop whose iteration count is not proven to fit '@bound(cycles: " + str(bound) + ")': with the measure of its 'terminates' clause as m and c cycles per iteration, 'requires' must entail m <= " + str(bound) + " / c - 2 (fix-it: bound the measure with 'requires', or raise the budget)
-") else let est = if afn_calls_self(nm, body) == 1 or tot_param_call(ps, body) != "" then 100000 else vwcet_e(body, ot.fns, 4) in if est > bound then ctfail("lume: wcet budget error [V0002]: function '" + nm + "' has structural cycle cost of " + str(est) + " cycles, exceeding '@bound(cycles: " + str(bound) + ")' (fix-it: remove recursion/loops on the critical path, give a tail-recursive loop a single 'terminates (m)' measure bounded by 'requires', or increase '@bound(cycles: " + str(est) + ")')
-") else 1
+## THE cost model of `@bound`, as a value: {ok, est, loop}. vwcet_chk_fn turns a failing verdict into [V0002]; lcaas
+## (cs_vwcet_prove_fn) reports the same verdict. lcaas used to carry a copy of vwcet_e that did not know `match` arms,
+## record fields or the loop rule, and listed `budget_checked` for functions the compiler rejects.
+##   loop  1: a tail-recursive loop whose measure is proven to fit the budget (est is then the cost of one iteration)
+##        -1: a loop whose iteration count is not proven to fit        0: not a loop, est is the structural cost
+fn vwcet_verdict(nm, ps, body, bound, ot) = let lp = if afn_calls_self(nm, body) == 1 then vwcet_loop(nm, ps, body, bound, ot) else 0 in if lp == 1 then {ok: 1, est: vwcet_e(body, Cons({nm: nm, ps: ps, body: Num(0)}, ot.fns), 4), loop: 1} else if lp < 0 then {ok: 0, est: 100000, loop: 0 - 1} else let est = if afn_calls_self(nm, body) == 1 or tot_param_call(ps, body) != "" then 100000 else vwcet_e(body, ot.fns, 4) in {ok: if est > bound then 0 else 1, est: est, loop: 0}
+fn vwcet_chk_fn(nm, ps, body, ot) = let bound = vwcet_lookup(nm, ot.wcets) in if bound <= 0 then 0 else let v = vwcet_verdict(nm, ps, body, bound, ot) in if v.ok == 1 then 1 else if v.loop < 0 then ctfail("lume: wcet budget error [V0002]: function '" + nm + "' is a loop whose iteration count is not proven to fit '@bound(cycles: " + str(bound) + ")': with the measure of its 'terminates' clause as m and c cycles per iteration, 'requires' must entail m <= " + str(bound) + " / c - 2 (fix-it: bound the measure with 'requires', or raise the budget)
+") else ctfail("lume: wcet budget error [V0002]: function '" + nm + "' has structural cycle cost of " + str(v.est) + " cycles, exceeding '@bound(cycles: " + str(bound) + ")' (fix-it: remove recursion/loops on the critical path, give a tail-recursive loop a single 'terminates (m)' measure bounded by 'requires', or increase '@bound(cycles: " + str(v.est) + ")')
+")
 
 fn ochkfn(nm, ps, body, ot) = ochkfn2(nm, ps, body, osiglookup(nm, ot.osigs), tsiglookup(nm, ot.sigs), ot)
 
@@ -4671,7 +4927,10 @@ fn tl_ok(e, fnm, tail) = match e
     VarIn(nm, v, b) => if afn_calls_self(fnm, v) == 1 then 0 else tl_ok(b, fnm, tail)
     Match(sc, arms) => if afn_calls_self(fnm, sc) == 1 then 0 else tl_arms(arms, fnm, tail)
     _               => if afn_calls_self(fnm, e) == 1 then 0 else 1
-fn vwcet_loop_k(m, k, reqs, lenv0, fns) = if k < 0 then 0 else tm_ge0(vlin_sub(vlin_const(k), vlin_expr(m, Nil, lenv0, fns, 0)), tm_req_hyps(reqs, lenv0, fns))
+## The measure is read with the hypotheses of the `requires` (they carry the integer evidence of the parameters): it
+## used to be read with none, every parameter stayed a handle, the term was never built and no loop ever fitted a
+## budget, whatever its `requires` said.
+fn vwcet_loop_k(m, k, reqs, lenv0, fns) = if k < 0 then 0 else let rh = tm_req_hyps(reqs, lenv0, fns) in tm_ge0(vlin_sub(vlin_const(k), vlin_expr(m, rh, lenv0, fns, 0)), rh)
 ## 1 when the loop is proven inside the budget, 0 when it has no usable measure, -1 when the measure does not fit
 fn vwcet_loop(nm, ps, body, bound, ot) = let ms = tot_ms(tm_lookup(nm, ot.tsigs)) in if len(ms) != 1 or tl_ok(body, nm, 1) == 0 then 0 else let reqs = tot_reqs(vsiglookup(nm, ot.vsigs)) in if (tm_check(nm, ps, body, reqs, ms, ot.fns)).err != "" then 0 else let c = vwcet_e(body, Cons({nm: nm, ps: ps, body: Num(0)}, ot.fns), 4) in if vwcet_loop_k(phd_e(ms), bound / c - 2, reqs, vlin_env_h(ps), ot.fns) == 1 then 1 else 0 - 1
 fn phd_e(xs) = match xs

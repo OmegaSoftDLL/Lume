@@ -873,15 +873,9 @@ print run_lumeputer_demo()
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy`, or `mem_set` targets `.text`/`.rodata` (`[0x8000..0x3FFFF]`), including symbolic/affine `base + off`. Use a safe DMA RAM buffer (`>= 0x40000`). |
 | `[K0006]` | Kernel Stack Safety  | Unbounded mutual recursion cycle (`f -> g -> f`) in `@freestanding` / `kernel_boot_entry` module. Use tail-loop state or bounded iteration. |
 | `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup on `secret_*` or inside `ct_*`. Use bitwise XOR/OR mask accumulation. |
-<<<<<<< HEAD
-| `[L0001]` | Lexer / Assembler    | Unterminated string literal in a source file (close it with a double quote); `lasm` uses the same code for an instruction or directive it does not know. |
-=======
 | `[C0010]` | Machine Constant-Time | `lume tv`: the emitted code of a `@secret fn`, or of a routine it reaches by `call`, holds a conditional branch, a division or a memory access outside frame and stack. Write the function as a constant-time kernel (`@secret` + `@no_alloc`). |
 | `[C0011]` | Constant-Time Kernel | A `@secret` + `@no_alloc` function has a `requires`, an unproven `ensures`, a conditional, comparison, `/` or `%`, a shift by a non-literal, recursion, a non-`int` type or a call of a function that is not a kernel. Use masks, `ct_select(mask, a, b)` and `ct_eq(a, b)`. |
-| `[Q0001]` | Quantum Linearity    | Non-linear `Qubit` duplication (No-Cloning violation) or reuse of measured qubit. Ensure each `Qubit` wire is consumed linearly. |
-| `[Q0002]` | Quantum Uncompute    | Uncomputed ancilla wire in `qfree` function (`anc_leaked > 0`). Apply adjoint $U^\dagger$ (`q_silq_qfree_verify`) before returning. |
-| `[L0001]` | Lint / Style         | Unformatted source or lint warning; run `lume fmt <file.src>`. |
->>>>>>> 43cd95a5cff0ef302e03869bf05ed49e7719d55f
+| `[L0001]` | Lexer / Assembler    | Unterminated string literal in a source file (close it with a double quote); `lasm` uses the same code for an instruction or directive it does not know. |
 | `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
 | `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |
