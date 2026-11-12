@@ -25,7 +25,21 @@
 ##   (define-fun trap_ast () Bool _) (define-fun trap_x86 () Bool _) (define-fun ret_x86 () Bool _)
 ##   (define-fun val_ast () Int _) (define-fun val_x86 () Int _),
 ##   (assert (not (and (= trap_ast trap_x86) (=> (not trap_ast) (and ret_x86 (= val_ast val_x86)))))), (check-sat)
-## and nothing else: one assertion, one check-sat. Raw mode (lsmt_solve_text, `@mode raw`) refutes the conjunction of
+## and nothing else: one assertion, one check-sat.
+## Constant-time kernel form (ltv, `@secret` + `@no_alloc` functions). ltv states the claim of a kernel UNDER the
+## hypothesis H "every parameter is an immediate and every callee kernel returns inside its interval", and writes
+## exactly one extra command, `(assert ret_x86)`, immediately before the claim. An assumed hypothesis can make a
+## certificate vacuous (`ret_x86 := false` refutes everything), so this form is accepted only when the body of
+## ret_x86 is `true` or a right-nested conjunction `(and L (and L ...))` of bound literals `(>= T c)` / `(<= T c)` where
+##   * T is a declared constant `x_*` and the bound is the immediate range exactly: `(>= x (- 4611686018427387904))`,
+##     `(<= x 4611686018427387903)`; or T is an application (or nullary constant) of a declared `f_*` that is not one
+##     of the `f___bit_*` stand-ins, and c is an integer literal with |c| <= 2^62;
+##   * all lower bounds on applications of one symbol f carry the same literal, all upper bounds too, and lo <= hi.
+## Under these rules H is satisfiable (every x := 0, every bounded f := the constant function lo_f, or hi_f when it
+## has no lower bound), so `unsat` of H and the negated claim is a refutation of the claim under a NON-VACUOUS
+## hypothesis. Anything else after ret_x86 (a second assumption, another literal form, a bound on a bit operation,
+## an empty interval, a narrowed parameter range) is `forged`.
+## Raw mode (lsmt_solve_text, `@mode raw`) refutes the conjunction of
 ## whatever assertions a script of the subset has; the gate uses it for the hand-written and mutated controls.
 ##
 ## The decision procedure, and why every rule is sound for NIA + UF over the integers. "Sound" means: if the script has
@@ -423,15 +437,52 @@ fn sm_cname(c) = match c
 fn sm_prof_decl(cs, env) = match cs
     Nil         => "the claim definitions are missing"
     Cons(c, ct) => sm_prof_decl2(sm_show(c), c, cs, ct, env)
-fn sm_prof_decl2(s, c, cs, ct, env) = if sm_starts(s, "(declare-fun f_") == 1 or sm_starts(s, "(declare-const x_") == 1 then (if (sm_env(env, sm_cname(c))).rs != 0 then "`" + sm_cname(c) + "` is not declared with result sort Int" else sm_prof_decl(ct, env)) else sm_prof_claim(cs, Cons("(define-fun trap_ast () Bool ", Cons("(define-fun trap_x86 () Bool ", Cons("(define-fun ret_x86 () Bool ", Cons("(define-fun val_ast () Int ", Cons("(define-fun val_x86 () Int ", Cons(sm_w_claim(), Cons("(check-sat)", Nil))))))))
-## a wanted text that ends with a blank is a prefix (the body follows), any other is the whole command
-fn sm_prof_claim(cs, want) = match want
+fn sm_prof_decl2(s, c, cs, ct, env) = if sm_starts(s, "(declare-fun f_") == 1 or sm_starts(s, "(declare-const x_") == 1 then (if (sm_env(env, sm_cname(c))).rs != 0 then "`" + sm_cname(c) + "` is not declared with result sort Int" else sm_prof_decl(ct, env)) else sm_prof_claim(cs, Cons("(define-fun trap_ast () Bool ", Cons("(define-fun trap_x86 () Bool ", Cons(sm_w_ret(), Cons("(define-fun val_ast () Int ", Cons("(define-fun val_x86 () Int ", Cons(sm_w_claim(), Cons("(check-sat)", Nil))))))), SxL(Nil))
+## --- the hypothesis of the constant-time kernel form (see the header): "" when ret_x86 has the stated shape ---
+fn sm_kx(xs, i) = match xs
+    Nil        => SxL(Nil)
+    Cons(h, t) => if i <= 0 then h else sm_kx(t, i - 1)
+## an integer literal `n` or `(- n)` with |n| <= 2^62: {ok, v}
+fn sm_kh_mag(a) = let n = count(a) in if n == 0 or n > 19 or sm_alldig(a, n, 0) == 0 then {ok: 0, v: 0} else if n == 19 and a > "4611686018427387904" then {ok: 0, v: 0} else {ok: 1, v: sm_num(a, n, 0, 0)}
+fn sm_kh_const(c) = match c
+    SxA(a)  => sm_kh_mag(a)
+    SxL(xs) => if sm_len(xs) == 2 and sm_atom(sm_x0(xs)) == "-" then (let m = sm_kh_mag(sm_atom(sm_x1(xs))) in {ok: m.ok, v: 0 - m.v}) else {ok: 0, v: 0}
+## the bounded term: {sym, isx}; sym == "" when it is not `x_*` or an application of a declared `f_*`
+fn sm_kh_term(t) = match t
+    SxA(a)  => if sm_starts(a, "x_") == 1 then {sym: a, isx: 1} else if sm_starts(a, "f_") == 1 and sm_starts(a, "f___bit_") == 0 then {sym: a, isx: 0} else {sym: "", isx: 0}
+    SxL(xs) => let f = sm_atom(sm_x0(xs)) in if sm_len(xs) >= 2 and sm_starts(f, "f_") == 1 and sm_starts(f, "f___bit_") == 0 then {sym: f, isx: 0} else {sym: "", isx: 0}
+fn sm_kh_find(acc, sym, d) = match acc
+    Nil        => {ok: 0, v: 0}
+    Cons(h, t) => if h.sym == sym and h.d == d then {ok: 1, v: h.v} else sm_kh_find(t, sym, d)
+fn sm_kh_add(acc, tm, d, c, shown) = if tm.sym == "" then {e: "`" + sm_clip(shown) + "` does not bound a parameter `x_*` or the result of a callee `f_*`", acc: acc} else if c.ok == 0 then {e: "`" + sm_clip(shown) + "` does not bound by an integer literal of magnitude at most 2^62", acc: acc} else if tm.isx == 1 and c.v != (if d == 0 then 0 - 4611686018427387904 else 4611686018427387903) then {e: "`" + sm_clip(shown) + "` is not the immediate range [-2^62, 2^62) of a parameter", acc: acc} else let same = sm_kh_find(acc, tm.sym, d) in let oth = sm_kh_find(acc, tm.sym, 1 - d) in if same.ok == 1 and same.v != c.v then {e: "`" + tm.sym + "` is bounded by two different literals on the same side", acc: acc} else if oth.ok == 1 and (if d == 0 then c.v > oth.v else oth.v > c.v) then {e: "the interval assumed for `" + tm.sym + "` is empty", acc: acc} else {e: "", acc: if same.ok == 1 then acc else Cons({sym: tm.sym, d: d, v: c.v}, acc)}
+fn sm_kh_lit(xs, acc, shown) = let op = sm_atom(sm_x0(xs)) in if sm_len(xs) != 3 or (op != ">=" and op != "<=") then {e: "`" + sm_clip(shown) + "` is not a bound literal `(>= T c)` / `(<= T c)`", acc: acc} else sm_kh_add(acc, sm_kh_term(sm_x1(xs)), if op == ">=" then 0 else 1, sm_kh_const(sm_x2(xs)), shown)
+fn sm_kh_conj(b, acc) = match b
+    SxA(a)  => "`" + sm_clip(a) + "` is not a bound literal"
+    SxL(xs) => if sm_atom(sm_x0(xs)) == "and" then (if sm_len(xs) != 3 then "the hypothesis is not a right-nested binary conjunction" else sm_kh_conj2(sm_x1(xs), sm_x2(xs), acc)) else (sm_kh_lit(xs, acc, sm_show(b))).e
+fn sm_kh_conj2(l, rest, acc) = match l
+    SxA(a)  => "`" + sm_clip(a) + "` is not a bound literal"
+    SxL(xs) => let r = sm_kh_lit(xs, acc, sm_show(l)) in if r.e != "" then r.e else sm_kh_conj(rest, r.acc)
+fn sm_kh_body(b) = match b
+    SxA(a)  => if a == "true" then "" else "`" + sm_clip(a) + "` is not a conjunction of bound literals"
+    SxL(xs) => sm_kh_conj(b, Nil)
+fn sm_kern_hyp(rx) = match rx
+    SxA(a)  => "ret_x86 is not defined before it is assumed"
+    SxL(xs) => if sm_len(xs) != 5 then "ret_x86 is not defined before it is assumed" else sm_kh_body(sm_kx(xs, 4))
+fn sm_w_ret() = "(define-fun ret_x86 () Bool "
+fn sm_w_hyp() = "(assert ret_x86)"
+## a wanted text that ends with a blank is a prefix (the body follows), any other is the whole command. `rx` is the
+## ret_x86 definition once it has been seen. `(assert ret_x86)` is accepted once, exactly where the claim is due, and
+## only with a hypothesis of the stated shape; the claim itself must be the next command.
+fn sm_prof_claim(cs, want, rx) = match want
     Nil         => if sm_isnil(cs) == 1 then "" else "a command follows (check-sat)"
-    Cons(w, wt) => sm_prof_claim2(cs, w, wt)
-fn sm_prof_claim2(cs, w, wt) = match cs
+    Cons(w, wt) => sm_prof_claim2(cs, w, wt, rx)
+fn sm_prof_claim2(cs, w, wt, rx) = match cs
     Nil         => "the certificate ends where `" + w + "` was expected"
-    Cons(c, ct) => sm_prof_claim3(sm_show(c), w, wt, ct)
-fn sm_prof_claim3(s, w, wt, ct) = if (if sm_ends(w, " ") == 1 then sm_starts(s, w) else (if s == w then 1 else 0)) == 1 then sm_prof_claim(ct, wt) else "the claim differs from the one ltv states: expected `" + w + "`, found `" + sm_clip(s) + "`"
+    Cons(c, ct) => sm_prof_claim3(sm_show(c), c, w, wt, ct, rx)
+fn sm_prof_claim3(s, c, w, wt, ct, rx) = if w == sm_w_claim() and s == sm_w_hyp() then (let k = sm_kern_hyp(rx) in if k != "" then "the constant-time kernel hypothesis is not the one ltv states: " + k else sm_prof_claim4(ct, w, wt, rx)) else if (if sm_ends(w, " ") == 1 then sm_starts(s, w) else (if s == w then 1 else 0)) == 1 then sm_prof_claim(ct, wt, if w == sm_w_ret() then c else rx) else "the claim differs from the one ltv states: expected `" + w + "`, found `" + sm_clip(s) + "`"
+fn sm_prof_claim4(ct, w, wt, rx) = match ct
+    Nil          => "the certificate ends where `" + w + "` was expected"
+    Cons(c2, c3) => if sm_show(c2) == w then sm_prof_claim(c3, wt, rx) else "the claim differs from the one ltv states: expected `" + w + "` after the kernel hypothesis, found `" + sm_clip(sm_show(c2)) + "`"
 fn sm_profile(cs, env) = sm_prof_pre(cs, Cons(sm_w_logic(), Cons(sm_w_f63(), Cons(sm_w_f64(), Cons(sm_w_div(), Cons(sm_w_mod(), Nil))))), env)
 
 ## --- one script. mode 0: certificate, 1: raw ---
@@ -484,6 +535,13 @@ fn test_lsmt_raw_unsat() = if smt_raw("(assert (and (< x 0) (>= x 0)))\n") == "u
 fn test_lsmt_raw_sat_is_never_unsat() = if smt_raw("(assert (< x 0))\n") == "unknown" and smt_raw("(assert (not (= (f x) (f y))))\n") == "unknown" and smt_raw("(assert (and (< x 5) (> x 3)))\n") == "unknown" and smt_raw("(assert (not (= (* x y) (+ x y))))\n") == "unknown" and smt_raw("") == "unknown" then 1 else 0
 fn test_lsmt_malformed_and_unsupported() = if smt_raw("(assert (< x 0)\n") == "malformed" and smt_raw("(assert (< x z))\n") == "malformed" and smt_raw("(declare-const x Int)\n(assert false)\n") == "malformed" and smt_raw("(assert (+ x 1))\n") == "malformed" and smt_raw("(assert (= (div x 2) 0))\n(assert false)\n") == "unsupported" and smt_raw("(assert (let ((z 1)) false))\n") == "unsupported" and (lsmt_solve_text(smt_pre() + "(assert false)\n")).verdict == "malformed" and (lsmt_solve_text("(assert false)\n(check-sat)\n")).verdict == "unsupported" then 1 else 0
 fn test_lsmt_certificate_shape() = if smt_cert(smt_defs("(< x_a 0)", "(not (>= x_a 0))", "true", "(+ x_a 1)", "(+ 1 x_a)"), smt_tail()) == "unsat" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), smt_tail()) == "unknown" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), "(assert false)\n(check-sat)\n") == "forged" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), "(assert (< x_a 0))\n" + smt_tail()) == "forged" and smt_cert(smt_defs("false", "false", "true", "x_a", "(+ x_a 1)"), "(assert (and ret_x86 (not ret_x86)))\n(check-sat)\n") == "forged" and smt_cert("(declare-const trap_ast Bool)\n(define-fun trap_x86 () Bool false)\n(define-fun ret_x86 () Bool true)\n(define-fun val_ast () Int 0)\n(define-fun val_x86 () Int 0)\n(assert (and trap_ast (not trap_ast)))\n(check-sat)\n", "") == "forged" then 1 else 0
+fn smt_kdefs(r, va, vx) = "(declare-fun f_k (Int) Int)\n(declare-fun f___bit_and (Int Int) Int)\n" + smt_defs("false", "false", r, va, vx)
+fn smt_khyp() = "(and (>= x_a (- 4611686018427387904)) (and (<= x_a 4611686018427387903) (and (>= (f_k x_a) 0) (<= (f_k x_a) 255))))"
+fn smt_ktail() = sm_w_hyp() + "\n" + smt_tail()
+fn smt_kc(r, va, vx, tail) = smt_cert(smt_kdefs(r, va, vx), tail)
+fn test_lsmt_kernel_form_accepted() = if smt_kc(smt_khyp(), "(+ (f_k x_a) 1)", "(+ 1 (f_k x_a))", smt_ktail()) == "unsat" and smt_kc("true", "x_a", "x_a", smt_ktail()) == "unsat" and smt_kc(smt_khyp(), "(f_k x_a)", "(+ 1 (f_k x_a))", smt_ktail()) == "unknown" and smt_kc("(>= (f_k x_a) 7)", "x_a", "x_a", smt_ktail()) == "unsat" then 1 else 0
+fn test_lsmt_kernel_form_forged_hypotheses() = if smt_kc("false", "0", "1", smt_ktail()) == "forged" and smt_kc("(and (>= (f_k x_a) 5) (<= (f_k x_a) 3))", "0", "1", smt_ktail()) == "forged" and smt_kc("(and (>= (f_k x_a) 5) (<= (f_k 0) 3))", "0", "1", smt_ktail()) == "forged" and smt_kc("(and (>= (f_k x_a) 5) (>= (f_k 0) 6))", "0", "0", smt_ktail()) == "forged" and smt_kc("(and (>= x_a 0) (<= x_a 0))", "x_a", "0", smt_ktail()) == "forged" and smt_kc("(>= x_a (- 4611686018427387905))", "0", "0", smt_ktail()) == "forged" and smt_kc("(<= (f___bit_and x_a 1) 1)", "0", "0", smt_ktail()) == "forged" and smt_kc("(= x_a 0)", "x_a", "0", smt_ktail()) == "forged" and smt_kc("(or (>= x_a (- 4611686018427387904)) (<= x_a 4611686018427387903))", "0", "0", smt_ktail()) == "forged" and smt_kc("(not (>= x_a (- 4611686018427387904)))", "0", "1", smt_ktail()) == "forged" and smt_kc("(>= (+ x_a 1) 0)", "0", "0", smt_ktail()) == "forged" and smt_kc("(>= (f_k x_a) 99999999999999999999)", "0", "0", smt_ktail()) == "forged" and smt_kc("(and (>= (f_k x_a) 0) (<= (f_k x_a) 1) (<= x_a 4611686018427387903))", "0", "0", smt_ktail()) == "forged" then 1 else 0
+fn test_lsmt_kernel_form_forged_placement() = if smt_kc(smt_khyp(), "0", "0", sm_w_hyp() + "\n" + sm_w_hyp() + "\n" + smt_tail()) == "forged" and smt_kc(smt_khyp(), "0", "0", sm_w_claim() + "\n" + sm_w_hyp() + "\n(check-sat)\n") == "forged" and smt_kc(smt_khyp(), "0", "0", sm_w_hyp() + "\n(check-sat)\n") == "forged" and smt_kc(smt_khyp(), "0", "0", sm_w_hyp() + "\n(assert false)\n" + smt_tail()) == "forged" and smt_kc(smt_khyp(), "0", "0", "(assert trap_ast)\n" + smt_tail()) == "forged" and smt_cert(sm_w_hyp() + "\n" + smt_kdefs("false", "0", "1"), smt_tail()) != "unsat" then 1 else 0
 fn test_lsmt_overflow_is_unknown() = if smt_raw("(assert (not (= (* 9223372036854775807 (* 2 x)) (* 2 (* 9223372036854775807 x)))))\n") == "unknown" and smt_raw("(assert (not (= (+ x 9223372036854775808) (+ 9223372036854775808 x))))\n") == "unsat" then 1 else 0
 fn test_lsmt_bounds_on_one_base() = if smt_raw("(assert (and (not (= x 0)) (not (= x 1)) (>= x 0) (<= x 1)))\n") == "unsat" and smt_raw("(assert (and (not (= x 0)) (not (= x 1)) (>= x 0) (<= x 2)))\n") == "unknown" and smt_raw("(assert (and (>= x 0) (not (= x 5)) (< x 3)))\n") == "unknown" and smt_raw("(assert (not (or (< x y) (= x y) (> x y))))\n") == "unsat" and smt_raw("(assert (and (<= x 5) (>= x 5) (not (= x 5))))\n") == "unsat" and smt_raw("(assert (and (<= x 5) (>= x 4) (not (= x 5))))\n") == "unknown" then 1 else 0
 
