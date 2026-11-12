@@ -1008,6 +1008,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume smt-cert-gate [--require-z3] [--solver <value>] [--chameleon] [--sites <value>] [--corpus <value>]
   lume lcaas-scale-gate [--full] [--modes <value>] [--fams <value>] [--reps <value>] [--timeout <value>] [--lcaas <value>]
   lume cli-parity
+  lume synergy-gate
   lume bootstrap|zero-c|amalgamate|seed|clean
   lume qwenputer|lumeputer|lumepu|weight-vm|in-weights-npu [exec|run] [--json] [--fn <value>] [--args <value>] [--budget <value>] [kernel.src] (values: sync|status)
   lume ui-layout|@ui-layout [--json] [file] (values: sync|status)
