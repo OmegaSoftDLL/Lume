@@ -24,8 +24,22 @@
 ##   4. with @exec 1, runs every witness on the REAL binary (lumec + lasm, one process per vector, arguments through
 ##      argv so that no call is folded or refuted at compile time) and requires the value, or the contract trap, the
 ##      interpreter predicted. A witness is a test case only if the machine agrees with it. What the machine confirms
-##      is the observable result of the vector (value or trap); which branch the object code took is not observed
-##      here (the correspondence between the lowered AST and the object code is the translation validator's job).
+##      is the observable result of the vector (value or trap); which branch the object code took is not observed.
+##   5. links the measure to the OBJECT CODE (Wave 14). The module is compiled by the real lumec and handed, in this
+##      process, to the translation validator (`use ltv`: tv_bc_module). For every function measured here ltv must
+##      (i) validate the emitted code against the lowered AST, (ii) establish its branch correlation -- every
+##      conditional instruction of the function is either a representation branch (tag test, overflow test) or the
+##      one decision instruction of exactly one condition of the lowered AST, with the polarity of the compilation
+##      scheme (ltv.src, "Object-code branch correlation") -- and (iii) count the same number of conditions as this
+##      analyzer. "Condition" has ONE definition, `tv_cond_leaves` of ltv.src (the leaves of an and/or tree); mc_atoms
+##      is that function. The two counts are still an independent cross-check: this file walks DECISIONS (mc_decs, which
+##      the obligations are built from) and ltv walks the denotation in code-generation order (tv_bc). A measured
+##      function that fails (i), (ii) or (iii) is listed in `object_code_uncorrelated` and the run FAILS: its MC/DC
+##      figures would be about an AST whose branches are not shown to be the branches of the machine code.
+##      Real level: MC/DC is measured on the lowered AST by a reference interpreter; the witnesses are confirmed on the
+##      machine by their observable result; and the conditions measured are proven to be, one to one, the decision
+##      branches of the emitted x86-64 code. What is still NOT measured: that a witness drove a given machine branch
+##      in a given direction on the real CPU (no object-level trace is recorded).
 ## The witnesses come from this search only: the `test_*` functions of the module are not read.
 ## An obligation with no witness is reported as it is. Two kinds are classified, never silently dropped:
 ##   theorem_false  the false outcome of a CONCLUSION of a declared `law` (a decision in result position of the law's
@@ -50,9 +64,13 @@
 ## gives `typed_integer_functions_in_source` next to `functions` (the analyzed ones); the difference is not measured.
 ##
 ## stdin:  @root <repo>   @src <file.src, self-contained>   [@fn <name>]   [@exec 1]   [@budget <vectors per function>]
-## stdout: one JSON object; non-zero exit when a witness disagrees with the real machine.
+## stdout: one JSON object; non-zero exit when a witness disagrees with the real machine or a measured function is
+##         not correlated with its object code. Fields of the link: object_code_correlated_functions,
+##         object_code_uncorrelated_functions, object_code_conditions (ltv's count over the correlated functions),
+##         object_code_uncorrelated [{name, reason}]; per function object_code_correlated, object_code_conditions.
 use lumec
 use lcert
+use ltv
 
 fn mc_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else mc_line_end(s, i + 1)
 fn mc_get_at(s, key, i) = if i >= count(s) then "" else let e = mc_line_end(s, i) in let n = count(key) in if e - i > n + 2 and slice(s, i, i + n + 2) == "@" + key + " " then slice(s, i + n + 2, e) else mc_get_at(s, key, e + 1)
@@ -120,9 +138,8 @@ fn mc_val_call(f, a, fs, fuel) = if a.st != 1 then mc_r(a.st, 0) else if f.ok ==
 fn mc_isbool(x) = match x
     Bin(op, l, r) => if op == "and" or op == "or" then 1 else 0
     _             => 0
-fn mc_atoms(c) = match c
-    Bin(op, l, r) => if op == "and" or op == "or" then app(mc_atoms(l), mc_atoms(r)) else Cons(c, Nil)
-    _             => Cons(c, Nil)
+## the conditions of a decision: the one definition lives in ltv.src (tv_cond_leaves), see step 5 of the header
+fn mc_atoms(c) = tv_cond_leaves(c)
 fn mc_atom_vals(ats, env, fs, fuel) = match ats
     Nil        => Nil
     Cons(a, t) => let r = mc_val(a, env, fs, fuel) in Cons(if r.st != 1 then 2 else if r.v != 0 then 1 else 0, mc_atom_vals(t, env, fs, fuel))
@@ -537,10 +554,18 @@ fn mc_unc_all(rs) = match rs
 fn mc_inf_all(rs) = match rs
     Nil        => ""
     Cons(r, t) => let rest = mc_inf_all(t) in if r.infl == "" then rest else r.infl + (if rest == "" then "" else ",") + rest
-fn mc_fn_json(rs) = match rs
+## --- the link to the object code (header, step 5): "" when the function is correlated, else the reason ---
+fn mc_oc_why(r, b) = if b.found == 0 then "the translation validator has no result for this function" else if b.status != "validated" then "the translation validator did not validate the emitted code (" + b.status + "): " + b.why else if b.ok != 1 then "the emitted code is not branch-correlated with the lowered AST" else if b.na != r.conds then "this analyzer counts " + str(r.conds) + " conditions, the translation validator " + str(b.na) else ""
+fn mc_oc(rs, tvr, acc) = match rs
+    Nil        => {n: acc.n, conds: acc.conds, bad: acc.bad, list: rev(acc.list)}
+    Cons(r, t) => let b = tv_bc_get(tvr.rs, r.nm) in let why = if tvr.err != "" then tvr.err else mc_oc_why(r, b) in mc_oc(t, tvr, if why == "" then {n: acc.n + 1, conds: acc.conds + b.na, bad: acc.bad, list: acc.list} else {n: acc.n, conds: acc.conds, bad: acc.bad + 1, list: Cons("{\"name\":\"" + r.nm + "\",\"reason\":\"" + mc_jesc(why) + "\"}", acc.list)})
+fn mc_oc_list(xs) = match xs
     Nil        => ""
-    Cons(r, t) => "{\"name\":\"" + r.nm + "\",\"decisions\":" + str(r.decisions) + ",\"conditions\":" + str(r.conds) + ",\"obligations\":" + str(r.obls) + ",\"covered\":" + str(r.cv) + ",\"theorem_false\":" + str(r.ens) + ",\"infeasible_proved\":" + str(r.inf) + ",\"uncovered\":" + str(r.un) + ",\"witness_vectors\":" + str(len(r.wit)) + ",\"vectors_tried\":" + str(r.tried) + "}" + (if isnil(t) == 1 then "" else ",") + mc_fn_json(t)
-fn mc_main(input) = let root = mc_get(input, "root") in let srcp = mc_get(input, "src") in if root == "" or srcp == "" then ctfail("lmcdc: usage: @root <repo> and @src <file.src> are required on stdin\n") else if fs_path_exists(srcp) == 0 then ctfail("lmcdc: cannot read " + srcp + "\n") else let src = fs_read_file(srcp) in let prog = nf_late(lumec_expand(src)) in let sigs = mc_sigs(prog) in let fs = mc_fns(prog, sigs, 1) in let rs = mc_all(mc_pick(fs, mc_get(input, "fn")), mc_fns(prog, sigs, 0), toint(mc_or(mc_get(input, "budget"), "6000")), mc_laws(parseprogram(src))) in let s = mc_sum(rs, {fns: 0, decisions: 0, conds: 0, obls: 0, cv: 0, ens: 0, inf: 0, un: 0, wit: 0, full: 0}) in let ex = if mc_get(input, "exec") == "1" then mc_exec(root, src, rs, "/tmp/lume-mcdc." + str(os_getpid())) else {n: 0, traps: 0, bad: ""} in mc_finish("{\"ok\":" + (if ex.bad == "" then "true" else "false") + ",\"tool\":\"lmcdc\",\"criterion\":\"decision coverage + masking MC/DC over the lowered AST (requires, runtime-checked ensures, if conditions, Boolean values)\",\"theorem_false_basis\":\"false outcome of the conclusion of a declared law; not proven by lmcdc, it rests on the proof status of that law\",\"source\":\"" + mc_jesc(srcp) + "\",\"typed_integer_functions_in_source\":" + str(mc_sig_okn(sigs)) + ",\"functions\":" + str(s.fns) + ",\"functions_fully_covered\":" + str(s.full) + ",\"decisions\":" + str(s.decisions) + ",\"conditions\":" + str(s.conds) + ",\"obligations\":" + str(s.obls) + ",\"covered\":" + str(s.cv) + ",\"theorem_false_unreachable\":" + str(s.ens) + ",\"infeasible_proved_by_kernel\":" + str(s.inf) + ",\"uncovered\":" + str(s.un) + ",\"witness_vectors\":" + str(s.wit) + ",\"native_witnesses_agreeing\":" + str(ex.n) + ",\"native_contract_traps_confirmed\":" + str(ex.traps) + ",\"error\":\"" + mc_jesc(ex.bad) + "\",\"uncovered_list\":[" + mc_unc_all(rs) + "],\"infeasible_list\":[" + mc_inf_all(rs) + "],\"per_function\":[" + mc_fn_json(rs) + "]}", if ex.bad == "" then 0 else 1)
-fn mc_finish(json, code) = if code == 0 then json else let w = fs_write_sync("/dev/stdout", json + "\n") in ctfail("lmcdc: a coverage witness disagrees with the real machine; the report is on stdout\n")
+    Cons(h, t) => h + (if isnil(t) == 1 then "" else ",") + mc_oc_list(t)
+fn mc_fn_json(rs, tvr) = match rs
+    Nil        => ""
+    Cons(r, t) => let b = tv_bc_get(tvr.rs, r.nm) in "{\"name\":\"" + r.nm + "\",\"decisions\":" + str(r.decisions) + ",\"conditions\":" + str(r.conds) + ",\"obligations\":" + str(r.obls) + ",\"covered\":" + str(r.cv) + ",\"theorem_false\":" + str(r.ens) + ",\"infeasible_proved\":" + str(r.inf) + ",\"uncovered\":" + str(r.un) + ",\"witness_vectors\":" + str(len(r.wit)) + ",\"vectors_tried\":" + str(r.tried) + ",\"object_code_correlated\":" + (if tvr.err == "" and mc_oc_why(r, b) == "" then "true" else "false") + ",\"object_code_conditions\":" + str(b.na) + "}" + (if isnil(t) == 1 then "" else ",") + mc_fn_json(t, tvr)
+fn mc_main(input) = let root = mc_get(input, "root") in let srcp = mc_get(input, "src") in if root == "" or srcp == "" then ctfail("lmcdc: usage: @root <repo> and @src <file.src> are required on stdin\n") else if fs_path_exists(srcp) == 0 then ctfail("lmcdc: cannot read " + srcp + "\n") else let src = fs_read_file(srcp) in let prog = nf_late(lumec_expand(src)) in let sigs = mc_sigs(prog) in let fs = mc_fns(prog, sigs, 1) in let rs = mc_all(mc_pick(fs, mc_get(input, "fn")), mc_fns(prog, sigs, 0), toint(mc_or(mc_get(input, "budget"), "6000")), mc_laws(parseprogram(src))) in let s = mc_sum(rs, {fns: 0, decisions: 0, conds: 0, obls: 0, cv: 0, ens: 0, inf: 0, un: 0, wit: 0, full: 0}) in let ex = if mc_get(input, "exec") == "1" then mc_exec(root, src, rs, "/tmp/lume-mcdc." + str(os_getpid())) else {n: 0, traps: 0, bad: ""} in let tvr = tv_bc_module(root, srcp, src, mc_get(input, "fn")) in let oc = mc_oc(rs, tvr, {n: 0, conds: 0, bad: 0, list: Nil}) in let bad = if ex.bad != "" then ex.bad else if oc.bad > 0 then str(oc.bad) + " measured function(s) are not correlated with their object code (see object_code_uncorrelated)" else "" in mc_finish("{\"ok\":" + (if bad == "" then "true" else "false") + ",\"tool\":\"lmcdc\",\"criterion\":\"decision coverage + masking MC/DC over the lowered AST (requires, runtime-checked ensures, if conditions, Boolean values); every measured condition is correlated one-to-one with a decision branch of the emitted x86-64 code by the translation validator (object_code_correlated_functions)\",\"theorem_false_basis\":\"false outcome of the conclusion of a declared law; not proven by lmcdc, it rests on the proof status of that law\",\"source\":\"" + mc_jesc(srcp) + "\",\"typed_integer_functions_in_source\":" + str(mc_sig_okn(sigs)) + ",\"functions\":" + str(s.fns) + ",\"functions_fully_covered\":" + str(s.full) + ",\"decisions\":" + str(s.decisions) + ",\"conditions\":" + str(s.conds) + ",\"obligations\":" + str(s.obls) + ",\"covered\":" + str(s.cv) + ",\"theorem_false_unreachable\":" + str(s.ens) + ",\"infeasible_proved_by_kernel\":" + str(s.inf) + ",\"uncovered\":" + str(s.un) + ",\"witness_vectors\":" + str(s.wit) + ",\"native_witnesses_agreeing\":" + str(ex.n) + ",\"native_contract_traps_confirmed\":" + str(ex.traps) + ",\"object_code_correlated_functions\":" + str(oc.n) + ",\"object_code_uncorrelated_functions\":" + str(oc.bad) + ",\"object_code_conditions\":" + str(oc.conds) + ",\"object_code_uncorrelated\":[" + mc_oc_list(oc.list) + "],\"error\":\"" + mc_jesc(bad) + "\",\"uncovered_list\":[" + mc_unc_all(rs) + "],\"infeasible_list\":[" + mc_inf_all(rs) + "],\"per_function\":[" + mc_fn_json(rs, tvr) + "]}", if bad == "" then 0 else 1)
+fn mc_finish(json, code) = if code == 0 then json else let w = fs_write_sync("/dev/stdout", json + "\n") in ctfail("lmcdc: a coverage witness disagrees with the real machine, or a measured function is not correlated with its object code; the report is on stdout\n")
 
 print mc_main(readall())
