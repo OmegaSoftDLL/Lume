@@ -74,17 +74,19 @@ fn contains(xs, x) = match xs
 fn modname_clean(s) = let t = trim(s) in if startswith(t, "std.") then slice(t, 4, count(t)) else t
 fn extractuses(lines) = match lines
     Nil        => Nil
-    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then Cons(modname_clean(slice(tr, 4, count(tr))), extractuses(t)) else extractuses(t)
+    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then Cons(usemod(slice(tr, 4, count(tr))), extractuses(t)) else extractuses(t)
 
-## For imported library modules, strip `use ...` lines and top-level `print ...` demo lines.
+## For imported library modules, blank `use ...` lines and top-level `print ...` demo lines (an empty line keeps the
+## line numbers of the file: diagnostics map back through the `## --- module NAME ---` marker).
 fn liblines(lines) = match lines
     Nil        => Nil
-    Cons(h, t) => let raw = rtrim(h) in let tr = ltrim(raw) in if startswith(tr, "use ") or (isindented(raw) == 0 and startswith(tr, "print ")) then liblines(t) else Cons(raw, liblines(t))
+    Cons(h, t) => let raw = rtrim(h) in let tr = ltrim(raw) in if startswith(tr, "use ") or (isindented(raw) == 0 and startswith(tr, "print ")) then Cons("", liblines(t)) else Cons(raw, liblines(t))
 
-## For the root entry module, strip only `use ...` lines (keep all `fn`, `type`, `print`, exprs).
+## For the root entry module, blank only `use ...` lines (keep all `fn`, `type`, `print`, exprs); its marker is
+## `## --- entry NAME ---`.
 fn entrylines(lines) = match lines
     Nil        => Nil
-    Cons(h, t) => let raw = rtrim(h) in let tr = ltrim(raw) in if startswith(tr, "use ") then entrylines(t) else Cons(raw, entrylines(t))
+    Cons(h, t) => let raw = rtrim(h) in let tr = ltrim(raw) in if startswith(tr, "use ") then Cons("", entrylines(t)) else Cons(raw, entrylines(t))
 
 ## --- capability scanner: detect I/O calls (`read`, `readall`, `emit`, `flush`, `fs_*`, `os_*`, `net_*`) in module text ---
 fn isidch(c) = isalnum(c)
@@ -115,6 +117,149 @@ fn findmod(mods, nm) = match mods
     Nil        => {found: 0, m: {name: "", uses: Nil, lines: Nil}}
     Cons(h, t) => if h.name == nm then {found: 1, m: h} else findmod(t, nm)
 
+## --- module namespaces: `use X as Y`, `Y.NAME`, and one name defined in several modules ---
+## A name defined at the top level of two or more modules is kept apart by a suffix: in a library module M every
+## occurrence of the name becomes NAME__M (the entry module keeps its own names, so its tests keep their names). A
+## module that uses such a name without defining it means the one owner it can reach through its `use` lines (a direct
+## import first); two candidates are an error that asks for a qualified name. `Y.NAME`, with Y a module named in a
+## `use` line or the alias of `use X as Y`, means NAME of that module. Lines keep their numbers.
+fn wordend(s, i, n) = if i >= n then i else if isws(at(s, i)) then i else wordend(s, i + 1, n)
+fn usehead(rest) = let r = trim(rest) in slice(r, 0, wordend(r, 0, count(r)))
+fn usemod(rest) = let r = trim(rest) in modname_clean(slice(r, 0, wordend(r, 0, count(r))))
+fn usealias(rest) = let r = trim(rest) in let after = trim(slice(r, wordend(r, 0, count(r)), count(r))) in if startswith(after, "as ") then trim(slice(after, 3, count(after))) else ""
+fn extractaliases(lines) = match lines
+    Nil        => Nil
+    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then let rest = slice(tr, 4, count(tr)) in let m = usemod(rest) in let a = usealias(rest) in Cons({a: m, m: m}, if a != "" then Cons({a: a, m: m}, extractaliases(t)) else extractaliases(t)) else extractaliases(t)
+
+## the name a top-level line defines (fn, type, law, const, let, effect after pub/total/partial), else ""
+fn ns_skipmods(s, i, n) = let j = skipws(s, i, n) in let e = id_end(s, j, n) in let w = slicen(s, n, j, e) in if w == "pub" or w == "total" or w == "partial" then ns_skipmods(s, e, n) else j
+fn ns_defname(raw) = let n = count(raw) in if n == 0 then "" else if isws(at(raw, 0)) then "" else if isalpha(at(raw, 0)) == 0 then "" else let j = ns_skipmods(raw, 0, n) in let e = id_end(raw, j, n) in let kw = slicen(raw, n, j, e) in if kw == "fn" or kw == "type" or kw == "law" or kw == "const" or kw == "let" or kw == "effect" then let a = skipws(raw, e, n) in if a < n and isalpha(at(raw, a)) then slicen(raw, n, a, id_end(raw, a, n)) else "" else ""
+fn ns_defs(lines) = match lines
+    Nil        => Nil
+    Cons(h, t) => let d = ns_defname(h) in if d == "" then ns_defs(t) else Cons(d, ns_defs(t))
+fn nsrec(m) = {name: m.name, uses: m.uses, lines: m.lines, aliases: extractaliases(m.lines), defs: ns_defs(m.lines)}
+
+## names defined in two or more modules: sort "name\x01module" keys and group equal names
+fn ns_keys1(ds, m, acc) = match ds
+    Nil        => acc
+    Cons(d, t) => ns_keys1(t, m, Cons(d + chr(1) + m, acc))
+fn ns_keys(recs, acc) = match recs
+    Nil        => acc
+    Cons(r, t) => ns_keys(t, ns_keys1(r.defs, r.name, acc))
+fn ns_merge(xs, ys, acc) = match xs
+    Nil        => revacc(acc, ys)
+    Cons(a, t) => ns_merge1(a, t, xs, ys, acc)
+fn ns_merge1(a, t, xs, ys, acc) = match ys
+    Nil        => revacc(acc, xs)
+    Cons(b, u) => if b < a then ns_merge(xs, u, Cons(b, acc)) else ns_merge(t, ys, Cons(a, acc))
+fn ns_wrap(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => ns_wrap(t, Cons(Cons(h, Nil), acc))
+fn ns_pass(ls, acc) = match ls
+    Nil        => acc
+    Cons(a, t) => ns_pass1(a, t, acc)
+fn ns_pass1(a, t, acc) = match t
+    Nil        => Cons(a, acc)
+    Cons(b, r) => ns_pass(r, Cons(ns_merge(a, b, Nil), acc))
+fn ns_all(ls) = match ls
+    Nil        => Nil
+    Cons(a, t) => if isnil(t) == 1 then a else ns_all(ns_pass(ls, Nil))
+fn ns_sort(xs) = ns_all(ns_wrap(xs, Nil))
+fn ns_sep(s, i, n) = if i >= n then n else if at(s, i) == chr(1) then i else ns_sep(s, i + 1, n)
+fn ns_kname(k) = slice(k, 0, ns_sep(k, 0, count(k)))
+fn ns_kmod(k) = slice(k, ns_sep(k, 0, count(k)) + 1, count(k))
+fn ns_take(ks, nm, mods) = match ks
+    Nil        => {rest: Nil, mods: mods}
+    Cons(k, t) => if ns_kname(k) == nm then ns_take(t, nm, if contains(mods, ns_kmod(k)) == 1 then mods else Cons(ns_kmod(k), mods)) else {rest: ks, mods: mods}
+fn ns_groups(ks, acc) = match ks
+    Nil        => acc
+    Cons(k, t) => let nm = ns_kname(k) in let g = ns_take(t, nm, Cons(ns_kmod(k), Nil)) in ns_groups(g.rest, if isnil(g.mods) == 0 and ns_len(g.mods) >= 2 then Cons({n: nm, owners: rev(g.mods)}, acc) else acc)
+fn ns_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + ns_len(t)
+
+## modules and what a module can reach through its `use` lines
+fn ns_find(recs, nm) = match recs
+    Nil        => {name: "", uses: Nil, lines: Nil, aliases: Nil, defs: Nil}
+    Cons(r, t) => if r.name == nm then r else ns_find(t, nm)
+fn ns_reach(todo, recs, seen) = match todo
+    Nil        => seen
+    Cons(m, t) => if contains(seen, m) == 1 then ns_reach(t, recs, seen) else ns_reach(app((ns_find(recs, m)).uses, t), recs, Cons(m, seen))
+fn ns_inter(xs, ys) = match xs
+    Nil        => Nil
+    Cons(h, t) => if contains(ys, h) == 1 then Cons(h, ns_inter(t, ys)) else ns_inter(t, ys)
+fn ns_tagc(s, i, n) = if i >= n then "" else (if isalnum(at(s, i)) then at(s, i) else "_") + ns_tagc(s, i + 1, n)
+fn ns_target(m, nm, entry) = if m == entry then nm else nm + "__" + ns_tagc(m, 0, count(m))
+
+## where a shared name points from inside module r: "" (untouched), a new name, or "?a and b" (ambiguous)
+fn ns_pick(nm, c, uses, entry) = match c
+    Nil        => ""
+    Cons(a, rest) => if isnil(rest) == 1 then ns_target(a, nm, entry) else ns_pick_direct(nm, c, ns_inter(c, uses), entry)
+fn ns_pick_direct(nm, c, d, entry) = if ns_len(d) == 1 then ns_target(ns_first(d), nm, entry) else "?" + joinsep(c, " and ")
+fn ns_first(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn ns_to(g, r, reach, entry) = if contains(g.owners, r.name) == 1 then ns_target(r.name, g.n, entry) else ns_pick(g.n, ns_inter(g.owners, reach), r.uses, entry)
+fn ns_map(gs, r, reach, entry, acc) = match gs
+    Nil        => acc
+    Cons(g, t) => let to = ns_to(g, r, reach, entry) in ns_map(t, r, reach, entry, if to == "" or to == g.n then acc else Cons({f: g.n, t: to}, acc))
+fn ns_lookup(mp, w) = match mp
+    Nil        => ""
+    Cons(e, t) => if e.f == w then e.t else ns_lookup(t, w)
+fn ns_alias(als, w) = match als
+    Nil        => ""
+    Cons(e, t) => if e.a == w then e.m else ns_alias(t, w)
+fn ns_isdup(gs, w) = match gs
+    Nil        => 0
+    Cons(g, t) => if g.n == w then 1 else ns_isdup(t, w)
+
+## does s contain w (plain text)?
+fn ns_has(s, n, w, m, i) = if i + m > n then 0 else if at(s, i) == at(w, 0) and slicen(s, n, i, i + m) == w then 1 else ns_has(s, n, w, m, i + 1)
+fn ns_has_any_map(s, n, mp) = match mp
+    Nil        => 0
+    Cons(e, t) => if ns_has(s, n, e.f, count(e.f), 0) == 1 then 1 else ns_has_any_map(s, n, t)
+fn ns_has_any_alias(s, n, als) = match als
+    Nil        => 0
+    Cons(e, t) => if ns_has(s, n, e.a + ".", count(e.a) + 1, 0) == 1 then 1 else ns_has_any_alias(s, n, t)
+
+## a record key: the identifier at [i, e) is followed by ':' (not '::') and sits right inside '{', or is the first thing
+## on a line outside every bracket (a key of a record written over several lines)
+fn ns_top(st) = match st
+    Nil        => ""
+    Cons(h, t) => h
+fn ns_pop(st) = match st
+    Nil        => Nil
+    Cons(h, t) => t
+fn ns_onlyws(s, i, e) = if i >= e then 1 else if isws(at(s, i)) or at(s, i) == "," then ns_onlyws(s, i + 1, e) else 0
+fn ns_iskey(s, n, i, e, st) = let j = skipws(s, e, n) in if j >= n or at(s, j) != ":" then 0 else if j + 1 < n and at(s, j + 1) == ":" then 0 else if ns_top(st) == "{" then 1 else isnil(st) == 1 and ns_onlyws(s, 0, i) == 1
+
+## rewrite one line; cx = {mp, als, recs, gs, entry, mod, line}
+fn ns_rw(s, n, i, start, acc, st, cx) = if i >= n then joinall(rev(Cons(slicen(s, n, start, n), acc))) else let c = at(s, i) in if c == "\"" then ns_rw(s, n, strend(s, i + 1, n), start, acc, st, cx) else if c == "#" then joinall(rev(Cons(slicen(s, n, start, n), acc))) else if c == "(" or c == "[" or c == "{" then ns_rw(s, n, i + 1, start, acc, Cons(c, st), cx) else if c == ")" or c == "]" or c == "}" then ns_rw(s, n, i + 1, start, acc, ns_pop(st), cx) else if isalpha(c) and prev_boundary(s, i) then ns_word(s, n, i, id_end(s, i, n), start, acc, st, cx) else ns_rw(s, n, i + 1, start, acc, st, cx)
+fn ns_word(s, n, i, e, start, acc, st, cx) = if i > 0 and at(s, i - 1) == "." then ns_rw(s, n, e, start, acc, st, cx) else let w = slicen(s, n, i, e) in let m = if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) then ns_alias(cx.als, w) else "" in if m != "" then ns_qual(s, n, i, e, id_end(s, e + 1, n), m, start, acc, st, cx) else let t = ns_lookup(cx.mp, w) in if t == "" or ns_iskey(s, n, i, e, st) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" then ctfail(cx.mod + ".src:" + str(cx.line) + ":" + str(i + 1) + ": lume: name error: '" + w + "' is defined in modules " + slice(t, 1, count(t)) + "; write the module name before it (" + ns_kfirst(slice(t, 1, count(t))) + "." + w + ")\n") else ns_rw(s, n, e, e, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
+fn ns_kfirst(s) = slice(s, 0, wordend(s, 0, count(s)))
+fn ns_qual(s, n, i, e, ne, m, start, acc, st, cx) = let nm = slicen(s, n, e + 1, ne) in if contains((ns_find(cx.recs, m)).defs, nm) == 0 then ns_rw(s, n, e, start, acc, st, cx) else let t = if ns_isdup(cx.gs, nm) == 1 then ns_target(m, nm, cx.entry) else nm in ns_rw(s, n, ne, ne, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
+
+fn ns_lines(lines, k, mp, cx) = match lines
+    Nil        => Nil
+    Cons(h, t) => let n = count(h) in let tr = ltrim(h) in let nh = if startswith(tr, "use ") then h else if ns_has_any_map(h, n, mp) == 1 or ns_has_any_alias(h, n, cx.als) == 1 then ns_rw(h, n, 0, 0, Nil, Nil, {mp: cx.mp, als: cx.als, recs: cx.recs, gs: cx.gs, entry: cx.entry, mod: cx.mod, line: k}) else h in Cons(nh, ns_lines(t, k + 1, mp, cx))
+fn ns_rec(r, recs, gs, entry) = let mp = ns_map(gs, r, ns_reach(r.uses, recs, Nil), entry, Nil) in let qual = ns_any_qual(r.lines, r.aliases) in if isnil(mp) == 1 and qual == 0 then r else {name: r.name, uses: r.uses, lines: ns_lines(r.lines, 1, mp, {mp: mp, als: r.aliases, recs: recs, gs: gs, entry: entry, mod: r.name, line: 0}), aliases: r.aliases, defs: r.defs}
+fn ns_any_qual(lines, als) = if isnil(als) == 1 then 0 else match lines
+    Nil        => 0
+    Cons(h, t) => if ns_has_any_alias(h, count(h), als) == 1 then 1 else ns_any_qual(t, als)
+fn ns_recs(rs, recs, gs, entry) = match rs
+    Nil        => Nil
+    Cons(r, t) => Cons(ns_rec(r, recs, gs, entry), ns_recs(t, recs, gs, entry))
+fn ns_apply(recs, entry) = ns_recs(recs, recs, ns_groups(ns_sort(ns_keys(recs, Nil)), Nil), entry)
+fn ns_texts(recs, entry) = match recs
+    Nil        => Nil
+    Cons(r, t) => Cons(if r.name == entry then "## --- entry " + r.name + " ---\n" + joinsep(entrylines(r.lines), "\n") else "## --- module " + r.name + " ---\n" + joinsep(liblines(r.lines), "\n"), ns_texts(t, entry))
+## "@namespaces" mode (the incremental build asks): "needed" when the namespace pass changes some module, else "none"
+fn ns_changed(a, b) = match a
+    Nil        => 0
+    Cons(r, t) => match b
+        Nil        => 0
+        Cons(q, u) => if joinsep(r.lines, "\n") != joinsep(q.lines, "\n") then 1 else ns_changed(t, u)
+
 ## --- topological DFS resolver with cycle detection & diamond deduplication ---
 fn resolve_list(uses, mods, grant, visiting, visited, chunks) = match uses
     Nil        => {visited: visited, chunks: chunks}
@@ -122,9 +267,10 @@ fn resolve_list(uses, mods, grant, visiting, visited, chunks) = match uses
 
 fn resolve_one(nm, mods, grant, visiting, visited, chunks) = if contains(visited, nm) == 1 then {visited: visited, chunks: chunks} else if contains(visiting, nm) == 1 then ctfail("lume: module error: circular module dependency involving '" + nm + "'\n") else let lk = findmod(mods, nm) in if lk.found == 0 then ctfail("lume: module error: module '" + nm + "' not found\n") else resolve_mod(lk.m, mods, grant, Cons(nm, visiting), visited, chunks)
 
-fn resolve_mod(m, mods, grant, visiting, visited, chunks) = let chk = checkcap(m.name, m.lines, grant) in let r = resolve_list(m.uses, mods, grant, visiting, visited, chunks) in {visited: Cons(m.name, r.visited), chunks: app(r.chunks, Cons("## --- module " + m.name + " ---\n" + joinsep(liblines(m.lines), "\n"), Nil))}
+fn resolve_mod(m, mods, grant, visiting, visited, chunks) = let chk = checkcap(m.name, m.lines, grant) in let r = resolve_list(m.uses, mods, grant, visiting, visited, chunks) in {visited: Cons(m.name, r.visited), chunks: app(r.chunks, Cons(nsrec(m), Nil))}
 
-fn bundle(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let ebody = joinsep(entrylines(st.entry.lines), "\n") in joinsep(app(r.chunks, Cons(ebody, Nil)), "\n\n")
+fn bundle(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n")
+fn ns_needed(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, "io", Cons(st.entry.name, Nil), Nil, Nil) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in if ns_changed(recs, ns_apply(recs, st.entry.name)) == 1 then "needed" else "none"
 
 ## --- `@manifest` mode: parse & validate `lume.toml` in Lume-Core ---
 fn unquote(s) = let t = trim(s) in let n = count(t) in if n < 2 then t else if at(t, 0) == "\"" and at(t, n - 1) == "\"" then slicen(t, n, 1, n - 1) else t
@@ -151,7 +297,7 @@ fn pkg_lock(st) = "# lume.lock — deterministic content-addressed lockfile (P26
 
 fn pkg_scan_uses(lines) = match lines
     Nil        => Nil
-    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then Cons(trim(slice(tr, 4, count(tr))), pkg_scan_uses(t)) else pkg_scan_uses(t)
+    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then Cons(usehead(slice(tr, 4, count(tr))), pkg_scan_uses(t)) else pkg_scan_uses(t)
 fn pkg_fmt_tree_mods(mods) = match mods
     Nil        => ""
     Cons(h, t) => let uses = pkg_scan_uses(splitlines(h.src)) in let line = if isnil(uses) == 1 then "  |-- " + h.rel else "  |-- " + h.rel + " -> " + joinsep(uses, " ") + " " in "\n" + line + pkg_fmt_tree_mods(t)
@@ -169,6 +315,6 @@ fn run_package(lines) = let st = pkg_parse(lines, {cmd: "", pkg: "app", part: "t
 
 fn run_lmod(lines) = match lines
     Nil        => ""
-    Cons(h, t) => let mode = trim(h) in if mode == "@manifest" then checkmanifest(scanmanifest(t, {name: "", version: "", edition: "", cap: "io", protect: "", ffi_libs: ""})) else if mode == "@pkg-init" or mode == "@pkg-lock" or mode == "@pkg-tree" then run_package(lines) else bundle(lines)
+    Cons(h, t) => let mode = trim(h) in if mode == "@manifest" then checkmanifest(scanmanifest(t, {name: "", version: "", edition: "", cap: "io", protect: "", ffi_libs: ""})) else if mode == "@pkg-init" or mode == "@pkg-lock" or mode == "@pkg-tree" then run_package(lines) else if mode == "@namespaces" then ns_needed(t) else bundle(lines)
 
 print chomp(run_lmod(splitlines(readall())))

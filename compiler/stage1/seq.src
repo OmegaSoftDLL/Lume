@@ -1,0 +1,100 @@
+## seq.src -- repetition without hand-written recursion (`use seq`): list combinators and loops over integer ranges,
+## written in Lume, tail-recursive and linear (a million steps run in constant stack, never quadratic).
+##
+## Lists (Cons / Nil):
+##   seq_map(xs, f)            seq_filter(xs, p)          seq_fold(xs, acc, f)  f(acc, x), left to right
+##   seq_foldr(xs, acc, f)     f(x, acc), right to left   seq_reduce(xs, f)     fold without a start (Nil -> Nil)
+##   seq_each(xs, f)           f(x) for its effect, 0     seq_any(xs, p)        seq_all(xs, p)
+##   seq_find(xs, p)           first match, or Nil        seq_index(xs, p)      position of the first match, or -1
+##   seq_len(xs)  seq_sum(xs)  seq_rev(xs)  seq_concat(xs, ys)  seq_flatten(xss)  seq_take(xs, n)  seq_drop(xs, n)
+##   seq_zip(xs, ys)           records {a, b}, as long as the shorter list
+##   seq_nth(xs, i)            the i-th element, or Nil
+## Integer loops:
+##   seq_range(a, b)           [a, a+1, ..., b-1]
+##   seq_loop(a, b, acc, f)    for i in a..b-1: acc = f(i, acc); the final acc (a for loop with an accumulator)
+##   seq_loop_down(a, b, acc, f)  for i = b-1 down to a
+##   seq_while(state, cond, step)  while cond(state): state = step(state); the final state
+##   seq_count(a, b, p)        how many i in a..b-1 satisfy p(i)
+## Strings:
+##   seq_bytes(s)              the bytes of s as a list of ints 0..255
+##   seq_str_fold(s, acc, f)   f(acc, byte), over every byte of s
+## The functions take functions as values: a named function (seq_map(xs, inc)) or a lambda (fn(x) => x * 2), which may
+## capture variables. Effects: none of their own; a function passed in brings its own.
+
+## --- lists ---
+fn seq_rev_go(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => seq_rev_go(t, Cons(h, acc))
+fn seq_rev(xs) = seq_rev_go(xs, Nil)
+fn seq_map_go(xs, f, acc) = match xs
+    Nil        => seq_rev(acc)
+    Cons(h, t) => seq_map_go(t, f, Cons(f(h), acc))
+fn seq_map(xs, f) = seq_map_go(xs, f, Nil)
+fn seq_filter_go(xs, p, acc) = match xs
+    Nil        => seq_rev(acc)
+    Cons(h, t) => seq_filter_go(t, p, if p(h) then Cons(h, acc) else acc)
+fn seq_filter(xs, p) = seq_filter_go(xs, p, Nil)
+fn seq_fold(xs, acc, f) = match xs
+    Nil        => acc
+    Cons(h, t) => seq_fold(t, f(acc, h), f)
+fn seq_foldr_go(rs, acc, f) = match rs
+    Nil        => acc
+    Cons(h, t) => seq_foldr_go(t, f(h, acc), f)
+fn seq_foldr(xs, acc, f) = seq_foldr_go(seq_rev(xs), acc, f)
+fn seq_reduce(xs, f) = match xs
+    Nil        => Nil
+    Cons(h, t) => seq_fold(t, h, f)
+fn seq_each(xs, f) = match xs
+    Nil        => 0
+    Cons(h, t) => let z = f(h) in seq_each(t, f)
+fn seq_any(xs, p) = match xs
+    Nil        => 0
+    Cons(h, t) => if p(h) then 1 else seq_any(t, p)
+fn seq_all(xs, p) = match xs
+    Nil        => 1
+    Cons(h, t) => if p(h) then seq_all(t, p) else 0
+fn seq_find(xs, p) = match xs
+    Nil        => Nil
+    Cons(h, t) => if p(h) then h else seq_find(t, p)
+fn seq_index_go(xs, p, i) = match xs
+    Nil        => 0 - 1
+    Cons(h, t) => if p(h) then i else seq_index_go(t, p, i + 1)
+fn seq_index(xs, p) = seq_index_go(xs, p, 0)
+fn seq_len_go(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => seq_len_go(t, n + 1)
+fn seq_len(xs) = seq_len_go(xs, 0)
+fn seq_sum(xs) = seq_fold(xs, 0, fn(a, x) => a + x)
+fn seq_concat(xs, ys) = seq_rev_go(seq_rev(xs), ys)
+fn seq_flatten_go(xss, acc) = match xss
+    Nil        => seq_rev(acc)
+    Cons(h, t) => seq_flatten_go(t, seq_rev_go(h, acc))
+fn seq_flatten(xss) = seq_flatten_go(xss, Nil)
+fn seq_take_go(xs, n, acc) = if n <= 0 then seq_rev(acc) else match xs
+    Nil        => seq_rev(acc)
+    Cons(h, t) => seq_take_go(t, n - 1, Cons(h, acc))
+fn seq_take(xs, n) = seq_take_go(xs, n, Nil)
+fn seq_drop(xs, n) = if n <= 0 then xs else match xs
+    Nil        => Nil
+    Cons(h, t) => seq_drop(t, n - 1)
+fn seq_zip_go(xs, ys, acc) = match xs
+    Nil        => seq_rev(acc)
+    Cons(h, t) => match ys
+        Nil        => seq_rev(acc)
+        Cons(a, b) => seq_zip_go(t, b, Cons({a: h, b: a}, acc))
+fn seq_zip(xs, ys) = seq_zip_go(xs, ys, Nil)
+fn seq_nth(xs, i) = if i < 0 then Nil else match xs
+    Nil        => Nil
+    Cons(h, t) => if i == 0 then h else seq_nth(t, i - 1)
+
+## --- integer loops ---
+fn seq_range_go(a, i, acc) = if i < a then acc else seq_range_go(a, i - 1, Cons(i, acc))
+fn seq_range(a, b) = seq_range_go(a, b - 1, Nil)
+fn seq_loop(a, b, acc, f) = if a >= b then acc else seq_loop(a + 1, b, f(a, acc), f)
+fn seq_loop_down(a, b, acc, f) = if b <= a then acc else seq_loop_down(a, b - 1, f(b - 1, acc), f)
+fn seq_while(state, cond, step) = if cond(state) then seq_while(step(state), cond, step) else state
+fn seq_count(a, b, p) = seq_loop(a, b, 0, fn(i, n) => if p(i) then n + 1 else n)
+
+## --- strings ---
+fn seq_bytes(s) = seq_loop_down(0, count(s), Nil, fn(i, acc) => Cons(ord(at(s, i)), acc))
+fn seq_str_fold(s, acc, f) = seq_loop(0, count(s), acc, fn(i, a) => f(a, ord(at(s, i))))
