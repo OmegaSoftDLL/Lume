@@ -76,6 +76,7 @@
     .extern KERNEL32.dll!UnmapViewOfFile
     .extern KERNEL32.dll!LoadLibraryExW
     .extern KERNEL32.dll!GetModuleFileNameA
+    .extern KERNEL32.dll!PeekNamedPipe
     .section .text
 # __win_syscall: the Linux x86-64 syscall ABI on top of Win64.
 # In: rax = Linux syscall number, rdi rsi rdx r10 r8 r9 = arguments. Out: rax (>= 0, or -errno).
@@ -127,6 +128,16 @@ __win_syscall:
     je .Lws_lseek
     cmpq $9, %rax
     je .Lws_mmap
+    cmpq $291, %rax
+    je .Lws_epcreate
+    cmpq $213, %rax
+    je .Lws_epcreate
+    cmpq $233, %rax
+    je .Lws_epctl
+    cmpq $232, %rax
+    je .Lws_epwait
+    cmpq $281, %rax
+    je .Lws_epwait
     cmpq $10, %rax
     je .Lws_mprotect
     cmpq $11, %rax
@@ -867,6 +878,27 @@ __win_syscall:
     movq %rax, 64(%rsp)
     movq %rcx, 72(%rsp)
     call .Lws_fd_free
+# a closed fd leaves every epoll interest list; a closed epoll fd drops its whole list
+    leaq .Lws_ept(%rip), %rax
+    movq $256, %rcx
+    leaq 1(%r12), %rdx
+.Lws_close_ep:
+    cmpq %r12, 8(%rax)
+    jne .Lws_close_ep_own
+    cmpq $0, (%rax)
+    jne .Lws_close_ep_drop
+.Lws_close_ep_own:
+    cmpq %rdx, (%rax)
+    jne .Lws_close_ep_n
+.Lws_close_ep_drop:
+    movq $0, (%rax)
+    movq $0, 8(%rax)
+    movq $0, 16(%rax)
+    movq $0, 24(%rax)
+.Lws_close_ep_n:
+    addq $32, %rax
+    decq %rcx
+    jnz .Lws_close_ep
     movq 72(%rsp), %rcx
     cmpq $2, %rcx
     je .Lws_close_dir
@@ -1053,6 +1085,255 @@ __win_syscall:
     addq $40, %rsp
 .Lws_mvn2_out:
     ret
+# ---- epoll: an epoll fd (kind 6) and its interest list in .Lws_ept (32-byte entries: epfd + 1 (0 = free), fd,
+# events, data). epoll_wait is level-triggered, as the Linux default: a pipe is readable when PeekNamedPipe reports
+# bytes or a closed writer (EPOLLIN | EPOLLHUP), a socket by WSAPoll, a file or console is always ready; every
+# kind but a socket is always writable. Until something is ready it waits 0.2 ms at a time on the high-resolution
+# timer, up to the timeout (ms; -1 = no limit). struct epoll_event is packed: u32 events, u64 data.
+.Lws_epcreate:
+    movq $6, %r8
+    xorq %r9, %r9
+    call .Lws_fd_new
+    jmp .Lws_ret
+.Lws_epctl:
+    call .Lws_fdh
+    cmpq $6, %rcx
+    jne .Lws_einval
+    movq %r12, 64(%rsp)
+    movq %r14, %r12
+    call .Lws_fdh
+    movq 64(%rsp), %r12
+    testq %rcx, %rcx
+    jz .Lws_ebadf
+    leaq 1(%r12), %rdx
+# find (epfd, fd)
+    leaq .Lws_ept(%rip), %rax
+    movq $256, %rcx
+.Lws_epc_f:
+    cmpq %rdx, (%rax)
+    jne .Lws_epc_fn
+    cmpq %r14, 8(%rax)
+    je .Lws_epc_hit
+.Lws_epc_fn:
+    addq $32, %rax
+    decq %rcx
+    jnz .Lws_epc_f
+# not in the list: ADD takes a free entry, DEL / MOD fail with ENOENT
+    cmpq $1, %r13
+    jne .Lws_epc_noent
+    leaq .Lws_ept(%rip), %rax
+    movq $256, %rcx
+.Lws_epc_free:
+    cmpq $0, (%rax)
+    je .Lws_epc_put
+    addq $32, %rax
+    decq %rcx
+    jnz .Lws_epc_free
+    movq $-28, %rax
+    jmp .Lws_ret
+.Lws_epc_put:
+    movq %rdx, (%rax)
+    movq %r14, 8(%rax)
+.Lws_epc_set:
+    movq (%r15), %rcx
+    shlq $32, %rcx
+    shrq $32, %rcx
+    movq %rcx, 16(%rax)
+    movq 4(%r15), %rcx
+    movq %rcx, 24(%rax)
+    jmp .Lws_zero
+.Lws_epc_hit:
+    cmpq $1, %r13
+    je .Lws_epc_exist
+    cmpq $3, %r13
+    je .Lws_epc_set
+    cmpq $2, %r13
+    jne .Lws_einval
+    movq $0, (%rax)
+    movq $0, 8(%rax)
+    movq $0, 16(%rax)
+    movq $0, 24(%rax)
+    jmp .Lws_zero
+.Lws_epc_exist:
+    movq $-17, %rax
+    jmp .Lws_ret
+.Lws_epc_noent:
+    movq $-2, %rax
+    jmp .Lws_ret
+.Lws_epwait:
+    call .Lws_fdh
+    cmpq $6, %rcx
+    jne .Lws_einval
+    testq %r14, %r14
+    jle .Lws_einval
+    leaq 96(%rsp), %rcx
+    call QueryPerformanceFrequency
+    leaq 104(%rsp), %rcx
+    call QueryPerformanceCounter
+.Lws_epw_loop:
+# scan: rsi = entry, rdi = events written
+    leaq .Lws_ept(%rip), %rsi
+    xorq %rdi, %rdi
+    movq $256, %rbx
+.Lws_epw_scan:
+    leaq 1(%r12), %rax
+    cmpq %rax, (%rsi)
+    jne .Lws_epw_next
+    movq %r12, 112(%rsp)
+    movq 8(%rsi), %r12
+    call .Lws_fdh
+    movq 112(%rsp), %r12
+    movq $0, 120(%rsp)
+    cmpq $5, %rcx
+    je .Lws_epw_sock
+    testq %rcx, %rcx
+    jz .Lws_epw_hup
+    cmpq $1, %rcx
+    je .Lws_epw_pipe
+    cmpq $4, %rcx
+    je .Lws_epw_pipe
+# any other kind (directory stream, /dev/urandom, an epoll fd): readable and writable
+    movq $5, 120(%rsp)
+    jmp .Lws_epw_mask
+.Lws_epw_pipe:
+    movq $4, 120(%rsp)
+    movq %rax, %rcx
+    xorq %rdx, %rdx
+    xorq %r8, %r8
+    xorq %r9, %r9
+    movq $0, 128(%rsp)
+    leaq 128(%rsp), %rax
+    movq %rax, 32(%rsp)
+    movq $0, 40(%rsp)
+    call PeekNamedPipe
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_epw_pipe_err
+    cmpq $0, 128(%rsp)
+    je .Lws_epw_mask
+    movq 120(%rsp), %rdx
+    orq $1, %rdx
+    movq %rdx, 120(%rsp)
+    jmp .Lws_epw_mask
+.Lws_epw_pipe_err:
+    call GetLastError
+    shlq $32, %rax
+    shrq $32, %rax
+    cmpq $109, %rax
+    jne .Lws_epw_file
+    movq 120(%rsp), %rdx
+    orq $17, %rdx
+    movq %rdx, 120(%rsp)
+    jmp .Lws_epw_mask
+.Lws_epw_file:
+    movq 120(%rsp), %rdx
+    orq $1, %rdx
+    movq %rdx, 120(%rsp)
+    jmp .Lws_epw_mask
+.Lws_epw_hup:
+    movq $16, 120(%rsp)
+    jmp .Lws_epw_mask
+.Lws_epw_sock:
+# WSAPOLLFD { SOCKET, short events = POLLRDNORM | POLLWRNORM, short revents }
+    movq %rax, 128(%rsp)
+    movq $272, 136(%rsp)
+    leaq 128(%rsp), %rcx
+    movq $1, %rdx
+    xorq %r8, %r8
+    movq .Lws_ws_fn+112(%rip), %rax
+    call *%rax
+    movq 136(%rsp), %rax
+    shrq $16, %rax
+    andq $65535, %rax
+    testq $256, %rax
+    jz .Lws_epw_s1
+    movq 120(%rsp), %rdx
+    orq $1, %rdx
+    movq %rdx, 120(%rsp)
+.Lws_epw_s1:
+    testq $16, %rax
+    jz .Lws_epw_s2
+    movq 120(%rsp), %rdx
+    orq $4, %rdx
+    movq %rdx, 120(%rsp)
+.Lws_epw_s2:
+    testq $2, %rax
+    jz .Lws_epw_s3
+    movq 120(%rsp), %rdx
+    orq $17, %rdx
+    movq %rdx, 120(%rsp)
+.Lws_epw_s3:
+    testq $1, %rax
+    jz .Lws_epw_mask
+    movq 120(%rsp), %rdx
+    orq $9, %rdx
+    movq %rdx, 120(%rsp)
+.Lws_epw_mask:
+# requested events, plus EPOLLERR and EPOLLHUP, which are always reported
+    movq 16(%rsi), %rax
+    orq $24, %rax
+    andq 120(%rsp), %rax
+    testq %rax, %rax
+    jz .Lws_epw_next
+    movq %rdi, %rcx
+    imulq $12, %rcx
+    addq %r13, %rcx
+    movq %rax, (%rcx)
+    movq 24(%rsi), %rax
+    movq %rax, 4(%rcx)
+    incq %rdi
+    cmpq %r14, %rdi
+    jge .Lws_epw_done
+.Lws_epw_next:
+    addq $32, %rsi
+    decq %rbx
+    jnz .Lws_epw_scan
+    testq %rdi, %rdi
+    jnz .Lws_epw_done
+    testq %r15, %r15
+    jz .Lws_epw_done
+    js .Lws_epw_sleep
+    leaq 112(%rsp), %rcx
+    call QueryPerformanceCounter
+    movq 112(%rsp), %rax
+    subq 104(%rsp), %rax
+    imulq $1000, %rax
+    cqto
+    idivq 96(%rsp)
+    cmpq %r15, %rax
+    jge .Lws_epw_done
+.Lws_epw_sleep:
+    movq $-2000, 80(%rsp)
+    movq .Lws_timer(%rip), %rax
+    testq %rax, %rax
+    jnz .Lws_epw_tset
+    xorq %rcx, %rcx
+    xorq %rdx, %rdx
+    movq $2, %r8
+    movq $2031619, %r9
+    call CreateWaitableTimerExW
+    movq %rax, .Lws_timer(%rip)
+    testq %rax, %rax
+    jnz .Lws_epw_tset
+    movq $1, %rcx
+    call Sleep
+    jmp .Lws_epw_loop
+.Lws_epw_tset:
+    movq %rax, %rcx
+    leaq 80(%rsp), %rdx
+    xorq %r8, %r8
+    xorq %r9, %r9
+    movq $0, 32(%rsp)
+    movq $0, 40(%rsp)
+    call SetWaitableTimer
+    movq .Lws_timer(%rip), %rcx
+    movq $4294967295, %rdx
+    call WaitForSingleObject
+    jmp .Lws_epw_loop
+.Lws_epw_done:
+    movq %rdi, %rax
+    jmp .Lws_ret
 # ---- extern "c" functions: bound on first call, like the lazy binding of the Linux loader -------------------------
 # __win_ffi_resolve: rdi = symbol name (NUL-terminated). Looks the symbol up in each library of __lume_ffi_libs
 # (paths separated by ';', written there by `lume build --link`; "@..." = no library) and returns its address in
@@ -3874,6 +4155,7 @@ __win_image_hi:
     .asciz "shutdown"
     .asciz "closesocket"
     .asciz "WSAGetLastError"
+    .asciz "WSAPoll"
     .byte 0
 # Winsock error -> -errno (EWOULDBLOCK, EINTR, EBADF, EACCES, EFAULT, EINVAL, EMFILE, ENOTSOCK, EMSGSIZE,
 # EAFNOSUPPORT, EADDRINUSE, EADDRNOTAVAIL, ENETUNREACH, ECONNABORTED, ECONNRESET, ENOTCONN, ETIMEDOUT,
@@ -3986,4 +4268,5 @@ __lume_ffi_libs:
     .lcomm .Lws_cpres, 8
     .lcomm .Lws_cperr, 8
     .lcomm .Lws_shm, 1536
+    .lcomm .Lws_ept, 8192
     .lcomm .Lws_mvn2_fn, 8
