@@ -6,7 +6,7 @@ R=$PWD; O=$R/build/windows-native/mem/${1:-pc_l}; rm -rf $O; mkdir -p $O
 # a fresh, empty home: no test may read or write the real ~/.lume, ~/.lume_sovereign_memory or /var/lib vaults
 H=$O.home; rm -rf $H; mkdir -p $H/win $H/vault
 export HOME=$H USERPROFILE=$H LUME_WIN_HOME=$H/win LUME_SYSTEM_VAULT=$H/vault
-B=$R/build/windows-native/instl/bin; P=$R/build/windows-native/mem/probes_l; mkdir -p $P
+B=${LUME_BIN:-$R/build/windows-native/instl/bin}; P=$R/build/windows-native/mem/probes_l; mkdir -p $P
 cd $R/bootstrap/lume0
 for p in os_run_probe os_run_slow_probe os_run_input_probe process_probe; do
   [ -x $P/$p ] || { $B/lumec < $R/compiler/stage1/$p.src > $P/$p.s && $B/lasm $P/$p.s > $P/$p && chmod +x $P/$p; }
