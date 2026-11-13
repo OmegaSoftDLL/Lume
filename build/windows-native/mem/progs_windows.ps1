@@ -7,12 +7,18 @@ Set-Location $root
 $outDir = Join-Path $here $Out
 if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir -Confirm:$false }
 New-Item -ItemType Directory -Force $outDir | Out-Null
+# a fresh, empty home per run: no test may read or write the real ~/.lume, ~/.lume_sovereign_memory or ProgramData vault
+$sandboxHome = $outDir + '.home'; if (Test-Path $sandboxHome) { Remove-Item -Recurse -Force $sandboxHome -Confirm:$false }
+$sandboxWin = Join-Path $sandboxHome 'win'; $sandboxVault = Join-Path $sandboxHome 'vault'
+New-Item -ItemType Directory -Force $sandboxWin, $sandboxVault | Out-Null
+$env:HOME = $sandboxHome; $env:USERPROFILE = $sandboxHome; $env:LUME_WIN_HOME = $sandboxWin; $env:LUME_SYSTEM_VAULT = $sandboxVault
 $rel = "build\windows-native\mem\$Out"
 $lines = @()
 foreach ($f in [System.IO.File]::ReadAllLines((Join-Path $here $List))) {
     if ($f.Length -eq 0) { continue }
     $n = ($f -replace '/', '_') -replace '\.src$', ''
     $p = Start-Process -FilePath 'cmd.exe' -ArgumentList "/c build\windows-native\inst\bin\lume.exe run $f > $rel\$n.out 2> $rel\$n.err < NUL" -NoNewWindow -PassThru
+    $null = $p.Handle   # cache the handle, or ExitCode is lost after WaitForExit(timeout)
     if (-not $p.WaitForExit(300000)) {
         cmd /c "taskkill /PID $($p.Id) /T /F > NUL 2>&1"
         $lines += "$n 124"
