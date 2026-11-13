@@ -623,9 +623,20 @@ fn ld_need_headers(links) = match links
     Nil        => ""
     Cons(h, t) => ld_need_library(h) + ld_need_headers(t)
 
+## Windows: extern "c" functions are bound on first call (the Win64 layer's __win_ffi_resolve) in the libraries listed
+## in __lume_ffi_libs, separated by ';'. `-lc` / `-lm` are the Universal C Runtime (ucrtbase.dll, in System32), a bare
+## name is NAME.dll, a path is used as it is.
+fn ld_win_lib(lib) = if lib == "c" or lib == "m" then "ucrtbase.dll" else if ld_suffix(lib, ".dll") or ld_contains_at(lib, "/", 0) == 1 then lib else lib + ".dll"
+fn ld_win_libs(links) = match links
+    Nil        => ""
+    Cons(h, t) => let rest = ld_win_libs(t) in ld_win_lib(h) + (if rest == "" then "" else ";" + rest)
+fn ld_at_match(text, part, i, j) = if j >= count(part) then 1 else if at(text, i + j) != at(part, j) then 0 else ld_at_match(text, part, i, j + 1)
+## the last occurrence of part in text (the layer, which holds the list, is at the end of the assembly), or -1
+fn ld_rfind(text, part, i) = if i < 0 then 0 - 1 else if ld_at_match(text, part, i, 0) == 1 then i else ld_rfind(text, part, i - 1)
+fn ld_win_link_text(text, links) = let mark = "__lume_ffi_libs:\n    .asciz \"@lume-ffi-libs@\"\n" in let p = ld_rfind(text, mark, count(text) - count(mark)) in if p < 0 then ctfail("native build --link: the assembly has no Windows library list (built without lumec --win64?)\n") else slice(text, 0, p) + "__lume_ffi_libs:\n    .asciz \"" + ld_win_libs(links) + "\"\n" + slice(text, p + count(mark), count(text))
 fn ld_link_assembly(assembly, out, links) = match links
     Nil        => assembly
-    Cons(_, _) => let linked = out + ".linked.s" in let written = fs_write_sync(linked, ld_need_headers(links) + fs_read_file(assembly)) in if written != 1 then ctfail("native build cannot write dynamic-link assembly\n") else linked
+    Cons(_, _) => let linked = out + ".linked.s" in let text = if os_platform() == "windows" then ld_win_link_text(fs_read_file(assembly), links) else ld_need_headers(links) + fs_read_file(assembly) in let written = fs_write_sync(linked, text) in if written != 1 then ctfail("native build cannot write dynamic-link assembly\n") else linked
 
 fn ld_build_native_options(root, source, out, grant, protect, lsym, links, chdr, btoms) = let bundled = ld_bundle_grant(root, source, out, grant) in let btext = fs_read_file(bundled) in let bsha = fs_sha256_file(bundled) in let is_krn = if ld_suffix(out, ".kernel") or ld_contains_at(btext, "@freestanding", 0) == 1 then "krn" else "elf" in let can_cache = if btoms == 0 and chdr == "" and lsym == "" and (protect == "" or protect == "none") and ld_has_links(links) == 0 and ld_contains_at(out, "lumec", 0) == 0 and ld_contains_at(out, "lasm", 0) == 0 and ld_contains_at(out, "lcli", 0) == 0 and ld_contains_at(out, "lcaas", 0) == 0 and ld_contains_at(out, "lcert", 0) == 0 and ld_contains_at(out, "lume_driver", 0) == 0 then 1 else 0 in let cid = if can_cache == 1 then lc_sha256("build-v5:" + is_krn + ":" + grant + ":" + protect + ":" + bsha + ":" + ld_tool_id(root, "lumec") + ld_tool_id(root, "lasm")) else "" in if can_cache == 1 and ld_cache_recall_binary(root, cid, out) == 1 then 0 else let header = ld_maybe_header(root, bundled, chdr) in let assembly = ld_compile_assembly(root, bundled, out, btoms) in let protected_assembly = ld_protect_assembly(root, assembly, out, protect, lsym) in let linked = ld_link_assembly(protected_assembly, out, links) in let rc = ld_assemble(root, linked, out, btoms) in let stored = if rc == 0 and can_cache == 1 then ld_cache_store_binary(root, cid, out) else 0 in rc
 

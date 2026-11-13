@@ -389,6 +389,42 @@ fn lw_big_sub(c, i, e) = e > i + 10 and e + 7 <= c.n and lw_match(c.s, e, ", %rs
 fn lw_pgo(c, i, start, acc) = if i > c.n - 10 then Cons(slicen(c.s, c.n, start, c.n), acc) else if lw_match(c.s, i, "    subq $", 0, 10) == 1 then lw_pgo_sub(c, i, start, acc, lw_pend(c.s, c.n, i + 10)) else lw_pgo(c, i + 1, start, acc)
 fn lw_pgo_sub(c, i, start, acc, e) = if lw_big_sub(c, i, e) then lw_pgo(c, e + 7, e + 7, Cons(lw_probe_seq(toint(slicen(c.s, c.n, i + 10, e))), Cons(slicen(c.s, c.n, start, i), acc))) else lw_pgo(c, i + 1, start, acc)
 fn lw_probe(s) = joinall(own rev(lw_pgo({s: s, n: count(s)}, 0, 0, Nil)))
-fn lw_win64(asm) = let a1 = lw_replace(asm, runtime_hosted_init(), rt_win64_init()) in if a1 == asm then ctfail("lumec: [W0064] --win64 needs a hosted program (a `.kernel` image has no Windows form)\n") else rt_win64_imports() + lw_probe(lw_replace(lw_replace(a1, "    syscall\n", "    call __win_syscall\n"), ".Lrt_platform:\n    .asciz \"linux\"\n", ".Lrt_platform:\n    .asciz \"windows\"\n")) + rt_win64_layer()
+# extern "c" functions on Windows: the import stub's `call NAME` (System V registers, an `.extern NAME` the ELF
+# loader binds lazily) becomes a call through a slot bound on first use by __win_ffi_resolve (the libraries of
+# `lume build --link`, the same "symbol lookup error" and exit status 127 as ld.so when no library exports it),
+# with the arguments moved to the Win64 convention: rcx, rdx, r8, r9, then the stack above 32 bytes of shadow space.
+fn lw_ext_end(s, n, i) = if i < n and at(s, i) != "\n" then lw_ext_end(s, n, i + 1) else i
+## a symbol name: letters, digits, '_', '.', '$' (an `.extern` written inside a string of the program is not one)
+fn lw_sym_ch(c) = isalpha(c) or isdigit(c) or c == "_" or c == "." or c == "$"
+fn lw_is_sym(s, i, e) = if i >= e then 1 else if lw_sym_ch(at(s, i)) then lw_is_sym(s, i + 1, e) else 0
+## `    .extern NAME` lines (at the start of a line, NAME a plain symbol)
+fn lw_ext_go(s, n, i, acc) = if i > n - 12 then acc else if (i == 0 or at(s, i - 1) == "\n") and lw_match(s, i, "    .extern ", 0, 12) == 1 then let e = lw_ext_end(s, n, i + 12) in lw_ext_go(s, n, e, if e > i + 12 and lw_is_sym(s, i + 12, e) == 1 then Cons(slicen(s, n, i + 12, e), acc) else acc) else lw_ext_go(s, n, i + 1, acc)
+fn lw_has_name(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else lw_has_name(t, x)
+fn lw_uniq(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lw_uniq(t, if lw_has_name(acc, h) == 1 then acc else Cons(h, acc))
+fn lw_externs(s) = lw_uniq(lw_ext_go(s, count(s), 0, Nil), Nil)
+fn lw_ffi_call(nm) = "    movq .Lffi_fn_" + nm + "(%rip), %rax\n    testq %rax, %rax\n    jnz .Lffi_go_" + nm + "\n    pushq %rdi\n    pushq %rsi\n    pushq %rdx\n    pushq %rcx\n    pushq %r8\n    pushq %r9\n    leaq .Lffi_nm_" + nm + "(%rip), %rdi\n    call __win_ffi_resolve\n    movq %rax, .Lffi_fn_" + nm + "(%rip)\n    popq %r9\n    popq %r8\n    popq %rcx\n    popq %rdx\n    popq %rsi\n    popq %rdi\n.Lffi_go_" + nm + ":\n    subq $48, %rsp\n    movq %r8, 32(%rsp)\n    movq %r9, 40(%rsp)\n    movq %rcx, %r9\n    movq %rdx, %r8\n    movq %rsi, %rdx\n    movq %rdi, %rcx\n    movq .Lffi_fn_" + nm + "(%rip), %rax\n    call *%rax\n"
+fn lw_ffi_rw(asm, names) = match names
+    Nil        => asm
+    Cons(nm, t) => lw_ffi_rw(lw_replace(lw_replace(asm, "    .extern " + nm + "\n", ""), "    call " + nm + "\n", lw_ffi_call(nm)), t)
+fn lw_ffi_names(names) = match names
+    Nil        => ""
+    Cons(nm, t) => ".Lffi_nm_" + nm + ":\n    .asciz \"" + nm + "\"\n" + lw_ffi_names(t)
+fn lw_ffi_slots(names) = match names
+    Nil        => ""
+    Cons(nm, t) => "    .lcomm .Lffi_fn_" + nm + ", 8\n" + lw_ffi_slots(t)
+fn lw_ffi_binds(names) = match names
+    Nil        => ""
+    Cons(nm, t) => "    leaq .Lffi_nm_" + nm + "(%rip), %rdi\n    call __win_ffi_resolve\n    movq %rax, .Lffi_fn_" + nm + "(%rip)\n" + lw_ffi_binds(t)
+## every extern "c" symbol is bound at start-up, as the ELF loader binds them before main: a missing one stops the
+## program before it runs, with the loader's message and exit status 127 (the per-call slot check stays as a fallback)
+fn lw_ffi_bind_fn(names) = "    .section .text\n__lume_ffi_bind:\n    pushq %rax\n    pushq %rcx\n    pushq %rdx\n    pushq %rsi\n    pushq %rdi\n    pushq %r8\n    pushq %r9\n    pushq %r10\n    pushq %r11\n    pushq %rbp\n    movq %rsp, %rbp\n    andq $-16, %rsp\n" + lw_ffi_binds(names) + "    movq %rbp, %rsp\n    popq %rbp\n    popq %r11\n    popq %r10\n    popq %r9\n    popq %r8\n    popq %rdi\n    popq %rsi\n    popq %rdx\n    popq %rcx\n    popq %rax\n    ret\n"
+fn lw_ffi(asm) = let names = lw_externs(asm) in match names
+    Nil        => asm
+    Cons(_, _) => lw_replace(lw_ffi_rw(asm, names), rt_win64_init(), rt_win64_init() + "    call __lume_ffi_bind\n") + lw_ffi_bind_fn(names) + "    .section .rodata\n" + lw_ffi_names(names) + "    .section .bss\n" + lw_ffi_slots(names)
+fn lw_win64(asm) = let a1 = lw_replace(asm, runtime_hosted_init(), rt_win64_init()) in if a1 == asm then ctfail("lumec: [W0064] --win64 needs a hosted program (a `.kernel` image has no Windows form)\n") else rt_win64_imports() + lw_probe(lw_replace(lw_replace(lw_ffi(a1), "    syscall\n", "    call __win_syscall\n"), ".Lrt_platform:\n    .asciz \"linux\"\n", ".Lrt_platform:\n    .asciz \"windows\"\n")) + rt_win64_layer()
 fn lumec_main(src) = if os_arg_count() >= 2 and os_arg_at(1) == "--ast-hash" then lumec_mode_asthash(src) else if os_arg_count() >= 5 and os_arg_at(1) == "--module" then lumec_mode_module(os_arg_at(2), os_arg_at(3), os_arg_at(4), src) else if os_arg_count() >= 2 and os_arg_at(1) == "--link" then lumec_mode_link(src) else if lw_flag(1) == 1 then lw_win64(lumec_compile(src)) else let dp = ldw_path(1) in if dp == "" then lumec_compile(src) else ldw_annotate(lumec_compile(src), src, dp)
 print with handler CompilerIO { fn read_source() -> str = readall() } in lumec_main(read_source())

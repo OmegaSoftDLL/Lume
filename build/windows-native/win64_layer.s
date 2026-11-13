@@ -74,6 +74,8 @@
     .extern KERNEL32.dll!CreateFileMappingW
     .extern KERNEL32.dll!MapViewOfFileEx
     .extern KERNEL32.dll!UnmapViewOfFile
+    .extern KERNEL32.dll!LoadLibraryExW
+    .extern KERNEL32.dll!GetModuleFileNameA
     .section .text
 # __win_syscall: the Linux x86-64 syscall ABI on top of Win64.
 # In: rax = Linux syscall number, rdi rsi rdx r10 r8 r9 = arguments. Out: rax (>= 0, or -errno).
@@ -1050,6 +1052,127 @@ __win_syscall:
 .Lws_mvn2_none:
     addq $40, %rsp
 .Lws_mvn2_out:
+    ret
+# ---- extern "c" functions: bound on first call, like the lazy binding of the Linux loader -------------------------
+# __win_ffi_resolve: rdi = symbol name (NUL-terminated). Looks the symbol up in each library of __lume_ffi_libs
+# (paths separated by ';', written there by `lume build --link`; "@..." = no library) and returns its address in
+# rax. A symbol no library exports ends the process as ld.so does: "<exe>: symbol lookup error: <exe>: undefined
+# symbol: <name>" on stderr, exit status 127. Keeps rbx, rsi, rdi, rbp, r12-r15.
+__win_ffi_resolve:
+    pushq %rbx
+    pushq %rsi
+    pushq %rdi
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %rbp
+    movq %rsp, %rbp
+    andq $-16, %rsp
+    subq $64, %rsp
+    movq %rdi, %r13
+    leaq __lume_ffi_libs(%rip), %r14
+    movzbq (%r14), %rax
+    cmpq $64, %rax
+    je .Lffr_none
+.Lffr_next:
+    movzbq (%r14), %rax
+    testq %rax, %rax
+    jz .Lffr_none
+    leaq .Lws_cbuf(%rip), %rdi
+.Lffr_cp:
+    movzbq (%r14), %rax
+    testq %rax, %rax
+    jz .Lffr_cp_end
+    incq %r14
+    cmpq $59, %rax
+    je .Lffr_cp_end
+    movb %al, (%rdi)
+    incq %rdi
+    jmp .Lffr_cp
+.Lffr_cp_end:
+    movb $0, (%rdi)
+    leaq .Lws_cbuf(%rip), %r12
+    call .Lws_wpath
+    testq %rax, %rax
+    jz .Lffr_next
+# LoadLibraryExW wants '\' separators
+    leaq .Lws_wbuf(%rip), %rax
+.Lffr_sl:
+    movzbq (%rax), %rcx
+    movzbq 1(%rax), %rdx
+    movq %rcx, %r8
+    orq %rdx, %r8
+    jz .Lffr_load
+    cmpq $47, %rcx
+    jne .Lffr_sl_n
+    testq %rdx, %rdx
+    jnz .Lffr_sl_n
+    movb $92, (%rax)
+.Lffr_sl_n:
+    addq $2, %rax
+    jmp .Lffr_sl
+.Lffr_load:
+    leaq .Lws_wbuf(%rip), %rcx
+    xorq %rdx, %rdx
+    xorq %r8, %r8
+    call LoadLibraryExW
+    testq %rax, %rax
+    jz .Lffr_next
+    movq %rax, %rcx
+    movq %r13, %rdx
+    call GetProcAddress
+    testq %rax, %rax
+    jz .Lffr_next
+    movq %rbp, %rsp
+    popq %rbp
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rdi
+    popq %rsi
+    popq %rbx
+    ret
+.Lffr_none:
+    xorq %rcx, %rcx
+    leaq .Lws_cbuf(%rip), %rdx
+    movq $32768, %r8
+    call GetModuleFileNameA
+    leaq .Lws_pbuf(%rip), %rdi
+    leaq .Lws_cbuf(%rip), %rsi
+    call .Lffr_cat
+    leaq .Lffr_m1(%rip), %rsi
+    call .Lffr_cat
+    leaq .Lws_cbuf(%rip), %rsi
+    call .Lffr_cat
+    leaq .Lffr_m2(%rip), %rsi
+    call .Lffr_cat
+    movq %r13, %rsi
+    call .Lffr_cat
+    movb $10, (%rdi)
+    incq %rdi
+    leaq .Lws_pbuf(%rip), %rax
+    subq %rax, %rdi
+    movq %rdi, %rbx
+    movq $-12, %rcx
+    call GetStdHandle
+    movq %rax, %rcx
+    leaq .Lws_pbuf(%rip), %rdx
+    movq %rbx, %r8
+    leaq 48(%rsp), %r9
+    movq $0, 32(%rsp)
+    call WriteFile
+    movq $127, %rcx
+    call ExitProcess
+# copy the NUL-terminated string at rsi to rdi (without its NUL); rdi ends past the copy
+.Lffr_cat:
+    movzbq (%rsi), %rax
+    testq %rax, %rax
+    jz .Lffr_cat_out
+    movb %al, (%rdi)
+    incq %rsi
+    incq %rdi
+    jmp .Lffr_cat
+.Lffr_cat_out:
     ret
 .Lws_mprotect:
     testq %r14, %r14
@@ -3824,6 +3947,13 @@ __win_image_hi:
     .asciz "kernelbase.dll"
 .Lws_mvn2_proc:
     .asciz "MapViewOfFileNuma2"
+.Lffr_m1:
+    .asciz ": symbol lookup error: "
+.Lffr_m2:
+    .asciz ": undefined symbol: "
+# the libraries of `lume build --link` (the driver replaces this line); "@..." = none
+__lume_ffi_libs:
+    .asciz "@lume-ffi-libs@"
 .Lws_devstdin:
     .asciz "/dev/stdin"
     .section .bss
