@@ -18,6 +18,7 @@ $env:HOME = $sandboxHome; $env:USERPROFILE = $sandboxHome; $env:LUME_WIN_HOME = 
 $rel = "build\windows-native\mem\$Out"
 $lume = 'build\windows-native\inst\bin\lume.exe'
 $binDir = Join-Path $root 'build\windows-native\inst\bin'
+function PosixOf([string]$p) { '/' + $p.Substring(0, 1).ToLower() + ($p.Substring(2) -replace '\\', '/') }
 $modes = @{}
 foreach ($m in [System.IO.File]::ReadAllLines((Join-Path $here 'progs_modes.txt'))) {
     $parts = $m -split ' '
@@ -33,7 +34,7 @@ function Invoke-Limited([string]$cmdline, [int]$ms) {
 function Invoke-Gate([string]$gate, [string]$n) {
     $b = Invoke-Limited "$lume build $gate -o $rel\$n.gate.exe > $rel\$n.gate.build 2>&1 < NUL" 1800000
     if ($b -ne 0) { return 3 }
-    [System.IO.File]::WriteAllText((Join-Path $outDir "$n.in"), "@root $root`n@bin $binDir`n")
+    [System.IO.File]::WriteAllText((Join-Path $outDir "$n.in"), "@root $(PosixOf $root)`n@bin $(PosixOf $binDir)`n")
     return (Invoke-Limited "$rel\$n.gate.exe < $rel\$n.in > $rel\$n.out 2> $rel\$n.err" 3600000)
 }
 $lines = @()
