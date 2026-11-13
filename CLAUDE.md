@@ -54,6 +54,21 @@ Everything lives in `build/windows-native/` (git-ignored; the sources there were
 - `lume` on this machine from PowerShell is the released toolchain inside WSL, not the port; the port is
   `build\windows-native\inst\bin\lume.exe`.
 
+## Progress 2026-11-13 afternoon (newest first; details in the commit messages and doc 42 §9)
+
+- Done and committed: §9 items 2 (os_shm_map), 3 (native installer), 5 (epoll), 6 (io_uring), 7 (C FFI, Win64 ABI,
+  --link, ld.so-style binding), self-kill of item 1; test runs isolated from the real home (HOME / USERPROFILE /
+  LUME_WIN_HOME / LUME_SYSTEM_VAULT sandbox in every runner) after a test overwrote ~/.lume sanctuary files (restored
+  from gen_4081); tests/registry/gate.src expectation fixed; precond runners (precond_*.{sh,ps1}).
+- Coverage with the 11:31 trees: 111 test files identical on both systems (sidecar now 127 on both with the new
+  driver); 205 programs identical except the two @freestanding kernels.
+- Not committed yet: lume_driver.src `ld_is_freestanding` (lume run refuses a bare-metal kernel with a message on
+  both systems) - needs the rebuild, then both batteries again.
+- The rebuild of 12:13 was stopped by low memory: build/windows-native/lumec and lasm are new, inst/bin is a MIX of
+  new and old tools, instl/bin is from 11:31. Run mem/rebuild_isolated.sh to completion before any battery.
+- Next: rebuild, Linux then Windows batteries (tests, precond, programs), then gates (mem/gates_*.{sh,ps1};
+  six gates still call /bin/sh), then the 114 CLI commands.
+
 ## State when this file was written (2026-11-13 ~10:00)
 
 Done and tested on both systems: `lumec --win64`, `lasm --pe`, the Win64 layer (fd table, lazy memory, VEH, real

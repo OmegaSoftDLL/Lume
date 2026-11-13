@@ -337,13 +337,13 @@ which the real fork and Winsock now pass in isolation (20/20); the full re-run i
 
 | # | Item | Size |
 | --- | --- | --- |
-| 1 | Stack limit for one child (`soak_battle_gate` uses `ulimit -s`); self `kill` with the exact signal (done, to test) | small |
-| 2 | Shared memory: `os_shm_map` on `CreateFileMapping` / `MapViewOfFile` | small |
-| 3 | Native `lume.exe` resolving `use` of a module outside the file's directory; `ld_root` pointing at the install tree on Windows | small |
+| 1 | Stack limit for one child (`soak_battle_gate` uses `ulimit -s`, with item 4); self `kill` with the exact signal: **done 2026-11-13** (`t/selfkill.src`: 15 for a fork child, 9 for an `os_run` child, both systems) | small |
+| 2 | Shared memory: `os_shm_map` on a pagefile section, shared with a real-fork child (`MapViewOfFileNuma2`): **done 2026-11-13** (`t/shm.src`) | small |
+| 3 | Native installer without POSIX tools (`scripts/install.src` on `hostio`, `.exe` names, `bin/lume.exe`); an installed `lume.exe` resolves `use` from outside the checkout: **done 2026-11-13** | small |
 | 4 | Finish the gates that build and run native programs: tv, tv_rt, soak, safety_envelope, crypto, cert_source, synergy, smt_cert, lcaas_scale (`/usr/bin/time`) | medium |
-| 5 | epoll (`async_rt`, domain #71) on IOCP / `WSAPoll` | medium |
-| 6 | io_uring (domain #105) on IoRing (Windows 11) | medium |
-| 7 | C FFI with the Win64 ABI (interop, `--emit-c-header`, `--module` / `--link`) | medium |
+| 5 | epoll: `epoll_create1` / `epoll_ctl` / `epoll_wait` in the layer (pipes by `PeekNamedPipe`, sockets by `WSAPoll`, level-triggered): **done 2026-11-13** (`t/epoll.src`, `t/epoll_sock.src`). It polls every 0.2 ms while nothing is ready; an IOCP wake-up would remove that latency | medium |
+| 6 | io_uring: the three system calls answer as Linux (queues are empty: no builtin maps the rings): **done 2026-11-13** (`t/uring.src`). A ring-mapping builtin would need SQE execution in the layer | medium |
+| 7 | C FFI: Win64 ABI stubs, `--link` DLLs (`-lc` = `ucrtbase.dll`), start-up binding with the ld.so message and status 127: **done 2026-11-13** (`t/ffi.src`, `t/ffi_win64_args.src`). Library output (`.so` / `.dll`) is not migrated on either system | medium |
 | 8 | `scripts/lume_legacy.sh` routes (pkg `~publish` / `~audit`, `.lume` surfaces, the `.wasm` target, `fmt` outside `.src`, `self` with `LUME_HOME`): rewrite in Lume (POSIX sh today) | large |
 | 9 | DWARF to CodeView / PDB (`-g`, `dwarf_cache_gate`, native witnesses of `lproof_cache`) | large |
 | 10 | GUI: `gui.src` speaks the X11 protocol; Windows needs Win32 windowing | large |
