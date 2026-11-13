@@ -54,6 +54,21 @@ Everything lives in `build/windows-native/` (git-ignored; the sources there were
 - `lume` on this machine from PowerShell is the released toolchain inside WSL, not the port; the port is
   `build\windows-native\inst\bin\lume.exe`.
 
+## Progress 2026-11-13 night (newest first)
+
+- LumeDesk developer's list, all on Linux (commit 39a9cbb + the f64 commit): seq.src (repetition without recursion),
+  module namespaces (`use X as Y`, `X.NAME`, a name in two modules kept apart as NAME__module, ambiguity is an error
+  with file:line:col), error locations everywhere (spans skip comments/strings now), fmt nested match, effect docs.
+- f64: lasm encodes scalar SSE2 and x87 (lasm_gate family "float", 23 families byte-identical to GNU as); kind-17
+  cells in runtime_core (rt_f64), hooks in addv/__rt_sub/__rt_mul/__rt_div/cmpv/eqv/str/showval. A program gets
+  rt_f64 only when it calls an f64 builtin (has_f64), else rt_f64_stub: the seed `lume0 asm` (frozen C) assembles the
+  stage-0 lcli and knows no xmm/x87. data_asmgen.lume (the seed's code generator) uses the stubs too.
+- Decimals: print/str write 1.5, 0.10 (rt_dec, always, seed-safe); a decimal through a parameter/list/record goes to
+  the sugar's __lume_dyn_* (decimal_add and friends) when the program has them (has_dec), else rt_dec_dyn_stub.
+  `__lume_` names are runtime-reserved: compiler helpers must be listed in name_flow nf_comp_helper.
+- Next: Linux battery (th_l_0x, ph_l_0x), then the Windows tree with all of it, Windows batteries, compare,
+  update C:\Lume, commit; tell the owner the message for the LumeDesk developer.
+
 ## Progress 2026-11-13 evening (newest first)
 
 - Both trees rebuilt complete after the low-memory stop (mem/inst_part.sh, batches; drop the WSL page cache between
