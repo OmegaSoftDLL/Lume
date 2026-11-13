@@ -156,6 +156,12 @@ jobs:
         run: ./bootstrap/lume0/lume0 run compiler/stage1/block_cc.lume compiler/stage1/block_native_smoke.src build/block_native_smoke.s && ./bootstrap/lume0/lume0 asm build/block_native_smoke.s build/bin/block_native_smoke && chmod +x build/bin/block_native_smoke && build/bin/block_native_smoke > build/block_native_smoke.out && diff -u tests/conformance/stage1/block_native_smoke_asm.expected build/block_native_smoke.out
       - name: Execute Lume-generated assembly acceptance
         run: printf '@root %s\n' "$PWD" | build/bin/lasm_gate
+      - name: Upload lasm --pe probes for the Windows run
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-pe-probes
+          path: build/windows-pe-probes/*.exe
+          if-no-files-found: error
 
   native-capstones:
     name: Native SaaS and RTC capstones (Lume only)
@@ -285,10 +291,27 @@ jobs:
   windows-pe:
     name: Native Windows x64 PE32+ & WASI Run-Verification (#206)
     runs-on: windows-latest
+    needs: native-assembly
     steps:
       - name: Configure git LF line endings
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
+      - name: Download lasm --pe probes
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-pe-probes
+          path: build/windows-pe-probes
+      - name: Run lasm --pe probes on Windows (imports, .bss, .quad, two DLLs)
+        shell: pwsh
+        run: |
+          $hello = (& build/windows-pe-probes/pe_hello.exe) -join "|"
+          $rcHello = $LASTEXITCODE
+          $multi = (& build/windows-pe-probes/pe_multi.exe) -join "|"
+          $rcMulti = $LASTEXITCODE
+          Write-Host "pe_hello: '$hello' rc=$rcHello | pe_multi: '$multi' rc=$rcMulti"
+          if ($hello -ne "hello from lasm" -or $rcHello -ne 3 -or $multi -ne "123456789ab" -or $rcMulti -ne 38) {
+              throw "lasm --pe probe verification failed"
+          }
       - name: Build lume0 (64 MB stack) and run-verify x86_64-windows-pe & wasm32-wasi
         shell: pwsh
         run: |

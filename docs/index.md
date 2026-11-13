@@ -68,6 +68,8 @@ lume --version
 lume self verify
 ```
 
+> **Host level on Windows (and macOS, Linux AArch64/RISC-V):** these archives ship the seed toolchain (`lume0`) and the cross-compilation targets, not the native toolchain. `lume run` and `lume build --target x86_64-windows-pe` work; `check`, `test`, `prove` and `fmt` of Lume-Core `.src` files need the native toolchain and refuse on these hosts instead of guessing. A native Windows toolchain (Win64 runtime and PE output for `lume_driver`, `lumec`, `lasm`) is planned. Until it ships, run the full toolchain on Linux x86_64, for example under WSL.
+
 ### 3. Prebuilt Platform Archives (`v1.1.0`)
 
 | Platform / Architecture | Official Archive (`v1.1.0`) |

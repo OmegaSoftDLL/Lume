@@ -55,6 +55,7 @@
 ## for the step when this gate was written. Each is one function: replace its body by the driver call.
 use lcrypto_tls
 use lneural_cartridge
+use hostio
 
 ## --- text helpers ---
 fn sy_b(c) = if c then 1 else 0
@@ -115,15 +116,15 @@ fn sy_demo() = "use critical_pipeline\nprint rate_limit(100, 900, 50)\nprint rat
 fn sy_demo_out() = "150\n4500\n120\n9000\n1\n7\n9\n0\n6\n"
 
 ## --- running tools ---
-fn sy_cap(bin, args, inp, base, ms) = let t0 = os_monotonic_ns() in let st = if inp == "" then os_run_capture_timeout(bin, args, base + ".out", base + ".err", ms) else os_run_input_capture_timeout(bin, args, inp, base + ".out", base + ".err", ms) in {status: sy_wait_exit(st), out: fs_read_file(base + ".out"), err: fs_read_file(base + ".err"), ms: (os_monotonic_ns() - t0) / 1000000}
+fn sy_cap(bin, args, inp, base, ms) = let t0 = os_monotonic_ns() in let st = if inp == "" then hio_osrun_ct(bin, args, base + ".out", base + ".err", ms) else os_run_input_capture_timeout(bin, args, inp, base + ".out", base + ".err", ms) in {status: sy_wait_exit(st), out: fs_read_file(base + ".out"), err: fs_read_file(base + ".err"), ms: (os_monotonic_ns() - t0) / 1000000}
 fn sy_drv(g, tag, args) = sy_cap(g.bin + "/lume_driver", args, "", g.tmp + "/" + tag, 300000)
 fn sy_bin(g, tag, tool, args, request) = let w = fs_write_sync(g.tmp + "/" + tag + ".in", request) in sy_cap(g.bin + "/" + tool, args, g.tmp + "/" + tag + ".in", g.tmp + "/" + tag, 300000)
 fn sy_sys(g, tag, bin, args) = sy_cap(bin, args, "", g.tmp + "/" + tag, 60000)
 fn sy_sha_file(path) = if fs_path_exists(path) == 1 then se_sha256_file(path) else ""
-fn sy_mkdir(d) = os_run("/bin/mkdir", Cons("-p", Cons(d, Nil)))
-fn sy_rmrf(d) = os_run("/bin/rm", Cons("-rf", Cons(d, Nil)))
-fn sy_cp(a, b) = os_run("/bin/cp", Cons(a, Cons(b, Nil)))
-fn sy_cpr(a, b) = os_run("/bin/cp", Cons("-r", Cons(a, Cons(b, Nil))))
+fn sy_mkdir(d) = hio_run("mkdir", Cons("-p", Cons(d, Nil)))
+fn sy_rmrf(d) = hio_run("rm", Cons("-rf", Cons(d, Nil)))
+fn sy_cp(a, b) = hio_run("cp", Cons(a, Cons(b, Nil)))
+fn sy_cpr(a, b) = hio_run("cp", Cons("-r", Cons(a, Cons(b, Nil))))
 ## digest of a directory: SHA-256 over `<name> <sha256 of the file>` lines in `ls` order
 fn sy_dir_lines(dir, ls, i, acc) = if i >= count(ls) then acc else let e = sy_line_end(ls, i) in let nm = slice(ls, i, e) in sy_dir_lines(dir, ls, e + 1, if nm == "" then acc else acc + nm + " " + sy_sha_file(dir + "/" + nm) + "\n")
 fn sy_dir_sha(g, tag, dir) = let ls = sy_sys(g, tag + "_ls", "/bin/ls", Cons(dir, Nil)) in if ls.status != 0 or ls.out == "" then "" else lsh256(sy_dir_lines(dir, ls.out, 0, ""))

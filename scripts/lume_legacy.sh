@@ -1267,6 +1267,19 @@ cmd_fmt() {
             echo "lume fmt: cannot read $_file" >&2
             exit 66
         fi
+        case "$_file" in
+            *.src)
+                # lfmt needs the native Lume-Core parser. Interpreted through the seed it misreads
+                # contracts, `law` and `+%`, and its output used to overwrite the file (data loss on
+                # Windows/macOS). Fail closed: never read, rewrite or judge a .src without the native
+                # toolchain.
+                if ! is_linux_x86_64; then
+                    echo "lume fmt: $_file: formatting .src needs the native toolchain (x86_64 Linux); this host only has the seed — file left unchanged" >&2
+                    _rc=1
+                    continue
+                fi
+                ;;
+        esac
         _tmpfmt=$(mktemp)
         case "$_file" in
             *.src)

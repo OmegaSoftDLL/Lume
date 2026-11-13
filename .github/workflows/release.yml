@@ -385,6 +385,22 @@ jobs:
           "$VERIFY_DIR/win/bin/lume" build --target x86_64-windows-pe stage/verify_ok.src -o "$VERIFY_DIR/win_built.exe"
           [ "$("$VERIFY_DIR/win_built.exe" | tr -d '\r' | tr '\n' ',')" = "55,42," ]
 
+          # Gate C: this archive ships the seed, not the native toolchain. Commands that need the
+          # native Lume-Core front end must fail closed on .src instead of corrupting or passing it.
+          printf 'fn wrap_add(a: int, b: int) -> int requires a >= 0 ensures result >= 0 = a +%% b\nlaw wrap_law(x) = if x >= 0 then x + 1 > x else 1 == 1\nprint wrap_add(2, 3)\n' > "$VERIFY_DIR/contracts.src"
+          cp "$VERIFY_DIR/contracts.src" "$VERIFY_DIR/contracts.orig"
+          for _mode in "" "--check" "--stdout"; do
+            if "$VERIFY_DIR/win/bin/lume" fmt $_mode "$VERIFY_DIR/contracts.src" > /dev/null 2>&1; then
+              echo "FATAL: seed-only Windows lume fmt $_mode accepted a .src it cannot parse" >&2
+              exit 1
+            fi
+          done
+          cmp -s "$VERIFY_DIR/contracts.src" "$VERIFY_DIR/contracts.orig"
+          if "$VERIFY_DIR/win/bin/lume" test "$VERIFY_DIR/contracts.src" > /dev/null 2>&1; then
+            echo "FATAL: seed-only Windows lume test passed a .src with law it cannot check" >&2
+            exit 1
+          fi
+
           rm -rf "$VERIFY_DIR"
 
       - name: Upload verified Windows release artifact

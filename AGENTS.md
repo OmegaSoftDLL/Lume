@@ -10,6 +10,13 @@ is the short version.
 - **Converse in Portuguese (pt-BR). Write all code, docs, comments, filenames, commits and
   PRs in English.**
 - **Golden rule: Lume generates Lume, with zero bugs in Lume's own toolchain.** Every fix ships with a regression test. Implementation and test logic must be in Lume. Existing non-Lume artifacts are migration liabilities, not precedent; remove them only after a verified Lume replacement exists.
+- **Golden rule for every system (owner, 2026-11-13): Lume generates Lume, 100 % Lume, for everything and on every
+  system. Never leave a bug behind. The compilers and toolchains of all systems must be identical to each other or
+  better, never worse: same functions, modules, domains and outputs. On Windows, performance (time and memory) must
+  never be below Linux; a measured gap is a defect to fix, not a difference to document. Never move to the next
+  step while a bug, a correction or an improvement found in the current one is still open: close it, test it on
+  every system, then advance.** The Windows port and its
+  remaining work are in `docs/42-windows-native-toolchain.md` (§9).
 - **Do not use Rust** to implement Lume.
 - **Edit the self-hosted compiler in `compiler/stage1/lume/NN_*.src`, never the generated
   `compiler/stage1/lumec.src`.** `lumec.src` is a build artifact (git-ignored), amalgamated

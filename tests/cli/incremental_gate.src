@@ -1,6 +1,7 @@
+use hostio
 fn ig_wait_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
 
-fn ig_run(root, args, name) = let output = root + "/build/cli-" + name + ".out" in let errors = root + "/build/cli-" + name + ".err" in let status = os_run_capture_timeout(root + "/build/bin/lume_driver", args, output, errors, 120000) in {status: ig_wait_exit(status), output: fs_read_file(output), errors: fs_read_file(errors)}
+fn ig_run(root, args, name) = let output = root + "/build/cli-" + name + ".out" in let errors = root + "/build/cli-" + name + ".err" in let status = os_run_capture_timeout(hio_bin_dir(root) + "/lume_driver", args, output, errors, 120000) in {status: ig_wait_exit(status), output: fs_read_file(output), errors: fs_read_file(errors)}
 
 fn ig_contains_at(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else ig_contains_at(text, part, i + 1)
 
@@ -28,7 +29,7 @@ fn ig_frag_names(root) = if fs_path_exists(ig_frag_dir(root)) == 0 then "" else 
 
 fn ig_names_kept(before, after) = if count(before) == 0 then 1 else let e = ig_line_end(before, 0) in let name = slice(before, 0, e) in if count(name) > 0 and ig_contains(after, name) == 0 then 0 else ig_names_kept(if e >= count(before) then "" else slice(before, e + 1, count(before)), after)
 
-fn ig_copy_bin(src, dst) = os_run("/bin/cp", Cons("-f", Cons(src, Cons(dst, Nil)))) == 0
+fn ig_copy_bin(src, dst) = hio_run("cp", Cons("-f", Cons(src, Cons(dst, Nil)))) == 0
 
 ## cold then warm builds must be byte-identical and run correctly (determinism of the cache)
 fn ig_determinism(root) = if ig_build_fixture(root) == 0 then "cannot write incremental fixtures" else let cleaned = ig_clean_cache(root) in if cleaned != 1 then "cannot clean incremental cache" else let cold = ig_inc_build(root, "inc-cold") in if cold.status != 0 then "incremental cold build failed: " + cold.errors else let run1 = ig_execute(root, root + "/build/inc-demo", "8\n", "inc-cold-run") in if run1 != "" then run1 else let saved = ig_copy_bin(root + "/build/inc-demo", root + "/build/inc-demo-cold.bin") in if saved != 1 then "cannot preserve cold artifact" else let warm = ig_inc_build(root, "inc-warm") in if warm.status != 0 then "incremental warm build failed: " + warm.errors else if fs_files_equal(root + "/build/inc-demo-cold.bin", root + "/build/inc-demo") != 1 then "incremental warm build is not byte-identical to the cold build" else ig_execute(root, root + "/build/inc-demo", "8\n", "inc-warm-run")

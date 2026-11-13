@@ -285,7 +285,10 @@ fn encvec2(mn, ins, iend, syms) = let iszmm = if ins.a.k == 6 or ins.b.k == 6 th
 fn encmn(mn, ins, iend, syms) = let s0 = encsys0(mn) in if isnil(s0) == 0 then encsysck(mn, ins, s0) else if isvec(mn) then encvec(mn, ins, iend, syms) else if mn == "syscall" then enc0(ins, Cons(15, Cons(5, Nil))) else if mn == "ret" then enc0(ins, Cons(195, Nil)) else if mn == "cqto" then enc0(ins, Cons(72, Cons(153, Nil))) else if mn == "int" then encint(ins) else if mn == "lgdt" then encmem1(ins, 2, iend, syms) else if mn == "lidt" then encmem1(ins, 3, iend, syms) else if mn == "invlpg" then encmem1(ins, 7, iend, syms) else if mn == "xaddq" then enclk(0, 193, ins, iend, syms) else if mn == "lock xaddq" then enclk(1, 193, ins, iend, syms) else if mn == "cmpxchgq" then enclk(0, 177, ins, iend, syms) else if mn == "lock cmpxchgq" then enclk(1, 177, ins, iend, syms) else if mn == "xchgq" then encxchg(ins, iend, syms) else if mn == "pushq" or mn == "popq" then encpush(mn, ins) else if mn == "jmp" or mn == "call" then encjmp(mn, ins, iend, syms) else if jccop(mn) >= 0 then encjcc(mn, ins, iend, syms) else if setccop(mn) >= 0 then encsetcc(mn, ins, iend, syms) else if mn == "movzbq" or mn == "movzbl" then encmovzb(mn, ins, iend, syms) else if isunary(mn) then encunary(mn, ins, iend, syms) else if isshift(mn) then encshift(mn, ins, iend, syms) else if mn == "imulq" then encimul(ins, iend, syms) else if ismov(mn) then encmov(mn, ins, iend, syms) else if mn == "leaq" then enclea(ins, iend, syms) else if mn == "testq" or mn == "testb" then enctest(mn, ins, iend, syms) else encalu(mn, ins, iend, syms)
 fn enctest(mn, ins, iend, syms) = let os = if mn == "testb" then 1 else 8 in if ins.nop != 2 then badops(ins) else if ins.a.k == 2 and isrm(ins.b, os) then (if immfits(os, ins.a.imm) then app(encrm(os, Cons(if os == 1 then 246 else 247, Nil), 0, ins.b, iend, syms), if os == 1 then Cons(lowbyte(ins.a.imm), Nil) else b4(ins.a.imm)) else badimm(ins)) else if isr(ins.a, os) and isrm(ins.b, os) then rex8(os, ins.a.reg, encrm(os, Cons(if os == 1 then 132 else 133, Nil), ins.a.reg, ins.b, iend, syms)) else if ins.a.k == 3 and isr(ins.b, os) then rex8(os, ins.b.reg, encrm(os, Cons(if os == 1 then 132 else 133, Nil), ins.b.reg, ins.a, iend, syms)) else badops(ins)
 fn encpush(mn, ins) = if ins.nop == 1 and isr(ins.a, 8) then app(if ins.a.reg >= 8 then Cons(65, Nil) else Nil, Cons((if mn == "pushq" then 80 else 88) + ins.a.reg % 8, Nil)) else badops(ins)
-fn encjmp(mn, ins, iend, syms) = if ins.nop != 1 then badops(ins) else Cons(if mn == "jmp" then 233 else 232, b4(symaddr(syms, ins.tgt) - iend))
+## `call *%reg` / `jmp *%reg`: a register operand, encoded FF /2 (call) or FF /4 (jmp), REX.B for r8-r15
+fn isind(t) = count(t) > 2 and at(t, 0) == "*" and at(t, 1) == "%"
+fn encind(mn, ins) = let rr = regn(slice(ins.tgt, 1, count(ins.tgt))) in let r = rr.rg in if rr.sz != 8 or r < 0 or r > 15 then badops(ins) else app(if r >= 8 then Cons(65, Nil) else Nil, Cons(255, Cons((if mn == "call" then 208 else 224) + r % 8, Nil)))
+fn encjmp(mn, ins, iend, syms) = if ins.nop != 1 then badops(ins) else if isind(ins.tgt) then encind(mn, ins) else Cons(if mn == "jmp" then 233 else 232, b4(symaddr(syms, ins.tgt) - iend))
 fn encunary(mn, ins, iend, syms) = if ins.nop != 1 then badops(ins) else if isrm(ins.a, 8) then (if mn == "incq" then encrm(8, Cons(255, Nil), 0, ins.a, iend, syms) else if mn == "decq" then encrm(8, Cons(255, Nil), 1, ins.a, iend, syms) else encrm(8, Cons(247, Nil), unaryext(mn), ins.a, iend, syms)) else badops(ins)
 fn encimul(ins, iend, syms) = if ins.nop == 2 and ins.a.k == 2 and isr(ins.b, 8) then (if fits32(ins.a.imm) then app(encrm(8, Cons(105, Nil), ins.b.reg, ins.b, iend, syms), b4(ins.a.imm)) else badimm(ins)) else if ins.nop == 2 and isrm(ins.a, 8) and isr(ins.b, 8) then encrm(8, Cons(15, Cons(175, Nil)), ins.b.reg, ins.a, iend, syms) else badops(ins)
 fn encmov(mn, ins, iend, syms) = if ins.nop != 2 then badops(ins) else encmov2(opsizeof(mn), ins, ins.a, ins.b, iend, syms)
@@ -310,7 +313,7 @@ fn encalu3(os, ext, sop, ins, a, b, iend, syms) = if ext < 0 or os == 0 then ctf
 ## Only jumps/calls/jcc (displacement computed from tgt) and %rip-relative memory operands
 ## ever consult symaddr; every other instruction encodes identically at any address with any
 ## symbol table, so pass 1's bytes are final and pass 2 emits them verbatim.
-fn needsreloc(r) = if isjump(r.mn) then 1 else if r.a.rip == 1 then 1 else if r.b.rip == 1 then 1 else 0
+fn needsreloc(r) = if isjump(r.mn) and not isind(r.tgt) then 1 else if isjump(r.mn) then 0 else if r.a.rip == 1 then 1 else if r.b.rip == 1 then 1 else 0
 
 ## --- pass 1: layout + encode-once. Each instruction is encoded a SINGLE time (at address 0,
 ## empty symtab) to obtain both its final length and its bytes; pass 1 records one entry per
@@ -494,13 +497,13 @@ fn asm_dbg(lay, syms, entry, filesz, memsz) = let d = lay.dbg in let files = d.f
 ## resolve against the final symbol table; the first missing symbol aborts with [L0001] naming
 ## it, on stderr, with a non-zero exit (via ctfail), before a single ELF byte is flushed. ---
 fn chksym(syms, nm, ctx) = if nm == "" then 0 else if symlocated(syms, nm) == 1 then 0 else ctfail("lasm: link error [L0001]: undefined symbol '" + nm + "' (" + ctx + ")\n")
-fn chkinsref(r, syms) = if isjump(r.mn) then chksym(syms, r.tgt, r.mn + " target") else if r.a.rip == 1 then chksym(syms, r.a.sym, r.mn + " operand") else if r.b.rip == 1 then chksym(syms, r.b.sym, r.mn + " operand") else 0
+fn chkinsref(r, syms) = if isjump(r.mn) and isind(r.tgt) then 0 else if isjump(r.mn) then chksym(syms, r.tgt, r.mn + " target") else if r.a.rip == 1 then chksym(syms, r.a.sym, r.mn + " operand") else if r.b.rip == 1 then chksym(syms, r.b.sym, r.mn + " operand") else 0
 fn chkrefs(encs, syms, strict) = if strict == 0 then chkrefs0(encs, syms) else chkrefs1(encs, syms)
 ## lenient mode keeps the historical "unresolved symbol = address 0", but only for something that can be
 ## a symbol: `jmp *%rax`, `call f, g`, `jmp sym+4` (none implemented) must not become a jump to 0.
 fn badname(s, i, n) = if i >= n then 0 else let c = at(s, i) in if c == " " or c == "\t" or c == "," or c == "*" or c == "%" or c == "(" or c == ")" or c == "+" or c == "-" then 1 else badname(s, i + 1, n)
 fn chkname(syms, nm, ctx) = if nm == "" then 0 else if symlocated(syms, nm) == 1 then 0 else if badname(nm, 0, count(nm)) == 1 then lerr("malformed symbol reference '" + nm + "' (" + ctx + ")") else 0
-fn chkinsref0(r, syms) = if isjump(r.mn) then chkname(syms, r.tgt, r.mn + " target") else if r.a.rip == 1 then chkname(syms, r.a.sym, r.mn + " operand") else if r.b.rip == 1 then chkname(syms, r.b.sym, r.mn + " operand") else 0
+fn chkinsref0(r, syms) = if isjump(r.mn) and isind(r.tgt) then 0 else if isjump(r.mn) then chkname(syms, r.tgt, r.mn + " target") else if r.a.rip == 1 then chkname(syms, r.a.sym, r.mn + " operand") else if r.b.rip == 1 then chkname(syms, r.b.sym, r.mn + " operand") else 0
 fn chkrefs0(encs, syms) = match encs
     Nil        => 0
     Cons(e, t) => let z = if e.reloc == 1 then chkinsref0(e.ins, syms) else 0 in chkrefs0(t, syms)
@@ -563,6 +566,83 @@ fn phdr_dynamic(doff, dsz) = app(b4(2), app(b4(6), app(b8(doff), app(b8(4194304 
 fn interp_bytes() = app(str_nul_bytes("/lib64/ld-linux-x86-64.so.2", 0, 27), zeros(4))
 fn asmdyn(lay, needs, exts, strict) = let nexts = len(exts) in let cs0 = lay.co in let ppad = (8 - nexts * 6 % 8) % 8 in let cs = cs0 + nexts * 6 + ppad in let rs0 = len(lay.robytes) in let pad0 = (8 - (232 + cs + rs0) % 8) % 8 in let interp_off = 232 + cs + rs0 + pad0 in let hash_off = interp_off + 32 in let hwords = 3 + nexts in let hash_sz = (hwords + hwords % 2) * 4 in let dynsym_off = hash_off + hash_sz in let dynsym_sz = (1 + nexts) * 24 in let dynstr_off = dynsym_off + dynsym_sz in let pn = dynstr_pack(needs, 1) in let pe = dynstr_pack(exts, pn.end) in let dpad = (8 - pe.end % 8) % 8 in let dynstr_sz = pe.end + dpad in let got_off = dynstr_off + dynstr_sz in let got_sz = (3 + nexts) * 8 in let rela_off = got_off + got_sz in let rela_sz = nexts * 24 in let dyn_off = rela_off + rela_sz in let dyn_sz = (len(needs) + 10) * 16 in let filesz = dyn_off + dyn_sz in let memsz = filesz + lay.boff in let tls_all = app(mk_plt_tls(exts, cs0, 0), lay.tls) in let syms = app(mapsym(tls_all, 4194536), app(mapsym(lay.rls, 4194536 + cs), mapsym(lay.bls, 4194304 + filesz))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = app(emitcode2b(lay.encs, syms, 4194536), mk_plt_code(nexts, 0, cs0, got_off)) in let hash_bs = app(b4(1), app(b4(1 + nexts), zeros((1 + nexts + hwords % 2) * 4))) in let dynsym_bs = app(zeros(24), mk_dynsym(pe.offs)) in let dynstr_bs = app(Cons(0, app(pn.bytes, pe.bytes)), zeros(dpad)) in let got_bs = zeros(got_sz) in let rela_bs = mk_rela(nexts, 0, got_off) in let dyn_bs = app(mk_dt_needed(pn.offs), app(b8(4), app(b8(4194304 + hash_off), app(b8(5), app(b8(4194304 + dynstr_off), app(b8(6), app(b8(4194304 + dynsym_off), app(b8(10), app(b8(pe.end), app(b8(11), app(b8(24), app(b8(3), app(b8(4194304 + got_off), app(b8(7), app(b8(4194304 + rela_off), app(b8(8), app(b8(rela_sz), app(b8(9), app(b8(24), app(b8(0), b8(0))))))))))))))))))))) in let hdrs = app(ehdr_dyn(symaddr(syms, "_start")), app(phdr_interp(interp_off), app(phdr(filesz, memsz), phdr_dynamic(dyn_off, dyn_sz)))) in let tail = app(zeros(ppad), app(ro_final(lay, syms), app(zeros(pad0), app(interp_bytes(), app(hash_bs, app(dynsym_bs, app(dynstr_bs, app(got_bs, app(rela_bs, dyn_bs))))))))) in emitall(app(hdrs, app(code, tail)))
 
+## --- PE32+ container for Windows x64 (`lasm --pe`) ---
+## Same item stream as the ELF paths, written as a console executable that the Windows loader runs directly.
+## Image base 0x400000 with no base relocations (IMAGE_FILE_RELOCS_STRIPPED, no DYNAMIC_BASE), so the image is
+## always mapped at its preferred base and every absolute address lasm computes stays valid. Three sections, W^X:
+##   .text   RVA 0x1000, read + execute: code | one 6-byte `jmp *IAT(%rip)` thunk per import
+##   .rdata  next 4 KiB boundary, read only: rodata | import directory (8-aligned): IDT (one entry per DLL + null),
+##           ILT, IAT, hint/name table, DLL names (the loader fills the IAT before the image runs)
+##   .bss    next 4 KiB boundary, read + write, no file data (zero-filled by the loader)
+## Imports: `.need "KERNEL32.dll"` declares a DLL; `.extern Sym` imports Sym from the only `.need`ed DLL, and
+## `.extern DLL!Sym` imports it from DLL, which must be `.need`ed (needed once several DLLs are declared).
+## `call Sym` / `call Sym@plt` reach the thunk. The entry point is `_start`, entered with the Win64 ABI
+## (rsp = 8 mod 16); stack reserve 4 GiB (commit 64 KiB, grown by the guard page, as Linux commits the stack on demand): the soft limit the Linux start-up sets.
+## `.kernel` and debug directives are rejected in this mode.
+fn pe_al(n, a) = (n + a - 1) / a * a
+fn pe_hd(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => h
+fn pe_tl(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn pe_first(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn pe_bind1(e, needs) = let p = findc(e, "!", 0) in if p < count(e) then pe_bind_q(e, slice(e, 0, p), slice(e, p + 1, count(e)), needs) else if len(needs) == 1 then {dll: pe_first(needs), sym: e} else lerr("`.extern " + e + "` needs its DLL: write `.extern DLL!" + e + "` (" + str(len(needs)) + " DLLs are declared with `.need`)")
+fn pe_bind_q(e, d, s, needs) = if d == "" or s == "" then lerr("malformed `.extern " + e + "` (expected `.extern DLL!Sym`)") else if has_str(needs, d) == 0 then lerr("`.extern " + e + "`: DLL '" + d + "' is not declared with `.need`") else {dll: d, sym: s}
+fn pe_binds(exts, needs) = match exts
+    Nil        => Nil
+    Cons(e, t) => Cons(pe_bind1(e, needs), pe_binds(t, needs))
+fn pe_syms_of(binds, d) = match binds
+    Nil        => Nil
+    Cons(b, t) => if b.dll == d then Cons(b.sym, pe_syms_of(t, d)) else pe_syms_of(t, d)
+fn pe_groups(needs, binds) = match needs
+    Nil        => Nil
+    Cons(d, t) => let ss = pe_syms_of(binds, d) in if isnil(ss) == 1 then pe_groups(t, binds) else Cons({dll: d, syms: ss}, pe_groups(t, binds))
+fn pe_slots_g(syms, k) = match syms
+    Nil        => Nil
+    Cons(s, t) => Cons({sym: s, slot: k}, pe_slots_g(t, k + 1))
+fn pe_flat_slots(groups, k) = match groups
+    Nil        => Nil
+    Cons(g, t) => app(pe_slots_g(g.syms, k), pe_flat_slots(t, k + len(g.syms) + 1))
+fn pe_names(flat) = match flat
+    Nil        => Nil
+    Cons(f, t) => Cons(f.sym, pe_names(t))
+fn pe_hn_sz(s) = let n = count(s) + 3 in n + n % 2
+fn pe_hn_list(names, rva) = match names
+    Nil        => Nil
+    Cons(s, t) => Cons(rva, pe_hn_list(t, rva + pe_hn_sz(s)))
+fn pe_hn_bytes(names) = match names
+    Nil        => Nil
+    Cons(s, t) => let raw = app(b2(0), str_nul_bytes(s, 0, count(s))) in app(raw, app(zeros(len(raw) % 2), pe_hn_bytes(t)))
+fn pe_ilt(groups, hns) = match groups
+    Nil        => Nil
+    Cons(g, t) => pe_ilt_g(g.syms, hns, t)
+fn pe_ilt_g(syms, hns, rest) = match syms
+    Nil         => app(b8(0), pe_ilt(rest, hns))
+    Cons(s, ts) => app(b8(pe_hd(hns)), pe_ilt_g(ts, pe_tl(hns), rest))
+fn pe_dll_rvas(groups, rva) = match groups
+    Nil        => Nil
+    Cons(g, t) => Cons(rva, pe_dll_rvas(t, rva + count(g.dll) + 1))
+fn pe_dll_bytes(groups) = match groups
+    Nil        => Nil
+    Cons(g, t) => app(str_nul_bytes(g.dll, 0, count(g.dll)), pe_dll_bytes(t))
+fn pe_idt(groups, dllrvas, k, ilt_rva, iat_rva) = match groups
+    Nil        => zeros(20)
+    Cons(g, t) => app(b4(ilt_rva + k * 8), app(b4(0), app(b4(0), app(b4(pe_hd(dllrvas)), app(b4(iat_rva + k * 8), pe_idt(t, pe_tl(dllrvas), k + len(g.syms) + 1, ilt_rva, iat_rva))))))
+fn pe_thunk_code(flat, i, cs0, iat_rva) = match flat
+    Nil        => Nil
+    Cons(f, t) => app(Cons(255, Cons(37, b4(iat_rva + f.slot * 8 - (4096 + cs0 + i * 6 + 6)))), pe_thunk_code(t, i + 1, cs0, iat_rva))
+## h: {entry, traw, rraw, tsize, rsize, rd, bs, bvs, img, idt, idtsz, iat, iatsz} (RVAs and sizes)
+fn pe_dirs(h) = app(zeros(8), app(b4(h.idt), app(b4(h.idtsz), app(zeros(80), app(b4(h.iat), app(b4(h.iatsz), zeros(24)))))))
+fn pe_opt(h) = app(b2(523), app(Cons(14, Cons(0, Nil)), app(b4(h.traw), app(b4(h.rraw), app(b4(pe_al(h.bvs, 512)), app(b4(h.entry), app(b4(4096), app(b8(4194304), app(b4(4096), app(b4(512), app(b2(6), app(b2(0), app(b2(0), app(b2(0), app(b2(6), app(b2(0), app(b4(0), app(b4(h.img), app(b4(512), app(b4(0), app(b2(3), app(b2(33024), app(b8(4294967296), app(b8(65536), app(b8(1048576), app(b8(4096), app(b4(0), app(b4(16), pe_dirs(h)))))))))))))))))))))))))))))
+fn pe_sect1(name, vsize, rva, raw, ptr, chars) = app(app(str_nul_bytes(name, 0, count(name)), zeros(7 - count(name))), app(b4(vsize), app(b4(rva), app(b4(raw), app(b4(ptr), app(zeros(12), b4(chars)))))))
+fn pe_sects(h) = app(pe_sect1(".text", h.tsize, 4096, h.traw, 512, 1610612768), app(pe_sect1(".rdata", h.rsize, h.rd, h.rraw, 512 + h.traw, 1073741888), pe_sect1(".bss", h.bvs, h.bs, 0, 0, 3221225600)))
+fn pe_headers(h) = let dos = app(Cons(77, Cons(90, zeros(58))), b4(64)) in let coff = app(b2(34404), app(b2(3), app(b4(0), app(b4(0), app(b4(0), app(b2(240), b2(35))))))) in let hs = app(dos, app(Cons(80, Cons(69, Cons(0, Cons(0, Nil)))), app(coff, app(pe_opt(h), pe_sects(h))))) in app(hs, zeros(512 - len(hs)))
+fn asmpe(lay, needs, exts, strict) = let groups = pe_groups(needs, pe_binds(exts, needs)) in let flat = pe_flat_slots(groups, 0) in let names = pe_names(flat) in let nth = len(flat) in let cs0 = lay.co in let tsize = cs0 + nth * 6 in let traw = pe_al(tsize, 512) in let rd = pe_al(4096 + tsize, 4096) in let rs = len(lay.robytes) in let io = pe_al(rs, 8) in let ndll = len(groups) in let ilt_off = io + (ndll + 1) * 20 in let nslot = nth + ndll in let iat_off = ilt_off + nslot * 8 in let hn_off = iat_off + nslot * 8 in let hnb = pe_hn_bytes(names) in let dn_off = hn_off + len(hnb) in let dnb = pe_dll_bytes(groups) in let rsize = dn_off + len(dnb) in let rraw = pe_al(rsize, 512) in let bs = pe_al(rd + rsize, 4096) in let bvs = if lay.boff > 0 then lay.boff else 16 in let syms = app(mapsym(app(mk_plt_tls(names, cs0, 0), lay.tls), 4198400), app(mapsym(lay.rls, 4194304 + rd), mapsym(lay.bls, 4194304 + bs))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = app(emitcode2b(lay.encs, syms, 4198400), pe_thunk_code(flat, 0, cs0, rd + iat_off)) in let ilt = pe_ilt(groups, pe_hn_list(names, rd + hn_off)) in let idata = app(pe_idt(groups, pe_dll_rvas(groups, rd + dn_off), 0, rd + ilt_off, rd + iat_off), app(ilt, app(ilt, app(hnb, dnb)))) in let rbody = app(ro_final(lay, syms), app(zeros(io - rs), idata)) in let hdr = pe_headers({entry: symaddr(syms, "_start") - 4194304, traw: traw, rraw: rraw, tsize: tsize, rsize: rsize, rd: rd, bs: bs, bvs: bvs, img: pe_al(bs + bvs, 4096), idt: rd + io, idtsz: (ndll + 1) * 20, iat: rd + iat_off, iatsz: nslot * 8}) in emitall(app(hdr, app(code, app(zeros(traw - tsize), app(rbody, zeros(rraw - rsize))))))
+fn asmpe_mode(lay, strict) = let items = lay.dyn in let zk = if has_krn(items) == 1 then lerr("a `.kernel` image cannot be written as a PE executable (`--pe`)") else 0 in let zd = dw_static_only(lay.dbg, "PE output (`--pe`)") in asmpe(lay, collect_needs(items), collect_exts(items), strict)
+
 fn has_krn(items) = match items
     Nil        => 0
     Cons(h, t) => if is_krn(h) == 1 then 1 else has_krn(t)
@@ -589,14 +669,15 @@ fn iso_boot_cat(vsects) = let val_e = Cons(1, Cons(0, Cons(0, Cons(0, app(zeros(
 fn asmiso(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let syms = app(mapsym(lay.tls, 32768), app(mapsym(lay.rls, 32768 + cs), mapsym(lay.bls, 458752))) in let zref = chkrefs(lay.encs, syms, strict) in let zentry = chkentry(syms, strict) in let code = emitcode2b(lay.encs, syms, 32768) in let body = app(code, ro_final(lay, syms)) in let blen = len(body) in let nsects = (blen + 511) / 512 in let nsects_clamped = if nsects < 1 then 1 else if nsects > 120 then 120 else nsects in let vsects = (nsects_clamped + 5) / 4 * 4 in let boot_payload = app(mbr_iso_sector(symaddr(syms, "_start"), nsects_clamped), app(zeros(512), body)) in let rem_pad = 90112 - len(boot_payload) in let hdrs = app(zeros(32768), app(iso_pvd(), app(iso_brvd(), app(iso_vdst(), iso_boot_cat(vsects))))) in emitall(app(hdrs, app(boot_payload, zeros(if rem_pad > 0 then rem_pad else 2048))))
 
 ## --- the assembler: read input, two passes, emit the ELF (or bootable kernel/ISO image) to stdout.
-## Modes: `lasm [--strict|--lenient|--allow-undefined] [--iso] [file.s]` (file arg => ELF to stdout; no arg => stdin/stdout).
+## Modes: `lasm [--strict|--lenient|--allow-undefined] [--iso|--pe] [file.s]` (file arg => ELF to stdout; no arg => stdin/stdout).
+## `--pe` writes a Windows x64 PE32+ console executable instead of the ELF (see the PE32+ container above).
 ## Debug info is not a flag: it is produced exactly when the input has `.file` / `.loc` directives (see above).
 ## By default (`strict = 1`), any unresolved symbol or missing `_start` is a named compile error
 ## ([L0001]) instead of a silent jump to address 0 (#428, #19); `--lenient` / `--allow-undefined`
 ## keeps the historical address-0 resolution for inputs that intentionally rely on it. ---
 fn buildsyms(lay, cs, rs) = app(mapsym(lay.tls, 4194424), app(mapsym(lay.rls, 4194424 + cs), mapsym(lay.bls, 4194424 + cs + rs)))
 fn assemble_mode_iso(src, strict, iso) = assemble_back(layout(reslocals(parseitems(splitlines(src, 0), 0), Nil), 0, 0, 0), strict, iso)
-fn assemble_back(lay, strict, iso) = let zdup = chkdups(lay, strict) in let items = lay.dyn in if has_krn(items) == 1 then (let zk = dw_static_only(lay.dbg, "a `.kernel` image") in if iso == 1 then asmiso(lay, strict) else asmkernel(lay, strict)) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(lay, strict) else let zd = dw_static_only(lay.dbg, "`.need` / `.extern` (dynamically linked output)") in asmdyn(lay, needs, exts, strict)
+fn assemble_back(lay, strict, iso) = let zdup = chkdups(lay, strict) in let items = lay.dyn in if iso == 2 then asmpe_mode(lay, strict) else if has_krn(items) == 1 then (let zk = dw_static_only(lay.dbg, "a `.kernel` image") in if iso == 1 then asmiso(lay, strict) else asmkernel(lay, strict)) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(lay, strict) else let zd = dw_static_only(lay.dbg, "`.need` / `.extern` (dynamically linked output)") in asmdyn(lay, needs, exts, strict)
 fn assemble_mode(src, strict) = assemble_mode_iso(src, strict, 0)
 fn assemble(src) = assemble_mode(src, 1)
 fn asm2(lay, strict) = asm3(lay, lay.co, len(lay.robytes), strict)
@@ -606,7 +687,7 @@ fn asm6(lay, syms, entry, filesz, memsz) = if lay.dbg.on == 1 then asm_dbg(lay, 
 fn endswith(s, p) = let n = count(s) in let m = count(p) in n >= m and slice(s, n - m, n) == p
 fn asm_is_flag(arg) = count(arg) > 1 and at(arg, 0) == "-"
 fn asm_eff_strict(strict, file) = if strict != 2 then strict else if endswith(file, "undefined_call.s") or endswith(file, "w1_undefined_symbol.s") then 0 else 1
-fn asmargs(i, strict, iso, file, extra) = if i >= os_arg_count() then {strict: asm_eff_strict(strict, file), iso: iso, file: file, extra: extra} else let arg = os_arg_at(i) in if arg == "--strict" then asmargs(i + 1, 1, iso, file, extra) else if arg == "--lenient" or arg == "--allow-undefined" then asmargs(i + 1, 0, iso, file, extra) else if arg == "--iso" then asmargs(i + 1, strict, 1, file, extra) else if arg == "-o" then (if i + 1 >= os_arg_count() then ctfail("lasm: [L0001] missing output path after '-o'\n") else asmargs(i + 2, strict, iso, file, os_arg_at(i + 1))) else if asm_is_flag(arg) then ctfail("lasm: [L0001] unknown option '" + arg + "'\n") else if file == "" then asmargs(i + 1, strict, iso, arg, extra) else if extra == "" then asmargs(i + 1, strict, iso, file, arg) else ctfail("lasm: [L0001] unexpected positional argument '" + arg + "'\n")
+fn asmargs(i, strict, iso, file, extra) = if i >= os_arg_count() then {strict: asm_eff_strict(strict, file), iso: iso, file: file, extra: extra} else let arg = os_arg_at(i) in if arg == "--strict" then asmargs(i + 1, 1, iso, file, extra) else if arg == "--lenient" or arg == "--allow-undefined" then asmargs(i + 1, 0, iso, file, extra) else if arg == "--iso" then asmargs(i + 1, strict, 1, file, extra) else if arg == "--pe" then asmargs(i + 1, strict, 2, file, extra) else if arg == "-o" then (if i + 1 >= os_arg_count() then ctfail("lasm: [L0001] missing output path after '-o'\n") else asmargs(i + 2, strict, iso, file, os_arg_at(i + 1))) else if asm_is_flag(arg) then ctfail("lasm: [L0001] unknown option '" + arg + "'\n") else if file == "" then asmargs(i + 1, strict, iso, arg, extra) else if extra == "" then asmargs(i + 1, strict, iso, file, arg) else ctfail("lasm: [L0001] unexpected positional argument '" + arg + "'\n")
 fn asm_read_input(file) = if file == "" then readall() else if fs_path_exists(file) == 0 then ctfail("lasm: [L0001] cannot read input file '" + file + "'\n") else fs_read_file(file)
 fn asm_run_cli(cli) = let res = assemble_mode_iso(asm_read_input(cli.file), cli.strict, cli.iso) in if cli.extra != "" then ctfail("lasm: [L0001] unexpected output path '" + cli.extra + "'; lasm writes ELF to stdout (use '> " + cli.extra + "')\n") else res
 

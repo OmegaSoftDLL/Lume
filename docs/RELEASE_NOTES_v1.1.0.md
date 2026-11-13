@@ -147,22 +147,17 @@ brew install --Formula https://raw.githubusercontent.com/OmegaSoftDLL/Lume/main/
 
 ### Prebuilt Release Bundles (`v1.1.0`)
 
-| Platform / Format | Asset Filename | Description |
+| Platform | Asset Filename | What it contains |
 | :--- | :--- | :--- |
-| **Linux x86_64 (Tarball)** | `lume-1.1.0-linux-x86_64.tar.gz` | Complete self-hosted Linux `x86_64` toolchain (`lume`, `lumec`, `lasm`, `lchameleon`, `lcert`, stdlib & manuals) |
-| **Linux x86_64 (Debian/Ubuntu)** | `lume_1.1.0_amd64.deb` | Native Debian/Ubuntu `.deb` package (`/usr/local/bin/lume`) |
-| **Linux x86_64 (AppImage)** | `Lume-1.1.0-x86_64.AppImage` | Single-file portable Linux `x86_64` AppImage |
-| **Linux ARM64 / AArch64 (Tarball)** | `lume-1.1.0-linux-aarch64.tar.gz` | Native ARM64 Linux bundle (AWS Graviton, Raspberry Pi 5, Ampere) |
-| **Linux ARM64 (Debian/Ubuntu)** | `lume_1.1.0_arm64.deb` | Native Debian/Ubuntu `arm64` `.deb` package |
-| **macOS Apple Silicon (ARM64)** | `lume-1.1.0-macos-arm64.tar.gz` | Native macOS M1/M2/M3/M4 Mach-O toolchain bundle |
-| **macOS Apple Silicon (`.pkg`)** | `lume-1.1.0-macos-arm64.pkg` | macOS Installer package for Apple Silicon |
-| **macOS Intel (`x86_64`)** | `lume-1.1.0-macos-x86_64.tar.gz` | macOS `x86_64` toolchain bundle |
-| **Windows x64 (ZIP Archive)** | `lume-1.1.0-windows-x86_64.zip` | Native Windows 11/10 PE64 CLI, Win64 GUI synthesizer & `lume.ico` |
-| **Windows x64 (NSIS Installer)** | `lume-1.1.0-windows-x86_64-setup.exe` | Automated Windows setup executable with `PATH` registration |
-| **Universal Source & Bootstrap** | `lume-1.1.0-universal-bootstrap.tar.gz` | Complete `stage1` source + zero-dependency bootstrap bundle |
-| **VS Code Extension (`.vsix`)** | `lume-vscode-1.1.0.vsix` | Official Lume LSP, syntax highlighting, proof lens & Chameleon snippets |
-| **Formal Proof Certificate** | `lume-1.1.0-omniproof-v3.lcert` | Signed `OmniProof-v3` certificate (`557` obligations, `154` unit tests, `99` manifest hashes) |
-| **Cryptographic Checksums** | `SHA256SUMS` | SHA-256 digests for all release artifacts |
+| **Linux x86_64** | `lume-v1.1.0-linux-x86_64.tar.gz` | Complete self-hosted native toolchain: `lume` driver, `lumec`, `lasm`, `lcert`, stdlib and manuals. Every command (`check`, `test`, `prove`, `certify`, `fmt`, `build`) runs natively. |
+| **Linux AArch64** | `lume-v1.1.0-linux-aarch64.tar.gz` | Seed toolchain (`lume0`) plus cross-compilation targets. The native toolchain does not run on this host yet: `check`, `test` and `fmt` of `.src` refuse instead of guessing. |
+| **Linux RISC-V 64** | `lume-v1.1.0-linux-riscv64.tar.gz` | Seed toolchain (`lume0`) plus cross-compilation targets (same level as AArch64). |
+| **macOS Apple Silicon** | `lume-v1.1.0-macos-aarch64.tar.gz` | Seed toolchain (`lume0`) plus cross-compilation targets (same level as AArch64). |
+| **macOS Intel** | `lume-v1.1.0-macos-x86_64.tar.gz` | Seed toolchain (`lume0`) plus cross-compilation targets (same level as AArch64). |
+| **Windows x64** | `lume-v1.1.0-windows-x86_64.tar.gz` | Seed toolchain (`lume0.exe`), the `x86_64-windows-pe` target and two run-verified sample executables. The native toolchain does not run on Windows yet (planned: Win64 runtime and PE output for `lume_driver`, `lumec`, `lasm`). Until then, run the full toolchain on Linux x86_64, for example under WSL. |
+| **Seed binaries** | `lume0-linux-x86_64`, `lume0-windows-x86_64.exe`, `lumec-linux-x86_64`, `lasm-linux-x86_64` | Standalone bootstrap and compiler binaries. |
+| **Installers** | `install.sh`, `install.ps1`, `lume.rb` | POSIX installer, PowerShell installer, Homebrew formula. |
+| **Checksums** | `SHA256SUMS` | SHA-256 digests of every asset above. |
 
 ---
 

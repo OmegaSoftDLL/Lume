@@ -5,9 +5,10 @@
 ##   2. [E0306] cyclic lock/actor wait-for DAG & lock-rank violation rejection (exit 3, zero asm emitted, lumec + lcaas);
 ##   3. Valid linear channel relay, strict ascending lock-rank nesting, and diamond actor DAG compile & execute cleanly;
 ##   4. SPSC lock-free ring-buffer wraparound conservation & runtime DAG cycle detector (`use lconcurrency`);
-##   5. Concurrent multi-worker execution stress across 6 and 8 parallel native Lume ELF64 OS worker processes;
+##   5. Concurrent multi-worker execution stress across 6 and 8 parallel native Lume OS worker processes;
 ##   6. QF_LIA formal proof verification of all contracts, conservation laws, and @bound budgets in `lconcurrency.src`.
 use lconcurrency
+use hostio
 
 fn cg_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else cg_line_end(s, i + 1)
 
@@ -46,20 +47,20 @@ fn cg_input(path, in_path, out_path) =
     os_run_input_capture_timeout(path, Nil, in_path, out_path, out_path + ".err", 60000)
 
 fn cg_run(path, args, out_path) =
-    os_run_capture_timeout(path, args, out_path, out_path + ".err", 60000)
+    hio_osrun_ct(path, args, out_path, out_path + ".err", 60000)
 
 fn cg_compile_inline(root, tmp, name, src) =
     let sp = tmp + "/" + name + ".src" in
     let ap = tmp + "/" + name + ".s" in
     let w = fs_write_sync(sp, src) in
-    let st = cg_input(root + "/build/bin/lumec", sp, ap) in
+    let st = cg_input(hio_bin_dir(root) + "/lumec", sp, ap) in
     {exit_code: cg_wait_exit(st), asm_path: ap, asm_body: fs_read_file(ap), err: fs_read_file(ap + ".err")}
 
 fn cg_oracle_inline(root, tmp, name, mode, src) =
     let ip = tmp + "/" + name + ".caas.in" in
     let op = tmp + "/" + name + ".caas.out" in
     let w = fs_write_sync(ip, "@mode " + mode + "\n" + src) in
-    let st = cg_input(root + "/build/bin/lcaas", ip, op) in
+    let st = cg_input(hio_bin_dir(root) + "/lcaas", ip, op) in
     fs_read_file(op)
 
 fn cg_expect_reject(root, tmp, name, code, src) =
@@ -88,7 +89,7 @@ fn cg_expect_run(root, tmp, name, want_out, src) =
             ctfail("concurrency gate failed [" + name + "]: lcaas rejected valid program: " + slice(orc, 0, 240) + "\n")
         else
             let elf = tmp + "/" + name + ".elf" in
-            let ast = cg_wait_exit(cg_run(root + "/build/bin/lasm", Cons("--strict", Cons(c.asm_path, Nil)), elf)) in
+            let ast = cg_wait_exit(cg_run(hio_bin_dir(root) + "/lasm", Cons("--strict", Cons(c.asm_path, Nil)), elf)) in
             if ast != 0 then
                 ctfail("concurrency gate failed [" + name + "]: lasm --strict failed (" + str(ast) + ")\n")
             else
@@ -231,24 +232,12 @@ fn cg_check_inproc_spsc_and_dag() =
             ctfail("concurrency gate failed: DAG or linear token invariant mismatch\n")
         else 4
 
-## 5. Multi-worker concurrent execution stress across 6 and 8 native Lume ELF64 worker processes
+## 5. Multi-worker concurrent execution stress across 6 and 8 native Lume worker processes (ELF64 on Linux, PE32+ on Windows)
 fn cg_build_worker_elf(root, tmp) =
-    let wsrc =
-        "fn w_parse_neg(s, i, n, acc) = if i >= n then acc else w_parse_neg(s, i + 1, n, acc * 10 - (ord(at(s, i)) - 48))\n" +
-        "fn w_parse(s) = 0 - w_parse_neg(s, 0, count(s), 0)\n" +
-        "fn w_kernel(lo: int, hi: int, acc: int) -> int = if lo >= hi then acc else w_kernel(lo + 1, hi, acc + (lo * lo + 3 * lo + 7))\n" +
-        "let lo = if os_arg_count() >= 2 then w_parse(os_arg_at(1)) else 0\n" +
-        "let hi = if os_arg_count() >= 3 then w_parse(os_arg_at(2)) else 0\n" +
-        "print w_kernel(lo, hi, 0)\n" in
-    let c = cg_compile_inline(root, tmp, "conc_worker", wsrc) in
-    if c.exit_code != 0 then ctfail("concurrency gate failed: worker compile error: " + c.err + "\n")
-    else
-        let elf = tmp + "/conc_worker.elf" in
-        let ast = cg_wait_exit(cg_run(root + "/build/bin/lasm", Cons("--strict", Cons(c.asm_path, Nil)), elf)) in
-        if ast != 0 then ctfail("concurrency gate failed: worker lasm error\n")
-        else
-            let ch = cg_run("/bin/chmod", Cons("+x", Cons(elf, Nil)), elf + ".chmod") in
-            elf
+    let bindir = if os_getenv("LUME_BIN_DIR") != "" then lconc_bin_dir() else root + "/build/bin" in
+    let w = lconc_build_worker(bindir, tmp) in
+    if w == "" then ctfail("concurrency gate failed: worker compile error: " + fs_read_file(tmp + "/conc_worker.cerr") + fs_read_file(tmp + "/conc_worker.aerr") + "\n")
+    else w
 
 fn cg_check_parallel_workers(root, tmp) =
     let welf = cg_build_worker_elf(root, tmp) in
@@ -305,7 +294,7 @@ fn cg_main(input) =
         let n_par = cg_check_parallel_workers(root, tmp) in
         let pr = cg_check_lconcurrency_proofs(root, tmp) in
         let rm = cg_run("/bin/rm", Cons("-rf", Cons(tmp, Cons(tmp + ".mkdir", Cons(tmp + ".mkdir.err", Nil)))), "/tmp/lume-cg-rm." + str(os_getpid())) in
-        let rm2 = os_run("/bin/rm", Cons("-f", Cons("/tmp/lume-cg-rm." + str(os_getpid()), Cons("/tmp/lume-cg-rm." + str(os_getpid()) + ".err", Nil)))) in
+        let rm2 = hio_run("rm", Cons("-f", Cons("/tmp/lume-cg-rm." + str(os_getpid()), Cons("/tmp/lume-cg-rm." + str(os_getpid()) + ".err", Nil)))) in
         let ms = (os_monotonic_ns() - t0) / 1000000 in
         "OK: concurrency gate: " + str(n_e305) + " [E0305] linear-move rejections, " + str(n_e306) + " [E0306] cycle/lock-rank rejections, " + str(n_valid) + " compiled linear pipelines, " + str(n_spsc) + " SPSC/DAG invariants, " + str(n_par) + " multi-worker (6x & 8x ELF64) deterministic barrier runs, " + str(pr.proven) + " QF_LIA obligations + " + str(pr.wcet) + " @bound budgets proven in " + str(ms) + " ms"
 

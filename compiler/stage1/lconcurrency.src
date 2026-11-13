@@ -14,6 +14,7 @@
 ##      `dag_graph_acyclic_ok`);
 ##   4. Deterministic multi-worker OS-process parallel dispatcher on Linux (`parallel_dispatch_partitions`), spawning
 ##      concurrent isolated worker processes and reducing partitioned outputs bit-identically regardless of scheduling.
+use hostio
 
 ## --- 1. Bounded SPSC Lock-Free Ring-Buffer State & Index Arithmetic (QF_LIA Proven) -------------------------------
 
@@ -216,22 +217,45 @@ fn lconc_parse_int(raw) =
     else if at(s, 0) == "-" then {ok: 1, v: lconc_parse_int_neg(s, 1, n, 0)}
     else {ok: 1, v: 0 - lconc_parse_int_neg(s, 0, n, 0)}
 
-fn lconc_sh_quote(s) = "'" + s + "'"
-
-fn lconc_build_spawn_lines(work_dir, worker_bin, parts, idx) = match parts
-    Nil        => ""
+## every partition as its own OS process, all started before any is awaited (os_spawn_capture returns the pid at
+## once; on Windows the child is a real process too), output of worker i in w<i>.out / w<i>.err
+fn lconc_spawn_all(work_dir, worker_bin, parts, idx) = match parts
+    Nil        => Nil
     Cons(p, r) =>
-        let outp = work_dir + "/w" + str(idx) + ".out" in
-        let errp = work_dir + "/w" + str(idx) + ".err" in
-        lconc_sh_quote(worker_bin) + " " + str(p.lo) + " " + str(p.hi) + " > " + lconc_sh_quote(outp) + " 2> " + lconc_sh_quote(errp) + " &\n" +
-        "P_" + str(idx) + "=$!\n" +
-        lconc_build_spawn_lines(work_dir, worker_bin, r, idx + 1)
+        let pid = os_spawn_capture(worker_bin, Cons(str(p.lo), Cons(str(p.hi), Nil)), work_dir + "/w" + str(idx) + ".out", work_dir + "/w" + str(idx) + ".err") in
+        Cons(pid, lconc_spawn_all(work_dir, worker_bin, r, idx + 1))
 
-fn lconc_build_wait_lines(parts, idx) = match parts
-    Nil        => ""
+## the barrier: wait for every worker; 1 when any of them failed or could not start
+fn lconc_wait_all(pids) = match pids
+    Nil        => 0
     Cons(p, r) =>
-        "wait $P_" + str(idx) + " || RC=1\n" +
-        lconc_build_wait_lines(r, idx + 1)
+        let st = if p <= 0 then 256 else os_waitpid_status(p) in
+        let rest = lconc_wait_all(r) in
+        if lconc_wait_exit(st) != 0 or rest != 0 then 1 else 0
+
+## the reference worker as a Lume program: prints sum_{i = lo}^{hi - 1} (i * i + 3 * i + 7) for argv lo hi
+fn lconc_worker_src() =
+    "fn w_parse_neg(s, i, n, acc) = if i >= n then acc else w_parse_neg(s, i + 1, n, acc * 10 - (ord(at(s, i)) - 48))\n" +
+    "fn w_parse(s) = 0 - w_parse_neg(s, 0, count(s), 0)\n" +
+    "fn w_kernel(lo: int, hi: int, acc: int) -> int = if lo >= hi then acc else w_kernel(lo + 1, hi, acc + (lo * lo + 3 * lo + 7))\n" +
+    "let lo = if os_arg_count() >= 2 then w_parse(os_arg_at(1)) else 0\n" +
+    "let hi = if os_arg_count() >= 3 then w_parse(os_arg_at(2)) else 0\n" +
+    "print w_kernel(lo, hi, 0)\n"
+
+## the tool directory (the driver exports LUME_BIN_DIR to test binaries; build/bin otherwise)
+fn lconc_bin_dir() = let d = os_getenv("LUME_BIN_DIR") in if d != "" then hio_posix(d) else "build/bin"
+
+## compile the worker for this host with bindir's lumec + lasm (a PE image on Windows): its path, or "" on failure
+fn lconc_build_worker(bindir, dir) =
+    let win = os_platform() == "windows" in
+    let src = dir + "/conc_worker.src" in
+    let asm = dir + "/conc_worker.s" in
+    let bin = dir + (if win then "/conc_worker.exe" else "/conc_worker.elf") in
+    let w = fs_write_sync(src, lconc_worker_src()) in
+    let c = hio_osrun_ict(bindir + "/lumec", if win then Cons("--win64", Nil) else Nil, src, asm, dir + "/conc_worker.cerr", 120000) in
+    let a = if lconc_wait_exit(c) != 0 then 256 else hio_osrun_ct(bindir + "/lasm", if win then Cons("--strict", Cons("--pe", Cons(asm, Nil))) else Cons("--strict", Cons(asm, Nil)), bin, dir + "/conc_worker.aerr", 120000) in
+    let x = fs_make_executable(bin) in
+    if lconc_wait_exit(c) == 0 and lconc_wait_exit(a) == 0 then bin else ""
 
 fn lconc_collect_outputs(work_dir, n, idx, sum_acc, cat_acc) =
     if idx >= n then {ok: 1, workers: n, sum: sum_acc, transcript: cat_acc}
@@ -266,12 +290,9 @@ fn parallel_dispatch_partitions(work_dir, worker_bin, parts) =
     let n = lconc_len(parts) in
     if n <= 0 then {ok: 0, workers: 0, sum: 0, transcript: "empty"}
     else
-        let mk = os_run("/bin/mkdir", Cons("-p", Cons(work_dir, Nil))) in
-        let script = "#!/bin/sh\nRC=0\n" + lconc_build_spawn_lines(work_dir, worker_bin, parts, 0) + lconc_build_wait_lines(parts, 0) + "exit $RC\n" in
-        let sp = work_dir + "/dispatch.sh" in
-        let w = fs_write_sync(sp, script) in
-        let st = os_run_capture_timeout("/bin/sh", Cons(sp, Nil), work_dir + "/dispatch.out", work_dir + "/dispatch.err", 60000) in
-        if lconc_wait_exit(st) != 0 then {ok: 0, workers: n, sum: 0, transcript: "worker_failed:" + fs_read_file(work_dir + "/dispatch.err")}
+        let mk = hio_run("mkdir", Cons("-p", Cons(work_dir, Nil))) in
+        let pids = lconc_spawn_all(work_dir, worker_bin, parts, 0) in
+        if lconc_wait_all(pids) != 0 then {ok: 0, workers: n, sum: 0, transcript: "worker_failed:" + fs_read_file(work_dir + "/w0.err")}
         else lconc_collect_outputs(work_dir, n, 0, 0, "")
 
 ## Deterministic reference workload kernel: sum_{i = lo}^{hi - 1} (i * i + 3 * i + 7)
@@ -322,13 +343,10 @@ fn test_dag_order_and_cycle_detection() =
 
 fn test_parallel_multi_worker_dispatch_linux() =
     let wdir = "/tmp/lume-conc-unit." + str(os_getpid()) in
-    let mk = os_run("/bin/mkdir", Cons("-p", Cons(wdir, Nil))) in
-    let wbin = wdir + "/worker.sh" in
-    let wsrc = "#!/bin/sh\nLO=$1\nHI=$2\nACC=0\nI=$LO\nwhile [ \"$I\" -lt \"$HI\" ]; do\n  ACC=$((ACC + I * I + 3 * I + 7))\n  I=$((I + 1))\ndone\necho \"$ACC\"\n" in
-    let wf = fs_write_sync(wbin, wsrc) in
-    let ch = os_run("/bin/chmod", Cons("+x", Cons(wbin, Nil))) in
+    let mk = hio_run("mkdir", Cons("-p", Cons(wdir, Nil))) in
+    let wbin = lconc_build_worker(lconc_bin_dir(), wdir) in
     let parts = parallel_make_partitions(200, 4) in
     let res = parallel_dispatch_partitions(wdir, wbin, parts) in
     let seq_ref = parallel_ref_kernel(0, 200, 0) in
-    let rm = os_run("/bin/rm", Cons("-rf", Cons(wdir, Nil))) in
-    res.ok == 1 and res.workers == 4 and res.sum == seq_ref
+    let rm = hio_run("rm", Cons("-rf", Cons(wdir, Nil))) in
+    wbin != "" and res.ok == 1 and res.workers == 4 and res.sum == seq_ref

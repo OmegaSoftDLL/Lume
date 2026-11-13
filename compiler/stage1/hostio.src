@@ -1,0 +1,248 @@
+## hostio.src -- portable host operations, written in Lume (docs/42-windows-native-toolchain.md §6).
+## Import with `use hostio`. The tools used to start /bin/mkdir, /bin/rm, /bin/cp, /bin/mv and /bin/chmod, and
+## to build paths under /root, /var/lib and /mnt/c; none of those exist on Windows, and starting a process per
+## file operation is slow on every system. These functions do the same work with runtime builtins, so a tool
+## behaves the same on Linux and on Windows.
+##
+## hio_run(prog, args) and hio_run_capture(prog, args, out, err) take the argument list a tool passed to
+## os_run("/bin/<prog>", args) and return the same kind of status: 0 on success, 256 (exit 1) on failure.
+## Supported: mkdir [-p], rm [-f] [-r|-rf|-R], cp [-f] [-r|-R] [-T], mv [-f] [-T], chmod (+x or an octal mode).
+
+## ---- paths of the host -------------------------------------------------------------------------------------
+fn hio_lower(c) = let o = ord(c) in if o >= 65 and o <= 90 then chr(o + 32) else c
+fn hio_slashes(p, i, n, acc) = if i >= n then acc else hio_slashes(p, i + 1, n, acc + (if at(p, i) == "\\" then "/" else at(p, i)))
+## "C:\Users\x" -> "/c/Users/x" (the POSIX view the Windows runtime uses); a POSIX path is returned unchanged
+fn hio_posix(p) = if count(p) >= 2 and at(p, 1) == ":" then "/" + hio_lower(at(p, 0)) + hio_slashes(p, 2, count(p), "") else hio_slashes(p, 0, count(p), "")
+fn hio_env_dir(name, dflt) = let v = os_getenv(name) in if v != "" then hio_posix(v) else dflt
+## the user's home: $HOME, else %USERPROFILE%, else /tmp
+fn hio_home() = hio_env_dir("HOME", hio_env_dir("USERPROFILE", "/tmp"))
+## the Lume installation: $LUME_HOME, else ~/.lume
+fn hio_lume_home() = hio_env_dir("LUME_HOME", hio_home() + "/.lume")
+fn hio_lume_bin() = hio_lume_home() + "/bin/lume"
+## a program file: the path itself, else the path + ".exe" (Windows)
+fn hio_exe_path(p) = if fs_path_exists(p) == 1 then p else if fs_path_exists(p + ".exe") == 1 then p + ".exe" else p
+## per-user data of the sentience tools
+fn hio_data_dir() = hio_home() + "/.lume_sovereign_memory"
+## machine-wide data: /var/lib on Linux, %ProgramData% on Windows
+fn hio_system_vault() = if os_platform() == "windows" then hio_env_dir("ProgramData", "/c/ProgramData") + "/lume_sovereign_vault" else "/var/lib/lume_sovereign_vault"
+## the Windows system directory: %SystemRoot%\System32 on Windows, its WSL mount on Linux
+fn hio_win_system32() = if os_platform() == "windows" then hio_env_dir("SystemRoot", "/c/Windows") + "/System32" else "/mnt/c/Windows/System32"
+## the Windows user profile: the home on Windows; on Linux $LUME_WIN_HOME, else /mnt/c/Users/$USER
+fn hio_win_home() = if os_platform() == "windows" then hio_home() else hio_env_dir("LUME_WIN_HOME", "/mnt/c/Users/" + os_getenv("USER"))
+fn hio_tmp() = "/tmp"
+
+## ---- building and running native programs for this host ---------------------------------------------------
+## the extension of an executable of this host
+fn hio_exe_ext() = if os_platform() == "windows" then ".exe" else ".elf"
+## the directory of lumec and lasm: $LUME_BIN_DIR (set by the driver), else <root>/build/bin
+fn hio_bin_dir(root) = let d = os_getenv("LUME_BIN_DIR") in if d != "" then hio_posix(d) else root + "/build/bin"
+## lumec flags for a program of this host (a PE image on Windows) and the lasm arguments for one assembly file
+fn hio_cflags() = if os_platform() == "windows" then Cons("--win64", Nil) else Nil
+fn hio_aflags(asm) = if os_platform() == "windows" then Cons("--strict", Cons("--pe", Cons(asm, Nil))) else Cons("--strict", Cons(asm, Nil))
+fn hio_aflags_plain(asm) = if os_platform() == "windows" then Cons("--pe", Cons(asm, Nil)) else Cons(asm, Nil)
+
+## ---- file system ------------------------------------------------------------------------------------------
+fn hio_trim_end(p) = if count(p) > 1 and at(p, count(p) - 1) == "/" then hio_trim_end(slice(p, 0, count(p) - 1)) else p
+fn hio_slash_before(p, i) = if i <= 0 then 0 else if at(p, i) == "/" then i else hio_slash_before(p, i - 1)
+fn hio_base(p) = let q = hio_trim_end(p) in let i = hio_slash_before(q, count(q) - 1) in if i == 0 and (count(q) == 0 or at(q, 0) != "/") then q else slice(q, i + 1, count(q))
+## a directory, also an empty one ("d/." exists only when d is a directory)
+fn hio_is_dir(p) = fs_path_exists(hio_trim_end(p) + "/.") == 1
+fn hio_mkdir_p_go(p) = if p == "" or fs_path_exists(p) == 1 then 1 else let e = hio_slash_before(p, count(p) - 1) in let up = if e <= 0 then 1 else hio_mkdir_p_go(slice(p, 0, e)) in if up == 1 and (fs_mkdir(p) == 1 or hio_is_dir(p)) then 1 else 0
+## mkdir -p: 1 when the directory exists afterwards
+fn hio_mkdir_p(p) = hio_mkdir_p_go(hio_trim_end(p))
+fn hio_line_end(s, i, n) = if i >= n or at(s, i) == "\n" then i else hio_line_end(s, i + 1, n)
+fn hio_lines(s, i, n) = if i >= n then Nil else let e = hio_line_end(s, i, n) in if e == i then hio_lines(s, i + 1, n) else Cons(slice(s, i, e), hio_lines(s, e + 1, n))
+fn hio_entries(dir) = let s = fs_read_dir(dir) in hio_lines(s, 0, count(s))
+fn hio_remove_each(dir, names) = match names
+    Nil        => 1
+    Cons(h, t) => let a = hio_remove_tree(dir + "/" + h) in let b = hio_remove_each(dir, t) in if a == 1 and b == 1 then 1 else 0
+## rm -rf: 1 when nothing is left at p (a symbolic link is removed, never followed)
+fn hio_remove_tree(p) = if fs_remove(p) == 1 or fs_path_exists(p) == 0 then 1 else let r = hio_remove_each(p, hio_entries(p)) in if fs_remove(p) == 1 or fs_path_exists(p) == 0 then 1 else 0
+fn hio_copy_each(src, dst, names) = match names
+    Nil        => 1
+    Cons(h, t) => let a = hio_copy_tree(src + "/" + h, dst + "/" + h) in let b = hio_copy_each(src, dst, t) in if a == 1 and b == 1 then 1 else 0
+## cp -R src dst (dst is created; files are copied byte for byte)
+fn hio_copy_tree(src, dst) = if hio_is_dir(src) then (if hio_mkdir_p(dst) == 1 then hio_copy_each(src, dst, hio_entries(src)) else 0) else fs_copy(src, dst)
+
+## ---- the argument lists of /bin/mkdir, rm, cp, mv, chmod ---------------------------------------------------
+fn hio_is_flag(a) = count(a) >= 2 and at(a, 0) == "-"
+fn hio_has(a, c, i) = if i >= count(a) then 0 else if at(a, i) == c then 1 else hio_has(a, c, i + 1)
+fn hio_flags(args) = match args
+    Nil        => ""
+    Cons(h, t) => if hio_is_flag(h) then slice(h, 1, count(h)) + hio_flags(t) else hio_flags(t)
+fn hio_paths(args) = match args
+    Nil        => Nil
+    Cons(h, t) => if hio_is_flag(h) then hio_paths(t) else Cons(h, hio_paths(t))
+fn hio_last(xs) = match xs
+    Cons(h, Nil) => h
+    Cons(h, t)   => hio_last(t)
+    Nil          => ""
+fn hio_but_last(xs) = match xs
+    Cons(h, Nil) => Nil
+    Cons(h, t)   => Cons(h, hio_but_last(t))
+    Nil          => Nil
+fn hio_all(xs, f) = match xs
+    Nil        => 1
+    Cons(h, t) => let a = f(h) in let b = hio_all(t, f) in if a == 1 and b == 1 then 1 else 0
+fn hio_octal(s, i, acc) = if i >= count(s) then acc else let d = ord(at(s, i)) - 48 in if d < 0 or d > 7 then 0 - 1 else hio_octal(s, i + 1, acc * 8 + d)
+fn hio_chmod_one(mode, p) = if mode == "+x" or mode == "a+x" or mode == "u+x" then fs_make_executable(p) else let m = hio_octal(mode, 0, 0) in if m < 0 then 0 else fs_chmod(p, m)
+fn hio_mkdir_one(p) = hio_mkdir_p(p)
+fn hio_mkdir_plain(p) = if fs_mkdir(p) == 1 then 1 else 0
+fn hio_rm_one(rec, force, p) = if rec == 1 then hio_remove_tree(p) else if fs_remove(p) == 1 then 1 else if force == 1 and fs_path_exists(p) == 0 then 1 else 0
+## cp/mv into an existing directory put the file inside it, unless -T
+fn hio_target(dst, src, tflag) = if tflag == 0 and hio_is_dir(dst) then hio_trim_end(dst) + "/" + hio_base(src) else dst
+fn hio_cp_one(rec, tflag, dst, src) = let d = hio_target(dst, src, tflag) in if hio_is_dir(src) then (if rec == 1 then hio_copy_tree(src, d) else 0) else fs_copy(src, d)
+fn hio_mv_one(tflag, dst, src) = let d = hio_target(dst, src, tflag) in if fs_rename(src, d) == 1 then 1 else if hio_copy_tree(src, d) == 1 then hio_remove_tree(src) else 0
+fn hio_chmod_all(ps) = match ps
+    Cons(mode, files) => hio_all(files, fn(p) => hio_chmod_one(mode, p))
+    Nil               => 0
+fn hio_do(prog, args) = let fl = hio_flags(args) in let ps = hio_paths(args) in let rec = if hio_has(fl, "r", 0) == 1 or hio_has(fl, "R", 0) == 1 then 1 else 0 in let force = hio_has(fl, "f", 0) in let tflag = hio_has(fl, "T", 0) in if prog == "mkdir" then (if hio_has(fl, "p", 0) == 1 then hio_all(ps, hio_mkdir_one) else hio_all(ps, hio_mkdir_plain)) else if prog == "rm" then hio_all(ps, fn(p) => hio_rm_one(rec, force, p)) else if prog == "chmod" then hio_chmod_all(ps) else if prog == "cp" then (let dst = hio_last(ps) in hio_all(hio_but_last(ps), fn(s) => hio_cp_one(rec, tflag, dst, s))) else if prog == "mv" then (let dst = hio_last(ps) in hio_all(hio_but_last(ps), fn(s) => hio_mv_one(tflag, dst, s))) else 0
+fn hio_status(ok) = if ok == 1 then 0 else 256
+
+## ---- programs that print: ls, pwd, printenv, test -------------------------------------------------
+## byte order, as `ls` sorts in the C locale
+fn hio_lt(a, b, i) = if i >= count(a) then (if i < count(b) then 1 else 0) else if i >= count(b) then 0 else let x = ord(at(a, i)) in let y = ord(at(b, i)) in if x < y then 1 else if x > y then 0 else hio_lt(a, b, i + 1)
+fn hio_odd(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(h, hio_even(t))
+fn hio_even(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => hio_odd(t)
+fn hio_merge(a, b) = match a
+    Nil          => b
+    Cons(x, xt)  => hio_merge_b(x, xt, b)
+fn hio_merge_b(x, xt, b) = match b
+    Nil          => Cons(x, xt)
+    Cons(y, yt)  => if hio_lt(y, x, 0) == 1 then Cons(y, hio_merge(Cons(x, xt), yt)) else Cons(x, hio_merge(xt, Cons(y, yt)))
+fn hio_sort(xs) = match xs
+    Nil          => Nil
+    Cons(h, Nil) => Cons(h, Nil)
+    Cons(h, t)   => hio_merge(hio_sort(hio_odd(xs)), hio_sort(hio_even(xs)))
+fn hio_join_lines(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h + "\n" + hio_join_lines(t)
+fn hio_first(xs, dflt) = match xs
+    Nil        => dflt
+    Cons(h, t) => h
+fn hio_mark(dir, xs, on) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(if on == 1 and hio_is_dir(dir + "/" + h) then h + "/" else h, hio_mark(dir, t, on))
+fn hio_ls(fl, p) = if hio_is_dir(p) then {ok: 1, out: hio_join_lines(hio_mark(hio_trim_end(p), hio_sort(hio_entries(p)), hio_has(fl, "p", 0)))} else if fs_path_exists(p) == 1 then {ok: 1, out: p + "\n"} else {ok: 0, out: ""}
+fn hio_test(fl, p) = if hio_has(fl, "d", 0) == 1 then hio_is_dir(p) else if hio_has(fl, "f", 0) == 1 then (fs_path_exists(p) == 1 and not hio_is_dir(p)) else fs_path_exists(p) == 1
+fn hio_bool(b) = if b then 1 else 0
+## ---- date and uname -----------------------------------------------------------------------------------------
+## days since 1970-01-01 -> {y, m, d} (proleptic Gregorian; the civil-from-days method)
+fn hio_civil(days) = let z = days + 719468 in let era = (if z >= 0 then z else z - 146096) / 146097 in let doe = z - era * 146097 in let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 in let doy = doe - (365 * yoe + yoe / 4 - yoe / 100) in let mp = (5 * doy + 2) / 153 in let d = doy - (153 * mp + 2) / 5 + 1 in let m = if mp < 10 then mp + 3 else mp - 9 in {y: yoe + era * 400 + (if m <= 2 then 1 else 0), m: m, d: d}
+fn hio_pad2(n) = if n < 10 then "0" + str(n) else str(n)
+fn hio_nth(names, i) = slice(names, i * 3, i * 3 + 3)
+fn hio_wday(days) = ((days % 7) + 11) % 7
+## strftime for the fields the tools use: %Y %m %d %H %M %S %s %a %b %e %Z %T %F %%; the clock is UTC
+fn hio_strf(fmt, i, t, acc) = if i >= count(fmt) then acc else if at(fmt, i) != "%" or i + 1 >= count(fmt) then hio_strf(fmt, i + 1, t, acc + at(fmt, i)) else hio_strf(fmt, i + 2, t, acc + hio_field(at(fmt, i + 1), t))
+fn hio_field(c, t) = let days = (if t >= 0 then t else t - 86399) / 86400 in let s = t - days * 86400 in let cv = hio_civil(days) in if c == "Y" then str(cv.y) else if c == "m" then hio_pad2(cv.m) else if c == "d" then hio_pad2(cv.d) else if c == "e" then (if cv.d < 10 then " " + str(cv.d) else str(cv.d)) else if c == "H" then hio_pad2(s / 3600) else if c == "M" then hio_pad2(s % 3600 / 60) else if c == "S" then hio_pad2(s % 60) else if c == "s" then str(t) else if c == "a" then hio_nth("SunMonTueWedThuFriSat", hio_wday(days)) else if c == "b" then hio_nth("JanFebMarAprMayJunJulAugSepOctNovDec", cv.m - 1) else if c == "Z" then "UTC" else if c == "T" then hio_field("H", t) + ":" + hio_field("M", t) + ":" + hio_field("S", t) else if c == "F" then hio_field("Y", t) + "-" + hio_field("m", t) + "-" + hio_field("d", t) else if c == "%" then "%" else "%" + c
+fn hio_fmt_arg(args) = match args
+    Nil        => "%a %b %e %T %Z %Y"
+    Cons(h, t) => if count(h) >= 1 and at(h, 0) == "+" then slice(h, 1, count(h)) else hio_fmt_arg(t)
+fn hio_date(args) = {ok: 1, out: hio_strf(hio_fmt_arg(args), 0, os_unix_time(), "") + "\n"}
+fn hio_uname_pick(fl, c, i) = if hio_has(fl, c, 0) == 1 or hio_has(fl, "a", 0) == 1 then Cons(os_uname_field(i), Nil) else Nil
+fn hio_join_sp(xs) = match xs
+    Nil          => ""
+    Cons(h, Nil) => h
+    Cons(h, t)   => h + " " + hio_join_sp(t)
+fn hio_cat(a, b) = match a
+    Nil        => b
+    Cons(h, t) => Cons(h, hio_cat(t, b))
+fn hio_uname(fl) = let f = if fl == "" then "s" else fl in {ok: 1, out: hio_join_sp(hio_cat(hio_uname_pick(f, "s", 0), hio_cat(hio_uname_pick(f, "n", 1), hio_cat(hio_uname_pick(f, "r", 2), hio_cat(hio_uname_pick(f, "v", 3), hio_uname_pick(f, "m", 4)))))) + "\n"}
+
+## the work of one program: {ok, out}
+fn hio_exec(prog, args) = let fl = hio_flags(args) in let ps = hio_paths(args) in if prog == "ls" then hio_ls(fl, hio_first(ps, ".")) else if prog == "pwd" then {ok: 1, out: fs_current_dir() + "\n"} else if prog == "date" then hio_date(args) else if prog == "uname" then hio_uname(fl) else if prog == "printenv" then (let v = os_getenv(hio_first(ps, "")) in {ok: if v == "" then 0 else 1, out: if v == "" then "" else v + "\n"}) else if prog == "test" then {ok: hio_bool(hio_test(fl, hio_first(ps, ""))), out: ""} else {ok: hio_do(prog, args), out: ""}
+fn hio_known(n) = n == "mkdir" or n == "rm" or n == "cp" or n == "mv" or n == "chmod" or n == "ls" or n == "pwd" or n == "date" or n == "uname" or n == "printenv" or n == "test"
+## "/bin/rm" or "/usr/bin/printenv" -> the program done here; "" for any other program
+fn hio_prefix(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
+fn hio_emulated(prog) = if hio_prefix(prog, "/bin/") or hio_prefix(prog, "/usr/bin/") then (let n = hio_base(prog) in if hio_known(n) then n else "") else ""
+
+## os_run("/bin/<prog>", args) without a process: the output goes to standard output
+fn hio_run(prog, args) = let r = hio_exec(prog, args) in let e = if r.out == "" then 1 else fs_append_sync("/dev/stdout", r.out) in hio_status(r.ok)
+## os_run_capture*("/bin/<prog>", args, out, err): out gets what the program prints, err names a failure
+fn hio_run_capture(prog, args, out, err) = let r = hio_exec(prog, args) in let w1 = fs_write_sync(out, r.out) in let w2 = fs_write_sync(err, if r.ok == 1 then "" else prog + ": failed\n") in hio_status(r.ok)
+## ---- env NAME=VALUE ... program args: the assignments hold for that program only ------------------------------
+fn hio_eq_at(a, i) = if i >= count(a) then 0 - 1 else if at(a, i) == "=" then i else hio_eq_at(a, i + 1)
+fn hio_is_assign(a) = hio_eq_at(a, 0) > 0
+fn hio_assigns(args) = match args
+    Nil        => Nil
+    Cons(h, t) => if hio_is_assign(h) then Cons(h, hio_assigns(t)) else Nil
+fn hio_after_assigns(args) = match args
+    Nil        => Nil
+    Cons(h, t) => if hio_is_assign(h) then hio_after_assigns(t) else args
+fn hio_tail(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+## set each NAME=VALUE; the list returned holds what to put back ({name, old}; old "" = was not set)
+fn hio_env_apply(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => let i = hio_eq_at(h, 0) in let name = slice(h, 0, i) in let old = os_getenv(name) in let s = os_setenv(name, slice(h, i + 1, count(h))) in Cons({name: name, old: old}, hio_env_apply(t))
+fn hio_env_restore(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => let r = hio_env_restore(t) in if h.old == "" then os_unsetenv(h.name) else os_setenv(h.name, h.old)
+fn hio_env_run(rest, run) = match rest
+    Nil        => 0
+    Cons(p, a) => run(p, a)
+fn hio_with_env(args, run) = let saved = hio_env_apply(hio_assigns(args)) in let r = hio_env_run(hio_after_assigns(args), run) in let z = hio_env_restore(saved) in r
+## ---- PATH lookup -------------------------------------------------------------------------------------------
+## the entries of $PATH (":" on Linux; ";" on Windows, where entries are "C:\..." and become POSIX paths)
+fn hio_sep_end(s, i, sep) = if i >= count(s) or at(s, i) == sep then i else hio_sep_end(s, i + 1, sep)
+fn hio_split(s, i, sep) = if i >= count(s) then Nil else let e = hio_sep_end(s, i, sep) in if e == i then hio_split(s, i + 1, sep) else Cons(hio_posix(slice(s, i, e)), hio_split(s, e + 1, sep))
+fn hio_path_dirs() = let w = os_platform() == "windows" in let p = os_getenv("PATH") in let q = if p != "" then p else os_getenv("Path") in hio_split(q, 0, if w then ";" else ":")
+fn hio_which_in(dirs, name) = match dirs
+    Nil        => ""
+    Cons(h, t) => let p = hio_trim_end(h) + "/" + name in if fs_path_exists(p + ".exe") == 1 and not hio_is_dir(p + ".exe") then p + ".exe" else if fs_path_exists(p) == 1 and not hio_is_dir(p) then p else hio_which_in(t, name)
+## the program file `name` resolves to through $PATH, or ""
+## a program a tool may start: done here (hostio), present at that path, or found through $PATH by name
+fn hio_tool_exists(prog) = hio_emulated(prog) != "" or prog == "/usr/bin/env" or fs_path_exists(hio_resolve(prog)) == 1 or fs_path_exists(hio_resolve(prog) + ".exe") == 1
+fn hio_which(name) = hio_which_in(hio_path_dirs(), name)
+## an absolute program path that does not exist on this host (e.g. /usr/bin/z3 on Windows) is looked up by name
+fn hio_resolve(prog) = if fs_path_exists(prog) == 1 or fs_path_exists(prog + ".exe") == 1 or (not hio_prefix(prog, "/usr/bin/") and not hio_prefix(prog, "/bin/") and not hio_prefix(prog, "/usr/local/bin/")) then prog else let w = hio_which(hio_base(prog)) in if w != "" then w else prog
+
+## ---- command lines --------------------------------------------------------------------------------------------
+## a configured command line runs without a shell when it is only words (quotes allowed); one with shell syntax
+## (pipes, redirection, groups, variables, globs) goes to the host's sh: /bin/sh, or sh found through $PATH
+fn hio_meta(c) = c == "|" or c == "&" or c == ";" or c == "<" or c == ">" or c == "(" or c == ")" or c == "{" or c == "}" or c == "$" or c == "`" or c == "*" or c == "?" or c == "\n" or c == "~"
+fn hio_has_meta(s, i) = if i >= count(s) then 0 else if hio_meta(at(s, i)) then 1 else hio_has_meta(s, i + 1)
+## words of a command line: blanks separate, '...' and "..." quote (a backslash quotes the next byte outside '...')
+fn hio_words_go(s, i, cur, has, q, acc) = if i >= count(s) then (if has == 1 then hio_rev(Cons(cur, acc), Nil) else hio_rev(acc, Nil)) else let c = at(s, i) in if q == "" and (c == " " or c == "\t") then hio_words_go(s, i + 1, "", 0, "", if has == 1 then Cons(cur, acc) else acc) else if q == "" and (c == "'" or c == "\"") then hio_words_go(s, i + 1, cur, 1, c, acc) else if q != "" and c == q then hio_words_go(s, i + 1, cur, 1, "", acc) else if c == "\\" and q != "'" and i + 1 < count(s) then hio_words_go(s, i + 2, cur + at(s, i + 1), 1, q, acc) else hio_words_go(s, i + 1, cur + c, 1, q, acc)
+fn hio_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => hio_rev(t, Cons(h, acc))
+fn hio_words(s) = hio_words_go(s, 0, "", 0, "", Nil)
+fn hio_sh() = if fs_path_exists("/bin/sh") == 1 then "/bin/sh" else hio_which("sh")
+fn hio_cmd_words(ws, inp, out, err, ms) = match ws
+    Nil        => 256
+    Cons(p, a) => hio_osrun_ict(p, a, inp, out, err, ms)
+## run command line `cmd` with stdin from inp, stdout/stderr to out/err, killed after ms milliseconds
+fn hio_cmdline_ict(cmd, inp, out, err, ms) = if hio_has_meta(cmd, 0) == 0 then hio_cmd_words(hio_words(cmd), inp, out, err, ms) else let sh = hio_sh() in if sh == "" then (let w = fs_write_sync(err, "no sh on this host for: " + cmd + "\n") in 32512) else os_run_input_capture_timeout(sh, Cons("-c", Cons(cmd, Nil)), inp, out, err, ms)
+
+## drop-in replacements of the process builtins: known programs run here, every other one is started as before
+fn hio_osrun(prog, args) = if prog == "/usr/bin/env" then hio_with_env(args, fn(p, a) => hio_osrun(p, a)) else let n = hio_emulated(prog) in if n != "" then hio_run(n, args) else os_run(hio_resolve(prog), args)
+fn hio_osrun_c(prog, args, out, err) = if prog == "/usr/bin/env" then hio_with_env(args, fn(p, a) => hio_osrun_c(p, a, out, err)) else let n = hio_emulated(prog) in if n != "" then hio_run_capture(n, args, out, err) else os_run_capture(hio_resolve(prog), args, out, err)
+fn hio_osrun_ct(prog, args, out, err, ms) = if prog == "/usr/bin/env" then hio_with_env(args, fn(p, a) => hio_osrun_ct(p, a, out, err, ms)) else let n = hio_emulated(prog) in if n != "" then hio_run_capture(n, args, out, err) else os_run_capture_timeout(hio_resolve(prog), args, out, err, ms)
+## os_run_input_capture_timeout with the same routing (env, known programs)
+fn hio_osrun_ict(prog, args, inp, out, err, ms) = if prog == "/usr/bin/env" then hio_with_env(args, fn(p, a) => hio_osrun_ict(p, a, inp, out, err, ms)) else let n = hio_emulated(prog) in if n != "" then hio_run_capture(n, args, out, err) else os_run_input_capture_timeout(hio_resolve(prog), args, inp, out, err, ms)
+
+## ---- laws and tests ---------------------------------------------------------------------------------------
+law hio_status_is_exit_code_law(ok: int) = if ok == 1 then hio_status(ok) == 0 else hio_status(ok) == 256
+
+fn test_hio_posix_paths() = hio_posix("C:\\Users\\x\\.lume") == "/c/Users/x/.lume" and hio_posix("/home/x") == "/home/x" and hio_posix("D:/a/b") == "/d/a/b"
+fn test_hio_base_names() = hio_base("/a/b/c.txt") == "c.txt" and hio_base("/a/b/") == "b" and hio_base("c") == "c"
+fn test_hio_octal_modes() = hio_octal("600", 0, 0) == 384 and hio_octal("755", 0, 0) == 493 and hio_octal("8", 0, 0) < 0
+fn test_hio_flags_and_paths() = hio_flags(Cons("-rf", Cons("x", Cons("-T", Nil)))) == "rfT" and count(hio_paths(Cons("-p", Cons("a", Cons("b", Nil))))) == 2
+fn test_hio_tree_roundtrip() = let base = "build/hostio_probe" in let r0 = hio_remove_tree(base) in let m = hio_mkdir_p(base + "/a/b/c") in let w = fs_write_sync(base + "/a/b/c/f.txt", "x\ny") in let w2 = fs_write_sync(base + "/a/top.txt", "t") in let cp = hio_run("cp", Cons("-R", Cons(base + "/a", Cons(base + "/copy", Nil)))) in let same = fs_read_file(base + "/copy/b/c/f.txt") == "x\ny" in let mv = hio_run("mv", Cons("-f", Cons(base + "/copy/top.txt", Cons(base + "/moved.txt", Nil)))) in let moved = fs_read_file(base + "/moved.txt") == "t" and fs_path_exists(base + "/copy/top.txt") == 0 in let into = hio_run("cp", Cons("-f", Cons(base + "/moved.txt", Cons(base + "/a", Nil)))) in let inside = fs_read_file(base + "/a/moved.txt") == "t" in let rm = hio_run("rm", Cons("-rf", Cons(base, Nil))) in m == 1 and cp == 0 and same and mv == 0 and moved and into == 0 and inside and rm == 0 and fs_path_exists(base) == 0
+fn test_hio_rm_missing_with_and_without_force() = hio_run("rm", Cons("-f", Cons("build/hostio_never_there", Nil))) == 0 and hio_run("rm", Cons("build/hostio_never_there", Nil)) == 256
+fn test_hio_mkdir_p_existing_is_success() = hio_mkdir_p("build") == 1 and hio_run("mkdir", Cons("-p", Cons("build", Nil))) == 0
+fn test_hio_chmod_modes() = let p = "build/hostio_mode_probe" in let w = fs_write_sync(p, "s") in let a = hio_run("chmod", Cons("600", Cons(p, Nil))) in let b = hio_run("chmod", Cons("+x", Cons(p, Nil))) in let c = hio_run("chmod", Cons("9z", Cons(p, Nil))) in let r = fs_remove(p) in a == 0 and b == 0 and c == 256 and r == 1
+fn test_hio_home_is_posix() = let h = hio_home() in count(h) > 0 and at(h, 0) == "/"
+fn test_hio_env_scoped() = let before = os_getenv("LUME_HIO_PROBE") in let r = hio_with_env(Cons("LUME_HIO_PROBE=on", Cons("x", Nil)), fn(p, a) => if os_getenv("LUME_HIO_PROBE") == "on" then 0 else 256) in r == 0 and os_getenv("LUME_HIO_PROBE") == before
+fn test_hio_setenv_unsetenv() = os_setenv("LUME_HIO_X", "1") == 1 and os_getenv("LUME_HIO_X") == "1" and os_setenv("LUME_HIO_X", "2") == 1 and os_getenv("LUME_HIO_X") == "2" and os_unsetenv("LUME_HIO_X") == 1 and os_getenv("LUME_HIO_X") == "" and os_setenv("A=B", "x") == 0 and os_setenv("", "x") == 0
+fn test_hio_civil_dates() = let a = hio_civil(0) in let b = hio_civil(19723) in let c = hio_civil(11016) in a.y == 1970 and a.m == 1 and a.d == 1 and b.y == 2024 and b.m == 1 and b.d == 1 and c.y == 2000 and c.m == 2 and c.d == 29
+fn test_hio_strftime() = hio_strf("%Y-%m-%dT%H:%M:%SZ", 0, 1704067261, "") == "2024-01-01T00:01:01Z" and hio_strf("%a %b %e", 0, 0, "") == "Thu Jan  1" and hio_strf("100%%", 0, 0, "") == "100%"
+fn test_hio_uname_sysname() = let s = os_uname_field(0) in s == "Linux" or s == "Windows_NT"
+fn test_hio_resolve_keeps_existing_and_relative() = hio_resolve("build") == "build" and hio_resolve("/usr/bin/lume-never-installed-xyz") == "/usr/bin/lume-never-installed-xyz" and count(hio_path_dirs()) > 0
+fn test_hio_command_words() = let w = hio_words("prog -a 'two words' \"x y\" z\\ w") in count(w) == 5 and hio_first(w, "") == "prog" and hio_has_meta("qemu-riscv64 -L . ch.elf", 0) == 0 and hio_has_meta("sed s/a/b/ | x", 0) == 1

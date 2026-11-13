@@ -372,5 +372,23 @@ fn ldw_row(line, tab) = let lb = ldw_label(line) in let ln = if lb == "" then 0 
 fn ldw_pass(s, i, n, tab, acc) = if i >= n then acc else let e = lil_line_end(s, i) in ldw_pass(s, e + 1, n, tab, Cons(if e >= n then ldw_row(slice(s, i, e), tab) else ldw_row(slice(s, i, e), tab) + "\n", acc))
 fn ldw_annotate(asm, src, path) = "    .file 1 \"" + path + "\"\n" + joinall(own rev(ldw_pass(asm, 0, count(asm), ldw_fnlines(lex(src, 0), Nil), Nil)))
 fn ldw_path(i) = if i + 1 >= os_arg_count() then "" else if os_arg_at(i) == "--dwarf" then os_arg_at(i + 1) else ldw_path(i + 1)
-fn lumec_main(src) = if os_arg_count() >= 2 and os_arg_at(1) == "--ast-hash" then lumec_mode_asthash(src) else if os_arg_count() >= 5 and os_arg_at(1) == "--module" then lumec_mode_module(os_arg_at(2), os_arg_at(3), os_arg_at(4), src) else if os_arg_count() >= 2 and os_arg_at(1) == "--link" then lumec_mode_link(src) else let dp = ldw_path(1) in if dp == "" then lumec_compile(src) else ldw_annotate(lumec_compile(src), src, dp)
+## --- `lumec --win64`: the same program for Windows x64 (assembled by `lasm --pe`, docs/42-windows-native-toolchain.md).
+## The Linux program is kept as it is; three textual changes make it a Windows program: the hosted start-up
+## (runtime_hosted_init) becomes rt_win64_init, every `syscall` becomes `call __win_syscall` (the Linux syscall ABI
+## implemented on KERNEL32 in runtime_core.lume), and the Win64 layer with its imports is appended. A program
+## without the hosted start-up (a `.kernel` image) is refused with [W0064]. Linear in the size of the assembly.
+fn lw_flag(i) = if i >= os_arg_count() then 0 else if os_arg_at(i) == "--win64" then 1 else lw_flag(i + 1)
+fn lw_match(s, i, pat, j, m) = if j >= m then 1 else if at(s, i + j) != at(pat, j) then 0 else lw_match(s, i, pat, j + 1, m)
+fn lw_go(c, i, start, acc) = if i > c.n - c.m then Cons(slicen(c.s, c.n, start, c.n), acc) else if lw_match(c.s, i, c.pat, 0, c.m) == 1 then lw_go(c, i + c.m, i + c.m, Cons(c.rep, Cons(slicen(c.s, c.n, start, i), acc))) else lw_go(c, i + 1, start, acc)
+fn lw_replace(s, pat, rep) = joinall(own rev(lw_go({s: s, n: count(s), pat: pat, m: count(pat), rep: rep}, 0, 0, Nil)))
+# Windows commits the stack one guard page at a time: a frame of 4 KiB or more touches each page as it grows (as __chkstk does)
+fn lw_pend(s, n, i) = if i < n and isdigit(at(s, i)) then lw_pend(s, n, i + 1) else i
+fn lw_pages(k, acc) = if k <= 0 then acc else lw_pages(k - 1, acc + "    subq $4096, %rsp\n    movq $0, (%rsp)\n")
+fn lw_probe_seq(v) = lw_pages(v / 4096, "") + (if v % 4096 > 0 then "    subq $" + str(v % 4096) + ", %rsp\n" else "")
+fn lw_big_sub(c, i, e) = e > i + 10 and e + 7 <= c.n and lw_match(c.s, e, ", %rsp\n", 0, 7) == 1 and toint(slicen(c.s, c.n, i + 10, e)) >= 4096
+fn lw_pgo(c, i, start, acc) = if i > c.n - 10 then Cons(slicen(c.s, c.n, start, c.n), acc) else if lw_match(c.s, i, "    subq $", 0, 10) == 1 then lw_pgo_sub(c, i, start, acc, lw_pend(c.s, c.n, i + 10)) else lw_pgo(c, i + 1, start, acc)
+fn lw_pgo_sub(c, i, start, acc, e) = if lw_big_sub(c, i, e) then lw_pgo(c, e + 7, e + 7, Cons(lw_probe_seq(toint(slicen(c.s, c.n, i + 10, e))), Cons(slicen(c.s, c.n, start, i), acc))) else lw_pgo(c, i + 1, start, acc)
+fn lw_probe(s) = joinall(own rev(lw_pgo({s: s, n: count(s)}, 0, 0, Nil)))
+fn lw_win64(asm) = let a1 = lw_replace(asm, runtime_hosted_init(), rt_win64_init()) in if a1 == asm then ctfail("lumec: [W0064] --win64 needs a hosted program (a `.kernel` image has no Windows form)\n") else rt_win64_imports() + lw_probe(lw_replace(lw_replace(a1, "    syscall\n", "    call __win_syscall\n"), ".Lrt_platform:\n    .asciz \"linux\"\n", ".Lrt_platform:\n    .asciz \"windows\"\n")) + rt_win64_layer()
+fn lumec_main(src) = if os_arg_count() >= 2 and os_arg_at(1) == "--ast-hash" then lumec_mode_asthash(src) else if os_arg_count() >= 5 and os_arg_at(1) == "--module" then lumec_mode_module(os_arg_at(2), os_arg_at(3), os_arg_at(4), src) else if os_arg_count() >= 2 and os_arg_at(1) == "--link" then lumec_mode_link(src) else if lw_flag(1) == 1 then lw_win64(lumec_compile(src)) else let dp = ldw_path(1) in if dp == "" then lumec_compile(src) else ldw_annotate(lumec_compile(src), src, dp)
 print with handler CompilerIO { fn read_source() -> str = readall() } in lumec_main(read_source())

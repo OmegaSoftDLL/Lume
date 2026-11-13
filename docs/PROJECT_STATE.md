@@ -72,6 +72,10 @@ equivalent: hosts where the x86_64-linux-elf toolchain cannot run (macOS, Window
 via `LUME0_RUNNER`), surface `.lume` `check`/`run`/`test`, the `.lume` formatting fallback, and
 the POSIX installer emit. That legacy dispatcher is reported migration liability — migrate pieces
 to Lume rather than growing it.
+On those hosts `lume fmt` refuses `.src` (file left unchanged) instead of guessing. The plan and status
+of the native Windows toolchain (`lasm --pe`, the Win64 runtime layer, processes with a real fork, sockets,
+`hostio.src`; status and the remaining work to full parity in §9, 2026-11-13) are in
+`docs/42-windows-native-toolchain.md`.
 Seed CLI (`bootstrap/lume0/lume0`):
 - `lume0 check <f.lume> [--json]` — lex + parse + **name resolution + basic type + duplicate checks**.
 - `lume0 parse <f.lume> [--json]` — AST (parse only, no semantics).
