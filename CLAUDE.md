@@ -54,6 +54,23 @@ Everything lives in `build/windows-native/` (git-ignored; the sources there were
 - `lume` on this machine from PowerShell is the released toolchain inside WSL, not the port; the port is
   `build\windows-native\inst\bin\lume.exe`.
 
+## Progress 2026-11-13 evening (newest first)
+
+- Both trees rebuilt complete after the low-memory stop (mem/inst_part.sh, batches; drop the WSL page cache between
+  batches when memory is short: `echo 3 > /proc/sys/vm/drop_caches`). Run long batteries in the 6 parts
+  (tests_part_0x, progs_part_0x) so each fits a 10-minute foreground call, then merge into ta_* / pr_*.
+- Tests, full universe, new trees: Windows = Linux test by test (1773 passed, 15 failed on both; the 15 are the four
+  precondition files, which pass 3/7/13/13 on both with precond_*.{sh,ps1}; sidecar 127 on both). Linux programs
+  re-run (pr_l): 87 exit 0, 117 exit 3, 1 timeout (ledger_server). Windows programs re-run in progress (pr_w_0x).
+- `lume run` on an @freestanding kernel: same message and exit 3 on both (commit 350b68c).
+- The owner uses the native Windows toolchain installed in C:\Lume (native installer). After every tested step
+  rebuilt into inst/bin run `mem/update_install.ps1` and tell him. Never touch C:\Users\Ricardo.Bueno\LUMEDESK or
+  install over ~/.lume. The user PATH still resolves `lume` to the WSL release: change it only on his order.
+- Told the owner: macOS targets are only the verified-core subset (write/exit syscalls); a LumeDesk for macOS needs a
+  Darwin runtime layer like the Win64 one. He has not decided yet whether to add it to §9.
+- Next: compare pr_w with pr_l, then the 30 gates (mem/gates_*.{sh,ps1}; six still call /bin/sh), then the 114 CLI
+  commands, then §9 items 10 (Win32 GUI) and 11 (TLS over sockets) - the two the LumeDesk needs most.
+
 ## Progress 2026-11-13 afternoon (newest first; details in the commit messages and doc 42 §9)
 
 - Done and committed: §9 items 2 (os_shm_map), 3 (native installer), 5 (epoll), 6 (io_uring), 7 (C FFI, Win64 ABI,
