@@ -71,6 +71,9 @@
     .extern KERNEL32.dll!AddVectoredExceptionHandler
     .extern KERNEL32.dll!LoadLibraryExA
     .extern KERNEL32.dll!GetProcAddress
+    .extern KERNEL32.dll!CreateFileMappingW
+    .extern KERNEL32.dll!MapViewOfFileEx
+    .extern KERNEL32.dll!UnmapViewOfFile
     .section .text
 # __win_syscall: the Linux x86-64 syscall ABI on top of Win64.
 # In: rax = Linux syscall number, rdi rsi rdx r10 r8 r9 = arguments. Out: rax (>= 0, or -errno).
@@ -911,6 +914,11 @@ __win_syscall:
     andq $32, %rax
     testq %rax, %rax
     jz .Lws_enodev
+# MAP_SHARED | MAP_ANONYMOUS (os_shm_map): a section, still shared with a fork child
+    movq %r15, %rax
+    andq $1, %rax
+    testq %rax, %rax
+    jnz .Lws_mmap_shm
 # MAP_NORESERVE + read/write (not exec): reserve now, commit on first touch
     movq %r15, %rax
     andq $16384, %rax
@@ -960,6 +968,89 @@ __win_syscall:
     movq %r13, %rdx
     call .Lws_reg_add
     jmp .Lws_ret
+# shared anonymous mapping: a pagefile-backed section mapped at an address taken top-down (free in a fork child too,
+# like every region of the layer), recorded in .Lws_shm (base, size, section) and not in the private registry: a
+# fork maps the same section into the child instead of copying it
+.Lws_mmap_shm:
+    testq %r13, %r13
+    jz .Lws_einval
+    leaq .Lws_shm(%rip), %rax
+    movq $64, %rcx
+.Lws_ms_slot:
+    cmpq $0, (%rax)
+    je .Lws_ms_have
+    addq $24, %rax
+    decq %rcx
+    jnz .Lws_ms_slot
+    jmp .Lws_enomem
+.Lws_ms_have:
+    movq %rax, 80(%rsp)
+    xorq %rcx, %rcx
+    movq %r13, %rdx
+    movq $1056768, %r8
+    movq $1, %r9
+    call VirtualAlloc
+    testq %rax, %rax
+    jz .Lws_enomem
+    movq %rax, 96(%rsp)
+    movq %rax, %rcx
+    xorq %rdx, %rdx
+    movq $32768, %r8
+    call VirtualFree
+    movq $-1, %rcx
+    xorq %rdx, %rdx
+    movq $4, %r8
+    movq %r13, %r9
+    shrq $32, %r9
+    movq %r13, %rax
+    shlq $32, %rax
+    shrq $32, %rax
+    movq %rax, 32(%rsp)
+    movq $0, 40(%rsp)
+    call CreateFileMappingW
+    testq %rax, %rax
+    jz .Lws_enomem
+    movq %rax, 88(%rsp)
+    movq %rax, %rcx
+    movq $6, %rdx
+    xorq %r8, %r8
+    xorq %r9, %r9
+    movq %r13, 32(%rsp)
+    movq 96(%rsp), %rax
+    movq %rax, 40(%rsp)
+    call MapViewOfFileEx
+    testq %rax, %rax
+    jz .Lws_ms_fail
+    movq 80(%rsp), %rcx
+    movq %rax, (%rcx)
+    movq %r13, 8(%rcx)
+    movq 88(%rsp), %rdx
+    movq %rdx, 16(%rcx)
+    jmp .Lws_ret
+.Lws_ms_fail:
+    movq 88(%rsp), %rcx
+    call CloseHandle
+    jmp .Lws_enomem
+# rax = MapViewOfFileNuma2 (kernelbase.dll, loaded on first use), or 0. Keeps rbx, rsi, rdi, r12-r15.
+.Lws_mvn2:
+    movq .Lws_mvn2_fn(%rip), %rax
+    testq %rax, %rax
+    jnz .Lws_mvn2_out
+    subq $40, %rsp
+    leaq .Lws_kbase_dll(%rip), %rcx
+    xorq %rdx, %rdx
+    movq $2048, %r8
+    call LoadLibraryExA
+    testq %rax, %rax
+    jz .Lws_mvn2_none
+    movq %rax, %rcx
+    leaq .Lws_mvn2_proc(%rip), %rdx
+    call GetProcAddress
+    movq %rax, .Lws_mvn2_fn(%rip)
+.Lws_mvn2_none:
+    addq $40, %rsp
+.Lws_mvn2_out:
+    ret
 .Lws_mprotect:
     testq %r14, %r14
     jz .Lws_mprotect_none
@@ -985,6 +1076,29 @@ __win_syscall:
     call VirtualFree
     jmp .Lws_zero
 .Lws_munmap:
+    testq %r12, %r12
+    jz .Lws_mu_priv
+    leaq .Lws_shm(%rip), %rax
+    movq $64, %rcx
+.Lws_mu_shm:
+    cmpq %r12, (%rax)
+    je .Lws_mu_shm_hit
+    addq $24, %rax
+    decq %rcx
+    jnz .Lws_mu_shm
+    jmp .Lws_mu_priv
+.Lws_mu_shm_hit:
+    movq %rax, 80(%rsp)
+    movq %r12, %rcx
+    call UnmapViewOfFile
+    movq 80(%rsp), %rax
+    movq 16(%rax), %rcx
+    movq $0, (%rax)
+    movq $0, 8(%rax)
+    movq $0, 16(%rax)
+    call CloseHandle
+    jmp .Lws_zero
+.Lws_mu_priv:
     movq %r12, %rcx
     call .Lws_reg_del
     leaq .Lws_nrt(%rip), %rax
@@ -2203,6 +2317,48 @@ __win_syscall:
     addq $16, %r15
     decq %r13
     jnz .Lws_fr_regs
+# every shared mapping (os_shm_map): the same section mapped into the child at the same address, and its handle
+# duplicated into the child so its own munmap works
+    leaq .Lws_shm(%rip), %r15
+    movq $64, %r13
+.Lws_fr_shm:
+    cmpq $0, (%r15)
+    je .Lws_fr_snext
+    call .Lws_mvn2
+    testq %rax, %rax
+    jz .Lws_fr_abort
+    movq 16(%r15), %rcx
+    movq .Lws_fk_proc(%rip), %rdx
+    xorq %r8, %r8
+    movq (%r15), %r9
+    movq 8(%r15), %r10
+    movq %r10, 32(%rsp)
+    movq $0, 40(%rsp)
+    movq $4, 48(%rsp)
+    movq $-1, 56(%rsp)
+    call *%rax
+    cmpq (%r15), %rax
+    jne .Lws_fr_abort
+    call GetCurrentProcess
+    movq %rax, %rcx
+    movq 16(%r15), %rdx
+    movq .Lws_fk_proc(%rip), %r8
+    leaq 88(%rsp), %r9
+    movq $0, 88(%rsp)
+    movq $0, 32(%rsp)
+    movq $0, 40(%rsp)
+    movq $2, 48(%rsp)
+    call DuplicateHandle
+    movq .Lws_fk_proc(%rip), %rcx
+    leaq 16(%r15), %rdx
+    leaq 88(%rsp), %r8
+    movq $8, %r9
+    movq $0, 32(%rsp)
+    call WriteProcessMemory
+.Lws_fr_snext:
+    addq $24, %r15
+    decq %r13
+    jnz .Lws_fr_shm
 # the stack: from the page holding rsp to the top of the committed stack
     movq %rsp, %rcx
     leaq 48(%rsp), %rdx
@@ -3664,6 +3820,10 @@ __win_image_hi:
     .asciz "bcrypt.dll"
 .Lws_bcrypt_proc:
     .asciz "BCryptGenRandom"
+.Lws_kbase_dll:
+    .asciz "kernelbase.dll"
+.Lws_mvn2_proc:
+    .asciz "MapViewOfFileNuma2"
 .Lws_devstdin:
     .asciz "/dev/stdin"
     .section .bss
@@ -3695,3 +3855,5 @@ __win_image_hi:
     .lcomm .Lws_envp_arg, 8
     .lcomm .Lws_cpres, 8
     .lcomm .Lws_cperr, 8
+    .lcomm .Lws_shm, 1536
+    .lcomm .Lws_mvn2_fn, 8

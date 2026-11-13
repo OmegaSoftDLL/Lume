@@ -10,6 +10,7 @@ TOOLS="lume_driver lumec lasm lmod lcaas lcert lchameleon lcli lconcurrency lcry
 ok=0; fail=0
 for n in $TOOLS; do
   src=compiler/stage1/$n.src
+  [ "$n" = native_installer ] && src=scripts/install.src
   [ -f "$src" ] || src=scripts/$n.src
   [ -f "$src" ] || src=tests/harness/$n.src
   if [ ! -f "$src" ]; then echo "MISSING SOURCE $n"; fail=$((fail+1)); continue; fi
