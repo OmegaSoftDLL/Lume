@@ -62,10 +62,14 @@ memory battery (62/62 identical), a 24-file test sample and `net.src`.
 
 Open in the current step, in order:
 
-1. Full coverage: the Linux run was in progress (`mem/ta_l`, `mem/pr_l`); then the same on Windows (`ta_w`, `pr_w`)
-   and the comparison; fix every difference. Linux baseline before the last fixes: 1511 passed, 16 failed in 18
-   files — 1 was a regression (fs_remove, fixed with `fs_rmdir`), 11 were modules not found in the test trees
-   (fixed by the links), 6 need the preconditions `bootstrap/lume0/tests/run.sh` sets up (working directory, probes).
+1. Full coverage. Linux is done on this checkout (`mem/ta_l`, `mem/pr_l`, 2026-11-13 ~10:20): 1769 passed, 16
+   failed, 6 files not zero — `fs_path_exists_ok` and `fs_read_byte_ok` (paths relative to `bootstrap/lume0/tests`:
+   run them from there, as `run.sh` does), `os_run_ok` and `process_ok` (need the probes built first; `os_run_ok` is
+   13/13 on Linux with them), `examples/interop/sidecar/host.lume` (needs the example's C library built), and
+   `tests/registry/gate.src` (`test_replace_once_does_not_duplicate_text` fails with the released toolchain too: an
+   old defect, to fix). Programs: 88 exit 0, 114 exit 3 (mostly negative cases), 2 exit 127 and 1 timeout to look at.
+   Next: the same on Windows (`tests_windows.ps1 -List tests_all.txt -Out ta_w`, `progs_windows.ps1`), compare with
+   the Linux directories file by file, fix every difference, then set up the preconditions and run those files too.
 2. `os_run_ok` on Windows: 11/13; the two failures give a probe 1 s and Defender holds it longer — reconfirm.
 3. `lasm_gate` with the new `indirect` family (`call *%reg`, `jmp *%reg`), and the self-`kill` signal test.
 4. Gates (~35) and the 114 CLI commands on Windows.
