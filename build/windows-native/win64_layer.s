@@ -138,6 +138,12 @@ __win_syscall:
     je .Lws_epwait
     cmpq $281, %rax
     je .Lws_epwait
+    cmpq $425, %rax
+    je .Lws_ur_setup
+    cmpq $426, %rax
+    je .Lws_ur_enter
+    cmpq $427, %rax
+    je .Lws_ur_reg
     cmpq $10, %rax
     je .Lws_mprotect
     cmpq $11, %rax
@@ -1333,6 +1339,79 @@ __win_syscall:
     jmp .Lws_epw_loop
 .Lws_epw_done:
     movq %rdi, %rax
+    jmp .Lws_ret
+# ---- io_uring through its three system calls. Lume programs do not map the rings (no builtin maps an fd), so the
+# queues are always empty: setup validates and returns an io_uring fd (kind 7) with sq_entries / cq_entries filled,
+# enter submits nothing (0) and waits for ever when asked for completions, register answers as Linux 6.18 does for
+# the NULL argument the builtin passes (.Lws_ur_tab: errno for nr_args 0 and >= 1; 255 = a new personality id).
+.Lws_ur_setup:
+    testq %r12, %r12
+    jz .Lws_einval
+    cmpq $32768, %r12
+    jg .Lws_einval
+    movq 8(%r13), %rax
+    shlq $32, %rax
+    shrq $49, %rax
+    testq %rax, %rax
+    jnz .Lws_einval
+    movq $1, %rcx
+.Lws_urs_p2:
+    cmpq %r12, %rcx
+    jge .Lws_urs_fill
+    shlq $1, %rcx
+    jmp .Lws_urs_p2
+.Lws_urs_fill:
+    movq %rcx, %rax
+    shlq $33, %rax
+    orq %rcx, %rax
+    movq %rax, (%r13)
+    movq $7, %r8
+    xorq %r9, %r9
+    call .Lws_fd_new
+    jmp .Lws_ret
+.Lws_ur_enter:
+    call .Lws_fdh
+    testq %rcx, %rcx
+    jz .Lws_ebadf
+    cmpq $7, %rcx
+    jne .Lws_ur_notsup
+    movq %r15, %rax
+    andq $1, %rax
+    jz .Lws_zero
+    testq %r14, %r14
+    jle .Lws_zero
+    movq $4294967295, %rcx
+    call Sleep
+    jmp .Lws_zero
+.Lws_ur_reg:
+    call .Lws_fdh
+    testq %rcx, %rcx
+    jz .Lws_ebadf
+    cmpq $7, %rcx
+    jne .Lws_ur_notsup
+    testq %r13, %r13
+    js .Lws_einval
+    cmpq $40, %r13
+    jg .Lws_einval
+    movq %r13, %rcx
+    shlq $1, %rcx
+    testq %r15, %r15
+    jz .Lws_urr_c0
+    incq %rcx
+.Lws_urr_c0:
+    leaq .Lws_ur_tab(%rip), %rax
+    addq %rcx, %rax
+    movzbq (%rax), %rax
+    cmpq $255, %rax
+    je .Lws_urr_pers
+    negq %rax
+    jmp .Lws_ret
+.Lws_urr_pers:
+    incq .Lws_ur_pers(%rip)
+    movq .Lws_ur_pers(%rip), %rax
+    jmp .Lws_ret
+.Lws_ur_notsup:
+    movq $-95, %rax
     jmp .Lws_ret
 # ---- extern "c" functions: bound on first call, like the lazy binding of the Linux loader -------------------------
 # __win_ffi_resolve: rdi = symbol name (NUL-terminated). Looks the symbol up in each library of __lume_ffi_libs
@@ -4233,6 +4312,9 @@ __win_image_hi:
     .asciz ": symbol lookup error: "
 .Lffr_m2:
     .asciz ": undefined symbol: "
+# io_uring_register(fd, op, NULL, nr) for op 0..40: errno with nr_args 0, then with nr_args >= 1 (Linux 6.18)
+.Lws_ur_tab:
+    .byte 14, 14, 6, 22, 14, 14, 6, 22, 22, 14, 6, 22, 22, 14, 22, 14, 22, 22, 255, 22, 22, 0, 77, 77, 77, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 0, 22, 22, 22, 22, 14, 22, 14, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 0, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 0, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22
 # the libraries of `lume build --link` (the driver replaces this line); "@..." = none
 __lume_ffi_libs:
     .asciz "@lume-ffi-libs@"
@@ -4269,4 +4351,5 @@ __lume_ffi_libs:
     .lcomm .Lws_cperr, 8
     .lcomm .Lws_shm, 1536
     .lcomm .Lws_ept, 8192
+    .lcomm .Lws_ur_pers, 8
     .lcomm .Lws_mvn2_fn, 8
