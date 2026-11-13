@@ -1,0 +1,44 @@
+## progs_verdict.src -- the verdict of every program of a battery, from its recorded status and output.
+## stdin: "@list <program list>" and "@dir <result dir>" (paths from the repository root, the working directory).
+## A program passes when it does what it is for:
+##   - a fixture whose first line is "## expect: reject CODE" must be refused with [CODE] (ownership_gate's rule);
+##   - "## expect: run TEXT" must exit 0 and print exactly TEXT and a newline;
+##   - tests/conformance/stage1/fail_closed/CODE_name.src must be refused with [CODE];
+##   - every other program must exit 0 (the runners already give kernels, servers and gate helpers their own
+##     invocation and record 0 when that invocation succeeds).
+## Output: "<name> pass" or "<name> FAIL <why>" per program, then "verdict: <n> programs, <f> failing".
+
+fn pv_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else pv_line_end(s, i + 1)
+fn pv_lines(s, i) = if i >= count(s) then Nil else let e = pv_line_end(s, i) in Cons(slice(s, i, e), pv_lines(s, e + 1))
+fn pv_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
+fn pv_has_at(s, p, i) = if i + count(p) > count(s) then 0 else if slice(s, i, i + count(p)) == p then 1 else pv_has_at(s, p, i + 1)
+fn pv_has(s, p) = pv_has_at(s, p, 0)
+fn pv_chomp(s) = if count(s) > 0 and (at(s, count(s) - 1) == "\r" or at(s, count(s) - 1) == " ") then pv_chomp(slice(s, 0, count(s) - 1)) else s
+fn pv_value(lines, key) = match lines
+    Nil        => ""
+    Cons(h, t) => if pv_starts(h, key) then pv_chomp(slice(h, count(key), count(h))) else pv_value(t, key)
+
+## the result name of a program: '/' -> '_', without .src
+fn pv_mangle_go(s, i, acc) = if i >= count(s) then acc else pv_mangle_go(s, i + 1, acc + (if at(s, i) == "/" then "_" else at(s, i)))
+fn pv_name(f) = let m = pv_mangle_go(f, 0, "") in if count(m) > 4 and slice(m, count(m) - 4, count(m)) == ".src" then slice(m, 0, count(m) - 4) else m
+
+## the recorded status of a program in summary.txt ("<name> <status>"), -1 when it is missing
+fn pv_digits(s, i, acc) = if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then pv_digits(s, i + 1, acc * 10 + ord(at(s, i)) - 48) else acc
+fn pv_status(rows, n) = match rows
+    Nil        => 0 - 1
+    Cons(h, t) => if pv_starts(h, n + " ") then pv_digits(h, count(n) + 1, 0) else pv_status(t, n)
+
+fn pv_base(f) = let s = pv_last_slash(f, count(f) - 1) in slice(f, s + 1, count(f))
+fn pv_last_slash(f, i) = if i < 0 then 0 - 1 else if at(f, i) == "/" then i else pv_last_slash(f, i - 1)
+
+fn pv_reject(st, err, code) = if st == 0 then "FAIL accepted, but must be refused with [" + code + "]" else if pv_has(err, "[" + code + "]") == 0 then "FAIL refused without [" + code + "]" else "pass"
+fn pv_run(st, out, want) = if st != 0 then "FAIL exit " + str(st) + ", expected to run and print '" + want + "'" else if out != want + "\n" then "FAIL printed '" + pv_chomp(out) + "', expected '" + want + "'" else "pass"
+fn pv_judge(f, st, out, err) = let head = pv_chomp(slice(fs_read_file(f), 0, pv_line_end(fs_read_file(f), 0))) in if st < 0 then "FAIL no result recorded" else if pv_starts(head, "## expect: reject ") then pv_reject(st, err, slice(head, 18, count(head))) else if pv_starts(head, "## expect: run ") then pv_run(st, out, slice(head, 15, count(head))) else if pv_has(f, "/fail_closed/") == 1 then pv_reject(st, err, slice(pv_base(f), 0, 5)) else if st == 0 then "pass" else "FAIL exit " + str(st)
+
+fn pv_all(progs, rows, dir, n, bad, acc) = match progs
+    Nil        => acc + "verdict: " + str(n) + " programs, " + str(bad) + " failing\n"
+    Cons(f, t) => if pv_chomp(f) == "" then pv_all(t, rows, dir, n, bad, acc) else let p = pv_chomp(f) in let nm = pv_name(p) in let v = pv_judge(p, pv_status(rows, nm), fs_read_file(dir + "/" + nm + ".out"), fs_read_file(dir + "/" + nm + ".err")) in pv_all(t, rows, dir, n + 1, if v == "pass" then bad else bad + 1, acc + nm + " " + v + "\n")
+
+fn pv_main(input) = let ls = pv_lines(input, 0) in let list = pv_value(ls, "@list ") in let dir = pv_value(ls, "@dir ") in pv_all(pv_lines(fs_read_file(list), 0), pv_lines(fs_read_file(dir + "/summary.txt"), 0), dir, 0, 0, "")
+
+print pv_main(readall())
