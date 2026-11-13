@@ -38,8 +38,12 @@ fn strend(s, n, i, ls, ln, spos) = if i >= n then ctfail("lume: lex error [L0001
 fn lex_rev(xs, acc) = match xs
     Nil        => acc
     Cons(h, t) => lex_rev(t, Cons(h, acc))
-fn unesc1(c) = if c == "n" then "\n" else if c == "t" then "\t" else if c == "r" then "\r" else if c == "b" then chr(8) else if c == "f" then chr(12) else if c == "\\" or c == "\"" or c == "'" or c == "{" or c == "}" or c == "$" then c else if c == "0" then ctfail("lume: lex error [L0002]: '\\0' is not representable: native strings are NUL-terminated\n") else ctfail("lume: lex error [L0002]: unsupported escape sequence '\\" + c + "' in string literal (valid: \\n \\t \\r \\b \\f \\\\ \\\" \\' \\$ \\\{ \\\})\n")
-fn unescl_acc(s, i, n, acc) = if i >= n then lex_rev(acc, Nil) else if at(s, i) == "\\" and i + 1 < n then unescl_acc(s, i + 2, n, Cons(unesc1(at(s, i + 1)), acc)) else if at(s, i) == "\r" then unescl_acc(s, i + 1, n, acc) else unescl_acc(s, i + 1, n, Cons(at(s, i), acc))
+## \\xHH: exactly two hexadecimal digits, any byte 0..255 (a str carries every byte, NUL included)
+fn lex_hexd(c) = if isdigit(c) then ord(c) - 48 else if c >= "a" and c <= "f" then ord(c) - 87 else if c >= "A" and c <= "F" then ord(c) - 55 else 0 - 1
+fn lex_hexbyte(s, i, n) = let h = if i + 2 < n then lex_hexd(at(s, i + 2)) else 0 - 1 in let l = if i + 3 < n then lex_hexd(at(s, i + 3)) else 0 - 1 in if h < 0 or l < 0 then ctfail("lume: lex error [L0002]: '\\x' needs exactly two hexadecimal digits in string literal\n") else chr(h * 16 + l)
+
+fn unesc1(c) = if c == "n" then "\n" else if c == "t" then "\t" else if c == "r" then "\r" else if c == "b" then chr(8) else if c == "f" then chr(12) else if c == "\\" or c == "\"" or c == "'" or c == "{" or c == "}" or c == "$" then c else if c == "0" then chr(0) else ctfail("lume: lex error [L0002]: unsupported escape sequence '\\" + c + "' in string literal (valid: \\n \\t \\r \\b \\f \\0 \\xHH \\\\ \\\" \\' \\$ \\\{ \\\})\n")
+fn unescl_acc(s, i, n, acc) = if i >= n then lex_rev(acc, Nil) else if at(s, i) == "\\" and i + 1 < n and at(s, i + 1) == "x" then unescl_acc(s, i + 4, n, Cons(lex_hexbyte(s, i, n), acc)) else if at(s, i) == "\\" and i + 1 < n then unescl_acc(s, i + 2, n, Cons(unesc1(at(s, i + 1)), acc)) else if at(s, i) == "\r" then unescl_acc(s, i + 1, n, acc) else unescl_acc(s, i + 1, n, Cons(at(s, i), acc))
 fn unescl(s, i, n) = unescl_acc(s, i, n, Nil)
 fn strval(t) = let b = strbody(t) in joinall(own unescl(b, 0, count(b)))
 fn two(s, n, i) = slicen(s, n, i, if i + 2 > n then n else i + 2)

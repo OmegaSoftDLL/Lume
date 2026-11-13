@@ -124,15 +124,20 @@ fn ld_find_in_base(base, name) = if base == "" then "" else let p0 = base + "/" 
 
 fn ld_find_module(root, dir, name) = let eff_dir = if dir == "" then "." else dir in let f0 = ld_find_in_base(eff_dir, name) in if f0 != "" then f0 else let f_dot = ld_find_in_base(".", name) in if f_dot != "" then f_dot else let pdir = ld_dir(eff_dir) in let f1 = if pdir != "" then ld_find_in_base(pdir, name) else "" in if f1 != "" then f1 else let f_up = ld_find_in_base("..", name) in if f_up != "" then f_up else let shared = root + "/compiler/stage1/" + name + ".src" in if fs_path_exists(shared) == 1 then shared else ctfail("lmod: module '" + name + "' not found (native bundling cannot resolve module: " + name + ")\n")
 
+## the directory of the module that holds the `use` first, then the entry-based search of ld_find_module
+fn ld_find_module_in(root, idir, dir, name) = let fi = if idir == "" or idir == dir then "" else ld_find_in_base(idir, name) in if fi != "" then fi else ld_find_module(root, dir, name)
+
 fn ld_append(out, text) = if fs_append_sync(out, text) == 1 then 1 else ctfail("native bundling cannot append request: " + out + "\n")
 
-fn ld_collect_mem(root, dir, names, seen) = match names
+fn ld_collect_mem(root, dir, names, seen) = ld_collect_mem_in(root, dir, dir, names, seen)
+fn ld_collect_mem_in(root, idir, dir, names, seen) = match names
     Nil        => {seen: seen, chunks: Nil}
-    Cons(h, t) => if ld_member(seen, h) == 1 then ld_collect_mem(root, dir, t, seen) else let path = ld_find_module(root, dir, h) in let src = fs_read_file(path) in let chunk = "@module " + h + "\n" + src + "\n@end\n" in let sub = ld_collect_mem(root, dir, ld_imports_text(src), Cons(h, seen)) in let rest = ld_collect_mem(root, dir, t, sub.seen) in {seen: rest.seen, chunks: Cons(chunk, ld_list_append(sub.chunks, rest.chunks))}
+    Cons(h, t) => if ld_member(seen, h) == 1 then ld_collect_mem_in(root, idir, dir, t, seen) else let path = ld_find_module_in(root, idir, dir, h) in let src = fs_read_file(path) in let chunk = "@module " + h + "\n" + src + "\n@end\n" in let sub = ld_collect_mem_in(root, ld_dir(path), dir, ld_imports_text(src), Cons(h, seen)) in let rest = ld_collect_mem_in(root, idir, dir, t, sub.seen) in {seen: rest.seen, chunks: Cons(chunk, ld_list_append(sub.chunks, rest.chunks))}
 
-fn ld_collect(root, dir, out, names, seen) = match names
+fn ld_collect(root, dir, out, names, seen) = ld_collect_in(root, dir, dir, out, names, seen)
+fn ld_collect_in(root, idir, dir, out, names, seen) = match names
     Nil        => seen
-    Cons(h, t) => if ld_member(seen, h) == 1 then ld_collect(root, dir, out, t, seen) else let path = ld_find_module(root, dir, h) in let written = ld_append(out, "@module " + h + "\n" + fs_read_file(path) + "\n@end\n") in let next_seen = ld_collect(root, dir, out, ld_imports(path), Cons(h, seen)) in ld_collect(root, dir, out, t, next_seen)
+    Cons(h, t) => if ld_member(seen, h) == 1 then ld_collect_in(root, idir, dir, out, t, seen) else let path = ld_find_module_in(root, idir, dir, h) in let written = ld_append(out, "@module " + h + "\n" + fs_read_file(path) + "\n@end\n") in let next_seen = ld_collect_in(root, ld_dir(path), dir, out, ld_imports(path), Cons(h, seen)) in ld_collect_in(root, idir, dir, out, t, next_seen)
 
 fn ld_entry_name(source) = let base = ld_base(source) in if count(base) > 4 and slice(base, count(base) - 4, count(base)) == ".src" then slice(base, 0, count(base) - 4) else base
 
@@ -676,11 +681,13 @@ fn ld_istrip_lines(lines, is_lib) = match lines
 
 fn ld_istrip_text(text, is_lib) = ld_ijoin(ld_istrip_lines(ld_lines(text, 0), is_lib))
 
-fn ld_imod_visit(root, dir, name, visiting, visited) = if ld_member(visited, name) == 1 then {visited: visited, order: Nil} else if ld_member(visiting, name) == 1 then ctfail("lume: module error: circular module dependency involving '" + name + "'\n") else let path = ld_find_module(root, dir, name) in let sub = ld_imod_visit_uses(root, dir, ld_imports(path), Cons(name, visiting), visited) in {visited: Cons(name, sub.visited), order: Cons({name: name, path: path}, sub.order)}
+fn ld_imod_visit(root, dir, name, visiting, visited) = ld_imod_visit_in(root, dir, dir, name, visiting, visited)
+fn ld_imod_visit_in(root, idir, dir, name, visiting, visited) = if ld_member(visited, name) == 1 then {visited: visited, order: Nil} else if ld_member(visiting, name) == 1 then ctfail("lume: module error: circular module dependency involving '" + name + "'\n") else let path = ld_find_module_in(root, idir, dir, name) in let sub = ld_imod_visit_uses_in(root, ld_dir(path), dir, ld_imports(path), Cons(name, visiting), visited) in {visited: Cons(name, sub.visited), order: Cons({name: name, path: path}, sub.order)}
 
-fn ld_imod_visit_uses(root, dir, names, visiting, visited) = match names
+fn ld_imod_visit_uses(root, dir, names, visiting, visited) = ld_imod_visit_uses_in(root, dir, dir, names, visiting, visited)
+fn ld_imod_visit_uses_in(root, idir, dir, names, visiting, visited) = match names
     Nil        => {visited: visited, order: Nil}
-    Cons(h, t) => let r1 = ld_imod_visit(root, dir, h, visiting, visited) in let r2 = ld_imod_visit_uses(root, dir, t, visiting, r1.visited) in {visited: r2.visited, order: ld_list_append(r1.order, r2.order)}
+    Cons(h, t) => let r1 = ld_imod_visit_in(root, idir, dir, h, visiting, visited) in let r2 = ld_imod_visit_uses_in(root, idir, dir, t, visiting, r1.visited) in {visited: r2.visited, order: ld_list_append(r1.order, r2.order)}
 
 fn ld_imods(root, source) = let dir = ld_dir(source) in let entry_name = ld_entry_name(source) in let r = ld_imod_visit_uses(root, dir, ld_imports(source), Cons(entry_name, Nil), Nil) in ld_list_append(r.order, Cons({name: entry_name, path: source}, Nil))
 
