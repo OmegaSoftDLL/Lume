@@ -1,0 +1,17 @@
+# parity_runner.src -- run every line of a command list through one lume binary and record the results.
+# Usage: parity_runner <lume binary> <list file> <result dir>
+# List line: "<id>|<arguments separated by single spaces>" ('#' starts a comment line).
+# For each id: <dir>/<id>.out and <id>.err (captured), and one summary line "<id> <exit code> <signal> <ms>".
+fn line_end(s, n, i) = if i >= n then n else if at(s, i) == "\n" then i else line_end(s, n, i + 1)
+fn word_end(s, n, i) = if i >= n then n else if at(s, i) == " " then i else word_end(s, n, i + 1)
+fn words(s, n, i) = if i >= n then Nil else let e = word_end(s, n, i) in if e == i then words(s, n, i + 1) else Cons(slicen(s, n, i, e), words(s, n, e + 1))
+fn bar(s, n, i) = if i >= n then n else if at(s, i) == "|" then i else bar(s, n, i + 1)
+fn run_line(lume, dir, l) = let n = count(l) in let b = bar(l, n, 0) in let id = slicen(l, n, 0, b) in let args = words(l, n, b + 1) in let t0 = os_monotonic_ns() in let st = os_run_capture_timeout(lume, args, dir + "/" + id + ".out", dir + "/" + id + ".err", 300000) in let t1 = os_monotonic_ns() in id + " " + str(st / 256) + " " + str(st % 256) + " " + str((t1 - t0) / 1000000) + "\n"
+fn run_all(lume, dir, s, n, i, acc) = if i >= n then acc else let e = line_end(s, n, i) in let l = slicen(s, n, i, e) in let acc2 = if count(l) == 0 or at(l, 0) == "#" then acc else acc + run_line(lume, dir, l) in run_all(lume, dir, s, n, e + 1, acc2)
+let lume = os_arg_at(1)
+let list = fs_read_file(os_arg_at(2))
+let dir = os_arg_at(3)
+let mk = fs_mkdir(dir)
+let summary = run_all(lume, dir, list, count(list), 0, "")
+let w = fs_write_sync(dir + "/summary.txt", summary)
+print summary

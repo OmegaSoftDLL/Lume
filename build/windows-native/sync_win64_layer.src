@@ -1,0 +1,20 @@
+# sync_win64_layer.src -- regenerate rt_win64_imports() and rt_win64_layer() in compiler/stage1/runtime_core.lume
+# from the working file build/windows-native/win64_layer.s.
+# Usage (repository root as the argument): lume run build/windows-native/sync_win64_layer.src <root>
+# `.need` / `.extern` lines go to rt_win64_imports, every other non-comment line to rt_win64_layer; the two old
+# definitions are dropped and the new ones appended; every other line of runtime_core.lume is kept byte for byte.
+
+fn esc_ch(c) = if c == "\\" then "\\\\" else if c == "\"" then "\\\"" else c
+fn esc(s, i, n, acc) = if i >= n then acc else esc(s, i + 1, n, acc + esc_ch(at(s, i)))
+fn line_end(s, n, i) = if i >= n then n else if at(s, i) == "\n" then i else line_end(s, n, i + 1)
+fn starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
+fn is_import(l) = starts(l, "    .need ") or starts(l, "    .extern ")
+fn piece(l) = "\"" + esc(l, 0, count(l), "") + "\\n\""
+fn join_plus(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => join_plus(t, if acc == "" then h else h + " + " + acc)
+fn split_asm(s, n, i, imp, body) = if i >= n then {imp: imp, body: body} else let e = line_end(s, n, i) in let l = slicen(s, n, i, e) in if count(l) == 0 or at(l, 0) == "#" then split_asm(s, n, e + 1, imp, body) else if is_import(l) then split_asm(s, n, e + 1, Cons(piece(l), imp), body) else split_asm(s, n, e + 1, imp, Cons(piece(l), body))
+fn keep_lines(s, n, i, acc) = if i >= n then acc else let e = line_end(s, n, i) in let l = slicen(s, n, i, e) in let drop = starts(l, "fn rt_win64_imports() =") or starts(l, "fn rt_win64_layer() =") in keep_lines(s, n, e + 1, if drop then acc else acc + l + "\n")
+fn sync(root) = let asm = fs_read_file(root + "/build/windows-native/win64_layer.s") in let parts = split_asm(asm, count(asm), 0, Nil, Nil) in let rt_path = root + "/compiler/stage1/runtime_core.lume" in let rt = fs_read_file(rt_path) in let kept = keep_lines(rt, count(rt), 0, "") in let out = kept + "fn rt_win64_imports() = " + join_plus(parts.imp, "") + "\n" + "fn rt_win64_layer() = " + join_plus(parts.body, "") + "\n" in let w = fs_write_sync(rt_path, out) in "synced " + rt_path + " (" + str(count(out)) + " bytes)"
+
+print sync(os_arg_at(1))

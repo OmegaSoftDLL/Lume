@@ -1,0 +1,1 @@
+cd /mnt/c/Users/Ricardo.Bueno/lume/build/windows-native; for e in hello cpu cpu35 fib38 gc; do b=999999; for i in 1 2 3 4 5; do s=$(date +%s%N); ./t/$e.elf > /dev/null; d=$(( ($(date +%s%N)-s)/1000000 )); [ $d -lt $b ] && b=$d; done; echo "linux $e $b ms"; done
