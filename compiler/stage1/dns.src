@@ -4,7 +4,7 @@
 ## name cannot be resolved):
 ##   1. an IP literal (dotted IPv4, or anything with ':') is returned as it is;
 ##   2. the hosts file (/etc/hosts; on Windows %SystemRoot%\System32\drivers\etc\hosts);
-##   3. each nameserver of /etc/resolv.conf in turn: an A query, then an AAAA query, over UDP port 53, answered within
+##   3. each nameserver of /etc/resolv.conf (on Windows, of the adapters that are up: os_dns_servers) in turn: an A query, then an AAAA query, over UDP port 53, answered within
 ##      2 s (epoll), one retry; only an answer from port 53 with the query's id counts. Compressed names are followed.
 ## dns_resolve_first(name) is the first address or "", dns_tcp_connect(host, port) connects to the first address
 ## that accepts (-1 when none does). The wire functions (dnsr_query, dnsr_parse) are pure and tested on fixed
@@ -80,11 +80,17 @@ fn dnsr_app(xs, ys) = match xs
     Cons(h, t) => Cons(h, dnsr_app(t, ys))
 ## the addresses of name in a hosts file text, IPv4 first (names compared without case)
 fn dnsr_hosts_lookup(text, name) = let r = dnsr_hosts_lines(dnsr_lines(text, 0), dnsr_lower(name, 0, ""), Nil, Nil) in dnsr_app(r.v4, r.v6)
-fn dnsr_ns_lines(lines) = match lines
+## fec0::/10 is the site-local prefix deprecated by RFC 3879; Windows lists fec0:0:0:ffff::1, ::2 and ::3 for every adapter
+## without a configured IPv6 DNS server, and they rarely answer: skipped, so a lookup does not wait for them first
+fn dnsr_site_local(ip) = if count(ip) < 5 or at(ip, 4) != ":" then 0 else let p = dnsr_lower(slice(ip, 0, 3), 0, "") in p == "fec" or p == "fed" or p == "fee" or p == "fef"
+fn dnsr_member(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else dnsr_member(t, x)
+fn dnsr_ns_lines(lines, seen) = match lines
     Nil        => Nil
-    Cons(h, t) => let ws = dnsr_words(h, 0) in let ip = dnsr_first(dnsr_rest(ws)) in if dnsr_first(ws) == "nameserver" and dnsr_is_ip(ip) then Cons(ip, dnsr_ns_lines(t)) else dnsr_ns_lines(t)
-## the nameservers of a resolv.conf text, in order
-fn dnsr_nameservers(text) = dnsr_ns_lines(dnsr_lines(text, 0))
+    Cons(h, t) => let ws = dnsr_words(h, 0) in let ip = dnsr_first(dnsr_rest(ws)) in if dnsr_first(ws) == "nameserver" and dnsr_is_ip(ip) and dnsr_site_local(ip) == 0 and dnsr_member(seen, ip) == 0 then Cons(ip, dnsr_ns_lines(t, Cons(ip, seen))) else dnsr_ns_lines(t, seen)
+## the nameservers of a resolv.conf text, in order, each once, without the deprecated site-local fec0::/10 ones
+fn dnsr_nameservers(text) = dnsr_ns_lines(dnsr_lines(text, 0), Nil)
 fn dnsr_hosts_path() = if os_platform() == "windows" then hio_win_system32() + "/drivers/etc/hosts" else "/etc/hosts"
 
 ## --- the exchange ---
@@ -98,7 +104,10 @@ fn dnsr_servers(servers, name) = match servers
     Cons(h, t) => let a4 = dnsr_ask(h, name, 1, 2) in let a6 = dnsr_ask(h, name, 28, 2) in if a4.ok == 1 or a6.ok == 1 then dnsr_app(a4.addrs, a6.addrs) else dnsr_servers(t, name)
 
 ## --- the public API ---
-fn dnsr_from_servers(name) = let r = dnsr_servers(dnsr_nameservers(fs_read_file("/etc/resolv.conf")), name) in if dnsr_isnil(r) == 0 then r else if dnsr_lower(name, 0, "") == "localhost" then Cons("127.0.0.1", Cons("::1", Nil)) else Nil
+## the nameservers: /etc/resolv.conf, or on Windows the servers of the adapters that are up (os_dns_servers, the same
+## text form)
+fn dnsr_resolv_text() = if os_platform() == "windows" then os_dns_servers() else fs_read_file("/etc/resolv.conf")
+fn dnsr_from_servers(name) = let r = dnsr_servers(dnsr_nameservers(dnsr_resolv_text()), name) in if dnsr_isnil(r) == 0 then r else if dnsr_lower(name, 0, "") == "localhost" then Cons("127.0.0.1", Cons("::1", Nil)) else Nil
 fn dns_resolve(name) = if dnsr_is_ip(name) then Cons(name, Nil) else let h = dnsr_hosts_lookup(fs_read_file(dnsr_hosts_path()), name) in if dnsr_isnil(h) == 0 then h else dnsr_from_servers(name)
 fn dns_resolve_first(name) = dnsr_first(dns_resolve(name))
 fn dnsr_connect_each(addrs, port) = match addrs

@@ -138,6 +138,10 @@ __win_syscall:
     je .Lws_epwait
     cmpq $281, %rax
     je .Lws_epwait
+    cmpq $16, %rax
+    je .Lws_ioctl
+    cmpq $1000, %rax
+    je .Lws_dnssrv
     cmpq $425, %rax
     je .Lws_ur_setup
     cmpq $426, %rax
@@ -1340,6 +1344,205 @@ __win_syscall:
 .Lws_epw_done:
     movq %rdi, %rax
     jmp .Lws_ret
+# ---- IP helper (iphlpapi.dll, System32, loaded on first use): GetAdaptersAddresses, if_nametoindex,
+# ConvertInterfaceAliasToLuid, ConvertInterfaceLuidToIndex in .Lws_iph_fn; rax = 1 when loaded. Keeps rsi, rdi, rbx.
+.Lws_iph_load:
+    cmpq $0, .Lws_iph_fn+24(%rip)
+    jne .Lws_iph_yes
+    pushq %rsi
+    pushq %rdi
+    pushq %rbx
+    subq $32, %rsp
+    leaq .Lws_iph_dll(%rip), %rcx
+    xorq %rdx, %rdx
+    movq $2048, %r8
+    call LoadLibraryExA
+    testq %rax, %rax
+    jz .Lws_iph_no
+    movq %rax, %rbx
+    leaq .Lws_iph_names(%rip), %rsi
+    leaq .Lws_iph_fn(%rip), %rdi
+.Lws_iph_l:
+    movzbq (%rsi), %rax
+    testq %rax, %rax
+    jz .Lws_iph_done
+    movq %rbx, %rcx
+    movq %rsi, %rdx
+    call GetProcAddress
+    testq %rax, %rax
+    jz .Lws_iph_no
+    movq %rax, (%rdi)
+    addq $8, %rdi
+.Lws_iph_skip:
+    incq %rsi
+    movzbq -1(%rsi), %rax
+    testq %rax, %rax
+    jnz .Lws_iph_skip
+    jmp .Lws_iph_l
+.Lws_iph_done:
+    addq $32, %rsp
+    popq %rbx
+    popq %rdi
+    popq %rsi
+.Lws_iph_yes:
+    movq $1, %rax
+    ret
+.Lws_iph_no:
+    movq $0, .Lws_iph_fn+24(%rip)
+    addq $32, %rsp
+    popq %rbx
+    popq %rdi
+    popq %rsi
+    xorq %rax, %rax
+    ret
+# ioctl(fd, SIOCGIFINDEX, struct ifreq *): the index of the interface named in ifr_name (16 bytes) into ifr_ifindex
+# (offset 16): the interface name (if_nametoindex), else the friendly name ("Ethernet", "Wi-Fi"); ENODEV when none.
+# Any other request: ENOTTY.
+.Lws_ioctl:
+    cmpq $35123, %r13
+    jne .Lws_enotty
+    call .Lws_iph_load
+    testq %rax, %rax
+    jz .Lws_enosys
+    movq %r14, %rcx
+    movq .Lws_iph_fn+8(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_ioc_put
+    movq $65001, %rcx
+    xorq %rdx, %rdx
+    movq %r14, %r8
+    movq $-1, %r9
+    leaq .Lws_wbuf(%rip), %rax
+    movq %rax, 32(%rsp)
+    movq $64, 40(%rsp)
+    call MultiByteToWideChar
+    testq %rax, %rax
+    jz .Lws_enodev
+    leaq .Lws_wbuf(%rip), %rcx
+    leaq 80(%rsp), %rdx
+    movq .Lws_iph_fn+16(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_enodev
+    movq $0, 88(%rsp)
+    leaq 80(%rsp), %rcx
+    leaq 88(%rsp), %rdx
+    movq .Lws_iph_fn+24(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_enodev
+    movq 88(%rsp), %rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_enodev
+.Lws_ioc_put:
+    movq %rax, 16(%r14)
+    jmp .Lws_zero
+.Lws_enotty:
+    movq $-25, %rax
+    jmp .Lws_ret
+# pseudo system call 1000 (no Linux system call has this number: there it is ENOSYS): the DNS servers of the
+# adapters that are up, as "nameserver <address>\n" lines (resolv.conf form) into buf r12 of r13 bytes; rax = the
+# length. The addresses come from GetAdaptersAddresses, written by WSAAddressToStringA (IPv6 with %zone).
+.Lws_dnssrv:
+    call .Lws_iph_load
+    testq %rax, %rax
+    jz .Lws_enosys
+    call .Lws_ws_init
+    testq %rax, %rax
+    jz .Lws_enosys
+    movq $65536, 80(%rsp)
+    xorq %rcx, %rcx
+    movq $7, %rdx
+    xorq %r8, %r8
+    leaq .Lws_gaa(%rip), %r9
+    leaq 80(%rsp), %rax
+    movq %rax, 32(%rsp)
+    movq .Lws_iph_fn(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_zero
+    leaq .Lws_gaa(%rip), %rsi
+    xorq %rdi, %rdi
+.Lws_dns_ad:
+    testq %rsi, %rsi
+    jz .Lws_dns_done
+    movq 104(%rsi), %rax
+    shlq $32, %rax
+    shrq $32, %rax
+    cmpq $1, %rax
+    jne .Lws_dns_adn
+    movq 48(%rsi), %rbx
+.Lws_dns_srv:
+    testq %rbx, %rbx
+    jz .Lws_dns_adn
+    movq 16(%rbx), %rcx
+    movq 24(%rbx), %rdx
+    shlq $32, %rdx
+    shrq $32, %rdx
+    xorq %r8, %r8
+    leaq .Lws_nbuf(%rip), %r9
+    movq $256, 88(%rsp)
+    leaq 88(%rsp), %rax
+    movq %rax, 32(%rsp)
+    movq .Lws_ws_fn+120(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_dns_srvn
+    movq 88(%rsp), %r10
+    shlq $32, %r10
+    shrq $32, %r10
+    decq %r10
+    jle .Lws_dns_srvn
+    movq %rdi, %rax
+    addq %r10, %rax
+    addq $12, %rax
+    cmpq %r13, %rax
+    jg .Lws_dns_done
+    leaq .Lws_ns_pfx(%rip), %rax
+.Lws_dns_p:
+    movzbq (%rax), %rcx
+    testq %rcx, %rcx
+    jz .Lws_dns_pd
+    movb %cl, (%r12,%rdi)
+    incq %rdi
+    incq %rax
+    jmp .Lws_dns_p
+.Lws_dns_pd:
+    leaq .Lws_nbuf(%rip), %rax
+    xorq %r11, %r11
+.Lws_dns_a:
+    cmpq %r10, %r11
+    jge .Lws_dns_ad2
+    movzbq (%rax,%r11), %rcx
+    movb %cl, (%r12,%rdi)
+    incq %rdi
+    incq %r11
+    jmp .Lws_dns_a
+.Lws_dns_ad2:
+    movb $10, (%r12,%rdi)
+    incq %rdi
+.Lws_dns_srvn:
+    movq 8(%rbx), %rbx
+    jmp .Lws_dns_srv
+.Lws_dns_adn:
+    movq 8(%rsi), %rsi
+    jmp .Lws_dns_ad
+.Lws_dns_done:
+    movq %rdi, %rax
+    jmp .Lws_ret
 # ---- io_uring through its three system calls. Lume programs do not map the rings (no builtin maps an fd), so the
 # queues are always empty: setup validates and returns an io_uring fd (kind 7) with sq_entries / cq_entries filled,
 # enter submits nothing (0) and waits for ever when asked for completions, register answers as Linux 6.18 does for
@@ -2333,13 +2536,20 @@ __win_ffi_resolve:
 .Lws_wsf_other:
     movq $-5, %rax
     jmp .Lws_ret
+# socket(family, type, proto): AF_INET (2) as it is, AF_INET6 (10 on Linux) is Winsock's 23. An IPv6 socket accepts
+# IPv4-mapped peers (IPV6_V6ONLY off, the Linux default); a datagram socket ignores ICMP port-unreachable on recv
+# (SIO_UDP_CONNRESET off: Linux does not fail the next recvfrom because of it)
 .Lws_socket:
     call .Lws_ws_init
     testq %rax, %rax
     jz .Lws_enosys
     movq $2, %rcx
     cmpq $2, %r12
+    je .Lws_sock_fam
+    movq $23, %rcx
+    cmpq $10, %r12
     jne .Lws_eafnosupport
+.Lws_sock_fam:
     movq %r13, %rdx
     andq $15, %rdx
     movq %r14, %r8
@@ -2348,6 +2558,39 @@ __win_ffi_resolve:
     cmpq $-1, %rax
     je .Lws_ws_fail
     movq %rax, 64(%rsp)
+    cmpq $10, %r12
+    jne .Lws_sock_v6done
+    movq $0, 80(%rsp)
+    movq %rax, %rcx
+    movq $41, %rdx
+    movq $27, %r8
+    leaq 80(%rsp), %r9
+    movq $4, 32(%rsp)
+    movq .Lws_ws_fn+48(%rip), %rax
+    call *%rax
+.Lws_sock_v6done:
+    movq %r13, %rax
+    andq $15, %rax
+    cmpq $2, %rax
+    jne .Lws_sock_udpdone
+    movq $0, 80(%rsp)
+    movq 64(%rsp), %rcx
+    movq %rcx, 104(%rsp)
+    movq $2550136844, %rdx
+    leaq 80(%rsp), %r8
+    movq $4, %r9
+    movq $0, 32(%rsp)
+    movq $0, 40(%rsp)
+    leaq 96(%rsp), %rax
+    movq %rax, 48(%rsp)
+    movq $0, 56(%rsp)
+    movq $0, 64(%rsp)
+    movq .Lws_ws_fn+128(%rip), %rax
+    call *%rax
+    movq 104(%rsp), %rax
+    movq %rax, 64(%rsp)
+.Lws_sock_udpdone:
+    movq 64(%rsp), %rax
     movq $5, %r8
     movq %rax, %r9
     call .Lws_fd_new
@@ -2368,6 +2611,37 @@ __win_ffi_resolve:
 .Lws_enosys:
     movq $-38, %rax
     jmp .Lws_ret
+# an outgoing sockaddr (rdi, or 0): an AF_INET6 one (family 10) is copied to .Lws_sa with Winsock's family 23;
+# rdi = the address to pass. Uses rax, rcx.
+.Lws_sa_fix:
+    testq %rdi, %rdi
+    jz .Lws_saf_out
+    movzbq (%rdi), %rax
+    cmpq $10, %rax
+    jne .Lws_saf_out
+    leaq .Lws_sa(%rip), %rax
+    movq (%rdi), %rcx
+    movq %rcx, (%rax)
+    movq 8(%rdi), %rcx
+    movq %rcx, 8(%rax)
+    movq 16(%rdi), %rcx
+    movq %rcx, 16(%rax)
+    movq 24(%rdi), %rcx
+    movq %rcx, 24(%rax)
+    movb $23, (%rax)
+    movq %rax, %rdi
+.Lws_saf_out:
+    ret
+# a sockaddr Winsock filled (rdi, or 0): family 23 becomes Linux's 10. Uses rax.
+.Lws_sa_back:
+    testq %rdi, %rdi
+    jz .Lws_sab_out
+    movzbq (%rdi), %rax
+    cmpq $23, %rax
+    jne .Lws_sab_out
+    movb $10, (%rdi)
+.Lws_sab_out:
+    ret
 # connect(fd, addr, len) / bind(fd, addr, len): the same three arguments
 .Lws_connect:
     movq $16, %rbx
@@ -2375,6 +2649,9 @@ __win_ffi_resolve:
 .Lws_bind:
     movq $32, %rbx
 .Lws_sock3:
+    movq %r13, %rdi
+    call .Lws_sa_fix
+    movq %rdi, %r13
     call .Lws_fdh
     cmpq $5, %rcx
     jne .Lws_enotsock
@@ -2421,6 +2698,10 @@ __win_ffi_resolve:
     call *%rax
     cmpq $-1, %rax
     je .Lws_ws_fail
+    movq %rax, 64(%rsp)
+    movq %r13, %rdi
+    call .Lws_sa_back
+    movq 64(%rsp), %rax
     movq %rax, 64(%rsp)
     movq $5, %r8
     movq %rax, %r9
@@ -2470,6 +2751,9 @@ __win_ffi_resolve:
     movq $80, %rax
 .Lws_sock6:
     movq %rax, 88(%rsp)
+    movq %rbx, %rdi
+    call .Lws_sa_fix
+    movq %rdi, %rbx
     call .Lws_fdh
     cmpq $5, %rcx
     jne .Lws_enotsock
@@ -2493,6 +2777,10 @@ __win_ffi_resolve:
     sarq $32, %rax
     cmpq $-1, %rax
     je .Lws_ws_fail
+    movq %rax, 64(%rsp)
+    movq %rbx, %rdi
+    call .Lws_sa_back
+    movq 64(%rsp), %rax
     jmp .Lws_ret
 # read / write on a socket: recv / send with flags 0 (rax = SOCKET)
 .Lws_read_sock:
@@ -4235,6 +4523,8 @@ __win_image_hi:
     .asciz "closesocket"
     .asciz "WSAGetLastError"
     .asciz "WSAPoll"
+    .asciz "WSAAddressToStringA"
+    .asciz "WSAIoctl"
     .byte 0
 # Winsock error -> -errno (EWOULDBLOCK, EINTR, EBADF, EACCES, EFAULT, EINVAL, EMFILE, ENOTSOCK, EMSGSIZE,
 # EAFNOSUPPORT, EADDRINUSE, EADDRNOTAVAIL, ENETUNREACH, ECONNABORTED, ECONNRESET, ENOTCONN, ETIMEDOUT,
@@ -4300,6 +4590,16 @@ __win_image_hi:
     .asciz "/dev/stdout"
 .Lws_devstderr:
     .asciz "/dev/stderr"
+.Lws_iph_dll:
+    .asciz "iphlpapi.dll"
+.Lws_iph_names:
+    .asciz "GetAdaptersAddresses"
+    .asciz "if_nametoindex"
+    .asciz "ConvertInterfaceAliasToLuid"
+    .asciz "ConvertInterfaceLuidToIndex"
+    .byte 0
+.Lws_ns_pfx:
+    .asciz "nameserver "
 .Lws_bcrypt_dll:
     .asciz "bcrypt.dll"
 .Lws_bcrypt_proc:
@@ -4343,7 +4643,10 @@ __lume_ffi_libs:
     .lcomm .Lws_fk_proc, 8
     .lcomm .Lws_fk_thread, 8
     .lcomm .Lws_ctx, 1264
-    .lcomm .Lws_ws_fn, 128
+    .lcomm .Lws_ws_fn, 256
+    .lcomm .Lws_sa, 32
+    .lcomm .Lws_gaa, 65536
+    .lcomm .Lws_iph_fn, 32
     .lcomm .Lws_wsadata, 512
     .lcomm .Lws_envblk, 8
     .lcomm .Lws_envp_arg, 8
