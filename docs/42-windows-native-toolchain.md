@@ -289,7 +289,7 @@ are looked up on the PATH): `os_platform()` (`"linux"` / `"windows"`), `fs_chdir
 `fs_copy(src, dst)` (binary-safe, 64 KiB mapped buffer), `fs_rename(src, dst)` (replaces, like POSIX rename),
 `fs_make_executable(path)` (mode 0755 on Linux; on Windows the extension decides, so it checks the file exists),
 `fs_chmod(path, mode)` (on Windows the owner write bit is the read-only attribute, as the C runtime's `_chmod`),
-`fs_remove` (also an empty directory), `os_getenv(name)`, `os_setenv(name, value)` and `os_unsetenv(name)` (they hold
+`fs_rmdir(path)` (an empty directory; `fs_remove` still rejects a directory), `os_getenv(name)`, `os_setenv(name, value)` and `os_unsetenv(name)` (they hold
 for every child started afterwards), `os_unix_time()`, `os_uname_field(i)` (`Windows_NT`, the version from the
 shared user data page, `x86_64`), `os_spawn_capture(prog, args, out, err)` (start without waiting; `os_waitpid_status`
 waits). `lasm` also encodes `call *%reg` and `jmp *%reg` (checked against GNU as in `lasm_gate`, family `indirect`).
