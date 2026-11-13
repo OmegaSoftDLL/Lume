@@ -1,0 +1,16 @@
+## link-local with a zone: the eth0 fe80:: address from /proc/net/if_inet6, a datagram to itself, the sender reported
+## with %<interface index>
+fn line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else line_end(s, i + 1)
+fn find_ll(s, i) = if i >= count(s) then "" else let e = line_end(s, i) in let l = slice(s, i, e) in if count(l) > 40 and slice(l, 0, 4) == "fe80" and slice(l, count(l) - 4, count(l)) == "eth0" then slice(l, 0, 32) else find_ll(s, e + 1)
+fn groups(h, k, acc) = if k >= 8 then acc else groups(h, k + 1, acc + (if k == 0 then "" else ":") + slice(h, 4 * k, 4 * k + 4))
+let hex = find_ll(fs_read_file("/proc/net/if_inet6"), 0)
+let ll = groups(hex, 0, "") + "%eth0"
+print "eth0 link-local: " + (if hex == "" then "none" else "found")
+let a = net_udp_bind_addr(ll, 47860)
+let b = net_udp_bind_addr("::", 47861)
+let s = net_udp_send_to(a, ll, 47861, "zone")
+let r = net_udp_recv_from(b, 64)
+let peer = net_last_peer_ip()
+print "received " + r + ", sender has a zone " + str(if count(peer) > 0 and at(peer, count(peer) - 2) == "%" or count(peer) > 2 and at(peer, count(peer) - 3) == "%" then 1 else 0)
+let back = net_udp_send_to(b, peer, net_last_peer_port(), "back")
+print "reply to the reported sender: " + net_udp_recv_from(a, 64)

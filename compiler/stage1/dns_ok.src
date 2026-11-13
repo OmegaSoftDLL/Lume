@@ -1,0 +1,36 @@
+## dns_ok.src -- tests of the DNS stub resolver (dns.src) on fixed wire messages, hosts and resolv.conf texts:
+## no network is needed. A live lookup is in build/windows-native/mem/dns_live.src.
+
+use dns
+
+fn bs(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => chr(h) + bs(t)
+fn js(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h + jsr(t)
+fn jsr(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => "," + h + jsr(t)
+fn hdr(id_hi, id_lo, f1, f2, an) = bs([id_hi, id_lo, f1, f2, 0, 1, 0, an, 0, 0, 0, 0])
+fn qex() = chr(7) + "example" + chr(3) + "com" + chr(0)
+## example.com: an A record 93.184.216.34 and an AAAA record 2606:2800:220:1:248:1893:25c8:1946, both named by a
+## compression pointer to offset 12
+fn resp(f1, f2, an) = hdr(18, 52, f1, f2, an) + qex() + bs([0, 1, 0, 1]) + bs([192, 12, 0, 1, 0, 1, 0, 0, 14, 16, 0, 4, 93, 184, 216, 34]) + bs([192, 12, 0, 28, 0, 1, 0, 0, 14, 16, 0, 16, 38, 6, 40, 0, 2, 32, 0, 1, 2, 72, 24, 147, 37, 200, 25, 70])
+
+fn test_query_bytes() = dnsr_query(4660, "example.com", 1) == bs([18, 52, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]) + qex() + bs([0, 1, 0, 1])
+fn test_query_aaaa_type() = dnsr_query(1, "a.b", 28) == bs([0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]) + "a" + chr(1) + "b" + bs([0, 0, 28, 0, 1])
+fn test_parse_a_and_aaaa_with_compression() = let r = dnsr_parse(resp(129, 128, 2), 4660) in r.ok == 1 and r.rcode == 0 and js(r.addrs) == "93.184.216.34,2606:2800:220:1:248:1893:25c8:1946"
+fn test_parse_rejects_another_id() = dnsr_parse(resp(129, 128, 2), 4661).ok == 0
+fn test_parse_rejects_a_query() = dnsr_parse(dnsr_query(4660, "example.com", 1), 4660).ok == 0
+fn test_parse_nxdomain() = let r = dnsr_parse(hdr(18, 52, 129, 131, 0) + qex() + bs([0, 1, 0, 1]), 4660) in r.ok == 1 and r.rcode == 3 and js(r.addrs) == ""
+fn test_parse_truncated_flag() = dnsr_parse(resp(131, 128, 2), 4660).truncated == 1
+fn test_parse_cut_message_keeps_what_is_whole() = let m = resp(129, 128, 2) in let r = dnsr_parse(slice(m, 0, count(m) - 3), 4660) in r.ok == 1 and js(r.addrs) == "93.184.216.34"
+fn test_parse_short_message() = dnsr_parse(bs([18, 52, 129]), 4660).ok == 0
+fn test_qname_forms() = dnsr_qname("a.b.") == chr(1) + "a" + chr(1) + "b" + chr(0) and dnsr_qname("") == "" and dnsr_qname("a..b") == "" and dnsr_qname(".a") == "" and dnsr_qname("x" + slice("0123456789012345678901234567890123456789012345678901234567890123", 0, 63) + ".com") == ""
+fn test_is_ip() = dnsr_is_ip("10.0.0.1") and dnsr_is_ip("::1") and dnsr_is_ip("fe80::1%eth0") and dnsr_is_ip("example.com") == 0 and dnsr_is_ip("1.2.3") == 0 and dnsr_is_ip("") == 0
+fn test_hosts_lookup() = let t = "127.0.0.1 localhost\n::1 localhost ip6-localhost\n# 10.0.0.9 box\n10.1.2.3\tBox box.lan # the box\n" in js(dnsr_hosts_lookup(t, "BOX")) == "10.1.2.3" and js(dnsr_hosts_lookup(t, "localhost")) == "127.0.0.1,::1" and js(dnsr_hosts_lookup(t, "none")) == ""
+fn test_nameservers() = js(dnsr_nameservers("# resolv.conf\nnameserver 10.255.255.254\nsearch lan\nnameserver ::1\nnameserver not-an-ip\n")) == "10.255.255.254,::1"
+fn test_ip_literal_resolves_to_itself() = js(dns_resolve("192.0.2.7")) == "192.0.2.7" and js(dns_resolve("2001:db8::1")) == "2001:db8::1"
+
+print js(dnsr_parse(resp(129, 128, 2), 4660).addrs)

@@ -1,0 +1,102 @@
+## dns.src -- a DNS stub resolver written in Lume (`use dns`), over the runtime's UDP builtins.
+##
+## dns_resolve(name) returns the addresses of a host name as a list of strings, IPv4 first, then IPv6 (Nil when the
+## name cannot be resolved):
+##   1. an IP literal (dotted IPv4, or anything with ':') is returned as it is;
+##   2. the hosts file (/etc/hosts; on Windows %SystemRoot%\System32\drivers\etc\hosts);
+##   3. each nameserver of /etc/resolv.conf in turn: an A query, then an AAAA query, over UDP port 53, answered within
+##      2 s (epoll), one retry; only an answer from port 53 with the query's id counts. Compressed names are followed.
+## dns_resolve_first(name) is the first address or "", dns_tcp_connect(host, port) connects to the first address
+## that accepts (-1 when none does). The wire functions (dnsr_query, dnsr_parse) are pure and tested on fixed
+## messages in dns_ok.src.
+
+use hostio
+
+## --- bytes ---
+fn dnsr_u16(m, i) = ord(at(m, i)) * 256 + ord(at(m, i + 1))
+fn dnsr_be16(n) = chr(n / 256 % 256) + chr(n % 256)
+fn dnsr_lower_ch(c) = let o = ord(c) in if o >= 65 and o <= 90 then chr(o + 32) else c
+fn dnsr_lower(s, i, acc) = if i >= count(s) then acc else dnsr_lower(s, i + 1, acc + dnsr_lower_ch(at(s, i)))
+fn dnsr_hexd(v) = if v < 10 then chr(48 + v) else chr(87 + v)
+fn dnsr_hex16(v) = if v >= 4096 then dnsr_hexd(v / 4096) + dnsr_hexd(v / 256 % 16) + dnsr_hexd(v / 16 % 16) + dnsr_hexd(v % 16) else if v >= 256 then dnsr_hexd(v / 256) + dnsr_hexd(v / 16 % 16) + dnsr_hexd(v % 16) else if v >= 16 then dnsr_hexd(v / 16) + dnsr_hexd(v % 16) else dnsr_hexd(v)
+
+## --- names ---
+## an IP literal: anything with ':' (IPv6), or digits and dots only with three dots (IPv4)
+fn dnsr_dots(s, i, n, dots, ok) = if i >= n then (if ok == 1 and dots == 3 then 1 else 0) else let c = at(s, i) in if c == "." then dnsr_dots(s, i + 1, n, dots + 1, ok) else if c >= "0" and c <= "9" then dnsr_dots(s, i + 1, n, dots, ok) else 0
+fn dnsr_has_colon(s, i) = if i >= count(s) then 0 else if at(s, i) == ":" then 1 else dnsr_has_colon(s, i + 1)
+fn dnsr_is_ip(s) = count(s) > 0 and (dnsr_has_colon(s, 0) == 1 or dnsr_dots(s, 0, count(s), 0, 1) == 1)
+## QNAME: each label 1..63 bytes, the whole name at most 253 bytes (a final dot is allowed); "" when invalid
+fn dnsr_qn(name, i, start, n, acc) = if i >= n then (if i == start then (if start == n and n > 0 then acc + chr(0) else "") else if i - start > 63 then "" else acc + chr(i - start) + slice(name, start, i) + chr(0)) else if at(name, i) == "." then (if i == start or i - start > 63 then "" else dnsr_qn(name, i + 1, i + 1, n, acc + chr(i - start) + slice(name, start, i))) else dnsr_qn(name, i + 1, start, n, acc)
+fn dnsr_qname(name) = if count(name) == 0 or count(name) > 254 or (count(name) == 254 and at(name, 253) != ".") then "" else dnsr_qn(name, 0, 0, count(name), "")
+
+## --- the query: header (id, RD set, one question) + QNAME + QTYPE + QCLASS IN ---
+fn dnsr_query(id, name, qtype) = let q = dnsr_qname(name) in if q == "" then "" else dnsr_be16(id) + chr(1) + chr(0) + chr(0) + chr(1) + chr(0) + chr(0) + chr(0) + chr(0) + chr(0) + chr(0) + q + dnsr_be16(qtype) + chr(0) + chr(1)
+
+## --- the answer ---
+## the offset after a name at i (labels, or a compression pointer that ends it); > n when it runs past the message
+fn dnsr_skip_name(m, i, n) = if i >= n then n + 1 else let l = ord(at(m, i)) in if l == 0 then i + 1 else if l >= 192 then i + 2 else if l > 63 then n + 1 else dnsr_skip_name(m, i + 1 + l, n)
+fn dnsr_ip4(m, i) = str(ord(at(m, i))) + "." + str(ord(at(m, i + 1))) + "." + str(ord(at(m, i + 2))) + "." + str(ord(at(m, i + 3)))
+fn dnsr_ip6g(m, i, k, acc) = if k >= 8 then acc else dnsr_ip6g(m, i, k + 1, acc + (if k == 0 then "" else ":") + dnsr_hex16(dnsr_u16(m, i + 2 * k)))
+fn dnsr_ip6(m, i) = dnsr_ip6g(m, i, 0, "")
+fn dnsr_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => dnsr_rev(t, Cons(h, acc))
+## the A (type 1, 4 bytes) and AAAA (type 28, 16 bytes) records among k resource records starting at i
+fn dnsr_rrs(m, i, n, k, acc) = if k <= 0 or i >= n then dnsr_rev(acc, Nil) else let j = dnsr_skip_name(m, i, n) in if j + 10 > n then dnsr_rev(acc, Nil) else let ty = dnsr_u16(m, j) in let cl = dnsr_u16(m, j + 2) in let rdlen = dnsr_u16(m, j + 8) in let rd = j + 10 in if rd + rdlen > n then dnsr_rev(acc, Nil) else dnsr_rrs(m, rd + rdlen, n, k - 1, if cl == 1 and ty == 1 and rdlen == 4 then Cons(dnsr_ip4(m, rd), acc) else if cl == 1 and ty == 28 and rdlen == 16 then Cons(dnsr_ip6(m, rd), acc) else acc)
+fn dnsr_skip_qs(m, i, n, k) = if k <= 0 or i > n then i else dnsr_skip_qs(m, dnsr_skip_name(m, i, n) + 4, n, k - 1)
+## {ok, rcode, truncated, addrs}: ok = a response to query id with a readable header
+fn dnsr_parse(m, id) = let n = count(m) in if n < 12 then {ok: 0, rcode: 0 - 1, truncated: 0, addrs: Nil} else let flags = dnsr_u16(m, 2) in if dnsr_u16(m, 0) != id or flags < 32768 then {ok: 0, rcode: 0 - 1, truncated: 0, addrs: Nil} else let i = dnsr_skip_qs(m, 12, n, dnsr_u16(m, 4)) in {ok: 1, rcode: flags % 16, truncated: flags / 512 % 2, addrs: if i > n then Nil else dnsr_rrs(m, i, n, dnsr_u16(m, 6), Nil)}
+
+## --- the hosts file and resolv.conf ---
+fn dnsr_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else dnsr_line_end(s, i + 1)
+fn dnsr_lines(s, i) = if i >= count(s) then Nil else let e = dnsr_line_end(s, i) in Cons(slice(s, i, e), dnsr_lines(s, e + 1))
+fn dnsr_is_ws(c) = c == " " or c == "\t" or c == "\r"
+fn dnsr_tok_end(s, i) = if i >= count(s) or dnsr_is_ws(at(s, i)) or at(s, i) == "#" then i else dnsr_tok_end(s, i + 1)
+fn dnsr_skip_ws(s, i) = if i < count(s) and dnsr_is_ws(at(s, i)) then dnsr_skip_ws(s, i + 1) else i
+fn dnsr_words(s, i) = let a = dnsr_skip_ws(s, i) in if a >= count(s) or at(s, a) == "#" then Nil else let e = dnsr_tok_end(s, a) in Cons(slice(s, a, e), dnsr_words(s, e))
+fn dnsr_name_in(names, want) = match names
+    Nil        => 0
+    Cons(h, t) => if dnsr_lower(h, 0, "") == want then 1 else dnsr_name_in(t, want)
+fn dnsr_first(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn dnsr_rest(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn dnsr_isnil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn dnsr_hosts_line(ws, want, acc4, acc6) = let ip = dnsr_first(ws) in if ip == "" or dnsr_name_in(dnsr_rest(ws), want) == 0 or dnsr_is_ip(ip) == 0 then {v4: acc4, v6: acc6} else if dnsr_has_colon(ip, 0) == 1 then {v4: acc4, v6: Cons(ip, acc6)} else {v4: Cons(ip, acc4), v6: acc6}
+fn dnsr_hosts_lines(lines, want, acc4, acc6) = match lines
+    Nil        => {v4: dnsr_rev(acc4, Nil), v6: dnsr_rev(acc6, Nil)}
+    Cons(h, t) => let r = dnsr_hosts_line(dnsr_words(h, 0), want, acc4, acc6) in dnsr_hosts_lines(t, want, r.v4, r.v6)
+fn dnsr_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, dnsr_app(t, ys))
+## the addresses of name in a hosts file text, IPv4 first (names compared without case)
+fn dnsr_hosts_lookup(text, name) = let r = dnsr_hosts_lines(dnsr_lines(text, 0), dnsr_lower(name, 0, ""), Nil, Nil) in dnsr_app(r.v4, r.v6)
+fn dnsr_ns_lines(lines) = match lines
+    Nil        => Nil
+    Cons(h, t) => let ws = dnsr_words(h, 0) in let ip = dnsr_first(dnsr_rest(ws)) in if dnsr_first(ws) == "nameserver" and dnsr_is_ip(ip) then Cons(ip, dnsr_ns_lines(t)) else dnsr_ns_lines(t)
+## the nameservers of a resolv.conf text, in order
+fn dnsr_nameservers(text) = dnsr_ns_lines(dnsr_lines(text, 0))
+fn dnsr_hosts_path() = if os_platform() == "windows" then hio_win_system32() + "/drivers/etc/hosts" else "/etc/hosts"
+
+## --- the exchange ---
+fn dnsr_wait(fd, ms) = let ep = epoll_create_fd() in let a = epoll_add_in(ep, fd, 7) in let ev = epoll_wait_one(ep, ms) in let z = net_close(ep) in if ev % 1000 == 7 then 1 else 0
+## one query to server, one answer (or "" after ms)
+fn dnsr_exchange(server, query, ms) = let fd = net_udp_bind_addr(if dnsr_has_colon(server, 0) == 1 then "::" else "0.0.0.0", 0) in if fd < 0 then "" else let s = net_udp_send_to(fd, server, 53, query) in let r = if s == count(query) and dnsr_wait(fd, ms) == 1 then net_udp_recv_from(fd, 4096) else "" in let ok = net_last_peer_port() == 53 in let z = net_close(fd) in if ok then r else ""
+fn dnsr_id(qtype) = (os_getpid() * 7919 + os_monotonic_ns() / 1000 + qtype) % 65536
+fn dnsr_ask(server, name, qtype, tries) = if tries <= 0 then {ok: 0, addrs: Nil} else let id = dnsr_id(qtype) in let q = dnsr_query(id, name, qtype) in if q == "" then {ok: 0, addrs: Nil} else let r = dnsr_parse(dnsr_exchange(server, q, 2000), id) in if r.ok == 1 then {ok: 1, addrs: if r.rcode == 0 then r.addrs else Nil} else dnsr_ask(server, name, qtype, tries - 1)
+fn dnsr_servers(servers, name) = match servers
+    Nil        => Nil
+    Cons(h, t) => let a4 = dnsr_ask(h, name, 1, 2) in let a6 = dnsr_ask(h, name, 28, 2) in if a4.ok == 1 or a6.ok == 1 then dnsr_app(a4.addrs, a6.addrs) else dnsr_servers(t, name)
+
+## --- the public API ---
+fn dnsr_from_servers(name) = let r = dnsr_servers(dnsr_nameservers(fs_read_file("/etc/resolv.conf")), name) in if dnsr_isnil(r) == 0 then r else if dnsr_lower(name, 0, "") == "localhost" then Cons("127.0.0.1", Cons("::1", Nil)) else Nil
+fn dns_resolve(name) = if dnsr_is_ip(name) then Cons(name, Nil) else let h = dnsr_hosts_lookup(fs_read_file(dnsr_hosts_path()), name) in if dnsr_isnil(h) == 0 then h else dnsr_from_servers(name)
+fn dns_resolve_first(name) = dnsr_first(dns_resolve(name))
+fn dnsr_connect_each(addrs, port) = match addrs
+    Nil        => 0 - 1
+    Cons(h, t) => let fd = net_tcp_connect_addr(h, port) in if fd >= 0 then fd else dnsr_connect_each(t, port)
+fn dns_tcp_connect(host, port) = dnsr_connect_each(dns_resolve(host), port)
