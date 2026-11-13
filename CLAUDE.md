@@ -1,0 +1,72 @@
+# CLAUDE.md — Lume
+
+Read **`AGENTS.md`** first (rules of the repository), then this file (where the current work stands).
+Converse with the owner in Portuguese (pt-BR); write code, docs, comments and commits in English.
+
+## Current work: native Windows toolchain
+
+Goal set by the owner: Lume on Windows identical to Linux or better — every function, module and domain, same
+outputs, performance never below Linux — and only then start the LumeDesk project (`C:\Users\Ricardo.Bueno\LUMEDESK`).
+
+- Branch: `windows-native-toolchain`, local commits only. **Never push or publish without the owner's explicit
+  order.** Commit locally at the end of each closed step.
+- This checkout (`L:\lume`, a Dev Drive) is the working copy since 2026-11-13. `C:\Users\Ricardo.Bueno\lume` is the
+  older copy (remote `copia-c`); `origin` is GitHub.
+- Design, status and the remaining work: `docs/42-windows-native-toolchain.md` (§6 parity table, §6.1 memory,
+  §7 design, **§9 the 12 remaining items, smallest first**).
+- Step-by-step tracker and the audit reports (Portuguese): `build/windows-native/audit/PLANO_DE_CORRECOES.md`.
+
+## Rules the owner added (also in AGENTS.md)
+
+- Lume generates Lume, 100 % Lume, for everything and every system. Whatever Windows lacks is written in Lume.
+- Never leave a bug, a correction or an improvement behind before moving to the next step.
+- A measured Windows/Linux gap (time or memory) is a defect to fix, not a difference to document.
+- "Tested" means the full universe, not a sample: 111 files with `fn test_` (`mem/tests_all.txt`), 205 programs
+  (`mem/progs_all.txt`), the memory battery, then the gates and the 114 CLI commands — on both systems, compared.
+
+## How to build and test
+
+Everything lives in `build/windows-native/` (git-ignored; the sources there were added with `git add -f`).
+
+- Layer source: `win64_layer.s`. `sync_win64_layer.src` turns it into `rt_win64_imports` / `rt_win64_layer` inside
+  `compiler/stage1/runtime_core.lume`. Edit the `.s` (by hand or with a small perl script), never the generated text.
+- `rebuild_all.sh` (run inside WSL): rebuilds `lumec` / `lasm`, the Windows test programs (`t/*.src` -> `t/*.exe`)
+  and both tool trees: `inst/bin` (Windows `.exe`) and `instl/bin` (Linux). Then run `link_trees_linux.sh` and create
+  the Windows junctions (`inst\compiler\stage1`, `inst\stdlib`) so `use` finds the modules, as an install does.
+- Linux side: `mem/full_linux.sh` (tests + programs), `mem/mem_all_linux.sh` (memory battery).
+- Windows side (PowerShell): `mem/run_windows.ps1` (memory battery), `mem/tests_windows.ps1 -List tests_all.txt -Out ta_w`,
+  `mem/progs_windows.ps1`, `mem/osrun_windows.ps1`. Compare the result directories byte by byte.
+- Never run the Linux and the Windows test runs at the same time on this checkout: tests use fixed-name probe files.
+
+## Traps already paid for
+
+- Call WSL from Git Bash as `MSYS_NO_PATHCONV=1 wsl -d Ubuntu -u root -- bash /mnt/l/lume/...script.sh`; an inline
+  command with `$` is mangled. In WSL the drive needs `montar-l` (or `mount -t drvfs L: /mnt/l -o metadata`).
+- After a reboot the Dev Drive is mounted by the scheduled task "Lume - montar Dev Drive"
+  (`C:\DevDrive\montar_lume.ps1`); by hand: `Mount-DiskImage C:\DevDrive\lume.vhdx`.
+- Text with backslashes: write it with a perl script and `chr(92)`, or with the editor tool; shell heredocs and perl
+  `\h`, `\b` have corrupted sources here.
+- `while read` loops that start a program reading stdin need `< /dev/null`.
+- PowerShell variables are case-insensitive (`$P` and `$p` are one variable); `"$p.s"` is a property access.
+- Defender on this machine holds every newly built `.exe` about 10 s per launch until its cloud lookup for that file
+  succeeds (per file). It is not a Lume defect, exclusions cannot be set locally, and the Dev Drive does not change it.
+  Do not rebuild probe executables needlessly, and take timings on cleared files or with `os_monotonic_ns`.
+- `lume` on this machine from PowerShell is the released toolchain inside WSL, not the port; the port is
+  `build\windows-native\inst\bin\lume.exe`.
+
+## State when this file was written (2026-11-13 ~10:00)
+
+Done and tested on both systems: `lumec --win64`, `lasm --pe`, the Win64 layer (fd table, lazy memory, VEH, real
+fork, Winsock, envp for children, uname, clocks), the new builtins, `hostio.src`, the 13 defects of the audits, the
+memory battery (62/62 identical), a 24-file test sample and `net.src`.
+
+Open in the current step, in order:
+
+1. Full coverage: the Linux run was in progress (`mem/ta_l`, `mem/pr_l`); then the same on Windows (`ta_w`, `pr_w`)
+   and the comparison; fix every difference. Linux baseline before the last fixes: 1511 passed, 16 failed in 18
+   files — 1 was a regression (fs_remove, fixed with `fs_rmdir`), 11 were modules not found in the test trees
+   (fixed by the links), 6 need the preconditions `bootstrap/lume0/tests/run.sh` sets up (working directory, probes).
+2. `os_run_ok` on Windows: 11/13; the two failures give a probe 1 s and Defender holds it longer — reconfirm.
+3. `lasm_gate` with the new `indirect` family (`call *%reg`, `jmp *%reg`), and the self-`kill` signal test.
+4. Gates (~35) and the 114 CLI commands on Windows.
+5. Then §9 of doc 42. For LumeDesk the items that matter most are epoll, real TLS over sockets and the Win32 GUI.
