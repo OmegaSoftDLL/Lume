@@ -54,6 +54,17 @@ Everything lives in `build/windows-native/` (git-ignored; the sources there were
 - `lume` on this machine from PowerShell is the released toolchain inside WSL, not the port; the port is
   `build\windows-native\inst\bin\lume.exe`.
 
+## Progress 2026-11-13 late night (newest first)
+
+- '+' never converts (T0604) in all code (tpl_* pass in 06_typecheck + runtime refusal in addv); closure dispatcher
+  __closure_call_N gets no fixed type (seq_loop with str acc + any annotation); seq_loop_inv + lcaas loop proofs.
+- lcert: range facts (bit_and with a constant mask, ct_eq), non-linear antecedents dropped, byte masks as low(a, m)
+  variables: lcrypto_tls certifies 48/48. ltv_rt executes the f64/decimal hooks (.Lrt_anyf/.Lrt_anyd ...) it meets.
+- codegen: bit_and/or/xor/shl/shr inline fast path for two small ints (3.5x); lcrypto_tls gained the string API
+  lcs_* (SHA-256 12 MB/s, AEAD 13 MB/s, memory of the output only); crypto_str_ok.src.
+- Memory is short on this machine: run builds and batteries in foreground batches (tb_*.lst, wb_*.lst, test parts),
+  never one long background job while idle (the session reaper kills it).
+
 ## Progress 2026-11-13 night (newest first)
 
 - LumeDesk developer's list, all on Linux (commit 39a9cbb + the f64 commit): seq.src (repetition without recursion),

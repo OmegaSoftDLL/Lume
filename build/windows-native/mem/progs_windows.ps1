@@ -15,6 +15,8 @@ $sandboxHome = $outDir + '.home'; if (Test-Path $sandboxHome) { Remove-Item -Rec
 $sandboxWin = Join-Path $sandboxHome 'win'; $sandboxVault = Join-Path $sandboxHome 'vault'
 New-Item -ItemType Directory -Force $sandboxWin, $sandboxVault | Out-Null
 $env:HOME = $sandboxHome; $env:USERPROFILE = $sandboxHome; $env:LUME_WIN_HOME = $sandboxWin; $env:LUME_SYSTEM_VAULT = $sandboxVault
+# the gates find the tools through LUME_BIN_DIR (hio_bin_dir), as run.sh gives them on Linux
+$env:LUME_BIN_DIR = '/' + $root.Substring(0, 1).ToLower() + ($root.Substring(2) -replace '\\', '/') + '/build/windows-native/inst/bin'
 $rel = "build\windows-native\mem\$Out"
 $lume = 'build\windows-native\inst\bin\lume.exe'
 $binDir = Join-Path $root 'build\windows-native\inst\bin'
