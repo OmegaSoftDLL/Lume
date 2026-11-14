@@ -245,16 +245,49 @@ fn ns_pop(st) = match st
 fn ns_onlyws(s, i, e) = if i >= e then 1 else if isws(at(s, i)) or at(s, i) == "," then ns_onlyws(s, i + 1, e) else 0
 fn ns_iskey(s, n, i, e, st) = let j = skipws(s, e, n) in if j >= n or at(s, j) != ":" then 0 else if j + 1 < n and at(s, j + 1) == ":" then 0 else if ns_top(st) == "{" then 1 else isnil(st) == 1 and ns_onlyws(s, 0, i) == 1
 
+## the names a module binds locally (let / var, the parameters of fn and of fn(...) lambdas, the variables of match
+## patterns): a shared global name that is also bound locally stays the local one where it is written, so it is not an
+## ambiguity (`let c = ...` or `fn(c) => ...` next to two imported modules that both define c)
+fn ns_tokw(s, i, n) = if i < n and isidch(at(s, i)) then ns_tokw(s, i + 1, n) else i
+fn ns_toks(s, i, n, acc) = if i >= n then rev(acc) else let c = at(s, i) in if c == "\"" then ns_toks(s, strend(s, i + 1, n), n, acc) else if c == "#" then rev(acc) else if isws(c) then ns_toks(s, i + 1, n, acc) else if isalpha(c) then (let e = ns_tokw(s, i, n) in ns_toks(s, e, n, Cons(slicen(s, n, i, e), acc))) else if c == "=" and i + 1 < n and at(s, i + 1) == ">" then ns_toks(s, i + 2, n, Cons("=>", acc)) else ns_toks(s, i + 1, n, Cons(c, acc))
+fn ns_kw(w) = w == "let" or w == "var" or w == "fn" or w == "if" or w == "then" or w == "else" or w == "match" or w == "in" or w == "and" or w == "or" or w == "not" or w == "own" or w == "mut" or w == "ref"
+fn ns_islower(w) = count(w) > 0 and at(w, 0) >= "a" and at(w, 0) <= "z" and ns_kw(w) == 0
+fn ns_has_arrow(ts) = match ts
+    Nil        => 0
+    Cons(h, t) => if h == "=>" then 1 else ns_has_arrow(t)
+fn ns_pat_names(ts, acc) = match ts
+    Nil        => acc
+    Cons(h, t) => if h == "=>" then acc else ns_pat_names(t, if ns_islower(h) then Cons(h, acc) else acc)
+fn ns_params(ts, depth, expect, acc) = match ts
+    Nil        => {rest: Nil, acc: acc}
+    Cons(h, t) => if h == "(" then ns_params(t, depth + 1, 1, acc) else if h == ")" then (if depth <= 1 then {rest: t, acc: acc} else ns_params(t, depth - 1, 0, acc)) else if h == "," and depth == 1 then ns_params(t, depth, 1, acc) else if expect == 1 and depth == 1 and ns_islower(h) then ns_params(t, depth, 0, Cons(h, acc)) else ns_params(t, depth, 0, acc)
+fn ns_bind_toks(ts, acc) = match ts
+    Nil        => acc
+    Cons(h, t) => if h == "let" or h == "var" then ns_bind_let(t, acc) else if h == "fn" then ns_bind_fn(t, acc) else ns_bind_toks(t, acc)
+fn ns_bind_let(ts, acc) = match ts
+    Nil        => acc
+    Cons(h, t) => ns_bind_toks(t, if ns_islower(h) then Cons(h, acc) else acc)
+fn ns_bind_fnp(ts, acc) = let r = ns_params(ts, 0, 1, acc) in ns_bind_toks(r.rest, r.acc)
+fn ns_bind_fn(ts, acc) = match ts
+    Nil        => acc
+    Cons(h, t) => if h == "(" then ns_bind_fnp(ts, acc) else ns_bind_fn2(t, acc)
+fn ns_bind_fn2(t, acc) = match t
+    Nil          => acc
+    Cons(h2, t2) => if h2 == "(" then ns_bind_fnp(t, acc) else ns_bind_toks(t, acc)
+fn ns_binders(lines, acc) = match lines
+    Nil        => acc
+    Cons(l, t) => let ts = ns_toks(l, 0, count(l), Nil) in let a1 = ns_bind_toks(ts, acc) in ns_binders(t, if ns_has_arrow(ts) == 1 then ns_pat_names(ts, a1) else a1)
+
 ## rewrite one line; cx = {mp, als, recs, gs, entry, mod, line}
 fn ns_rw(s, n, i, start, acc, st, cx) = if i >= n then joinall(rev(Cons(slicen(s, n, start, n), acc))) else let c = at(s, i) in if c == "\"" then ns_rw(s, n, strend(s, i + 1, n), start, acc, st, cx) else if c == "#" then joinall(rev(Cons(slicen(s, n, start, n), acc))) else if c == "(" or c == "[" or c == "{" then ns_rw(s, n, i + 1, start, acc, Cons(c, st), cx) else if c == ")" or c == "]" or c == "}" then ns_rw(s, n, i + 1, start, acc, ns_pop(st), cx) else if isalpha(c) and prev_boundary(s, i) then ns_word(s, n, i, id_end(s, i, n), start, acc, st, cx) else ns_rw(s, n, i + 1, start, acc, st, cx)
-fn ns_word(s, n, i, e, start, acc, st, cx) = if i > 0 and at(s, i - 1) == "." then ns_rw(s, n, e, start, acc, st, cx) else let w = slicen(s, n, i, e) in let m = if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) then ns_alias(cx.als, w) else "" in if m != "" then ns_qual(s, n, i, e, id_end(s, e + 1, n), m, start, acc, st, cx) else let t = ns_lookup(cx.mp, w) in if t == "" or ns_iskey(s, n, i, e, st) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" then ctfail(cx.mod + ".src:" + str(cx.line) + ":" + str(i + 1) + ": lume: name error: '" + w + "' is defined in modules " + slice(t, 1, count(t)) + "; write " + ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) + "." + w + (if ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) != ns_kfirst(slice(t, 1, count(t))) then " (or `use " + ns_kfirst(slice(t, 1, count(t))) + " as <alias>` and <alias>." + w + ")" else "") + "\n") else ns_rw(s, n, e, e, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
+fn ns_word(s, n, i, e, start, acc, st, cx) = if i > 0 and at(s, i - 1) == "." then ns_rw(s, n, e, start, acc, st, cx) else let w = slicen(s, n, i, e) in let m = if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) then ns_alias(cx.als, w) else "" in if m != "" then ns_qual(s, n, i, e, id_end(s, e + 1, n), m, start, acc, st, cx) else let t = ns_lookup(cx.mp, w) in if t == "" or ns_iskey(s, n, i, e, st) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" and contains(cx.bnd, w) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" then ctfail(cx.mod + ".src:" + str(cx.line) + ":" + str(i + 1) + ": lume: name error: '" + w + "' is defined in modules " + slice(t, 1, count(t)) + "; write " + ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) + "." + w + (if ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) != ns_kfirst(slice(t, 1, count(t))) then " (or `use " + ns_kfirst(slice(t, 1, count(t))) + " as <alias>` and <alias>." + w + ")" else "") + "\n") else ns_rw(s, n, e, e, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
 fn ns_kfirst(s) = slice(s, 0, wordend(s, 0, count(s)))
 fn ns_qual(s, n, i, e, ne, m, start, acc, st, cx) = let nm = slicen(s, n, e + 1, ne) in if contains((ns_find(cx.recs, m)).defs, nm) == 0 then ns_rw(s, n, e, start, acc, st, cx) else let t = if ns_isdup(cx.gs, nm) == 1 then ns_target(m, nm, cx.entry) else nm in ns_rw(s, n, ne, ne, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
 
 fn ns_lines(lines, k, mp, cx) = match lines
     Nil        => Nil
-    Cons(h, t) => let n = count(h) in let tr = ltrim(h) in let nh = if startswith(tr, "use ") then h else if ns_has_any_map(h, n, mp) == 1 or ns_has_any_alias(h, n, cx.als) == 1 then ns_rw(h, n, 0, 0, Nil, Nil, {mp: cx.mp, als: cx.als, recs: cx.recs, gs: cx.gs, entry: cx.entry, mod: cx.mod, line: k}) else h in Cons(nh, ns_lines(t, k + 1, mp, cx))
-fn ns_rec(r, recs, gs, entry) = let mp = ns_map(gs, r, ns_reach(r.uses, recs, Nil), entry, Nil) in let qual = ns_any_qual(r.lines, r.aliases) in if isnil(mp) == 1 and qual == 0 then r else {name: r.name, uses: r.uses, lines: ns_lines(r.lines, 1, mp, {mp: mp, als: r.aliases, recs: recs, gs: gs, entry: entry, mod: r.name, line: 0}), aliases: r.aliases, defs: r.defs}
+    Cons(h, t) => let n = count(h) in let tr = ltrim(h) in let nh = if startswith(tr, "use ") then h else if ns_has_any_map(h, n, mp) == 1 or ns_has_any_alias(h, n, cx.als) == 1 then ns_rw(h, n, 0, 0, Nil, Nil, {mp: cx.mp, als: cx.als, recs: cx.recs, gs: cx.gs, entry: cx.entry, mod: cx.mod, line: k, bnd: cx.bnd}) else h in Cons(nh, ns_lines(t, k + 1, mp, cx))
+fn ns_rec(r, recs, gs, entry) = let mp = ns_map(gs, r, ns_reach(r.uses, recs, Nil), entry, Nil) in let qual = ns_any_qual(r.lines, r.aliases) in if isnil(mp) == 1 and qual == 0 then r else {name: r.name, uses: r.uses, lines: ns_lines(r.lines, 1, mp, {mp: mp, als: r.aliases, recs: recs, gs: gs, entry: entry, mod: r.name, line: 0, bnd: ns_binders(r.lines, Nil)}), aliases: r.aliases, defs: r.defs}
 fn ns_any_qual(lines, als) = if isnil(als) == 1 then 0 else match lines
     Nil        => 0
     Cons(h, t) => if ns_has_any_alias(h, count(h), als) == 1 then 1 else ns_any_qual(t, als)
