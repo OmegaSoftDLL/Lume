@@ -173,6 +173,73 @@ fn tsx_stmt(h, sigs, laws, al) = match h
     _                                => 0
 fn tsx_prog(prog) = let al = tsx_aliases(prog, Nil) in let sigs = tsx_sigs(prog, al, Nil) in if isnil(sigs) == 1 then 0 else tsx_stmts(prog, sigs, tsx_laws(prog, Nil), al)
 fn tsx_gate(prog) = tsx_snd(tsx_prog(prog), prog)
+## --- '+' NEVER CONVERTS (spec T0604), IN EVERY FUNCTION AND STATEMENT ------------------------------------------------
+## The strict pass above checks fully annotated functions only, and it rejects more than '+'. This one applies to all
+## code and to '+' alone: a str on one side and an int, bool, decimal or f64 on the other is refused wherever both
+## types are known from what is written (literals, str()/chr()/slice()/at(), count()/ord()/toint(), f64 builtins, a
+## `let` or a top-level `let` bound to such a value, a parameter annotated int/bool/str). An unknown type ("") is never
+## flagged here; the run-time slow path of '+' refuses those cases with the same message.
+## Types: "int", "bool", "str", "dec", "f64", "" (unknown).
+fn tpl_frag(b, right) = let h = tpl_hint(b) in if h == "x" then "" else if right == 1 then "+ " + h else h + " +"
+fn tpl_fail(where, ta, tb, b, right) = ctfail("lume: type error [T0604]: " + (if tpl_frag(b, right) == "" then "" else "'" + tpl_frag(b, right) + "': ") + where + "operator '+' is applied to " + tpl_show(ta) + " and " + tpl_show(tb) + "; '+' adds two numbers or joins two strs; nothing converts implicitly (fix-it: " + tpl_fixit(b) + ")\n")
+fn tpl_fixit(b) = match b
+    Var(nm) => "`str(" + nm + ")` turns it into a str"
+    _       => "wrap the side that is not a str in `str(...)`"
+fn tpl_show(t) = if t == "dec" then "decimal" else t
+fn tpl_hint(e) = match e
+    Var(nm) => nm
+    Num(n)  => str(n)
+    _       => "x"
+fn tpl_nonstr(t) = t == "int" or t == "bool" or t == "dec" or t == "f64"
+fn tpl_isnum(t) = t == "int" or t == "dec" or t == "f64"
+fn tpl_f64res(nm) = nm == "f64" or nm == "f64_floor" or nm == "f64_ceil" or nm == "f64_round" or nm == "f64_sqrt" or nm == "f64_abs" or nm == "f64_sin" or nm == "f64_cos" or nm == "f64_tan" or nm == "f64_atan2" or nm == "f64_exp" or nm == "f64_log" or nm == "f64_log10" or nm == "f64_pow" or nm == "f64_from_bits"
+fn tpl_call_ty(nm) = if nm == "str" or nm == "chr" or nm == "slice" or nm == "slicen" or nm == "at" or nm == "f64_str" or nm == "fs_read_file" then "str" else if nm == "count" or nm == "ord" or nm == "toint" or nm == "f64_int" or nm == "f64_bits" then "int" else if tpl_f64res(nm) then "f64" else ""
+## the type of '+' and of the other operators from their operand types (and the check of '+')
+fn tpl_bin(op, a, b, ta, tb, where) = if op == "+" then (if (ta == "str" and tpl_nonstr(tb)) or (tb == "str" and tpl_nonstr(ta)) then tpl_fail(where, ta, tb, if ta == "str" then b else a, if ta == "str" then 1 else 0) else if ta == tb and ta != "bool" then ta else if ta == "f64" and tpl_isnum(tb) or tb == "f64" and tpl_isnum(ta) then "f64" else "") else if op == "-" or op == "*" or op == "/" or op == "%" then (if ta == "int" and tb == "int" then "int" else if (ta == "f64" and tpl_isnum(tb)) or (tb == "f64" and tpl_isnum(ta)) then "f64" else "") else if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or" then "bool" else ""
+fn tpl_join(a, b) = if a == b then a else ""
+fn tpl_e(e, env, where) = match e
+    Num(n)          => "int"
+    Str(s)          => "str"
+    Var(nm)         => tsx_var(nm, env)
+    Bin(op, a, b)   => tpl_bin(op, a, b, tpl_e(a, env, where), tpl_e(b, env, where), where)
+    If(c, t, e2)    => let tc = tpl_e(c, env, where) in tpl_join(tpl_e(t, env, where), tpl_e(e2, env, where))
+    LetIn(nm, v, b) => tpl_e(b, Cons({k: nm, v: tpl_e(v, env, where)}, env), where)
+    VarIn(nm, v, b) => let tv = tpl_e(v, env, where) in tpl_e(b, Cons({k: nm, v: ""}, env), where)
+    Match(sc, arms) => let ts = tpl_e(sc, env, where) in tpl_arms(arms, env, where, "?")
+    Call(nm, args)  => let ta = tpl_args(args, env, where) in if tsx_bound(nm, env) == 1 then "" else tpl_call_ty(nm)
+    Rec(items)      => let z = tpl_items(items, env, where) in if is_dec_rec_items(items) == 1 then "dec" else ""
+    RecT(tn, items) => let z = tpl_items(items, env, where) in ""
+    Field(o, nm)    => let z = tpl_e(o, env, where) in ""
+    CT(inner)       => tpl_e(inner, env, where)
+    OwnE(inner)     => tpl_e(inner, env, where)
+    MutE(inner)     => tpl_e(inner, env, where)
+    ScopeE(snm, b)  => tpl_e(b, env, where)
+    LambdaE(ps, tys, rt, body) => let z = tpl_e(body, tsx_shadow(ps, env), where) in ""
+    _               => ""
+fn tpl_args(xs, env, where) = match xs
+    Nil        => 0
+    Cons(h, t) => let a = tpl_e(h, env, where) in tpl_args(t, env, where)
+fn tpl_items(xs, env, where) = match xs
+    Nil        => 0
+    Cons(h, t) => let a = tpl_e(h.val, env, where) in tpl_items(t, env, where)
+fn tpl_arms(arms, env, where, acc) = match arms
+    Nil        => if acc == "?" then "" else acc
+    Cons(h, t) => let tb = tpl_e(h.body, tsx_shadow(oa_pat_names(h.pat), env), where) in tpl_arms(t, env, where, if acc == "?" then tb else tpl_join(acc, tb))
+## a function's parameters: their annotated scalar types when the signature names them, else unknown
+fn tpl_fenv(nm, ps, sigs, genv) = match tsx_look(nm, sigs)
+    Nil         => tsx_shadow(ps, genv)
+    Cons(sg, r) => app(tsx_env(sg.pn, sg.pt), genv)
+fn tpl_stmts(prog, sigs, genv) = match prog
+    Nil        => 0
+    Cons(h, t) => tpl_stmt(h, t, sigs, genv)
+fn tpl_stmt(h, t, sigs, genv) = match h
+    Fn(nm, ps, body)    => let z = tpl_e(body, tpl_fenv(nm, ps, sigs, genv), "in '" + nm + "': ") in tpl_stmts(t, sigs, genv)
+    ConstDecl(nm, v)    => let tv = tpl_e(v, genv, "") in tpl_stmts(t, sigs, Cons({k: nm, v: tv}, genv))
+    Print(v)            => let z = tpl_e(v, genv, "") in tpl_stmts(t, sigs, genv)
+    ExprS(v)            => let z = tpl_e(v, genv, "") in tpl_stmts(t, sigs, genv)
+    _                   => tpl_stmts(t, sigs, genv)
+fn tpl_prog(prog) = tpl_stmts(prog, tsx_sigs(prog, tsx_aliases(prog, Nil), Nil), Nil)
+fn tpl_gate(prog) = tsx_snd(tpl_prog(prog), prog)
 fn tany_tier_args(xs) = match xs
     Nil        => 0
     Cons(h, t) => if tany_tier_e(h) == 1 then 1 else tany_tier_args(t)
@@ -867,7 +934,7 @@ fn tchkinferargs3(nm, args, m, tt) = match m
 ## (literal or not) is checked, since an inferred int/str parameter is as binding as an annotated one.
 fn tchkinferargsi(nm, args, m, tt) = match m
     Nil          => 0
-    Cons(isg, r) => tchkiwalk(nm, 1, args, isg.pn, isg.iptypes, tt)
+    Cons(isg, r) => if tis_dispatch(nm) == 1 then 0 else tchkiwalk(nm, 1, args, isg.pn, isg.iptypes, tt)
 fn tchkiwalk(nm, i, args, pns, pts, tt) = match args
     Nil         => 0
     Cons(a, ar) => tchkiwalk2(nm, i, a, pns, pts, tt) + tchkiwalk(nm, i + 1, ar, ptl(pns), ptl(pts), tt)
@@ -891,12 +958,15 @@ fn hsig_pts(pts, i) = match pts
 fn hfn_env_sigs(sigs) = match sigs
     Nil         => Nil
     Cons(sg, r) => let pts = hsig_pts(sg.pt, 0) in let rt = if tisname(sg.rt) == 1 then sg.rt else TyVar(200) in Cons({k: "__top_" + sg.fname, v: hgeneralize(Nil, Nil, TyFun(pts, rt))}, hfn_env_sigs(r))
+## `__closure_call_N` dispatches every lambda of N parameters (the closures are defunctionalized): its parameters
+## take the union of all those lambdas' types, so it has no single type to give its callers or to check them against
+fn tis_dispatch(nm) = count(nm) > 15 and slice(nm, 0, 15) == "__closure_call_"
 fn tcollecti(prog, sigs) = tcollecti_acc(prog, sigs, hfn_env_sigs(sigs))
 fn tcollecti_acc(prog, sigs, fenv) = match prog
     Nil        => Nil
     Cons(h, t) => tcollecti2(h, t, sigs, fenv)
 fn tcollecti2(h, t, sigs, fenv) = match h
-    Fn(nm, ps, body) => let isg = tifn(h, ps, body, tsiglookup(nm, sigs), fenv) in let fenv2 = if isany(isg.fscheme) == 0 then Cons({k: "__top_" + nm, v: isg.fscheme}, fenv) else fenv in Cons(isg, tcollecti_acc(t, sigs, fenv2))
+    Fn(nm, ps, body) => let isg = tifn(h, ps, body, tsiglookup(nm, sigs), fenv) in let fenv2 = if isany(isg.fscheme) == 0 and tis_dispatch(nm) == 0 then Cons({k: "__top_" + nm, v: isg.fscheme}, fenv) else fenv in Cons(isg, tcollecti_acc(t, sigs, fenv2))
     _                => tcollecti_acc(t, sigs, fenv)
 fn henv_sig(ps, i, m) = match m
     Nil         => henv0(ps, i)
