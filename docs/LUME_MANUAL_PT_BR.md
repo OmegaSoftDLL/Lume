@@ -82,7 +82,7 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - Record Update (`with`):     `{ estado with contador: estado.contador + 1 }`
 - Interpolacao de Strings:    `f"valor={x}"`, `"valor=${x}"` ou `"valor={x}"`
                               (JSON bruto `"{\"a\":{\"b\":1}}"` preserva todas as chaves; escape chaves
-                              literais com `"\{x}"`, `"{{x}}"` ou `"custo: \${x}"`; escapes `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`)
+                              literais com `"\{x}"`, `"{{x}}"` ou `"custo: \${x}"`; escapes `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`)
 - Condicional (`if..then..else` ou chaves): `if x > 0 then 1 else 0` ou `if x > 0 { 1 } else { 0 }`
 - Operadores logicos (curto-circuito): `a == 1 and b == 2`, `x < 0 or x > 10`, `not (a == b)` (`not` tem precedencia menor que `==`/`<`)
 - Aritmetica: `+`, `-`, `*`, `/`, `%`
@@ -146,6 +146,14 @@ fn taxa(p) = match p
 
 ## 3.3 Tipos Financeiros e de Dados (`decimal`, `money`, `table`)
 - `decimal(p, s)`     Decimal exato de ponto fixo (sem erros de ponto flutuante IEEE 754).
+                      Um literal com ponto (`1.5`, `0.10`) e decimal; imprime como escrito e
+                      continua exato por parametros, listas e registros; `1.20 == 1.2` e verdadeiro.
+- `f64`               Ponto flutuante IEEE 754 (builtins, sem `use`): `f64(x)` de int, decimal, f64
+                      ou texto; `+ - * /` e comparacoes; `str`/`print` dao o texto mais curto que
+                      volta ao mesmo double; `f64_str(x, n)` com n casas; `f64_int`, `f64_floor`,
+                      `f64_ceil`, `f64_round`, `f64_sqrt`, `f64_abs`, `f64_sin`, `f64_cos`, `f64_tan`,
+                      `f64_atan2`, `f64_exp`, `f64_log`, `f64_log10`, `f64_pow`, `f64_is_nan`,
+                      `f64_bits`, `f64_from_bits`. Comparar com NaN para o programa (use f64_is_nan).
 - `money[BRL]`        Dinheiro tipado por moeda (`money[BRL]`, `money[USD]`). Somar moedas
                       diferentes sem conversao explicita gera erro em tempo de compilacao!
 - `table[T]`          Tabela relacional tipada com suporte a `persist table` (WAL duravel).
@@ -201,6 +209,13 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 ## 5.1 Efeitos Algebricos (`/ pure`, `/ {io, fs, net}`)
 - Funcoes marcadas com `/ pure` sao matematicamente puras: nao podem acessar disco,
   rede, processos ou mutar estado externo. Qualquer violacao gera `[E0200]`.
+- A lista de efeitos e opcional: sem `/ ...` os efeitos sao inferidos. Uma funcao que
+  declara a lista precisa nomear todos os efeitos que realiza, inclusive pelas funcoes
+  que chama; `[E0200]` diz quais faltam (`add '/ {net, io}'`).
+- Efeitos dos builtins do runtime: `buf_*` (buffers de bytes mutaveis, alterados no
+  lugar) sao `io`, como todo builtin que le ou muda estado; `net_*` sao `net`; `fs_*`
+  sao `fs`. As funcoes de `use dns` sao `{io, net, fs, time, panic}`. `f64` e os
+  builtins `f64_*` sao puros (sem efeito).
 
 ## 5.2 Memoria Automatica, SRA Zero-Heap e Arenas (`std.arena`)
 A Lume recupera memoria sozinha: o runtime nativo tem um coletor mark-sweep nao movel que
@@ -234,6 +249,16 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`,
                    `fs_write_sync(caminho, texto)`, `fs_path_exists(caminho)`,
                    `fs_read_byte(caminho, offset)`
+- Arquivos so do dono (chaves, segredos): `fs_write_private(caminho, texto)` grava um temporario criado 0600
+                   (O_EXCL, sem seguir link), faz fsync e renomeia por cima: atomico, nunca legivel por outros,
+                   tambem no Windows (DACL protegida so com o dono); `fs_create_private(caminho, texto)` so cria
+                   se nao existe; `fs_mkdir_private(caminho)` cria pasta 0700 (uma existente e restringida);
+                   `fs_mode(caminho)` da os bits de permissao (384 = 0600, -1 se ilegivel; o Windows os compoe);
+                   `fs_is_private(caminho)` e 1 quando so o dono alcanca (recuse chave que outros leem, como o ssh)
+- Chaveiro do SO: `use keychain` -> `keychain_set(servico, conta, segredo)`, `keychain_get(servico, conta)`
+                   ({ok, value, err}), `keychain_delete(servico, conta)`: Credential Manager no Windows; no Linux
+                   um arquivo so do dono, recusado na leitura se outros o alcancam; segredo de ate 2560 bytes
+- Ambiente: `os_getenv(nome)` ("" se ausente), `os_env_has(nome)` (1 se existe, mesmo vazia)
 - Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`,
                   `os_getpid()`, `os_exit(cod)`, `os_run(cmd, args)`,
                   `os_run_capture_timeout(cmd, args, out, err, ms)`
@@ -930,7 +955,7 @@ print run_lumeputer_demo()
 | `[C0011]` | Kernel Constant-Time | Funcao `@secret` + `@no_alloc` com `requires`, `ensures` nao provado, condicional, comparacao, `/` ou `%`, shift por nao-literal, recursao, tipo que nao e `int` ou chamada de funcao que nao e kernel. Use mascaras, `ct_select(mask, a, b)` e `ct_eq(a, b)`. |
 | `[L0001]` | Lexico / Montador    | Literal de string nao terminado em um arquivo fonte (feche com aspas duplas); o `lasm` usa o mesmo codigo para instrucao ou diretiva desconhecida. |
 | `[L0010]` | Ligacao              | Um simbolo definido duas vezes na mesma imagem, o que mandaria chamadas para a rotina errada. |
-| `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
+| `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |
 
 # APENDICE A: SINOPSE DE TODOS OS COMANDOS

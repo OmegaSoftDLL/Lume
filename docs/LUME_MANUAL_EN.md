@@ -69,6 +69,7 @@ can write high-assurance software with zero external C/Python scaffolding:
 ## 2.1 Top-Level Declarations in `.src` (Lume-Core)
 In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `use <module>`               Import a module from `compiler/stage1/<module>.src` or local dir.
+- `use <module> as <alias>`    The same import; `alias.name` (or `module.name`) names `name` of that module.
 - `type Name = ...`            Algebraic Data Type (ADT) or record type definition.
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
@@ -87,8 +88,9 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - Arithmetic:         `+`, `-`, `*`, `/`, `%`
 - Comparison:         `==`, `!=` (constant-stack `O(1)` worklist structural equality on deep lists/ADTs/records), `<`, `<=`, `>`, `>=`
 - String concat/interp: `f"val={x}"`, `"val=${x}"`, or `"val={x}"`
+- `+` adds two ints or joins two strs; nothing converts implicitly: `"total: " + str(n)` ([T0604]).
                         (raw JSON `"{\"a\":{\"b\":1}}"` is preserved; escape literal braces with `"\{x}"`,
-                        `"{{x}}"`, or `"cost: \${x}"`; escapes `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`)
+                        `"{{x}}"`, or `"cost: \${x}"`; escapes `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`)
 - Record literal:     `{id: 1, name: "alice"}` (field access: `r.id`, `r.name`)
 - List literals & ADTs: `[]` (`Nil`), `[1, 2, 3]` (`Cons(1, Cons(2, Cons(3, Nil)))`), `count([1, 2, 3]) == 3`
 - Comments:           `## Double hash starts a comment line`
@@ -150,6 +152,21 @@ fn area(s) = match s
 
 ## 3.3 Financial & Tabular Types (`decimal`, `money`, `table`, `query`)
 - `decimal(p, s)`     Exact fixed-point decimal with precision `p` and scale `s`.
+                      A literal with a point (`1.5`, `0.10`) is a decimal; it prints as written
+                      (`print 0.10` gives `0.10`) and keeps exact arithmetic through parameters,
+                      lists and records (`fn avg(a, b) = (a + b) / 2.0`); an int operand is n.0;
+                      `1.20 == 1.2` is true.
+- `f64`               IEEE 754 double (builtins, no `use`): `f64(x)` from an int, a decimal, an
+                      f64 or text (`f64("1e-9")`, `f64("inf")`, `f64("nan")`); `+ - * /` and
+                      `< > <= >=` work on it, an int or decimal operand converted; `==` compares
+                      two f64 by value. `str`/`print` give the shortest text that reads back to the
+                      same double (`0.30000000000000004`, `1.0e21`); `f64_str(x, n)` has n decimals.
+                      `f64_int` (toward zero), `f64_floor`, `f64_ceil`, `f64_round` (half away from
+                      zero), `f64_sqrt`, `f64_abs`, `f64_sin`, `f64_cos`, `f64_tan`, `f64_atan2(y, x)`,
+                      `f64_exp`, `f64_log`, `f64_log10`, `f64_pow(x, y)`, `f64_is_nan`, `f64_bits`,
+                      `f64_from_bits` (the 64 bits as an int, for binary formats). A comparison with
+                      NaN stops the program: test with `f64_is_nan`. Linux and Windows print the same
+                      digits.
 - `money[CCY]`        Currency-parameterized monetary type (`money[BRL]`, `money[USD]`);
                       mixing currencies (`money[BRL] + money[USD]`) is a compile-time error!
 - `table[Row]`        In-memory or WAL-persisted (`persist table`) relational table.
@@ -207,6 +224,13 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 ## 5.1 Row-Polymorphic Algebraic Effects (`/ pure`, `/ {io, fs, net}`)
 - Functions marked `/ pure` cannot perform I/O, network, process execution, or raw
   global arena mutation; violations fail closed with `[E0200]`.
+- The effect list is optional: a function without `/ ...` has its effects inferred. A
+  function that declares a list must name every effect it performs, also through the
+  functions it calls; `[E0200]` names the missing ones (`add '/ {net, io}'`).
+- Effects of the runtime builtins: `buf_*` (mutable byte buffers, changed in place) are
+  `io`, like every builtin that reads or changes state; `net_*` are `net`; `fs_*` are
+  `fs`. `use dns` functions are `{io, net, fs, time, panic}`. `f64` and the
+  `f64_*` builtins are pure (no effect).
 - Custom effects are declared with `effect Name { fn op(...) -> T }` and handled via
   `handle expr with { ... }`.
 
@@ -240,6 +264,16 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`
 - I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,
             `fs_path_exists(path)`, `fs_read_byte(path, offset)`
+- Owner-only files (keys, secrets): `fs_write_private(path, data)` writes a temporary created 0600 (O_EXCL, no
+            symlink followed), fsyncs it and renames it over path: atomic, never readable by others, also on Windows
+            (a protected DACL that grants the owner alone); `fs_create_private(path, data)` creates it only when it
+            does not exist; `fs_mkdir_private(path)` makes a 0700 directory (an existing one is tightened);
+            `fs_mode(path)` gives the permission bits (384 = 0600, -1 when unreadable; Windows composes them);
+            `fs_is_private(path)` is 1 when only the owner can reach it (refuse a key file others can read, as ssh)
+- OS keychain: `use keychain` -> `keychain_set(service, account, secret)`, `keychain_get(service, account)`
+            ({ok, value, err}), `keychain_delete(service, account)`: the Windows Credential Manager; on Linux an
+            owner-only file, refused on read when others can reach it; secrets up to 2560 bytes
+- Environment: `os_getenv(name)` ("" when absent), `os_env_has(name)` (1 when set, even to "")
 - Process:  `os_arg_count()`, `os_arg_at(i)`,
             `os_getpid()`, `os_exit(code)`, `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):
@@ -265,6 +299,18 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Failure:  `ctfail(msg)` (prints message to stderr and exits with non-zero code)
 
 ## 6.2 Standard Library Modules (`use <module>`)
+Names across modules: a name defined at the top level of two modules is kept apart; each module
+uses its own, and the entry file keeps its names (a module's copy is renamed `name__module`, which
+is how its tests are listed). A module that uses such a name without defining it gets the one owner
+it imports (directly first); two candidates stop the build with `file:line:col` and ask for
+`module.name`. `use json as j` then `j.read(s)` names `read` of `json`. A module in a folder is
+written by its last segment (`use net/http`, then `http.get(u)`); two folders with the same last
+segment need aliases (`use a/http as ha`). Record fields are never renamed.
+- `use seq`            Repetition without hand-written recursion: `seq_map`, `seq_filter`, `seq_fold`,
+                       `seq_foldr`, `seq_any`, `seq_all`, `seq_find`, `seq_range`, `seq_loop(a, b, acc, f)`,
+                       `seq_while(state, cond, step)`, `seq_count`, `seq_bytes`, `seq_loop_inv(a, b, acc, step, inv)`
+                       (`lume prove` proves its contract by induction on the invariant); tail-recursive, linear,
+                       a million steps in constant stack; lambdas `fn(x) => ...` may capture variables
 - `use fs`             Safe file handles (`sfile_with` close-on-all-paths, `[O0001]` safety)
 - `use bytes`          Bounds-checked byte buffers (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
 - `use vec`            Formally verified generic collection & numeric invariants (`vec.src`, `decimal.src`,
@@ -719,7 +765,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   `lock_acquire` out of rank order, an unreleased lock or a cycle of `actor_link` edges is rejected (`[E0306]`).
 - **Cryptography and TLS 1.3 (Domain `#119`, `use lcrypto_tls`)**: SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305,
   Ed25519, X25519, the TLS 1.3 key schedule, record layer and handshake state machine, all in Lume and checked
-  against the official vectors by `crypto_tls_gate`. `ltv` adds `[C0010]`: the emitted code of a `@secret` function
+  against the official vectors by `crypto_tls_gate`. For bulk data use the string API (binary strings, linear time,
+  memory of the output only): `lcs_sha256(s)`, `lcs_hmac_sha256(key, msg)`, `lcs_aead_seal(key32, nonce12, aad, p)`,
+  `lcs_aead_open(...)` -> `{ok, plain}`, `lcs_chacha20`, `lcs_poly1305`, `lcs_hex` / `lcs_unhex`. `ltv` adds `[C0010]`: the emitted code of a `@secret` function
   may hold no conditional branch, division or memory access outside its frame, and neither may any routine it
   reaches by `call` (the scan is transitive and names the call chain). Limits: tested, not formally
   verified; a plain `@secret` function that uses `+` or a bit operation is rejected by `[C0010]` (its helpers
@@ -947,7 +995,7 @@ print run_lumeputer_demo()
 | `[C0011]` | Constant-Time Kernel | A `@secret` + `@no_alloc` function has a `requires`, an unproven `ensures`, a conditional, comparison, `/` or `%`, a shift by a non-literal, recursion, a non-`int` type or a call of a function that is not a kernel. Use masks, `ct_select(mask, a, b)` and `ct_eq(a, b)`. |
 | `[L0001]` | Lexer / Assembler    | Unterminated string literal in a source file (close it with a double quote); `lasm` uses the same code for an instruction or directive it does not know. |
 | `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
-| `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
+| `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |
 
 # APPENDIX A: SYNOPSIS OF EVERY COMMAND

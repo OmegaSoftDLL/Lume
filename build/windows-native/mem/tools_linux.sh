@@ -6,7 +6,9 @@ export HOME=$H LUME_WIN_HOME=$H/win LUME_SYSTEM_VAULT=$H/vault
 cd /mnt/l/lume; ulimit -s unlimited 2>/dev/null
 ok=0; bad=""
 for t in "$@"; do
-  s=compiler/stage1/$t.src; [ -f $s ] || s=scripts/$t.src; [ "$t" = native_installer ] && s=scripts/install.src
+  s=compiler/stage1/$t.src; [ -f $s ] || s=scripts/$t.src; [ -f $s ] || s=tests/harness/$t.src
+  case $t in native_*_gate) g=${t#native_}; [ -f tests/cli/$g.src ] && s=tests/cli/$g.src;; esac
+  [ "$t" = native_installer ] && s=scripts/install.src
   if ./lume build $s -o build/bin/$t.stage > /tmp/tool_$t.log 2>&1 && [ -s build/bin/$t.stage ]; then
     [ -f build/bin/$t ] && cp -p build/bin/$t build/bin/$t.prev; mv -f build/bin/$t.stage build/bin/$t; ok=$((ok+1))
   else bad="$bad $t"; tail -3 /tmp/tool_$t.log; rm -f build/bin/$t.stage; fi

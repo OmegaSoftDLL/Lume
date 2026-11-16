@@ -259,10 +259,19 @@ fn cg_check_parallel_workers(root, tmp) =
         ctfail("concurrency gate failed: non-deterministic per-partition transcript across concurrent runs\n")
     else 4
 
+## lconcurrency.src imports hostio, and lumec and lcaas read one file: the library check sees what the bundler builds,
+## hostio's text and then lconcurrency's own (its `use hostio` line dropped)
+fn cg_drop_line_at(text, part, i) =
+    if i + count(part) > count(text) then text
+    else if slice(text, i, i + count(part)) == part then slice(text, 0, i) + "\n" + slice(text, i + count(part), count(text))
+    else cg_drop_line_at(text, part, i + 1)
+
+fn cg_lconcurrency_bundle(root) = fs_read_file(root + "/compiler/stage1/hostio.src") + "\n" + cg_drop_line_at(fs_read_file(root + "/compiler/stage1/lconcurrency.src"), "\nuse hostio\n", 0)
+
 ## 6. QF_LIA proof & WCET budget verification of `compiler/stage1/lconcurrency.src`
 fn cg_check_lconcurrency_proofs(root, tmp) =
     let lconc_path = root + "/compiler/stage1/lconcurrency.src" in
-    let src = fs_read_file(lconc_path) in
+    let src = cg_lconcurrency_bundle(root) in
     let c = cg_compile_inline(root, tmp, "lconcurrency_lib_check", src + "\nprint spsc_ring_advance_slot(3, 4)\n") in
     if c.exit_code != 0 then
         ctfail("concurrency gate failed: lumec failed on lconcurrency.src: " + c.err + "\n")
