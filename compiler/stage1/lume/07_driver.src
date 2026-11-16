@@ -425,6 +425,17 @@ fn lw_ffi_bind_fn(names) = "    .section .text\n__lume_ffi_bind:\n    pushq %rax
 fn lw_ffi(asm) = let names = lw_externs(asm) in match names
     Nil        => asm
     Cons(_, _) => lw_replace(lw_ffi_rw(asm, names), rt_win64_init(), rt_win64_init() + "    call __lume_ffi_bind\n") + lw_ffi_bind_fn(names) + "    .section .rodata\n" + lw_ffi_names(names) + "    .section .bss\n" + lw_ffi_slots(names)
-fn lw_win64(asm) = let a1 = lw_replace(asm, runtime_hosted_init(), rt_win64_init()) in if a1 == asm then ctfail("lumec: [W0064] --win64 needs a hosted program (a `.kernel` image has no Windows form)\n") else rt_win64_imports() + lw_probe(lw_replace(lw_replace(lw_ffi(a1), "    syscall\n", "    call __win_syscall\n"), ".Lrt_platform:\n    .asciz \"linux\"\n", ".Lrt_platform:\n    .asciz \"windows\"\n")) + rt_win64_layer()
+## A DLL's exports are entered with the Win64 ABI (rcx, rdx, r8, r9, then the stack past 32 bytes of shadow space;
+## rsi and rdi kept): each `.globl NAME` but _start gets a wrapper that moves the arguments to the registers of the
+## Lume stub (now __lume_sysv_NAME) and keeps rsi / rdi. The library's lazy start-up starts the Win64 layer first.
+fn lw_globl_names(s, i, acc) = let p = ld_w_find(s, "    .globl ", i) in if p < 0 then acc else let e = ld_w_find(s, "\n", p) in let nm = slice(s, p + 11, if e < 0 then count(s) else e) in lw_globl_names(s, if e < 0 then count(s) else e, if nm == "_start" then acc else Cons(nm, acc))
+fn ld_w_find(s, pat, i) = if i + count(pat) > count(s) then 0 - 1 else if lw_match(s, i, pat, 0, count(pat)) == 1 then i else ld_w_find(s, pat, i + 1)
+fn lw_export_wrap(nm) = "    .globl " + nm + "\n" + nm + ":\n    pushq %rsi\n    pushq %rdi\n    subq $8, %rsp\n    movq %rcx, %rdi\n    movq %rdx, %rsi\n    movq %r8, %rdx\n    movq %r9, %rcx\n    movq 64(%rsp), %r8\n    movq 72(%rsp), %r9\n    call __lume_sysv_" + nm + "\n    addq $8, %rsp\n    popq %rdi\n    popq %rsi\n    ret\n__lume_sysv_" + nm + ":\n"
+fn lw_exports_rw(asm, names) = match names
+    Nil         => asm
+    Cons(nm, t) => lw_exports_rw(lw_replace(asm, "    .globl " + nm + "\n" + nm + ":\n", lw_export_wrap(nm)), t)
+fn lw_exports(asm) = lw_replace(lw_exports_rw(asm, lw_globl_names(asm, 0, Nil)), "__lume_lib_init:\n    movq $1, __gc_off(%rip)\n", "__lume_lib_init:\n    call __win_start\n    movq $1, __gc_off(%rip)\n")
+
+fn lw_win64(asm) = let a1 = lw_replace(asm, runtime_hosted_init(), rt_win64_init()) in if a1 == asm then ctfail("lumec: [W0064] --win64 needs a hosted program (a `.kernel` image has no Windows form)\n") else rt_win64_imports() + lw_probe(lw_replace(lw_replace(lw_exports(lw_ffi(a1)), "    syscall\n", "    call __win_syscall\n"), ".Lrt_platform:\n    .asciz \"linux\"\n", ".Lrt_platform:\n    .asciz \"windows\"\n")) + rt_win64_layer()
 fn lumec_main(src) = if os_arg_count() >= 2 and os_arg_at(1) == "--raw" then rw_prog(lumec_parse(src)) else if os_arg_count() >= 2 and os_arg_at(1) == "--ast-hash" then lumec_mode_asthash(src) else if os_arg_count() >= 5 and os_arg_at(1) == "--module" then lumec_mode_module(os_arg_at(2), os_arg_at(3), os_arg_at(4), src) else if os_arg_count() >= 2 and os_arg_at(1) == "--link" then lumec_mode_link(src) else if lw_flag(1) == 1 then lw_win64(lumec_compile(src)) else let dp = ldw_path(1) in if dp == "" then lumec_compile(src) else ldw_annotate(lumec_compile(src), src, dp)
 print with handler CompilerIO { fn read_source() -> str = readall() } in lumec_main(read_source())
