@@ -2236,8 +2236,9 @@ __win_ffi_resolve:
     testq %rax, %rax
     jz .Lws_eacces
     leaq .Lws_wbuf(%rip), %rcx
-# OWNER | DACL | PROTECTED_DACL security information: the user owns it and no inherited entry stays
-    movq $2147483653, %rdx
+# DACL | PROTECTED_DACL security information: no inherited entry stays (the owner always may set the DACL; changing
+# the owner needs WRITE_OWNER, which a user's own file in a shared tree does not grant)
+    movq $2147483652, %rdx
     leaq .Lws_pv_sd(%rip), %r8
     movq .Lws_av_fn+64(%rip), %rax
     call *%rax

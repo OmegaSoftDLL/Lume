@@ -70,3 +70,33 @@ fn nc_connect(fd, sa, ms) = let fl = sys_call(72, fd, 3, 0, 0, 0) in if fl < 0 t
 fn net_tcp_connect_addr_timeout(ip, port, ms) = let sa = nc_sockaddr(ip, port) in if sa.ok == 0 or ms < 0 then 0 - 1 else let fd = sys_call(41, sa.fam, 1, 0, 0, 0) in if fd < 0 then 0 - 1 else if nc_connect(fd, sa, ms) == 1 then fd else let z = nc_close(fd) in 0 - 1
 ## TCP_NODELAY (IPPROTO_TCP 6, option 1)
 fn net_tcp_nodelay(fd, on) = let v = nc_put(buf_new(4), 0, nc_le32(if on != 0 then 1 else 0)) in if sys_call(54, fd, 6, 1, buf_addr(v), 4) == 0 then 1 else 0
+
+## --- sockets that never block the process (one loop serving many clients with epoll) ---
+## net_set_nonblocking(fd, on) -> 1 when the mode was set (on != 0) or cleared
+## net_send_some(fd, data) -> the bytes the kernel took (maybe fewer than count(data): send the rest later), 0 when the
+##     socket's buffer is full (EAGAIN: wait for epoll_out), -1 on an error (a reset peer). A broken pipe is an error,
+##     never a signal that ends the process.
+## net_recv_some(fd, max) -> {n, data}: n > 0 bytes read, n == 0 the peer closed, n == -2 nothing to read now, n == -1
+##     an error
+## epoll_add(ep, fd, tag, events) / epoll_mod(ep, fd, tag, events) / epoll_del(ep, fd) -> 1 on success; events are
+##     epoll_in() (readable), epoll_out() (writable), or bit_or of both
+## epoll_wait_ev(ep, ms) -> {tag, events}: the tag given to epoll_add and the events that are ready (epoll_in,
+##     epoll_out, epoll_err, epoll_hup bits), or tag == -1 when nothing is ready within ms
+fn epoll_in() = 1
+fn epoll_out() = 4
+fn epoll_err() = 8
+fn epoll_hup() = 16
+fn net_set_nonblocking(fd, on) = let fl = sys_call(72, fd, 3, 0, 0, 0) in if fl < 0 then 0 else if sys_call(72, fd, 4, if on != 0 then bit_or(fl, 2048) else bit_and(fl, 0 - 2049), 0, 0) == 0 then 1 else 0
+## MSG_NOSIGNAL on Linux (a peer that closed gives EPIPE, not SIGPIPE); Winsock raises no signal
+fn nc_send_flags() = if os_platform() == "windows" then 0 else 16384
+fn net_send_some(fd, data) = if count(data) == 0 then 0 else let b = buf_from_str(data) in let r = sys_call(44, fd, buf_addr(b), count(data), nc_send_flags(), 0) in if r >= 0 then r else if r == 0 - 11 or r == 0 - 4 then 0 else 0 - 1
+fn net_recv_some(fd, max) = if max <= 0 then {n: 0 - 1, data: ""} else let b = buf_new(max) in let r = sys_call(45, fd, buf_addr(b), max, 0, 0) in if r > 0 then {n: r, data: buf_to_str(b, 0, r)} else if r == 0 then {n: 0, data: ""} else if r == 0 - 11 or r == 0 - 4 then {n: 0 - 2, data: ""} else {n: 0 - 1, data: ""}
+fn nc_le64(v) = nc_app(nc_le32(v % 4294967296), nc_le32(v / 4294967296))
+fn nc_get32at(b, i) = buf_get(b, i) + 256 * buf_get(b, i + 1) + 65536 * buf_get(b, i + 2) + 16777216 * buf_get(b, i + 3)
+## struct epoll_event (packed): u32 events, u64 data (the tag)
+fn nc_epev(events, tag) = nc_put(buf_new(12), 0, nc_app(nc_le32(events), nc_le64(tag)))
+fn nc_epctl(ep, op, fd, tag, events) = if tag < 0 then 0 else if sys_call(233, ep, op, fd, buf_addr(nc_epev(events, tag)), 0) == 0 then 1 else 0
+fn epoll_add(ep, fd, tag, events) = nc_epctl(ep, 1, fd, tag, events)
+fn epoll_mod(ep, fd, tag, events) = nc_epctl(ep, 3, fd, tag, events)
+fn epoll_del(ep, fd) = nc_epctl(ep, 2, fd, 0, 0)
+fn epoll_wait_ev(ep, ms) = let b = nc_put(buf_new(12), 0, nc_zeros(12)) in let r = sys_call(232, ep, buf_addr(b), 1, ms, 0) in if r == 0 - 4 then epoll_wait_ev(ep, ms) else if r <= 0 then {tag: 0 - 1, events: 0} else {tag: nc_get32at(b, 4) + 4294967296 * nc_get32at(b, 8), events: nc_get32at(b, 0)}

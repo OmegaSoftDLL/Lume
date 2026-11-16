@@ -262,6 +262,10 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Controle de rede: `use netctl` -> `net_tcp_connect_addr_timeout(ip, porta, ms)` (o socket, ou -1 se recusado,
                    inalcancavel ou calado alem de ms), `net_tcp_nodelay(fd, ligado)` (1 se aplicado); `use dns` ->
                    `dns_tcp_connect_timeout(host, porta, ms)`. Escritos em Lume sobre as duas primitivas abaixo.
+                   Um laco atendendo muitos clientes: `net_set_nonblocking(fd, ligado)`, `net_send_some(fd, dados)`
+                   (bytes aceitos, 0 com o buffer cheio, -1 no erro; sem SIGPIPE), `net_recv_some(fd, max)` -> n > 0 /
+                   0 fechado / -2 nada agora / -1 erro, `epoll_add(ep, fd, tag, eventos)`, `epoll_mod`,
+                   `epoll_del(ep, fd)`, `epoll_wait_ev(ep, ms)` -> tag (-1 sem nada) e eventos (`epoll_in()`, `epoll_out()`)
 - Primitivas de sistema (para runtime e bibliotecas, efeitos sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` e a
                    chamada ao sistema operacional (numeros do Linux, atendidos igual no Windows; ints pequenos;
                    -errno na falha); `buf_addr(b)` e o endereco dos bytes de um buffer, para montar as estruturas

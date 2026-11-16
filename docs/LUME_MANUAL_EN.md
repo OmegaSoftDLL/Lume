@@ -277,6 +277,10 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - Network control: `use netctl` -> `net_tcp_connect_addr_timeout(ip, port, ms)` (the socket, or -1 when refused,
             unreachable or silent past ms), `net_tcp_nodelay(fd, on)` (1 when set); `use dns` ->
             `dns_tcp_connect_timeout(host, port, ms)`. Written in Lume on the two primitives below.
+            One loop serving many clients: `net_set_nonblocking(fd, on)`, `net_send_some(fd, data)` (bytes taken,
+            0 when the buffer is full, -1 on error; no SIGPIPE), `net_recv_some(fd, max)` -> n > 0 / 0 closed /
+            -2 nothing now / -1 error, `epoll_add(ep, fd, tag, events)`, `epoll_mod`, `epoll_del(ep, fd)`,
+            `epoll_wait_ev(ep, ms)` -> tag (-1 on timeout) and events (`epoll_in()`, `epoll_out()`, err, hup)
 - System primitives (for runtime and library code, effects sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` is the
             operating system call (Linux numbers, answered alike on Windows; small ints; -errno on failure);
             `buf_addr(b)` is the address of a buffer's bytes, to build the structures a call takes
