@@ -259,6 +259,12 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                    ({ok, value, err}), `keychain_delete(servico, conta)`: Credential Manager no Windows; no Linux
                    um arquivo so do dono, recusado na leitura se outros o alcancam; segredo de ate 2560 bytes
 - Ambiente: `os_getenv(nome)` ("" se ausente), `os_env_has(nome)` (1 se existe, mesmo vazia)
+- Controle de rede: `use netctl` -> `net_tcp_connect_addr_timeout(ip, porta, ms)` (o socket, ou -1 se recusado,
+                   inalcancavel ou calado alem de ms), `net_tcp_nodelay(fd, ligado)` (1 se aplicado); `use dns` ->
+                   `dns_tcp_connect_timeout(host, porta, ms)`. Escritos em Lume sobre as duas primitivas abaixo.
+- Primitivas de sistema (para runtime e bibliotecas, efeitos sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` e a
+                   chamada ao sistema operacional (numeros do Linux, atendidos igual no Windows; ints pequenos;
+                   -errno na falha); `buf_addr(b)` e o endereco dos bytes de um buffer, para montar as estruturas
 - Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`,
                   `os_getpid()`, `os_exit(cod)`, `os_run(cmd, args)`,
                   `os_run_capture_timeout(cmd, args, out, err, ms)`

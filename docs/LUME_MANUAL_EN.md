@@ -274,6 +274,12 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             ({ok, value, err}), `keychain_delete(service, account)`: the Windows Credential Manager; on Linux an
             owner-only file, refused on read when others can reach it; secrets up to 2560 bytes
 - Environment: `os_getenv(name)` ("" when absent), `os_env_has(name)` (1 when set, even to "")
+- Network control: `use netctl` -> `net_tcp_connect_addr_timeout(ip, port, ms)` (the socket, or -1 when refused,
+            unreachable or silent past ms), `net_tcp_nodelay(fd, on)` (1 when set); `use dns` ->
+            `dns_tcp_connect_timeout(host, port, ms)`. Written in Lume on the two primitives below.
+- System primitives (for runtime and library code, effects sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` is the
+            operating system call (Linux numbers, answered alike on Windows; small ints; -errno on failure);
+            `buf_addr(b)` is the address of a buffer's bytes, to build the structures a call takes
 - Process:  `os_arg_count()`, `os_arg_at(i)`,
             `os_getpid()`, `os_exit(code)`, `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):

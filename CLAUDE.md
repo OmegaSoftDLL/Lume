@@ -19,6 +19,9 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 ## Rules the owner added (also in AGENTS.md)
 
 - Lume generates Lume, 100 % Lume, for everything and every system. Whatever Windows lacks is written in Lume.
+- Golden rule (2026-11-16): the runtime itself must be 100 % Lume source too. Today runtime_core.lume holds x86
+  assembly text and the Windows layer is win64_layer.s; both are to be migrated to Lume (freestanding subset +
+  minimal compiler intrinsics). Never add new runtime code as hand-written asm when it can be Lume.
 - Never leave a bug, a correction or an improvement behind before moving to the next step.
 - A measured Windows/Linux gap (time or memory) is a defect to fix, not a difference to document.
 - "Tested" means the full universe, not a sample: 111 files with `fn test_` (`mem/tests_all.txt`), 205 programs

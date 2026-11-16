@@ -226,6 +226,12 @@ __win_syscall:
     je .Lws_listen
     cmpq $54, %rax
     je .Lws_setsockopt
+    cmpq $7, %rax
+    je .Lws_poll
+    cmpq $55, %rax
+    je .Lws_getsockopt
+    cmpq $72, %rax
+    je .Lws_fcntl
     movq $-38, %rax
 .Lws_ret:
     leaq -88(%rbp), %rsp
@@ -3215,6 +3221,170 @@ __win_ffi_resolve:
     jmp .Lws_ret
 # setsockopt(fd, level, name, val, len): SO_REUSEADDR is Linux's default rebinding rule on Windows (and Winsock's
 # SO_REUSEADDR would let another socket steal the port), so it succeeds without a change; TCP options pass through
+# poll(fds, nfds, ms) over sockets: the Linux pollfd array (fd, events, revents: 8 bytes each) becomes WSAPOLLFD
+# entries (SOCKET, events, revents: 16 bytes) in .Lws_pbuf for WSAPoll, and the answers come back as Linux bits
+# (POLLIN 1, POLLOUT 4, POLLERR 8, POLLHUP 16, POLLNVAL 32). A descriptor that is not a socket: -EINVAL.
+.Lws_poll:
+    call .Lws_ws_init
+    testq %rax, %rax
+    jz .Lws_enosys
+    cmpq $0, %r13
+    jl .Lws_einval
+    cmpq $64, %r13
+    jg .Lws_einval
+    movq %r12, %rsi
+    leaq .Lws_pbuf(%rip), %rdi
+    xorq %rbx, %rbx
+.Lws_poll_in:
+    cmpq %r13, %rbx
+    jge .Lws_poll_call
+    movq (%rsi,%rbx,8), %rax
+    movq %rax, 88(%rsp)
+    movq %rax, %r12
+    shlq $32, %r12
+    shrq $32, %r12
+    call .Lws_fdh
+    cmpq $5, %rcx
+    jne .Lws_einval
+    movq %rbx, %rcx
+    shlq $4, %rcx
+    movq %rax, (%rdi,%rcx)
+    movq 88(%rsp), %rax
+    shrq $32, %rax
+    xorq %rdx, %rdx
+    movq %rax, %r8
+    andq $1, %r8
+    testq %r8, %r8
+    jz .Lws_poll_in_w
+    orq $768, %rdx
+.Lws_poll_in_w:
+    movq %rax, %r8
+    andq $4, %r8
+    testq %r8, %r8
+    jz .Lws_poll_in_s
+    orq $16, %rdx
+.Lws_poll_in_s:
+    movq %rdx, 8(%rdi,%rcx)
+    incq %rbx
+    jmp .Lws_poll_in
+.Lws_poll_call:
+    leaq .Lws_pbuf(%rip), %rcx
+    movq %r13, %rdx
+    movq %r14, %r8
+    movq .Lws_ws_fn+112(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    sarq $32, %rax
+    cmpq $-1, %rax
+    je .Lws_ws_fail
+    movq %rax, 72(%rsp)
+    xorq %rbx, %rbx
+.Lws_poll_out:
+    cmpq %r13, %rbx
+    jge .Lws_poll_done
+    movq %rbx, %rcx
+    shlq $4, %rcx
+    movq 8(%rdi,%rcx), %rax
+    shrq $16, %rax
+    andq $65535, %rax
+    xorq %rdx, %rdx
+    movq %rax, %r8
+    andq $768, %r8
+    testq %r8, %r8
+    jz .Lws_poll_o1
+    orq $1, %rdx
+.Lws_poll_o1:
+    movq %rax, %r8
+    andq $16, %r8
+    testq %r8, %r8
+    jz .Lws_poll_o2
+    orq $4, %rdx
+.Lws_poll_o2:
+    movq %rax, %r8
+    andq $1, %r8
+    testq %r8, %r8
+    jz .Lws_poll_o3
+    orq $8, %rdx
+.Lws_poll_o3:
+    movq %rax, %r8
+    andq $2, %r8
+    testq %r8, %r8
+    jz .Lws_poll_o4
+    orq $16, %rdx
+.Lws_poll_o4:
+    movq %rax, %r8
+    andq $4, %r8
+    testq %r8, %r8
+    jz .Lws_poll_o5
+    orq $32, %rdx
+.Lws_poll_o5:
+    movq (%rsi,%rbx,8), %rax
+    shlq $16, %rax
+    shrq $16, %rax
+    shlq $48, %rdx
+    orq %rdx, %rax
+    movq %rax, (%rsi,%rbx,8)
+    incq %rbx
+    jmp .Lws_poll_out
+.Lws_poll_done:
+    movq 72(%rsp), %rax
+    jmp .Lws_ret
+# getsockopt(fd, SOL_SOCKET, SO_ERROR, val, lenp): Winsock's getsockopt(0xFFFF, 0x1007); 0 in val is no error
+.Lws_getsockopt:
+    call .Lws_fdh
+    cmpq $5, %rcx
+    jne .Lws_enotsock
+    cmpq $1, %r13
+    jne .Lws_gso_bad
+    cmpq $4, %r14
+    jne .Lws_gso_bad
+    movq %rax, %rcx
+    movq $65535, %rdx
+    movq $4103, %r8
+    movq %r15, %r9
+    movq %rbx, 32(%rsp)
+    movq .Lws_ws_fn+144(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_ws_fail
+    jmp .Lws_zero
+.Lws_gso_bad:
+    movq $-92, %rax
+    jmp .Lws_ret
+# fcntl(fd, cmd, arg): F_GETFL is O_RDWR; F_SETFL on a socket sets or clears non-blocking mode (ioctlsocket FIONBIO);
+# F_GETFD / F_SETFD and F_SETFL on other descriptors succeed without effect
+.Lws_fcntl:
+    cmpq $1, %r13
+    je .Lws_zero
+    cmpq $2, %r13
+    je .Lws_zero
+    cmpq $3, %r13
+    je .Lws_fcntl_get
+    cmpq $4, %r13
+    jne .Lws_einval
+    call .Lws_fdh
+    cmpq $5, %rcx
+    jne .Lws_zero
+    movq %rax, %rcx
+    movq %r14, %rax
+    andq $2048, %rax
+    shrq $11, %rax
+    movq %rax, 80(%rsp)
+    movq $2147772030, %rdx
+    leaq 80(%rsp), %r8
+    movq .Lws_ws_fn+136(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_ws_fail
+    jmp .Lws_zero
+.Lws_fcntl_get:
+    movq $2, %rax
+    jmp .Lws_ret
+
 .Lws_setsockopt:
     call .Lws_fdh
     cmpq $5, %rcx
@@ -5024,6 +5194,8 @@ __win_image_hi:
     .asciz "WSAPoll"
     .asciz "WSAAddressToStringA"
     .asciz "WSAIoctl"
+    .asciz "ioctlsocket"
+    .asciz "getsockopt"
     .byte 0
 .Lws_av_dll:
     .asciz "advapi32.dll"
