@@ -1,0 +1,19 @@
+## big_constants_ok.src -- `lume prove` and `lume certify` on laws with 64-bit constants (2^60 .. 2^63 - 1).
+## Reported by the LumeDesk developer: the kernel of certify refused such a law (literals of more than 18 digits) and
+## prove answered runtime_checked for a false one. Now the kernel keeps constants exactly (lcert bz), lcaas checks
+## sums and products of its linear forms exactly as lumec does, and the edge of the bound is a counterexample.
+## Run from the repository root (the fixtures go to build/).
+use hostio
+
+fn bc_law(name, k, concl) = "law " + name + "(n: int) = if n >= 0 and n < " + k + " then " + concl + " else 1 == 1\n"
+fn bc_run(sub, name, text) = let src = "build/bc_" + name + ".src" in let out = "build/bc_" + name + "." + sub + ".out" in let w = fs_write_sync(src, text) in let r = hio_osrun_ct(hio_lume_cmd("."), Cons(sub, Cons("--json", Cons(src, Nil))), out, out + ".err", 600000) in let t = fs_read_file(out) in let c1 = fs_remove(out) in let c2 = fs_remove(out + ".err") in let c3 = fs_remove(src) in t
+fn bc_has_at(s, p, i) = if i + count(p) > count(s) then 0 else if slice(s, i, i + count(p)) == p then 1 else bc_has_at(s, p, i + 1)
+fn bc_has(s, p) = bc_has_at(s, p, 0) == 1
+
+fn test_certify_law_with_2_pow_60() = bc_has(bc_run("certify", "c60", bc_law("k60", "1152921504606846976", "n + 1 > n")), "\"kernel_verified\":true")
+fn test_certify_law_with_2_pow_63_minus_1() = bc_has(bc_run("certify", "c63", bc_law("k63", "9223372036854775807", "n + 1 > n")), "\"kernel_verified\":true")
+fn test_certify_law_at_the_edge() = bc_has(bc_run("certify", "edge", bc_law("edge", "1152921504606846976", "n + 1 <= 1152921504606846976")), "\"kernel_verified\":true")
+fn test_certify_refuses_a_false_big_law() = bc_has(bc_run("certify", "bad", bc_law("bad", "1152921504606846976", "n + 1 < 1152921504606846976")), "\"kernel_verified\":false")
+fn test_prove_refutes_a_false_big_law_with_its_counterexample() = let t = bc_run("prove", "pbad", bc_law("pbad", "1152921504606846976", "n + 1 < 1152921504606846976")) in bc_has(t, "\"status\":\"refuted\"") and bc_has(t, "n = 1152921504606846975")
+fn test_prove_refutes_at_2_pow_63_minus_1() = let t = bc_run("prove", "pbad63", bc_law("pbad63", "9223372036854775807", "n + 1 < 9223372036854775807")) in bc_has(t, "\"status\":\"refuted\"") and bc_has(t, "n = 9223372036854775806")
+fn test_prove_proves_a_true_big_law() = bc_has(bc_run("prove", "pok", bc_law("pok", "4611686018427387903", "n + 1 <= 4611686018427387903")), "\"status\":\"proven\"")

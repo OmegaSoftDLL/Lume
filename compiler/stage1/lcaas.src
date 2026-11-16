@@ -2203,10 +2203,13 @@ fn cs_vprove_law_envs(envs, body, ft, undec) = match envs
     Cons(env, r) => let rb = cs_veval(body, env, env, ft, 0) in if rb.ok == 0 then cs_vprove_law_envs(r, body, ft, 1) else if rb.i == 0 then {status: "refuted", cex: cs_vfmt_env(env)} else cs_vprove_law_envs(r, body, ft, undec)
 
 ## --- Stage B: Sound QF_LIA (Quantifier-Free Linear Integer Arithmetic) Decision Procedure (Fourier-Motzkin) ---
-fn cs_vlin_ovf(x) = if x > 100000000000000000 or x < 0 - 100000000000000000 then 1 else 0
+## the constants of linear forms are any 64-bit words, as in lumec (vlin_*, 06b_phase3.src): sums and products are
+## checked exactly (cs_vlin_add_ovf, cs_vlin_mul_ovf), so `n < 2^60` is a hypothesis and its edge a candidate point
+fn cs_vlin_ovf(x) = 0
+fn cs_vlin_add_ovf(x, y) = if y > 0 and x > cs_vlin_max_int() - y then 1 else if y < 0 and x < cs_vlin_min_int() - y then 1 else 0
 fn cs_vlin_coeff_ovf(x) = if x > 2000000000 or x < 0 - 2000000000 then 1 else 0
 fn cs_vlin_abs(x) = if x < 0 then 0 - x else x
-fn cs_vlin_mul_ovf(k, c) = if k == 0 or c == 0 then 0 else if cs_vlin_ovf(k) == 1 or cs_vlin_ovf(c) == 1 then 1 else if cs_vlin_abs(c) > 100000000000000000 / cs_vlin_abs(k) then 1 else 0
+fn cs_vlin_mul_ovf(x, y) = if x == 0 or y == 0 then 0 else if y == 0 - 1 then (if x == cs_vlin_min_int() then 1 else 0) else if x == 0 - 1 then (if y == cs_vlin_min_int() then 1 else 0) else if y > 0 then (if x > cs_vlin_max_int() / y or x < cs_vlin_min_int() / y then 1 else 0) else if x < cs_vlin_max_int() / y or x > cs_vlin_min_int() / y then 1 else 0
 fn cs_vlin_cs_ovf(cs) = match cs
     Nil        => 0
     Cons(h, t) => if cs_vlin_coeff_ovf(h.c) == 1 then 1 else cs_vlin_cs_ovf(t)
@@ -2230,7 +2233,7 @@ fn cs_vlin_scale_cs(k, cs) = if k == 0 then Nil else cs_vlin_scale_cs1(k, cs)
 fn cs_vlin_scale_cs1(k, cs) = match cs
     Nil        => Nil
     Cons(h, t) => Cons({k: h.k, c: k * h.c}, cs_vlin_scale_cs1(k, t))
-fn cs_vlin_add(a, b) = if a.ok == 0 or b.ok == 0 or cs_vlin_ovf(a.c0) == 1 or cs_vlin_ovf(b.c0) == 1 or cs_vlin_ovf(a.c0 + b.c0) == 1 then cs_vlin_err() else let cs = cs_vlin_add_cs(a.cs, b.cs) in if cs_vlin_cs_ovf(cs) == 1 then cs_vlin_err() else {ok: 1, c0: a.c0 + b.c0, cs: cs}
+fn cs_vlin_add(a, b) = if a.ok == 0 or b.ok == 0 or cs_vlin_add_ovf(a.c0, b.c0) == 1 then cs_vlin_err() else let cs = cs_vlin_add_cs(a.cs, b.cs) in if cs_vlin_cs_ovf(cs) == 1 then cs_vlin_err() else {ok: 1, c0: a.c0 + b.c0, cs: cs}
 fn cs_vlin_scale(k, a) = if a.ok == 0 or cs_vlin_ovf(k) == 1 or cs_vlin_mul_ovf(k, a.c0) == 1 or cs_vlin_scale_ovf(k, a.cs) == 1 then cs_vlin_err() else {ok: 1, c0: k * a.c0, cs: cs_vlin_scale_cs(k, a.cs)}
 fn cs_vlin_sub(a, b) = cs_vlin_add(a, cs_vlin_scale(0 - 1, b))
 fn cs_vmono_key(k1, k2) = if k1 <= k2 then k1 + "*" + k2 else k2 + "*" + k1
@@ -2281,7 +2284,7 @@ fn cs_vfm_pair1(v, p, cp, negs) = match negs
 fn cs_vfm_pairs(v, pos, negs) = match pos
     Nil        => Nil
     Cons(p, r) => let pairs1 = cs_vfm_pair1(v, p, cs_vlin_coeff(v, p.cs), negs) in if cs_len(pairs1) > 24 then pairs1 else cs_app(pairs1, cs_vfm_pairs(v, r, negs))
-fn cs_vfm_fdiv(c0, a) = if c0 >= 0 then c0 / a else (c0 - a + 1) / a
+fn cs_vfm_fdiv(c0, a) = if c0 >= 0 then c0 / a else let q = c0 / a in if q * a == c0 then q else q - 1
 fn cs_vfm_tighten_h(h) = if h.ok == 1 and cs_len(h.cs) == 1 then let t = cs_phd_cs(h.cs) in let a = if t.c < 0 then 0 - t.c else t.c in if a > 1 then {ok: 1, c0: cs_vfm_fdiv(h.c0, a), cs: Cons({k: t.k, c: if t.c > 0 then 1 else 0 - 1}, Nil)} else h else h
 fn cs_vfm_tighten_list(hyps) = match hyps
     Nil        => Nil
@@ -2577,7 +2580,7 @@ fn cs_vmem_int(x, xs) = match xs
 fn cs_vadd_int_uniq(x, xs) = if cs_vmem_int(x, xs) == 1 or cs_len(xs) >= 16 then xs else cs_app(xs, Cons(x, Nil))
 fn cs_vpts_from_hyps(p, hyps, acc) = match hyps
     Nil        => acc
-    Cons(h, t) => let c = cs_vlin_coeff(p, h.cs) in if c == 0 or cs_vlin_ovf(h.c0) == 1 then cs_vpts_from_hyps(p, t, acc) else let b = (0 - h.c0) / c in cs_vpts_from_hyps(p, t, cs_vadd_int_uniq(cs_vwrap_sub(b, 1), cs_vadd_int_uniq(cs_vwrap_add(b, 1), cs_vadd_int_uniq(b, acc))))
+    Cons(h, t) => let c = cs_vlin_coeff(p, h.cs) in if c == 0 or cs_vlin_mul_ovf(0 - 1, h.c0) == 1 or c == 0 - 1 and h.c0 == cs_vlin_min_int() then cs_vpts_from_hyps(p, t, acc) else let b = (0 - h.c0) / c in cs_vpts_from_hyps(p, t, cs_vadd_int_uniq(cs_vwrap_sub(b, 1), cs_vadd_int_uniq(cs_vwrap_add(b, 1), cs_vadd_int_uniq(b, acc))))
 fn cs_vfm_trace_hyps(hyps, vars) = match vars
     Nil        => hyps
     Cons(v, r) => let next = cs_vfm_elim_var(v, hyps) in if cs_len(next) > 32 then hyps else cs_app(hyps, cs_vfm_trace_hyps(next, r))
