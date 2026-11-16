@@ -142,6 +142,10 @@ __win_syscall:
     je .Lws_ioctl
     cmpq $1000, %rax
     je .Lws_dnssrv
+    cmpq $1008, %rax
+    je .Lws_ipv4if
+    cmpq $51, %rax
+    je .Lws_getsockname
     cmpq $1001, %rax
     je .Lws_kc_put
     cmpq $1002, %rax
@@ -3386,6 +3390,90 @@ __win_ffi_resolve:
     movq $2, %rax
     jmp .Lws_ret
 
+# getsockname(fd, addr, lenp): Winsock getsockname; an IPv6 address (family 23) is given back with Linux's family 10
+.Lws_getsockname:
+    call .Lws_fdh
+    cmpq $5, %rcx
+    jne .Lws_enotsock
+    movq %rax, %rcx
+    movq %r13, %rdx
+    movq %r14, %r8
+    movq .Lws_ws_fn+152(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_ws_fail
+    movzbq (%r13), %rax
+    cmpq $23, %rax
+    jne .Lws_zero
+    movb $10, (%r13)
+    jmp .Lws_zero
+# pseudo system call 1008 (ENOSYS on Linux): the IPv4 unicast addresses of the adapters that are up, 4 bytes each
+# (network order) into buf r12 of r13 bytes; rax = the number of bytes written
+.Lws_ipv4if:
+    call .Lws_iph_load
+    testq %rax, %rax
+    jz .Lws_enosys
+    movq $65536, 80(%rsp)
+    movq $2, %rcx
+    movq $14, %rdx
+    xorq %r8, %r8
+    leaq .Lws_gaa(%rip), %r9
+    leaq 80(%rsp), %rax
+    movq %rax, 32(%rsp)
+    movq .Lws_iph_fn(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_zero
+    leaq .Lws_gaa(%rip), %rsi
+    xorq %rdi, %rdi
+.Lws_v4_ad:
+    testq %rsi, %rsi
+    jz .Lws_v4_done
+    movq 104(%rsi), %rax
+    shlq $32, %rax
+    shrq $32, %rax
+    cmpq $1, %rax
+    jne .Lws_v4_adn
+    movq 24(%rsi), %rbx
+.Lws_v4_u:
+    testq %rbx, %rbx
+    jz .Lws_v4_adn
+    movq 16(%rbx), %rcx
+    testq %rcx, %rcx
+    jz .Lws_v4_un
+    movzbq (%rcx), %rax
+    cmpq $2, %rax
+    jne .Lws_v4_un
+    movq %rdi, %rax
+    addq $4, %rax
+    cmpq %r13, %rax
+    jg .Lws_v4_done
+    movzbq 4(%rcx), %rax
+    movb %al, (%r12,%rdi)
+    incq %rdi
+    movzbq 5(%rcx), %rax
+    movb %al, (%r12,%rdi)
+    incq %rdi
+    movzbq 6(%rcx), %rax
+    movb %al, (%r12,%rdi)
+    incq %rdi
+    movzbq 7(%rcx), %rax
+    movb %al, (%r12,%rdi)
+    incq %rdi
+.Lws_v4_un:
+    movq 8(%rbx), %rbx
+    jmp .Lws_v4_u
+.Lws_v4_adn:
+    movq 8(%rsi), %rsi
+    jmp .Lws_v4_ad
+.Lws_v4_done:
+    movq %rdi, %rax
+    jmp .Lws_ret
+
 .Lws_setsockopt:
     call .Lws_fdh
     cmpq $5, %rcx
@@ -5197,6 +5285,7 @@ __win_image_hi:
     .asciz "WSAIoctl"
     .asciz "ioctlsocket"
     .asciz "getsockopt"
+    .asciz "getsockname"
     .byte 0
 .Lws_av_dll:
     .asciz "advapi32.dll"

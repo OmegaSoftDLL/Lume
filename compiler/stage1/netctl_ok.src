@@ -20,3 +20,16 @@ fn test_send_some_never_blocks_and_epoll_out_resumes() = let l = net_tcp_listen_
 fn test_recv_some_reports_empty_and_closed() = let l = net_tcp_listen_addr("127.0.0.1", 47815) in let c = net_tcp_connect_addr_timeout("127.0.0.1", 47815, 3000) in let a = net_tcp_accept(l) in let nb = net_set_nonblocking(a, 1) in let e = net_recv_some(a, 16) in let s = net_send_some(c, "hi") in let w = os_sleep_ms(50) in let r = net_recv_some(a, 16) in let x1 = net_close(c) in let w2 = os_sleep_ms(50) in let z = net_recv_some(a, 16) in let x2 = net_close(a) in let x3 = net_close(l) in nb == 1 and e.n == 0 - 2 and s == 2 and r.n == 2 and r.data == "hi" and z.n == 0
 fn test_epoll_in_with_tags() = let l = net_tcp_listen_addr("127.0.0.1", 47816) in let c = net_tcp_connect_addr_timeout("127.0.0.1", 47816, 3000) in let a = net_tcp_accept(l) in let ep = epoll_create_fd() in let ad = epoll_add(ep, a, 42, epoll_in()) in let w0 = epoll_wait_ev(ep, 50) in let s = net_send_some(c, "x") in let w1 = epoll_wait_ev(ep, 2000) in let md = epoll_mod(ep, a, 43, bit_or(epoll_in(), epoll_out())) in let w2 = epoll_wait_ev(ep, 2000) in let x1 = net_close(a) in let x2 = net_close(c) in let x3 = net_close(l) in let x4 = net_close(ep) in ad == 1 and w0.tag == 0 - 1 and s == 1 and w1.tag == 42 and bit_and(w1.events, epoll_in()) == 1 and md == 1 and w2.tag == 43
 fn test_send_some_on_a_bad_socket() = net_send_some(0 - 1, "x") == 0 - 1 and net_send_some(0 - 1, "") == 0 and epoll_add(0 - 1, 0 - 1, 1, epoll_in()) == 0
+
+## the socket's own address, the machine's IPv4 addresses
+fn nl_has(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else nl_has(t, x)
+fn nl_all_v4(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if nc_isnil(nc_v4(h)) == 1 then 0 else nl_all_v4(t)
+fn test_local_port_of_a_bind_to_port_0() = let fd = net_udp_bind_addr("0.0.0.0", 0) in let a = net_local_addr(fd) in let p = net_local_port(fd) in let c = net_close(fd) in fd >= 0 and a.ip == "0.0.0.0" and p > 0 and a.port == p
+fn test_local_addr_of_a_tcp_listener() = let l = net_tcp_listen_addr("127.0.0.1", 47817) in let a = net_local_addr(l) in let c = net_close(l) in l >= 0 and a.ip == "127.0.0.1" and a.port == 47817
+fn test_local_addr_of_a_bad_socket() = let a = net_local_addr(0 - 1) in a.ip == "" and a.port == 0 - 1 and net_local_port(0 - 1) == 0 - 1
+fn test_ipv4_interfaces_include_loopback() = let xs = os_ipv4_interfaces() in nl_has(xs, "127.0.0.1") == 1 and nl_all_v4(xs) == 1
+fn test_v6_short_text() = let b = nc_put(buf_new(16), 0, nc_v6("2001:db8::8a2e:370:7334")) in let c = nc_put(buf_new(16), 0, nc_v6("::1")) in let d = nc_put(buf_new(16), 0, nc_v6("1:0:0:2:0:0:0:3")) in nc_v6text(b, 0) == "2001:db8::8a2e:370:7334" and nc_v6text(c, 0) == "::1" and nc_v6text(d, 0) == "1:0:0:2::3"

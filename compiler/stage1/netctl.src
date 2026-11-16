@@ -100,3 +100,31 @@ fn epoll_add(ep, fd, tag, events) = nc_epctl(ep, 1, fd, tag, events)
 fn epoll_mod(ep, fd, tag, events) = nc_epctl(ep, 3, fd, tag, events)
 fn epoll_del(ep, fd) = nc_epctl(ep, 2, fd, 0, 0)
 fn epoll_wait_ev(ep, ms) = let b = nc_put(buf_new(12), 0, nc_zeros(12)) in let r = sys_call(232, ep, buf_addr(b), 1, ms, 0) in if r == 0 - 4 then epoll_wait_ev(ep, ms) else if r <= 0 then {tag: 0 - 1, events: 0} else {tag: nc_get32at(b, 4) + 4294967296 * nc_get32at(b, 8), events: nc_get32at(b, 0)}
+
+## --- the socket's own address and the machine's IPv4 addresses ---
+## net_local_addr(fd) -> {ip, port} of the socket (getsockname), so a bind to port 0 learns the port the system chose;
+##     {ip: "", port: -1} when fd is not a bound socket. IPv6 addresses are written in the short form (::1).
+## net_local_port(fd) -> that port, or -1
+## os_ipv4_interfaces() -> the IPv4 addresses, as text, of the interfaces that are up (the loopback included), in the
+##     system's order: SIOCGIFCONF / SIOCGIFFLAGS on Linux, the up adapters of GetAdaptersAddresses on Windows
+fn nc_dotted(b, i) = str(buf_get(b, i)) + "." + str(buf_get(b, i + 1)) + "." + str(buf_get(b, i + 2)) + "." + str(buf_get(b, i + 3))
+fn nc_hd(d) = at("0123456789abcdef", d)
+fn nc_hexs(v) = if v < 16 then nc_hd(v) else nc_hexs(v / 16) + nc_hd(v % 16)
+fn nc_g(b, i, k) = buf_get(b, i + 2 * k) * 256 + buf_get(b, i + 2 * k + 1)
+## the longest run (at least 2) of zero groups: {s, l}
+fn nc_zrun(b, i, k, cs, cl, bs, bl) = if k >= 8 then (if cl > bl then {s: cs, l: cl} else {s: bs, l: bl}) else if nc_g(b, i, k) == 0 then (if cl == 0 then nc_zrun(b, i, k + 1, k, 1, bs, bl) else nc_zrun(b, i, k + 1, cs, cl + 1, bs, bl)) else (if cl > bl then nc_zrun(b, i, k + 1, 0, 0, cs, cl) else nc_zrun(b, i, k + 1, 0, 0, bs, bl))
+fn nc_v6g(b, i, k, e) = if k >= e then "" else nc_hexs(nc_g(b, i, k)) + (if k + 1 < e then ":" else "") + nc_v6g(b, i, k + 1, e)
+fn nc_v6text(b, i) = let z = nc_zrun(b, i, 0, 0, 0, 0, 0) in if z.l < 2 then nc_v6g(b, i, 0, 8) else nc_v6g(b, i, 0, z.s) + "::" + nc_v6g(b, i, z.s + z.l, 8)
+fn net_local_addr(fd) = let sa = nc_put(buf_new(28), 0, nc_zeros(28)) in let ln = nc_put(buf_new(4), 0, nc_le32(28)) in let r = sys_call(51, fd, buf_addr(sa), buf_addr(ln), 0, 0) in if r != 0 then {ip: "", port: 0 - 1} else let fam = buf_get(sa, 0) + 256 * buf_get(sa, 1) in let port = buf_get(sa, 2) * 256 + buf_get(sa, 3) in if fam == 2 then {ip: nc_dotted(sa, 4), port: port} else if fam == 10 then {ip: nc_v6text(sa, 8), port: port} else {ip: "", port: 0 - 1}
+fn net_local_port(fd) = (net_local_addr(fd)).port
+fn nc_if_bytes(b, i, n) = if i + 4 > n then Nil else Cons(nc_dotted(b, i), nc_if_bytes(b, i + 4, n))
+## Windows: the layer's call 1008 writes 4 bytes per address
+fn nc_if_win() = let b = buf_new(4096) in let r = sys_call(1008, buf_addr(b), 4096, 0, 0, 0) in if r <= 0 then Nil else nc_if_bytes(b, 0, r)
+fn nc_bytes(b, i, n) = if n <= 0 then Nil else Cons(buf_get(b, i), nc_bytes(b, i + 1, n - 1))
+## SIOCGIFFLAGS (0x8913) on the interface named in the ifreq at data+i: IFF_UP
+fn nc_if_up(s, data, i) = let q = nc_put(buf_new(40), 0, nc_app(nc_bytes(data, i, 16), nc_zeros(24))) in let r = sys_call(16, s, 35091, buf_addr(q), 0, 0) in if r == 0 and bit_and(buf_get(q, 16), 1) == 1 then 1 else 0
+## the ifreq entries (40 bytes: name[16], sockaddr) of SIOCGIFCONF: the IPv4 ones of interfaces that are up
+fn nc_ifreqs(s, data, i, len) = if i + 40 > len then Nil else let rest = nc_ifreqs(s, data, i + 40, len) in if buf_get(data, i + 16) == 2 and nc_if_up(s, data, i) == 1 then Cons(nc_dotted(data, i + 20), rest) else rest
+## Linux: SIOCGIFCONF (0x8912) on a UDP socket; struct ifconf = int length, padding, pointer to the entries
+fn nc_if_linux() = let s = sys_call(41, 2, 2, 0, 0, 0) in if s < 0 then Nil else let cap = 40 * 128 in let data = buf_new(cap) in let ifc = nc_put(buf_new(16), 0, nc_app(nc_le32(cap), nc_app(nc_zeros(4), nc_le64(buf_addr(data))))) in let r = sys_call(16, s, 35090, buf_addr(ifc), 0, 0) in let out = if r < 0 then Nil else nc_ifreqs(s, data, 0, nc_get32at(ifc, 0)) in let z = nc_close(s) in out
+fn os_ipv4_interfaces() = if os_platform() == "windows" then nc_if_win() else nc_if_linux()
