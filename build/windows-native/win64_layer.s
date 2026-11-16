@@ -142,6 +142,18 @@ __win_syscall:
     je .Lws_ioctl
     cmpq $1000, %rax
     je .Lws_dnssrv
+    cmpq $1001, %rax
+    je .Lws_kc_put
+    cmpq $1002, %rax
+    je .Lws_kc_get
+    cmpq $1003, %rax
+    je .Lws_kc_del
+    cmpq $1004, %rax
+    je .Lws_kc_avail
+    cmpq $1005, %rax
+    je .Lws_fip
+    cmpq $1006, %rax
+    je .Lws_fmode
     cmpq $425, %rax
     je .Lws_ur_setup
     cmpq $426, %rax
@@ -786,9 +798,25 @@ __win_syscall:
     movq %r8, 32(%rsp)
     movq $33554560, 40(%rsp)
     movq $0, 48(%rsp)
+    xorq %r9, %r9
+# O_CREAT with no group or other bits in the mode (0600, 0400, 0700): the new file gets the owner-only DACL
+    movq %r13, %rcx
+    andq $64, %rcx
+    testq %rcx, %rcx
+    jz .Lws_open_cf
+    movq %r14, %rcx
+    andq $63, %rcx
+    testq %rcx, %rcx
+    jnz .Lws_open_cf
+    movq %rdx, 80(%rsp)
+    call .Lws_pv_sa_get
+    movq 80(%rsp), %rdx
+    testq %rax, %rax
+    jz .Lws_eacces
+    movq %rax, %r9
+.Lws_open_cf:
     leaq .Lws_wbuf(%rip), %rcx
     movq $7, %r8
-    xorq %r9, %r9
     call CreateFileW
     cmpq $-1, %rax
     je .Lws_fail
@@ -2114,8 +2142,17 @@ __win_ffi_resolve:
     call .Lws_wpath
     testq %rax, %rax
     jz .Lws_fail
-    leaq .Lws_wbuf(%rip), %rcx
     xorq %rdx, %rdx
+    movq %r13, %rcx
+    andq $63, %rcx
+    testq %rcx, %rcx
+    jnz .Lws_mkdir_go
+    call .Lws_pv_sa_get
+    testq %rax, %rax
+    jz .Lws_eacces
+    movq %rax, %rdx
+.Lws_mkdir_go:
+    leaq .Lws_wbuf(%rip), %rcx
     call CreateDirectoryW
     shlq $32, %rax
     shrq $32, %rax
@@ -2177,9 +2214,27 @@ __win_ffi_resolve:
     orq $1, %rdx
 .Lws_chmod_set:
     cmpq %rax, %rdx
-    je .Lws_zero
+    je .Lws_chmod_acl
     leaq .Lws_wbuf(%rip), %rcx
     call SetFileAttributesW
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fail
+.Lws_chmod_acl:
+    movq %r13, %rcx
+    andq $63, %rcx
+    testq %rcx, %rcx
+    jnz .Lws_zero
+    call .Lws_pv_sa_get
+    testq %rax, %rax
+    jz .Lws_eacces
+    leaq .Lws_wbuf(%rip), %rcx
+# OWNER | DACL | PROTECTED_DACL security information: the user owns it and no inherited entry stays
+    movq $2147483653, %rdx
+    leaq .Lws_pv_sd(%rip), %r8
+    movq .Lws_av_fn+64(%rip), %rax
+    call *%rax
     shlq $32, %rax
     shrq $32, %rax
     testq %rax, %rax
@@ -2611,6 +2666,450 @@ __win_ffi_resolve:
 .Lws_enosys:
     movq $-38, %rax
     jmp .Lws_ret
+.Lws_eacces:
+    movq $-13, %rax
+    jmp .Lws_ret
+# load advapi32.dll and its functions once: rax = 1, or 0 when it is not available. Entered by call; keeps rbx, rsi, rdi.
+.Lws_av_init:
+    cmpq $0, .Lws_av_ok(%rip)
+    jne .Lws_avi_yes
+    pushq %rbx
+    pushq %rsi
+    pushq %rdi
+    subq $32, %rsp
+    leaq .Lws_av_dll(%rip), %rcx
+    xorq %rdx, %rdx
+    movq $2048, %r8
+    call LoadLibraryExA
+    testq %rax, %rax
+    jz .Lws_avi_no
+    movq %rax, %rbx
+    leaq .Lws_av_names(%rip), %rsi
+    leaq .Lws_av_fn(%rip), %rdi
+.Lws_avi_l:
+    cmpb $0, (%rsi)
+    je .Lws_avi_done
+    movq %rbx, %rcx
+    movq %rsi, %rdx
+    call GetProcAddress
+    testq %rax, %rax
+    jz .Lws_avi_no
+    movq %rax, (%rdi)
+    addq $8, %rdi
+.Lws_avi_skip:
+    incq %rsi
+    cmpb $0, -1(%rsi)
+    jne .Lws_avi_skip
+    jmp .Lws_avi_l
+.Lws_avi_done:
+    movq $1, .Lws_av_ok(%rip)
+    addq $32, %rsp
+    popq %rdi
+    popq %rsi
+    popq %rbx
+.Lws_avi_yes:
+    movq $1, %rax
+    ret
+.Lws_avi_no:
+    addq $32, %rsp
+    popq %rdi
+    popq %rsi
+    popq %rbx
+    xorq %rax, %rax
+    ret
+# the owner-only SECURITY_ATTRIBUTES, built once: owner = the token's user, a protected DACL with one entry that grants
+# that user FILE_ALL_ACCESS (inherited by files and directories made inside). rax = its address, or 0.
+# Entered by call; keeps rbx, rsi, rdi.
+.Lws_pv_sa_get:
+    cmpq $0, .Lws_pv_ok(%rip)
+    jne .Lws_pvs_yes
+    pushq %rbx
+    pushq %rsi
+    pushq %rdi
+    subq $64, %rsp
+    call .Lws_av_init
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    call GetCurrentProcess
+    movq %rax, %rcx
+    movq $8, %rdx
+    leaq 48(%rsp), %r8
+    movq .Lws_av_fn(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    movq 48(%rsp), %rcx
+    movq $1, %rdx
+    leaq .Lws_pv_tok(%rip), %r8
+    movq $256, %r9
+    leaq 56(%rsp), %rax
+    movq %rax, 32(%rsp)
+    movq .Lws_av_fn+8(%rip), %rax
+    call *%rax
+    movq %rax, %rbx
+    movq 48(%rsp), %rcx
+    call CloseHandle
+    shlq $32, %rbx
+    shrq $32, %rbx
+    testq %rbx, %rbx
+    jz .Lws_pvs_no
+    leaq .Lws_pv_acl(%rip), %rcx
+    movq $256, %rdx
+    movq $2, %r8
+    movq .Lws_av_fn+16(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    leaq .Lws_pv_acl(%rip), %rcx
+    movq $2, %rdx
+    movq $3, %r8
+    movq $2032127, %r9
+    movq .Lws_pv_tok(%rip), %rax
+    movq %rax, 32(%rsp)
+    movq .Lws_av_fn+24(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    leaq .Lws_pv_sd(%rip), %rcx
+    movq $1, %rdx
+    movq .Lws_av_fn+32(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    leaq .Lws_pv_sd(%rip), %rcx
+    movq $1, %rdx
+    leaq .Lws_pv_acl(%rip), %r8
+    xorq %r9, %r9
+    movq .Lws_av_fn+40(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    leaq .Lws_pv_sd(%rip), %rcx
+    movq .Lws_pv_tok(%rip), %rdx
+    xorq %r8, %r8
+    movq .Lws_av_fn+48(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    leaq .Lws_pv_sd(%rip), %rcx
+    movq $4096, %rdx
+    movq $4096, %r8
+    movq .Lws_av_fn+56(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_pvs_no
+    leaq .Lws_pv_sa(%rip), %rax
+    movq $24, %rcx
+    movq %rcx, (%rax)
+    leaq .Lws_pv_sd(%rip), %rcx
+    movq %rcx, 8(%rax)
+    xorq %rcx, %rcx
+    movq %rcx, 16(%rax)
+    movq $1, .Lws_pv_ok(%rip)
+    addq $64, %rsp
+    popq %rdi
+    popq %rsi
+    popq %rbx
+.Lws_pvs_yes:
+    leaq .Lws_pv_sa(%rip), %rax
+    ret
+.Lws_pvs_no:
+    addq $64, %rsp
+    popq %rdi
+    popq %rsi
+    popq %rbx
+    xorq %rax, %rax
+    ret
+# r12 (UTF-8 target name) -> .Lws_cwbuf (UTF-16): rax = characters written, 0 on failure. Entered by call.
+.Lws_kc_wide:
+    pushq %rbx
+    pushq %rsi
+    pushq %rdi
+    subq $64, %rsp
+    movq $65001, %rcx
+    xorq %rdx, %rdx
+    movq %r12, %r8
+    movq $-1, %r9
+    leaq .Lws_cwbuf(%rip), %rax
+    movq %rax, 32(%rsp)
+    movq $32767, %rax
+    movq %rax, 40(%rsp)
+    call MultiByteToWideChar
+    shlq $32, %rax
+    shrq $32, %rax
+    addq $64, %rsp
+    popq %rdi
+    popq %rsi
+    popq %rbx
+    ret
+# a failed Cred* call: ERROR_NOT_FOUND (1168) -> -ENOENT, anything else -> -EIO
+.Lws_kc_err:
+    call GetLastError
+    shlq $32, %rax
+    shrq $32, %rax
+    cmpq $1168, %rax
+    jne .Lws_eio
+    movq $-2, %rax
+    jmp .Lws_ret
+# 1004: 0 when the Credential Manager can be used
+.Lws_kc_avail:
+    call .Lws_av_init
+    testq %rax, %rax
+    jz .Lws_enosys
+    jmp .Lws_zero
+# 1001 (target, blob, len): CredWriteW of a generic credential that persists on this machine for this user
+.Lws_kc_put:
+    call .Lws_av_init
+    testq %rax, %rax
+    jz .Lws_enosys
+    cmpq $2560, %r14
+    jg .Lws_einval
+    cmpq $0, %r14
+    jl .Lws_einval
+    call .Lws_kc_wide
+    testq %rax, %rax
+    jz .Lws_einval
+    movq $4294967296, %rax
+    movq %rax, 96(%rsp)
+    leaq .Lws_cwbuf(%rip), %rax
+    movq %rax, 104(%rsp)
+    xorq %rax, %rax
+    movq %rax, 112(%rsp)
+    movq %rax, 120(%rsp)
+    movq %r14, 128(%rsp)
+    movq %r13, 136(%rsp)
+    movq $2, %rax
+    movq %rax, 144(%rsp)
+    xorq %rax, %rax
+    movq %rax, 152(%rsp)
+    movq %rax, 160(%rsp)
+    movq %rax, 168(%rsp)
+    leaq 96(%rsp), %rcx
+    xorq %rdx, %rdx
+    movq .Lws_av_fn+72(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_kc_err
+    jmp .Lws_zero
+# 1002 (target, out, cap): CredReadW, the blob copied to out: rax = its length, -ENOENT, -ERANGE
+.Lws_kc_get:
+    call .Lws_av_init
+    testq %rax, %rax
+    jz .Lws_enosys
+    call .Lws_kc_wide
+    testq %rax, %rax
+    jz .Lws_einval
+    leaq .Lws_cwbuf(%rip), %rcx
+    movq $1, %rdx
+    xorq %r8, %r8
+    leaq 64(%rsp), %r9
+    movq .Lws_av_fn+80(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_kc_err
+    movq 64(%rsp), %rbx
+    movq 32(%rbx), %rcx
+    shlq $32, %rcx
+    shrq $32, %rcx
+    movq $-34, %rax
+    cmpq %r14, %rcx
+    jg .Lws_kcg_free
+    movq %rcx, %rax
+    movq 40(%rbx), %rsi
+    movq %r13, %rdi
+.Lws_kcg_cp:
+    testq %rcx, %rcx
+    jz .Lws_kcg_free
+    movb (%rsi), %dl
+    movb %dl, (%rdi)
+    incq %rsi
+    incq %rdi
+    decq %rcx
+    jmp .Lws_kcg_cp
+.Lws_kcg_free:
+    movq %rax, 72(%rsp)
+    movq %rbx, %rcx
+    movq .Lws_av_fn+96(%rip), %rax
+    call *%rax
+    movq 72(%rsp), %rax
+    jmp .Lws_ret
+# 1005 (path): 1 when the owner is the running user and every allowing entry of a present, non-null DACL names that
+# user alone (deny entries only narrow); 0 otherwise; -errno when the path cannot be read
+.Lws_fip:
+    xorq %rax, %rax
+    movq %rax, 128(%rsp)
+    jmp .Lws_fip_go
+# 1006 (path): the mode a POSIX reader expects: 0755 for a directory, 0644 for a file; 0700 / 0600 when only the owner
+# can reach it (the 1005 walk); the read-only attribute takes the write bits away
+.Lws_fmode:
+    movq $1, %rax
+    movq %rax, 128(%rsp)
+.Lws_fip_go:
+    call .Lws_pv_sa_get
+    testq %rax, %rax
+    jz .Lws_eacces
+    call .Lws_wpath
+    testq %rax, %rax
+    jz .Lws_fail
+    leaq .Lws_wbuf(%rip), %rcx
+    call GetFileAttributesW
+    shlq $32, %rax
+    shrq $32, %rax
+    movq $4294967295, %rcx
+    cmpq %rcx, %rax
+    je .Lws_fail
+    movq %rax, 120(%rsp)
+    leaq .Lws_wbuf(%rip), %rcx
+    movq $5, %rdx
+    leaq .Lws_pbuf(%rip), %r8
+    movq $65536, %r9
+    leaq 64(%rsp), %rax
+    movq %rax, 32(%rsp)
+    movq .Lws_av_fn+104(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fail
+    leaq .Lws_pbuf(%rip), %rcx
+    leaq 72(%rsp), %rdx
+    leaq 80(%rsp), %r8
+    movq .Lws_av_fn+120(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_eio
+    movq 72(%rsp), %rcx
+    testq %rcx, %rcx
+    jz .Lws_fip_no
+    movq .Lws_pv_tok(%rip), %rdx
+    movq .Lws_av_fn+128(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fip_no
+    xorq %rax, %rax
+    movq %rax, 88(%rsp)
+    movq %rax, 96(%rsp)
+    leaq .Lws_pbuf(%rip), %rcx
+    leaq 88(%rsp), %rdx
+    leaq 96(%rsp), %r8
+    leaq 104(%rsp), %r9
+    movq .Lws_av_fn+112(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_eio
+    movq 88(%rsp), %rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fip_no
+    movq 96(%rsp), %rbx
+    testq %rbx, %rbx
+    jz .Lws_fip_no
+    movq 4(%rbx), %rsi
+    andq $65535, %rsi
+    xorq %rdi, %rdi
+.Lws_fip_l:
+    cmpq %rsi, %rdi
+    jge .Lws_fip_yes
+    movq %rbx, %rcx
+    movq %rdi, %rdx
+    leaq 112(%rsp), %r8
+    movq .Lws_av_fn+136(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fip_no
+    movq 112(%rsp), %rax
+    movzbq (%rax), %rcx
+    cmpq $1, %rcx
+    je .Lws_fip_next
+    testq %rcx, %rcx
+    jnz .Lws_fip_no
+    leaq 8(%rax), %rcx
+    movq .Lws_pv_tok(%rip), %rdx
+    movq .Lws_av_fn+128(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fip_no
+.Lws_fip_next:
+    incq %rdi
+    jmp .Lws_fip_l
+.Lws_fip_yes:
+    movq $1, %rax
+    jmp .Lws_fip_out
+.Lws_fip_no:
+    xorq %rax, %rax
+.Lws_fip_out:
+    cmpq $0, 128(%rsp)
+    je .Lws_ret
+    movq 120(%rsp), %rcx
+    andq $16, %rcx
+    testq %rcx, %rcx
+    jz .Lws_fmode_file
+    movq $493, %rcx
+    testq %rax, %rax
+    jz .Lws_fmode_ro
+    movq $448, %rcx
+    jmp .Lws_fmode_ro
+.Lws_fmode_file:
+    movq $420, %rcx
+    testq %rax, %rax
+    jz .Lws_fmode_ro
+    movq $384, %rcx
+.Lws_fmode_ro:
+    movq 120(%rsp), %rax
+    andq $1, %rax
+    testq %rax, %rax
+    jz .Lws_fmode_out
+    andq $-147, %rcx
+.Lws_fmode_out:
+    movq %rcx, %rax
+    jmp .Lws_ret
+# 1003 (target): CredDeleteW
+.Lws_kc_del:
+    call .Lws_av_init
+    testq %rax, %rax
+    jz .Lws_enosys
+    call .Lws_kc_wide
+    testq %rax, %rax
+    jz .Lws_einval
+    leaq .Lws_cwbuf(%rip), %rcx
+    movq $1, %rdx
+    xorq %r8, %r8
+    movq .Lws_av_fn+88(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_kc_err
+    jmp .Lws_zero
 # an outgoing sockaddr (rdi, or 0): an AF_INET6 one (family 10) is copied to .Lws_sa with Winsock's family 23;
 # rdi = the address to pass. Uses rax, rcx.
 .Lws_sa_fix:
@@ -4526,6 +5025,28 @@ __win_image_hi:
     .asciz "WSAAddressToStringA"
     .asciz "WSAIoctl"
     .byte 0
+.Lws_av_dll:
+    .asciz "advapi32.dll"
+.Lws_av_names:
+    .asciz "OpenProcessToken"
+    .asciz "GetTokenInformation"
+    .asciz "InitializeAcl"
+    .asciz "AddAccessAllowedAceEx"
+    .asciz "InitializeSecurityDescriptor"
+    .asciz "SetSecurityDescriptorDacl"
+    .asciz "SetSecurityDescriptorOwner"
+    .asciz "SetSecurityDescriptorControl"
+    .asciz "SetFileSecurityW"
+    .asciz "CredWriteW"
+    .asciz "CredReadW"
+    .asciz "CredDeleteW"
+    .asciz "CredFree"
+    .asciz "GetFileSecurityW"
+    .asciz "GetSecurityDescriptorDacl"
+    .asciz "GetSecurityDescriptorOwner"
+    .asciz "EqualSid"
+    .asciz "GetAce"
+    .byte 0
 # Winsock error -> -errno (EWOULDBLOCK, EINTR, EBADF, EACCES, EFAULT, EINVAL, EMFILE, ENOTSOCK, EMSGSIZE,
 # EAFNOSUPPORT, EADDRINUSE, EADDRNOTAVAIL, ENETUNREACH, ECONNABORTED, ECONNRESET, ENOTCONN, ETIMEDOUT,
 # ECONNREFUSED, EHOSTUNREACH, EISCONN, EALREADY, EINPROGRESS)
@@ -4656,3 +5177,11 @@ __lume_ffi_libs:
     .lcomm .Lws_ept, 8192
     .lcomm .Lws_ur_pers, 8
     .lcomm .Lws_mvn2_fn, 8
+    .lcomm .Lws_av_ok, 8
+    .lcomm .Lws_av_fn, 256
+    .lcomm .Lws_pv_ok, 8
+    .lcomm .Lws_pv_sa, 24
+    .lcomm .Lws_pv_pad, 8
+    .lcomm .Lws_pv_sd, 64
+    .lcomm .Lws_pv_tok, 256
+    .lcomm .Lws_pv_acl, 256

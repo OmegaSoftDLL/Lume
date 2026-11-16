@@ -1,0 +1,47 @@
+## keychain.src -- secrets kept by the operating system (`use keychain`), and the owner-only files it rests on.
+##
+## keychain_set(service, account, secret) -> {ok, err}
+## keychain_get(service, account)         -> {ok, value, err}
+## keychain_delete(service, account)      -> {ok, err}
+## keychain_backend()                     -> "os" | "file"
+##
+## Backends:
+## - Windows: the Credential Manager (a generic credential "lume:SERVICE:ACCOUNT", persisted for this user on this
+##   machine and protected by DPAPI), through the runtime's os_keychain_* builtins.
+## - Linux: the kernel has no persistent keychain (a headless server has no Secret Service either), so a secret is a
+##   file only its owner can reach: DIR/hex(service).hex(account), written with fs_write_private (0600 from birth,
+##   replaced atomically) inside a 0700 directory, and refused on read when someone else could reach it
+##   (fs_is_private), as ssh refuses a key file others can read.
+##   DIR = $LUME_KEYCHAIN_DIR, else $XDG_DATA_HOME/lume/keychain, else $HOME/.local/share/lume/keychain.
+## - LUME_KEYCHAIN_DIR set: the file backend on every system (a portable store, or a test sandbox).
+##
+## Errors: "bad_name" (empty, longer than 256 bytes, or holding ':' or a NUL byte), "too_large" (more than 2560 bytes,
+## the Credential Manager's limit, kept on every backend so a secret moves between systems), "not_found",
+## "not_private" (the file backend found the secret reachable by others: it is not returned), "no_store",
+## "write_failed", "delete_failed".
+use hostio
+
+fn kc_hexd(d) = at("0123456789abcdef", d)
+fn kc_hex_go(s, i, n, acc) = if i >= n then acc else let b = ord(at(s, i)) in kc_hex_go(s, i + 1, n, acc + kc_hexd(b / 16) + kc_hexd(b % 16))
+fn kc_hex(s) = kc_hex_go(s, 0, count(s), "")
+fn kc_bad_go(s, i, n) = if i >= n then 0 else let c = at(s, i) in if c == ":" or ord(c) == 0 then 1 else kc_bad_go(s, i + 1, n)
+fn kc_name_ok(s) = count(s) > 0 and count(s) <= 256 and kc_bad_go(s, 0, count(s)) == 0
+fn kc_check(service, account) = if kc_name_ok(service) and kc_name_ok(account) then "" else "bad_name"
+fn keychain_max_secret() = 2560
+fn keychain_dir() = let d = os_getenv("LUME_KEYCHAIN_DIR") in if d != "" then d else let x = os_getenv("XDG_DATA_HOME") in if x != "" then x + "/lume/keychain" else let hm = os_getenv("HOME") in if hm != "" then hm + "/.local/share/lume/keychain" else ""
+fn keychain_backend() = if os_getenv("LUME_KEYCHAIN_DIR") != "" then "file" else if os_keychain_available() == 1 then "os" else "file"
+fn kc_target(service, account) = "lume:" + service + ":" + account
+fn kc_file(service, account) = keychain_dir() + "/" + kc_hex(service) + "." + kc_hex(account)
+fn kc_ready_dir() = let d = keychain_dir() in if d == "" then 0 else if hio_mkdir_p(d) != 1 then 0 else fs_mkdir_private(d)
+
+fn kc_set_os(service, account, secret) = if os_keychain_put(kc_target(service, account), secret) == 1 then {ok: 1, err: ""} else {ok: 0, err: "write_failed"}
+fn kc_set_file(service, account, secret) = if kc_ready_dir() != 1 then {ok: 0, err: "no_store"} else if fs_write_private(kc_file(service, account), secret) == 1 then {ok: 1, err: ""} else {ok: 0, err: "write_failed"}
+fn keychain_set(service, account, secret) = let e = kc_check(service, account) in if e != "" then {ok: 0, err: e} else if count(secret) > keychain_max_secret() then {ok: 0, err: "too_large"} else if keychain_backend() == "os" then kc_set_os(service, account, secret) else kc_set_file(service, account, secret)
+
+fn kc_get_os(service, account) = let r = os_keychain_get(kc_target(service, account)) in if count(r) == 0 then {ok: 0, value: "", err: "not_found"} else {ok: 1, value: slice(r, 1, count(r)), err: ""}
+fn kc_get_file(service, account) = let p = kc_file(service, account) in if fs_path_exists(p) == 0 then {ok: 0, value: "", err: "not_found"} else if fs_is_private(p) != 1 then {ok: 0, value: "", err: "not_private"} else {ok: 1, value: fs_read_file(p), err: ""}
+fn keychain_get(service, account) = let e = kc_check(service, account) in if e != "" then {ok: 0, value: "", err: e} else if keychain_backend() == "os" then kc_get_os(service, account) else kc_get_file(service, account)
+
+fn kc_del_os(service, account) = if os_keychain_delete(kc_target(service, account)) == 1 then {ok: 1, err: ""} else {ok: 0, err: "not_found"}
+fn kc_del_file(service, account) = let p = kc_file(service, account) in if fs_path_exists(p) == 0 then {ok: 0, err: "not_found"} else if fs_remove(p) == 1 then {ok: 1, err: ""} else {ok: 0, err: "delete_failed"}
+fn keychain_delete(service, account) = let e = kc_check(service, account) in if e != "" then {ok: 0, err: e} else if keychain_backend() == "os" then kc_del_os(service, account) else kc_del_file(service, account)
