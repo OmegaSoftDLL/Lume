@@ -1088,3 +1088,63 @@ fn lgen(prog0) = lgen_emit(lgen_analysis(prog0, ""))
 
 
 ## --- runtime (copied verbatim from data_asmgen.lume) ---
+
+## --- lumec --raw: the runtime written in Lume -----------------------------------------------------------------------
+## A source of `fn` declarations becomes machine-word code for the runtime (the golden rule: the runtime is Lume
+## source; the assembly is what the compiler makes of it). Parameters and results are 64-bit words, not tagged
+## values: + - * are the machine's (wrapping), / and % are signed, comparisons give 1 or 0, `and` / `or` short-circuit
+## on non-zero words, load8 / load32 / load64 read memory and store8 / store32 / store64 write it (they give 0),
+## bit_and / bit_or / bit_xor / bit_shl / bit_shr act on words, sys_call(nr, a1..a5) is the OS call, and any other call
+## is a call of a raw function or of a runtime routine by its name, with words in %rdi .. %r9. A call of the function
+## itself in tail position is a jump back to its start (a loop: no stack grows). Every function keeps every register
+## but %rax, its result, so it replaces a routine of the assembly runtime without its callers changing. Records,
+## strings, lists and closures are not machine words: the compiler refuses them.
+fn rw_regs() = Cons("%rdi", Cons("%rsi", Cons("%rdx", Cons("%rcx", Cons("%r8", Cons("%r9", Nil))))))
+fn rw_nth(xs, k) = match xs
+    Nil        => ""
+    Cons(h, t) => if k <= 0 then h else rw_nth(t, k - 1)
+fn rw_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + rw_len(t)
+fn rw_slot(env, nm) = match env
+    Nil        => 0
+    Cons(h, t) => if h.k == nm then h.off else rw_slot(t, nm)
+## parameter i lives where the prologue pushed its register: -8(%rbp) for %rdi .. -48(%rbp) for %r9
+fn rw_params(ps, i, acc) = match ps
+    Nil        => acc
+    Cons(p, t) => if i >= 6 then ctfail("lume --raw: a raw function takes at most 6 parameters\n") else rw_params(t, i + 1, Cons({k: p, off: 0 - 8 * (i + 1)}, acc))
+fn rw_r(code, st) = {code: code, n: st.n, nl: st.nl, f: st.f, np: st.np}
+fn rw_lab(st, k) = ".Lrw_" + st.f + "_" + str(k)
+fn rw_cc(op) = if op == "==" then "e" else if op == "!=" then "ne" else if op == "<" then "l" else if op == "<=" then "le" else if op == ">" then "g" else "ge"
+fn rw_iscmp(op) = op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">="
+## %rax = a (left), %rcx = b (right)
+fn rw_op(op) = if op == "+" or op == "+%" then "    addq %rcx, %rax\n" else if op == "-" or op == "-%" then "    subq %rcx, %rax\n" else if op == "*" or op == "*%" then "    imulq %rcx, %rax\n" else if op == "/" then "    cqto\n    idivq %rcx\n" else if op == "%" then "    cqto\n    idivq %rcx\n    movq %rdx, %rax\n" else ctfail("lume --raw: the operator '" + op + "' has no machine-word meaning\n")
+fn rw_e(e, env, st, tail) = match e
+    Num(v)          => rw_r("    movq $" + str(v) + ", %rax\n", st)
+    Var(x)          => let o = rw_slot(env, x) in if o == 0 then ctfail("lume --raw: unknown name '" + x + "' in '" + st.f + "'\n") else rw_r("    movq " + str(o) + "(%rbp), %rax\n", st)
+    Bin(op, a, b)   => if op == "and" or op == "or" then rw_logic(op, a, b, env, st) else let k = st.n in let rb = rw_e(b, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let ra = rw_e(a, env, rb, 0) in rw_r(rb.code + "    pushq %rax\n" + ra.code + "    popq %rcx\n" + (if rw_iscmp(op) then "    cmpq %rcx, %rax\n    movq $1, %rax\n    j" + rw_cc(op) + " " + rw_lab(st, k) + "c\n    xorq %rax, %rax\n" + rw_lab(st, k) + "c:\n" else rw_op(op)), ra)
+    If(c, t, f)     => let k = st.n in let rc = rw_e(c, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let rt = rw_e(t, env, rc, tail) in let rf = rw_e(f, env, rt, tail) in rw_r(rc.code + "    testq %rax, %rax\n    jz " + rw_lab(st, k) + "e\n" + rt.code + "    jmp " + rw_lab(st, k) + "d\n" + rw_lab(st, k) + "e:\n" + rf.code + rw_lab(st, k) + "d:\n", rf)
+    LetIn(nm, v, b) => let rv = rw_e(v, env, st, 0) in let off = 0 - 72 - 8 * rv.nl in let rb = rw_e(b, Cons({k: nm, off: off}, env), {n: rv.n, nl: rv.nl + 1, f: st.f, np: st.np}, tail) in rw_r(rv.code + "    movq %rax, " + str(off) + "(%rbp)\n" + rb.code, rb)
+    Call(g, args)   => rw_call(g, args, env, st, tail)
+    _               => ctfail("lume --raw: '" + st.f + "' uses a value that is not a machine word (a string, record, list or closure)\n")
+fn rw_logic(op, a, b, env, st) = let k = st.n in let ra = rw_e(a, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let rb = rw_e(b, env, ra, 0) in rw_r(ra.code + "    testq %rax, %rax\n    " + (if op == "and" then "jz " else "jnz ") + rw_lab(st, k) + "s\n" + rb.code + rw_lab(st, k) + "s:\n    testq %rax, %rax\n    movq $0, %rax\n    jz " + rw_lab(st, k) + "z\n    movq $1, %rax\n" + rw_lab(st, k) + "z:\n", rb)
+## the arguments, left to right, each pushed
+fn rw_push(args, env, st) = match args
+    Nil        => rw_r("", st)
+    Cons(h, t) => let r1 = rw_e(h, env, st, 0) in let r2 = rw_push(t, env, r1) in rw_r(r1.code + "    pushq %rax\n" + r2.code, r2)
+## pop into the k first argument registers (the last argument first)
+fn rw_popregs(k) = if k <= 0 then "" else "    popq " + rw_nth(rw_regs(), k - 1) + "\n" + rw_popregs(k - 1)
+fn rw_popslots(k) = if k <= 0 then "" else "    popq %rax\n    movq %rax, " + str(0 - 8 * k) + "(%rbp)\n" + rw_popslots(k - 1)
+fn rw_mem(g) = g == "load8" or g == "load32" or g == "load64" or g == "store8" or g == "store32" or g == "store64"
+fn rw_memop(g) = if g == "load8" then "    movzbq (%rax), %rax\n" else if g == "load32" then "    movl (%rax), %eax\n" else if g == "load64" then "    movq (%rax), %rax\n" else if g == "store8" then "    movb %cl, (%rax)\n    xorq %rax, %rax\n" else if g == "store32" then "    movl %ecx, (%rax)\n    xorq %rax, %rax\n" else "    movq %rcx, (%rax)\n    xorq %rax, %rax\n"
+fn rw_bitop(g) = if g == "bit_and" then "    andq %rcx, %rax\n" else if g == "bit_or" then "    orq %rcx, %rax\n" else if g == "bit_xor" then "    xorq %rcx, %rax\n" else if g == "bit_shl" then "    salq %cl, %rax\n" else "    sarq %cl, %rax\n"
+fn rw_isbit(g) = g == "bit_and" or g == "bit_or" or g == "bit_xor" or g == "bit_shl" or g == "bit_shr"
+fn rw_call(g, args, env, st, tail) = let n = rw_len(args) in if rw_mem(g) then (if (g == "load8" or g == "load32" or g == "load64") and n == 1 then let r = rw_e(rw_nth(args, 0), env, st, 0) in rw_r(r.code + rw_memop(g), r) else if n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_memop(g), r) else ctfail("lume --raw: " + g + " takes " + (if ld_s_starts(g, "load") then "1 argument" else "2 arguments") + "\n")) else if rw_isbit(g) and n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_bitop(g), r) else if g == "sys_call" and n == 6 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %r8\n    popq %r10\n    popq %rdx\n    popq %rsi\n    popq %rdi\n    popq %rax\n    xorq %r9, %r9\n    syscall\n", r) else if n > 6 then ctfail("lume --raw: a call takes at most 6 arguments\n") else if tail == 1 and g == st.f and n == st.np then let r = rw_push(args, env, st) in rw_r(r.code + rw_popslots(n) + "    jmp .Lrw_" + st.f + "_top\n", r) else let r = rw_push(args, env, st) in rw_r(r.code + rw_popregs(n) + "    call " + g + "\n", r)
+fn ld_s_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
+## the prologue keeps %rdi..%r11 (also the parameters' homes), the frame holds the lets; the epilogue gives them back
+fn rw_fn(nm, ps, body) = let np = rw_len(ps) in let r = rw_e(body, rw_params(ps, 0, Nil), {n: 0, nl: 0, f: nm, np: np}, 1) in let fr = (r.nl * 8 + 15) / 16 * 16 in nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n    pushq %rdi\n    pushq %rsi\n    pushq %rdx\n    pushq %rcx\n    pushq %r8\n    pushq %r9\n    pushq %r10\n    pushq %r11\n" + (if fr > 0 then "    subq $" + str(fr) + ", %rsp\n" else "") + ".Lrw_" + nm + "_top:\n" + r.code + "    leaq -64(%rbp), %rsp\n    popq %r11\n    popq %r10\n    popq %r9\n    popq %r8\n    popq %rcx\n    popq %rdx\n    popq %rsi\n    popq %rdi\n    popq %rbp\n    ret\n"
+fn rw_prog(stmts) = match stmts
+    Nil        => ""
+    Cons(h, t) => (match h
+        Fn(nm, ps, body) => rw_fn(nm, ps, body) + rw_prog(t)
+        _                => rw_prog(t))
