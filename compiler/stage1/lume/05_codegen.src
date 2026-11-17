@@ -1065,12 +1065,14 @@ fn lp_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
 fn lp_ends(s, p) = count(s) >= count(p) and slice(s, count(s) - count(p), count(s)) == p
 ## `movq S, %rax` with S a register other than %rax, a literal, or a %rbp/%rip memory word: the source text S, else ""
 fn lp_load_rax(l) = if lp_starts(l, "    movq ") == 1 and lp_ends(l, ", %rax") == 1 then (let src = slice(l, 9, count(l) - 6) in if src == "%rax" or lp_has(src, "%rsp") == 1 then "" else src) else ""
+## `popq R` with R an argument register: R, else "" (`pushq %rax` right before it is `movq %rax, R`)
+fn lp_argreg(l) = if l == "    popq %rdi" then "%rdi" else if l == "    popq %rsi" then "%rsi" else if l == "    popq %rdx" then "%rdx" else if l == "    popq %r8" then "%r8" else if l == "    popq %r9" then "%r9" else if l == "    popq %r10" then "%r10" else ""
 fn lp_go(ls, acc) = match ls
     Nil        => rev(acc)
     Cons(a, t) => if a == "    pushq %rax" then lp_push(t, acc) else lp_go(t, Cons(a, acc))
 fn lp_push(t, acc) = match t
     Nil        => rev(Cons("    pushq %rax", acc))
-    Cons(b, t2) => if b == "    popq %rcx" then lp_go(Cons("    movq %rax, %rcx", t2), acc) else if b == "    popq %rax" then lp_go(t2, acc) else let src = lp_load_rax(b) in if src == "" then lp_go(t, Cons("    pushq %rax", acc)) else lp_push2(src, b, t2, acc)
+    Cons(b, t2) => if b == "    popq %rcx" then lp_go(Cons("    movq %rax, %rcx", t2), acc) else if b == "    popq %rax" then lp_go(t2, acc) else if lp_argreg(b) != "" then lp_go(Cons("    movq %rax, " + lp_argreg(b), t2), acc) else let src = lp_load_rax(b) in if src == "" then lp_go(t, Cons("    pushq %rax", acc)) else lp_push2(src, b, t2, acc)
 fn lp_push2(src, b, t2, acc) = match t2
     Nil        => rev(Cons(b, Cons("    pushq %rax", acc)))
     Cons(c, t3) => if c == "    popq %rcx" and lp_has(src, "%rcx") == 0 then lp_go(Cons("    movq %rax, %rcx", Cons(b, t3)), acc) else if c == "    movq %rax, %rcx" then lp_push3(src, b, c, t3, acc) else if c == "    pushq %rax" then lp_go(Cons(b, t2), Cons("    pushq %rax", acc)) else lp_go(Cons(b, t2), Cons("    pushq %rax", acc))
@@ -1106,13 +1108,17 @@ fn rw_nth(xs, k) = match xs
 fn rw_len(xs) = match xs
     Nil        => 0
     Cons(h, t) => 1 + rw_len(t)
+## where a value of a raw function lives: 1 .. 5 are the callee-saved registers %rbx, %r12 .. %r15 (the first five
+## values: parameters, then lets, in a routine that is not rw_keepall), a negative number is a frame slot
+fn rw_loc(o) = if o > 0 then rw_nth(Cons("%rbx", Cons("%r12", Cons("%r13", Cons("%r14", Cons("%r15", Nil))))), o - 1) else str(o) + "(%rbp)"
+fn rw_vreg(f, idx) = if rw_keepall(f) then 0 else if idx < 5 then idx + 1 else 0
 fn rw_slot(env, nm) = match env
     Nil        => 0
     Cons(h, t) => if h.k == nm then h.off else rw_slot(t, nm)
 ## parameter i lives where the prologue pushed its register: -8(%rbp) for %rdi .. -48(%rbp) for %r9
-fn rw_params(ps, i, acc) = match ps
+fn rw_params(ps, i, acc, f) = match ps
     Nil        => acc
-    Cons(p, t) => if i >= 6 then ctfail("lume --raw: a raw function takes at most 6 parameters\n") else rw_params(t, i + 1, Cons({k: p, off: 0 - 8 * (i + 1)}, acc))
+    Cons(p, t) => if i >= 6 then ctfail("lume --raw: a raw function takes at most 6 parameters\n") else rw_params(t, i + 1, Cons({k: p, off: if rw_vreg(f, i) > 0 then rw_vreg(f, i) else 0 - 8 * (i + 1)}, acc), f)
 fn rw_r(code, st) = {code: code, n: st.n, nl: st.nl, f: st.f, np: st.np}
 fn rw_lab(st, k) = ".Lrw_" + st.f + "_" + str(k)
 fn rw_cc(op) = if op == "==" then "e" else if op == "!=" then "ne" else if op == "<" then "l" else if op == "<=" then "le" else if op == ">" then "g" else "ge"
@@ -1124,10 +1130,10 @@ fn rw_op(op) = if op == "+" or op == "+%" then "    addq %rcx, %rax\n" else if o
 fn rw_e(e, env, st, tail) = match e
     Num(v)          => rw_r("    movq $" + str(v) + ", %rax\n", st)
     Str(v)          => let k = st.n in rw_r("    leaq " + rw_lab(st, k) + "t(%rip), %rax\n    .section .rodata\n" + rw_lab(st, k) + "t:\n    .asciz \"" + rw_esc(v, 0, "") + "\"\n    .section .text\n", {n: st.n + 1, nl: st.nl, f: st.f, np: st.np})
-    Var(x)          => let o = rw_slot(env, x) in if o == 0 then ctfail("lume --raw: unknown name '" + x + "' in '" + st.f + "'\n") else rw_r("    movq " + str(o) + "(%rbp), %rax\n", st)
+    Var(x)          => let o = rw_slot(env, x) in if o == 0 then ctfail("lume --raw: unknown name '" + x + "' in '" + st.f + "'\n") else rw_r("    movq " + rw_loc(o) + ", %rax\n", st)
     Bin(op, a, b)   => if op == "and" or op == "or" then rw_logic(op, a, b, env, st) else let k = st.n in let rb = rw_e(b, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let ra = rw_e(a, env, rb, 0) in rw_r(rb.code + "    pushq %rax\n" + ra.code + "    popq %rcx\n" + (if rw_iscmp(op) then "    cmpq %rcx, %rax\n    movq $1, %rax\n    j" + rw_cc(op) + " " + rw_lab(st, k) + "c\n    xorq %rax, %rax\n" + rw_lab(st, k) + "c:\n" else rw_op(op)), ra)
     If(c, t, f)     => let k = st.n in let rc = rw_e(c, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let rt = rw_e(t, env, rc, tail) in let rf = rw_e(f, env, rt, tail) in rw_r(rc.code + "    testq %rax, %rax\n    jz " + rw_lab(st, k) + "e\n" + rt.code + "    jmp " + rw_lab(st, k) + "d\n" + rw_lab(st, k) + "e:\n" + rf.code + rw_lab(st, k) + "d:\n", rf)
-    LetIn(nm, v, b) => let rv = rw_e(v, env, st, 0) in let off = 0 - 72 - 8 * rv.nl in let rb = rw_e(b, Cons({k: nm, off: off}, env), {n: rv.n, nl: rv.nl + 1, f: st.f, np: st.np}, tail) in rw_r(rv.code + "    movq %rax, " + str(off) + "(%rbp)\n" + rb.code, rb)
+    LetIn(nm, v, b) => let rv = rw_e(v, env, st, 0) in let vr = rw_vreg(st.f, st.np + rv.nl) in let off = if vr > 0 then vr else 0 - 72 - 8 * rv.nl in let rb = rw_e(b, Cons({k: nm, off: off}, env), {n: rv.n, nl: rv.nl + 1, f: st.f, np: st.np}, tail) in rw_r(rv.code + "    movq %rax, " + rw_loc(off) + "\n" + rb.code, rb)
     Call(g, args)   => rw_call(g, args, env, st, tail)
     _               => ctfail("lume --raw: '" + st.f + "' uses a value that is not a machine word (a string, record, list or closure)\n")
 fn rw_logic(op, a, b, env, st) = let k = st.n in let ra = rw_e(a, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let rb = rw_e(b, env, ra, 0) in rw_r(ra.code + "    testq %rax, %rax\n    " + (if op == "and" then "jz " else "jnz ") + rw_lab(st, k) + "s\n" + rb.code + rw_lab(st, k) + "s:\n    testq %rax, %rax\n    movq $0, %rax\n    jz " + rw_lab(st, k) + "z\n    movq $1, %rax\n" + rw_lab(st, k) + "z:\n", rb)
@@ -1137,15 +1143,58 @@ fn rw_push(args, env, st) = match args
     Cons(h, t) => let r1 = rw_e(h, env, st, 0) in let r2 = rw_push(t, env, r1) in rw_r(r1.code + "    pushq %rax\n" + r2.code, r2)
 ## pop into the k first argument registers (the last argument first)
 fn rw_popregs(k) = if k <= 0 then "" else "    popq " + rw_nth(rw_regs(), k - 1) + "\n" + rw_popregs(k - 1)
+fn rw_popparams(k, f) = if k <= 0 then "" else (if rw_vreg(f, k - 1) > 0 then "    popq " + rw_loc(rw_vreg(f, k - 1)) + "\n" else "    popq %rax\n    movq %rax, " + str(0 - 8 * k) + "(%rbp)\n") + rw_popparams(k - 1, f)
 fn rw_popslots(k) = if k <= 0 then "" else "    popq %rax\n    movq %rax, " + str(0 - 8 * k) + "(%rbp)\n" + rw_popslots(k - 1)
 fn rw_mem(g) = g == "load8" or g == "load32" or g == "load64" or g == "store8" or g == "store32" or g == "store64"
 fn rw_memop(g) = if g == "load8" then "    movzbq (%rax), %rax\n" else if g == "load32" then "    movl (%rax), %eax\n" else if g == "load64" then "    movq (%rax), %rax\n" else if g == "store8" then "    movb %cl, (%rax)\n    xorq %rax, %rax\n" else if g == "store32" then "    movl %ecx, (%rax)\n    xorq %rax, %rax\n" else "    movq %rcx, (%rax)\n    xorq %rax, %rax\n"
 fn rw_bitop(g) = if g == "bit_and" then "    andq %rcx, %rax\n" else if g == "bit_or" then "    orq %rcx, %rax\n" else if g == "bit_xor" then "    xorq %rcx, %rax\n" else if g == "bit_shl" then "    salq %cl, %rax\n" else "    sarq %cl, %rax\n"
 fn rw_isbit(g) = g == "bit_and" or g == "bit_or" or g == "bit_xor" or g == "bit_shl" or g == "bit_shr"
-fn rw_call(g, args, env, st, tail) = let n = rw_len(args) in if rw_mem(g) then (if (g == "load8" or g == "load32" or g == "load64") and n == 1 then let r = rw_e(rw_nth(args, 0), env, st, 0) in rw_r(r.code + rw_memop(g), r) else if n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_memop(g), r) else ctfail("lume --raw: " + g + " takes " + (if ld_s_starts(g, "load") then "1 argument" else "2 arguments") + "\n")) else if rw_isbit(g) and n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_bitop(g), r) else if g == "sys_call" and n == 6 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %r8\n    popq %r10\n    popq %rdx\n    popq %rsi\n    popq %rdi\n    popq %rax\n    xorq %r9, %r9\n    syscall\n", r) else if n > 6 then ctfail("lume --raw: a call takes at most 6 arguments\n") else if tail == 1 and g == st.f and n == st.np then let r = rw_push(args, env, st) in rw_r(r.code + rw_popslots(n) + "    jmp .Lrw_" + st.f + "_top\n", r) else let r = rw_push(args, env, st) in rw_r(r.code + rw_popregs(n) + "    call " + g + "\n", r)
+## sym_addr("name"): the address of a runtime symbol (a .bss word, a buffer, a table); the name must be a literal
+## made of letters, digits, `_` and `.`
+fn rw_symname(e, st) = match e
+    Str(v) => if count(v) > 0 and rw_symok(v, 0) == 1 then v else ctfail("lume --raw: sym_addr needs a symbol name, not '" + v + "' (in '" + st.f + "')\n")
+    _      => ctfail("lume --raw: sym_addr takes a string literal (in '" + st.f + "')\n")
+fn rw_symok(v, i) = if i >= count(v) then 1 else let c = ord_at(v, i) in if (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 95 or c == 46 then rw_symok(v, i + 1) else 0
+## a simple argument (a literal or a local) as an operand, else "": it needs no stack slot, it is loaded straight
+## into its register after the other arguments are popped (it reads only an immediate or the frame)
+fn rw_simple(e, env) = match e
+    Num(v) => "$" + str(v)
+    Var(x) => let o = rw_slot(env, x) in if o == 0 then "" else rw_loc(o)
+    _      => ""
+## the complex arguments, left to right, each pushed
+fn rw_pushc(args, env, st) = match args
+    Nil        => rw_r("", st)
+    Cons(h, t) => if rw_simple(h, env) != "" then rw_pushc(t, env, st) else let r1 = rw_e(h, env, st, 0) in let r2 = rw_pushc(t, env, r1) in rw_r(r1.code + "    pushq %rax\n" + r2.code, r2)
+## into the registers regs: from the last argument back, a complex one popped, a simple one moved
+fn rw_popc(args, regs, env) = rw_popc_go(rw_revl(args, Nil), rw_revl(rw_takel(regs, rw_len(args)), Nil), env)
+fn rw_popc_go(as, rs, env) = match as
+    Nil        => ""
+    Cons(a, t) => let s = rw_simple(a, env) in (if s != "" then "    movq " + s + ", " + rw_nth(rs, 0) + "\n" else "    popq " + rw_nth(rs, 0) + "\n") + rw_popc_go(t, rw_dropl(rs), env)
+fn rw_revl(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rw_revl(t, Cons(h, acc))
+fn rw_takel(xs, k) = match xs
+    Nil        => Nil
+    Cons(h, t) => if k <= 0 then Nil else Cons(h, rw_takel(t, k - 1))
+fn rw_dropl(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+## mkint(v) inline: the immediate 2v + 1, and the runtime's mkint (a boxed cell) only when 2v overflows
+fn rw_mkint(r, st) = let k = st.n in rw_r(r.code + "    movq %rax, %rdi\n    addq %rax, %rax\n    jo " + rw_lab(st, k) + "m\n    incq %rax\n    jmp " + rw_lab(st, k) + "k\n" + rw_lab(st, k) + "m:\n    call mkint\n" + rw_lab(st, k) + "k:\n", r)
+fn rw_call(g, args, env, st, tail) = let n = rw_len(args) in if g == "mkint" and n == 1 then rw_mkint(rw_e(rw_nth(args, 0), env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0), st) else if g == "sym_addr" and n == 1 then rw_r("    leaq " + rw_symname(rw_nth(args, 0), st) + "(%rip), %rax\n", st) else if rw_mem(g) then (if (g == "load8" or g == "load32" or g == "load64") and n == 1 then let r = rw_e(rw_nth(args, 0), env, st, 0) in rw_r(r.code + rw_memop(g), r) else if n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_memop(g), r) else ctfail("lume --raw: " + g + " takes " + (if ld_s_starts(g, "load") then "1 argument" else "2 arguments") + "\n")) else if rw_isbit(g) and n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_bitop(g), r) else if g == "sys_call" and n == 6 then let r = rw_pushc(args, env, st) in rw_r(r.code + rw_popc(args, Cons("%rax", Cons("%rdi", Cons("%rsi", Cons("%rdx", Cons("%r10", Cons("%r8", Nil)))))), env) + "    xorq %r9, %r9\n    syscall\n", r) else if n > 6 then ctfail("lume --raw: a call takes at most 6 arguments\n") else if tail == 1 and g == st.f and n == st.np then let r = rw_push(args, env, st) in rw_r(r.code + rw_popparams(n, st.f) + "    jmp .Lrw_" + st.f + "_top\n", r) else let r = rw_pushc(args, env, st) in rw_r(r.code + rw_popc(args, rw_regs(), env) + "    call " + g + "\n", r)
 fn ld_s_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
 ## the prologue keeps %rdi..%r11 (also the parameters' homes), the frame holds the lets; the epilogue gives them back
-fn rw_fn(nm, ps, body) = let np = rw_len(ps) in let r = rw_e(body, rw_params(ps, 0, Nil), {n: 0, nl: 0, f: nm, np: np}, 1) in let fr = (r.nl * 8 + 15) / 16 * 16 in nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n    pushq %rdi\n    pushq %rsi\n    pushq %rdx\n    pushq %rcx\n    pushq %r8\n    pushq %r9\n    pushq %r10\n    pushq %r11\n" + (if fr > 0 then "    subq $" + str(fr) + ", %rsp\n" else "") + ".Lrw_" + nm + "_top:\n" + r.code + "    leaq -64(%rbp), %rsp\n    popq %r11\n    popq %r10\n    popq %r9\n    popq %r8\n    popq %rcx\n    popq %rdx\n    popq %rsi\n    popq %rdi\n    popq %rbp\n    ret\n"
+## a routine the hand-written assembly calls keeps every register but %rax (those callers rely on it); every other one
+## follows the System V rule, like the assembly builtins it sits next to: %rdi .. %r11 are the caller's to save (the
+## code Lume compiles keeps nothing in them across a call), so the prologue stores only its parameters into their slots
+## the callee-saved registers a routine uses are kept in the frame words -8 .. -40 (the slots its first five parameters
+## would have had); its parameters move from the argument registers to their registers or slots
+fn rw_saveregs(i, nu) = if i > nu then "" else "    movq " + rw_loc(i) + ", " + str(0 - 8 * i) + "(%rbp)\n" + rw_saveregs(i + 1, nu)
+fn rw_restregs(i, nu) = if i > nu then "" else "    movq " + str(0 - 8 * i) + "(%rbp), " + rw_loc(i) + "\n" + rw_restregs(i + 1, nu)
+fn rw_movparams(f, i, np) = if i >= np then "" else "    movq " + rw_nth(rw_regs(), i) + ", " + (if rw_vreg(f, i) > 0 then rw_loc(rw_vreg(f, i)) else str(0 - 8 * (i + 1)) + "(%rbp)") + "\n" + rw_movparams(f, i + 1, np)
+fn rw_keepall(nm) = nm == "strlen" or nm == "streq" or nm == "__rt_nofield_text"
+fn rw_pushparams(np, i) = if i >= np then "" else "    pushq " + rw_nth(rw_regs(), i) + "\n" + rw_pushparams(np, i + 1)
+fn rw_fn(nm, ps, body) = let np = rw_len(ps) in let r = rw_e(body, rw_params(ps, 0, Nil, nm), {n: 0, nl: 0, f: nm, np: np}, 1) in let fr = (r.nl * 8 + 15) / 16 * 16 in if rw_keepall(nm) then nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n    pushq %rdi\n    pushq %rsi\n    pushq %rdx\n    pushq %rcx\n    pushq %r8\n    pushq %r9\n    pushq %r10\n    pushq %r11\n" + (if fr > 0 then "    subq $" + str(fr) + ", %rsp\n" else "") + ".Lrw_" + nm + "_top:\n" + r.code + "    leaq -64(%rbp), %rsp\n    popq %r11\n    popq %r10\n    popq %r9\n    popq %r8\n    popq %rcx\n    popq %rdx\n    popq %rsi\n    popq %rdi\n    popq %rbp\n    ret\n" else let nu = (if np + r.nl < 5 then np + r.nl else 5) in nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n    subq $" + str(64 + fr) + ", %rsp\n" + rw_saveregs(1, nu) + rw_movparams(nm, 0, np) + ".Lrw_" + nm + "_top:\n" + r.code + rw_restregs(1, nu) + "    movq %rbp, %rsp\n    popq %rbp\n    ret\n"
 fn rw_prog(stmts) = match stmts
     Nil        => ""
     Cons(h, t) => (match h

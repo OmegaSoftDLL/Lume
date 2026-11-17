@@ -1,0 +1,22 @@
+## rt_lume_fs_ok.src -- the file, environment and process builtins the runtime now has in Lume (compiler/stage1/rt/
+## rt_fs.src): every one, with its edge cases, so the migration from assembly is checked on Linux and on Windows.
+
+fn dir() = "rt_lume_fs_probe_dir"
+fn p(n) = dir() + "/" + n
+fn setup() = let a = if fs_path_exists(dir()) == 1 then 0 else fs_mkdir(dir()) in 1
+
+fn test_write_read_append() = let s = setup() in let w = fs_write_sync(p("a.txt"), "hello") in let a = fs_append_sync(p("a.txt"), " world") in let r = fs_read_file(p("a.txt")) in w == 1 and a == 1 and r == "hello world" and count(r) == 11
+fn test_short_and_empty_strings() = let s = setup() in let w = fs_write_sync(p("s.txt"), "ab") in let e = fs_write_sync(p("e.txt"), "") in fs_read_file(p("s.txt")) == "ab" and fs_read_file(p("e.txt")) == "" and w == 1 and e == 1
+fn test_binary_bytes_survive() = let s = setup() in let w = fs_write_hex_file(p("b.bin"), "00ff7f80410a") in let r = fs_read_file(p("b.bin")) in w == 1 and count(r) == 6 and ord_at(r, 0) == 0 and ord_at(r, 1) == 255 and fs_read_byte(p("b.bin"), 3) == 128 and fs_read_byte(p("b.bin"), 6) == 0 - 1
+fn test_bad_hex_creates_nothing() = let s = setup() in fs_write_hex_file(p("bad.bin"), "0g") == 0 and fs_write_hex_file(p("odd.bin"), "abc") == 0 and fs_path_exists(p("bad.bin")) == 0
+fn test_missing_file() = fs_read_file("no_such_file_rt_lume") == "" and fs_read_byte("no_such_file_rt_lume", 0) == 0 - 1 and fs_path_exists("no_such_file_rt_lume") == 0 and fs_remove("no_such_file_rt_lume") == 0
+fn test_copy_and_compare() = let s = setup() in let w = fs_write_sync(p("c1.txt"), "copy me") in let c = fs_copy(p("c1.txt"), p("c2.txt")) in let x = fs_write_sync(p("c3.txt"), "copy mE") in c == 1 and fs_files_equal(p("c1.txt"), p("c2.txt")) == 1 and fs_files_equal(p("c1.txt"), p("c3.txt")) == 0 and fs_files_equal(p("c1.txt"), "no_such_file_rt_lume") == 0 - 1
+fn test_rename_remove_dirs() = let s = setup() in let w = fs_write_sync(p("r1.txt"), "x") in let r = fs_rename(p("r1.txt"), p("r2.txt")) in let m = fs_mkdir(p("sub")) in let m2 = fs_mkdir(p("sub")) in r == 1 and fs_path_exists(p("r2.txt")) == 1 and m == 1 and m2 == 1 and fs_rmdir(p("sub")) == 1 and fs_rmdir(p("sub")) == 0
+fn test_read_dir_lists_names() = let s = setup() in let w = fs_write_sync(p("listed.txt"), "x") in let d = fs_read_dir(dir()) in str_has(d, "listed.txt\n") and str_has(d, "a.txt\n") and fs_read_dir("no_such_dir_rt_lume") == ""
+fn str_has(s, sub) = str_has_at(s, sub, 0)
+fn str_has_at(s, sub, i) = if i + count(sub) > count(s) then false else if slice(s, i, i + count(sub)) == sub then true else str_has_at(s, sub, i + 1)
+fn test_chmod_and_mode() = let s = setup() in let w = fs_write_sync(p("m.txt"), "x") in let c = fs_chmod(p("m.txt"), 384) in let bad = fs_chmod(p("m.txt"), 5000) in c == 1 and bad == 0 and fs_mode("no_such_file_rt_lume") == 0 - 1 and fs_make_executable(p("m.txt")) == 1
+fn test_current_dir_and_time() = count(fs_current_dir()) > 0 and os_unix_time() > 1700000000
+fn test_environment() = let a = os_setenv("RT_LUME_PROBE", "v1") in let g = os_getenv("RT_LUME_PROBE") in let h = os_env_has("RT_LUME_PROBE") in let b = os_setenv("RT_LUME_PROBE", "v2") in let g2 = os_getenv("RT_LUME_PROBE") in let u = os_unsetenv("RT_LUME_PROBE") in a == 1 and g == "v1" and h == 1 and g2 == "v2" and u == 1 and os_env_has("RT_LUME_PROBE") == 0 and os_getenv("RT_LUME_PROBE") == "" and os_setenv("", "x") == 0 and os_setenv("A=B", "x") == 0
+fn test_process_info() = os_arg_count() >= 1 and count(os_arg_at(0)) > 0 and os_arg_at(9999) == "" and count(os_platform()) > 0 and count(os_uname_field(0)) > 0 and os_uname_field(7) == ""
+fn test_cleanup() = let a = fs_remove(p("a.txt")) + fs_remove(p("s.txt")) + fs_remove(p("e.txt")) + fs_remove(p("b.bin")) + fs_remove(p("c1.txt")) + fs_remove(p("c2.txt")) + fs_remove(p("c3.txt")) + fs_remove(p("r2.txt")) + fs_remove(p("listed.txt")) + fs_remove(p("m.txt")) in fs_rmdir(dir()) == 1

@@ -758,7 +758,7 @@ fn se_vote(a, b, cert_ok, ltv_status) = if a.ok != 1 then {commit: 0, value: 0, 
 fn s2_u32(x) = bit_and(x, 4294967295)
 fn s2_rotr(x, n) = bit_or(bit_shr(x, n), bit_and(bit_shl(x, 32 - n), 4294967295))
 fn s2_k() = Cons(1116352408, Cons(1899447441, Cons(3049323471, Cons(3921009573, Cons(961987163, Cons(1508970993, Cons(2453635748, Cons(2870763221, Cons(3624381080, Cons(310598401, Cons(607225278, Cons(1426881987, Cons(1925078388, Cons(2162078206, Cons(2614888103, Cons(3248222580, Cons(3835390401, Cons(4022224774, Cons(264347078, Cons(604807628, Cons(770255983, Cons(1249150122, Cons(1555081692, Cons(1996064986, Cons(2554220882, Cons(2821834349, Cons(2952996808, Cons(3210313671, Cons(3336571891, Cons(3584528711, Cons(113926993, Cons(338241895, Cons(666307205, Cons(773529912, Cons(1294757372, Cons(1396182291, Cons(1695183700, Cons(1986661051, Cons(2177026350, Cons(2456956037, Cons(2730485921, Cons(2820302411, Cons(3259730800, Cons(3345764771, Cons(3516065817, Cons(3600352804, Cons(4094571909, Cons(275423344, Cons(430227734, Cons(506948616, Cons(659060556, Cons(883997877, Cons(958139571, Cons(1322822218, Cons(1537002063, Cons(1747873779, Cons(1955562222, Cons(2024104815, Cons(2227730452, Cons(2361852424, Cons(2428436474, Cons(2756734187, Cons(3204031479, Cons(3329325298, Nil))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
-fn s2_byte(m, total, i) = if i < m.n then (if m.k == 0 then ord(at(m.s, i)) else fs_read_byte(m.s, i)) else if i == m.n then 128 else if i >= total - 8 then bit_and(bit_shr(m.n * 8, 8 * (total - 1 - i)), 255) else 0
+fn s2_byte(m, total, i) = if i < m.n then (ord_at(m.s, i)) else if i == m.n then 128 else if i >= total - 8 then bit_and(bit_shr(m.n * 8, 8 * (total - 1 - i)), 255) else 0
 fn s2_word(m, total, b) = s2_byte(m, total, b) * 16777216 + s2_byte(m, total, b + 1) * 65536 + s2_byte(m, total, b + 2) * 256 + s2_byte(m, total, b + 3)
 fn s2_nth(xs, i) = match xs
     Nil        => 0
@@ -777,7 +777,7 @@ fn s2_hex(w) = s2_h1(w / 268435456 % 16) + s2_h1(w / 16777216 % 16) + s2_h1(w / 
 fn s2_of(m) = let h = s2_blocks(m, (m.n + 9 + 63) / 64 * 64, 0, {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in s2_hex(h.a) + s2_hex(h.b) + s2_hex(h.c) + s2_hex(h.d) + s2_hex(h.e) + s2_hex(h.f) + s2_hex(h.g) + s2_hex(h.h)
 ## lower-case hex SHA-256 of a string / of the bytes of a file
 fn se_sha256(s) = s2_of({k: 0, s: s, n: count(s)})
-fn se_sha256_file(path) = s2_of({k: 1, s: path, n: ss_size(path)})
+fn se_sha256_file(path) = let d = fs_read_file(path) in s2_of({k: 0, s: d, n: count(d)})
 
 ## ====================================================================================================================
 ## 7. Text helpers
@@ -1240,9 +1240,8 @@ fn sx_prog(src, fname, kid, ps, rt) = src + "\nfn lsa9_hv(c) = let o = ord(c) in
 fn ss_bytes_hex(ws) = kir_hex(kir_words_le(ws))
 fn ss_write_bin(path, hex) = if fs_write_hex_file(path, hex) == 1 then hio_run("chmod", Cons("+x", Cons(path, Nil))) else 0 - 1
 fn ss_art(dir, file, extra) = "{\"file\":\"" + file + "\",\"bytes\":" + str(ss_size(dir + "/" + file)) + ",\"sha256\":\"" + se_sha256_file(dir + "/" + file) + "\"" + extra + "}"
-fn ss_size_hi(path, step) = if fs_read_byte(path, step) < 0 then step else ss_size_hi(path, step * 2)
-fn ss_size_bin(path, lo, hi) = if lo + 1 >= hi then hi else let mid = (lo + hi) / 2 in if fs_read_byte(path, mid) < 0 then ss_size_bin(path, lo, mid) else ss_size_bin(path, mid, hi)
-fn ss_size(path) = if fs_read_byte(path, 0) < 0 then 0 else ss_size_bin(path, 0, ss_size_hi(path, 1))
+## the size of a file in bytes (0 when it cannot be read): one read of the whole file, never a system call per byte
+fn ss_size(path) = if fs_path_exists(path) == 0 then 0 else count(fs_read_file(path))
 fn ss_ptypes(ps) = match ps
     Nil        => ""
     Cons(h, t) => (if h.t == 2 then "bool" else "int") + (if cb_len(t) > 0 then "," else "") + ss_ptypes(t)
@@ -1265,8 +1264,10 @@ fn sj_at(s, n, pat, pn) = let p = se_find(s, n, pat, pn, 0) in if p < 0 then 0 -
 fn sj_str(s, key) = let n = count(s) in let p = sj_at(s, n, "\"" + key + "\":\"", count(key) + 4) in if p < 0 then "" else slicen(s, n, p, sj_qend(s, n, p))
 fn sj_qend(s, n, i) = if i < n and at(s, i) != "\"" then sj_qend(s, n, i + 1) else i
 fn sj_int(s, key) = let n = count(s) in let p = sj_at(s, n, "\"" + key + "\":", count(key) + 3) in if p < 0 then 0 - 1 else let e = se_digits_end(s, n, p) in if e == p or e - p > 17 then 0 - 1 else toint(slicen(s, n, p, e))
-fn ss_img_words(path, i, acc) = let b0 = fs_read_byte(path, i) in if b0 < 0 then cb_rev(acc, Nil) else ss_img_words(path, i + 4, Cons(b0 + 256 * ss_b0(fs_read_byte(path, i + 1)) + 65536 * ss_b0(fs_read_byte(path, i + 2)) + 16777216 * ss_b0(fs_read_byte(path, i + 3)), acc))
-fn ss_b0(b) = if b < 0 then 0 else b
+## the little-endian 32-bit words of an image file (the last one padded with zero bytes), read once
+fn ss_img_words(path, i, acc) = let d = fs_read_file(path) in ss_img_go(d, count(d), i, acc)
+fn ss_img_go(d, n, i, acc) = if i >= n then cb_rev(acc, Nil) else ss_img_go(d, n, i + 4, Cons(ord_at(d, i) + 256 * ss_bat(d, n, i + 1) + 65536 * ss_bat(d, n, i + 2) + 16777216 * ss_bat(d, n, i + 3), acc))
+fn ss_bat(d, n, i) = if i < n then ord_at(d, i) else 0
 ## one channel: {text, timed_out, how}
 fn ss_chan(cmd, req, reqpath, outpath, timeout_ms) = if se_starts(cmd, "lumeputer:") == 1 then (let r = sb_exec(ss_img_words(slice(cmd, 10, count(cmd)), 0, Nil), req, 4000000) in {text: if r.st == 1 then r.out else "", timed_out: if r.cause == "watchdog_cycle_budget" then 1 else 0, how: "in-tool LumePuter: " + (if r.st == 1 then "halt" else r.cause) + " after " + str(r.cyc) + " instructions"}) else (let z = fs_write_sync(outpath, "") in let raw = hio_cmdline_ict(cmd, reqpath, outpath, outpath + ".err", timeout_ms) in {text: if os_last_timed_out() == 1 then "" else fs_read_file(outpath), timed_out: os_last_timed_out(), how: "process exit " + str(se_wait_exit(raw))})
 fn ss_frame_show(t) = let n = count(t) in se_jesc(if n > 200 then slicen(t, n, 0, 200) else t)

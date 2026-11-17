@@ -128,20 +128,20 @@ fn usehead(rest) = let r = trim(rest) in slice(r, 0, wordend(r, 0, count(r)))
 fn usemod(rest) = let r = trim(rest) in modname_clean(slice(r, 0, wordend(r, 0, count(r))))
 fn usealias(rest) = let r = trim(rest) in let after = trim(slice(r, wordend(r, 0, count(r)), count(r))) in if startswith(after, "as ") then trim(slice(after, 3, count(after))) else ""
 ## the prefixes a module may write before a name of an imported module: the alias of `use X as Y`, the module as
-## written, and, for a module in a folder (`use ns/alfa`), its last segment (`alfa.nome`) when no other `use` line of
-## the module ends with the same segment (then only an alias tells them apart)
+## written, and, for a module in a folder (`use ns/alfa`) imported without `as`, its last segment (`alfa.nome`) when no
+## other `use` line without `as` ends with the same segment (a module imported `as` a name is named by that name)
 fn ns_lastseg_go(m, i) = if i < 0 then m else if at(m, i) == "/" then slice(m, i + 1, count(m)) else ns_lastseg_go(m, i - 1)
 fn ns_lastseg(m) = ns_lastseg_go(m, count(m) - 1)
 fn ns_usemods(lines) = match lines
     Nil        => Nil
-    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then Cons(usemod(slice(tr, 4, count(tr))), ns_usemods(t)) else ns_usemods(t)
+    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") and usealias(slice(tr, 4, count(tr))) == "" then Cons(usemod(slice(tr, 4, count(tr))), ns_usemods(t)) else ns_usemods(t)
 fn ns_segcount(ms, seg) = match ms
     Nil        => 0
     Cons(h, t) => (if ns_lastseg(h) == seg then 1 else 0) + ns_segcount(t, seg)
 fn extractaliases(lines) = extractaliases_go(lines, ns_usemods(lines))
 fn extractaliases_go(lines, mods) = match lines
     Nil        => Nil
-    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then let rest = slice(tr, 4, count(tr)) in let m = usemod(rest) in let a = usealias(rest) in let seg = ns_lastseg(m) in let more = if a != "" then Cons({a: a, m: m}, extractaliases_go(t, mods)) else extractaliases_go(t, mods) in let withseg = if seg != m and ns_segcount(mods, seg) == 1 then Cons({a: seg, m: m}, more) else more in Cons({a: m, m: m}, withseg) else extractaliases_go(t, mods)
+    Cons(h, t) => let tr = trim(h) in if startswith(tr, "use ") then let rest = slice(tr, 4, count(tr)) in let m = usemod(rest) in let a = usealias(rest) in let seg = ns_lastseg(m) in let more = if a != "" then Cons({a: a, m: m}, extractaliases_go(t, mods)) else extractaliases_go(t, mods) in let withseg = if a == "" and seg != m and ns_segcount(mods, seg) == 1 then Cons({a: seg, m: m}, more) else more in Cons({a: m, m: m}, withseg) else extractaliases_go(t, mods)
 
 ## the name a top-level line defines (fn, type, law, const, let, effect after pub/total/partial), else ""
 fn ns_skipmods(s, i, n) = let j = skipws(s, i, n) in let e = id_end(s, j, n) in let w = slicen(s, n, j, e) in if w == "pub" or w == "total" or w == "partial" then ns_skipmods(s, e, n) else j
@@ -280,7 +280,19 @@ fn ns_binders(lines, acc) = match lines
 
 ## rewrite one line; cx = {mp, als, recs, gs, entry, mod, line}
 fn ns_rw(s, n, i, start, acc, st, cx) = if i >= n then joinall(rev(Cons(slicen(s, n, start, n), acc))) else let c = at(s, i) in if c == "\"" then ns_rw(s, n, strend(s, i + 1, n), start, acc, st, cx) else if c == "#" then joinall(rev(Cons(slicen(s, n, start, n), acc))) else if c == "(" or c == "[" or c == "{" then ns_rw(s, n, i + 1, start, acc, Cons(c, st), cx) else if c == ")" or c == "]" or c == "}" then ns_rw(s, n, i + 1, start, acc, ns_pop(st), cx) else if isalpha(c) and prev_boundary(s, i) then ns_word(s, n, i, id_end(s, i, n), start, acc, st, cx) else ns_rw(s, n, i + 1, start, acc, st, cx)
-fn ns_word(s, n, i, e, start, acc, st, cx) = if i > 0 and at(s, i - 1) == "." then ns_rw(s, n, e, start, acc, st, cx) else let w = slicen(s, n, i, e) in let m = if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) then ns_alias(cx.als, w) else "" in if m != "" then ns_qual(s, n, i, e, id_end(s, e + 1, n), m, start, acc, st, cx) else let t = ns_lookup(cx.mp, w) in if t == "" or ns_iskey(s, n, i, e, st) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" and contains(cx.bnd, w) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" then ctfail(cx.mod + ".src:" + str(cx.line) + ":" + str(i + 1) + ": lume: name error: '" + w + "' is defined in modules " + slice(t, 1, count(t)) + "; write " + ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) + "." + w + (if ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) != ns_kfirst(slice(t, 1, count(t))) then " (or `use " + ns_kfirst(slice(t, 1, count(t))) + " as <alias>` and <alias>." + w + ")" else "") + "\n") else ns_rw(s, n, e, e, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
+## the modules imported without `as` whose last segment is w (`use a/m` and `use b/m` both end in m)
+fn ns_segmods(ms, w) = match ms
+    Nil        => Nil
+    Cons(h, t) => if ns_lastseg(h) == w and h != w then Cons(h, ns_segmods(t, w)) else ns_segmods(t, w)
+## `w.name` where w is the last segment of two imported modules: the rule and the fix, at the file, line and column
+fn ns_segamb(cx, i, w, ms) = ctfail(cx.mod + ".src:" + str(cx.line) + ":" + str(i + 1) + ": lume: name error: '" + w + "' names more than one module (" + joinsep(ms, " and ") + "): a module in a folder is written by its last segment only when no other `use` without `as` ends the same way; give one of them a name, e.g. `use " + ns_kfirst2(ms) + " as " + w + "2` and then " + w + "2.name\n")
+fn ns_kfirst2(ms) = match ms
+    Nil        => ""
+    Cons(h, t) => ns_ksecond(t, h)
+fn ns_ksecond(t, h) = match t
+    Nil        => h
+    Cons(h2, t2) => h2
+fn ns_word(s, n, i, e, start, acc, st, cx) = if i > 0 and at(s, i - 1) == "." then ns_rw(s, n, e, start, acc, st, cx) else let w = slicen(s, n, i, e) in let m = if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) then ns_alias(cx.als, w) else "" in if m != "" then ns_qual(s, n, i, e, id_end(s, e + 1, n), m, start, acc, st, cx) else if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) and contains(cx.bnd, w) == 0 and ns_len(ns_segmods(ns_usemods((ns_find(cx.recs, cx.mod)).lines), w)) >= 2 then ns_segamb(cx, i, w, ns_segmods(ns_usemods((ns_find(cx.recs, cx.mod)).lines), w)) else let t = ns_lookup(cx.mp, w) in if t == "" or ns_iskey(s, n, i, e, st) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" and contains(cx.bnd, w) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" then ctfail(cx.mod + ".src:" + str(cx.line) + ":" + str(i + 1) + ": lume: name error: '" + w + "' is defined in modules " + slice(t, 1, count(t)) + "; write " + ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) + "." + w + (if ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) != ns_kfirst(slice(t, 1, count(t))) then " (or `use " + ns_kfirst(slice(t, 1, count(t))) + " as <alias>` and <alias>." + w + ")" else "") + "\n") else ns_rw(s, n, e, e, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
 fn ns_kfirst(s) = slice(s, 0, wordend(s, 0, count(s)))
 fn ns_qual(s, n, i, e, ne, m, start, acc, st, cx) = let nm = slicen(s, n, e + 1, ne) in if contains((ns_find(cx.recs, m)).defs, nm) == 0 then ns_rw(s, n, e, start, acc, st, cx) else let t = if ns_isdup(cx.gs, nm) == 1 then ns_target(m, nm, cx.entry) else nm in ns_rw(s, n, ne, ne, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
 

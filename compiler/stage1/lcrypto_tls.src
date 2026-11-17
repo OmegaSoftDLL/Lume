@@ -869,12 +869,16 @@ fn lct_ed_clamp_l(bs, i) = match bs
     Cons(h, t) => if i == 0 then Cons(lct_k_clamp_lo(h), lct_ed_clamp_l(t, 1)) else if i == 31 then Cons(lct_k_clamp_hi(h), Nil) else Cons(h, lct_ed_clamp_l(t, i + 1))
 ## {a: the clamped secret scalar, prefix: the nonce-derivation key}
 fn lct_ed25519_expand(seed) = let s = lct_split(lct_sha512(seed), 32) in {a: lct_ed_clamp_l(s.a, 0), prefix: s.b}
-fn lct_ed25519_public_key(seed) = lct_pt_pack(lct_pt_base_mul((lct_ed25519_expand(seed)).a))
+fn lct_ed25519_public_key(seed) = lct_ed_bmul((lct_ed25519_expand(seed)).a)
+fn lct_ed25519_public_key_ref(seed) = lct_pt_pack(lct_pt_base_mul((lct_ed25519_expand(seed)).a))
 ## deterministic signature R || S (64 bytes) of msg under the 32-byte seed
-fn lct_ed25519_sign(seed, msg) = let e = lct_ed25519_expand(seed) in let pk = lct_pt_pack(lct_pt_base_mul(e.a)) in let r = lct_sc_modl(lct_sha512(lct_app(e.prefix, msg))) in let rb = lct_pt_pack(lct_pt_base_mul(r)) in lct_app(rb, lct_sc_muladd(lct_sc_modl(lct_sha512(lct_app(rb, lct_app(pk, msg)))), e.a, r))
+fn lct_ed25519_sign(seed, msg) = let e = lct_ed25519_expand(seed) in let pk = lct_ed_bmul(e.a) in let r = lct_sc_modl(lct_sha512(lct_app(e.prefix, msg))) in let rb = lct_ed_bmul(r) in lct_app(rb, lct_sc_muladd(lct_sc_modl(lct_sha512(lct_app(rb, lct_app(pk, msg)))), e.a, r))
+fn lct_ed25519_sign_ref(seed, msg) = let e = lct_ed25519_expand(seed) in let pk = lct_pt_pack(lct_pt_base_mul(e.a)) in let r = lct_sc_modl(lct_sha512(lct_app(e.prefix, msg))) in let rb = lct_pt_pack(lct_pt_base_mul(r)) in lct_app(rb, lct_sc_muladd(lct_sc_modl(lct_sha512(lct_app(rb, lct_app(pk, msg)))), e.a, r))
 fn lct_ed25519_verify2(up, pk, msg, rb, s) = if up.ok == 0 then 0 else lct_ct_eq(lct_pt_pack(lct_pt_add(lct_pt_mul(up.pt, lct_sc_modl(lct_sha512(lct_app(rb, lct_app(pk, msg))))), lct_pt_base_mul(s))), rb)
 ## 1 when sig is a valid signature of msg under the 32-byte public key pk, else 0
-fn lct_ed25519_verify(pk, msg, sig) = if lct_len(pk) != 32 or lct_len(sig) != 64 then 0 else let sp = lct_split(sig, 32) in if lct_sc_lt_l(sp.b) == 0 then 0 else lct_ed25519_verify2(lct_pt_unpack_neg(pk), pk, msg, sp.a, sp.b)
+## [s]B + [k](-A) by the runtime routine (rt_ed25519.src, Lume); "" when pk is not a point
+fn lct_ed25519_verify(pk, msg, sig) = if lct_len(pk) != 32 or lct_len(sig) != 64 then 0 else let sp = lct_split(sig, 32) in if lct_sc_lt_l(sp.b) == 0 then 0 else let k = lct_sc_modl(lct_sha512(lct_app(sp.a, lct_app(pk, msg)))) in let v = crypto_ed25519_vpt(lcs_l2s(pk), lcs_l2s32(k), lcs_l2s(sp.b)) in if count(v) != 32 then 0 else lct_ct_eq(lcs_s2l(v), sp.a)
+fn lct_ed25519_verify_ref(pk, msg, sig) = if lct_len(pk) != 32 or lct_len(sig) != 64 then 0 else let sp = lct_split(sig, 32) in if lct_sc_lt_l(sp.b) == 0 then 0 else lct_ed25519_verify2(lct_pt_unpack_neg(pk), pk, msg, sp.a, sp.b)
 
 ## --- X25519 (RFC 7748): Montgomery ladder on the u-coordinate, same field and limbs as Ed25519 -------------------------
 fn lct_fe_x121665(a) = match a
@@ -887,7 +891,9 @@ fn lct_fe_mul121665(a) = lct_fe_car(lct_fe_car(lct_fe_x121665(a)))
 fn lct_x25519_loop(bits, x, a, b, c, d) = match bits
     Nil         => {a: a, c: c}
     Cons(r, rs) => let m = lct_k_mask_neg(r) in let a1 = lct_fe_sel(a, b, m) in let b1 = lct_fe_sel(b, a, m) in let c1 = lct_fe_sel(c, d, m) in let d1 = lct_fe_sel(d, c, m) in let e = lct_fe_add(a1, c1) in let a2 = lct_fe_sub(a1, c1) in let c2 = lct_fe_add(b1, d1) in let b2 = lct_fe_sub(b1, d1) in let d2 = lct_fe_mul(e, e) in let f = lct_fe_mul(a2, a2) in let a3 = lct_fe_mul(c2, a2) in let c3 = lct_fe_mul(b2, e) in let e2 = lct_fe_add(a3, c3) in let a4 = lct_fe_sub(a3, c3) in let b3 = lct_fe_mul(a4, a4) in let c4 = lct_fe_sub(d2, f) in let a5 = lct_fe_add(lct_fe_mul121665(c4), d2) in let c5 = lct_fe_mul(c4, a5) in let a6 = lct_fe_mul(d2, f) in let d3 = lct_fe_mul(b3, x) in let b4 = lct_fe_mul(e2, e2) in lct_x25519_loop(rs, x, lct_fe_sel(a6, b4, m), lct_fe_sel(b4, a6, m), lct_fe_sel(c5, d3, m), lct_fe_sel(d3, c5, m))
-fn lct_x25519_raw(k, u) = let x = lct_fe_unpack(u) in let r = lct_x25519_loop(lct_tl(lct_bits_msb(lct_ed_clamp_l(k, 0), Nil)), x, lct_fe_one(), x, lct_fe_zero(), lct_fe_one()) in lct_fe_pack(lct_fe_mul(r.a, lct_fe_inv(r.c)))
+## the list form over the runtime's crypto_x25519 (Lume, rt_x25519.src); lct_x25519_ref is its plain Lume reference
+fn lct_x25519_raw(k, u) = lcs_s2l(crypto_x25519(lcs_l2s(k), lcs_l2s(u)))
+fn lct_x25519_ref(k, u) = let x = lct_fe_unpack(u) in let r = lct_x25519_loop(lct_tl(lct_bits_msb(lct_ed_clamp_l(k, 0), Nil)), x, lct_fe_one(), x, lct_fe_zero(), lct_fe_one()) in lct_fe_pack(lct_fe_mul(r.a, lct_fe_inv(r.c)))
 ## X25519(k, u), 32 bytes. The scalar is clamped (k[0] &= 248, k[31] &= 127, k[31] |= 64: the same clamp as Ed25519),
 ## bit 255 of u is masked, a non-canonical u is accepted and reduced mod p, as RFC 7748 section 5 requires. The inverse
 ## of 0 is 0, so a small-order u gives 32 zero bytes. Wrong lengths (public) also give 32 zero bytes: fail closed.
@@ -1968,3 +1974,187 @@ fn lcs_s256_iv() = lcs_wset(lcs_wset(lcs_wset(lcs_wset(lcs_wset(lcs_wset(lcs_wse
 fn lcs_sha256(s) = let n = count(s) in let full = (n / 64) * 64 in let st = crypto_sha256_blocks(lcs_s256_iv(), s, 0, full) in let rest = n - full in let tail = slice(s, full, n) + chr(128) + lcs_zeros(if rest < 56 then 55 - rest else 119 - rest) + lcs_be64s(n * 8) in let st2 = crypto_sha256_blocks(st, tail, 0, count(tail)) in lcs_be32s(lcs_wget(st2, 0)) + lcs_be32s(lcs_wget(st2, 4)) + lcs_be32s(lcs_wget(st2, 8)) + lcs_be32s(lcs_wget(st2, 12)) + lcs_be32s(lcs_wget(st2, 16)) + lcs_be32s(lcs_wget(st2, 20)) + lcs_be32s(lcs_wget(st2, 24)) + lcs_be32s(lcs_wget(st2, 28))
 fn lcs_chacha20(key, nonce, counter, data) = let n = count(data) in if n == 0 then "" else buf_to_str(crypto_chacha20_xor(buf_new(n), data, key, nonce, counter), 0, n)
 fn lcs_poly1305(key, msg) = crypto_poly1305(key, msg)
+
+## --- AES (FIPS 197) and AES-GCM (NIST SP 800-38D) over binary strings ------------------------------------------------
+## Needed by QUIC (RFC 9001 5.2: Initial packets are always AEAD_AES_128_GCM; 5.4.3: header protection of those packets
+## is AES-128 on a 16-byte sample) and by the TLS 1.3 suites TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384.
+##   lcs_aes128_ecb_encrypt(key16, block16) -> 16 bytes        lcs_aes256_ecb_encrypt(key32, block16) -> 16 bytes
+##   lcs_aes128_gcm_seal(key16, nonce12, aad, plain) -> ciphertext + 16-byte tag
+##   lcs_aes128_gcm_open(key16, nonce12, aad, sealed) -> {ok: 1, plain: str} or {ok: 0, plain: ""} (tag compared in constant time)
+##   lcs_aes256_gcm_seal / lcs_aes256_gcm_open: the same with a 32-byte key;  lcs_aes_gcm_seal / _open take either size
+## A wrong key, nonce or block size gives "" (seal, ECB) or {ok: 0} (open). The S-box lookups are table lookups: this is
+## the reference implementation for the handshake-time packets QUIC protects with AES, not a constant-time bulk cipher
+## (the bulk of a LumeDesk connection is ChaCha20-Poly1305).
+fn lcs_aes_sbox() = lcs_unhex("637c777bf26b6fc53001672bfed7ab76ca82c97dfa5947f0add4a2af9ca472c0b7fd9326363ff7cc34a5e5f171d8311504c723c31896059a071280e2eb27b27509832c1a1b6e5aa0523bd6b329e32f8453d100ed20fcb15b6acbbe394a4c58cfd0efaafb434d338545f9027f503c9fa851a3408f929d38f5bcb6da2110fff3d2cd0c13ec5f974417c4a77e3d645d197360814fdc222a908846eeb814de5e0bdbe0323a0a4906245cc2d3ac629195e479e7c8376d8dd54ea96c56f4ea657aae08ba78252e1ca6b4c6e8dd741f4bbd8b8a703eb5664803f60e613557b986c11d9ee1f8981169d98e949b1e87e9ce5528df8ca1890dbfe6426841992d0fb054bb16")
+## the column word w as its byte r (0 = the top row, the most significant byte)
+fn lcs_ab(w, r) = bit_and(bit_shr(w, 24 - 8 * r), 255)
+fn lcs_xt(x) = if x >= 128 then bit_xor(bit_and(x * 2, 255), 27) else x * 2
+fn lcs_w4(a, b, c, d) = bit_or(bit_or(bit_shl(a, 24), bit_shl(b, 16)), bit_or(bit_shl(c, 8), d))
+## SubBytes + ShiftRows of one output column (its bytes come from the columns p, q, r, s, rows 0..3), then MixColumns
+fn lcs_aes_col(sb, p, q, r, s, mix) = let a0 = ord_at(sb, lcs_ab(p, 0)) in let a1 = ord_at(sb, lcs_ab(q, 1)) in let a2 = ord_at(sb, lcs_ab(r, 2)) in let a3 = ord_at(sb, lcs_ab(s, 3)) in if mix == 0 then lcs_w4(a0, a1, a2, a3) else let x0 = lcs_xt(a0) in let x1 = lcs_xt(a1) in let x2 = lcs_xt(a2) in let x3 = lcs_xt(a3) in lcs_w4(bit_xor(bit_xor(x0, bit_xor(x1, a1)), bit_xor(a2, a3)), bit_xor(bit_xor(a0, x1), bit_xor(bit_xor(x2, a2), a3)), bit_xor(bit_xor(a0, a1), bit_xor(x2, bit_xor(x3, a3))), bit_xor(bit_xor(bit_xor(x0, a0), a1), bit_xor(a2, x3)))
+fn lcs_rk(rk, i) = lcs_be32(rk, i)
+fn lcs_aes_r(sb, rk, r, nr, c0, c1, c2, c3) = let k = 16 * r in if r == nr then lcs_be32s(bit_xor(lcs_aes_col(sb, c0, c1, c2, c3, 0), lcs_rk(rk, k))) + lcs_be32s(bit_xor(lcs_aes_col(sb, c1, c2, c3, c0, 0), lcs_rk(rk, k + 4))) + lcs_be32s(bit_xor(lcs_aes_col(sb, c2, c3, c0, c1, 0), lcs_rk(rk, k + 8))) + lcs_be32s(bit_xor(lcs_aes_col(sb, c3, c0, c1, c2, 0), lcs_rk(rk, k + 12))) else lcs_aes_r(sb, rk, r + 1, nr, bit_xor(lcs_aes_col(sb, c0, c1, c2, c3, 1), lcs_rk(rk, k)), bit_xor(lcs_aes_col(sb, c1, c2, c3, c0, 1), lcs_rk(rk, k + 4)), bit_xor(lcs_aes_col(sb, c2, c3, c0, c1, 1), lcs_rk(rk, k + 8)), bit_xor(lcs_aes_col(sb, c3, c0, c1, c2, 1), lcs_rk(rk, k + 12)))
+## one block: the 16 bytes of s at i, encrypted with the expanded key {sb, rk, nr}
+fn lcs_aes_blk(ks, s, i) = lcs_aes_r(ks.sb, ks.rk, 1, ks.nr, bit_xor(lcs_be32(s, i), lcs_rk(ks.rk, 0)), bit_xor(lcs_be32(s, i + 4), lcs_rk(ks.rk, 4)), bit_xor(lcs_be32(s, i + 8), lcs_rk(ks.rk, 8)), bit_xor(lcs_be32(s, i + 12), lcs_rk(ks.rk, 12)))
+## key expansion (FIPS 197 5.2): Nk = 4 or 8 words, 4 * (Nr + 1) round-key words written big-endian into a buffer
+fn lcs_sw(sb, w) = lcs_w4(ord_at(sb, lcs_ab(w, 0)), ord_at(sb, lcs_ab(w, 1)), ord_at(sb, lcs_ab(w, 2)), ord_at(sb, lcs_ab(w, 3)))
+fn lcs_rcon(j) = ord_at(lcs_unhex("01020408102040801b36"), j - 1)
+fn lcs_bset32(b, i, w) = buf_set(buf_set(buf_set(buf_set(b, i, bit_shr(w, 24)), i + 1, bit_and(bit_shr(w, 16), 255)), i + 2, bit_and(bit_shr(w, 8), 255)), i + 3, bit_and(w, 255))
+fn lcs_bget32(b, i) = buf_get(b, i) * 16777216 + buf_get(b, i + 1) * 65536 + buf_get(b, i + 2) * 256 + buf_get(b, i + 3)
+fn lcs_kx(sb, b, nk, i, total, prev) = if i >= total then b else let t = if i % nk == 0 then bit_xor(lcs_sw(sb, bit_or(bit_and(bit_shl(prev, 8), 4294967295), bit_shr(prev, 24))), bit_shl(lcs_rcon(i / nk), 24)) else if nk > 6 and i % nk == 4 then lcs_sw(sb, prev) else prev in let w = bit_xor(lcs_bget32(b, 4 * (i - nk)), t) in lcs_kx(sb, lcs_bset32(b, 4 * i, w), nk, i + 1, total, w)
+fn lcs_kcopy(key, b, i, n) = if i >= n then b else lcs_kcopy(key, buf_set(b, i, ord_at(key, i)), i + 1, n)
+fn lcs_aes_key(key) = let sb = lcs_aes_sbox() in let nk = count(key) / 4 in let nr = nk + 6 in let total = 4 * (nr + 1) in let b = lcs_kx(sb, lcs_kcopy(key, buf_new(4 * total), 0, count(key)), nk, nk, total, lcs_be32(key, count(key) - 4)) in {sb: sb, rk: buf_to_str(b, 0, 4 * total), nr: nr}
+fn lcs_aes_keyok(key) = count(key) == 16 or count(key) == 32
+fn lcs_aes_ecb(key, block) = if (count(key) != 16 and count(key) != 32) or count(block) != 16 then "" else lcs_aes_blk(lcs_aes_key(key), block, 0)
+fn lcs_aes128_ecb_encrypt(key, block) = if count(key) != 16 then "" else lcs_aes_ecb(key, block)
+fn lcs_aes256_ecb_encrypt(key, block) = if count(key) != 32 then "" else lcs_aes_ecb(key, block)
+
+## GHASH (SP 800-38D 6.4): X * H in GF(2^128), bit 0 = the most significant bit, R = 11100001 || 0^120; four 32-bit words
+fn lcs_gbit(x0, x1, x2, x3, i) = let w = if i < 32 then x0 else if i < 64 then x1 else if i < 96 then x2 else x3 in bit_and(bit_shr(w, 31 - i % 32), 1)
+fn lcs_gmul(x0, x1, x2, x3, v0, v1, v2, v3, z0, z1, z2, z3, i) = if i >= 128 then [z0, z1, z2, z3] else let on = lcs_gbit(x0, x1, x2, x3, i) in let y0 = if on == 1 then bit_xor(z0, v0) else z0 in let y1 = if on == 1 then bit_xor(z1, v1) else z1 in let y2 = if on == 1 then bit_xor(z2, v2) else z2 in let y3 = if on == 1 then bit_xor(z3, v3) else z3 in let lsb = bit_and(v3, 1) in let n3 = bit_or(bit_shr(v3, 1), bit_shl(bit_and(v2, 1), 31)) in let n2 = bit_or(bit_shr(v2, 1), bit_shl(bit_and(v1, 1), 31)) in let n1 = bit_or(bit_shr(v1, 1), bit_shl(bit_and(v0, 1), 31)) in let n0 = if lsb == 1 then bit_xor(bit_shr(v0, 1), 3774873600) else bit_shr(v0, 1) in lcs_gmul(x0, x1, x2, x3, n0, n1, n2, n3, y0, y1, y2, y3, i + 1)
+fn lcs_g4(ws, i) = match ws
+    Nil        => 0
+    Cons(h, t) => if i == 0 then h else lcs_g4(t, i - 1)
+## Y over the 16-byte blocks of s (its length a multiple of 16), starting from y0..y3
+fn lcs_ghash_go(h, s, i, n, y0, y1, y2, y3) = if i >= n then lcs_be32s(y0) + lcs_be32s(y1) + lcs_be32s(y2) + lcs_be32s(y3) else let z = lcs_gmul(bit_xor(y0, lcs_be32(s, i)), bit_xor(y1, lcs_be32(s, i + 4)), bit_xor(y2, lcs_be32(s, i + 8)), bit_xor(y3, lcs_be32(s, i + 12)), lcs_be32(h, 0), lcs_be32(h, 4), lcs_be32(h, 8), lcs_be32(h, 12), 0, 0, 0, 0, 0) in lcs_ghash_go(h, s, i + 16, n, lcs_g4(z, 0), lcs_g4(z, 1), lcs_g4(z, 2), lcs_g4(z, 3))
+fn lcs_ghash(h, aad, ct) = let s = aad + lcs_pad16(count(aad)) + ct + lcs_pad16(count(ct)) + lcs_be64s(8 * count(aad)) + lcs_be64s(8 * count(ct)) in lcs_ghash_go(h, s, 0, count(s), 0, 0, 0, 0)
+## GCTR (SP 800-38D 6.5) from the counter block nonce || ctr (32-bit big-endian counter), into the buffer
+fn lcs_gctr_go(ks, nonce, ctr, data, pos, n, out) = if pos >= n then out else let k = lcs_aes_blk(ks, nonce + lcs_be32s(ctr), 0) in lcs_gctr_go(ks, nonce, bit_and(ctr + 1, 4294967295), data, pos + 16, n, lcs_gx(out, data, k, pos, 0, n))
+fn lcs_gx(out, data, k, pos, j, n) = if j >= 16 or pos + j >= n then out else lcs_gx(buf_set(out, pos + j, bit_xor(ord_at(data, pos + j), ord_at(k, j))), data, k, pos, j + 1, n)
+fn lcs_gctr(ks, nonce, ctr, data) = let n = count(data) in if n == 0 then "" else buf_to_str(lcs_gctr_go(ks, nonce, ctr, data, 0, n, buf_new(n)), 0, n)
+fn lcs_xor16(a, b) = buf_to_str(lcs_gx(buf_new(16), a, b, 0, 0, 16), 0, 16)
+fn lcs_gcm_tag(ks, nonce, aad, ct) = lcs_xor16(lcs_aes_blk(ks, nonce + lcs_be32s(1), 0), lcs_ghash(lcs_aes_blk(ks, lcs_zeros(16), 0), aad, ct))
+fn lcs_aes_gcm_seal(key, nonce, aad, plain) = if (count(key) != 16 and count(key) != 32) or count(nonce) != 12 then "" else let ks = lcs_aes_key(key) in let ct = lcs_gctr(ks, nonce, 2, plain) in ct + lcs_gcm_tag(ks, nonce, aad, ct)
+fn lcs_aes_gcm_open(key, nonce, aad, sealed) = let n = count(sealed) in if (count(key) != 16 and count(key) != 32) or count(nonce) != 12 or n < 16 then {ok: 0, plain: ""} else let ks = lcs_aes_key(key) in let ct = slice(sealed, 0, n - 16) in if lcs_ct_diff(slice(sealed, n - 16, n), lcs_gcm_tag(ks, nonce, aad, ct), 0, 0) != 0 then {ok: 0, plain: ""} else {ok: 1, plain: lcs_gctr(ks, nonce, 2, ct)}
+fn lcs_aes128_gcm_seal(key, nonce, aad, plain) = if count(key) != 16 then "" else lcs_aes_gcm_seal(key, nonce, aad, plain)
+fn lcs_aes128_gcm_open(key, nonce, aad, sealed) = if count(key) != 16 then {ok: 0, plain: ""} else lcs_aes_gcm_open(key, nonce, aad, sealed)
+fn lcs_aes256_gcm_seal(key, nonce, aad, plain) = if count(key) != 32 then "" else lcs_aes_gcm_seal(key, nonce, aad, plain)
+fn lcs_aes256_gcm_open(key, nonce, aad, sealed) = if count(key) != 32 then {ok: 0, plain: ""} else lcs_aes_gcm_open(key, nonce, aad, sealed)
+
+## --- ECDSA over P-256 / secp256r1 (FIPS 186-5, SEC 1) with SHA-256; deterministic signing per RFC 6979 ----------------------
+## TLS 1.3 signature scheme ecdsa_secp256r1_sha256 (0x0403): the self-signed certificates rcgen makes for a Rust agent.
+##   lcs_p256_verify(pub65, msg, sig_der) -> 1 or 0   pub65 = 04 || X || Y (uncompressed), sig_der = SEQUENCE { r, s }
+##   lcs_p256_verify_raw(pub65, msg, sig64) -> 1 or 0  sig64 = r || s, 32 bytes each
+##   lcs_p256_sign(priv32, msg) -> DER signature (RFC 6979 nonce: no randomness needed, same input -> same signature)
+##   lcs_p256_sign_raw(priv32, msg) -> r || s (64 bytes);   lcs_p256_public(priv32) -> pub65
+## The public key must lie on the curve, r and s must be in [1, n - 1] and the DER strict (minimal integers, exact
+## lengths); anything else is a refusal (0, or "" from the signers). Numbers are eleven 24-bit limbs, least
+## significant first (264 bits), multiplied in Montgomery form: every limb product fits 48 bits, every sum 51.
+fn pk_hd(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => h
+fn pk_tl(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn pk_nth(xs, i) = if i <= 0 then pk_hd(xs) else pk_nth(pk_tl(xs), i - 1)
+fn pk_byte(s, off, len, k) = if k >= len then 0 else ord_at(s, off + len - 1 - k)
+fn pk_from_go(s, off, len, i) = if i >= 11 then Nil else Cons(pk_byte(s, off, len, 3 * i) + 256 * pk_byte(s, off, len, 3 * i + 1) + 65536 * pk_byte(s, off, len, 3 * i + 2), pk_from_go(s, off, len, i + 1))
+## the big-endian bytes s[off, off + len) as a number
+fn pk_from(s, off, len) = pk_from_go(s, off, len, 0)
+fn pk_hex(h) = let s = lcs_unhex(h) in pk_from(s, 0, count(s))
+fn pk_small(v) = Cons(v, pk_from_go("", 0, 0, 1))
+## a number below 2^256 as 32 big-endian bytes
+fn pk_to32(x, k, acc) = if k >= 32 then acc else pk_to32(x, k + 1, chr(bit_and(bit_shr(pk_nth(x, k / 3), 8 * (k % 3)), 255)) + acc)
+fn pk_bytes(x) = pk_to32(x, 0, "")
+fn pk_zero(a) = match a
+    Nil        => true
+    Cons(h, t) => h == 0 and pk_zero(t)
+fn pk_cmp(a, b) = match a
+    Nil        => 0
+    Cons(x, t) => let c = pk_cmp(t, pk_tl(b)) in if c != 0 then c else if x < pk_hd(b) then 0 - 1 else if x > pk_hd(b) then 1 else 0
+fn pk_add(a, b, c) = match a
+    Nil        => Nil
+    Cons(x, t) => let s = x + pk_hd(b) + c in Cons(bit_and(s, 16777215), pk_add(t, pk_tl(b), bit_shr(s, 24)))
+fn pk_sub(a, b, w) = match a
+    Nil        => Nil
+    Cons(x, t) => let d = x - pk_hd(b) - w in if d < 0 then Cons(d + 16777216, pk_sub(t, pk_tl(b), 1)) else Cons(d, pk_sub(t, pk_tl(b), 0))
+fn pk_madd(a, b, m) = let s = pk_add(a, b, 0) in if pk_cmp(s, m) >= 0 then pk_sub(s, m, 0) else s
+fn pk_msub(a, b, m) = if pk_cmp(a, b) >= 0 then pk_sub(a, b, 0) else pk_sub(pk_add(a, m, 0), b, 0)
+fn pk_bit(x, i) = bit_and(bit_shr(pk_nth(x, i / 24), i % 24), 1)
+
+## Montgomery multiplication (CIOS), R = 2^264: a * b / R mod m for a, b < m (m odd, below 2^256)
+fn pk_row(ai, u, bs, ms, ts, carry, first) = match ts
+    Nil        => Cons(carry, Nil)
+    Cons(tj, tr) => let s = tj + ai * pk_hd(bs) + u * pk_hd(ms) + carry in if first == 1 then pk_row(ai, u, pk_tl(bs), pk_tl(ms), tr, bit_shr(s, 24), 0) else Cons(bit_and(s, 16777215), pk_row(ai, u, pk_tl(bs), pk_tl(ms), tr, bit_shr(s, 24), 0))
+fn pk_mm_go(as, b, c, t) = match as
+    Nil        => t
+    Cons(ai, rest) => let u = bit_and(bit_and(pk_hd(t) + ai * pk_hd(b), 16777215) * c.minv, 16777215) in pk_mm_go(rest, b, c, pk_row(ai, u, b, c.m, t, 0, 1))
+fn pk_take11(t, i) = if i >= 11 then Nil else Cons(pk_hd(t), pk_take11(pk_tl(t), i + 1))
+fn pk_mm(a, b, c) = let t = pk_mm_go(a, b, c, Cons(0, pk_small(0))) in let lo = pk_take11(t, 0) in if pk_nth(t, 11) > 0 or pk_cmp(lo, c.m) >= 0 then pk_sub(lo, c.m, 0) else lo
+## -m^-1 mod 2^24 (Newton), R^2 mod m (doublings), then the context {m, minv, r2, one}
+fn pk_newton(m0, x, k) = if k <= 0 then x else pk_newton(m0, bit_and(x * bit_and(2 - bit_and(m0 * x, 16777215) + 16777216, 16777215), 16777215), k - 1)
+fn pk_dbls(x, m, k) = if k <= 0 then x else pk_dbls(pk_madd(x, x, m), m, k - 1)
+fn pk_ctx(m) = let inv = pk_newton(pk_hd(m), 1, 6) in let c0 = {m: m, minv: bit_and(16777216 - inv, 16777215), r2: pk_small(0)} in let r2 = pk_dbls(pk_small(1), m, 528) in {m: m, minv: c0.minv, r2: r2}
+fn pk_tom(x, c) = pk_mm(x, c.r2, c)
+fn pk_fromm(x, c) = pk_mm(x, pk_small(1), c)
+## base^e (base in Montgomery form, e a plain number, bits 263..0) in Montgomery form
+fn pk_pow_go(base, e, c, i, acc) = if i < 0 then acc else let sq = pk_mm(acc, acc, c) in pk_pow_go(base, e, c, i - 1, if pk_bit(e, i) == 1 then pk_mm(sq, base, c) else sq)
+fn pk_pow(base, e, c) = pk_pow_go(base, e, c, 263, pk_tom(pk_small(1), c))
+fn pk_inv(xm, c) = pk_pow(xm, pk_sub(c.m, pk_small(2), 0), c)
+
+## the curve: y^2 = x^3 - 3x + b over p; n the order of G
+fn p256_p() = pk_hex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff")
+fn p256_n() = pk_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551")
+fn p256_b() = pk_hex("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b")
+fn p256_gx() = pk_hex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296")
+fn p256_gy() = pk_hex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
+## Jacobian points {x, y, z} in Montgomery form over p; z = 0 is the point at infinity
+fn pf_mul(a, b, f) = pk_mm(a, b, f)
+fn pf_add(a, b, f) = pk_madd(a, b, f.m)
+fn pf_sub(a, b, f) = pk_msub(a, b, f.m)
+fn pj_inf() = {x: pk_small(0), y: pk_small(0), z: pk_small(0)}
+fn pj_dbl(q, f) = if pk_zero(q.z) then q else let delta = pf_mul(q.z, q.z, f) in let gamma = pf_mul(q.y, q.y, f) in let beta = pf_mul(q.x, gamma, f) in let a0 = pf_mul(pf_sub(q.x, delta, f), pf_add(q.x, delta, f), f) in let alpha = pf_add(pf_add(a0, a0, f), a0, f) in let b2 = pf_add(beta, beta, f) in let b4 = pf_add(b2, b2, f) in let b8 = pf_add(b4, b4, f) in let x3 = pf_sub(pf_mul(alpha, alpha, f), b8, f) in let yz = pf_add(q.y, q.z, f) in let z3 = pf_sub(pf_sub(pf_mul(yz, yz, f), gamma, f), delta, f) in let gg = pf_mul(gamma, gamma, f) in let g4 = pf_add(gg, gg, f) in let g8 = pf_add(pf_add(g4, g4, f), pf_add(g4, g4, f), f) in {x: x3, y: pf_sub(pf_mul(alpha, pf_sub(b4, x3, f), f), g8, f), z: z3}
+fn pj_add(p1, p2, f) = if pk_zero(p1.z) then p2 else if pk_zero(p2.z) then p1 else let z1z1 = pf_mul(p1.z, p1.z, f) in let z2z2 = pf_mul(p2.z, p2.z, f) in let u1 = pf_mul(p1.x, z2z2, f) in let u2 = pf_mul(p2.x, z1z1, f) in let s1 = pf_mul(p1.y, pf_mul(p2.z, z2z2, f), f) in let s2 = pf_mul(p2.y, pf_mul(p1.z, z1z1, f), f) in let hh = pf_sub(u2, u1, f) in let rr0 = pf_sub(s2, s1, f) in if pk_zero(hh) then (if pk_zero(rr0) then pj_dbl(p1, f) else pj_inf()) else let h2 = pf_add(hh, hh, f) in let ii = pf_mul(h2, h2, f) in let jj = pf_mul(hh, ii, f) in let rr = pf_add(rr0, rr0, f) in let vv = pf_mul(u1, ii, f) in let x3 = pf_sub(pf_sub(pf_mul(rr, rr, f), jj, f), pf_add(vv, vv, f), f) in let sj = pf_mul(s1, jj, f) in let y3 = pf_sub(pf_mul(rr, pf_sub(vv, x3, f), f), pf_add(sj, sj, f), f) in let zz = pf_add(p1.z, p2.z, f) in {x: x3, y: y3, z: pf_mul(pf_sub(pf_sub(pf_mul(zz, zz, f), z1z1, f), z2z2, f), hh, f)}
+fn pj_aff(x, y, f) = {x: pk_tom(x, f), y: pk_tom(y, f), z: pk_tom(pk_small(1), f)}
+## u1 * G + u2 * Q in one pass over the bits (Shamir's trick)
+fn pj_two(g, q, gq, u1, u2, f, i, acc) = if i < 0 then acc else let d = pj_dbl(acc, f) in let a = pk_bit(u1, i) in let b = pk_bit(u2, i) in pj_two(g, q, gq, u1, u2, f, i - 1, if a == 1 and b == 1 then pj_add(d, gq, f) else if a == 1 then pj_add(d, g, f) else if b == 1 then pj_add(d, q, f) else d)
+## the affine x of a Jacobian point, as a plain number (the point must not be at infinity)
+fn pj_x(q, f) = let zi = pk_inv(q.z, f) in pk_fromm(pf_mul(q.x, pf_mul(zi, zi, f), f), f)
+fn pj_y(q, f) = let zi = pk_inv(q.z, f) in pk_fromm(pf_mul(q.y, pf_mul(zi, pf_mul(zi, zi, f), f), f), f)
+fn p256_oncurve(x, y, f) = let xm = pk_tom(x, f) in let ym = pk_tom(y, f) in let x3 = pf_mul(xm, pf_mul(xm, xm, f), f) in let t3 = pf_add(pf_add(xm, xm, f), xm, f) in pk_cmp(pf_mul(ym, ym, f), pf_add(pf_sub(x3, t3, f), pk_tom(p256_b(), f), f)) == 0
+fn pk_modn(e, n) = if pk_cmp(e, n) >= 0 then pk_sub(e, n, 0) else e
+fn pk_inrange(v, n) = pk_zero(v) == 0 and pk_cmp(v, n) < 0
+
+## the verification proper, with r, s, e already numbers
+fn p256_verify_rs(pub, msg, r, s) = let f = pk_ctx(p256_p()) in let n = p256_n() in let qx = pk_from(pub, 1, 32) in let qy = pk_from(pub, 33, 32) in if pk_inrange(r, n) == 0 or pk_inrange(s, n) == 0 or pk_cmp(qx, f.m) >= 0 or pk_cmp(qy, f.m) >= 0 or p256_oncurve(qx, qy, f) == 0 then 0 else let c = pk_ctx(n) in let e = pk_modn(pk_from(lcs_sha256(msg), 0, 32), n) in let w = pk_inv(pk_tom(s, c), c) in let u1 = pk_fromm(pk_mm(pk_tom(e, c), w, c), c) in let u2 = pk_fromm(pk_mm(pk_tom(r, c), w, c), c) in let g = pj_aff(p256_gx(), p256_gy(), f) in let q = pj_aff(qx, qy, f) in let pt = pj_two(g, q, pj_add(g, q, f), u1, u2, f, 255, pj_inf()) in if pk_zero(pt.z) then 0 else if pk_cmp(pk_modn(pj_x(pt, f), n), r) == 0 then 1 else 0
+fn p256_pubok(pub) = count(pub) == 65 and ord_at(pub, 0) == 4
+fn lcs_p256_verify_raw(pub, msg, sig) = if p256_pubok(pub) == 0 or count(sig) != 64 then 0 else p256_verify_rs(pub, msg, pk_from(sig, 0, 32), pk_from(sig, 32, 32))
+## strict DER: 30 L 02 lr r 02 ls s, short lengths, minimal positive integers of at most 32 value bytes
+fn p256_int(s, i, end) = if i + 2 > end or ord_at(s, i) != 2 then {ok: 0, v: Nil, next: 0} else let l = ord_at(s, i + 1) in let a = i + 2 in if l < 1 or l > 33 or a + l > end then {ok: 0, v: Nil, next: 0} else let b0 = ord_at(s, a) in if b0 >= 128 or (l > 1 and b0 == 0 and ord_at(s, a + 1) < 128) or (l == 33 and b0 != 0) then {ok: 0, v: Nil, next: 0} else {ok: 1, v: pk_from(s, a, l), next: a + l}
+fn p256_der(sig) = let n = count(sig) in if n < 8 or ord_at(sig, 0) != 48 or ord_at(sig, 1) >= 128 or ord_at(sig, 1) + 2 != n then {ok: 0, r: Nil, s: Nil} else let r = p256_int(sig, 2, n) in if r.ok == 0 then {ok: 0, r: Nil, s: Nil} else let s = p256_int(sig, r.next, n) in if s.ok == 0 or s.next != n then {ok: 0, r: Nil, s: Nil} else {ok: 1, r: r.v, s: s.v}
+fn lcs_p256_verify(pub, msg, sig) = if p256_pubok(pub) == 0 then 0 else let d = p256_der(sig) in if d.ok == 0 then 0 else p256_verify_rs(pub, msg, d.r, d.s)
+
+## signing: k from RFC 6979 3.2 (HMAC-SHA256), r = (kG).x mod n, s = k^-1 (e + r d) mod n
+fn p256_k_loop(kk, v, n) = let v2 = lcs_hmac_sha256(kk, v) in let k = pk_from(v2, 0, 32) in if pk_inrange(k, n) then k else let kk2 = lcs_hmac_sha256(kk, v2 + chr(0)) in p256_k_loop(kk2, lcs_hmac_sha256(kk2, v2), n)
+fn p256_rfc6979(priv, h, n) = let x = priv in let h1 = pk_bytes(pk_modn(pk_from(h, 0, 32), n)) in let v0 = lcs_unhex("0101010101010101010101010101010101010101010101010101010101010101") in let k0 = lcs_zeros(32) in let k1 = lcs_hmac_sha256(k0, v0 + chr(0) + x + h1) in let v1 = lcs_hmac_sha256(k1, v0) in let k2 = lcs_hmac_sha256(k1, v1 + chr(1) + x + h1) in let v2 = lcs_hmac_sha256(k2, v1) in p256_k_loop(k2, v2, n)
+fn p256_kg(k, f) = let g = pj_aff(p256_gx(), p256_gy(), f) in pj_two(g, g, g, k, pk_small(0), f, 255, pj_inf())
+fn p256_sign_rs(priv, msg) = let n = p256_n() in let d = pk_from(priv, 0, 32) in if count(priv) != 32 or pk_inrange(d, n) == 0 then {ok: 0, r: Nil, s: Nil} else let f = pk_ctx(p256_p()) in let c = pk_ctx(n) in let h = lcs_sha256(msg) in let e = pk_modn(pk_from(h, 0, 32), n) in let k = p256_rfc6979(priv, h, n) in let r = pk_modn(pj_x(p256_kg(k, f), f), n) in let km = pk_inv(pk_tom(k, c), c) in let rd = pk_fromm(pk_mm(pk_tom(r, c), pk_tom(d, c), c), c) in let s = pk_fromm(pk_mm(km, pk_tom(pk_madd(e, rd, n), c), c), c) in if pk_zero(r) or pk_zero(s) then {ok: 0, r: Nil, s: Nil} else {ok: 1, r: r, s: s}
+fn lcs_p256_sign_raw(priv, msg) = let x = p256_sign_rs(priv, msg) in if x.ok == 0 then "" else pk_bytes(x.r) + pk_bytes(x.s)
+## a DER INTEGER of a positive number: leading zero bytes dropped, one 00 added when the top bit is set
+fn p256_strip(s) = if count(s) > 1 and ord_at(s, 0) == 0 then p256_strip(slice(s, 1, count(s))) else s
+fn p256_dint(v) = let b = p256_strip(pk_bytes(v)) in let c = if ord_at(b, 0) >= 128 then chr(0) + b else b in chr(2) + chr(count(c)) + c
+fn lcs_p256_sign(priv, msg) = let x = p256_sign_rs(priv, msg) in if x.ok == 0 then "" else let body = p256_dint(x.r) + p256_dint(x.s) in chr(48) + chr(count(body)) + body
+fn lcs_p256_public(priv) = let n = p256_n() in let d = pk_from(priv, 0, 32) in if count(priv) != 32 or pk_inrange(d, n) == 0 then "" else let f = pk_ctx(p256_p()) in let q = p256_kg(d, f) in chr(4) + pk_bytes(pj_x(q, f)) + pk_bytes(pj_y(q, f))
+
+## --- X25519 over strings (RFC 7748), by the runtime routine crypto_x25519 (written in Lume: rt/rt_x25519.src) ----------
+##   lcs_x25519(k32, u32) -> 32 bytes   lcs_x25519_base(k32) -> the public key X25519(k, 9)
+##   lcs_x25519_shared(k32, peer32) -> {ok, secret}: ok = 0 for the all-zero result (RFC 7748 6.1, RFC 8446 7.4.2)
+## Wrong sizes give 32 zero bytes (and ok = 0), as the list form.
+fn lcs_l2s_go(xs, b, i) = match xs
+    Nil        => b
+    Cons(h, t) => lcs_l2s_go(t, buf_set(b, i, h), i + 1)
+fn lcs_l2s(xs) = let n = lct_len(xs) in if n == 0 then "" else buf_to_str(lcs_l2s_go(xs, buf_new(n), 0), 0, n)
+fn lcs_s2l_go(s, i, acc) = if i < 0 then acc else lcs_s2l_go(s, i - 1, Cons(ord_at(s, i), acc))
+fn lcs_s2l(s) = lcs_s2l_go(s, count(s) - 1, Nil)
+fn lcs_x25519(k, u) = crypto_x25519(k, u)
+fn lcs_x25519_base(k) = crypto_x25519(k, chr(9) + lcs_zeros(31))
+fn lcs_x25519_shared(k, peer) = let s = crypto_x25519(k, peer) in {ok: if lcs_ct_diff(s, lcs_zeros(32), 0, 0) == 0 then 0 else 1, secret: s}
+
+## --- Ed25519 point arithmetic by the runtime routines crypto_ed25519_base / crypto_ed25519_vpt (Lume: rt/rt_ed25519.src) --
+## lct_ed25519_public_key / sign / verify use them; the *_ref functions keep the plain Lume point code as the oracle.
+##   lcs_ed25519_public(seed32) -> 32 bytes   lcs_ed25519_sign(seed32, msg) -> 64 bytes   lcs_ed25519_verify(pk32, msg, sig64) -> 1 or 0
+fn lcs_l2s32(xs) = let s = lcs_l2s(xs) in if count(s) >= 32 then s else s + lcs_zeros(32 - count(s))
+fn lct_ed_bmul(scalar) = lcs_s2l(crypto_ed25519_base(lcs_l2s32(scalar)))
+fn lcs_ed25519_public(seed) = if count(seed) != 32 then "" else lcs_l2s(lct_ed25519_public_key(lcs_s2l(seed)))
+fn lcs_ed25519_sign(seed, msg) = if count(seed) != 32 then "" else lcs_l2s(lct_ed25519_sign(lcs_s2l(seed), lcs_s2l(msg)))
+fn lcs_ed25519_verify(pk, msg, sig) = if count(pk) != 32 or count(sig) != 64 then 0 else lct_ed25519_verify(lcs_s2l(pk), lcs_s2l(msg), lcs_s2l(sig))

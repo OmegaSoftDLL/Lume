@@ -144,6 +144,10 @@ __win_syscall:
     je .Lws_dnssrv
     cmpq $1008, %rax
     je .Lws_ipv4if
+    cmpq $1010, %rax
+    je .Lws_dlsym
+    cmpq $1011, %rax
+    je .Lws_wcall
     cmpq $51, %rax
     je .Lws_getsockname
     cmpq $1001, %rax
@@ -3409,6 +3413,44 @@ __win_ffi_resolve:
     jne .Lws_zero
     movb $10, (%r13)
     jmp .Lws_zero
+# pseudo system call 1010 (ENOSYS on Linux): the address of the function named by the C string r13 in the system DLL
+# named by the C string r12 (LoadLibraryExA with LOAD_LIBRARY_SEARCH_SYSTEM32, then GetProcAddress), or 0. With 1011 it
+# lets runtime code written in Lume call any Win32 function: the Windows-specific logic stays Lume, not assembly.
+.Lws_dlsym:
+    movq %r12, %rcx
+    xorq %rdx, %rdx
+    movq $2048, %r8
+    call LoadLibraryExA
+    testq %rax, %rax
+    jz .Lws_zero
+    movq %rax, %rcx
+    movq %r13, %rdx
+    call GetProcAddress
+    jmp .Lws_ret
+
+# pseudo system call 1011 (ENOSYS on Linux): call the Win64 function at r12 with the r14 integer arguments (0 .. 12) in
+# the block of 64-bit words at r13 (at least 4 words long); rax = its result. Arguments 5 and up go above the 32-byte
+# shadow space, the first four in rcx, rdx, r8, r9; the stack is 16-byte aligned by __win_syscall.
+.Lws_wcall:
+    cmpq $12, %r14
+    jg .Lws_enosys
+    movq $4, %rcx
+.Lws_wc_lp:
+    cmpq %r14, %rcx
+    jge .Lws_wc_regs
+    movq (%r13,%rcx,8), %rax
+    movq %rax, (%rsp,%rcx,8)
+    incq %rcx
+    jmp .Lws_wc_lp
+.Lws_wc_regs:
+    movq (%r13), %rcx
+    movq 8(%r13), %rdx
+    movq 16(%r13), %r8
+    movq 24(%r13), %r9
+    movq %r12, %rax
+    call *%rax
+    jmp .Lws_ret
+
 # pseudo system call 1008 (ENOSYS on Linux): the IPv4 unicast addresses of the adapters that are up, 4 bytes each
 # (network order) into buf r12 of r13 bytes; rax = the number of bytes written
 .Lws_ipv4if:

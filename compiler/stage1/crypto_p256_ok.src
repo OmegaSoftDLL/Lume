@@ -1,0 +1,29 @@
+## crypto_p256_ok.src -- ECDSA P-256 with SHA-256 of lcrypto_tls: RFC 6979 Appendix A.2.5 (key, deterministic nonce and
+## signatures for "sample" and "test"), a signature made by an independent implementation, and the refusals (tampered
+## message or signature, r or s out of range, a public key off the curve, non-strict DER).
+use lcrypto_tls
+
+fn h(x) = lcs_unhex(x)
+fn priv() = h("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721")
+fn pub() = h("0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299")
+fn sig_sample() = "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716" + "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
+fn sig_test() = "f1abb023518351cd71d881567b1ea663ed3efcf6c5132b354f28d3b0b7d38367" + "019f4113742a2b14bd25926b49c649155f267e60d3814b4c0cc84250e46f0083"
+
+fn test_rfc6979_public_key() = lcs_p256_public(priv()) == pub()
+fn test_rfc6979_sign_sample() = lcs_hex(lcs_p256_sign_raw(priv(), "sample")) == sig_sample()
+fn test_rfc6979_sign_test() = lcs_hex(lcs_p256_sign_raw(priv(), "test")) == sig_test()
+fn test_rfc6979_verify_raw() = lcs_p256_verify_raw(pub(), "sample", h(sig_sample())) == 1 and lcs_p256_verify_raw(pub(), "test", h(sig_test())) == 1
+## the DER form: s of "test" starts with 01, so its INTEGER has no leading 00 and r (f1...) has one
+fn test_der_sign_and_verify() = let d = lcs_p256_sign(priv(), "test") in lcs_hex(d) == "3045022100" + slice(sig_test(), 0, 64) + "0220" + slice(sig_test(), 64, 128) and lcs_p256_verify(pub(), "test", d) == 1
+
+## made by another implementation (Python big integers, its own nonce)
+fn opub() = h("045f26cdb5f0ac5eedbe9a0e1c1de43f482d3e6b57d24d97265f22f7f80c4240fd7433f43d0245bf80e7bcfce22384cc357666e071b2b2f206c3b272cc2ed27df3")
+fn omsg() = "TLS 1.3, server CertificateVerify"
+fn test_independent_signature_verifies() = lcs_p256_verify(opub(), omsg(), h("3045022100cca2bf3b920f1512dcb54cc2eb0288d9e2db258dc53d8d6e871455c569e6ba6d022001351c07586b057c389d172e4f233b863146d192d3ae94231d04ec158432dc78")) == 1
+## (r, n - s) is the same signature in ECDSA's other form: valid, as for ring and rustls
+fn test_high_s_form_verifies() = lcs_p256_verify(opub(), omsg(), h("3046022100cca2bf3b920f1512dcb54cc2eb0288d9e2db258dc53d8d6e871455c569e6ba6d022100fecae3f7a794fa84c762e8d1b0dcc4798ba0291ad3690a61d6b4dead783048d9")) == 1
+
+fn flip(s, i) = slice(s, 0, i) + chr(bit_xor(ord_at(s, i), 1)) + slice(s, i + 1, count(s))
+fn test_refuses_tampering() = let s = h(sig_sample()) in lcs_p256_verify_raw(pub(), "samplf", s) == 0 and lcs_p256_verify_raw(pub(), "sample", flip(s, 40)) == 0 and lcs_p256_verify_raw(pub(), "sample", flip(s, 3)) == 0 and lcs_p256_verify_raw(flip(pub(), 64), "sample", s) == 0
+fn test_refuses_out_of_range() = let n = "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551" in lcs_p256_verify_raw(pub(), "sample", lcs_zeros(32) + h(slice(sig_sample(), 64, 128))) == 0 and lcs_p256_verify_raw(pub(), "sample", h(slice(sig_sample(), 0, 64) + n)) == 0
+fn test_refuses_bad_keys_and_der() = let d = lcs_p256_sign(priv(), "test") in lcs_p256_verify("03" + slice(pub(), 1, 65), "test", d) == 0 and lcs_p256_verify(slice(pub(), 0, 64), "test", d) == 0 and lcs_p256_verify(pub(), "test", d + chr(0)) == 0 and lcs_p256_verify(pub(), "test", h("3046022200") + slice(d, 4, count(d))) == 0 and lcs_p256_verify(pub(), "test", "") == 0 and lcs_p256_sign(lcs_zeros(32), "x") == "" and lcs_p256_public(lcs_zeros(31)) == ""

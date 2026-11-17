@@ -1,0 +1,25 @@
+## crypto_ed25519_ok.src -- Ed25519 of lcrypto_tls with the point arithmetic in the runtime (crypto_ed25519_base and
+## crypto_ed25519_vpt, written in Lume): RFC 8032 section 7.1 tests 1 and 2, the string API, the plain Lume point
+## code (the *_ref functions) on derived seeds, and the refusals (tampering, S >= L, a public key that is no point).
+use lcrypto_tls
+
+fn h(x) = lcs_unhex(x)
+fn sk1() = h("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+fn pk1() = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+fn sig1() = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+fn sk2() = h("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb")
+fn pk2() = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+fn sig2() = "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+
+fn test_rfc8032_test1_empty_message() = lcs_hex(lcs_ed25519_public(sk1())) == pk1() and lcs_hex(lcs_ed25519_sign(sk1(), "")) == sig1() and lcs_ed25519_verify(h(pk1()), "", h(sig1())) == 1
+fn test_rfc8032_test2_one_byte() = lcs_hex(lcs_ed25519_public(sk2())) == pk2() and lcs_hex(lcs_ed25519_sign(sk2(), chr(114))) == sig2() and lcs_ed25519_verify(h(pk2()), chr(114), h(sig2())) == 1
+
+## the runtime routines against the plain Lume point code
+fn same(i) = let seed = lcs_s2l(lcs_sha256("seed " + str(i))) in let msg = lcs_s2l("message number " + str(i)) in let pk = lct_ed25519_public_key(seed) in let sg = lct_ed25519_sign(seed, msg) in pk == lct_ed25519_public_key_ref(seed) and sg == lct_ed25519_sign_ref(seed, msg) and lct_ed25519_verify(pk, msg, sg) == 1 and lct_ed25519_verify_ref(pk, msg, sg) == 1
+fn all_same(i, n) = if i >= n then true else if same(i) then all_same(i + 1, n) else false
+fn test_matches_the_lume_reference() = all_same(0, 6)
+
+fn flip(s, i) = slice(s, 0, i) + chr(bit_xor(ord_at(s, i), 1)) + slice(s, i + 1, count(s))
+fn test_refuses_tampering() = let s = h(sig2()) in lcs_ed25519_verify(h(pk2()), chr(115), s) == 0 and lcs_ed25519_verify(h(pk2()), chr(114), flip(s, 5)) == 0 and lcs_ed25519_verify(h(pk2()), chr(114), flip(s, 40)) == 0 and lcs_ed25519_verify(flip(h(pk2()), 3), chr(114), s) == 0
+## S = L (the group order) is out of range; y = 2 is not on the curve, so that key is no point
+fn test_refuses_s_out_of_range_and_bad_keys() = let s = h(sig2()) in let big_s = slice(s, 0, 32) + h("edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010") in lcs_ed25519_verify(h(pk2()), chr(114), big_s) == 0 and lcs_ed25519_verify(chr(2) + lcs_zeros(31), chr(114), s) == 0 and lcs_ed25519_verify(h(pk2()), chr(114), slice(s, 0, 63)) == 0 and lcs_ed25519_sign(lcs_zeros(31), "x") == "" and lcs_ed25519_public("") == ""

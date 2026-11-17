@@ -27,6 +27,41 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 - "Tested" means the full universe, not a sample: 111 files with `fn test_` (`mem/tests_all.txt`), 205 programs
   (`mem/progs_all.txt`), the memory battery, then the gates and the 114 CLI commands — on both systems, compared.
 
+## Runtime in Lume: state on 2026-11-16 (newest work, read first)
+
+- Lume sources of the runtime: `compiler/stage1/rt/*.src`, compiled by `lumec --raw` (freestanding words; intrinsics
+  load8/32/64, store8/32/64, bit_*, sys_call, sym_addr("label"); at most 6 parameters/arguments; the right operand of
+  a binary operator is evaluated FIRST, so side effects go in sequential `let`s). `gen_runtime.src` writes
+  `runtime_lume.lume`: `rt_lume()` (rt_text, rt_fs: in every program) and `rt_lume_crypto()` (rt_x25519, rt_ed25519:
+  only when a program names a crypto_ builtin, through rt_crypto/has_crypto).
+- Migrated so far (asm removed from runtime_core): strlen, streq, __rt_nofield_text and 28 fs_*/os_*/io_* builtins;
+  batch 5 (fs_*_private, os_keychain_*) is written in rt_fs.src, not yet cut from runtime_core. Left: about 385
+  global labels (74 public builtins). Hot ones (buf_*, ord_at, slice, count, chr, addv...) wait for two --raw
+  improvements: save only the registers a function uses, and inline mkint / __rt_uint.
+- Cutting asm: NEVER by hand or by "next label" regexes (that once crossed fn boundaries and dropped three fn
+  headers). Run `python build/windows-native/mem/rebuild_core.py build/windows-native/mem/rc_head.lume
+  compiler/stage1/runtime_core.lume`: it rebuilds from the commit's file and cuts, inside each fn line, every routine
+  rt/*.src defines (refresh rc_head.lume from `git show HEAD:...` after each commit).
+- A routine whose Lume needs a primitive the installed lumec lacks: two bootstraps (strip it from rt/*.src, rebuild_core,
+  gen_runtime, bootstrap; restore, rebuild_core, gen_runtime, bootstrap). A new builtin name: name_flow nf_arN, then
+  rebuild lcaas and lcert too.
+- RUNTIME QUEUE, executed in this order without skipping (owner: "nada fica pra depois"; tick each when committed):
+  1. [ ] rt_io.src (read, readall) cut from runtime_core: rebuild_core + gen_runtime + bootstrap + both batteries.
+  2. [ ] --raw register allocation: keep lets/params in registers (callee-saved r12-r15/rbx saved once), not
+     rbp slots, so hot builtins are not slower than the asm (measure X25519 and a buf_set loop before/after).
+  3. [ ] hot builtins to Lume after (2): buf_new/len/get/set/copy/slice/from_str/to_str, ord, ord_at, chr, count,
+     at, slice, slicen, str, strni, toint, utf8_chr, emit/flush/wch/wstr/wint/print_int, printval/showval.
+  4. [ ] --raw stack intrinsics (read/set %rsp/%rbp, jump) -> ctfail, __lume_try_begin/end/msg, __rt_die*.
+  5. [ ] --raw f64 intrinsics (SSE2 movq/addsd/mulsd/divsd/sqrtsd/cvt...) -> f64_* builtins and rt_f64.
+  6. [ ] value-model builtins (addv, cmpv*, eqv*, mkint/mkstr/mklist/mkarray, lidx/lset/recget, alloc) and the GC
+     (__gc_*), then crypto_sha256_blocks/chacha20_xor/poly1305 (with (2) they can match the asm).
+  7. [ ] Windows layer win64_layer.s to Lume over the generic Win32 call (pseudo calls 1010 / 1011), routine by
+     routine, keeping the syscall numbers.
+  After each item: both batteries compared, commit, install /root/.lume, update C:\Lume.
+- New crypto (lcrypto_tls): AES-128/256 + GCM, ECDSA P-256 (verify/sign RFC 6979), X25519 and Ed25519 point math in
+  Lume runtime routines; tests crypto_{aes,p256,x25519,ed25519}_ok.src. Module fixes: lmod segment aliases, driver keeps
+  the written name when a module gets a canonical name (tests/namespaces/same_seg_ok.src, rel/a/rel_ok.src).
+
 ## How to build and test
 
 Everything lives in `build/windows-native/` (git-ignored; the sources there were added with `git add -f`).

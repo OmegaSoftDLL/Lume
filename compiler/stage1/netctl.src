@@ -128,3 +128,47 @@ fn nc_ifreqs(s, data, i, len) = if i + 40 > len then Nil else let rest = nc_ifre
 ## Linux: SIOCGIFCONF (0x8912) on a UDP socket; struct ifconf = int length, padding, pointer to the entries
 fn nc_if_linux() = let s = sys_call(41, 2, 2, 0, 0, 0) in if s < 0 then Nil else let cap = 40 * 128 in let data = buf_new(cap) in let ifc = nc_put(buf_new(16), 0, nc_app(nc_le32(cap), nc_app(nc_zeros(4), nc_le64(buf_addr(data))))) in let r = sys_call(16, s, 35090, buf_addr(ifc), 0, 0) in let out = if r < 0 then Nil else nc_ifreqs(s, data, 0, nc_get32at(ifc, 0)) in let z = nc_close(s) in out
 fn os_ipv4_interfaces() = if os_platform() == "windows" then nc_if_win() else nc_if_linux()
+
+## os_ipv6_interfaces() -> the IPv6 addresses, as text in the short form ("2804:14c:1234::5"), of the interfaces that are
+##     up, without the loopback (::1); a link-local address (fe80::/10) carries its scope, the interface index, after
+##     "%" ("fe80::1%3"), without which it cannot be used to send. Linux: /proc/net/if_inet6 (tentative and failed
+##     duplicate-detection addresses left out) and SIOCGIFFLAGS; Windows: GetAdaptersAddresses(AF_INET6) of the up
+##     adapters, called through the layer's generic Win32 call (1010 / 1011) and walked here, in Lume.
+fn os_ipv6_interfaces() = if os_platform() == "windows" then nc_v6_win() else nc_v6_linux()
+fn nc6_hexv(c) = if c >= 48 and c <= 57 then c - 48 else if c >= 97 and c <= 102 then c - 87 else c - 55
+fn nc_hexnum(s, i, n, acc) = if i >= n then acc else nc_hexnum(s, i + 1, n, acc * 16 + nc6_hexv(ord_at(s, i)))
+## the whitespace-separated words of a line
+fn nc_words(s, i, n, start, acc) = if i >= n then (if start < i then nc6_rev(Cons(slice(s, start, i), acc), Nil) else nc6_rev(acc, Nil)) else if ord_at(s, i) == 32 or ord_at(s, i) == 9 then nc_words(s, i + 1, n, i + 1, if start < i then Cons(slice(s, start, i), acc) else acc) else nc_words(s, i + 1, n, start, acc)
+fn nc6_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => nc6_rev(t, Cons(h, acc))
+fn nc_nth(xs, k) = match xs
+    Nil        => ""
+    Cons(h, t) => if k == 0 then h else nc_nth(t, k - 1)
+fn nc_lines(s, i, n, start) = if i >= n then (if start < n then Cons(slice(s, start, n), Nil) else Nil) else if ord_at(s, i) == 10 then Cons(slice(s, start, i), nc_lines(s, i + 1, n, i + 1)) else nc_lines(s, i + 1, n, start)
+fn nc6_hex16(b, h, k) = if k >= 16 then b else nc6_hex16(buf_set(b, k, nc6_hexv(ord_at(h, 2 * k)) * 16 + nc6_hexv(ord_at(h, 2 * k + 1))), h, k + 1)
+fn nc_is_loop6(b) = nc_all0(b, 0, 15) == 1 and buf_get(b, 15) == 1
+fn nc_all0(b, i, n) = if i >= n then 1 else if buf_get(b, i) != 0 then 0 else nc_all0(b, i + 1, n)
+fn nc_is_ll6(b) = buf_get(b, 0) == 254 and bit_and(buf_get(b, 1), 192) == 128
+fn nc_v6entry(b, sc) = nc_v6text(b, 0) + (if nc_is_ll6(b) then "%" + str(sc) else "")
+## Linux: one line of /proc/net/if_inet6 is "address(32 hex) ifindex prefix scope flags name", the numbers in hex
+fn nc_v6_line(s, line) = let w = nc_words(line, 0, count(line), 0, Nil) in let h = nc_nth(w, 0) in if count(h) != 32 then "" else let flags = nc_hexnum(nc_nth(w, 4), 0, count(nc_nth(w, 4)), 0) in if bit_and(flags, 72) != 0 then "" else let b = nc6_hex16(buf_new(16), h, 0) in if nc_is_loop6(b) then "" else let nm = nc_nth(w, 5) in if nc_name_up(s, nm) == 0 then "" else nc_v6entry(b, nc_hexnum(nc_nth(w, 1), 0, count(nc_nth(w, 1)), 0))
+fn nc_name_up(s, nm) = let d = buf_new(40) in let f = nc_cname(d, nm, 0) in nc_if_up(s, d, 0)
+fn nc_cname(d, nm, i) = if i >= count(nm) or i >= 15 then d else nc_cname(buf_set(d, i, ord_at(nm, i)), nm, i + 1)
+fn nc_v6_lines(s, ls) = match ls
+    Nil        => Nil
+    Cons(h, t) => let e = nc_v6_line(s, h) in if e == "" then nc_v6_lines(s, t) else Cons(e, nc_v6_lines(s, t))
+fn nc_v6_linux() = let txt = fs_read_file("/proc/net/if_inet6") in if txt == "" then Nil else let s = sys_call(41, 2, 2, 0, 0, 0) in if s < 0 then Nil else let r = nc_v6_lines(s, nc_lines(txt, 0, count(txt), 0)) in let c = sys_call(3, s, 0, 0, 0, 0) in r
+## Windows: GetAdaptersAddresses(AF_INET6 = 23, flags 14: no anycast, multicast or DNS servers, 0, buffer, &size) into a
+## 64 KiB buffer; the pointers inside it point into it. Adapter: Next at 8, FirstUnicastAddress at 24, OperStatus at
+## 104 (1 = up). Unicast address: Next at 8, the sockaddr pointer at 16. sockaddr_in6: family 23 at 0, the address at
+## 8, the scope id at 24.
+fn nc_cbuf(t) = let b = buf_new(count(t) + 1) in nc_cname2(b, t, 0)
+fn nc_cname2(b, t, i) = if i >= count(t) then b else nc_cname2(buf_set(b, i, ord_at(t, i)), t, i + 1)
+fn nc_w32(b, o) = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3)
+fn nc_w64(b, o) = nc_w32(b, o) + 4294967296 * nc_w32(b, o + 4)
+fn nc_off(b, ptr) = let o = ptr - buf_addr(b) in if ptr == 0 or o < 0 or o > 65536 - 32 then 0 - 1 else o
+fn nc_v6_win() = let dll = nc_cbuf("iphlpapi.dll") in let nm = nc_cbuf("GetAdaptersAddresses") in let fp = sys_call(1010, buf_addr(dll), buf_addr(nm), 0, 0, 0) in if fp <= 0 then Nil else let b = buf_new(65536) in let sz = nc_put(buf_new(8), 0, nc_le64(65536)) in let args = nc_put(buf_new(40), 0, nc_app(nc_le64(23), nc_app(nc_le64(14), nc_app(nc_le64(0), nc_app(nc_le64(buf_addr(b)), nc_le64(buf_addr(sz))))))) in let r = sys_call(1011, fp, buf_addr(args), 5, 0, 0) in if bit_and(r, 4294967295) != 0 then Nil else nc_v6_ads(b, 0)
+fn nc_v6_ads(b, o) = if o < 0 then Nil else let rest = nc_v6_ads(b, nc_off(b, nc_w64(b, o + 8))) in if nc_w32(b, o + 104) != 1 then rest else nc_app(nc_v6_uni(b, nc_off(b, nc_w64(b, o + 24))), rest)
+fn nc_v6_uni(b, u) = if u < 0 then Nil else let rest = nc_v6_uni(b, nc_off(b, nc_w64(b, u + 8))) in let sa = nc_off(b, nc_w64(b, u + 16)) in if sa < 0 or buf_get(b, sa) + 256 * buf_get(b, sa + 1) != 23 then rest else let a = nc_copy16(buf_new(16), b, sa + 8, 0) in if nc_is_loop6(a) then rest else Cons(nc_v6entry(a, nc_w32(b, sa + 24)), rest)
+fn nc_copy16(a, b, o, k) = if k >= 16 then a else nc_copy16(buf_set(a, k, buf_get(b, o + k)), b, o, k + 1)

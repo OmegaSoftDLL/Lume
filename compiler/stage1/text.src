@@ -1,0 +1,71 @@
+## text.src -- finding things inside text by content instead of by column (`use text`), written in Lume.
+## Made for reading test vectors out of plain text (RFCs, NIST files, tool output): "the value after the label X"
+## keeps working when the spacing changes, where "columns 14 to 50" counted by hand breaks.
+## Positions are byte offsets (0-based), as in slice / count / ord_at. Lines break only at "\n", like the rest of Lume.
+##
+##   str_find(s, sub, from)       index of the first sub at or after from, or -1 (an empty sub is found at from)
+##   str_find_last(s, sub)        index of the last sub, or -1
+##   str_contains(s, sub)         1 when sub occurs in s, else 0
+##   str_count_of(s, sub)         how many non-overlapping times sub occurs
+##   str_after(s, label)          the text after the first label, or "" when the label is absent
+##   str_before(s, label)         the text before the first label, or s when the label is absent
+##   str_between(s, open, close)  the text between the first open and the next close after it, or ""
+##   str_trim(s)                  s without spaces, tabs, "\r" and "\n" at both ends
+##   str_lines(s)                 the lines of s (split at "\n" only) as a list
+##   str_line(s, n)               line n (1-based, as editors, sed and awk number them), or "" past the end
+##   str_line_with(s, label)      the first line that contains label, or ""
+##   str_hex_tokens(s)            the hexadecimal values of s, lowercase, as a list (see below)
+##   str_hex_after(s, label)      the first hexadecimal value after label, or ""
+##
+## A hexadecimal value is a word made only of hex digits (a word is bounded by anything that is not a letter, digit
+## or '_'), with an optional 0x / 0X prefix that is dropped. Byte-wise notations are joined into one value: two-digit
+## words separated only by spaces or ':' ("00 10 0e", "00:10:0e") give "00100e". A word with any other letter (key,
+## quic) is not a value; in prose, short English words made of hex letters (be, add, cafe) would be, so take the
+## values of a line after its label: str_hex_after(line, "quic key:").
+
+## --- searching
+fn str_find(s, sub, from) = let n = count(s) in let m = count(sub) in let f = if from < 0 then 0 else from in if m == 0 then (if f <= n then f else 0 - 1) else txt_find(s, n, sub, m, ord_at(sub, 0), f)
+fn txt_find(s, n, sub, m, c0, i) = if i + m > n then 0 - 1 else if ord_at(s, i) == c0 and slice(s, i, i + m) == sub then i else txt_find(s, n, sub, m, c0, i + 1)
+fn str_find_last(s, sub) = txt_last(s, sub, 0, 0 - 1)
+fn txt_last(s, sub, from, best) = let p = str_find(s, sub, from) in if p < 0 then best else if count(sub) == 0 then count(s) else txt_last(s, sub, p + 1, p)
+fn str_contains(s, sub) = if str_find(s, sub, 0) >= 0 then 1 else 0
+fn str_count_of(s, sub) = if count(sub) == 0 then 0 else txt_count(s, sub, 0, 0)
+fn txt_count(s, sub, from, k) = let p = str_find(s, sub, from) in if p < 0 then k else txt_count(s, sub, p + count(sub), k + 1)
+
+## --- cutting by content
+fn str_after(s, label) = let p = str_find(s, label, 0) in if p < 0 then "" else slice(s, p + count(label), count(s))
+fn str_before(s, label) = let p = str_find(s, label, 0) in if p < 0 then s else slice(s, 0, p)
+fn str_between(s, open, close) = let p = str_find(s, open, 0) in if p < 0 then "" else let a = p + count(open) in let q = str_find(s, close, a) in if q < 0 then "" else slice(s, a, q)
+fn txt_blank(c) = c == 32 or c == 9 or c == 10 or c == 13
+fn txt_lstart(s, i, n) = if i < n and txt_blank(ord_at(s, i)) then txt_lstart(s, i + 1, n) else i
+fn txt_rend(s, j, lo) = if j > lo and txt_blank(ord_at(s, j - 1)) then txt_rend(s, j - 1, lo) else j
+fn str_trim(s) = let n = count(s) in let a = txt_lstart(s, 0, n) in slice(s, a, txt_rend(s, n, a))
+
+## --- lines ("\n" only: a form feed or another control character is part of its line)
+fn str_lines(s) = txt_lines(s, count(s), 0, Nil)
+fn txt_lines(s, n, i, acc) = if i >= n then txt_rev(acc, Nil) else let p = str_find(s, "\n", i) in if p < 0 then txt_rev(Cons(slice(s, i, n), acc), Nil) else txt_lines(s, n, p + 1, Cons(slice(s, i, p), acc))
+fn txt_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => txt_rev(t, Cons(h, acc))
+fn str_line(s, n) = if n < 1 then "" else txt_line(s, count(s), 0, n)
+fn txt_line(s, len, i, n) = let p = str_find(s, "\n", i) in if n == 1 then slice(s, i, if p < 0 then len else p) else if p < 0 then "" else txt_line(s, len, p + 1, n - 1)
+fn str_line_with(s, label) = let p = str_find(s, label, 0) in if p < 0 then "" else let a = txt_bol(s, p) in let q = str_find(s, "\n", p) in slice(s, a, if q < 0 then count(s) else q)
+fn txt_bol(s, i) = if i > 0 and ord_at(s, i - 1) != 10 then txt_bol(s, i - 1) else i
+
+## --- hexadecimal values
+fn txt_hex(c) = (c >= 48 and c <= 57) or (c >= 97 and c <= 102) or (c >= 65 and c <= 70)
+fn txt_word(c) = (c >= 48 and c <= 57) or (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or c == 95
+fn txt_wend(s, n, i) = if i < n and txt_word(ord_at(s, i)) then txt_wend(s, n, i + 1) else i
+fn txt_allhex(s, i, e) = if i >= e then 1 else if txt_hex(ord_at(s, i)) then txt_allhex(s, i + 1, e) else 0
+fn txt_lower(s, i, e, acc) = if i >= e then acc else let c = ord_at(s, i) in txt_lower(s, i + 1, e, acc + chr(if c >= 65 and c <= 70 then c + 32 else c))
+## the hex digits of the word s[i, e), without a 0x prefix, or "" when it is not a hexadecimal value
+fn txt_wordhex(s, i, e) = if e - i >= 3 and ord_at(s, i) == 48 and (ord_at(s, i + 1) == 120 or ord_at(s, i + 1) == 88) and txt_allhex(s, i + 2, e) == 1 then txt_lower(s, i + 2, e, "") else if e > i and txt_allhex(s, i, e) == 1 then txt_lower(s, i, e, "") else ""
+## after a two-digit word ending at e: the start of the next two-digit word when only spaces or ':' lie between, else -1
+fn txt_seps(s, n, j) = if j < n and (ord_at(s, j) == 32 or ord_at(s, j) == 58) then txt_seps(s, n, j + 1) else j
+fn txt_nextbyte(s, n, e) = let j = txt_seps(s, n, e) in if j == e or j >= n then 0 - 1 else let k = txt_wend(s, n, j) in if k - j == 2 and txt_allhex(s, j, k) == 1 then j else 0 - 1
+fn txt_bytes(s, n, i, acc) = let e = txt_wend(s, n, i) in let v = acc + txt_lower(s, i, e, "") in let j = txt_nextbyte(s, n, e) in if j < 0 then {v: v, e: e} else txt_bytes(s, n, j, v)
+fn str_hex_tokens(s) = txt_tokens(s, count(s), 0, Nil)
+fn txt_tokens(s, n, i, acc) = if i >= n then txt_rev(acc, Nil) else if txt_word(ord_at(s, i)) == 0 then txt_tokens(s, n, i + 1, acc) else let e = txt_wend(s, n, i) in if e - i == 2 and txt_allhex(s, i, e) == 1 then (let b = txt_bytes(s, n, i, "") in txt_tokens(s, n, b.e, Cons(b.v, acc))) else let h = txt_wordhex(s, i, e) in txt_tokens(s, n, e, if h == "" then acc else Cons(h, acc))
+fn str_hex_after(s, label) = let p = str_find(s, label, 0) in if p < 0 then "" else match str_hex_tokens(slice(s, p + count(label), count(s)))
+    Nil        => ""
+    Cons(h, t) => h

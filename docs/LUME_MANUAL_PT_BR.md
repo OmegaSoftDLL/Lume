@@ -88,6 +88,8 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - Aritmetica: `+`, `-`, `*`, `/`, `%`
 - Comparacao: `==`, `!=` (igualdade estrutural em pilha `O(1)` para listas/ADTs/records profundos), `<`, `<=`, `>`, `>=`
 - Registros (Structs): `let p = {x: 10, y: 20} in p.x + p.y`
+- Atualizacao: `{e with f: v}` copia trocando campos; e e qualquer expressao (nome, chamada,
+  campo `r.b`, `(e)`); campo que o registro nao tem e `[T2101]`
 - Literais de lista e ADTs: `[]` (`Nil`), `[1, 2, 3]` (`Cons(1, Cons(2, Cons(3, Nil)))`), `count([1, 2, 3]) == 3`
 - Comentarios: `## Comentarios comecam com dois sustenidos`
 
@@ -266,6 +268,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                    (bytes aceitos, 0 com o buffer cheio, -1 no erro; sem SIGPIPE), `net_recv_some(fd, max)` -> n > 0 /
                    0 fechado / -2 nada agora / -1 erro, `epoll_add(ep, fd, tag, eventos)`, `epoll_mod`,
                    `epoll_del(ep, fd)`, `epoll_wait_ev(ep, ms)` -> tag (-1 sem nada) e eventos (`epoll_in()`, `epoll_out()`)
+                   Enderecos: `net_local_addr(fd)`, `os_ipv4_interfaces()`, `os_ipv6_interfaces()` (forma curta, sem
+                   ::1, o de enlace local com o escopo: `fe80::1%3`), no Linux e no Windows
 - Primitivas de sistema (para runtime e bibliotecas, efeitos sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` e a
                    chamada ao sistema operacional (numeros do Linux, atendidos igual no Windows; ints pequenos;
                    -errno na falha); `buf_addr(b)` e o endereco dos bytes de um buffer, para montar as estruturas
@@ -295,6 +299,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)
 
 ## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)
+- `use text`           Achar por conteudo, nao por coluna: `str_find(s, sub, desde)` (indice ou -1),
+                       `str_find_last`, `str_contains`, `str_after(s, rotulo)`, `str_before`, `str_between`,
+                       `str_trim`, `str_lines` / `str_line(s, n)` (so "\n" quebra linha, como sed e awk),
+                       `str_line_with`, `str_hex_tokens(s)` (palavras hex, sem 0x, `00 10` / `00:10` unidos),
+                       `str_hex_after(linha, "quic key:")` para vetores de teste lidos do texto de RFCs
 - `use fs`             Arquivos seguros com `sfile_with` (fechamento garantido)
 - `use bytes`          Buffers binarios verificados (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
 - `use vec`            Invariantes genericos de colecoes e decimais provados por `QF_LIA` (`vec.src`,
@@ -608,6 +617,7 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   lume run [--memory] <src> [args...]    Compila e executa imediatamente
   lume test <src.src>...                 Executa todos os testes `fn test_*()`
   lume check <src.src> [--json]          Verifica tipos, ownership e efeitos
+  lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL
   lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo
   lume doc <src.src> [--json]            Gera documentacao e executa doctests
   lume repl [--kernel|--json]            REPL interativo com verificacao de contratos (`--kernel`: protocolo de kernel Jupyter)
@@ -736,7 +746,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   (`[E0306]`).
 - **Criptografia e TLS 1.3 (Dominio `#119`, `use lcrypto_tls`)**: SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305,
   Ed25519, X25519, o key schedule, a camada de registros e a maquina de estados do handshake do TLS 1.3, tudo em
-  Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. O `ltv` acrescenta o `[C0010]`: o codigo
+  Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. AES e AES-GCM (pacotes Initial do QUIC e
+  suites AES do TLS 1.3): `lcs_aes128_ecb_encrypt(chave16, bloco16)`, `lcs_aes128_gcm_seal(chave16, nonce12, aad,
+  p)`, `lcs_aes128_gcm_open(...)`, e o mesmo com `aes256`. ECDSA P-256 com SHA-256: `lcs_p256_verify(pub65, msg,
+  assinatura_der)` -> 1 ou 0, `lcs_p256_sign(priv32, msg)` (nonce do RFC 6979), `lcs_p256_public(priv32)`, e as
+  formas `_raw` com r || s. O `ltv` acrescenta o `[C0010]`: o codigo
   emitido de uma funcao `@secret` nao pode ter desvio condicional, divisao nem acesso a memoria fora do frame, e
   o mesmo vale para toda rotina que ela alcanca por `call` (a varredura e transitiva e nomeia a cadeia).
   Limites: testado, nao verificado formalmente; uma funcao `@secret` comum que usa `+` ou operacao de bit e
@@ -983,7 +997,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
   lume run [--memory] <source.src> [program-arguments]
   lume test <source.src>...
-  lume check [--json] <source.src>
+  lume check [--json] [--lex] <source.src>
   lume compile [--json] [--run] <source.src>
   lume fmt [--check] [--stdout] <source.src>...
   lume doc [--json] <source.src>

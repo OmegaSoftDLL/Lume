@@ -97,6 +97,10 @@ fn skiprb(ts) = if headtext(ts) == "}" then droponce(ts) else ctfail("lume: pars
 fn isrecbody(ts) = headtext(ts) == "}" or headtext(droponce(ts)) == ":"
 fn isrecwith(ts) = headtext(ts) != "}" and headtext(droponce(ts)) == "with"
 fn expecteq(ts) = if headtext(ts) == "=" then droponce(ts) else ctfail("lume: parse error [P0002]: expected '=' in binding " + headpos(ts) + "\n")
+## the words that start an expression or a binding: one of them used as a name (fn var, let match, a parameter `with`)
+## used to fail far away ("expected '=' in binding" at the call); now the declaration itself says so
+fn kw_reserved(s) = s == "if" or s == "then" or s == "else" or s == "let" or s == "in" or s == "var" or s == "mut" or s == "match" or s == "not" or s == "own" or s == "with" or s == "spawn" or s == "do" or s == "defer" or s == "errdefer" or s == "comptime" or s == "quote" or s == "splice" or s == "scope" or s == "shard" or s == "fn"
+fn kw_check(nm, what, pos) = if kw_reserved(nm) then ctfail("lume: parse error [P0002]: '" + nm + "' is a reserved word and cannot name " + what + " " + pos + " (fix-it: rename it, e.g. " + nm + "_v)\n") else 0
 fn letin(ts, ln) = if headtext(ts) == "in" or headtext(ts) == ";" then droponce(ts) else if headline(ts) == ln then ctfail("lume: parse error [P0002]: expected 'in' or a new line after 'let' value " + headpos(ts) + "\n") else ts
 fn dropin(ts) = if headtext(ts) == "in" or headtext(ts) == ";" then droponce(ts) else ts
 fn reckey(ts) = if headkind(ts) == "str" then strval(headtext(ts)) else headtext(ts)
@@ -155,8 +159,8 @@ fn recletnames(xs) = match xs
     Cons(h, t) => Cons(h.nm, recletnames(t))
 fn parseletrec(t) = let fs = parserecletfields(t) in let z0 = checknames(recletnames(fs.items), Nil, headpos(fs.rest)) in let rv = expr(expecteq(dropletty(fs.rest))) in let rb = expr(letin(rv.rest, headline(t))) in let tnm = "_lrec_" + letrechd(fs.items) in {node: LetIn(tnm, rv.node, mkrecletbinds(tnm, fs.items, rb.node)), rest: rb.rest}
 fn parseletpat(t) = let p = parsepat(t) in let pnode = checkpat(p.node, headpos(p.rest)) in let rv = expr(expecteq(dropletty(p.rest))) in let rb = expr(letin(rv.rest, headline(t))) in {node: Match(rv.node, Cons({pat: pnode, body: rb.node}, Nil)), rest: rb.rest}
-fn parselet(t) = if headtext(t) == "mut" then parsevar(droponce(t)) else if headtext(t) == "(" then parselettup(droponce(t)) else if headtext(t) == "{" then parseletrec(droponce(t)) else if isctor(headtext(t)) == 1 then parseletpat(t) else if headtext(t) == "_" and headtext(droponce(t)) != "=" and headtext(droponce(t)) != ":" then parselet(droponce(t)) else let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in let rb = expr(letin(rv.rest, headline(t))) in {node: LetIn(nm, wrap_tyann(rv.node, lty.node), rb.node), rest: rb.rest}
-fn parsevar(t) = let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in let rb = expr(letin(rv.rest, headline(t))) in {node: VarIn(nm, wrap_tyann(rv.node, lty.node), rb.node), rest: rb.rest}
+fn parselet(t) = if headtext(t) == "mut" then parsevar(droponce(t)) else if headtext(t) == "(" then parselettup(droponce(t)) else if headtext(t) == "{" then parseletrec(droponce(t)) else if isctor(headtext(t)) == 1 then parseletpat(t) else if headtext(t) == "_" and headtext(droponce(t)) != "=" and headtext(droponce(t)) != ":" then parselet(droponce(t)) else let kc = kw_check(headtext(t), "a variable", headpos(t)) in let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in let rb = expr(letin(rv.rest, headline(t))) in {node: LetIn(nm, wrap_tyann(rv.node, lty.node), rb.node), rest: rb.rest}
+fn parsevar(t) = let kc = (if headtext(t) == "(" then kw_check("var", "a function", headpos(t)) else kw_check(headtext(t), "a variable", headpos(t))) in let nm = headtext(t) in let lty = parseletty(droponce(t)) in let rv = expr(expecteq(lty.rest)) in let rb = expr(letin(rv.rest, headline(t))) in {node: VarIn(nm, wrap_tyann(rv.node, lty.node), rb.node), rest: rb.rest}
 fn parseowne(t) = let r = post(t) in {node: OwnE(r.node), rest: r.rest}
 fn parsemute(t) = let r = post(t) in {node: MutE(r.node), rest: r.rest}
 fn parsedefer(t) = let rc = expr(t) in let rb = expr(dropin(rc.rest)) in {node: DeferE(rc.node, rb.node), rest: rb.rest}

@@ -1,0 +1,29 @@
+## crypto_aes_ok.src -- AES-128 / AES-256 (FIPS 197) and AES-GCM (NIST SP 800-38D) of lcrypto_tls against the official
+## vectors: FIPS 197 Appendix C, the GCM specification test cases (McGrew and Viega, used by NIST GCMVS) and the QUIC
+## header-protection masks of RFC 9001 Appendix A.2 / A.3; plus the refusals (tampering, wrong sizes).
+use lcrypto_tls
+
+fn h(x) = lcs_unhex(x)
+fn test_fips197_c1_aes128_block() = lcs_hex(lcs_aes128_ecb_encrypt(h("000102030405060708090a0b0c0d0e0f"), h("00112233445566778899aabbccddeeff"))) == "69c4e0d86a7b0430d8cdb78070b4c55a"
+fn test_fips197_c3_aes256_block() = lcs_hex(lcs_aes256_ecb_encrypt(h("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"), h("00112233445566778899aabbccddeeff"))) == "8ea2b7ca516745bfeafc49904b496089"
+fn test_fips197_appendix_b_aes128() = lcs_hex(lcs_aes128_ecb_encrypt(h("2b7e151628aed2a6abf7158809cf4f3c"), h("3243f6a8885a308d313198a2e0370734"))) == "3925841d02dc09fbdc118597196a0b32"
+
+## RFC 9001 Appendix A.2 (client Initial) and A.3 (server Initial): mask = AES-ECB(hp, sample), first 5 bytes
+fn test_rfc9001_a2_client_header_mask() = slice(lcs_hex(lcs_aes128_ecb_encrypt(h("9f50449e04a0e810283a1e9933adedd2"), h("d1b1c98dd7689fb8ec11d242b123dc9b"))), 0, 10) == "437b9aec36"
+fn test_rfc9001_a3_server_header_mask() = slice(lcs_hex(lcs_aes128_ecb_encrypt(h("c206b8d9b9f0f37644430b490eeaa314"), h("2cd0991cd25b0aac406a5816b6394100"))), 0, 10) == "2ec0d8356a"
+
+## GCM test cases 1, 2, 4 (AES-128) and 16 (AES-256)
+fn test_gcm_case1_empty() = lcs_hex(lcs_aes128_gcm_seal(lcs_zeros(16), lcs_zeros(12), "", "")) == "58e2fccefa7e3061367f1d57a4e7455a"
+fn test_gcm_case2_one_block() = lcs_hex(lcs_aes128_gcm_seal(lcs_zeros(16), lcs_zeros(12), "", lcs_zeros(16))) == "0388dace60b6a392f328c2b971b2fe78" + "ab6e47d42cec13bdf53a67b21257bddf"
+fn gcm_p4() = h("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39")
+fn gcm_a4() = h("feedfacedeadbeeffeedfacedeadbeefabaddad2")
+fn gcm_iv4() = h("cafebabefacedbaddecaf888")
+fn test_gcm_case4_aad_partial_block() = lcs_hex(lcs_aes128_gcm_seal(h("feffe9928665731c6d6a8f9467308308"), gcm_iv4(), gcm_a4(), gcm_p4())) == "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091" + "5bc94fbc3221a5db94fae95ae7121a47"
+fn test_gcm_case16_aes256() = lcs_hex(lcs_aes256_gcm_seal(h("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308"), gcm_iv4(), gcm_a4(), gcm_p4())) == "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662" + "76fc6ece0f4e1768cddf8853bb2d551b"
+
+fn test_gcm_open_roundtrip_and_tamper() = let k = h("feffe9928665731c6d6a8f9467308308") in let s = lcs_aes128_gcm_seal(k, gcm_iv4(), gcm_a4(), gcm_p4()) in let r = lcs_aes128_gcm_open(k, gcm_iv4(), gcm_a4(), s) in let bad = slice(s, 0, 5) + chr(bit_xor(ord_at(s, 5), 1)) + slice(s, 6, count(s)) in let r2 = lcs_aes128_gcm_open(k, gcm_iv4(), gcm_a4(), bad) in let r3 = lcs_aes128_gcm_open(k, gcm_iv4(), "other aad", s) in r.ok == 1 and r.plain == gcm_p4() and r2.ok == 0 and r2.plain == "" and r3.ok == 0
+fn test_gcm_open_aes256_roundtrip() = let k = h("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308") in let r = lcs_aes256_gcm_open(k, gcm_iv4(), gcm_a4(), lcs_aes256_gcm_seal(k, gcm_iv4(), gcm_a4(), "abc")) in r.ok == 1 and r.plain == "abc"
+fn test_aes_refuses_wrong_sizes() = lcs_aes128_ecb_encrypt(lcs_zeros(15), lcs_zeros(16)) == "" and lcs_aes128_ecb_encrypt(lcs_zeros(16), lcs_zeros(15)) == "" and lcs_aes128_gcm_seal(lcs_zeros(32), lcs_zeros(12), "", "x") == "" and lcs_aes128_gcm_seal(lcs_zeros(16), lcs_zeros(8), "", "x") == "" and lcs_aes128_gcm_open(lcs_zeros(16), lcs_zeros(12), "", "short").ok == 0 and lcs_aes256_ecb_encrypt(lcs_zeros(16), lcs_zeros(16)) == ""
+## every length from 0 to 40 bytes survives seal + open (partial last blocks of the counter mode)
+fn rt_len(k, iv, n) = if n > 40 then true else let p = slice("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH", 0, n) in let r = lcs_aes128_gcm_open(k, iv, "a", lcs_aes128_gcm_seal(k, iv, "a", p)) in if r.ok == 1 and r.plain == p then rt_len(k, iv, n + 1) else false
+fn test_gcm_all_short_lengths() = rt_len(h("000102030405060708090a0b0c0d0e0f"), h("000000000000000000000001"), 0)

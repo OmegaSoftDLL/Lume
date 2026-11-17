@@ -138,6 +138,8 @@ Lume supports `match` everywhere (top-level bodies, `let ... in`, `if`, call arg
 - `Option[T]`         `None` | `Some(v)`
 - `Result[T, E]`      `Ok(v)` | `Err(e)`
 - Record `{f: T}`     Structural or nominal record (`{x: 10, y: 20}`)
+- Update `{e with f: v}`  A copy with some fields replaced; e is any expression (a name, a call, a
+                     field `r.b`, `(e)`); a field the record lacks is `[T2101]`
 
 ## 3.2 Algebraic Data Types (ADTs)
 ```lume
@@ -281,6 +283,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             0 when the buffer is full, -1 on error; no SIGPIPE), `net_recv_some(fd, max)` -> n > 0 / 0 closed /
             -2 nothing now / -1 error, `epoll_add(ep, fd, tag, events)`, `epoll_mod`, `epoll_del(ep, fd)`,
             `epoll_wait_ev(ep, ms)` -> tag (-1 on timeout) and events (`epoll_in()`, `epoll_out()`, err, hup)
+            Addresses: `net_local_addr(fd)`, `os_ipv4_interfaces()`, `os_ipv6_interfaces()` (short form, no ::1,
+            a link-local one with its scope: `fe80::1%3`), on Linux and on Windows
 - System primitives (for runtime and library code, effects sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` is the
             operating system call (Linux numbers, answered alike on Windows; small ints; -errno on failure);
             `buf_addr(b)` is the address of a buffer's bytes, to build the structures a call takes
@@ -314,13 +318,19 @@ uses its own, and the entry file keeps its names (a module's copy is renamed `na
 is how its tests are listed). A module that uses such a name without defining it gets the one owner
 it imports (directly first); two candidates stop the build with `file:line:col` and ask for
 `module.name`. `use json as j` then `j.read(s)` names `read` of `json`. A module in a folder is
-written by its last segment (`use net/http`, then `http.get(u)`); two folders with the same last
-segment need aliases (`use a/http as ha`). Record fields are never renamed.
+written by its last segment (`use net/http`, then `http.get(u)`); of two folders with the same last
+segment, all but one need an alias (`use a/http` + `use b/http as hb`: `http.get`, `hb.get`), and two
+without one stop at `file:line:col` with that fix. Record fields are never renamed.
 - `use seq`            Repetition without hand-written recursion: `seq_map`, `seq_filter`, `seq_fold`,
                        `seq_foldr`, `seq_any`, `seq_all`, `seq_find`, `seq_range`, `seq_loop(a, b, acc, f)`,
                        `seq_while(state, cond, step)`, `seq_count`, `seq_bytes`, `seq_loop_inv(a, b, acc, step, inv)`
                        (`lume prove` proves its contract by induction on the invariant); tail-recursive, linear,
                        a million steps in constant stack; lambdas `fn(x) => ...` may capture variables
+- `use text`           Find by content, not by column: `str_find(s, sub, from)` (index or -1), `str_find_last`,
+                       `str_contains`, `str_after(s, label)`, `str_before`, `str_between`, `str_trim`,
+                       `str_lines` / `str_line(s, n)` (only "\n" breaks a line, as sed and awk count),
+                       `str_line_with`, `str_hex_tokens(s)` (hex words, 0x dropped, `00 10` / `00:10` joined),
+                       `str_hex_after(line, "quic key:")` for test vectors read from RFC text
 - `use fs`             Safe file handles (`sfile_with` close-on-all-paths, `[O0001]` safety)
 - `use bytes`          Bounds-checked byte buffers (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
 - `use vec`            Formally verified generic collection & numeric invariants (`vec.src`, `decimal.src`,
@@ -635,6 +645,7 @@ segment need aliases (`use a/http as ha`). Record fields are never renamed.
   lume run [--memory] <src> [args...]    Compile and run source immediately
   lume test <src.src>...                 Run all `fn test_*()` unit tests
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check
+  lume check --lex <file>...             Lexical check only (strings, escapes, comments), FILE:LINE:COL
   lume fmt <src.src> [--check|--stdout]  Canonical code formatter
   lume doc <src.src> [--json]            Generate module documentation & run doctests
   lume repl [--kernel|--json]            Interactive Read-Eval-Prove-Print Loop (`--kernel`: Jupyter kernel protocol)
@@ -777,7 +788,12 @@ segment need aliases (`use a/http as ha`). Record fields are never renamed.
   Ed25519, X25519, the TLS 1.3 key schedule, record layer and handshake state machine, all in Lume and checked
   against the official vectors by `crypto_tls_gate`. For bulk data use the string API (binary strings, linear time,
   memory of the output only): `lcs_sha256(s)`, `lcs_hmac_sha256(key, msg)`, `lcs_aead_seal(key32, nonce12, aad, p)`,
-  `lcs_aead_open(...)` -> `{ok, plain}`, `lcs_chacha20`, `lcs_poly1305`, `lcs_hex` / `lcs_unhex`. `ltv` adds `[C0010]`: the emitted code of a `@secret` function
+  `lcs_aead_open(...)` -> `{ok, plain}`, `lcs_chacha20`, `lcs_poly1305`, `lcs_hex` / `lcs_unhex`.
+  AES (FIPS 197) and AES-GCM (SP 800-38D) for QUIC Initial packets and the AES suites of TLS 1.3:
+  `lcs_aes128_ecb_encrypt(key16, block16)` (QUIC header protection), `lcs_aes128_gcm_seal(key16, nonce12, aad, p)`,
+  `lcs_aes128_gcm_open(...)` -> `{ok, plain}`, the same with `aes256`. ECDSA P-256 with SHA-256
+  (`ecdsa_secp256r1_sha256`): `lcs_p256_verify(pub65, msg, sig_der)` -> 1 or 0, `lcs_p256_sign(priv32, msg)`
+  (RFC 6979 nonce), `lcs_p256_public(priv32)`, `_raw` forms with r || s. `ltv` adds `[C0010]`: the emitted code of a `@secret` function
   may hold no conditional branch, division or memory access outside its frame, and neither may any routine it
   reaches by `call` (the scan is transitive and names the call chain). Limits: tested, not formally
   verified; a plain `@secret` function that uses `+` or a bit operation is rejected by `[C0010]` (its helpers
@@ -1023,7 +1039,7 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
   lume run [--memory] <source.src> [program-arguments]
   lume test <source.src>...
-  lume check [--json] <source.src>
+  lume check [--json] [--lex] <source.src>
   lume compile [--json] [--run] <source.src>
   lume fmt [--check] [--stdout] <source.src>...
   lume doc [--json] <source.src>

@@ -1,0 +1,27 @@
+## crypto_x25519_ok.src -- X25519 of lcrypto_tls over strings (runtime routine crypto_x25519, written in Lume) against
+## RFC 7748: the section 5.2 vectors (one call, 1 and 1000 iterations), the section 6.1 Diffie-Hellman pair, the plain
+## Lume reference (lct_x25519_ref) on derived inputs, the all-zero refusal and wrong sizes.
+use lcrypto_tls
+
+fn h(x) = lcs_unhex(x)
+fn nine() = chr(9) + lcs_zeros(31)
+fn test_rfc7748_5_2_first() = lcs_hex(lcs_x25519(h("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4"), h("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c"))) == "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552"
+fn test_rfc7748_5_2_second() = lcs_hex(lcs_x25519(h("4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d"), h("e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493"))) == "95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957"
+fn iter(k, u, n) = if n <= 0 then k else iter(lcs_x25519(k, u), k, n - 1)
+fn test_rfc7748_5_2_one_iteration() = lcs_hex(iter(nine(), nine(), 1)) == "422c8e7a6227d7bca1350b3e2bb7279f7897b87bb6854b783c60e80311ae3079"
+fn test_rfc7748_5_2_thousand_iterations() = lcs_hex(iter(nine(), nine(), 1000)) == "684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51"
+
+fn alice() = h("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+fn bob() = h("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
+fn test_rfc7748_6_1_public_keys() = lcs_hex(lcs_x25519_base(alice())) == "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a" and lcs_hex(lcs_x25519_base(bob())) == "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+fn test_rfc7748_6_1_shared_secret() = let a = lcs_x25519_shared(alice(), lcs_x25519_base(bob())) in let b = lcs_x25519_shared(bob(), lcs_x25519_base(alice())) in a.ok == 1 and b.ok == 1 and a.secret == b.secret and lcs_hex(a.secret) == "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+
+## the runtime routine against the plain Lume ladder on inputs derived by SHA-256 (high bit of u set, too)
+fn same(i) = let k = lcs_sha256("k" + str(i)) in let u = lcs_sha256("u" + str(i)) in lcs_x25519(k, u) == lcs_l2s(lct_x25519_ref(lcs_s2l(k), lcs_s2l(u)))
+fn all_same(i, n) = if i >= n then true else if same(i) then all_same(i + 1, n) else false
+fn test_matches_the_lume_reference() = all_same(0, 12)
+## u = 0 and u = 1 have small order: the secret is all zeros and lcs_x25519_shared refuses it
+fn test_small_order_points_are_refused() = lcs_x25519_shared(alice(), lcs_zeros(32)).ok == 0 and lcs_x25519_shared(alice(), chr(1) + lcs_zeros(31)).ok == 0
+fn test_wrong_sizes_fail_closed() = lcs_x25519(lcs_zeros(31), nine()) == lcs_zeros(32) and lcs_x25519(alice(), "") == lcs_zeros(32) and lcs_x25519_shared(alice(), "x").ok == 0
+## the TLS 1.3 list API goes through the same routine
+fn test_list_form_uses_the_routine() = lcs_l2s(lct_x25519(lcs_s2l(alice()), lcs_s2l(lcs_x25519_base(bob())))) == lcs_x25519(alice(), lcs_x25519_base(bob()))
