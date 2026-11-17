@@ -1972,6 +1972,18 @@ fn lcs_wset(b, i, w) = buf_set(buf_set(buf_set(buf_set(b, i, bit_and(w, 255)), i
 fn lcs_wget(b, i) = buf_get(b, i) + buf_get(b, i + 1) * 256 + buf_get(b, i + 2) * 65536 + buf_get(b, i + 3) * 16777216
 fn lcs_s256_iv() = lcs_wset(lcs_wset(lcs_wset(lcs_wset(lcs_wset(lcs_wset(lcs_wset(lcs_wset(buf_new(32), 0, 1779033703), 4, 3144134277), 8, 1013904242), 12, 2773480762), 16, 1359893119), 20, 2600822924), 24, 528734635), 28, 1541459225)
 fn lcs_sha256(s) = let n = count(s) in let full = (n / 64) * 64 in let st = crypto_sha256_blocks(lcs_s256_iv(), s, 0, full) in let rest = n - full in let tail = slice(s, full, n) + chr(128) + lcs_zeros(if rest < 56 then 55 - rest else 119 - rest) + lcs_be64s(n * 8) in let st2 = crypto_sha256_blocks(st, tail, 0, count(tail)) in lcs_be32s(lcs_wget(st2, 0)) + lcs_be32s(lcs_wget(st2, 4)) + lcs_be32s(lcs_wget(st2, 8)) + lcs_be32s(lcs_wget(st2, 12)) + lcs_be32s(lcs_wget(st2, 16)) + lcs_be32s(lcs_wget(st2, 20)) + lcs_be32s(lcs_wget(st2, 24)) + lcs_be32s(lcs_wget(st2, 28))
+## incremental SHA-256 (FIPS 180-4) over strs: lcs_sha256_init() -> state, lcs_sha256_update(state, data) -> state (as many
+## times as needed, any sizes), lcs_sha256_final(state) -> the 32-byte digest. The state is a value: an older state stays
+## valid and can be continued or finished again. Whole blocks go to the native crypto_sha256_blocks, as in lcs_sha256.
+fn lcs_s256_copy(h) = buf_from_str(buf_to_str(h, 0, 32))
+fn lcs_s256_digest(h) = lcs_be32s(lcs_wget(h, 0)) + lcs_be32s(lcs_wget(h, 4)) + lcs_be32s(lcs_wget(h, 8)) + lcs_be32s(lcs_wget(h, 12)) + lcs_be32s(lcs_wget(h, 16)) + lcs_be32s(lcs_wget(h, 20)) + lcs_be32s(lcs_wget(h, 24)) + lcs_be32s(lcs_wget(h, 28))
+fn lcs_sha256_init() = {h: lcs_s256_iv(), pend: "", n: 0}
+fn lcs_sha256_update(st, d) = let m = count(d) in let p = count(st.pend) in if p + m < 64 then {h: st.h, pend: st.pend + d, n: st.n + m} else let need = if p == 0 then 0 else 64 - p in let h1 = if p == 0 then lcs_s256_copy(st.h) else crypto_sha256_blocks(lcs_s256_copy(st.h), st.pend + slice(d, 0, need), 0, 64) in let full = need + ((m - need) / 64) * 64 in let h2 = crypto_sha256_blocks(h1, d, need, full) in {h: h2, pend: slice(d, full, m), n: st.n + m}
+fn lcs_sha256_final(st) = let rest = count(st.pend) in let tail = st.pend + chr(128) + lcs_zeros(if rest < 56 then 55 - rest else 119 - rest) + lcs_be64s(st.n * 8) in lcs_s256_digest(crypto_sha256_blocks(lcs_s256_copy(st.h), tail, 0, count(tail)))
+## incremental HMAC-SHA256 (RFC 2104): lcs_hmac_sha256_init(key), lcs_hmac_sha256_update(state, data), lcs_hmac_sha256_final(state)
+fn lcs_hmac_sha256_init(key) = let k = if count(key) > 64 then lcs_sha256(key) else key in let ip = buf_to_str(lcs_xorpad(k, 0, 54, buf_new(64)), 0, 64) in let op = buf_to_str(lcs_xorpad(k, 0, 92, buf_new(64)), 0, 64) in {inner: lcs_sha256_update(lcs_sha256_init(), ip), op: op}
+fn lcs_hmac_sha256_update(st, d) = {inner: lcs_sha256_update(st.inner, d), op: st.op}
+fn lcs_hmac_sha256_final(st) = lcs_sha256(st.op + lcs_sha256_final(st.inner))
 fn lcs_chacha20(key, nonce, counter, data) = let n = count(data) in if n == 0 then "" else buf_to_str(crypto_chacha20_xor(buf_new(n), data, key, nonce, counter), 0, n)
 fn lcs_poly1305(key, msg) = crypto_poly1305(key, msg)
 

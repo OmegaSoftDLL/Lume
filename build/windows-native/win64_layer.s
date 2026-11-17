@@ -46,6 +46,7 @@
     .extern KERNEL32.dll!SetStdHandle
     .extern KERNEL32.dll!SetCurrentDirectoryW
     .extern KERNEL32.dll!MoveFileExW
+    .extern KERNEL32.dll!SetEndOfFile
     .extern KERNEL32.dll!GetFileType
     .extern KERNEL32.dll!RemoveDirectoryW
     .extern KERNEL32.dll!SetFileAttributesW
@@ -200,6 +201,10 @@ __win_syscall:
     je .Lws_chdir
     cmpq $82, %rax
     je .Lws_rename
+    cmpq $316, %rax
+    je .Lws_renameat2
+    cmpq $77, %rax
+    je .Lws_ftruncate
     cmpq $90, %rax
     je .Lws_chmod
     cmpq $87, %rax
@@ -286,7 +291,7 @@ __win_syscall:
     cmpq $2, %rax
     je .Lws_errset
     cmpq $3, %rax
-    je .Lws_errset
+    je .Lws_path3
     movq $-13, %rcx
     cmpq $5, %rax
     je .Lws_errset
@@ -833,7 +838,7 @@ __win_syscall:
     movq $7, %r8
     call CreateFileW
     cmpq $-1, %rax
-    je .Lws_fail
+    je .Lws_open_cffail
     movq %rax, 64(%rsp)
     movq $1, %r8
     movq %rax, %r9
@@ -864,6 +869,54 @@ __win_syscall:
     movq %rcx, .Lws_fk_nopen(%rip)
 .Lws_open_rec:
     movq 72(%rsp), %rax
+    jmp .Lws_ret
+# ERROR_PATH_NOT_FOUND (see .Lws_path3): Linux says ENOTDIR when the nearest existing component of the path is a file, ENOENT when it
+# is a directory; walk .Lws_wbuf back one separator at a time and ask GetFileAttributesW
+.Lws_open_cffail:
+    call GetLastError
+    shlq $32, %rax
+    shrq $32, %rax
+    jmp .Lws_errmap
+# every ERROR_PATH_NOT_FOUND (open, unlink, stat, mkdir...) comes here with the path in .Lws_wbuf
+.Lws_path3:
+    leaq .Lws_wbuf(%rip), %rdi
+.Lws_ocf_end:
+    movzbq (%rdi), %rax
+    movzbq 1(%rdi), %rdx
+    orq %rdx, %rax
+    testq %rax, %rax
+    jz .Lws_ocf_back
+    addq $2, %rdi
+    jmp .Lws_ocf_end
+.Lws_ocf_back:
+    subq $2, %rdi
+    leaq .Lws_wbuf(%rip), %rsi
+    cmpq %rsi, %rdi
+    jle .Lws_ocf_enoent
+    movzbq 1(%rdi), %rdx
+    testq %rdx, %rdx
+    jnz .Lws_ocf_back
+    movzbq (%rdi), %rax
+    cmpq $92, %rax
+    je .Lws_ocf_try
+    cmpq $47, %rax
+    jne .Lws_ocf_back
+.Lws_ocf_try:
+    movb $0, (%rdi)
+    movq %rdi, 72(%rsp)
+    leaq .Lws_wbuf(%rip), %rcx
+    call GetFileAttributesW
+    shlq $32, %rax
+    shrq $32, %rax
+    movq 72(%rsp), %rdi
+    movq $4294967295, %rcx
+    cmpq %rcx, %rax
+    je .Lws_ocf_back
+    andq $16, %rax
+    testq %rax, %rax
+    jz .Lws_enotdir
+.Lws_ocf_enoent:
+    movq $-2, %rax
     jmp .Lws_ret
 .Lws_opendir:
     call .Lws_wpath
@@ -973,6 +1026,82 @@ __win_syscall:
     xorq %rdx, %rdx
     movq $32768, %r8
     call VirtualFree
+    jmp .Lws_zero
+# ftruncate(fd, length): SetFilePointerEx to length, SetEndOfFile, then the old position back (Linux leaves it alone)
+.Lws_ftruncate:
+    call .Lws_fdh
+    testq %rcx, %rcx
+    jz .Lws_ebadf
+    cmpq $3, %rcx
+    je .Lws_einval
+    cmpq $2, %rcx
+    je .Lws_einval
+    testq %r13, %r13
+    js .Lws_einval
+    movq %rax, 72(%rsp)
+    movq %rax, %rcx
+    xorq %rdx, %rdx
+    leaq 64(%rsp), %r8
+    movq $1, %r9
+    call SetFilePointerEx
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fail
+    movq 72(%rsp), %rcx
+    movq %r13, %rdx
+    xorq %r8, %r8
+    xorq %r9, %r9
+    call SetFilePointerEx
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fail
+    movq 72(%rsp), %rcx
+    call SetEndOfFile
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fail
+    movq 72(%rsp), %rcx
+    movq 64(%rsp), %rdx
+    xorq %r8, %r8
+    xorq %r9, %r9
+    call SetFilePointerEx
+    jmp .Lws_zero
+# renameat2(AT_FDCWD, old, AT_FDCWD, new, RENAME_NOREPLACE): MoveFileExW with WRITE_THROUGH only, so an existing
+# target fails (ERROR_ALREADY_EXISTS -> EEXIST), as renameat2 with RENAME_NOREPLACE does on Linux
+.Lws_renameat2:
+    movq %r13, %r12
+    movq %r15, %r13
+    call .Lws_wpath
+    testq %rax, %rax
+    jz .Lws_fail
+    movq %rax, %rcx
+    addq %rax, %rcx
+    leaq .Lws_wbuf(%rip), %rsi
+    leaq .Lws_cwbuf(%rip), %rdi
+.Lws_rnx_cp:
+    movzbq (%rsi), %rax
+    movb %al, (%rdi)
+    incq %rsi
+    incq %rdi
+    decq %rcx
+    jnz .Lws_rnx_cp
+    movq %r12, 64(%rsp)
+    movq %r13, %r12
+    call .Lws_wpath
+    movq 64(%rsp), %r12
+    testq %rax, %rax
+    jz .Lws_fail
+    leaq .Lws_cwbuf(%rip), %rcx
+    leaq .Lws_wbuf(%rip), %rdx
+    movq $8, %r8
+    call MoveFileExW
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fail
     jmp .Lws_zero
 .Lws_lseek:
     call .Lws_fdh
@@ -2872,13 +3001,19 @@ __win_ffi_resolve:
     popq %rbx
     ret
 # a failed Cred* call: ERROR_NOT_FOUND (1168) -> -ENOENT, anything else -> -EIO
+# a Credential Manager failure: ERROR_NOT_FOUND (1168) is -2 (ENOENT); any other error code e is -(100000 + e), so the
+# Lume side (keychain.src) can tell "absent" from "denied", "no session", "bad data" and never reports one as another
 .Lws_kc_err:
     call GetLastError
     shlq $32, %rax
     shrq $32, %rax
     cmpq $1168, %rax
-    jne .Lws_eio
+    jne .Lws_kc_err2
     movq $-2, %rax
+    jmp .Lws_ret
+.Lws_kc_err2:
+    addq $100000, %rax
+    negq %rax
     jmp .Lws_ret
 # 1004: 0 when the Credential Manager can be used
 .Lws_kc_avail:

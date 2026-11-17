@@ -15,10 +15,24 @@
 ##   DIR = $LUME_KEYCHAIN_DIR, else $XDG_DATA_HOME/lume/keychain, else $HOME/.local/share/lume/keychain.
 ## - LUME_KEYCHAIN_DIR set: the file backend on every system (a portable store, or a test sandbox).
 ##
-## Errors: "bad_name" (empty, longer than 256 bytes, or holding ':' or a NUL byte), "too_large" (more than 2560 bytes,
-## the Credential Manager's limit, kept on every backend so a secret moves between systems), "not_found",
-## "not_private" (the file backend found the secret reachable by others: it is not returned), "no_store",
-## "write_failed", "delete_failed".
+## Errors (the `err` field; the contract a caller may fail closed on):
+## - "not_found": ONLY when the store answered that this service/account has no entry (Windows ERROR_NOT_FOUND; the
+##   file backend: no such file, ENOENT). Nothing else is ever reported as not_found.
+## - "access_denied": the store refused this process (Windows ERROR_ACCESS_DENIED; a file or directory it may not
+##   read, EACCES / EPERM).
+## - "locked": the vault exists but is locked (reserved: neither the Credential Manager nor the file backend has a
+##   lock of its own today).
+## - "unavailable": no store can answer here: no OS keychain on this system (the os builtins say ENOSYS), no logon
+##   session (Windows ERROR_NO_SUCH_LOGON_SESSION, e.g. a service account without a loaded profile), no keychain
+##   directory (no HOME / XDG_DATA_HOME / LUME_KEYCHAIN_DIR), a path that is not a directory, an I/O error.
+## - "corrupt": an entry exists but cannot be read back whole (ERROR_INVALID_DATA, a blob larger than the limit,
+##   a file that reads shorter than its size).
+## - "not_private": the file backend found the secret reachable by others (it is not returned).
+## - "bad_name", "too_large", "no_store", "write_failed", "delete_failed" (set / delete).
+## By system: Windows uses the Credential Manager of the account the process runs as (a service running as SYSTEM
+## gets SYSTEM's own vault; when that account has no usable vault the answer is unavailable / access_denied, never
+## not_found); Linux and macOS use the file backend (macOS has no OS backend in Lume yet: its Keychain needs the
+## Security framework), with the same codes.
 use hostio
 
 fn kc_hexd(d) = at("0123456789abcdef", d)
@@ -34,14 +48,23 @@ fn kc_target(service, account) = "lume:" + service + ":" + account
 fn kc_file(service, account) = keychain_dir() + "/" + kc_hex(service) + "." + kc_hex(account)
 fn kc_ready_dir() = let d = keychain_dir() in if d == "" then 0 else if hio_mkdir_p(d) != 1 then 0 else fs_mkdir_private(d)
 
-fn kc_set_os(service, account, secret) = if os_keychain_put(kc_target(service, account), secret) == 1 then {ok: 1, err: ""} else {ok: 0, err: "write_failed"}
+fn kc_set_os(service, account, secret) = let r = os_keychain_put(kc_target(service, account), secret) in if r == 1 then {ok: 1, err: ""} else {ok: 0, err: kc_os_err(0 - r, "write_failed")}
 fn kc_set_file(service, account, secret) = if kc_ready_dir() != 1 then {ok: 0, err: "no_store"} else if fs_write_private(kc_file(service, account), secret) == 1 then {ok: 1, err: ""} else {ok: 0, err: "write_failed"}
 fn keychain_set(service, account, secret) = let e = kc_check(service, account) in if e != "" then {ok: 0, err: e} else if count(secret) > keychain_max_secret() then {ok: 0, err: "too_large"} else if keychain_backend() == "os" then kc_set_os(service, account, secret) else kc_set_file(service, account, secret)
 
-fn kc_get_os(service, account) = let r = os_keychain_get(kc_target(service, account)) in if count(r) == 0 then {ok: 0, value: "", err: "not_found"} else {ok: 1, value: slice(r, 1, count(r)), err: ""}
-fn kc_get_file(service, account) = let p = kc_file(service, account) in if fs_path_exists(p) == 0 then {ok: 0, value: "", err: "not_found"} else if fs_is_private(p) != 1 then {ok: 0, value: "", err: "not_private"} else {ok: 1, value: fs_read_file(p), err: ""}
+## the error name of a store failure: n is the positive error number, Windows errors as 100000 + the Win32 code
+fn kc_os_err(n, other) = if n >= 100000 then kc_win_err(n - 100000, other) else if n == 2 then "not_found" else if n == 13 or n == 1 then "access_denied" else if n == 34 then "corrupt" else if n == 38 or n == 5 or n == 6 then "unavailable" else other
+## 5 ACCESS_DENIED, 1312 NO_SUCH_LOGON_SESSION, 1385 LOGON_TYPE_NOT_GRANTED, 13 INVALID_DATA, 1783 STUB_BAD_DATA,
+## 1004 INVALID_FLAGS / 87 INVALID_PARAMETER (an argument the layer built wrong: unavailable, never not_found)
+fn kc_win_err(w, other) = if w == 5 then "access_denied" else if w == 1312 or w == 1385 then "unavailable" else if w == 13 or w == 1783 then "corrupt" else "unavailable"
+fn kc_get_os(service, account) = let r = os_keychain_get(kc_target(service, account)) in if count(r) == 0 then {ok: 0, value: "", err: "not_found"} else if slice(r, 0, 1) == "+" then {ok: 1, value: slice(r, 1, count(r)), err: ""} else {ok: 0, value: "", err: kc_os_err(toint(slice(r, 1, count(r))), "unavailable")}
+## the file backend read: open tells absent (ENOENT) from denied (EACCES) from anything else, lseek gives the size the
+## read must match; every path that is not "no such file" is a code other than not_found
+fn kc_cpath(p) = let b = buf_new(count(p) + 1) in kc_cpath_go(b, p, 0)
+fn kc_cpath_go(b, p, i) = if i >= count(p) then b else kc_cpath_go(buf_set(b, i, ord_at(p, i)), p, i + 1)
+fn kc_get_file(service, account) = if keychain_dir() == "" then {ok: 0, value: "", err: "unavailable"} else let p = kc_file(service, account) in let c = kc_cpath(p) in let fd = sys_call(2, buf_addr(c), 0, 0, 0, 0) in if fd < 0 then {ok: 0, value: "", err: kc_os_err(0 - fd, "unavailable")} else let size = sys_call(8, fd, 0, 2, 0, 0) in let z = sys_call(3, fd, 0, 0, 0, 0) in let pv = fs_is_private(p) in if pv == 0 then {ok: 0, value: "", err: "not_private"} else if pv != 1 then {ok: 0, value: "", err: "unavailable"} else if size < 0 then {ok: 0, value: "", err: "unavailable"} else let v = fs_read_file(p) in if count(v) != size then {ok: 0, value: "", err: "corrupt"} else {ok: 1, value: v, err: ""}
 fn keychain_get(service, account) = let e = kc_check(service, account) in if e != "" then {ok: 0, value: "", err: e} else if keychain_backend() == "os" then kc_get_os(service, account) else kc_get_file(service, account)
 
-fn kc_del_os(service, account) = if os_keychain_delete(kc_target(service, account)) == 1 then {ok: 1, err: ""} else {ok: 0, err: "not_found"}
-fn kc_del_file(service, account) = let p = kc_file(service, account) in if fs_path_exists(p) == 0 then {ok: 0, err: "not_found"} else if fs_remove(p) == 1 then {ok: 1, err: ""} else {ok: 0, err: "delete_failed"}
+fn kc_del_os(service, account) = let r = os_keychain_delete(kc_target(service, account)) in if r == 1 then {ok: 1, err: ""} else if r == 0 then {ok: 0, err: "not_found"} else {ok: 0, err: kc_os_err(0 - r, "delete_failed")}
+fn kc_del_file(service, account) = if keychain_dir() == "" then {ok: 0, err: "unavailable"} else let r = sys_call(87, buf_addr(kc_cpath(kc_file(service, account))), 0, 0, 0, 0) in if r == 0 then {ok: 1, err: ""} else {ok: 0, err: kc_os_err(0 - r, "delete_failed")}
 fn keychain_delete(service, account) = let e = kc_check(service, account) in if e != "" then {ok: 0, err: e} else if keychain_backend() == "os" then kc_del_os(service, account) else kc_del_file(service, account)

@@ -182,6 +182,8 @@ fn tsx_gate(prog) = tsx_snd(tsx_prog(prog), prog)
 ## Types: "int", "bool", "str", "dec", "f64", "" (unknown).
 fn tpl_frag(b, right) = let h = tpl_hint(b) in if h == "x" then "" else if right == 1 then "+ " + h else h + " +"
 fn tpl_fail(where, ta, tb, b, right) = ctfail("lume: type error [T0604]: " + (if tpl_frag(b, right) == "" then "" else "'" + tpl_frag(b, right) + "': ") + where + "operator '+' is applied to " + tpl_show(ta) + " and " + tpl_show(tb) + "; '+' adds two numbers or joins two strs; nothing converts implicitly (fix-it: " + tpl_fixit(b) + ")\n")
+## a list on either side of '+': lists are joined by seq_concat (use seq), never by '+'
+fn tpl_list_fail(where, ta, tb) = ctfail("lume: type error [T0604]: " + where + "operator '+' is applied to " + (if ta == "" then "a value" else ta) + " and " + (if tb == "" then "a value" else tb) + "; '+' adds two numbers or joins two strs, never lists (fix-it: `use seq` and `seq_concat(xs, [d])`)\n")
 fn tpl_fixit(b) = match b
     Var(nm) => "`str(" + nm + ")` turns it into a str"
     _       => "wrap the side that is not a str in `str(...)`"
@@ -193,9 +195,9 @@ fn tpl_hint(e) = match e
 fn tpl_nonstr(t) = t == "int" or t == "bool" or t == "dec" or t == "f64"
 fn tpl_isnum(t) = t == "int" or t == "dec" or t == "f64"
 fn tpl_f64res(nm) = nm == "f64" or nm == "f64_floor" or nm == "f64_ceil" or nm == "f64_round" or nm == "f64_sqrt" or nm == "f64_abs" or nm == "f64_sin" or nm == "f64_cos" or nm == "f64_tan" or nm == "f64_atan2" or nm == "f64_exp" or nm == "f64_log" or nm == "f64_log10" or nm == "f64_pow" or nm == "f64_from_bits"
-fn tpl_call_ty(nm) = if nm == "str" or nm == "chr" or nm == "slice" or nm == "slicen" or nm == "at" or nm == "f64_str" or nm == "fs_read_file" or nm == "os_keychain_get" then "str" else if nm == "count" or nm == "ord" or nm == "toint" or nm == "f64_int" or nm == "f64_bits" then "int" else if tpl_f64res(nm) then "f64" else ""
+fn tpl_call_ty(nm) = if nm == "_tylist_" or nm == "Cons" then "list" else if nm == "str" or nm == "chr" or nm == "slice" or nm == "slicen" or nm == "at" or nm == "f64_str" or nm == "fs_read_file" or nm == "os_keychain_get" then "str" else if nm == "count" or nm == "ord" or nm == "toint" or nm == "f64_int" or nm == "f64_bits" then "int" else if tpl_f64res(nm) then "f64" else ""
 ## the type of '+' and of the other operators from their operand types (and the check of '+')
-fn tpl_bin(op, a, b, ta, tb, where) = if op == "+" then (if (ta == "str" and tpl_nonstr(tb)) or (tb == "str" and tpl_nonstr(ta)) then tpl_fail(where, ta, tb, if ta == "str" then b else a, if ta == "str" then 1 else 0) else if ta == tb and ta != "bool" then ta else if ta == "f64" and tpl_isnum(tb) or tb == "f64" and tpl_isnum(ta) then "f64" else "") else if op == "-" or op == "*" or op == "/" or op == "%" then (if ta == "int" and tb == "int" then "int" else if (ta == "f64" and tpl_isnum(tb)) or (tb == "f64" and tpl_isnum(ta)) then "f64" else "") else if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or" then "bool" else ""
+fn tpl_bin(op, a, b, ta, tb, where) = if op == "+" and (ta == "list" or tb == "list") then tpl_list_fail(where, ta, tb) else if op == "+" then (if (ta == "str" and tpl_nonstr(tb)) or (tb == "str" and tpl_nonstr(ta)) then tpl_fail(where, ta, tb, if ta == "str" then b else a, if ta == "str" then 1 else 0) else if ta == tb and ta != "bool" then ta else if ta == "f64" and tpl_isnum(tb) or tb == "f64" and tpl_isnum(ta) then "f64" else "") else if op == "-" or op == "*" or op == "/" or op == "%" then (if ta == "int" and tb == "int" then "int" else if (ta == "f64" and tpl_isnum(tb)) or (tb == "f64" and tpl_isnum(ta)) then "f64" else "") else if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or" then "bool" else ""
 fn tpl_join(a, b) = if a == b then a else ""
 fn tpl_e(e, env, where) = match e
     Num(n)          => "int"
@@ -1362,12 +1364,20 @@ fn trf_third(xs) = match xs
     Nil        => Num(0)
     Cons(h, t) => trf_snd(t)
 fn trf_upd(g, args) = if g == "__lume_rec_update" and trf_len(args) == 2 then {ok: 1, base: trf_hd(args), items: trf_items(trf_snd(args))} else if g == "__lume_rec_with" and trf_len(args) == 3 then {ok: 1, base: trf_snd(args), items: trf_items(trf_third(args))} else {ok: 0, base: Num(0), items: Nil}
-fn trf_shape(e, env, prog, d) = if d > 3 then trf_unk() else trf_shape1(e, env, prog, d)
+## both branches of an if give a record with the same field names: that shape; anything else is unknown (an error
+## is raised only when every path is known)
+fn trf_shape_join(a, b) = if a.ok == 1 and b.ok == 1 and trf_subset(a.fs, b.fs) == 1 and trf_subset(b.fs, a.fs) == 1 then a else trf_unk()
+fn trf_subset(xs, ys) = match xs
+    Nil        => 1
+    Cons(h, t) => if trf_has(ys, h) == 1 then trf_subset(t, ys) else 0
+fn trf_shape(e, env, prog, d) = if d > 8 then trf_unk() else trf_shape1(e, env, prog, d)
 fn trf_shape1(e, env, prog, d) = match e
     Rec(items)      => {ok: 1, fs: trf_names(items)}
+    RecT(tn, items) => {ok: 1, fs: trf_names(items)}
+    If(c, t, f)     => trf_shape_join(trf_shape(t, env, prog, d), trf_shape(f, env, prog, d))
     Var(x)          => trf_env(env, x)
     LetIn(nm, v, b) => trf_shape(b, Cons({k: nm, v: trf_shape(v, env, prog, d)}, env), prog, d)
-    Call(g, args)   => let u = trf_upd(g, args) in if u.ok == 1 then trf_shape(u.base, env, prog, d) else let f = trf_lookup(prog, g) in if f.ok == 1 and trf_len(f.ps) == 0 then trf_shape(f.body, Nil, prog, d + 1) else trf_unk()
+    Call(g, args)   => let u = trf_upd(g, args) in if u.ok == 1 then trf_shape(u.base, env, prog, d) else trf_tget(prog, g)
     _               => trf_unk()
 fn trf_req(e, p, acc) = match e
     Field(o, k)     => (match o
@@ -1399,34 +1409,46 @@ fn trf_fail(msg) = ctfail("lume: type error [T2101]: " + msg + "\n")
 fn trf_check_req(need, fs, g, idx) = match need
     Nil        => 0
     Cons(h, t) => if trf_has(fs, h.f) == 1 then trf_check_req(t, fs, g, idx) else trf_fail("no field '" + h.f + "' in argument " + str(idx) + " of '" + g + "', which " + (if h.upd == 1 then "updates it with `with`" else "reads it") + " (the record passed has " + trf_list(fs) + ") (fix-it: pass a record that has the field, or build a new record with it instead of `with`)")
-fn trf_call_args(g, ps, args, i, env, prog, body) = match args
+fn trf_call_args(g, ps, args, i, env, prog, body, tab) = match args
     Nil        => 0
-    Cons(a, t) => let sh = trf_shape(a, env, prog, 0) in let c = if sh.ok == 1 then trf_check_req(trf_req(body, trf_nth(ps, i), Nil), sh.fs, g, i + 1) else 0 in trf_call_args(g, ps, t, i + 1, env, prog, body)
+    Cons(a, t) => let sh = trf_shape(a, env, tab, 0) in let c = if sh.ok == 1 then trf_check_req(trf_req(body, trf_nth(ps, i), Nil), sh.fs, g, i + 1) else 0 in trf_call_args(g, ps, t, i + 1, env, prog, body, tab)
 fn trf_check_keys(items, fs) = match items
     Nil        => 0
     Cons(h, t) => if trf_has(fs, h.key) == 1 then trf_check_keys(t, fs) else trf_fail("the record has no field '" + h.key + "' to update with `with` (it has " + trf_list(fs) + ") (fix-it: update only the fields the record has, or build a new record that adds it)")
-fn trf_walk(e, env, prog) = match e
-    Field(o, k)     => let sh = trf_shape(o, env, prog, 0) in let c = if sh.ok == 1 and trf_has(sh.fs, k) == 0 then trf_fail("this value has no field '" + k + "' (it has " + trf_list(sh.fs) + ") (fix-it: read a field the record has)") else 0 in trf_walk(o, env, prog)
-    Call(g, args)   => let u = trf_upd(g, args) in let c = if u.ok == 1 then (let sh = trf_shape(u.base, env, prog, 0) in if sh.ok == 1 then trf_check_keys(u.items, sh.fs) else 0) else (let f = trf_lookup(prog, g) in if f.ok == 1 and trf_len(f.ps) == trf_len(args) then trf_call_args(g, f.ps, args, 0, env, prog, f.body) else 0) in trf_walk_args(args, env, prog)
-    LetIn(nm, v, b) => let c = trf_walk(v, env, prog) in trf_walk(b, Cons({k: nm, v: trf_shape(v, env, prog, 0)}, env), prog)
-    Bin(op, a, b)   => let c = trf_walk(a, env, prog) in trf_walk(b, env, prog)
-    If(c0, t, f)    => let c = trf_walk(c0, env, prog) in let c2 = trf_walk(t, env, prog) in trf_walk(f, env, prog)
-    Rec(items)      => trf_walk_items(items, env, prog)
+fn trf_walk(e, env, prog, tab) = match e
+    Field(o, k)     => let sh = trf_shape(o, env, tab, 0) in let c = if sh.ok == 1 and trf_has(sh.fs, k) == 0 then trf_fail("this value has no field '" + k + "' (it has " + trf_list(sh.fs) + ") (fix-it: read a field the record has)") else 0 in trf_walk(o, env, prog, tab)
+    Call(g, args)   => let u = trf_upd(g, args) in let c = if u.ok == 1 then (let sh = trf_shape(u.base, env, tab, 0) in if sh.ok == 1 then trf_check_keys(u.items, sh.fs) else 0) else (let f = trf_lookup(prog, g) in if f.ok == 1 and trf_len(f.ps) == trf_len(args) then trf_call_args(g, f.ps, args, 0, env, prog, f.body, tab) else 0) in trf_walk_args(args, env, prog, tab)
+    LetIn(nm, v, b) => let c = trf_walk(v, env, prog, tab) in trf_walk(b, Cons({k: nm, v: trf_shape(v, env, tab, 0)}, env), prog, tab)
+    Bin(op, a, b)   => let c = trf_walk(a, env, prog, tab) in trf_walk(b, env, prog, tab)
+    If(c0, t, f)    => let c = trf_walk(c0, env, prog, tab) in let c2 = trf_walk(t, env, prog, tab) in trf_walk(f, env, prog, tab)
+    Rec(items)      => trf_walk_items(items, env, prog, tab)
     _               => 0
-fn trf_walk_args(args, env, prog) = match args
+fn trf_walk_args(args, env, prog, tab) = match args
     Nil        => 0
-    Cons(h, t) => let c = trf_walk(h, env, prog) in trf_walk_args(t, env, prog)
-fn trf_walk_items(items, env, prog) = match items
+    Cons(h, t) => let c = trf_walk(h, env, prog, tab) in trf_walk_args(t, env, prog, tab)
+fn trf_walk_items(items, env, prog, tab) = match items
     Nil        => 0
-    Cons(h, t) => let c = trf_walk(h.val, env, prog) in trf_walk_items(t, env, prog)
+    Cons(h, t) => let c = trf_walk(h.val, env, prog, tab) in trf_walk_items(t, env, prog, tab)
 fn trf_params_env(ps) = match ps
     Nil        => Nil
     Cons(h, t) => Cons({k: h, v: trf_unk()}, trf_params_env(t))
-fn trf_stmts(xs, prog) = match xs
+fn trf_stmts(xs, prog, tab) = match xs
     Nil        => 0
     Cons(h, t) => let c = (match h
-        Fn(nm, ps, body) => trf_walk(body, trf_params_env(ps), prog)
-        Print(v)         => trf_walk(v, Nil, prog)
-        ExprS(v)         => trf_walk(v, Nil, prog)
-        _                => 0) in trf_stmts(t, prog)
-fn trf_gate(prog) = let c = trf_stmts(prog, prog) in prog
+        Fn(nm, ps, body) => trf_walk(body, trf_params_env(ps), prog, tab)
+        Print(v)         => trf_walk(v, Nil, prog, tab)
+        ExprS(v)         => trf_walk(v, Nil, prog, tab)
+        _                => 0) in trf_stmts(t, prog, tab)
+## the record shape each function returns, computed once per program in three rounds (a round reads the previous
+## one for the calls, so three levels of nested calls are followed): linear in the program, where following callee
+## bodies again at every read grew exponentially with the depth and the if branches
+fn trf_tab_round(xs, prev) = match xs
+    Nil        => Nil
+    Cons(h, t) => (match h
+        Fn(nm, ps, body) => Cons({k: nm, v: trf_shape(body, trf_params_env(ps), prev, 0)}, trf_tab_round(t, prev))
+        _                => trf_tab_round(t, prev))
+fn trf_tab(prog) = trf_tab_round(prog, trf_tab_round(prog, trf_tab_round(prog, Nil)))
+fn trf_tget(tab, g) = match tab
+    Nil        => trf_unk()
+    Cons(h, t) => if h.k == g then h.v else trf_tget(t, g)
+fn trf_gate(prog) = let c = trf_stmts(prog, prog, trf_tab(prog)) in prog

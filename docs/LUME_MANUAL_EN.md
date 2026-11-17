@@ -88,7 +88,8 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - Arithmetic:         `+`, `-`, `*`, `/`, `%`
 - Comparison:         `==`, `!=` (constant-stack `O(1)` worklist structural equality on deep lists/ADTs/records), `<`, `<=`, `>`, `>=`
 - String concat/interp: `f"val={x}"`, `"val=${x}"`, or `"val={x}"`
-- `+` adds two ints or joins two strs; nothing converts implicitly: `"total: " + str(n)` ([T0604]).
+- `+` adds two ints or joins two strs; nothing converts implicitly: `"total: " + str(n)` ([T0604]); lists are
+  joined with `seq_concat(xs, ys)` (`use seq`), and `xs + [d]` is refused by `lume check` and the compiler.
                         (raw JSON `"{\"a\":{\"b\":1}}"` is preserved; escape literal braces with `"\{x}"`,
                         `"{{x}}"`, or `"cost: \${x}"`; escapes `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`)
 - Record literal:     `{id: 1, name: "alice"}` (field access: `r.id`, `r.name`)
@@ -139,7 +140,10 @@ Lume supports `match` everywhere (top-level bodies, `let ... in`, `if`, call arg
 - `Result[T, E]`      `Ok(v)` | `Err(e)`
 - Record `{f: T}`     Structural or nominal record (`{x: 10, y: 20}`)
 - Update `{e with f: v}`  A copy with some fields replaced; e is any expression (a name, a call, a
-                     field `r.b`, `(e)`); a field the record lacks is `[T2101]`
+                     field `r.b`, `(e)`); a field the record lacks is `[T2101]`, also when the record comes
+                     from a function or from both branches of an if
+- Reserved words   `if then else let in var mut match not own with spawn do defer errdefer comptime quote splice
+                     scope shard fn` cannot name a function, variable or parameter (P0002 at the declaration)
 
 ## 3.2 Algebraic Data Types (ADTs)
 ```lume
@@ -205,6 +209,16 @@ law clamp_implication(x: int, lo: int, hi: int) =
 - Implication Idiom (`if P then Q else 1 == 1`): Express logical implication $P \implies Q$
   inside `law` declarations using `if P then Q else 1 == 1`, which reduces directly to
   decidable `QF_LIA` branches in both `lcaas.src` and the standalone proof kernel `lcert.src`.
+- Bounded products (QF_NIA by relaxation): `x * y` where `requires` bounds both factors (`dt >= 0 and dt <= 60000
+  and rate >= 0 and rate <= 10000000000`) is bound by the four McCormick inequalities, so `ensures result <=
+  600000000000` of `dt * rate / 1000` is proven by `lume prove` and certified by `lume certify`; a product with an
+  unbounded factor, or a bound that does not hold, stays unproven or refuted with a counterexample. The bound may
+  come from `requires` or from the path (`if a >= 4398046511104 then lim else a * p / 1000`), also inside a `let`;
+  bounds up to 2^62 count. A factor may be a bounded linear expression (`(255 - c) * alfa`), and a division may be by a
+  variable with a positive lower bound (`pool * p / soma`, `soma >= 1`); `lume certify` re-checks all of these.
+- Booleans in proofs: a comparison used as a value (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,
+  `not f(n)`) is proved as 1 / 0. A law about a function call uses the callee's proven `ensures` when the law's
+  hypothesis implies the callee's `requires` (so a callee that calls others or multiplies bounded factors is fine).
 - Compound Termination & Proof Kernel (`lcert.src`): Verifies compound `terminates`
   obligations (`lk_prove_term_cond` across `and`/`or` guards) and runs a built-in
   NIST FIPS 180-4 SHA-256 Known-Answer Test (`sha256("abc")`).
@@ -266,6 +280,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`
 - I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,
             `fs_path_exists(path)`, `fs_read_byte(path, offset)`
+            `fs_read_range(path, offset, n)` (up to n bytes from offset, never the whole file; shorter at the end,
+            "" past it), `fs_truncate(path, size)` (1 / 0), `fs_rename_noreplace(from, to)` (0 when `to` exists;
+            renameat2 RENAME_NOREPLACE / MoveFileExW without REPLACE_EXISTING)
 - Owner-only files (keys, secrets): `fs_write_private(path, data)` writes a temporary created 0600 (O_EXCL, no
             symlink followed), fsyncs it and renames it over path: atomic, never readable by others, also on Windows
             (a protected DACL that grants the owner alone); `fs_create_private(path, data)` creates it only when it
@@ -275,6 +292,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - OS keychain: `use keychain` -> `keychain_set(service, account, secret)`, `keychain_get(service, account)`
             ({ok, value, err}), `keychain_delete(service, account)`: the Windows Credential Manager; on Linux an
             owner-only file, refused on read when others can reach it; secrets up to 2560 bytes
+            Errors (`err`): `not_found` ONLY when the entry does not exist; `access_denied`, `unavailable` (no store,
+            no logon session, no directory), `corrupt`, `not_private`, `locked` (reserved): a store that cannot
+            answer is never reported as absent, so a caller may fail closed on it
 - Environment: `os_getenv(name)` ("" when absent), `os_env_has(name)` (1 when set, even to "")
 - Network control: `use netctl` -> `net_tcp_connect_addr_timeout(ip, port, ms)` (the socket, or -1 when refused,
             unreachable or silent past ms), `net_tcp_nodelay(fd, on)` (1 when set); `use dns` ->
@@ -283,6 +303,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             0 when the buffer is full, -1 on error; no SIGPIPE), `net_recv_some(fd, max)` -> n > 0 / 0 closed /
             -2 nothing now / -1 error, `epoll_add(ep, fd, tag, events)`, `epoll_mod`, `epoll_del(ep, fd)`,
             `epoll_wait_ev(ep, ms)` -> tag (-1 on timeout) and events (`epoll_in()`, `epoll_out()`, err, hup)
+            Connect without blocking the loop: `net_tcp_connect_start(ip, port)` (fd at once, connect under way;
+            -1 on an immediate error), wait for `epoll_out()`, then `net_tcp_connect_result(fd)` -> 0 up, else
+            the error number (111 refused, 110 timed out)
             Addresses: `net_local_addr(fd)`, `os_ipv4_interfaces()`, `os_ipv6_interfaces()` (short form, no ::1,
             a link-local one with its scope: `fe80::1%3`), on Linux and on Windows
 - System primitives (for runtime and library code, effects sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` is the
@@ -320,7 +343,11 @@ it imports (directly first); two candidates stop the build with `file:line:col` 
 `module.name`. `use json as j` then `j.read(s)` names `read` of `json`. A module in a folder is
 written by its last segment (`use net/http`, then `http.get(u)`); of two folders with the same last
 segment, all but one need an alias (`use a/http` + `use b/http as hb`: `http.get`, `hb.get`), and two
-without one stop at `file:line:col` with that fix. Record fields are never renamed.
+without one stop at `file:line:col` with that fix. Each `use m` resolves next to the file that writes
+it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are never renamed.
+- Recursion depth: the runtime reserves a large stack at start (Linux and Windows): plain recursion of a
+                       million levels runs (a list of a million items), tens of millions of small frames too; past
+                       that the program stops with `lume: stack overflow (recursion too deep)` (exit 12), never silently
 - `use seq`            Repetition without hand-written recursion: `seq_map`, `seq_filter`, `seq_fold`,
                        `seq_foldr`, `seq_any`, `seq_all`, `seq_find`, `seq_range`, `seq_loop(a, b, acc, f)`,
                        `seq_while(state, cond, step)`, `seq_count`, `seq_bytes`, `seq_loop_inv(a, b, acc, step, inv)`
@@ -336,8 +363,10 @@ without one stop at `file:line:col` with that fix. Record fields are never renam
 - `use vec`            Formally verified generic collection & numeric invariants (`vec.src`, `decimal.src`,
                        `stdlib/std.lume`: `vec_clamp_index`, `vec_checked_slice_len`, `map_checked_slot`,
                        `decimal_clamp`)
-- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`,
-                       `map_checked_slot`)
+- `use map`            Persistent hash map safe against forged collisions: `map_new()` (a secret key from the
+                       system's random source, for keys a peer chooses), `map_new_seeded(k0, k1)`, `map_put`,
+                       `map_get`, `map_get_or`, `map_has`, `map_remove`, `map_size`, `map_keys`, `map_fold(m, acc, f)`;
+                       keys are strings (any bytes) or ints; HalfSipHash-2-4, buckets that split as it grows
 - `use arena`          Scoped O(1) memory arenas (`arena_new`, `arena_alloc`, `arena_reset`, `heap_stats`)
 - `use capsule`        Tamper-evident execution capsules (`capsule_seal`, `capsule_verify`)
 - `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`, `fs_file_size(path, i)`)
@@ -642,11 +671,14 @@ without one stop at `file:line:col` with that fix. Record fields are never renam
 
 ## 8.1 Core Toolchain & Developer Commands
   lume build [--incremental] [--memory] [--protect [hardened|max]] [--target <t>] <src> [-o <out>]
+                                         (-o libX.so / X.dll: a shared library written by Lume, its pub
+                                         functions exported; a test says ## @library libX.so = X.src)
   lume run [--memory] <src> [args...]    Compile and run source immediately
   lume test <src.src>...                 Run all `fn test_*()` unit tests
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check
   lume check --lex <file>...             Lexical check only (strings, escapes, comments), FILE:LINE:COL
-  lume fmt <src.src> [--check|--stdout]  Canonical code formatter
+  lume fmt <src.src> [--check|--stdout]  Canonical code formatter (a function wider than 120 columns
+                                         is written one let / if branch / argument per line)
   lume doc <src.src> [--json]            Generate module documentation & run doctests
   lume repl [--kernel|--json]            Interactive Read-Eval-Prove-Print Loop (`--kernel`: Jupyter kernel protocol)
   lume lsp / lume dap                    Language Server & Debug Adapter Protocol
@@ -789,11 +821,17 @@ without one stop at `file:line:col` with that fix. Record fields are never renam
   against the official vectors by `crypto_tls_gate`. For bulk data use the string API (binary strings, linear time,
   memory of the output only): `lcs_sha256(s)`, `lcs_hmac_sha256(key, msg)`, `lcs_aead_seal(key32, nonce12, aad, p)`,
   `lcs_aead_open(...)` -> `{ok, plain}`, `lcs_chacha20`, `lcs_poly1305`, `lcs_hex` / `lcs_unhex`.
+  Incremental (a stream in pieces, same native speed): `lcs_sha256_init()`, `lcs_sha256_update(st, data)` -> st,
+  `lcs_sha256_final(st)` -> 32 bytes; `lcs_hmac_sha256_init(key)` / `_update(st, data)` / `_final(st)`; a state is a
+  value (an older one can still be continued or finished).
   AES (FIPS 197) and AES-GCM (SP 800-38D) for QUIC Initial packets and the AES suites of TLS 1.3:
   `lcs_aes128_ecb_encrypt(key16, block16)` (QUIC header protection), `lcs_aes128_gcm_seal(key16, nonce12, aad, p)`,
   `lcs_aes128_gcm_open(...)` -> `{ok, plain}`, the same with `aes256`. ECDSA P-256 with SHA-256
   (`ecdsa_secp256r1_sha256`): `lcs_p256_verify(pub65, msg, sig_der)` -> 1 or 0, `lcs_p256_sign(priv32, msg)`
-  (RFC 6979 nonce), `lcs_p256_public(priv32)`, `_raw` forms with r || s. `ltv` adds `[C0010]`: the emitted code of a `@secret` function
+  (RFC 6979 nonce), `lcs_p256_public(priv32)`, `_raw` forms with r || s. X25519 and Ed25519 (runtime routines
+  written in Lume): `lcs_x25519(k32, u32)`, `lcs_x25519_base(k32)`, `lcs_x25519_shared(k32, peer32)` -> `{ok, secret}`,
+  `lcs_ed25519_public(seed32)`, `lcs_ed25519_sign(seed32, msg)`, `lcs_ed25519_verify(pk32, msg, sig64)`.
+  `ltv` adds `[C0010]`: the emitted code of a `@secret` function
   may hold no conditional branch, division or memory access outside its frame, and neither may any routine it
   reaches by `call` (the scan is transitive and names the call chain). Limits: tested, not formally
   verified; a plain `@secret` function that uses `+` or a bit operation is rejected by `[C0010]` (its helpers

@@ -221,8 +221,27 @@ fn lf_fmte(e) = match e
     Match(sc, arms) => "match " + lf_fmte(sc) + lf_joinall(lf_fmtarms(arms, lf_maxpatlen(arms)))
     _               => "0"
 
+## --- long lines: a function whose one-line form is wider than lf_width() is written over several lines, the way a
+## reviewer reads it: one `let ... in` per line, `if C then` / `else` with the branches indented four more (an
+## `else if` chain stays at one level), a long call with one argument per line. A `match` keeps its own layout, and
+## everything that fits stays on one line. The compiler reads the broken form as the same program (lf_safe checks).
+fn lf_width() = 120
+fn lf_hasnl(s, i) = if i >= count(s) then 0 else if at(s, i) == "\n" then 1 else lf_hasnl(s, i + 1)
+fn lf_fmtfn(head, body) = head + " = " + lf_fmte(body)
+## e laid out at indentation ind (the text starts at column ind; later lines carry their own indentation)
+fn lf_fmtb(e, ind) = let flat = lf_fmte(e) in if ind + count(flat) <= lf_width() or lf_hasnl(flat, 0) == 1 then flat else lf_fmtb2(e, ind, flat)
+fn lf_fmtb2(e, ind, flat) = match e
+    LetIn(nm, v, b) => "let " + nm + " = " + lf_fmtb(v, ind + 8 + count(nm)) + " in\n" + lf_spaces(ind) + lf_fmtb(b, ind)
+    If(c, t, e2)    => "if " + lf_wrapthen(c) + " then\n" + lf_spaces(ind + 4) + lf_fmtthen(t, ind + 4) + "\n" + lf_spaces(ind) + lf_fmtelse(e2, ind)
+    Call(nm, args)  => if lf_isnil(args) == 1 then flat else nm + "(\n" + lf_spaces(ind + 4) + lf_joinsep(lf_fmtbs(args, ind + 4), ",\n" + lf_spaces(ind + 4)) + ")"
+    _               => flat
+fn lf_fmtthen(t, ind) = if lf_isif(t) == 1 then lf_wrapthen(t) else lf_fmtb(t, ind)
+fn lf_fmtelse(e2, ind) = if lf_isif(e2) == 1 then "else " + lf_fmtb(e2, ind) else "else\n" + lf_spaces(ind + 4) + lf_fmtb(e2, ind + 4)
+fn lf_fmtbs(xs, ind) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(lf_fmtb(h, ind), lf_fmtbs(t, ind))
 fn lf_fmtstmt(s) = match s
-    Fn(nm, ps, rt, body) => "fn " + nm + "(" + lf_joinsep(ps, ", ") + ")" + rt + " = " + lf_fmte(body)
+    Fn(nm, ps, rt, body) => lf_fmtfn("fn " + nm + "(" + lf_joinsep(ps, ", ") + ")" + rt, body)
     TypeD(line)          => line
     UseD(line)           => line
     Print(v)             => "print " + lf_fmte(v)
@@ -236,9 +255,42 @@ fn lf_same(src, a, text) = let b = lf_real_ast(text) in if b.ok == 1 and a.prog 
 fn lf_safe2(src, out) = if out.ok == 0 then src else let a = lf_real_ast(src) in if a.ok == 0 then src else lf_same(src, a, out.text)
 fn lf_safe(src) = if lf_comment_at(src, count(src), 0, 0) == 1 then src else lf_safe2(src, lf_try_fmt(src))
 
+## --- long lines, by tokens: a one-line `fn` wider than lf_width() is written with one `let ... in` per line and the
+## branches of every if indented (an `else if` chain stays at one level), to the end of the expression. Only the
+## words let / in / if / then / else outside parentheses, brackets, braces and strings are looked at, so lambdas,
+## `{r with ...}` and calls pass whole. The broken text replaces the line only when the compiler reads the same
+## program from it (lf_same).
+fn lb_id(c) = lf_isalnum(c)
+fn lb_word(s, i, n, w) = let m = count(w) in i + m <= n and slicen(s, n, i, i + m) == w and (i == 0 or lb_id(at(s, i - 1)) == 0) and (i + m >= n or lb_id(at(s, i + m)) == 0)
+## the index just past the string literal that starts at i ("..." with escapes, or """...""")
+fn lb_str(s, i, n) = if i + 2 < n and slicen(s, n, i, i + 3) == "\"\"\"" then lb_str3(s, i + 3, n) else lb_str1(s, i + 1, n)
+fn lb_str1(s, i, n) = if i >= n then n else let c = at(s, i) in if c == "\\" then lb_str1(s, i + 2, n) else if c == "\"" then i + 1 else lb_str1(s, i + 1, n)
+fn lb_str3(s, i, n) = if i + 2 >= n then n else if slicen(s, n, i, i + 3) == "\"\"\"" then i + 3 else lb_str3(s, i + 1, n)
+## the first position at depth 0 of the word w, skipping (w, open) pairs: open opens a nested construct whose own w
+## closes it (let/in, if/else); -1 when there is none
+fn lb_find(s, i, n, d, k, w, open) = if i >= n then 0 - 1 else let c = at(s, i) in if c == "\"" then lb_find(s, lb_str(s, i, n), n, d, k, w, open) else if c == "(" or c == "[" or c == "{" then lb_find(s, i + 1, n, d + 1, k, w, open) else if c == ")" or c == "]" or c == "}" then lb_find(s, i + 1, n, d - 1, k, w, open) else if d == 0 and lb_word(s, i, n, open) then lb_find(s, i + count(open), n, d, k + 1, w, open) else if d == 0 and lb_word(s, i, n, w) then (if k == 0 then i else lb_find(s, i + count(w), n, d, k - 1, w, open)) else lb_find(s, i + 1, n, d, k, w, open)
+fn lb_trim(s) = lf_rtrim(lf_ltrim(s))
+fn lb_lay(e, ind) = let t = lb_trim(e) in if lb_word(t, 0, count(t), "let") then lb_lay_let(t, ind) else if lb_word(t, 0, count(t), "if") then lb_lay_if(t, ind) else t
+fn lb_lay_let(t, ind) = let n = count(t) in let k = lb_find(t, 3, n, 0, 0, "in", "let") in if k < 0 then t else lf_rtrim(slicen(t, n, 0, k)) + " in\n" + lf_spaces(ind) + lb_lay(slicen(t, n, k + 2, n), ind)
+fn lb_lay_if(t, ind) = let n = count(t) in let th = lb_find(t, 2, n, 0, 0, "then", "if") in let el = (if th < 0 then 0 - 1 else lb_find(t, th + 4, n, 0, 0, "else", "if")) in if el < 0 then t else lb_lay_if2(lb_trim(slicen(t, n, 2, th)), slicen(t, n, th + 4, el), lb_trim(slicen(t, n, el + 4, n)), ind)
+fn lb_lay_if2(c, tb, eb, ind) = "if " + c + " then\n" + lf_spaces(ind + 4) + lb_lay(tb, ind + 4) + "\n" + lf_spaces(ind) + (if lb_word(eb, 0, count(eb), "if") then "else " + lb_lay(eb, ind) else "else\n" + lf_spaces(ind + 4) + lb_lay(eb, ind + 4))
+## the " = " that ends the head of a one-line fn (depth 0, not part of ==, <=, >=, !=, =>)
+fn lb_eq(s, i, n, d) = if i + 2 >= n then 0 - 1 else let c = at(s, i) in if c == "\"" then lb_eq(s, lb_str(s, i, n), n, d) else if c == "(" or c == "[" or c == "{" then lb_eq(s, i + 1, n, d + 1) else if c == ")" or c == "]" or c == "}" then lb_eq(s, i + 1, n, d - 1) else if d == 0 and slicen(s, n, i, i + 3) == " = " then i else lb_eq(s, i + 1, n, d)
+fn lb_stmt(t) = let n = count(t) in let k = lb_eq(t, 0, n, 0) in if k < 0 then t else let body = lb_lay(slicen(t, n, k + 3, n), 4) in if lf_hasnl(body, 0) == 0 then t else slicen(t, n, 0, k) + " =\n    " + body
+## a declaration over several lines (requires / ensures): its long `= body` line is broken the same way
+fn lb_multi(o) = if lf_comment_at(o, count(o), 0, 0) == 1 or lf_startswith(o, "fn ") == 0 then o else let b = lf_joinsep(lb_eqlines(lf_splitlines(o)), "\n") in if b == o then o else let a = lf_real_ast(o) in if a.ok == 1 then lf_same(o, a, b) else o
+fn lb_eqlines(ls) = match ls
+    Nil        => Nil
+    Cons(l, t) => Cons(lb_eqline(l), lb_eqlines(t))
+## a long match arm: what follows its "=>" (depth 0) is broken, continuing four columns past the arm
+fn lb_arrow(s, i, n, d) = if i + 3 >= n then 0 - 1 else let c = at(s, i) in if c == "\"" then lb_arrow(s, lb_str(s, i, n), n, d) else if c == "(" or c == "[" or c == "{" then lb_arrow(s, i + 1, n, d + 1) else if c == ")" or c == "]" or c == "}" then lb_arrow(s, i + 1, n, d - 1) else if d == 0 and slicen(s, n, i, i + 4) == " => " then i else lb_arrow(s, i + 1, n, d)
+fn lb_armline(l) = let n = count(l) in let k = lb_arrow(l, 0, n, 0) in if k < 0 then l else let ind = n - count(lf_ltrim(l)) in let body = lb_lay(slicen(l, n, k + 4, n), ind + 4) in if lf_hasnl(body, 0) == 1 then slicen(l, n, 0, k) + " => " + body else l
+fn lb_eqline(l) = let t = lf_ltrim(l) in if count(l) > lf_width() and lf_startswith(t, "= ") == 0 then lb_armline(l) else if count(l) > lf_width() and lf_startswith(t, "= ") then (let ind = count(l) - count(t) in let body = lb_lay(slice(t, 2, count(t)), ind + 4) in if lf_hasnl(body, 0) == 1 then lf_spaces(ind) + "= " + body else l) else l
+fn lf_safe_brk(src) = let o = lf_safe(src) in if lf_hasnl(o, 0) == 1 then lb_multi(o) else if count(o) <= lf_width() or lf_startswith(o, "fn ") == 0 or lf_comment_at(o, count(o), 0, 0) == 1 then o else let b = lb_stmt(o) in if b == o then o else let a = lf_real_ast(o) in if a.ok == 1 then lf_same(o, a, b) else o
+
 ## --- line grouping: group continuation lines (indented lines or unindented match arms) with statement ---
 fn lf_isarmline(tr) = if tr == "" or lf_startswith(tr, "#") or lf_startswith(tr, "fn ") or lf_startswith(tr, "type ") or lf_startswith(tr, "use ") or lf_startswith(tr, "print ") then 0 else lf_isarrow((lf_parsepat(lf_lexall(tr))).rest)
-fn lf_isbracecont(tr) = lf_startswith(tr, "}") or lf_startswith(tr, "elif ") or lf_startswith(tr, "else") or lf_startswith(tr, "|")
+fn lf_isbracecont(tr) = lf_startswith(tr, "= ") or lf_startswith(tr, "}") or lf_startswith(tr, "elif ") or lf_startswith(tr, "else") or lf_startswith(tr, "|")
 fn lf_iscont(raw, tr) = if tr == "" or lf_startswith(tr, "#") then 0 else if lf_isindented(raw) then 1 else if lf_isbracecont(tr) then 1 else lf_isarmline(tr)
 
 fn lf_takecont(lines) = match lines
@@ -253,6 +305,6 @@ fn lf_skipempty(lines) = match lines
 fn lf_fmtlines(lines) = match lines
     Nil        => Nil
     Cons(h, t) => let raw = lf_rtrim(h) in lf_fmtline1(raw, lf_ltrim(raw), t)
-fn lf_fmtline1(raw, tr, t) = if tr == "" then let t2 = lf_skipempty(t) in if lf_isnil(t2) == 1 then Nil else Cons("", lf_fmtlines(t2)) else if lf_startswith(tr, "#") then Cons(raw, lf_fmtlines(t)) else let c = lf_takecont(t) in Cons(lf_safe(lf_joinsep(Cons(raw, c.cont), "\n")), lf_fmtlines(c.rest))
+fn lf_fmtline1(raw, tr, t) = if tr == "" then let t2 = lf_skipempty(t) in if lf_isnil(t2) == 1 then Nil else Cons("", lf_fmtlines(t2)) else if lf_startswith(tr, "#") then Cons(raw, lf_fmtlines(t)) else let c = lf_takecont(t) in Cons(lf_safe_brk(lf_joinsep(Cons(raw, c.cont), "\n")), lf_fmtlines(c.rest))
 
 print lf_joinsep(lf_fmtlines(lf_skipempty(lf_splitlines(readall()))), "\n")

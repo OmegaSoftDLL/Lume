@@ -68,6 +68,15 @@ fn nc_wait(fd, ms) = let pb = nc_put(buf_new(8), 0, nc_app(nc_le32(fd), Cons(4, 
 ## non-blocking connect, wait, blocking mode back: 1 when connected
 fn nc_connect(fd, sa, ms) = let fl = sys_call(72, fd, 3, 0, 0, 0) in if fl < 0 then 0 else let s1 = sys_call(72, fd, 4, bit_or(fl, 2048), 0, 0) in if s1 < 0 then 0 else let c = sys_call(42, fd, buf_addr(sa.buf), sa.len, 0, 0) in let ok = if c == 0 then 1 else if c == 0 - 115 or c == 0 - 11 then nc_wait(fd, ms) else 0 in let r = sys_call(72, fd, 4, fl, 0, 0) in if ok == 1 and r >= 0 then 1 else 0
 fn net_tcp_connect_addr_timeout(ip, port, ms) = let sa = nc_sockaddr(ip, port) in if sa.ok == 0 or ms < 0 then 0 - 1 else let fd = sys_call(41, sa.fam, 1, 0, 0, 0) in if fd < 0 then 0 - 1 else if nc_connect(fd, sa, ms) == 1 then fd else let z = nc_close(fd) in 0 - 1
+## net_tcp_connect_start(ip, port) -> a socket whose connect is under way (O_NONBLOCK; EINPROGRESS), at once, or -1
+##     when it fails at once (bad address, no socket, refused right away). Wait for it with epoll_add(ep, fd, tag,
+##     epoll_out()), then net_tcp_connect_result(fd). The socket stays non-blocking: net_send_some / net_recv_some.
+## net_tcp_connect_result(fd) -> 0 when the connection is up, else the error number (SO_ERROR: 111 refused, 110 timed
+##     out, 113 no route ...); a socket whose connect is still under way answers 0 only once it is up. One event loop can
+##     open many connections without a dead address freezing it for the connect timeout.
+fn net_tcp_connect_start(ip, port) = let sa = nc_sockaddr(ip, port) in if sa.ok == 0 then 0 - 1 else let fd = sys_call(41, sa.fam, 1, 0, 0, 0) in if fd < 0 then 0 - 1 else if net_set_nonblocking(fd, 1) == 0 then nc_fail_close(fd) else let c = sys_call(42, fd, buf_addr(sa.buf), sa.len, 0, 0) in if c == 0 or c == 0 - 115 or c == 0 - 11 then fd else nc_fail_close(fd)
+fn nc_fail_close(fd) = let z = nc_close(fd) in 0 - 1
+fn net_tcp_connect_result(fd) = let v = nc_put(buf_new(4), 0, nc_le32(0)) in let l = nc_put(buf_new(4), 0, nc_le32(4)) in let r = sys_call(55, fd, 1, 4, buf_addr(v), buf_addr(l)) in if r != 0 then 0 - r else nc_get32(v)
 ## TCP_NODELAY (IPPROTO_TCP 6, option 1)
 fn net_tcp_nodelay(fd, on) = let v = nc_put(buf_new(4), 0, nc_le32(if on != 0 then 1 else 0)) in if sys_call(54, fd, 6, 1, buf_addr(v), 4) == 0 then 1 else 0
 

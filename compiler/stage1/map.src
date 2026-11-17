@@ -1,67 +1,87 @@
-## compiler/stage1/map.src -- Persistent Hash Array Mapped Trie (HAMT, 256-way O(1)) & @memo Cache
-## Import with `use map` (or `use std.map`).
+## compiler/stage1/map.src -- persistent hash map, safe against forged collisions (`use map`, or `use std.map`).
 ##
-## Implements a 4-level 4-ary persistent HAMT (`MNode(q0, q1, q2, q3)` -> 256 leaf buckets)
-## with FNV-1a string/integer hashing (`map_hash_str`, `map_hash_int`), O(1) lookup/insert/remove
-## (`map_new`, `map_put`, `map_get`, `map_get_or`, `map_has`, `map_remove`, `map_size`), and
-## pure-function memoization (`memo_fib_step`, `memo_fib`).
+## map_new()                  a map with a secret 64-bit key drawn from the system's random source (the default for
+##                            any key a peer can choose: CIDs, addresses, public keys)
+## map_new_seeded(k0, k1)     the same with a key you give (deterministic: tests, memoization of trusted data)
+## map_put(m, k, v) -> map    map_get(m, k) ("" when absent)   map_get_or(m, k, default)   map_has(m, k) -> 1 / 0
+## map_remove(m, k) -> map    map_size(m)   map_keys(m) -> list   map_fold(m, acc, f) -> f(acc, k, v) over every entry
+## Keys are strings (any bytes, NUL included) or integers (1 and "1" are different keys).
+##
+## The hash is HalfSipHash-2-4 (32-bit words: no boxed integers) keyed per map, so which keys share a bucket cannot be
+## predicted without the key. The trie grows with the map: a bucket of more than 8 entries splits into four by the
+## next 2 bits of the hash (16 levels), so a lookup stays a handful of steps however many keys there are. Updates
+## rebuild one path (persistent: an older map is unchanged). map_hash_str (unkeyed, 0 .. 255) stays for old callers;
+## it must not place keys an attacker chooses.
 
 fn map_hash_loop(s, i, n, acc) = if i >= n then acc else let next = (acc * 16777619 + ord(at(s, i)) * 131 + i * 17) % 1073741824 in map_hash_loop(s, i + 1, n, if next < 0 then 0 - next else next)
-
 fn map_hash_str(s) = map_hash_loop(s, 0, count(s), 2166136261 % 1073741824) % 256
 
-fn map_empty_level(depth) = if depth <= 0 then MBucket(Nil) else let sub = map_empty_level(depth - 1) in MNode(sub, sub, sub, sub)
+## --- HalfSipHash-2-4 over the bytes of str(k), keyed by (k0, k1), 32-bit result
+fn map_m32(x) = bit_and(x, 4294967295)
+fn map_rotl(x, n) = bit_or(bit_and(bit_shl(x, n), 4294967295), bit_shr(x, 32 - n))
+fn map_sr(a, b, c, d) = let a1 = map_m32(a + b) in let b1 = bit_xor(map_rotl(b, 5), a1) in let a2 = map_rotl(a1, 16) in let c1 = map_m32(c + d) in let d1 = bit_xor(map_rotl(d, 8), c1) in let a3 = map_m32(a2 + d1) in let d2 = bit_xor(map_rotl(d1, 7), a3) in let c2 = map_m32(c1 + b1) in let b2 = bit_xor(map_rotl(b1, 13), c2) in {a: a3, b: b2, c: map_rotl(c2, 16), d: d2}
+fn map_hs_m(st, w) = let x = map_sr(st.a, st.b, st.c, bit_xor(st.d, w)) in let y = map_sr(x.a, x.b, x.c, x.d) in {a: bit_xor(y.a, w), b: y.b, c: y.c, d: y.d}
+fn map_hs_words(s, i, end, st) = if i >= end then st else map_hs_words(s, i + 4, end, map_hs_m(st, ord_at(s, i) + 256 * ord_at(s, i + 1) + 65536 * ord_at(s, i + 2) + 16777216 * ord_at(s, i + 3)))
+fn map_hs_tail(s, i, n, sh, acc) = if i >= n then acc else map_hs_tail(s, i + 1, n, sh + 8, bit_or(acc, bit_shl(ord_at(s, i), sh)))
+fn map_hs_fin(st) = let x = map_sr(st.a, st.b, bit_xor(st.c, 255), st.d) in let y = map_sr(x.a, x.b, x.c, x.d) in let z = map_sr(y.a, y.b, y.c, y.d) in let u = map_sr(z.a, z.b, z.c, z.d) in bit_xor(u.b, u.d)
+fn map_hsip(s, k0, k1) = let n = count(s) in let body = n - n % 4 in let st = map_hs_words(s, 0, body, {a: k0, b: k1, c: bit_xor(1819895653, k0), d: bit_xor(1952801890, k1)}) in map_hs_fin(map_hs_m(st, bit_or(bit_shl(bit_and(n, 255), 24), map_hs_tail(s, body, n, 0, 0))))
+fn map_hkey(m, k) = map_hsip(str(k), m.k0, m.k1)
 
-fn map_new() = {root: map_empty_level(4), size: 0}
-
-fn map_bkt_has(xs, k) = match xs
-    Nil        => 0
-    Cons(h, t) => if h.k == k then 1 else map_bkt_has(t, k)
-
-fn map_bkt_get(xs, k, def_val) = match xs
-    Nil        => def_val
-    Cons(h, t) => if h.k == k then h.v else map_bkt_get(t, k, def_val)
-
-fn map_bkt_put(xs, k, v) = match xs
-    Nil        => Cons({k: k, v: v}, Nil)
-    Cons(h, t) => if h.k == k then Cons({k: k, v: v}, t) else Cons(h, map_bkt_put(t, k, v))
-
+## --- the trie: MNode(q0, q1, q2, q3) by 2 bits of the hash per level, MBucket(entries {k, v, h})
+## declared, so the map lives next to the enum types of the program and of other modules (json, hujson)
+type MapTrie = enum MNode(MapTrie, MapTrie, MapTrie, MapTrie) | MBucket(MapTrie)
+fn map_bkt_find(xs, k) = match xs
+    Nil        => {hit: 0, v: ""}
+    Cons(e, t) => if e.k == k then {hit: 1, v: e.v} else map_bkt_find(t, k)
+fn map_bkt_put(xs, k, v, h) = match xs
+    Nil        => Cons({k: k, v: v, h: h}, Nil)
+    Cons(e, t) => if e.k == k then Cons({k: k, v: v, h: h}, t) else Cons(e, map_bkt_put(t, k, v, h))
 fn map_bkt_del(xs, k) = match xs
     Nil        => Nil
-    Cons(h, t) => if h.k == k then t else Cons(h, map_bkt_del(t, k))
-
-fn map_trie_get(node, h, depth, k, def_val) = match node
-    MBucket(xs)           => map_bkt_get(xs, k, def_val)
-    MNode(q0, q1, q2, q3) => if depth <= 0 then def_val else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then map_trie_get(q0, h2, depth - 1, k, def_val) else if idx == 1 then map_trie_get(q1, h2, depth - 1, k, def_val) else if idx == 2 then map_trie_get(q2, h2, depth - 1, k, def_val) else map_trie_get(q3, h2, depth - 1, k, def_val)
-
-fn map_trie_has(node, h, depth, k) = match node
-    MBucket(xs)           => map_bkt_has(xs, k)
-    MNode(q0, q1, q2, q3) => if depth <= 0 then 0 else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then map_trie_has(q0, h2, depth - 1, k) else if idx == 1 then map_trie_has(q1, h2, depth - 1, k) else if idx == 2 then map_trie_has(q2, h2, depth - 1, k) else map_trie_has(q3, h2, depth - 1, k)
-
-fn map_trie_put(node, h, depth, k, v) = match node
-    MBucket(xs)           => MBucket(map_bkt_put(xs, k, v))
-    MNode(q0, q1, q2, q3) => if depth <= 0 then node else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then MNode(map_trie_put(q0, h2, depth - 1, k, v), q1, q2, q3) else if idx == 1 then MNode(q0, map_trie_put(q1, h2, depth - 1, k, v), q2, q3) else if idx == 2 then MNode(q0, q1, map_trie_put(q2, h2, depth - 1, k, v), q3) else MNode(q0, q1, q2, map_trie_put(q3, h2, depth - 1, k, v))
-
-fn map_trie_del(node, h, depth, k) = match node
+    Cons(e, t) => if e.k == k then t else Cons(e, map_bkt_del(t, k))
+fn map_len(xs, n) = match xs
+    Nil        => n
+    Cons(e, t) => map_len(t, n + 1)
+fn map_slot(h, depth) = bit_and(bit_shr(h, 2 * depth), 3)
+fn map_sel(q0, q1, q2, q3, i) = if i == 0 then q0 else if i == 1 then q1 else if i == 2 then q2 else q3
+fn map_set4(q0, q1, q2, q3, i, x) = if i == 0 then MNode(x, q1, q2, q3) else if i == 1 then MNode(q0, x, q2, q3) else if i == 2 then MNode(q0, q1, x, q3) else MNode(q0, q1, q2, x)
+## a full bucket becomes a node: its entries spread by the bits of the next level
+fn map_split(xs, depth, q0, q1, q2, q3) = match xs
+    Nil        => MNode(MBucket(q0), MBucket(q1), MBucket(q2), MBucket(q3))
+    Cons(e, t) => let i = map_slot(e.h, depth) in map_split(t, depth, if i == 0 then Cons(e, q0) else q0, if i == 1 then Cons(e, q1) else q1, if i == 2 then Cons(e, q2) else q2, if i == 3 then Cons(e, q3) else q3)
+fn map_tget(n, h, depth, k) = match n
+    MBucket(xs)           => map_bkt_find(xs, k)
+    MNode(q0, q1, q2, q3) => map_tget(map_sel(q0, q1, q2, q3, map_slot(h, depth)), h, depth + 1, k)
+fn map_tput(n, h, depth, k, v) = match n
+    MBucket(xs)           => let ys = map_bkt_put(xs, k, v, h) in if depth < 16 and map_len(ys, 0) > 8 then map_split(ys, depth, Nil, Nil, Nil, Nil) else MBucket(ys)
+    MNode(q0, q1, q2, q3) => let i = map_slot(h, depth) in map_set4(q0, q1, q2, q3, i, map_tput(map_sel(q0, q1, q2, q3, i), h, depth + 1, k, v))
+fn map_tdel(n, h, depth, k) = match n
     MBucket(xs)           => MBucket(map_bkt_del(xs, k))
-    MNode(q0, q1, q2, q3) => if depth <= 0 then node else let idx = h % 4 in let h2 = h / 4 in if idx == 0 then MNode(map_trie_del(q0, h2, depth - 1, k), q1, q2, q3) else if idx == 1 then MNode(q0, map_trie_del(q1, h2, depth - 1, k), q2, q3) else if idx == 2 then MNode(q0, q1, map_trie_del(q2, h2, depth - 1, k), q3) else MNode(q0, q1, q2, map_trie_del(q3, h2, depth - 1, k))
+    MNode(q0, q1, q2, q3) => let i = map_slot(h, depth) in map_set4(q0, q1, q2, q3, i, map_tdel(map_sel(q0, q1, q2, q3, i), h, depth + 1, k))
+fn map_tfold(n, acc, f) = match n
+    MBucket(xs)           => map_bfold(xs, acc, f)
+    MNode(q0, q1, q2, q3) => map_tfold(q3, map_tfold(q2, map_tfold(q1, map_tfold(q0, acc, f), f), f), f)
+fn map_bfold(xs, acc, f) = match xs
+    Nil        => acc
+    Cons(e, t) => map_bfold(t, f(acc, e.k, e.v), f)
 
-fn map_has(m, k) = map_trie_has(m.root, map_hash_str(k), 4, k)
-
-fn map_get_or(m, k, def_val) = map_trie_get(m.root, map_hash_str(k), 4, k, def_val)
-
+## --- the map
+fn map_new_seeded(k0, k1) = {root: MBucket(Nil), size: 0, k0: map_m32(k0), k1: map_m32(k1)}
+fn map_rnd4(i, acc) = if i >= 4 then acc else let b = fs_read_byte("/dev/urandom", 0) in map_rnd4(i + 1, acc * 256 + (if b < 0 then 0 else b))
+fn map_new() = map_new_seeded(map_rnd4(0, 0), map_rnd4(0, 0))
+fn map_get_or(m, k, def_val) = let r = map_tget(m.root, map_hkey(m, k), 0, k) in if r.hit == 1 then r.v else def_val
 fn map_get(m, k) = map_get_or(m, k, "")
-
-fn map_put(m, k, v) = let h = map_hash_str(k) in let existed = map_trie_has(m.root, h, 4, k) in {root: map_trie_put(m.root, h, 4, k, v), size: if existed == 1 then m.size else m.size + 1}
-
-fn map_remove(m, k) = let h = map_hash_str(k) in let existed = map_trie_has(m.root, h, 4, k) in if existed == 0 then m else {root: map_trie_del(m.root, h, 4, k), size: m.size - 1}
-
+fn map_has(m, k) = (map_tget(m.root, map_hkey(m, k), 0, k)).hit
+fn map_put(m, k, v) = let h = map_hkey(m, k) in let had = (map_tget(m.root, h, 0, k)).hit in {root: map_tput(m.root, h, 0, k, v), size: if had == 1 then m.size else m.size + 1, k0: m.k0, k1: m.k1}
+fn map_remove(m, k) = let h = map_hkey(m, k) in if (map_tget(m.root, h, 0, k)).hit == 0 then m else {root: map_tdel(m.root, h, 0, k), size: m.size - 1, k0: m.k0, k1: m.k1}
 fn map_size(m) = m.size
+fn map_fold(m, acc, f) = map_tfold(m.root, acc, f)
+fn map_keys(m) = map_fold(m, Nil, fn(acc, k, v) => Cons(k, acc))
 
 ## --- Pure @memo dynamic programming cache over persistent HAMT ---
 fn memo_fib_step(n, cache) = if n <= 1 then {val: n, cache: cache} else let key = str(n) in if map_has(cache, key) == 1 then {val: toint(map_get(cache, key)), cache: cache} else let r1 = memo_fib_step(n - 1, cache) in let r2 = memo_fib_step(n - 2, r1.cache) in let ans = r1.val + r2.val in {val: ans, cache: map_put(r2.cache, key, str(ans))}
 
-fn memo_fib(n) = (memo_fib_step(n, map_new())).val
+fn memo_fib(n) = (memo_fib_step(n, map_new_seeded(305419896, 2271560481))).val
 
 fn test_map_hamt_256_crud() = let m0 = map_new() in let m1 = map_put(m0, "alpha", "100") in let m2 = map_put(m1, "beta", "200") in let m3 = map_put(m2, "gamma", "300") in let m4 = map_put(m3, "beta", "250") in let m5 = map_remove(m4, "alpha") in if map_size(m4) == 3 and map_get(m4, "beta") == "250" and map_get(m4, "gamma") == "300" and map_has(m5, "alpha") == 0 and map_size(m5) == 2 then 1 else 0
 
@@ -79,3 +99,21 @@ fn par_reduce_sum(xs) = match xs
 fn test_par_map_and_reduce_deterministic() = let xs = Cons(10, Cons(20, Cons(30, Cons(40, Nil)))) in let ys = par_map_int(xs, 3, 1) in let total = par_reduce_sum(ys) in if total == 304 then 1 else 0
 
 print test_map_hamt_256_crud() * test_memo_fib_o_n_speedup() * test_par_map_and_reduce_deterministic()
+
+## --- the keyed map: correctness, keys of every kind, traversal, and forged collisions
+fn map_t_build(m, ks) = match ks
+    Nil        => m
+    Cons(k, t) => map_t_build(map_put(m, k, k), t)
+fn map_t_all(m, ks) = match ks
+    Nil        => true
+    Cons(k, t) => map_get_or(m, k, "?") == k and map_t_all(m, t)
+fn map_t_keys(i, n, acc) = if i >= n then acc else map_t_keys(i + 1, n, Cons("key-" + str(i), acc))
+## the keys of the old unkeyed hash that all fall in bucket 0 (the attack of the LumeDesk audit)
+fn map_t_forged(i, n, acc) = if n == 0 then acc else if map_hash_str("k" + str(i)) == 0 then map_t_forged(i + 1, n - 1, Cons("k" + str(i), acc)) else map_t_forged(i + 1, n, acc)
+fn test_map_crud_and_persistence() = let m0 = map_new() in let m1 = map_put(m0, "alpha", "100") in let m2 = map_put(m1, "beta", "200") in let m3 = map_put(m2, "beta", "250") in let m4 = map_remove(m3, "alpha") in map_size(m3) == 2 and map_get(m3, "beta") == "250" and map_get(m2, "beta") == "200" and map_has(m4, "alpha") == 0 and map_size(m4) == 1 and map_get_or(m4, "zzz", "none") == "none" and map_size(m0) == 0
+fn test_map_byte_and_int_keys() = let m = map_put(map_put(map_put(map_new(), "a" + chr(0) + "b", "nul"), 42, "int"), "42", "text") in map_get(m, "a" + chr(0) + "b") == "nul" and map_get(m, 42) == "int" and map_get(m, "42") == "text" and map_get(m, "a") == "" and map_size(m) == 3
+fn test_map_grows_and_finds_every_key() = let ks = map_t_keys(0, 3000, Nil) in let m = map_t_build(map_new(), ks) in map_size(m) == 3000 and map_t_all(m, ks)
+fn test_map_keys_and_fold() = let m = map_t_build(map_new(), map_t_keys(0, 50, Nil)) in let n = map_fold(m, 0, fn(acc, k, v) => acc + 1) in count(map_keys(m)) == 50 and n == 50
+## 4000 keys forged for one bucket of the old hash build about as fast as 4000 ordinary keys: no quadratic case
+fn test_map_forged_keys_do_not_collide() = let fk = map_t_forged(0, 4000, Nil) in let ok = map_t_keys(0, 4000, Nil) in let t0 = os_monotonic_ns() in let m1 = map_t_build(map_new(), fk) in let t1 = os_monotonic_ns() in let m2 = map_t_build(map_new(), ok) in let t2 = os_monotonic_ns() in map_size(m1) == 4000 and map_t_all(m1, fk) and (t1 - t0) < 4 * (t2 - t1) + 20000000
+fn test_map_seeded_is_deterministic() = let a = map_new_seeded(1, 2) in let b = map_new_seeded(1, 2) in map_hkey(a, "x") == map_hkey(b, "x") and map_hkey(a, "x") != map_hkey(map_new_seeded(1, 3), "x")

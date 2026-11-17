@@ -92,7 +92,8 @@ fn man_en_syntax() = "# CHAPTER 2: SYNTAX, GRAMMAR & COMPILER INVARIANTS\n\n" +
 "- Arithmetic:         `+`, `-`, `*`, `/`, `%`\n" +
 "- Comparison:         `==`, `!=` (constant-stack `O(1)` worklist structural equality on deep lists/ADTs/records), `<`, `<=`, `>`, `>=`\n" +
 "- String concat/interp: `f\"val=" + man_br("x") + "\"`, `\"val=$" + man_br("x") + "\"`, or `\"val=" + man_br("x") + "\"`\n" +
-"- `+` adds two ints or joins two strs; nothing converts implicitly: `\"total: \" + str(n)` ([T0604]).\n" +
+"- `+` adds two ints or joins two strs; nothing converts implicitly: `\"total: \" + str(n)` ([T0604]); lists are\n" +
+"  joined with `seq_concat(xs, ys)` (`use seq`), and `xs + [d]` is refused by `lume check` and the compiler.\n" +
 "                        (raw JSON `\"{\\\"a\\\":{\\\"b\\\":1}}\"` is preserved; escape literal braces with `\"\\" + man_br("x") + "\"`,\n" +
 "                        `\"" + man_br(man_br("x")) + "\"`, or `\"cost: \\$" + man_br("x") + "\"`; escapes `\\n`, `\\r`, `\\t`, `\\b`, `\\f`, `\\0`, `\\xHH`, `\\'`, `\\\"`, `\\\\`)\n" +
 "- Record literal:     `" + man_br("id: 1, name: \"alice\"") + "` (field access: `r.id`, `r.name`)\n" +
@@ -140,7 +141,10 @@ fn man_en_types() = "# CHAPTER 3: TYPE SYSTEM, OWNERSHIP & DATA TYPES\n\n" +
 "- `Result[T, E]`      `Ok(v)` | `Err(e)`\n" +
 "- Record `" + man_br("f: T") + "`     Structural or nominal record (`" + man_br("x: 10, y: 20") + "`)\n" +
 "- Update `" + man_br("e with f: v") + "`  A copy with some fields replaced; e is any expression (a name, a call, a\n" +
-"                     field `r.b`, `(e)`); a field the record lacks is `[T2101]`\n\n" +
+"                     field `r.b`, `(e)`); a field the record lacks is `[T2101]`, also when the record comes\n" +
+"                     from a function or from both branches of an if\n" +
+"- Reserved words   `if then else let in var mut match not own with spawn do defer errdefer comptime quote splice\n" +
+"                     scope shard fn` cannot name a function, variable or parameter (P0002 at the declaration)\n\n" +
 "## 3.2 Algebraic Data Types (ADTs)\n" +
 "```lume\n" +
 "type Shape =\n" +
@@ -199,6 +203,16 @@ fn man_en_contracts() = "# CHAPTER 4: CONTRACTS, LAWS & FORMAL VERIFICATION\n\n"
 "- Implication Idiom (`if P then Q else 1 == 1`): Express logical implication $P \\implies Q$\n" +
 "  inside `law` declarations using `if P then Q else 1 == 1`, which reduces directly to\n" +
 "  decidable `QF_LIA` branches in both `lcaas.src` and the standalone proof kernel `lcert.src`.\n" +
+"- Bounded products (QF_NIA by relaxation): `x * y` where `requires` bounds both factors (`dt >= 0 and dt <= 60000\n" +
+"  and rate >= 0 and rate <= 10000000000`) is bound by the four McCormick inequalities, so `ensures result <=\n" +
+"  600000000000` of `dt * rate / 1000` is proven by `lume prove` and certified by `lume certify`; a product with an\n" +
+"  unbounded factor, or a bound that does not hold, stays unproven or refuted with a counterexample. The bound may\n" +
+"  come from `requires` or from the path (`if a >= 4398046511104 then lim else a * p / 1000`), also inside a `let`;\n" +
+"  bounds up to 2^62 count. A factor may be a bounded linear expression (`(255 - c) * alfa`), and a division may be by a\n" +
+"  variable with a positive lower bound (`pool * p / soma`, `soma >= 1`); `lume certify` re-checks all of these.\n" +
+"- Booleans in proofs: a comparison used as a value (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,\n" +
+"  `not f(n)`) is proved as 1 / 0. A law about a function call uses the callee's proven `ensures` when the law's\n" +
+"  hypothesis implies the callee's `requires` (so a callee that calls others or multiplies bounded factors is fine).\n" +
 "- Compound Termination & Proof Kernel (`lcert.src`): Verifies compound `terminates`\n" +
 "  obligations (`lk_prove_term_cond` across `and`/`or` guards) and runs a built-in\n" +
 "  NIST FIPS 180-4 SHA-256 Known-Answer Test (`sha256(\"abc\")`).\n\n" +
@@ -254,6 +268,9 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "            `ord(ch)`, `chr(code)`, `str(n)`, `toint(s)`\n" +
 "- I/O & FS: `readall()`, `fs_read_file(path)`, `fs_write_sync(path, data)`,\n" +
 "            `fs_path_exists(path)`, `fs_read_byte(path, offset)`\n" +
+"            `fs_read_range(path, offset, n)` (up to n bytes from offset, never the whole file; shorter at the end,\n" +
+"            \"\" past it), `fs_truncate(path, size)` (1 / 0), `fs_rename_noreplace(from, to)` (0 when `to` exists;\n" +
+"            renameat2 RENAME_NOREPLACE / MoveFileExW without REPLACE_EXISTING)\n" +
 "- Owner-only files (keys, secrets): `fs_write_private(path, data)` writes a temporary created 0600 (O_EXCL, no\n" +
 "            symlink followed), fsyncs it and renames it over path: atomic, never readable by others, also on Windows\n" +
 "            (a protected DACL that grants the owner alone); `fs_create_private(path, data)` creates it only when it\n" +
@@ -263,6 +280,9 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "- OS keychain: `use keychain` -> `keychain_set(service, account, secret)`, `keychain_get(service, account)`\n" +
 "            (" + man_br("ok, value, err") + "), `keychain_delete(service, account)`: the Windows Credential Manager; on Linux an\n" +
 "            owner-only file, refused on read when others can reach it; secrets up to 2560 bytes\n" +
+"            Errors (`err`): `not_found` ONLY when the entry does not exist; `access_denied`, `unavailable` (no store,\n" +
+"            no logon session, no directory), `corrupt`, `not_private`, `locked` (reserved): a store that cannot\n" +
+"            answer is never reported as absent, so a caller may fail closed on it\n" +
 "- Environment: `os_getenv(name)` (\"\" when absent), `os_env_has(name)` (1 when set, even to \"\")\n" +
 "- Network control: `use netctl` -> `net_tcp_connect_addr_timeout(ip, port, ms)` (the socket, or -1 when refused,\n" +
 "            unreachable or silent past ms), `net_tcp_nodelay(fd, on)` (1 when set); `use dns` ->\n" +
@@ -271,6 +291,9 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "            0 when the buffer is full, -1 on error; no SIGPIPE), `net_recv_some(fd, max)` -> n > 0 / 0 closed /\n" +
 "            -2 nothing now / -1 error, `epoll_add(ep, fd, tag, events)`, `epoll_mod`, `epoll_del(ep, fd)`,\n" +
 "            `epoll_wait_ev(ep, ms)` -> tag (-1 on timeout) and events (`epoll_in()`, `epoll_out()`, err, hup)\n" +
+"            Connect without blocking the loop: `net_tcp_connect_start(ip, port)` (fd at once, connect under way;\n" +
+"            -1 on an immediate error), wait for `epoll_out()`, then `net_tcp_connect_result(fd)` -> 0 up, else\n" +
+"            the error number (111 refused, 110 timed out)\n" +
 "            Addresses: `net_local_addr(fd)`, `os_ipv4_interfaces()`, `os_ipv6_interfaces()` (short form, no ::1,\n" +
 "            a link-local one with its scope: `fe80::1%3`), on Linux and on Windows\n" +
 "- System primitives (for runtime and library code, effects sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` is the\n" +
@@ -307,7 +330,11 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "`module.name`. `use json as j` then `j.read(s)` names `read` of `json`. A module in a folder is\n" +
 "written by its last segment (`use net/http`, then `http.get(u)`); of two folders with the same last\n" +
 "segment, all but one need an alias (`use a/http` + `use b/http as hb`: `http.get`, `hb.get`), and two\n" +
-"without one stop at `file:line:col` with that fix. Record fields are never renamed.\n" +
+"without one stop at `file:line:col` with that fix. Each `use m` resolves next to the file that writes\n" +
+"it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are never renamed.\n" +
+"- Recursion depth: the runtime reserves a large stack at start (Linux and Windows): plain recursion of a\n" +
+"                       million levels runs (a list of a million items), tens of millions of small frames too; past\n" +
+"                       that the program stops with `lume: stack overflow (recursion too deep)` (exit 12), never silently\n" +
 "- `use seq`            Repetition without hand-written recursion: `seq_map`, `seq_filter`, `seq_fold`,\n" +
 "                       `seq_foldr`, `seq_any`, `seq_all`, `seq_find`, `seq_range`, `seq_loop(a, b, acc, f)`,\n" +
 "                       `seq_while(state, cond, step)`, `seq_count`, `seq_bytes`, `seq_loop_inv(a, b, acc, step, inv)`\n" +
@@ -323,8 +350,10 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "- `use vec`            Formally verified generic collection & numeric invariants (`vec.src`, `decimal.src`,\n" +
 "                       `stdlib/std.lume`: `vec_clamp_index`, `vec_checked_slice_len`, `map_checked_slot`,\n" +
 "                       `decimal_clamp`)\n" +
-"- `use map`            256-way hash-bucketed dictionary (`map_new`, `map_put`, `map_get`, `map_get_or`,\n" +
-"                       `map_checked_slot`)\n" +
+"- `use map`            Persistent hash map safe against forged collisions: `map_new()` (a secret key from the\n" +
+"                       system's random source, for keys a peer chooses), `map_new_seeded(k0, k1)`, `map_put`,\n" +
+"                       `map_get`, `map_get_or`, `map_has`, `map_remove`, `map_size`, `map_keys`, `map_fold(m, acc, f)`;\n" +
+"                       keys are strings (any bytes) or ints; HalfSipHash-2-4, buckets that split as it grows\n" +
 "- `use arena`          Scoped O(1) memory arenas (`arena_new`, `arena_alloc`, `arena_reset`, `heap_stats`)\n" +
 "- `use capsule`        Tamper-evident execution capsules (`capsule_seal`, `capsule_verify`)\n" +
 "- `use fs_sha256_file` FIPS 180-4 SHA-256 digest (`lc_sha256(str)`, `fs_sha256_file(path)`, `fs_file_size(path, i)`)\n" +
@@ -621,11 +650,14 @@ fn man_en_targets() = "# CHAPTER 7: 27 UNIVERSAL TARGETS, LUMEMIR SSA & STORE PA
 fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 & WAVES 1-10)\n\n" +
 "## 8.1 Core Toolchain & Developer Commands\n" +
 "  lume build [--incremental] [--memory] [--protect [hardened|max]] [--target <t>] <src> [-o <out>]\n" +
+"                                         (-o libX.so / X.dll: a shared library written by Lume, its pub\n" +
+"                                         functions exported; a test says ## @library libX.so = X.src)\n" +
 "  lume run [--memory] <src> [args...]    Compile and run source immediately\n" +
 "  lume test <src.src>...                 Run all `fn test_*()` unit tests\n" +
 "  lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check\n" +
 "  lume check --lex <file>...             Lexical check only (strings, escapes, comments), FILE:LINE:COL\n" +
-"  lume fmt <src.src> [--check|--stdout]  Canonical code formatter\n" +
+"  lume fmt <src.src> [--check|--stdout]  Canonical code formatter (a function wider than 120 columns\n" +
+"                                         is written one let / if branch / argument per line)\n" +
 "  lume doc <src.src> [--json]            Generate module documentation & run doctests\n" +
 "  lume repl [--kernel|--json]            Interactive Read-Eval-Prove-Print Loop (`--kernel`: Jupyter kernel protocol)\n" +
 "  lume lsp / lume dap                    Language Server & Debug Adapter Protocol\n" +
@@ -765,11 +797,17 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  against the official vectors by `crypto_tls_gate`. For bulk data use the string API (binary strings, linear time,\n" +
 "  memory of the output only): `lcs_sha256(s)`, `lcs_hmac_sha256(key, msg)`, `lcs_aead_seal(key32, nonce12, aad, p)`,\n" +
 "  `lcs_aead_open(...)` -> `" + man_br("ok, plain") + "`, `lcs_chacha20`, `lcs_poly1305`, `lcs_hex` / `lcs_unhex`.\n" +
+"  Incremental (a stream in pieces, same native speed): `lcs_sha256_init()`, `lcs_sha256_update(st, data)` -> st,\n" +
+"  `lcs_sha256_final(st)` -> 32 bytes; `lcs_hmac_sha256_init(key)` / `_update(st, data)` / `_final(st)`; a state is a\n" +
+"  value (an older one can still be continued or finished).\n" +
 "  AES (FIPS 197) and AES-GCM (SP 800-38D) for QUIC Initial packets and the AES suites of TLS 1.3:\n" +
 "  `lcs_aes128_ecb_encrypt(key16, block16)` (QUIC header protection), `lcs_aes128_gcm_seal(key16, nonce12, aad, p)`,\n" +
 "  `lcs_aes128_gcm_open(...)` -> `" + man_br("ok, plain") + "`, the same with `aes256`. ECDSA P-256 with SHA-256\n" +
 "  (`ecdsa_secp256r1_sha256`): `lcs_p256_verify(pub65, msg, sig_der)` -> 1 or 0, `lcs_p256_sign(priv32, msg)`\n" +
-"  (RFC 6979 nonce), `lcs_p256_public(priv32)`, `_raw` forms with r || s. `ltv` adds `[C0010]`: the emitted code of a `@secret` function\n" +
+"  (RFC 6979 nonce), `lcs_p256_public(priv32)`, `_raw` forms with r || s. X25519 and Ed25519 (runtime routines\n" +
+"  written in Lume): `lcs_x25519(k32, u32)`, `lcs_x25519_base(k32)`, `lcs_x25519_shared(k32, peer32)` -> `" + man_br("ok, secret") + "`,\n" +
+"  `lcs_ed25519_public(seed32)`, `lcs_ed25519_sign(seed32, msg)`, `lcs_ed25519_verify(pk32, msg, sig64)`.\n" +
+"  `ltv` adds `[C0010]`: the emitted code of a `@secret` function\n" +
 "  may hold no conditional branch, division or memory access outside its frame, and neither may any routine it\n" +
 "  reaches by `call` (the scan is transitive and names the call chain). Limits: tested, not formally\n" +
 "  verified; a plain `@secret` function that uses `+` or a bit operation is rejected by `[C0010]` (its helpers\n" +
@@ -1063,7 +1101,12 @@ fn man_pt_syntax() = "# CAPITULO 2: SINTAXE, GRAMATICA E REGRAS DO COMPILADOR\n\
 "- Comparacao: `==`, `!=` (igualdade estrutural em pilha `O(1)` para listas/ADTs/records profundos), `<`, `<=`, `>`, `>=`\n" +
 "- Registros (Structs): `let p = " + man_br("x: 10, y: 20") + " in p.x + p.y`\n" +
 "- Atualizacao: `" + man_br("e with f: v") + "` copia trocando campos; e e qualquer expressao (nome, chamada,\n" +
-"  campo `r.b`, `(e)`); campo que o registro nao tem e `[T2101]`\n" +
+"  campo `r.b`, `(e)`); campo que o registro nao tem e `[T2101]`, tambem quando o registro vem de uma\n" +
+"  funcao ou dos dois ramos de um if\n" +
+"- Palavras reservadas (`if`, `let`, `var`, `match`, `with`, `fn` e as demais) nao podem nomear funcao, variavel\n" +
+"  ou parametro (P0002 na propria declaracao)\n" +
+"- `+` soma dois inteiros ou junta duas strs; nada e convertido implicitamente (`\"total: \" + str(n)`, [T0604]);\n" +
+"  listas se juntam com `seq_concat(xs, ys)` (`use seq`), e `xs + [d]` e recusado no `lume check` e na compilacao\n" +
 "- Literais de lista e ADTs: `[]` (`Nil`), `[1, 2, 3]` (`Cons(1, Cons(2, Cons(3, Nil)))`), `count([1, 2, 3]) == 3`\n" +
 "- Comentarios: `## Comentarios comecam com dois sustenidos`\n\n" +
 "## 2.3 Reconhecimento de Padroes (`match` — DX 10/10)\n" +
@@ -1157,6 +1200,16 @@ fn man_pt_contracts() = "# CAPITULO 4: CONTRATOS, LEIS MATEMATICAS E VERIFICACAO
 "- Idioma de Implicacao (`if P then Q else 1 == 1`): Expresse implicacoes logicas $P \\implies Q$\n" +
 "  dentro de `law` usando `if P then Q else 1 == 1`, reduzindo diretamente para ramos\n" +
 "  decidiveis `QF_LIA` tanto no `lcaas.src` quanto no kernel independente `lcert.src`.\n" +
+"- Produtos limitados (QF_NIA por relaxacao): `x * y` com os dois fatores limitados nos `requires` fica preso\n" +
+"  pelas quatro desigualdades de McCormick: `dt * taxa / 1000` com `dt <= 60000` e `taxa <= 10000000000` prova\n" +
+"  `result <= 600000000000` (`lume prove`, e `lume certify` emite o selo); fator sem limite ou limite falso continua\n" +
+"  sem prova ou refutado com contraexemplo. O limite pode vir dos `requires` ou do caminho (`if a >= 4398046511104\n" +
+"  then lim else a * p / 1000`), tambem dentro de um `let`; valem limites ate 2^62. Um fator pode ser uma expressao\n" +
+"  linear limitada (`(255 - c) * alfa`) e a divisao pode ser por variavel com limite inferior positivo (`pool * p /\n" +
+"  soma`, `soma >= 1`); o `lume certify` confere todos esses casos.\n" +
+"- Booleanos nas provas: uma comparacao usada como valor (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,\n" +
+"  `not f(n)`) e provada como 1 / 0. Uma law sobre uma chamada usa o `ensures` ja provado da funcao chamada quando a\n" +
+"  hipotese da law implica o `requires` dela (vale para funcao que chama outras ou tem produto limitado).\n" +
 "- Terminacao Composta e Kernel de Prova (`lcert.src`): Verifica obrigacoes compostas\n" +
 "  `terminates` (`lk_prove_term_cond` com `and`/`or`) e executa autoteste criptografico\n" +
 "  NIST FIPS 180-4 SHA-256 KAT (`sha256(\"abc\")`).\n\n" +
@@ -1210,6 +1263,9 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "- Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`,\n" +
 "                   `fs_write_sync(caminho, texto)`, `fs_path_exists(caminho)`,\n" +
 "                   `fs_read_byte(caminho, offset)`\n" +
+"                   `fs_read_range(caminho, offset, n)` (ate n bytes a partir do offset, sem ler o arquivo inteiro;\n" +
+"                   menos no fim, \"\" depois dele), `fs_truncate(caminho, tamanho)` (1 / 0),\n" +
+"                   `fs_rename_noreplace(de, para)` (0 quando `para` ja existe; nunca substitui)\n" +
 "- Arquivos so do dono (chaves, segredos): `fs_write_private(caminho, texto)` grava um temporario criado 0600\n" +
 "                   (O_EXCL, sem seguir link), faz fsync e renomeia por cima: atomico, nunca legivel por outros,\n" +
 "                   tambem no Windows (DACL protegida so com o dono); `fs_create_private(caminho, texto)` so cria\n" +
@@ -1219,6 +1275,9 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "- Chaveiro do SO: `use keychain` -> `keychain_set(servico, conta, segredo)`, `keychain_get(servico, conta)`\n" +
 "                   (" + man_br("ok, value, err") + "), `keychain_delete(servico, conta)`: Credential Manager no Windows; no Linux\n" +
 "                   um arquivo so do dono, recusado na leitura se outros o alcancam; segredo de ate 2560 bytes\n" +
+"                   Erros (`err`): `not_found` SO quando a entrada nao existe; `access_denied`, `unavailable` (sem\n" +
+"                   cofre, sem sessao de logon, sem diretorio), `corrupt`, `not_private`, `locked` (reservado): um\n" +
+"                   cofre que nao responde nunca vira ausente, o chamador pode falhar fechado\n" +
 "- Ambiente: `os_getenv(nome)` (\"\" se ausente), `os_env_has(nome)` (1 se existe, mesmo vazia)\n" +
 "- Controle de rede: `use netctl` -> `net_tcp_connect_addr_timeout(ip, porta, ms)` (o socket, ou -1 se recusado,\n" +
 "                   inalcancavel ou calado alem de ms), `net_tcp_nodelay(fd, ligado)` (1 se aplicado); `use dns` ->\n" +
@@ -1227,6 +1286,9 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "                   (bytes aceitos, 0 com o buffer cheio, -1 no erro; sem SIGPIPE), `net_recv_some(fd, max)` -> n > 0 /\n" +
 "                   0 fechado / -2 nada agora / -1 erro, `epoll_add(ep, fd, tag, eventos)`, `epoll_mod`,\n" +
 "                   `epoll_del(ep, fd)`, `epoll_wait_ev(ep, ms)` -> tag (-1 sem nada) e eventos (`epoll_in()`, `epoll_out()`)\n" +
+"                   Connect sem travar o laco: `net_tcp_connect_start(ip, porta)` (fd na hora, connect em andamento;\n" +
+"                   -1 no erro imediato), espere `epoll_out()`, depois `net_tcp_connect_result(fd)` -> 0 conectado,\n" +
+"                   senao o numero do erro (111 recusado, 110 tempo esgotado)\n" +
 "                   Enderecos: `net_local_addr(fd)`, `os_ipv4_interfaces()`, `os_ipv6_interfaces()` (forma curta, sem\n" +
 "                   ::1, o de enlace local com o escopo: `fe80::1%3`), no Linux e no Windows\n" +
 "- Primitivas de sistema (para runtime e bibliotecas, efeitos sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` e a\n" +
@@ -1257,18 +1319,27 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "    `krn_slot_read(idx)` (tabela de estado de kernel de 1024 slots com zero alocacoes de heap)\n" +
 "- Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)\n\n" +
 "## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)\n" +
+"- Modulos: `use json as j` e depois `j.read(s)`; um modulo numa pasta e escrito pelo ultimo segmento (`use\n" +
+"  net/http` -> `http.get(u)`); de duas pastas com o mesmo ultimo segmento, todas menos uma precisam de alias\n" +
+"  (`use a/http` + `use b/http as hb`), e duas sem alias param em `arquivo:linha:coluna` com a correcao; cada\n" +
+"  `use m` e resolvido ao lado do arquivo que o escreve; nomes repetidos ficam separados (NOME__modulo)\n" +
 "- `use text`           Achar por conteudo, nao por coluna: `str_find(s, sub, desde)` (indice ou -1),\n" +
 "                       `str_find_last`, `str_contains`, `str_after(s, rotulo)`, `str_before`, `str_between`,\n" +
 "                       `str_trim`, `str_lines` / `str_line(s, n)` (so \"\\n\" quebra linha, como sed e awk),\n" +
 "                       `str_line_with`, `str_hex_tokens(s)` (palavras hex, sem 0x, `00 10` / `00:10` unidos),\n" +
 "                       `str_hex_after(linha, \"quic key:\")` para vetores de teste lidos do texto de RFCs\n" +
+"- Profundidade de recursao: o runtime reserva uma pilha grande ao iniciar (Linux e Windows): recursao comum\n" +
+"                       de um milhao de niveis roda, dezenas de milhoes de quadros pequenos tambem; alem disso o programa\n" +
+"                       para com `lume: stack overflow (recursion too deep)` (saida 12), nunca em silencio\n" +
 "- `use fs`             Arquivos seguros com `sfile_with` (fechamento garantido)\n" +
 "- `use bytes`          Buffers binarios verificados (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)\n" +
 "- `use vec`            Invariantes genericos de colecoes e decimais provados por `QF_LIA` (`vec.src`,\n" +
 "                       `decimal.src`, `stdlib/std.lume`: `vec_clamp_index`, `vec_checked_slice_len`,\n" +
 "                       `map_checked_slot`, `decimal_clamp`)\n" +
-"- `use map`            Dicionario hash de 256 buckets (`map_new`, `map_put`, `map_get`, `map_get_or`,\n" +
-"                       `map_checked_slot`)\n" +
+"- `use map`            Mapa hash persistente resistente a colisao forjada: `map_new()` (chave secreta da fonte\n" +
+"                       aleatoria do sistema, para chaves vindas da rede), `map_new_seeded(k0, k1)`, `map_put`,\n" +
+"                       `map_get`, `map_get_or`, `map_has`, `map_remove`, `map_size`, `map_keys`, `map_fold(m, acc, f)`;\n" +
+"                       chaves texto (quaisquer bytes) ou int; HalfSipHash-2-4, baldes que se dividem ao crescer\n" +
 "- `use arena`          Arenas de memoria de alta velocidade (`arena_new`, `arena_alloc`, `arena_reset`)\n" +
 "- `use capsule`        Capsulas de auditoria e replay deterministico\n" +
 "- `use fs_sha256_file` Hash criptografico FIPS 180-4 (`lc_sha256(s)`, `fs_sha256_file(p)`, `fs_file_size(p, i)`)\n" +
@@ -1564,11 +1635,14 @@ fn man_pt_targets() = "# CAPITULO 7: 27 ALVOS UNIVERSAIS, LUMEMIR SSA E EMPACOTA
 fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES 1-5 E ONDAS 1-10)\n\n" +
 "## 8.1 Comandos Essenciais do Programador\n" +
 "  lume build [--incremental] [--memory] [--protect [hardened|max]] [--target <t>] <src> [-o <out>]\n" +
+"                                         (-o libX.so / X.dll: biblioteca compartilhada escrita pelo Lume,\n" +
+"                                         funcoes pub exportadas; um teste declara ## @library libX.so = X.src)\n" +
 "  lume run [--memory] <src> [args...]    Compila e executa imediatamente\n" +
 "  lume test <src.src>...                 Executa todos os testes `fn test_*()`\n" +
 "  lume check <src.src> [--json]          Verifica tipos, ownership e efeitos\n" +
 "  lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL\n" +
-"  lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo\n" +
+"  lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo (funcao com mais de 120 colunas\n" +
+"                                         vira um let / ramo de if / argumento por linha)\n" +
 "  lume doc <src.src> [--json]            Gera documentacao e executa doctests\n" +
 "  lume repl [--kernel|--json]            REPL interativo com verificacao de contratos (`--kernel`: protocolo de kernel Jupyter)\n" +
 "  lume lsp / lume dap                    Servidores de IDE (LSP e Debug Adapter)\n" +
@@ -1693,11 +1767,15 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "  (`[E0306]`).\n" +
 "- **Criptografia e TLS 1.3 (Dominio `#119`, `use lcrypto_tls`)**: SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305,\n" +
 "  Ed25519, X25519, o key schedule, a camada de registros e a maquina de estados do handshake do TLS 1.3, tudo em\n" +
-"  Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. AES e AES-GCM (pacotes Initial do QUIC e\n" +
+"  Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. SHA-256 em pedacos (mesma velocidade nativa):\n" +
+"  `lcs_sha256_init()`, `lcs_sha256_update(st, dados)` -> st, `lcs_sha256_final(st)` -> 32 bytes; o mesmo para o HMAC\n" +
+"  (`lcs_hmac_sha256_init(chave)` / `_update` / `_final`); o estado e um valor. AES e AES-GCM (pacotes Initial do QUIC e\n" +
 "  suites AES do TLS 1.3): `lcs_aes128_ecb_encrypt(chave16, bloco16)`, `lcs_aes128_gcm_seal(chave16, nonce12, aad,\n" +
 "  p)`, `lcs_aes128_gcm_open(...)`, e o mesmo com `aes256`. ECDSA P-256 com SHA-256: `lcs_p256_verify(pub65, msg,\n" +
 "  assinatura_der)` -> 1 ou 0, `lcs_p256_sign(priv32, msg)` (nonce do RFC 6979), `lcs_p256_public(priv32)`, e as\n" +
-"  formas `_raw` com r || s. O `ltv` acrescenta o `[C0010]`: o codigo\n" +
+"  formas `_raw` com r || s. X25519 e Ed25519 (rotinas do runtime escritas em Lume): `lcs_x25519(k32, u32)`,\n" +
+"  `lcs_x25519_base(k32)`, `lcs_x25519_shared(k32, par32)`, `lcs_ed25519_public(seed32)`,\n" +
+"  `lcs_ed25519_sign(seed32, msg)`, `lcs_ed25519_verify(pk32, msg, sig64)`. O `ltv` acrescenta o `[C0010]`: o codigo\n" +
 "  emitido de uma funcao `@secret` nao pode ter desvio condicional, divisao nem acesso a memoria fora do frame, e\n" +
 "  o mesmo vale para toda rotina que ela alcanca por `call` (a varredura e transitiva e nomeia a cadeia).\n" +
 "  Limites: testado, nao verificado formalmente; uma funcao `@secret` comum que usa `+` ou operacao de bit e\n" +

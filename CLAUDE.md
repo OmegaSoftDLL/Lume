@@ -46,10 +46,16 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
   gen_runtime, bootstrap; restore, rebuild_core, gen_runtime, bootstrap). A new builtin name: name_flow nf_arN, then
   rebuild lcaas and lcert too.
 - RUNTIME QUEUE, executed in this order without skipping (owner: "nada fica pra depois"; tick each when committed):
-  1. [ ] rt_io.src (read, readall) cut from runtime_core: rebuild_core + gen_runtime + bootstrap + both batteries.
-  2. [ ] --raw register allocation: keep lets/params in registers (callee-saved r12-r15/rbx saved once), not
+  1. [x] rt_io.src (read, readall) cut from runtime_core (commit fc5b13d; Linux battery clean).
+  2. [x] (fc5b13d + next commit) first five values in rbx/r12-r15; immediates/registers as direct operands; if on
+     a comparison jumps straight to else; bit ops with immediates (ord_at draft 163 -> 108 instructions). Was:
+     --raw register allocation: keep lets/params in registers (callee-saved r12-r15/rbx saved once), not
      rbp slots, so hot builtins are not slower than the asm (measure X25519 and a buf_set loop before/after).
-  3. [ ] hot builtins to Lume after (2): buf_new/len/get/set/copy/slice/from_str/to_str, ord, ord_at, chr, count,
+  2b.[~] leaf mode done (no frame, params in their registers; X25519 800 -> 550 us). Left in 2b: a call on a
+     cold path (mkint's boxed case, __rt_not_str) must not disqualify a leaf: spill around it. Was: --raw leaf routines: a function whose common path makes no call keeps its parameters in the incoming
+     registers (rdi, rsi, rdx, r8, r9; the 4th moves off rcx) and needs no frame; calls only on cold paths
+     (__rt_not_str, mkint's boxed case) spill around themselves. Target: ord_at/buf_get within 1.5x of the asm.
+  3. [ ] hot builtins to Lume after (2) and (2b): buf_new/len/get/set/copy/slice/from_str/to_str, ord, ord_at, chr, count,
      at, slice, slicen, str, strni, toint, utf8_chr, emit/flush/wch/wstr/wint/print_int, printval/showval.
   4. [ ] --raw stack intrinsics (read/set %rsp/%rbp, jump) -> ctfail, __lume_try_begin/end/msg, __rt_die*.
   5. [ ] --raw f64 intrinsics (SSE2 movq/addsd/mulsd/divsd/sqrtsd/cvt...) -> f64_* builtins and rt_f64.

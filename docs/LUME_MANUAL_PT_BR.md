@@ -89,7 +89,12 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - Comparacao: `==`, `!=` (igualdade estrutural em pilha `O(1)` para listas/ADTs/records profundos), `<`, `<=`, `>`, `>=`
 - Registros (Structs): `let p = {x: 10, y: 20} in p.x + p.y`
 - Atualizacao: `{e with f: v}` copia trocando campos; e e qualquer expressao (nome, chamada,
-  campo `r.b`, `(e)`); campo que o registro nao tem e `[T2101]`
+  campo `r.b`, `(e)`); campo que o registro nao tem e `[T2101]`, tambem quando o registro vem de uma
+  funcao ou dos dois ramos de um if
+- Palavras reservadas (`if`, `let`, `var`, `match`, `with`, `fn` e as demais) nao podem nomear funcao, variavel
+  ou parametro (P0002 na propria declaracao)
+- `+` soma dois inteiros ou junta duas strs; nada e convertido implicitamente (`"total: " + str(n)`, [T0604]);
+  listas se juntam com `seq_concat(xs, ys)` (`use seq`), e `xs + [d]` e recusado no `lume check` e na compilacao
 - Literais de lista e ADTs: `[]` (`Nil`), `[1, 2, 3]` (`Cons(1, Cons(2, Cons(3, Nil)))`), `count([1, 2, 3]) == 3`
 - Comentarios: `## Comentarios comecam com dois sustenidos`
 
@@ -192,6 +197,16 @@ law implicacao_clamp(x: int, lo: int, hi: int) =
 - Idioma de Implicacao (`if P then Q else 1 == 1`): Expresse implicacoes logicas $P \implies Q$
   dentro de `law` usando `if P then Q else 1 == 1`, reduzindo diretamente para ramos
   decidiveis `QF_LIA` tanto no `lcaas.src` quanto no kernel independente `lcert.src`.
+- Produtos limitados (QF_NIA por relaxacao): `x * y` com os dois fatores limitados nos `requires` fica preso
+  pelas quatro desigualdades de McCormick: `dt * taxa / 1000` com `dt <= 60000` e `taxa <= 10000000000` prova
+  `result <= 600000000000` (`lume prove`, e `lume certify` emite o selo); fator sem limite ou limite falso continua
+  sem prova ou refutado com contraexemplo. O limite pode vir dos `requires` ou do caminho (`if a >= 4398046511104
+  then lim else a * p / 1000`), tambem dentro de um `let`; valem limites ate 2^62. Um fator pode ser uma expressao
+  linear limitada (`(255 - c) * alfa`) e a divisao pode ser por variavel com limite inferior positivo (`pool * p /
+  soma`, `soma >= 1`); o `lume certify` confere todos esses casos.
+- Booleanos nas provas: uma comparacao usada como valor (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,
+  `not f(n)`) e provada como 1 / 0. Uma law sobre uma chamada usa o `ensures` ja provado da funcao chamada quando a
+  hipotese da law implica o `requires` dela (vale para funcao que chama outras ou tem produto limitado).
 - Terminacao Composta e Kernel de Prova (`lcert.src`): Verifica obrigacoes compostas
   `terminates` (`lk_prove_term_cond` com `and`/`or`) e executa autoteste criptografico
   NIST FIPS 180-4 SHA-256 KAT (`sha256("abc")`).
@@ -251,6 +266,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Arquivos (`fs`): `readall()`, `fs_read_file(caminho)`,
                    `fs_write_sync(caminho, texto)`, `fs_path_exists(caminho)`,
                    `fs_read_byte(caminho, offset)`
+                   `fs_read_range(caminho, offset, n)` (ate n bytes a partir do offset, sem ler o arquivo inteiro;
+                   menos no fim, "" depois dele), `fs_truncate(caminho, tamanho)` (1 / 0),
+                   `fs_rename_noreplace(de, para)` (0 quando `para` ja existe; nunca substitui)
 - Arquivos so do dono (chaves, segredos): `fs_write_private(caminho, texto)` grava um temporario criado 0600
                    (O_EXCL, sem seguir link), faz fsync e renomeia por cima: atomico, nunca legivel por outros,
                    tambem no Windows (DACL protegida so com o dono); `fs_create_private(caminho, texto)` so cria
@@ -260,6 +278,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Chaveiro do SO: `use keychain` -> `keychain_set(servico, conta, segredo)`, `keychain_get(servico, conta)`
                    ({ok, value, err}), `keychain_delete(servico, conta)`: Credential Manager no Windows; no Linux
                    um arquivo so do dono, recusado na leitura se outros o alcancam; segredo de ate 2560 bytes
+                   Erros (`err`): `not_found` SO quando a entrada nao existe; `access_denied`, `unavailable` (sem
+                   cofre, sem sessao de logon, sem diretorio), `corrupt`, `not_private`, `locked` (reservado): um
+                   cofre que nao responde nunca vira ausente, o chamador pode falhar fechado
 - Ambiente: `os_getenv(nome)` ("" se ausente), `os_env_has(nome)` (1 se existe, mesmo vazia)
 - Controle de rede: `use netctl` -> `net_tcp_connect_addr_timeout(ip, porta, ms)` (o socket, ou -1 se recusado,
                    inalcancavel ou calado alem de ms), `net_tcp_nodelay(fd, ligado)` (1 se aplicado); `use dns` ->
@@ -268,6 +289,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                    (bytes aceitos, 0 com o buffer cheio, -1 no erro; sem SIGPIPE), `net_recv_some(fd, max)` -> n > 0 /
                    0 fechado / -2 nada agora / -1 erro, `epoll_add(ep, fd, tag, eventos)`, `epoll_mod`,
                    `epoll_del(ep, fd)`, `epoll_wait_ev(ep, ms)` -> tag (-1 sem nada) e eventos (`epoll_in()`, `epoll_out()`)
+                   Connect sem travar o laco: `net_tcp_connect_start(ip, porta)` (fd na hora, connect em andamento;
+                   -1 no erro imediato), espere `epoll_out()`, depois `net_tcp_connect_result(fd)` -> 0 conectado,
+                   senao o numero do erro (111 recusado, 110 tempo esgotado)
                    Enderecos: `net_local_addr(fd)`, `os_ipv4_interfaces()`, `os_ipv6_interfaces()` (forma curta, sem
                    ::1, o de enlace local com o escopo: `fe80::1%3`), no Linux e no Windows
 - Primitivas de sistema (para runtime e bibliotecas, efeitos sys / io): `sys_call(nr, a1, a2, a3, a4, a5)` e a
@@ -299,18 +323,27 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)
 
 ## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)
+- Modulos: `use json as j` e depois `j.read(s)`; um modulo numa pasta e escrito pelo ultimo segmento (`use
+  net/http` -> `http.get(u)`); de duas pastas com o mesmo ultimo segmento, todas menos uma precisam de alias
+  (`use a/http` + `use b/http as hb`), e duas sem alias param em `arquivo:linha:coluna` com a correcao; cada
+  `use m` e resolvido ao lado do arquivo que o escreve; nomes repetidos ficam separados (NOME__modulo)
 - `use text`           Achar por conteudo, nao por coluna: `str_find(s, sub, desde)` (indice ou -1),
                        `str_find_last`, `str_contains`, `str_after(s, rotulo)`, `str_before`, `str_between`,
                        `str_trim`, `str_lines` / `str_line(s, n)` (so "\n" quebra linha, como sed e awk),
                        `str_line_with`, `str_hex_tokens(s)` (palavras hex, sem 0x, `00 10` / `00:10` unidos),
                        `str_hex_after(linha, "quic key:")` para vetores de teste lidos do texto de RFCs
+- Profundidade de recursao: o runtime reserva uma pilha grande ao iniciar (Linux e Windows): recursao comum
+                       de um milhao de niveis roda, dezenas de milhoes de quadros pequenos tambem; alem disso o programa
+                       para com `lume: stack overflow (recursion too deep)` (saida 12), nunca em silencio
 - `use fs`             Arquivos seguros com `sfile_with` (fechamento garantido)
 - `use bytes`          Buffers binarios verificados (`bnew`, `bpush`, `bget`, `bslice`, `bto_str`)
 - `use vec`            Invariantes genericos de colecoes e decimais provados por `QF_LIA` (`vec.src`,
                        `decimal.src`, `stdlib/std.lume`: `vec_clamp_index`, `vec_checked_slice_len`,
                        `map_checked_slot`, `decimal_clamp`)
-- `use map`            Dicionario hash de 256 buckets (`map_new`, `map_put`, `map_get`, `map_get_or`,
-                       `map_checked_slot`)
+- `use map`            Mapa hash persistente resistente a colisao forjada: `map_new()` (chave secreta da fonte
+                       aleatoria do sistema, para chaves vindas da rede), `map_new_seeded(k0, k1)`, `map_put`,
+                       `map_get`, `map_get_or`, `map_has`, `map_remove`, `map_size`, `map_keys`, `map_fold(m, acc, f)`;
+                       chaves texto (quaisquer bytes) ou int; HalfSipHash-2-4, baldes que se dividem ao crescer
 - `use arena`          Arenas de memoria de alta velocidade (`arena_new`, `arena_alloc`, `arena_reset`)
 - `use capsule`        Capsulas de auditoria e replay deterministico
 - `use fs_sha256_file` Hash criptografico FIPS 180-4 (`lc_sha256(s)`, `fs_sha256_file(p)`, `fs_file_size(p, i)`)
@@ -614,11 +647,14 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 
 ## 8.1 Comandos Essenciais do Programador
   lume build [--incremental] [--memory] [--protect [hardened|max]] [--target <t>] <src> [-o <out>]
+                                         (-o libX.so / X.dll: biblioteca compartilhada escrita pelo Lume,
+                                         funcoes pub exportadas; um teste declara ## @library libX.so = X.src)
   lume run [--memory] <src> [args...]    Compila e executa imediatamente
   lume test <src.src>...                 Executa todos os testes `fn test_*()`
   lume check <src.src> [--json]          Verifica tipos, ownership e efeitos
   lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL
-  lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo
+  lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo (funcao com mais de 120 colunas
+                                         vira um let / ramo de if / argumento por linha)
   lume doc <src.src> [--json]            Gera documentacao e executa doctests
   lume repl [--kernel|--json]            REPL interativo com verificacao de contratos (`--kernel`: protocolo de kernel Jupyter)
   lume lsp / lume dap                    Servidores de IDE (LSP e Debug Adapter)
@@ -746,11 +782,15 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   (`[E0306]`).
 - **Criptografia e TLS 1.3 (Dominio `#119`, `use lcrypto_tls`)**: SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305,
   Ed25519, X25519, o key schedule, a camada de registros e a maquina de estados do handshake do TLS 1.3, tudo em
-  Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. AES e AES-GCM (pacotes Initial do QUIC e
+  Lume e conferido contra os vetores oficiais pelo `crypto_tls_gate`. SHA-256 em pedacos (mesma velocidade nativa):
+  `lcs_sha256_init()`, `lcs_sha256_update(st, dados)` -> st, `lcs_sha256_final(st)` -> 32 bytes; o mesmo para o HMAC
+  (`lcs_hmac_sha256_init(chave)` / `_update` / `_final`); o estado e um valor. AES e AES-GCM (pacotes Initial do QUIC e
   suites AES do TLS 1.3): `lcs_aes128_ecb_encrypt(chave16, bloco16)`, `lcs_aes128_gcm_seal(chave16, nonce12, aad,
   p)`, `lcs_aes128_gcm_open(...)`, e o mesmo com `aes256`. ECDSA P-256 com SHA-256: `lcs_p256_verify(pub65, msg,
   assinatura_der)` -> 1 ou 0, `lcs_p256_sign(priv32, msg)` (nonce do RFC 6979), `lcs_p256_public(priv32)`, e as
-  formas `_raw` com r || s. O `ltv` acrescenta o `[C0010]`: o codigo
+  formas `_raw` com r || s. X25519 e Ed25519 (rotinas do runtime escritas em Lume): `lcs_x25519(k32, u32)`,
+  `lcs_x25519_base(k32)`, `lcs_x25519_shared(k32, par32)`, `lcs_ed25519_public(seed32)`,
+  `lcs_ed25519_sign(seed32, msg)`, `lcs_ed25519_verify(pk32, msg, sig64)`. O `ltv` acrescenta o `[C0010]`: o codigo
   emitido de uma funcao `@secret` nao pode ter desvio condicional, divisao nem acesso a memoria fora do frame, e
   o mesmo vale para toda rotina que ela alcanca por `call` (a varredura e transitiva e nomeia a cadeia).
   Limites: testado, nao verificado formalmente; uma funcao `@secret` comum que usa `+` ou operacao de bit e

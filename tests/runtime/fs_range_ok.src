@@ -1,0 +1,22 @@
+## fs_range_ok.src -- fs_read_range (a piece of a file without loading it), fs_truncate and fs_rename_noreplace (a
+## rename that never replaces), the same on Linux and Windows (LumeDesk file transfer: hash a partial of up to 1 GiB
+## in pieces, cut it, move the finished file without overwriting an existing one).
+
+fn d() = "fs_range_probe_dir"
+fn p(n) = d() + "/" + n
+fn setup() = let a = if fs_path_exists(d()) == 1 then 0 else fs_mkdir(d()) in fs_write_hex_file(p("r.bin"), "00010203040506070809ff0a0b0c0d0e0f1011121314")
+
+fn test_middle_piece() = let s = setup() in let r = fs_read_range(p("r.bin"), 3, 4) in count(r) == 4 and ord_at(r, 0) == 3 and ord_at(r, 3) == 6
+fn test_piece_with_binary_bytes() = let s = setup() in let r = fs_read_range(p("r.bin"), 8, 3) in count(r) == 3 and ord_at(r, 0) == 8 and ord_at(r, 2) == 255
+fn test_long_piece_from_start() = let s = setup() in let r = fs_read_range(p("r.bin"), 0, 12) in count(r) == 12 and ord_at(r, 0) == 0 and ord_at(r, 11) == 10
+fn test_short_at_end() = let s = setup() in let r = fs_read_range(p("r.bin"), 20, 100) in count(r) == 2 and ord_at(r, 1) == 20
+fn test_past_the_end_is_empty() = let s = setup() in fs_read_range(p("r.bin"), 65536, 65536) == "" and fs_read_range(p("r.bin"), 22, 1) == ""
+fn test_bad_arguments() = let s = setup() in fs_read_range(p("r.bin"), 0, 0) == "" and fs_read_range(p("r.bin"), 0 - 1, 4) == "" and fs_read_range("no_such_fs_range_file", 0, 4) == ""
+fn test_pieces_rebuild_the_file() = let s = setup() in fs_read_range(p("r.bin"), 0, 7) + fs_read_range(p("r.bin"), 7, 7) + fs_read_range(p("r.bin"), 14, 7) + fs_read_range(p("r.bin"), 21, 7) == fs_read_file(p("r.bin"))
+fn test_truncate_shorter() = let s = setup() in let t = fs_truncate(p("r.bin"), 5) in t == 1 and count(fs_read_file(p("r.bin"))) == 5 and ord_at(fs_read_file(p("r.bin")), 4) == 4
+fn test_truncate_longer_fills_zeros() = let s = setup() in let t = fs_truncate(p("r.bin"), 30) in let r = fs_read_file(p("r.bin")) in t == 1 and count(r) == 30 and ord_at(r, 29) == 0 and ord_at(r, 21) == 20
+fn test_truncate_refusals() = fs_truncate("no_such_fs_range_file", 4) == 0 and fs_truncate(p("r.bin"), 0 - 1) == 0
+fn test_rename_noreplace_moves() = let s = setup() in let w = fs_write_sync(p("a.txt"), "A") in let x = fs_remove(p("b.txt")) in fs_rename_noreplace(p("a.txt"), p("b.txt")) == 1 and fs_read_file(p("b.txt")) == "A" and fs_path_exists(p("a.txt")) == 0
+fn test_rename_noreplace_keeps_existing() = let s = setup() in let w = fs_write_sync(p("a.txt"), "new") in let w2 = fs_write_sync(p("b.txt"), "old") in fs_rename_noreplace(p("a.txt"), p("b.txt")) == 0 and fs_read_file(p("b.txt")) == "old" and fs_read_file(p("a.txt")) == "new"
+fn test_rename_noreplace_missing_source() = fs_rename_noreplace("no_such_fs_range_file", p("c.txt")) == 0 and fs_path_exists(p("c.txt")) == 0
+fn test_cleanup() = let a = fs_remove(p("r.bin")) + fs_remove(p("a.txt")) + fs_remove(p("b.txt")) in fs_rmdir(d()) == 1

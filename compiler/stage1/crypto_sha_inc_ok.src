@@ -1,0 +1,22 @@
+## crypto_sha_inc_ok.src -- incremental SHA-256 and HMAC-SHA256 of lcrypto_tls (lcs_sha256_init/update/final,
+## lcs_hmac_sha256_init/update/final): the same digest as the one-shot lcs_sha256 / lcs_hmac_sha256 at every split
+## point and size around the block boundary, the FIPS 180-4 "abc" vector, and a state that stays valid after use.
+use lcrypto_tls
+
+fn msg(n) = if n <= 0 then "" else msg(n - 1) + chr((n * 37 + 11) % 256)
+fn hexs(s) = hexs_at(s, 0, "")
+fn hexs_at(s, i, acc) = if i >= count(s) then acc else let v = ord_at(s, i) in hexs_at(s, i + 1, acc + slice("0123456789abcdef", v / 16, v / 16 + 1) + slice("0123456789abcdef", v % 16, v % 16 + 1))
+fn split2(s, k) = lcs_sha256_final(lcs_sha256_update(lcs_sha256_update(lcs_sha256_init(), slice(s, 0, k)), slice(s, k, count(s))))
+fn all_splits(s, k) = if k > count(s) then true else if split2(s, k) != lcs_sha256(s) then false else all_splits(s, k + 1)
+fn bytewise(st, s, i) = if i >= count(s) then st else bytewise(lcs_sha256_update(st, slice(s, i, i + 1)), s, i + 1)
+fn sizes_ok(n, hi) = if n > hi then true else if all_splits(msg(n), 0) == false then false else sizes_ok(n + 1, hi)
+
+fn test_abc_vector() = hexs(lcs_sha256_final(lcs_sha256_update(lcs_sha256_init(), "abc"))) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+fn test_empty() = lcs_sha256_final(lcs_sha256_init()) == lcs_sha256("")
+fn test_every_split_around_one_block() = sizes_ok(54, 72)
+fn test_every_split_around_two_blocks() = sizes_ok(118, 130)
+fn test_byte_by_byte() = let s = msg(300) in lcs_sha256_final(bytewise(lcs_sha256_init(), s, 0)) == lcs_sha256(s)
+fn test_large_pieces() = let a = msg(1000) in let b = msg(777) in lcs_sha256_final(lcs_sha256_update(lcs_sha256_update(lcs_sha256_init(), a), b)) == lcs_sha256(a + b)
+fn test_state_is_a_value() = let s1 = lcs_sha256_update(lcs_sha256_init(), msg(100)) in let d1 = lcs_sha256_final(lcs_sha256_update(s1, "x")) in let d2 = lcs_sha256_final(lcs_sha256_update(s1, "y")) in d1 == lcs_sha256(msg(100) + "x") and d2 == lcs_sha256(msg(100) + "y") and lcs_sha256_final(s1) == lcs_sha256(msg(100))
+fn test_hmac_matches_one_shot() = let k = "key" in let m = msg(200) in lcs_hmac_sha256_final(lcs_hmac_sha256_update(lcs_hmac_sha256_update(lcs_hmac_sha256_init(k), slice(m, 0, 70)), slice(m, 70, 200))) == lcs_hmac_sha256(k, m)
+fn test_hmac_long_key() = let k = msg(100) in lcs_hmac_sha256_final(lcs_hmac_sha256_update(lcs_hmac_sha256_init(k), "data")) == lcs_hmac_sha256(k, "data")

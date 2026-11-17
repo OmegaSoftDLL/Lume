@@ -40,3 +40,11 @@ fn v6_ok(xs) = match xs
     Cons(h, t) => count(h) >= 2 and h != "::1" and (if slice(h, 0, 4) == "fe80" then nc_has_pct(h, 0) else true) and v6_ok(t)
 fn nc_has_pct(h, i) = if i >= count(h) then false else if ord_at(h, i) == 37 then true else nc_has_pct(h, i + 1)
 fn test_ipv6_interfaces_are_well_formed() = let xs = os_ipv6_interfaces() in count(xs) >= 0 and v6_ok(xs)
+
+## connect without blocking: start returns at once, epoll_out reports the end, result says 0 (up) or the error
+fn test_connect_start_and_result_through_epoll() = let l = net_tcp_listen_addr("127.0.0.1", 47821) in let t0 = os_monotonic_ns() in let c = net_tcp_connect_start("127.0.0.1", 47821) in let ms = (os_monotonic_ns() - t0) / 1000000 in let ep = epoll_create_fd() in let ad = epoll_add(ep, c, 5, epoll_out()) in let w = epoll_wait_ev(ep, 3000) in let r = net_tcp_connect_result(c) in let a = net_tcp_accept(l) in let sent = net_send_some(c, "ping") in let x1 = net_close(a) in let x2 = net_close(c) in let x3 = net_close(l) in let x4 = net_close(ep) in c >= 0 and ms < 1000 and w.tag == 5 and r == 0 and sent == 4
+## a port with no listener: the connect ends with an error, never 0, and nothing waits for a timeout
+fn test_connect_start_to_a_closed_port_reports_the_error() = let c = net_tcp_connect_start("127.0.0.1", 47829) in if c < 0 then true else let ep = epoll_create_fd() in let ad = epoll_add(ep, c, 6, epoll_out()) in let w = epoll_wait_ev(ep, 3000) in let r = net_tcp_connect_result(c) in let x = net_close(c) in let y = net_close(ep) in r != 0
+## an unroutable address returns at once instead of after the connect timeout
+fn test_connect_start_returns_at_once() = let t0 = os_monotonic_ns() in let c = net_tcp_connect_start("10.255.255.1", 9) in let ms = (os_monotonic_ns() - t0) / 1000000 in let x = if c >= 0 then net_close(c) else 0 in ms < 500
+fn test_connect_start_refuses_bad_addresses() = net_tcp_connect_start("not an ip", 80) == 0 - 1 and net_tcp_connect_start("127.0.0.1", 70000) == 0 - 1
