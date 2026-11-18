@@ -1,0 +1,33 @@
+## const_list_ok.src -- list and record literals of constants are built once as static cells and shared; they behave exactly like
+## lists built at run time. `lume test compiler/stage1/const_list_ok.src`
+use arena
+use seq
+
+fn tbl() = [10, 11, 13, 14, 16, 18]
+fn words() = ["a", "bb", "a string longer than seven bytes", ""]
+fn by_list(i) = seq_nth([10, 11, 13, 14, 16, 18], i)
+fn by_if(i) = if i == 0 then 10 else if i == 1 then 11 else if i == 2 then 13 else if i == 3 then 14 else if i == 4 then 16 else 18
+fn agree(i) = if i >= 6 then 1 else if by_list(i) != by_if(i) then 0 else agree(i + 1)
+fn sum(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => sum(t, acc + h)
+fn calls(k, acc) = if k == 0 then acc else calls(k - 1, acc + by_list(k % 6))
+fn heap_used() = (heap_stats()).used
+
+fn test_values_and_order() = agree(0) == 1 and sum(tbl(), 0) == 82 and tbl() == Cons(10, Cons(11, Cons(13, Cons(14, Cons(16, Cons(18, Nil))))))
+fn test_strings() = seq_nth(words(), 0) == "a" and seq_nth(words(), 2) == "a string longer than seven bytes" and seq_nth(words(), 3) == "" and count(seq_nth(words(), 1)) == 2
+## a literal used as the tail of a list built at run time, and taken apart by match
+fn test_shared_tail() = let xs = Cons(9, tbl()) in sum(xs, 0) == 91 and sum(tbl(), 0) == 82 and (match tbl()
+    Cons(h, t) => h == 10 and sum(t, 0) == 72
+    Nil        => false)
+## the same literal twice is the same data; a list with a computed element is still built at run time
+fn test_equal_and_mixed() = let k = 7 in tbl() == tbl() and [1, k, 3] == Cons(1, Cons(7, Cons(3, Nil))) and [0 - 1, 2] == Cons(0 - 1, Cons(2, Nil))
+## a constant literal allocates nothing: a million evaluations leave the heap where it was (give or take a page)
+fn test_no_allocation() = let before = heap_used() in let r = calls(1000000, 0) in r > 0 and heap_used() - before < 65536
+
+## constant record literals are static cells too: reads, `with` (a copy), equality and the field cache all hold
+fn pt() = {x: 3, y: 4, tag: "a tag longer than seven"}
+fn reads(k, acc) = if k == 0 then acc else reads(k - 1, acc + (pt()).x)
+fn test_const_record() = let p = pt() in p.x == 3 and p.y == 4 and p.tag == "a tag longer than seven" and pt() == {x: 3, y: 4, tag: "a tag longer than seven"}
+fn test_const_record_with_copies() = let q = { pt() with x: 10 } in q.x == 10 and q.y == 4 and (pt()).x == 3
+fn test_const_record_no_allocation() = let before = heap_used() in let r = reads(1000000, 0) in r == 3000000 and heap_used() - before < 65536

@@ -1,0 +1,15 @@
+## tun_ok.src -- `lume test compiler/stage1/tun_ok.src`. Pure parts everywhere; the round trip where a TUN can be made
+## (Linux as root: a UDP datagram sent to the peer of the interface comes out of tun_read as an IPv4 packet, and a
+## packet written with tun_write is accepted). Without the privilege the open must fail with its reason.
+use tun
+
+fn test_ipv4_parse() = tun_parse_ipv4("10.211.0.1") == Cons(10, Cons(211, Cons(0, Cons(1, Nil)))) and tun_isnil(tun_parse_ipv4("10.211.0")) == 1 and tun_isnil(tun_parse_ipv4("10.211.0.256")) == 1 and tun_isnil(tun_parse_ipv4("a.b.c.d")) == 1 and tun_isnil(tun_parse_ipv4("1.2.3.4.5")) == 1
+fn test_masks() = tun_mask(24) == Cons(255, Cons(255, Cons(255, Cons(0, Nil)))) and tun_mask(20) == Cons(255, Cons(255, Cons(240, Cons(0, Nil)))) and tun_mask(0) == Cons(0, Cons(0, Cons(0, Cons(0, Nil)))) and tun_mask(32) == Cons(255, Cons(255, Cons(255, Cons(255, Nil))))
+fn test_refusals_say_why() = let t = tun_open("a-name-much-longer-than-fifteen") in t.ok == 0 and count(t.err) > 10 and tun_read(t, buf_new(16)) == 0 - 1 and tun_set_up(t) == "the interface is not open"
+
+## the round trip (connect + write: sendto takes six arguments, sys_call passes five)
+fn udp_to(ip, port) = let s = sys_call(41, 2, 2, 0, 0, 0) in let sa = tun_put_bytes(tun_put16(tun_put16(buf_new(16), 0, 2), 2, port * 256), 4, ip) in let m = buf_from_str("lume-tun-probe") in let k = sys_call(42, s, buf_addr(sa), 16, 0, 0) in let r = (if k < 0 then k else sys_call(1, s, buf_addr(m), 14, 0, 0)) in let c = sys_call(3, s, 0, 0, 0, 0) in r
+## the next IPv4 UDP packet for 10.211.0.2 (other traffic, such as IPv6 router solicitations, is skipped)
+fn wait_udp(t, buf, tries) = if tries == 0 then 0 else let w = tun_wait(t, 200) in let n = tun_read(t, buf) in if n >= 28 and buf_get(buf, 0) == 69 and buf_get(buf, 9) == 17 and buf_get(buf, 16) == 10 and buf_get(buf, 17) == 211 and buf_get(buf, 19) == 2 then n else wait_udp(t, buf, tries - 1)
+fn roundtrip(t) = let a = tun_set_ipv4(t, "10.211.0.1", 24) in let m = tun_set_mtu(t, 1400) in let u = tun_set_up(t) in if a != "" or m != "" or u != "" then 0 else let nb = tun_set_nonblocking(t) in let sent = udp_to(Cons(10, Cons(211, Cons(0, Cons(2, Nil)))), 9) in let buf = buf_new(2048) in let n = wait_udp(t, buf, 25) in let back = tun_write(t, buf, n) in let c = tun_close(t) in sent == 14 and n == 42 and back == n and c == 1
+fn test_roundtrip_or_reason() = if os_platform() == "windows" then 1 else let t = tun_open("lumetun0") in if t.ok == 1 then roundtrip(t) == 1 else count(t.err) > 20

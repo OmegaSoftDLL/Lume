@@ -291,6 +291,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                    cofre, sem sessao de logon, sem diretorio), `corrupt`, `not_private`, `locked` (reservado): um
                    cofre que nao responde nunca vira ausente, o chamador pode falhar fechado
 - Ambiente: `os_getenv(nome)` ("" se ausente), `os_env_has(nome)` (1 se existe, mesmo vazia)
+- Interfaces virtuais (VPN): `use tun` -> `tun_open(nome)` -> {ok, fd, sess, name, err} (Linux /dev/net/tun como
+                   root, Windows Wintun em processo elevado: wintun.dll ao lado do programa, no System32 ou em
+                   LUME_WINTUN_DLL), `tun_read(t, buf)` (um pacote IP: o tamanho, 0 sem pacote, -1), `tun_write(t, buf,
+                   n)`, `tun_wait(t, ms)`, `tun_set_nonblocking(t)`, `tun_set_ipv4(t, end, prefixo)`, `tun_set_mtu(t, mtu)`,
+                   `tun_set_up(t)` ("" ou o motivo), `tun_close(t)`; no Linux o fd funciona com epoll
 - Controle de rede: `use netctl` -> `net_tcp_connect_addr_timeout(ip, porta, ms)` (o socket, ou -1 se recusado,
                    inalcancavel ou calado alem de ms), `net_tcp_nodelay(fd, ligado)` (1 se aplicado); `use dns` ->
                    `dns_tcp_connect_timeout(host, porta, ms)`. Escritos em Lume sobre as duas primitivas abaixo.

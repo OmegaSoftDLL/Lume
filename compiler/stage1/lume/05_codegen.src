@@ -293,13 +293,22 @@ fn lvalsof(items) = match items
     Nil        => Nil
     Cons(h, t) => Cons(h.val, lvalsof(t))
 fn lrec(items, ctx, s) = lrec2(lvalsof(items), len(items), lshape(items, len(items), s), ctx)
-fn lrec2(vals, n, d, ctx) = if n == 0 then lres("    leaq " + d.lab + "(%rip), %rax\n", d) else lcell(d.lab, vals, n, ctx, d)
+fn lrec2(vals, n, d, ctx) = if n == 0 then lres("    leaq " + d.lab + "(%rip), %rax\n", d) else if lconst_elems(vals) == 1 then lconstrec(d.lab, vals, d) else lcell(d.lab, vals, n, ctx, d)
+## a record literal of constants (ints that fit the word, strings) is one static cell, like a constant list: the
+## shape descriptor, then the fields in order; records are never updated in place (`with` copies)
+fn lcr_words(xs, s, acc) = match xs
+    Nil        => {txt: acc, st: s}
+    Cons(h, t) => let w = lcl_word(h, s) in lcr_words(t, w.st, acc + "    .quad " + w.w + "\n")
+fn lconstrec(dlab, vals, s) = let lab = "__cr_" + lhashlab(dlab + ":" + lcl_repr(vals)) in let c = lcr_words(vals, s, "") in let e = lentry(lab, "    .balign 8\n" + lab + ":\n    .quad " + dlab + "\n" + c.txt, c.st) in lres("    leaq " + lab + "(%rip), %rax\n", e)
+
 fn lfield(nm, o, ctx, s) = lfield2(lkey(nm, s), o, ctx)
 fn lfield2(k, o, ctx) = if lisleaf(o) == 1 then lfield3(k, lload(o, "%rdi", ctx, k)) else lfield3(k, lfield4(lax(o, ctx, k)))
-## r.name goes through the field's cache: one .lcomm pair per field name (the record descriptor last seen at a read
-## of the name, the byte offset of the field in records of that shape). Same descriptor: two loads, inline. Any other
+## r.name goes through a cache of its own: one .lcomm pair per read site (the record descriptor last seen there and
+## the byte offset of the field in records of that shape). Same descriptor: two loads, inline. Any other
 ## value calls __rt_recget_ic (rt/rt_text.src), which reads through recget (every check and message) and refills.
-fn lfield3(k, a) = lfield5(k, lentry("__ic" + slice(k.lab, 3, count(k.lab)), "    .lcomm __ic" + slice(k.lab, 3, count(k.lab)) + ", 16\n", a), a.code)
+## one cache per read site (__icN_name), never one per field name: two sites that see records of different shapes
+## (a producer reading its input, a consumer reading the producer's output) would evict each other on every read
+fn lfield3(k, a) = let lab = "__ic" + a.pfx + str(a.nl) + slice(k.lab, 3, count(k.lab)) in lfield5(k, lentry(lab, "    .lcomm " + lab + ", 16\n", lnext(a)), a.code)
 fn lfield5(k, c, code) = let n = c.pfx + str(c.nl) in lres(code + "    testq $7, %rdi\n    jnz .Lfs" + n + "\n    testq %rdi, %rdi\n    jz .Lfs" + n + "\n    movq (%rdi), %rax\n    cmpq " + c.lab + "(%rip), %rax\n    jne .Lfs" + n + "\n    movq " + c.lab + "+8(%rip), %rax\n    movq (%rdi,%rax), %rax\n    jmp .Lfx" + n + "\n.Lfs" + n + ":\n    leaq " + k.lab + "(%rip), %rsi\n    leaq " + c.lab + "(%rip), %rdx\n    call __rt_recget_ic\n.Lfx" + n + ":\n", lnext(c))
 fn lfield4(a) = lres(a.code + "    movq %rax, %rdi\n", a)
 
@@ -456,7 +465,7 @@ fn lis_err_call(arg, ctx, s) = let d1 = lctordesc("Err", 1, s) in let d0 = lctor
 fn lsyscall(args, ctx, s) = let ar = lstackargs(args, ctx, s) in lres(ar.code + "    popq %r8\n    popq %r10\n    popq %rdx\n    popq %rsi\n    popq %rdi\n    popq %rax\n    movq %rax, %rcx\n    andq %rdi, %rcx\n    andq %rsi, %rcx\n    andq %rdx, %rcx\n    andq %r10, %rcx\n    andq %r8, %rcx\n    andq $1, %rcx\n    testq %rcx, %rcx\n    jz __rt_need_int\n    sarq $1, %rax\n    sarq $1, %rdi\n    sarq $1, %rsi\n    sarq $1, %rdx\n    sarq $1, %r10\n    sarq $1, %r8\n    xorq %r9, %r9\n    syscall\n    movq %rax, %rdi\n    call mkint\n", ar)
 fn lbufaddr(args, ctx, s) = let lab = s.pfx + str(s.nl) in let ar = lstackargs(args, ctx, lnext(s)) in lres(ar.code + "    popq %rax\n    testq %rax, %rax\n    jz .Lba" + lab + "\n    testq $7, %rax\n    jnz .Lba" + lab + "\n    cmpb $15, (%rax)\n    jne .Lba" + lab + "\n    leaq 8(%rax), %rdi\n    call mkint\n    jmp .Lbz" + lab + "\n.Lba" + lab + ":\n    leaq __rt_nbuf_msg(%rip), %r8\n    jmp __rt_die3\n.Lbz" + lab + ":\n", ar)
 
-fn lcallx(nm, args, ctx, s) = if isctor(nm) then lctor(nm, args, ctx, s) else if nm == "sys_call" and len(args) == 6 then lsyscall(args, ctx, s) else if nm == "buf_addr" and len(args) == 1 then lbufaddr(args, ctx, s) else if nm == "__lume_is_err" and len(args) == 1 then lis_err_call(lqhead(args), ctx, s) else if nm == "__perceus_reuse_2" then lreuse2(args, ctx, s) else if nm == "__perceus_reuse_1" then lreuse1(args, ctx, s) else if nm == "ord" and len(args) == 1 then (let oa = lord_at_args(args) in if oa.ok == 1 then lord_at(oa.s, oa.i, ctx, s) else lcall(nm, args, ctx, s)) else if lis_bv2_call(nm) and len(args) == 2 then lbv2(nm, args, ctx, s) else if lis_bv1_call(nm) and len(args) == 1 then lbv1(nm, args, ctx, s) else if nm == "ct_eq" and len(args) == 2 then lcteq_o(args, ctx, s) else if nm == "ct_select" and len(args) == 3 then lctsel_o(args, ctx, s) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lquant(nm, args, ctx, s) else lcall(nm, args, ctx, s)
+fn lcallx(nm, args, ctx, s) = if isctor(nm) then lctor(nm, args, ctx, s) else if nm == "_constlist_" then lconstlist(args, s) else if nm == "sys_call" and len(args) == 6 then lsyscall(args, ctx, s) else if nm == "buf_addr" and len(args) == 1 then lbufaddr(args, ctx, s) else if nm == "__lume_is_err" and len(args) == 1 then lis_err_call(lqhead(args), ctx, s) else if nm == "__perceus_reuse_2" then lreuse2(args, ctx, s) else if nm == "__perceus_reuse_1" then lreuse1(args, ctx, s) else if nm == "ord" and len(args) == 1 then (let oa = lord_at_args(args) in if oa.ok == 1 then lord_at(oa.s, oa.i, ctx, s) else lcall(nm, args, ctx, s)) else if lis_bv2_call(nm) and len(args) == 2 then lbv2(nm, args, ctx, s) else if lis_bv1_call(nm) and len(args) == 1 then lbv1(nm, args, ctx, s) else if nm == "ct_eq" and len(args) == 2 then lcteq_o(args, ctx, s) else if nm == "ct_select" and len(args) == 3 then lctsel_o(args, ctx, s) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lquant(nm, args, ctx, s) else lcall(nm, args, ctx, s)
 ## constant-string folding: a chain of `+` over string literals is one .rodata literal, so a long runtime
 ## fragment costs nothing at run time. A chain is only walked when its leftmost leaf is a literal.
 fn lstr_chain_head(e) = match e
@@ -624,6 +633,40 @@ fn lalpha_quant(nm, args, st) = let vnm = lqvar(lqhead(args)) in let a1 = lqrest
 fn llistlower(xs) = match xs
     Nil        => Var("Nil")
     Cons(h, t) => Call("Cons", Cons(h, Cons(llistlower(t), Nil)))
+## a list literal of constants only (ints that fit the word, strings) is built once, as static cells in .rodata, and
+## shared by every evaluation: `[10, 11, 13]` costs one leaq instead of three allocations. Only literals take this
+## path (never a Cons written by hand), and Perceus never reuses a list literal in place (its uniqueness gate does
+## not count _tylist_ as fresh), so a static cell is never written.
+fn lconst_elem(e) = match e
+    Num(n) => lfits63(n)
+    Str(v) => true
+    _      => false
+fn lconst_elems(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if lconst_elem(h) then lconst_elems(t) else 0
+fn llistlit(xs) = match xs
+    Nil        => Var("Nil")
+    Cons(h, t) => if lconst_elems(xs) == 1 then Call("_constlist_", xs) else llistlower(xs)
+## the static cells: LAB_i holds the Cons descriptor, element i (an immediate word or a string cell) and LAB_(i+1)
+fn lcl_repr(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => lcl_repr1(h) + "," + lcl_repr(t)
+fn lcl_repr1(e) = match e
+    Num(n) => "n" + str(n)
+    Str(v) => "s" + str(count(v)) + ":" + v
+    _      => "?"
+fn lcl_word(e, s) = match e
+    Num(n) => {w: str(lintword(n)), st: s}
+    Str(v) => lcl_strword(v, count(v), s)
+    _      => {w: "0", st: s}
+fn lcl_strword(v, n, s) = if n <= 7 then {w: str(lsso_word(v, n)), st: s} else (let c = lstrcell(v, n, s) in {w: c.lab, st: c})
+fn lcl_cells(xs, lab, i, s, acc) = match xs
+    Nil        => {txt: acc, st: s}
+    Cons(h, t) => let w = lcl_word(h, s) in let nxt = lcl_next(t, lab, i + 1) in lcl_cells(t, lab, i + 1, w.st, acc + "    .balign 8\n" + lab + "_" + str(i) + ":\n    .quad __c_Cons_2\n    .quad " + w.w + "\n    .quad " + nxt + "\n")
+fn lcl_next(t, lab, j) = match t
+    Nil        => "__c_Nil_0"
+    Cons(h, r) => lab + "_" + str(j)
+fn lconstlist(args, s) = let lab = "__cl_" + lhashlab(lcl_repr(args)) in let d1 = lctordesc("Cons", 2, s) in let d2 = lctordesc("Nil", 0, d1) in let c = lcl_cells(args, lab, 0, d2, "") in let e = lentry(lab, c.txt, c.st) in lres("    leaq " + lab + "_0(%rip), %rax\n", e)
 fn lis_ed_var(e) = match e
     Var(vn) => if count(vn) >= 8 and slice(vn, 0, 8) == "_ed_val_" then 1 else 0
     _       => 0
@@ -636,7 +679,7 @@ fn lalpha_e(e, st) = match e
     LetIn(nm, v, b) => lalpha_let(nm, v, b, st)
     Bin(op, l, r)   => if lis_ed_cond(op, l, r) == 1 then lalpha_e(Call("__lume_is_err", Cons(l, Nil)), st) else let rl = lalpha_e(l, st) in let rr = lalpha_e(r, {bound: st.bound, env: st.env, k: rl.k}) in {node: Bin(op, rl.node, rr.node), k: rr.k}
     If(c, t, e2)    => let rc = lalpha_e(c, st) in let rt = lalpha_e(t, {bound: st.bound, env: st.env, k: rc.k}) in let re = lalpha_e(e2, {bound: st.bound, env: st.env, k: rt.k}) in {node: If(rc.node, rt.node, re.node), k: re.k}
-    Call(nm, args)  => if nm == "_tylist_" then lalpha_e(llistlower(args), st) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lalpha_quant(nm, args, st) else let ra = lalpha_args(args, st) in {node: Call(nm, ra.items), k: ra.k}
+    Call(nm, args)  => if nm == "_tylist_" then lalpha_e(llistlit(args), st) else if (nm == "forall_range" or nm == "exists_range") and len(args) == 4 then lalpha_quant(nm, args, st) else let ra = lalpha_args(args, st) in {node: Call(nm, ra.items), k: ra.k}
     Field(o, nm)    => let ro = lalpha_e(o, st) in {node: Field(ro.node, nm), k: ro.k}
     Rec(items)      => let rr = lalpha_rec(items, st) in {node: Rec(rr.items), k: rr.k}
     RecT(tn, items) => let rr = lalpha_rec(items, st) in {node: RecT(tn, rr.items), k: rr.k}

@@ -305,6 +305,11 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             no logon session, no directory), `corrupt`, `not_private`, `locked` (reserved): a store that cannot
             answer is never reported as absent, so a caller may fail closed on it
 - Environment: `os_getenv(name)` ("" when absent), `os_env_has(name)` (1 when set, even to "")
+- Virtual interfaces (VPN): `use tun` -> `tun_open(name)` -> {ok, fd, sess, name, err} (Linux /dev/net/tun as
+            root, Windows Wintun in an elevated process: wintun.dll next to the program, in System32 or named by
+            LUME_WINTUN_DLL), `tun_read(t, buf)` (one IP packet: its length, 0 when none waits, -1), `tun_write(t, buf,
+            n)`, `tun_wait(t, ms)`, `tun_set_nonblocking(t)`, `tun_set_ipv4(t, addr, prefix)`, `tun_set_mtu(t, mtu)`,
+            `tun_set_up(t)` ("" or the reason), `tun_close(t)`; on Linux the fd works with epoll
 - Network control: `use netctl` -> `net_tcp_connect_addr_timeout(ip, port, ms)` (the socket, or -1 when refused,
             unreachable or silent past ms), `net_tcp_nodelay(fd, on)` (1 when set); `use dns` ->
             `dns_tcp_connect_timeout(host, port, ms)`. Written in Lume on the two primitives below.

@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `win_window_draw` with StretchDIBits); the WH_KEYBOARD_LL hook (`win_kbhook_*`, layer pseudo call 1016).
 - **Video colour conversion:** `buf_bgra_to_i420` and `buf_i420_to_bgra` (BT.601 limited range), runtime routines
   written in Lume (`compiler/stage1/rt/rt_video.src`).
+- **TUN interfaces (`use tun`):** layer-3 virtual interfaces for VPNs, written in Lume: Linux `/dev/net/tun`
+  (TUNSETIFF, address / netmask / MTU / up through socket ioctls, epoll-able descriptor) and Windows Wintun
+  (wintun.dll over the generic Win32 call, address through the IP Helper API). `compiler/stage1/tun_ok.src` sends a UDP
+  datagram into the interface and reads it back as an IPv4 packet (Linux as root); without the privilege the open fails
+  with its reason.
 - **Block distortion for encoders:** `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`, `buf_satd16x16`
   (SAD and 4x4 Hadamard SATD between two blocks of byte buffers with their own strides), runtime routines written
   in Lume, checked against a reference in `compiler/stage1/video_sad_ok.src`. SAD uses SSE2 `psadbw`: the sixteen-by-
@@ -41,7 +46,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runtime split:** the file-system part of the Lume runtime (`rt_fs`, `rt_io`) is no longer linked into
   `@freestanding` kernels; text and video routines stay shared.
 
+- **Constant literals allocate nothing:** a list literal of constants (`[10, 11, 13]`) and a record literal of constants
+  are static cells in .rodata, shared by every evaluation (2 million `seq_nth([...], i)`: 154 -> 24 ms; a constant
+  `if` chain takes 15 ms). `compiler/stage1/const_list_ok.src` checks equality, strings, shared tails, `with` copies
+  and that a million evaluations leave the heap unchanged.
+- **Collector pacing:** the next collection comes after `max(8 MiB, 3 x live)` bytes instead of `max(64 MiB, 3 x
+  live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
+
 ### Fixed
+- **Field reads, two record shapes:** the inline field cache is one per read site, no longer one per field name. A
+  producer reading its input and a consumer reading the producer's output (different shapes, same field names)
+  evicted each other on every read: `consome(produz(z))` took 1.3 s for 500 000 rounds, now 148 ms, the sum of its
+  parts (LumeDesk report).
 - **C0009 and the `ct_` prefix:** a C0009 inside a function named `ct_*` now says that the prefix made its
   parameters secrets (all of them, or only those named `secret` / `secret_*`), and the manuals (EN / PT) document the
   convention with an example.
