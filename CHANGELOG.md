@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Screen, capture, input and windows on Windows (`use winsys`):** `win_displays()` (rectangle, effective DPI, scale,
+  rotation, primary, refresh; the process becomes Per-Monitor-V2 aware), `win_virtual_screen()`; Desktop Duplication
+  capture through Direct3D 11 written in Lume over COM vtables (`win_capture_open/frame/frame_into/close`: BGRA frames,
+  dirty rectangles, pointer position, "lost" on a desktop switch), GDI BitBlt fallback and `win_capture_gdi`;
+  `win_cursor()` and `win_cursor_shape()`; SendInput (`win_send_key` with Set-1 scancodes, `win_send_vk`,
+  `win_send_text`, absolute mouse moves on the virtual desktop, buttons, wheel in 1/120), `win_key_state`,
+  `win_async_key_down`, `win_send_sas`; a viewer window without callbacks (`win_window_open`, `win_window_events`,
+  `win_window_draw` with StretchDIBits); the WH_KEYBOARD_LL hook (`win_kbhook_*`, layer pseudo call 1016).
+- **Video colour conversion:** `buf_bgra_to_i420` and `buf_i420_to_bgra` (BT.601 limited range), runtime routines
+  written in Lume (`compiler/stage1/rt/rt_video.src`).
+
+### Changed
+- **Faster buffer and arithmetic loops:** `buf_get` / `buf_set` compile to inline machine code on the common path
+  (the runtime routine only for a boxed index, a wrong value or an out-of-range index, with the same diagnostics);
+  `x % k` and `x / k` by a literal k >= 2 divide in place. A 1080p-sized buffer copy loop: 51 -> 10 ms on Linux,
+  20 -> 7 ms on Windows.
+
+### Fixed
+- **Windows:** programs run by `lume run` / `lume test` that create a Direct3D device no longer die at exit
+  (0xC0000005 in the graphics driver, reported as status 139): scratch binaries are named `.exe`.
+- **CI:** the frozen seed (`lume0`) compiles the compiler again (a parameter was named `as`); the release workflow
+  checks the version of the tag instead of a fixed 1.1.0.
+
 ## [1.2.0] - 2026-11-17
 
 Native Windows toolchain (`lumec --win64`, `lasm --pe`, the Win64 runtime layer) with results identical to Linux on

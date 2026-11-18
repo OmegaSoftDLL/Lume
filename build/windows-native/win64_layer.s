@@ -163,6 +163,8 @@ __win_syscall:
     je .Lws_svc_start
     cmpq $1015, %rax
     je .Lws_svc_get
+    cmpq $1016, %rax
+    je .Lws_kbll
     cmpq $51, %rax
     je .Lws_getsockname
     cmpq $1001, %rax
@@ -3890,6 +3892,119 @@ __win_ffi_resolve:
     addq $56, %rsp
     ret
 
+# pseudo system call 1016: the WH_KEYBOARD_LL hook. Windows calls a hook procedure, so this one piece stays in the
+# layer; everything around it (SetWindowsHookExW, the message pump, decoding) is Lume over the generic call 1011.
+# r12 = 0: rax = the address of the hook procedure. 1: r13 = CallNextHookEx, r14 = GetForegroundWindow (pointers).
+# 2: r13 = the window whose foreground state swallows keys, r14 = 1 swallow / 0 pass. 3: pop the oldest event into
+# the 32-byte buffer r13 {u64 wParam, u32 vk, u32 scan, u32 flags, u32 time, u64 extra}; rax = 1, or 0 when empty.
+# The ring keeps the newest 64 events. Injected events (LLKHF_INJECTED, flags bit 4) are never swallowed.
+.Lws_kbll:
+    cmpq $0, %r12
+    jne .Lws_kb1
+    leaq .Lws_kbll_proc(%rip), %rax
+    jmp .Lws_ret
+.Lws_kb1:
+    cmpq $1, %r12
+    jne .Lws_kb2
+    movq %r13, .Lws_kb_next(%rip)
+    movq %r14, .Lws_kb_fg(%rip)
+    xorq %rax, %rax
+    jmp .Lws_ret
+.Lws_kb2:
+    cmpq $2, %r12
+    jne .Lws_kb3
+    movq %r13, .Lws_kb_hwnd(%rip)
+    movq %r14, .Lws_kb_swallow(%rip)
+    xorq %rax, %rax
+    jmp .Lws_ret
+.Lws_kb3:
+    movq .Lws_kb_head(%rip), %rax
+    movq .Lws_kb_tail(%rip), %r10
+    cmpq %rax, %r10
+    je .Lws_kb_empty
+    movq %rax, %r11
+    subq %r10, %r11
+    cmpq $64, %r11
+    jle .Lws_kb_take
+    movq %rax, %r10
+    subq $64, %r10
+.Lws_kb_take:
+    movq %r10, %r11
+    andq $63, %r11
+    shlq $5, %r11
+    leaq .Lws_kb_ring(%rip), %r9
+    addq %r11, %r9
+    movq (%r9), %rax
+    movq %rax, (%r13)
+    movq 8(%r9), %rax
+    movq %rax, 8(%r13)
+    movq 16(%r9), %rax
+    movq %rax, 16(%r13)
+    movq 24(%r9), %rax
+    movq %rax, 24(%r13)
+    addq $1, %r10
+    movq %r10, .Lws_kb_tail(%rip)
+    movq $1, %rax
+    jmp .Lws_ret
+.Lws_kb_empty:
+    xorq %rax, %rax
+    jmp .Lws_ret
+# LowLevelKeyboardProc(nCode, wParam, KBDLLHOOKSTRUCT *): runs on the thread that pumps messages
+.Lws_kbll_proc:
+    subq $56, %rsp
+    movq %rcx, 32(%rsp)
+    movq %rdx, 40(%rsp)
+    movq %r8, 48(%rsp)
+    movq %rcx, %rax
+    shlq $32, %rax
+    sarq $32, %rax
+    testq %rax, %rax
+    js .Lws_kbp_next
+    movq .Lws_kb_head(%rip), %r10
+    movq %r10, %r11
+    andq $63, %r11
+    shlq $5, %r11
+    leaq .Lws_kb_ring(%rip), %r9
+    addq %r11, %r9
+    movq %rdx, (%r9)
+    movq (%r8), %rax
+    movq %rax, 8(%r9)
+    movq 8(%r8), %rax
+    movq %rax, 16(%r9)
+    movq 16(%r8), %rax
+    movq %rax, 24(%r9)
+    addq $1, %r10
+    movq %r10, .Lws_kb_head(%rip)
+    cmpq $0, .Lws_kb_swallow(%rip)
+    je .Lws_kbp_next
+    movq 8(%r8), %rax
+    andq $16, %rax
+    jnz .Lws_kbp_next
+    movq .Lws_kb_fg(%rip), %rax
+    testq %rax, %rax
+    jz .Lws_kbp_next
+    call *%rax
+    cmpq .Lws_kb_hwnd(%rip), %rax
+    jne .Lws_kbp_next
+    movq $1, %rax
+    addq $56, %rsp
+    ret
+.Lws_kbp_next:
+    movq .Lws_kb_next(%rip), %rax
+    testq %rax, %rax
+    jz .Lws_kbp_zero
+    xorq %rcx, %rcx
+    movq 32(%rsp), %rdx
+    movq 40(%rsp), %r8
+    movq 48(%rsp), %r9
+    call *%rax
+    addq $56, %rsp
+    ret
+.Lws_kbp_zero:
+    xorq %rax, %rax
+    addq $56, %rsp
+    ret
+
 # pseudo system call 1008 (ENOSYS on Linux): the IPv4 unicast addresses of the adapters that are up, 4 bytes each
 # (network order) into buf r12 of r13 bytes; rax = the number of bytes written
 .Lws_ipv4if:
@@ -5920,6 +6035,13 @@ __lume_ffi_libs:
     .lcomm .Lws_wbuf, 65536
     .lcomm .Lws_jobs, 1024
     .lcomm .Lws_svc_name, 512
+    .lcomm .Lws_kb_ring, 2048
+    .lcomm .Lws_kb_head, 8
+    .lcomm .Lws_kb_tail, 8
+    .lcomm .Lws_kb_next, 8
+    .lcomm .Lws_kb_fg, 8
+    .lcomm .Lws_kb_hwnd, 8
+    .lcomm .Lws_kb_swallow, 8
     .lcomm .Lws_svc_table, 32
     .lcomm .Lws_svc_wr, 8
     .lcomm .Lws_svc_done, 8

@@ -15,13 +15,14 @@
 ## Services (inventory).
 ##   services_running() -> [str]                 short names of the Win32 services that are running
 ## Services (management, running as a service), processes in a user's session, local named pipes, desktops and the
-## privacy window: see their sections below.
+## privacy window, and screen capture / input injection / viewer windows / the low-level keyboard hook (win_displays,
+## win_capture_*, win_send_*, win_window_*, win_kbhook_*): see their sections below.
 
 use process
 
 fn ws_win() = os_platform() == "windows"
 fn ws_u32(b, o) = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3)
-fn ws_u64(b, o) = ws_u32(b, o) + 4294967296 * ws_u32(b, o + 4)
+fn ws_u64(b, o) = bit_or(ws_u32(b, o), bit_shl(ws_u32(b, o + 4), 32))
 fn ws_put64(b, o, v, k) = if k >= 8 then b else ws_put64(buf_set(b, o + k, bit_and(bit_shr(v, 8 * k), 255)), o, v, k + 1)
 fn ws_cz(s) = buf_from_str(s + chr(0))
 fn ws_len(xs, n) = match xs
@@ -214,6 +215,191 @@ fn win_pump_messages() = if ws_win() == 0 then 0 else ws_pump(buf_new(48), 0)
 fn ws_pump(m, n) = if n > 1000 or ws_call("user32.dll", "PeekMessageW", ws_l5(buf_addr(m), 0, 0, 0, 1)) == 0 then n else let t = ws_call("user32.dll", "TranslateMessage", ws_l1(buf_addr(m))) in let d = ws_callq("user32.dll", "DispatchMessageW", ws_l1(buf_addr(m))) in ws_pump(m, n + 1)
 fn win_window_destroy(hwnd) = if ws_win() == 0 or hwnd == 0 then 0 else let r = ws_call("user32.dll", "DestroyWindow", ws_l1(hwnd)) in let p = win_pump_messages() in if r == 0 then 0 else 1
 
+## --- Screen, capture, input and windows (remote desktop agents and viewers) -------------------------------------------
+## The process opts into Per-Monitor-V2 DPI awareness the first time it asks for displays (win_dpi_aware), so every
+## coordinate below is in physical pixels of the virtual desktop.
+##   win_dpi_aware() -> 1 / 0                       SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2); 1 when the
+##       process is per-monitor aware afterwards (also when it already was)
+##   win_displays() -> [{index, name, x, y, width, height, dpi, scale, rotation, primary, refresh, monitor}]
+##       the monitors attached to the desktop: rectangle in virtual-desktop pixels, effective DPI (96 = 100 %), scale
+##       in percent, rotation 0 / 90 / 180 / 270, primary 1 / 0, refresh in Hz, monitor = the HMONITOR
+##   win_virtual_screen() -> {x, y, width, height}  the bounding rectangle of all monitors
+## Capture. Desktop Duplication (DXGI 1.2, through Direct3D 11) first; GDI BitBlt when duplication is not available
+## (no GPU output, a remote session without WDDM, the secure desktop). Frames are BGRA, 4 bytes per pixel, top-down.
+##   win_capture_open(index) -> cap {ok, mode: "dxgi" / "gdi", index, x, y, width, height, rotation, err, ...}
+##   win_capture_frame(cap, timeout_ms) -> {ok, status, width, height, stride, data, dirty, accumulated,
+##       pointer_x, pointer_y, pointer_visible}
+##       status "frame": data holds the whole image (stride bytes per row); dirty = [{left, top, right, bottom}]
+##       the rectangles that changed since the previous frame. "pointer": only the mouse moved (data is empty).
+##       "timeout": nothing changed within timeout_ms. "lost": access was lost (desktop switch to UAC / lock screen,
+##       mode change, full-screen app): win_capture_close(cap) and win_capture_open again (it falls back to GDI on
+##       the secure desktop). "error": see err.
+##   win_capture_frame_into(cap, timeout_ms, buf) -> the same, reusing buf when it is large enough (no 8 MB
+##       allocation per 1080p frame)
+##   win_capture_close(cap) -> 1
+##   win_capture_gdi(x, y, w, h) -> {ok, width, height, stride, data}   one BitBlt of a virtual-desktop rectangle
+##   win_cursor() -> {visible, x, y, handle}        GetCursorInfo; x, y in virtual-desktop pixels
+##   win_cursor_shape(handle) -> {ok, width, height, hot_x, hot_y, color, mask, mono}
+##       color: the cursor drawn on black (BGRA); mask: its AND mask (BGRA, white = transparent);
+##       mono = 1 for a monochrome cursor (XOR rules apply where the mask is white and the color is not black)
+## Input (SendInput; the agent must run on the input desktop of the session it drives).
+##   win_send_key(scancode, extended, down) -> 1 / 0   scancode Set 1, extended: the E0 prefix (bool), down: bool
+##   win_send_vk(vk, down) -> 1 / 0                  a virtual-key code
+##   win_send_text(s) -> int                         KEYEVENTF_UNICODE, down and up per UTF-16 unit; the events sent
+##   win_send_mouse_move(x, y) -> 1 / 0              absolute, in virtual-desktop pixels (MOUSEEVENTF_VIRTUALDESK)
+##   win_send_mouse_button(button, down) -> 1 / 0    1 left, 2 right, 3 middle, 4 X1, 5 X2; down: bool
+##   win_send_mouse_wheel(delta, horizontal) -> 1 / 0   delta in 1/120 notches (120 = one notch away from the user)
+##   win_key_state(vk) -> {down, toggled}            GetKeyState (toggled: Caps / Num / Scroll lock lights)
+##   win_async_key_down(vk) -> 1 / 0                 GetAsyncKeyState
+##   win_send_sas(as_user) -> 1 / 0                  sas.dll SendSAS (Ctrl+Alt+Del); works from a service running as
+##       SYSTEM, or with the SoftwareSASGeneration policy; 0 when sas.dll is absent
+## Windows (a viewer). The class uses user32!DefWindowProcW itself, so no callback is needed: the program pumps.
+##   win_window_open(title, client_w, client_h) -> hwnd (0 on failure)
+##   win_window_events(hwnd) -> [{kind, msg, wparam, lparam, x, y, key, scan, extended, delta, button}]
+##       drains the thread's queue (it also drives the keyboard hook). kind: "key_down", "key_up", "char"
+##       (key = the UTF-16 unit), "mouse_move", "button_down", "button_up", "wheel", "hwheel" (delta in 1/120),
+##       "quit", "other". x, y: client pixels (wheel: screen pixels). key: the virtual key; scan, extended: from lParam
+##   win_window_alive(hwnd) -> 1 / 0                 0 after the user closed it (DefWindowProc destroys it)
+##   win_window_client_size(hwnd) -> {width, height}
+##   win_window_set_title(hwnd, title) -> 1 / 0
+##   win_window_draw(hwnd, data, w, h, stride) -> 1 / 0   StretchDIBits of a BGRA image over the whole client area
+##   win_window_draw_rect(hwnd, data, w, h, stride, dx, dy, dw, dh) -> 1 / 0   into one client rectangle
+##   win_window_destroy(hwnd) -> 1 / 0 (above)
+## Keyboard hook (WH_KEYBOARD_LL, so a viewer can forward Win, Alt+Tab, Alt+Esc ... to the remote side).
+##   win_kbhook_install() -> handle (0 on failure)    the events arrive while the thread pumps (win_window_events or
+##       win_pump_messages)
+##   win_kbhook_swallow(hwnd, on) -> 0                when on = 1 and hwnd is the foreground window, keys are kept
+##       from the local system (injected keys always pass)
+##   win_kbhook_events() -> [{msg, vk, scan, flags, extended, injected, down, alt, time}]   oldest first, up to 64
+##   win_kbhook_remove(handle) -> 1 / 0
+## The H.264 encoder is not here: Lume programs write their own (Media Foundation is not required).
+
+fn ws_putn(b, o, v, k, n) = if k >= n then b else ws_putn(buf_set(b, o + k, bit_and(bit_shr(v, 8 * k), 255)), o, v, k + 1, n)
+fn ws_put32(b, o, v) = ws_putn(b, o, v, 0, 4)
+fn ws_put16(b, o, v) = ws_putn(b, o, v, 0, 2)
+fn ws_s32(b, o) = let u = ws_u32(b, o) in if u >= 2147483648 then u - 4294967296 else u
+fn ws_s16(v) = let u = bit_and(v, 65535) in if u >= 32768 then u - 65536 else u
+fn ws_copyx(addr, n) = let b = buf_new(n) in let c = ws_callq("kernel32.dll", "RtlMoveMemory", ws_l3(buf_addr(b), addr, n)) in b
+fn ws_copy_into(dst, addr, n) = let c = ws_callq("kernel32.dll", "RtlMoveMemory", ws_l3(buf_addr(dst), addr, n)) in dst
+fn ws_rd64(addr) = ws_u64(ws_copyx(addr, 8), 0)
+fn ws_bytes(b, o, xs) = match xs
+    Nil        => b
+    Cons(h, t) => ws_bytes(buf_set(b, o, h), o + 1, t)
+fn ws_guid(d1, d2, d3, tail) = ws_bytes(ws_put16(ws_put16(ws_put32(buf_new(16), 0, d1), 4, d2), 6, d3), 8, tail)
+fn ws_l8(a, b, c, d, e, f, g, h) = Cons(a, ws_l7(b, c, d, e, f, g, h))
+fn ws_pt(x, y) = bit_or(bit_and(x, 4294967295), bit_shl(bit_and(y, 4294967295), 32))
+## a COM method: slot idx of the object's vtable, the object itself first
+fn ws_vcall(obj, idx, xs) = let fp = ws_rd64(ws_rd64(obj) + 8 * idx) in let all = Cons(obj, xs) in let n = ws_len(all, 0) in let a = ws_args(buf_new(8 * n + 8), all, 0) in bit_and(sys_call(1011, fp, buf_addr(a), n, 0, 0), 4294967295)
+fn ws_release(obj) = if obj == 0 then 0 else ws_vcall(obj, 2, Nil)
+fn ws_qi(obj, iid) = let p = buf_new(8) in if ws_vcall(obj, 0, ws_l2(buf_addr(iid), buf_addr(p))) != 0 then 0 else ws_u64(p, 0)
+fn ws_iid_output1() = ws_guid(13491880,37787, 19331, Cons(163, Cons(64, Cons(166, Cons(133, Cons(34, Cons(102, Cons(102, Cons(204, Nil)))))))))
+fn ws_iid_factory1() = ws_guid(1997188728, 62063, 19898, Cons(168, Cons(41, Cons(37, Cons(60, Cons(131, Cons(209, Cons(179, Cons(135, Nil)))))))))
+fn ws_iid_tex2d() = ws_guid(1863690994, 53768, 20105, Cons(154, Cons(180, Cons(72, Cons(149, Cons(53, Cons(211, Cons(79, Cons(156, Nil)))))))))
+
+fn win_dpi_aware() = if ws_win() == 0 then 0 else if ws_call("user32.dll", "SetProcessDpiAwarenessContext", ws_l1(0 - 4)) != 0 then 1 else let c = ws_callq("user32.dll", "GetThreadDpiAwarenessContext", Nil) in if ws_call("user32.dll", "GetAwarenessFromDpiAwarenessContext", ws_l1(c)) == 2 then 1 else 0
+fn win_virtual_screen() = if ws_win() == 0 then {x: 0, y: 0, width: 0, height: 0} else let a = win_dpi_aware() in {x: ws_metric(76), y: ws_metric(77), width: ws_metric(78), height: ws_metric(79)}
+## DISPLAY_DEVICEW (840 bytes): cb 0, DeviceName 4, StateFlags 324 (1 attached to the desktop, 4 primary);
+## DEVMODEW (220): dmSize 68, dmPosition 76 / 80, dmDisplayOrientation 84, dmPelsWidth 172, dmPelsHeight 176,
+## dmDisplayFrequency 184
+fn win_displays() = if ws_win() == 0 then Nil else let a = win_dpi_aware() in ws_disp(0, 0)
+fn ws_disp(i, k) = if i > 64 then Nil else let dd = ws_put32(buf_new(840), 0, 840) in if ws_call("user32.dll", "EnumDisplayDevicesW", ws_l4(0, i, buf_addr(dd), 0)) == 0 then Nil else let fl = ws_u32(dd, 324) in if bit_and(fl, 1) == 0 then ws_disp(i + 1, k) else Cons(ws_disp1(dd, fl, k), ws_disp(i + 1, k + 1))
+fn ws_disp1(dd, fl, k) = let dm = ws_put16(buf_new(224), 68, 220) in let ok = ws_call("user32.dll", "EnumDisplaySettingsExW", ws_l4(buf_addr(dd) + 4, 4294967295, buf_addr(dm), 0)) in let x = ws_s32(dm, 76) in let y = ws_s32(dm, 80) in let w = ws_u32(dm, 172) in let h = ws_u32(dm, 176) in let hm = ws_callq("user32.dll", "MonitorFromPoint", ws_l2(ws_pt(x + w / 2, y + h / 2), 2)) in let dpi = ws_dpi(hm) in {index: k, name: ws_wtext(dd, 4, 68), x: x, y: y, width: w, height: h, dpi: dpi, scale: dpi * 100 / 96, rotation: 90 * bit_and(ws_u32(dm, 84), 3), primary: (if bit_and(fl, 4) != 0 then 1 else 0), refresh: ws_u32(dm, 184), monitor: hm}
+fn ws_dpi(hm) = let dx = buf_new(8) in let dy = buf_new(8) in if hm == 0 or ws_call("shcore.dll", "GetDpiForMonitor", ws_l4(hm, 0, buf_addr(dx), buf_addr(dy))) != 0 then 96 else ws_u32(dx, 0)
+fn ws_disp_nth(xs, k) = match xs
+    Nil        => {index: 0 - 1, name: "", x: 0, y: 0, width: 0, height: 0, dpi: 96, scale: 100, rotation: 0, primary: 0, refresh: 0, monitor: 0}
+    Cons(h, t) => if h.index == k then h else ws_disp_nth(t, k)
+
+## BITMAPINFOHEADER: 40 bytes, top-down (negative height), 32 bits per pixel, BI_RGB
+fn ws_bmi(w, h) = ws_put16(ws_put16(ws_put32(ws_put32(ws_put32(buf_new(48), 0, 40), 4, w), 8, 0 - h), 12, 1), 14, 32)
+fn ws_gdi_fail() = {ok: 0, width: 0, height: 0, stride: 0, data: buf_new(0)}
+fn win_capture_gdi(x, y, w, h) = if ws_win() == 0 or w <= 0 or h <= 0 then ws_gdi_fail() else ws_gdi_into(x, y, w, h, buf_new(w * h * 4))
+fn ws_gdi_into(x, y, w, h, dst) = let scr = ws_callq("user32.dll", "GetDC", ws_l1(0)) in if scr == 0 then ws_gdi_fail() else let mem = ws_callq("gdi32.dll", "CreateCompatibleDC", ws_l1(scr)) in let bmi = ws_bmi(w, h) in let pb = buf_new(8) in let bmp = ws_callq("gdi32.dll", "CreateDIBSection", ws_l6(mem, buf_addr(bmi), 0, buf_addr(pb), 0, 0)) in if bmp == 0 then (let c = ws_call("gdi32.dll", "DeleteDC", ws_l1(mem)) + ws_call("user32.dll", "ReleaseDC", ws_l2(0, scr)) in ws_gdi_fail()) else let old = ws_callq("gdi32.dll", "SelectObject", ws_l2(mem, bmp)) in let ok = ws_call("gdi32.dll", "BitBlt", Cons(mem, Cons(0, Cons(0, Cons(w, Cons(h, Cons(scr, Cons(x, Cons(y, Cons(1087111200, Nil)))))))))) in let data = ws_copy_into(dst, ws_u64(pb, 0), w * h * 4) in let c = ws_callq("gdi32.dll", "SelectObject", ws_l2(mem, old)) + ws_call("gdi32.dll", "DeleteObject", ws_l1(bmp)) + ws_call("gdi32.dll", "DeleteDC", ws_l1(mem)) + ws_call("user32.dll", "ReleaseDC", ws_l2(0, scr)) in {ok: (if ok != 0 then 1 else 0), width: w, height: h, stride: w * 4, data: data}
+
+## Desktop Duplication: IDXGIFactory1 (EnumAdapters1 slot 12) -> IDXGIAdapter1 (EnumOutputs 7) -> IDXGIOutput (GetDesc 7:
+## DeviceName 0, DesktopCoordinates 64, AttachedToDesktop 80, Rotation 84) matched by name -> D3D11CreateDevice on that
+## adapter -> IDXGIOutput1 (DuplicateOutput 22) -> IDXGIOutputDuplication (GetDesc 7, AcquireNextFrame 8,
+## GetFrameDirtyRects 9, ReleaseFrame 14); frames copied into a staging texture (ID3D11Device CreateTexture2D 5;
+## context CopyResource 47, Map 14, Unmap 15)
+fn ws_cap_none(index, err) = {ok: 0, mode: "none", index: index, x: 0, y: 0, width: 0, height: 0, rotation: 0, err: err, dev: 0, ctx: 0, dup: 0, staging: 0}
+fn ws_cap_gdi(d) = {ok: 1, mode: "gdi", index: d.index, x: d.x, y: d.y, width: d.width, height: d.height, rotation: d.rotation, err: "", dev: 0, ctx: 0, dup: 0, staging: 0}
+fn win_capture_open(index) = if ws_win() == 0 then ws_cap_none(index, "not windows") else let d = ws_disp_nth(win_displays(), index) in if d.index < 0 then ws_cap_none(index, "no display " + str(index)) else let pf = buf_new(8) in if ws_call("dxgi.dll", "CreateDXGIFactory1", ws_l2(buf_addr(ws_iid_factory1()), buf_addr(pf))) != 0 then ws_cap_gdi(d) else let f = ws_u64(pf, 0) in let r = ws_find_out(f, 0, d) in let z = ws_release(f) in r
+fn ws_find_out(f, ai, d) = if ai > 16 then ws_cap_gdi(d) else let pa = buf_new(8) in if ws_vcall(f, 12, ws_l2(ai, buf_addr(pa))) != 0 then ws_cap_gdi(d) else let a = ws_u64(pa, 0) in let o = ws_find_out2(a, 0, d) in if o == 0 then (let z = ws_release(a) in ws_find_out(f, ai + 1, d)) else let r = ws_dup_open(a, o, d) in let z = ws_release(o) + ws_release(a) in r
+fn ws_find_out2(a, oi, d) = if oi > 16 then 0 else let po = buf_new(8) in if ws_vcall(a, 7, ws_l2(oi, buf_addr(po))) != 0 then 0 else let o = ws_u64(po, 0) in let desc = buf_new(96) in let g = ws_vcall(o, 7, ws_l1(buf_addr(desc))) in if g == 0 and ws_wtext(desc, 0, 64) == d.name then o else let z = ws_release(o) in ws_find_out2(a, oi + 1, d)
+fn ws_dup_open(a, o, d) = let pd = buf_new(8) in let pfl = buf_new(8) in let pc = buf_new(8) in let hr = bit_and(ws_callq("d3d11.dll", "D3D11CreateDevice", Cons(a, Cons(0, Cons(0, Cons(32, Cons(0, Cons(0, Cons(7, Cons(buf_addr(pd), Cons(buf_addr(pfl), Cons(buf_addr(pc), Nil))))))))))), 4294967295) in if hr != 0 then ws_cap_gdi(d) else let dev = ws_u64(pd, 0) in let ctx = ws_u64(pc, 0) in let o1 = ws_qi(o, ws_iid_output1()) in if o1 == 0 then ws_dup_fail(dev, ctx, d) else let pu = buf_new(8) in let hr2 = ws_vcall(o1, 22, ws_l2(dev, buf_addr(pu))) in let z = ws_release(o1) in if hr2 != 0 then ws_dup_fail(dev, ctx, d) else ws_dup_staging(dev, ctx, ws_u64(pu, 0), d)
+fn ws_dup_fail(dev, ctx, d) = let z = ws_release(ctx) + ws_release(dev) in ws_cap_gdi(d)
+## DXGI_OUTDUPL_DESC: ModeDesc.Width 0, Height 4, Rotation 28 (1 identity, 2 90, 3 180, 4 270);
+## D3D11_TEXTURE2D_DESC (44 bytes): Width, Height, MipLevels 1, ArraySize 1, Format 87 (B8G8R8A8), SampleDesc {1, 0},
+## Usage 3 (staging), BindFlags 0, CPUAccessFlags 0x20000 (read), MiscFlags 0
+fn ws_dup_staging(dev, ctx, dup, d) = let dd = buf_new(40) in let g = ws_vcall(dup, 7, ws_l1(buf_addr(dd))) in let w = ws_u32(dd, 0) in let h = ws_u32(dd, 4) in let td = ws_put32(ws_put32(ws_put32(ws_put32(ws_put32(ws_put32(ws_put32(ws_put32(buf_new(48), 0, w), 4, h), 8, 1), 12, 1), 16, 87), 20, 1), 28, 3), 36, 131072) in let pt = buf_new(8) in if ws_vcall(dev, 5, ws_l3(buf_addr(td), 0, buf_addr(pt))) != 0 then (let z = ws_release(dup) in ws_dup_fail(dev, ctx, d)) else {ok: 1, mode: "dxgi", index: d.index, x: d.x, y: d.y, width: w, height: h, rotation: (if ws_u32(dd, 28) >= 2 then 90 * (ws_u32(dd, 28) - 1) else 0), err: "", dev: dev, ctx: ctx, dup: dup, staging: ws_u64(pt, 0)}
+fn win_capture_close(cap) = let z = ws_release(cap.staging) + ws_release(cap.dup) + ws_release(cap.ctx) + ws_release(cap.dev) in 1
+
+fn ws_frame(ok, status, w, h, stride, data, dirty, acc, px, py, pv) = {ok: ok, status: status, width: w, height: h, stride: stride, data: data, dirty: dirty, accumulated: acc, pointer_x: px, pointer_y: py, pointer_visible: pv}
+fn ws_frame_err(status) = ws_frame(0, status, 0, 0, 0, buf_new(0), Nil, 0, 0, 0, 0)
+fn win_capture_frame(cap, timeout_ms) = win_capture_frame_into(cap, timeout_ms, buf_new(0))
+fn win_capture_frame_into(cap, timeout_ms, buf) = if cap.ok == 0 then ws_frame_err("error") else if cap.mode == "gdi" then ws_frame_gdi(cap, buf) else ws_frame_dxgi(cap, timeout_ms, buf)
+fn ws_need(buf, n) = if buf_len(buf) >= n then buf else buf_new(n)
+fn ws_frame_gdi(cap, buf) = let g = ws_gdi_into(cap.x, cap.y, cap.width, cap.height, ws_need(buf, cap.width * cap.height * 4)) in let c = win_cursor() in if g.ok == 0 then ws_frame_err("error") else ws_frame(1, "frame", g.width, g.height, g.stride, g.data, Cons({left: 0, top: 0, right: g.width, bottom: g.height}, Nil), 1, c.x - cap.x, c.y - cap.y, c.visible)
+## DXGI_OUTDUPL_FRAME_INFO (48 bytes): AccumulatedFrames 16, PointerPosition {x 28, y 32, visible 36},
+## TotalMetadataBufferSize 40. 0x887A0027 = DXGI_ERROR_WAIT_TIMEOUT, 0x887A0026 = DXGI_ERROR_ACCESS_LOST
+fn ws_frame_dxgi(cap, timeout_ms, buf) = let fi = buf_new(48) in let pr = buf_new(8) in let hr = ws_vcall(cap.dup, 8, ws_l3(timeout_ms, buf_addr(fi), buf_addr(pr))) in if hr == 2289696807 then ws_frame_err("timeout") else if hr == 2289696806 then ws_frame_err("lost") else if hr != 0 then ws_frame_err("error") else let res = ws_u64(pr, 0) in let acc = ws_u32(fi, 16) in let px = ws_s32(fi, 28) in let py = ws_s32(fi, 32) in let pv = (if ws_u32(fi, 36) != 0 then 1 else 0) in if acc == 0 then (let z = ws_release(res) + ws_vcall(cap.dup, 14, Nil) in ws_frame(1, "pointer", cap.width, cap.height, 0, buf_new(0), Nil, 0, px, py, pv)) else let dirty = ws_dirty(cap.dup, ws_u32(fi, 40)) in let tex = ws_qi(res, ws_iid_tex2d()) in let cp = (if tex != 0 then ws_vcall(cap.ctx, 47, ws_l2(cap.staging, tex)) else 0) in let z = ws_release(tex) + ws_release(res) + ws_vcall(cap.dup, 14, Nil) in if tex == 0 then ws_frame_err("error") else ws_map_copy(cap, buf, dirty, acc, px, py, pv)
+fn ws_dirty(dup, meta) = let cap = (if meta > 16 then meta else 16) in let b = buf_new(cap) in let req = buf_new(8) in if ws_vcall(dup, 9, ws_l3(cap, buf_addr(b), buf_addr(req))) != 0 then Nil else ws_rects(b, 0, ws_u32(req, 0) / 16)
+fn ws_rects(b, i, n) = if i >= n then Nil else Cons({left: ws_s32(b, 16 * i), top: ws_s32(b, 16 * i + 4), right: ws_s32(b, 16 * i + 8), bottom: ws_s32(b, 16 * i + 12)}, ws_rects(b, i + 1, n))
+## D3D11_MAPPED_SUBRESOURCE: pData 0, RowPitch 8
+fn ws_map_copy(cap, buf, dirty, acc, px, py, pv) = let ms = buf_new(16) in if ws_vcall(cap.ctx, 14, ws_l5(cap.staging, 0, 1, 0, buf_addr(ms))) != 0 then ws_frame_err("error") else let p = ws_u64(ms, 0) in let pitch = ws_u32(ms, 8) in let n = pitch * cap.height in let data = ws_copy_into(ws_need(buf, n), p, n) in let u = ws_vcall(cap.ctx, 15, ws_l2(cap.staging, 0)) in ws_frame(1, "frame", cap.width, cap.height, pitch, data, dirty, acc, px, py, pv)
+
+## CURSORINFO (24 bytes): cbSize 0, flags 4 (1 showing), hCursor 8, ptScreenPos 16
+fn win_cursor() = if ws_win() == 0 then {visible: 0, x: 0, y: 0, handle: 0} else let a = win_dpi_aware() in let ci = ws_put32(buf_new(24), 0, 24) in if ws_call("user32.dll", "GetCursorInfo", ws_l1(buf_addr(ci))) == 0 then {visible: 0, x: 0, y: 0, handle: 0} else {visible: bit_and(ws_u32(ci, 4), 1), x: ws_s32(ci, 16), y: ws_s32(ci, 20), handle: ws_u64(ci, 8)}
+## ICONINFO (32 bytes): xHotspot 4, yHotspot 8, hbmMask 16, hbmColor 24; BITMAP: bmWidth 4, bmHeight 8
+fn ws_shape_none() = {ok: 0, width: 0, height: 0, hot_x: 0, hot_y: 0, color: buf_new(0), mask: buf_new(0), mono: 0}
+fn win_cursor_shape(handle) = if ws_win() == 0 or handle == 0 then ws_shape_none() else let ii = buf_new(32) in if ws_call("user32.dll", "GetIconInfo", ws_l2(handle, buf_addr(ii))) == 0 then ws_shape_none() else let hm = ws_u64(ii, 16) in let hc = ws_u64(ii, 24) in let bm = buf_new(32) in let g = ws_call("gdi32.dll", "GetObjectW", ws_l3(hm, 32, buf_addr(bm))) in let w = ws_u32(bm, 4) in let h = (if hc == 0 then ws_u32(bm, 8) / 2 else ws_u32(bm, 8)) in let col = ws_draw_icon(handle, w, h, 2) in let msk = ws_draw_icon(handle, w, h, 1) in let z = (if hm != 0 then ws_call("gdi32.dll", "DeleteObject", ws_l1(hm)) else 0) + (if hc != 0 then ws_call("gdi32.dll", "DeleteObject", ws_l1(hc)) else 0) in {ok: (if w > 0 and h > 0 then 1 else 0), width: w, height: h, hot_x: ws_u32(ii, 4), hot_y: ws_u32(ii, 8), color: col, mask: msk, mono: (if hc == 0 then 1 else 0)}
+## DrawIconEx(dc, 0, 0, cursor, w, h, 0, 0, DI_MASK 1 / DI_IMAGE 2) into a fresh (black) DIB section
+fn ws_draw_icon(handle, w, h, flags) = if w <= 0 or h <= 0 then buf_new(0) else let scr = ws_callq("user32.dll", "GetDC", ws_l1(0)) in let mem = ws_callq("gdi32.dll", "CreateCompatibleDC", ws_l1(scr)) in let pb = buf_new(8) in let bmp = ws_callq("gdi32.dll", "CreateDIBSection", ws_l6(mem, buf_addr(ws_bmi(w, h)), 0, buf_addr(pb), 0, 0)) in let old = ws_callq("gdi32.dll", "SelectObject", ws_l2(mem, bmp)) in let d = ws_call("user32.dll", "DrawIconEx", Cons(mem, Cons(0, Cons(0, Cons(handle, Cons(w, Cons(h, Cons(0, Cons(0, Cons(flags, Nil)))))))))) in let data = (if bmp != 0 then ws_copyx(ws_u64(pb, 0), w * h * 4) else buf_new(0)) in let c = ws_callq("gdi32.dll", "SelectObject", ws_l2(mem, old)) + ws_call("gdi32.dll", "DeleteObject", ws_l1(bmp)) + ws_call("gdi32.dll", "DeleteDC", ws_l1(mem)) + ws_call("user32.dll", "ReleaseDC", ws_l2(0, scr)) in data
+
+## INPUT is 40 bytes: type 0 (0 mouse, 1 keyboard); KEYBDINPUT wVk 8, wScan 10, dwFlags 12;
+## MOUSEINPUT dx 8, dy 12, mouseData 16, dwFlags 20
+fn ws_kin(b, o, vk, scan, flags) = ws_put32(ws_put16(ws_put16(ws_put32(b, o, 1), o + 8, vk), o + 10, scan), o + 12, flags)
+fn ws_min(b, o, dx, dy, data, flags) = ws_put32(ws_put32(ws_put32(ws_put32(ws_put32(b, o, 0), o + 8, dx), o + 12, dy), o + 16, data), o + 20, flags)
+fn ws_send(b, n) = if ws_win() == 0 then 0 else ws_call("user32.dll", "SendInput", ws_l3(n, buf_addr(b), 40))
+fn ws_one(r) = if r == 1 then 1 else 0
+## KEYEVENTF_EXTENDEDKEY 1, KEYUP 2, UNICODE 4, SCANCODE 8
+fn win_send_key(scancode, extended, down) = ws_one(ws_send(ws_kin(buf_new(40), 0, 0, scancode, 8 + (if extended then 1 else 0) + (if down then 0 else 2)), 1))
+fn win_send_vk(vk, down) = ws_one(ws_send(ws_kin(buf_new(40), 0, vk, 0, if down then 0 else 2), 1))
+fn win_send_text(s) = let us = ws_units(s, 0, Nil) in let n = ws_len(us, 0) in if n == 0 then 0 else ws_send(ws_text_in(buf_new(80 * n), us, 0), 2 * n)
+fn ws_text_in(b, us, o) = match us
+    Nil        => b
+    Cons(u, t) => ws_text_in(ws_kin(ws_kin(b, o, 0, u, 4), o + 40, 0, u, 6), t, o + 80)
+## MOUSEEVENTF_MOVE 1 | VIRTUALDESK 0x4000 | ABSOLUTE 0x8000: 0..65535 across the virtual desktop
+fn win_send_mouse_move(x, y) = let v = win_virtual_screen() in if v.width <= 1 or v.height <= 1 then 0 else ws_one(ws_send(ws_min(buf_new(40), 0, ((x - v.x) * 65535 + (v.width - 1) / 2) / (v.width - 1), ((y - v.y) * 65535 + (v.height - 1) / 2) / (v.height - 1), 0, 49153), 1))
+fn ws_btn_flags(button, down) = if button == 1 then (if down then 2 else 4) else if button == 2 then (if down then 8 else 16) else if button == 3 then (if down then 32 else 64) else if button == 4 or button == 5 then (if down then 128 else 256) else 0
+fn win_send_mouse_button(button, down) = let f = ws_btn_flags(button, down) in if f == 0 then 0 else ws_one(ws_send(ws_min(buf_new(40), 0, 0, 0, (if button == 4 then 1 else if button == 5 then 2 else 0), f), 1))
+fn win_send_mouse_wheel(delta, horizontal) = ws_one(ws_send(ws_min(buf_new(40), 0, 0, 0, delta, if horizontal then 4096 else 2048), 1))
+fn win_key_state(vk) = if ws_win() == 0 then {down: 0, toggled: 0} else let s = ws_call("user32.dll", "GetKeyState", ws_l1(vk)) in {down: (if bit_and(s, 32768) != 0 then 1 else 0), toggled: bit_and(s, 1)}
+fn win_async_key_down(vk) = if ws_win() == 0 then 0 else if bit_and(ws_call("user32.dll", "GetAsyncKeyState", ws_l1(vk)), 32768) != 0 then 1 else 0
+fn win_send_sas(as_user) = if ws_win() == 0 then 0 else let fp = ws_fn("sas.dll", "SendSAS") in if fp <= 0 then 0 else let a = ws_args(buf_new(16), ws_l1(as_user), 0) in let r = sys_call(1011, fp, buf_addr(a), 1, 0, 0) in 1
+
+## the viewer window: WS_OVERLAPPEDWINDOW | WS_VISIBLE, client area of the asked size (AdjustWindowRectEx)
+fn win_window_open(title, cw, ch) = if ws_win() == 0 then 0 else let a = win_dpi_aware() in let hi = ws_callq("kernel32.dll", "GetModuleHandleW", ws_l1(0)) in let cn = ws_wstr("LumeViewerWindow") in let wc = ws_put64(ws_put64(ws_put64(ws_put64(ws_put64(ws_put32(ws_put32(buf_new(80), 0, 80), 4, 3), 8, ws_fn("user32.dll", "DefWindowProcW"), 0), 24, hi, 0), 40, ws_callq("user32.dll", "LoadCursorW", ws_l2(0, 32512)), 0), 48, ws_callq("gdi32.dll", "GetStockObject", ws_l1(4)), 0), 64, buf_addr(cn), 0) in let r = ws_call("user32.dll", "RegisterClassExW", ws_l1(buf_addr(wc))) in let rc = ws_put32(ws_put32(buf_new(16), 8, cw), 12, ch) in let adj = ws_call("user32.dll", "AdjustWindowRectEx", ws_l4(buf_addr(rc), 13565952, 0, 0)) in let t = ws_wstr(title) in ws_callq("user32.dll", "CreateWindowExW", Cons(0, Cons(buf_addr(cn), Cons(buf_addr(t), Cons(282001408, Cons(2147483648, Cons(2147483648, Cons(ws_s32(rc, 8) - ws_s32(rc, 0), Cons(ws_s32(rc, 12) - ws_s32(rc, 4), Cons(0, Cons(0, Cons(hi, Cons(0, Nil)))))))))))))
+fn win_window_alive(hwnd) = if ws_win() == 0 or hwnd == 0 then 0 else if ws_call("user32.dll", "IsWindow", ws_l1(hwnd)) != 0 then 1 else 0
+fn win_window_client_size(hwnd) = if ws_win() == 0 or hwnd == 0 then {width: 0, height: 0} else let rc = buf_new(16) in let g = ws_call("user32.dll", "GetClientRect", ws_l2(hwnd, buf_addr(rc))) in {width: ws_s32(rc, 8), height: ws_s32(rc, 12)}
+fn win_window_set_title(hwnd, title) = if ws_win() == 0 or hwnd == 0 then 0 else let t = ws_wstr(title) in if ws_call("user32.dll", "SetWindowTextW", ws_l2(hwnd, buf_addr(t))) != 0 then 1 else 0
+fn win_window_draw(hwnd, data, w, h, stride) = let s = win_window_client_size(hwnd) in win_window_draw_rect(hwnd, data, w, h, stride, 0, 0, s.width, s.height)
+## StretchDIBits(dc, dx, dy, dw, dh, 0, 0, w, h, bits, bmi, DIB_RGB_COLORS, SRCCOPY) after SetStretchBltMode(HALFTONE)
+fn win_window_draw_rect(hwnd, data, w, h, stride, dx, dy, dw, dh) = if ws_win() == 0 or hwnd == 0 or w <= 0 or h <= 0 or buf_len(data) < stride * h then 0 else let dc = ws_callq("user32.dll", "GetDC", ws_l1(hwnd)) in if dc == 0 then 0 else let m = ws_call("gdi32.dll", "SetStretchBltMode", ws_l2(dc, 4)) + ws_call("gdi32.dll", "SetBrushOrgEx", ws_l4(dc, 0, 0, 0)) in let bmi = ws_bmi(stride / 4, h) in let r = ws_call("gdi32.dll", "StretchDIBits", Cons(dc, Cons(dx, Cons(dy, Cons(dw, Cons(dh, Cons(0, Cons(0, Cons(w, Cons(h, Cons(buf_addr(data), Cons(buf_addr(bmi), Cons(0, Cons(13369376, Nil)))))))))))))) in let z = ws_call("user32.dll", "ReleaseDC", ws_l2(hwnd, dc)) in if r != 0 then 1 else 0
+## MSG (48 bytes): message 8, wParam 16, lParam 24
+fn win_window_events(hwnd) = if ws_win() == 0 then Nil else ws_rev(ws_events(buf_new(48), 0, Nil), Nil)
+fn ws_events(m, n, acc) = if n > 4096 or ws_call("user32.dll", "PeekMessageW", ws_l5(buf_addr(m), 0, 0, 0, 1)) == 0 then acc else let e = ws_event(ws_u32(m, 8), ws_u64(m, 16), ws_u64(m, 24)) in let t = ws_call("user32.dll", "TranslateMessage", ws_l1(buf_addr(m))) in let d = ws_callq("user32.dll", "DispatchMessageW", ws_l1(buf_addr(m))) in ws_events(m, n + 1, Cons(e, acc))
+fn ws_ev(kind, msg, wp, lp, x, y, key, scan, ext, delta, button) = {kind: kind, msg: msg, wparam: wp, lparam: lp, x: x, y: y, key: key, scan: scan, extended: ext, delta: delta, button: button}
+fn ws_event(msg, wp, lp) = let x = ws_s16(lp) in let y = ws_s16(bit_shr(lp, 16)) in let scan = bit_and(bit_shr(lp, 16), 255) in let ext = bit_and(bit_shr(lp, 24), 1) in if msg == 256 or msg == 260 then ws_ev("key_down", msg, wp, lp, 0, 0, wp, scan, ext, 0, 0) else if msg == 257 or msg == 261 then ws_ev("key_up", msg, wp, lp, 0, 0, wp, scan, ext, 0, 0) else if msg == 258 or msg == 262 then ws_ev("char", msg, wp, lp, 0, 0, wp, scan, ext, 0, 0) else if msg == 512 then ws_ev("mouse_move", msg, wp, lp, x, y, 0, 0, 0, 0, 0) else if msg == 513 or msg == 516 or msg == 519 or msg == 523 then ws_ev("button_down", msg, wp, lp, x, y, 0, 0, 0, 0, ws_btn_of(msg, wp)) else if msg == 514 or msg == 517 or msg == 520 or msg == 524 then ws_ev("button_up", msg, wp, lp, x, y, 0, 0, 0, 0, ws_btn_of(msg, wp)) else if msg == 515 or msg == 518 or msg == 521 or msg == 525 then ws_ev("button_down", msg, wp, lp, x, y, 0, 0, 0, 0, ws_btn_of(msg, wp)) else if msg == 522 then ws_ev("wheel", msg, wp, lp, x, y, 0, 0, 0, ws_s16(bit_shr(wp, 16)), 0) else if msg == 526 then ws_ev("hwheel", msg, wp, lp, x, y, 0, 0, 0, ws_s16(bit_shr(wp, 16)), 0) else if msg == 18 then ws_ev("quit", msg, wp, lp, 0, 0, 0, 0, 0, 0, 0) else ws_ev("other", msg, wp, lp, 0, 0, 0, 0, 0, 0, 0)
+fn ws_btn_of(msg, wp) = if msg >= 513 and msg <= 515 then 1 else if msg >= 516 and msg <= 518 then 2 else if msg >= 519 and msg <= 521 then 3 else if bit_and(bit_shr(wp, 16), 65535) == 2 then 5 else 4
+
+## WH_KEYBOARD_LL = 13; the hook procedure is the layer's (pseudo call 1016), the rest is here
+fn win_kbhook_install() = if ws_win() == 0 then 0 else let p = sys_call(1016, 0, 0, 0, 0, 0) in let s = sys_call(1016, 1, ws_fn("user32.dll", "CallNextHookEx"), ws_fn("user32.dll", "GetForegroundWindow"), 0, 0) in ws_callq("user32.dll", "SetWindowsHookExW", ws_l4(13, p, ws_callq("kernel32.dll", "GetModuleHandleW", ws_l1(0)), 0))
+fn win_kbhook_swallow(hwnd, on) = if ws_win() == 0 then 0 else sys_call(1016, 2, hwnd, on, 0, 0)
+fn win_kbhook_remove(h) = if ws_win() == 0 or h == 0 then 0 else let s = sys_call(1016, 2, 0, 0, 0, 0) in if ws_call("user32.dll", "UnhookWindowsHookEx", ws_l1(h)) != 0 then 1 else 0
+## each event: {u64 wParam, u32 vkCode, u32 scanCode, u32 flags (1 extended, 16 injected, 32 alt, 128 up), u32 time}
+fn win_kbhook_events() = if ws_win() == 0 then Nil else ws_rev(ws_kb_drain(buf_new(32), 0, Nil), Nil)
+fn ws_kb_drain(b, n, acc) = if n >= 64 or sys_call(1016, 3, buf_addr(b), 0, 0, 0) != 1 then acc else let m = ws_u32(b, 0) in let fl = ws_u32(b, 16) in ws_kb_drain(b, n + 1, Cons({msg: m, vk: ws_u32(b, 8), scan: ws_u32(b, 12), flags: fl, extended: bit_and(fl, 1), injected: (if bit_and(fl, 16) != 0 then 1 else 0), down: (if m == 256 or m == 260 then 1 else 0), alt: (if bit_and(fl, 32) != 0 then 1 else 0), time: ws_u32(b, 20)}, acc))
+
 ## --- tests -----------------------------------------------------------------------------------------------------------
 fn ws_has(xs, s) = match xs
     Nil        => false
@@ -235,10 +421,33 @@ fn test_named_pipe_with_epoll() = if ws_win() == 0 then true else let s = pipe_s
 fn test_named_pipe_refusals() = if ws_win() == 0 then true else let missing = pipe_client_open("lume-no-such-pipe-" + str(os_getpid()), 300) in let s = pipe_server_create(ws_pname() + "sy", "D:P(A;;GA;;;SY)") in let c = pipe_client_open(ws_pname() + "sy", 300) in let z = pipe_close(s.h) in missing.ok == 0 and s.ok == 1 and c.ok == 0
 fn test_session_process_and_spawn_refusal() = if ws_win() == 0 then win_find_session_process("winlogon.exe", 1) == 0 - 1 and (win_spawn_as_session(1, "x", "winsta0" + chr(92) + "default")).ok == 0 else let me = process_session_id(os_getpid()) in let wl = win_find_session_process("WINLOGON.EXE", me) in let sp = win_spawn_as_session(wl, "cmd.exe /c exit 0", "winsta0" + chr(92) + "default") in wl > 0 and win_find_session_process("no-such-process.exe", me) == 0 - 1 and (sp.ok == 1 or count(sp.err) > 0)
 fn test_process_handle_life() = if ws_win() == 0 then win_proc_alive(5) == 0 else let s = os_spawn_pipes("C:" + chr(92) + "Windows" + chr(92) + "System32" + chr(92) + "ping.exe", Cons("-n", Cons("20", Cons("127.0.0.1", Nil))), 0) in let h = ws_callq("kernel32.dll", "OpenProcess", ws_l3(1052673, 0, s.pid)) in let alive = win_proc_alive(h) in let code_alive = win_proc_exit_code(h) in let t = win_proc_terminate(h, 7) in let w = ws_call("kernel32.dll", "WaitForSingleObject", ws_l2(h, 5000)) in let dead = win_proc_alive(h) in let code = win_proc_exit_code(h) in let c = win_handle_close(h) in let z = os_fd_close(s.out_fd) + os_fd_close(s.err_fd) in h != 0 and alive == 1 and code_alive == 0 - 1 and t == 1 and dead == 0 and code == 7 and c == 1
-fn test_input_desktop() = if ws_win() == 0 then win_input_desktop_open() == 0 else let h = win_input_desktop_open() in let n = win_desktop_name(h) in let c = win_desktop_close(h) in h != 0 and ws_lower(n) == "default" and c == 1
+fn ws_locked() = ws_win() != 0 and win_find_session_process("LogonUI.exe", process_session_id(os_getpid())) > 0
+fn test_input_desktop() = if ws_win() == 0 then win_input_desktop_open() == 0 else let h = win_input_desktop_open() in if h == 0 and ws_locked() then true else let n = win_desktop_name(h) in let c = win_desktop_close(h) in h != 0 and ws_lower(n) == "default" and c == 1
 fn test_service_state_and_dispatcher_outside_scm() = if ws_win() == 0 then svc_state("EventLog") == "" and (svc_dispatch_start("x")).ok == 0 else let d = svc_dispatch_start("LumeNotAService") in let ev = ws_wait_ev(d.fd, 100) in svc_state("EventLog") == "running" and svc_state("NoSuchLumeSvc" + str(os_getpid())) == "" and d.ok == 1 and ev.kind == "error" and ev.reason == 1063
 fn ws_wait_ev(fd, n) = if n <= 0 then {ok: 0, kind: "none", control: 0, reason: 0, session: 0} else let e = svc_next_event(fd) in if e.ok == 1 then e else let z = os_sleep_ms(20) in ws_wait_ev(fd, n - 1)
 fn test_service_install_remove_when_admin() = if ws_win() == 0 then true else let scm = ws_scm(983103) in if scm == 0 then true else let c = ws_csh(scm) in let nm = "LumeWinsysTest" + str(os_getpid()) in let i = svc_install(nm, "Lume winsys test", "created and removed by winsys tests", "C:" + chr(92) + "Windows" + chr(92) + "System32" + chr(92) + "cmd.exe", "/c exit 0", 0) in let st = svc_state(nm) in let r = svc_remove(nm) in i.ok == 1 and st == "stopped" and r.ok == 1
 fn test_privacy_window_when_asked() = if ws_win() == 0 or os_getenv("LUME_TEST_GUI") != "1" then true else let w = win_privacy_window_create() in let z = os_sleep_ms(300) in let p = win_pump_messages() in let d = win_window_destroy(w.hwnd) in w.ok == 1 and d == 1
 fn ws_bsl() = chr(92)
 fn test_native_path() = if ws_win() == 0 then fs_native_path("/c/x/y") == "/c/x/y" else fs_native_path("/c/Users/x/a.exe") == "C:" + ws_bsl() + "Users" + ws_bsl() + "x" + ws_bsl() + "a.exe" and fs_native_path("D:/a/b") == "D:" + ws_bsl() + "a" + ws_bsl() + "b" and fs_native_path("/c") == "C:" + ws_bsl() and ws_cmd_native(chr(34) + "/c/p/a.exe" + chr(34) + " service run") == chr(34) + "C:" + ws_bsl() + "p" + ws_bsl() + "a.exe" + chr(34) + " service run" and ws_cmd_native("/d/a.exe --x /keep") == "D:" + ws_bsl() + "a.exe --x /keep"
+fn ws_primaries(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => ws_primaries(t, n + h.primary)
+fn ws_disp_sane(xs) = match xs
+    Nil        => true
+    Cons(h, t) => h.width > 0 and h.height > 0 and h.dpi >= 72 and h.monitor != 0 and count(h.name) > 0 and ws_disp_sane(t)
+fn test_displays() = if ws_win() == 0 then ws_len(win_displays(), 0) == 0 and (win_virtual_screen()).width == 0 else let ds = win_displays() in let v = win_virtual_screen() in ws_len(ds, 0) >= 1 and ws_primaries(ds, 0) == 1 and ws_disp_sane(ds) and v.width > 0 and v.height > 0 and win_dpi_aware() == 1
+fn test_capture_gdi() = if ws_win() == 0 then (win_capture_gdi(0, 0, 16, 16)).ok == 0 else let v = win_virtual_screen() in let g = win_capture_gdi(v.x, v.y, 16, 16) in (g.ok == 0 and ws_locked()) or g.ok == 1 and buf_len(g.data) == 1024 and g.stride == 64
+fn ws_frame_ok(f) = f.status == "frame" and f.ok == 1 and buf_len(f.data) >= f.stride * f.height and f.stride >= 4 * f.width or f.status == "timeout" or f.status == "pointer"
+fn test_capture_open_and_frames() = if ws_win() == 0 then (win_capture_open(0)).ok == 0 else let c = win_capture_open(0) in let f1 = win_capture_frame(c, 500) in let f2 = win_capture_frame_into(c, 100, f1.data) in let z = win_capture_close(c) in (ws_locked() and f1.ok == 0 and (f1.status == "error" or f1.status == "lost")) or c.ok == 1 and c.width > 0 and c.height > 0 and (c.mode == "dxgi" or c.mode == "gdi") and ws_frame_ok(f1) and ws_frame_ok(f2) and (win_capture_open(99)).ok == 0
+fn test_cursor_and_shape() = if ws_win() == 0 then (win_cursor()).handle == 0 and (win_cursor_shape(0)).ok == 0 else let c = win_cursor() in if c.handle == 0 then true else let s = win_cursor_shape(c.handle) in s.ok == 1 and buf_len(s.color) == 4 * s.width * s.height and buf_len(s.mask) == buf_len(s.color) and s.hot_x < s.width
+fn test_key_state() = let s = win_key_state(20) in (s.toggled == 0 or s.toggled == 1) and (s.down == 0 or s.down == 1) and (win_async_key_down(135) == 0)
+fn ws_has_vk(xs, vk) = match xs
+    Nil        => false
+    Cons(h, t) => if h.vk == vk and h.injected == 1 then true else ws_has_vk(t, vk)
+fn ws_hook_wait(n, acc) = if n <= 0 then acc else let p = win_pump_messages() in let e = win_kbhook_events() in if ws_has_vk(e, 135) then e else let z = os_sleep_ms(20) in ws_hook_wait(n - 1, acc)
+## F24 (VK 135) does nothing on Windows: the hook must see it, injected, and pass it on
+fn test_keyboard_hook_sees_injected_key() = if ws_win() == 0 then win_kbhook_install() == 0 and ws_len(win_kbhook_events(), 0) == 0 else let h = win_kbhook_install() in if h == 0 then false else let a = win_send_vk(135, true) + win_send_vk(135, false) in let e = (if a == 2 then ws_hook_wait(50, Nil) else Nil) in let r = win_kbhook_remove(h) in r == 1 and (a != 2 or ws_has_vk(e, 135))
+fn ws_absd(a) = if a < 0 then 0 - a else a
+fn test_mouse_move_in_place() = if ws_win() == 0 then win_send_mouse_move(0, 0) == 0 else let c = win_cursor() in if c.visible == 0 then true else let r = win_send_mouse_move(c.x, c.y) in let z = os_sleep_ms(30) in let d = win_cursor() in r == 0 or ws_absd(d.x - c.x) <= 1 and ws_absd(d.y - c.y) <= 1
+fn test_viewer_window_when_asked() = if ws_win() == 0 or os_getenv("LUME_TEST_GUI") != "1" then win_window_open("x", 10, 10) == 0 or ws_win() != 0 else let w = win_window_open("Lume viewer test", 320, 200) in let s = win_window_client_size(w) in let img = buf_new(64 * 64 * 4) in let d = win_window_draw(w, img, 64, 64, 256) in let e = win_window_events(w) in let t = win_window_set_title(w, "Lume viewer ok") in let alive = win_window_alive(w) in let x = win_window_destroy(w) in w != 0 and s.width == 320 and s.height == 200 and d == 1 and t == 1 and alive == 1 and win_window_alive(w) == 0
+fn test_text_input_units() = ws_len(ws_units("a" + chr(240) + chr(159) + chr(152) + chr(128), 0, Nil), 0) == 3

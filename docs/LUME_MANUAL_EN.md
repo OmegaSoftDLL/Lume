@@ -347,6 +347,31 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             screen, excluded from capture), `win_pump_messages()`, `win_window_destroy(hwnd)`
             `fs_native_path(p)`: the path as Windows APIs and command lines take it (POSIX view /c/x becomes the drive
             form with backslashes; svc_install and win_spawn_as_session apply it to the executable themselves)
+            screen, capture and input (remote desktop agents and viewers; the process becomes Per-Monitor-V2 DPI
+            aware): `win_displays()` (index, name, x, y, width, height, dpi, scale, rotation, primary, refresh,
+            monitor), `win_virtual_screen()`; `win_capture_open(index)` (Desktop Duplication through Direct3D 11,
+            GDI BitBlt when it is not available: mode "dxgi" / "gdi"), `win_capture_frame(cap, timeout_ms)` and
+            `win_capture_frame_into(cap, timeout_ms, buf)` -> status "frame" (BGRA data, stride, dirty rectangles),
+            "pointer", "timeout", "lost" (reopen: desktop switch, UAC, lock screen) or "error", with the pointer
+            position; `win_capture_close(cap)`, `win_capture_gdi(x, y, w, h)`; `win_cursor()` (visible, x, y, handle),
+            `win_cursor_shape(handle)` (width, height, hot_x, hot_y, color and mask BGRA, mono)
+            input: `win_send_key(scancode, extended, down)` (scancode Set 1), `win_send_vk(vk, down)`,
+            `win_send_text(s)` (Unicode), `win_send_mouse_move(x, y)` (absolute, virtual desktop),
+            `win_send_mouse_button(button, down)` (1 left .. 5 X2), `win_send_mouse_wheel(delta, horizontal)` (1/120),
+            `win_key_state(vk)` (down, toggled), `win_async_key_down(vk)`, `win_send_sas(as_user)` (Ctrl+Alt+Del)
+            viewer window (no callback: the program pumps): `win_window_open(title, w, h)`, `win_window_events(hwnd)`
+            (key_down, key_up, char, mouse_move, button_down / up, wheel, hwheel, quit), `win_window_alive`,
+            `win_window_client_size`, `win_window_set_title`, `win_window_draw(hwnd, data, w, h, stride)`,
+            `win_window_draw_rect(...)` (StretchDIBits); keyboard hook WH_KEYBOARD_LL: `win_kbhook_install()`,
+            `win_kbhook_swallow(hwnd, on)` (keep Win, Alt+Tab ... from the local system while hwnd is in front),
+            `win_kbhook_events()` (vk, scan, extended, injected, down, alt), `win_kbhook_remove(h)`
+- Byte buffers (mutable, any size): `buf_new(n)`, `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)`
+            (returns b), `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`,
+            `buf_to_str(b, off, n)`, `buf_addr(b)` (address of byte 0, for system calls); buf_get / buf_set on a
+            small index are inline machine code (no call), an out-of-range index stops with the same message
+            video: `buf_bgra_to_i420(src, stride, w, h, dst)` and `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
+            limited range, 2x2 chroma average, odd sizes; the bytes written or -1 for a wrong argument; a 1080p
+            frame in a few milliseconds, runtime routines written in Lume)
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):
   - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                             `port_out32(p, v)`, `port_in32(p)`

@@ -27,7 +27,21 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 - "Tested" means the full universe, not a sample: 111 files with `fn test_` (`mem/tests_all.txt`), 205 programs
   (`mem/progs_all.txt`), the memory battery, then the gates and the 114 CLI commands — on both systems, compared.
 
-## Runtime in Lume: state on 2026-11-16 (newest work, read first)
+## State on 2026-11-18 (newest first)
+
+- v1.2.0 published (release, main = branch 75e880f). The tag's workflows failed before publishing (assets intact):
+  the seed could not parse a parameter named `as` (renamed in 05_codegen / lcrypto_tls; fresh-clone seed bootstrap
+  verified in WSL) and release.yml checked "lume 1.1.0" (now the tag's version). Not pushed yet.
+- LumeDesk repro37 (stages 9-10): winsys gained displays (Per-Monitor-V2), DXGI Desktop Duplication in Lume over COM
+  vtables + GDI fallback, cursor shape, SendInput, key state, SendSAS, a viewer window without callbacks, and the
+  WH_KEYBOARD_LL hook (the only asm: layer pseudo call 1016, a 64-event ring). 32 tests, Linux and Windows.
+- LumeDesk repro38 (loop speed): buf_get/buf_set inline fast path and literal div/mod in 05_codegen (5x); colour
+  conversion builtins buf_bgra_to_i420 / buf_i420_to_bgra in rt/rt_video.src (~10-15 ms per 1080p frame). NEXT for
+  the 16 ms budget: SIMD (lasm packed-integer encodings + --raw vector intrinsics) and type-directed unboxed loops.
+  Register locals for ordinary code were tried and reverted: see memory runtime-asm-clobbers-callee-saved.
+- lume run / lume test scratch binaries are `.exe` on Windows (D3D kills extensionless images at exit).
+
+## Runtime in Lume: state on 2026-11-16
 
 - Lume sources of the runtime: `compiler/stage1/rt/*.src`, compiled by `lumec --raw` (freestanding words; intrinsics
   load8/32/64, store8/32/64, bit_*, sys_call, sym_addr("label"); at most 6 parameters/arguments; the right operand of

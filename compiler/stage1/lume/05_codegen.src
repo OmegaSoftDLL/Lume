@@ -270,7 +270,13 @@ fn lregs_popc(xs, i) = match xs
 fn lregs(args, ctx, s) = if lnonleaf(args) == 1 then lregs1(args, ctx, lregs_one(args, 0, ctx, s)) else lregs2(args, ctx, lregs_evalc(args, ctx, s))
 fn lregs1(args, ctx, a) = let b = lregs_leaf(args, 0, ctx, a) in lres(a.code + b.code, b)
 fn lregs2(args, ctx, a) = let b = lregs_leaf(args, 0, ctx, a) in lres(a.code + lregs_popc(args, 0) + b.code, b)
-fn lcall(nm, args, ctx, s) = let n = len(args) in if n <= 6 then (let rg = lregs(args, ctx, s) in lres(rg.code + "    call " + nm + "\n", rg)) else (let nst = n - 6 in let spad = if nst % 2 == 1 then (nst + 1) * 8 else nst * 8 in let rg = lregargs(args, 0, 6, ctx, s) in let st = lstackltr(drop(args, 6), 0, ctx, rg) in lres("    subq $" + str(spad) + ", %rsp\n" + rg.code + st.code + lpops(5) + "    call " + nm + "\n    addq $" + str(spad) + ", %rsp\n", st))
+## buf_get / buf_set inline: a small non-negative index below the length of a real buffer (header (len << 8) | 15,
+## bytes from offset 8) and, for buf_set, a small value 0..255 take the fast path; anything else calls the runtime
+## routine, which gives the same answer or the same diagnosed stop
+fn lbuf_inline(nm, n) = if nm == "buf_get" and n == 2 then 1 else if nm == "buf_set" and n == 3 then 1 else 0
+fn lbuf_chk(lab) = "    movq %rsi, %rax\n    testb $1, %al\n    jz .Lb" + lab + "\n    sarq $1, %rax\n    js .Lb" + lab + "\n    testq %rdi, %rdi\n    jz .Lb" + lab + "\n    testq $7, %rdi\n    jnz .Lb" + lab + "\n    cmpb $15, (%rdi)\n    jne .Lb" + lab + "\n    movq (%rdi), %rcx\n    shrq $8, %rcx\n    cmpq %rcx, %rax\n    jge .Lb" + lab + "\n"
+fn lbuf_fast(nm, lab) = if nm == "buf_get" then lbuf_chk(lab) + "    movzbq 8(%rdi,%rax), %rax\n    leaq 1(%rax,%rax), %rax\n    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    call buf_get\n.Lc" + lab + ":\n" else lbuf_chk(lab) + "    movq %rdx, %r11\n    sarq $1, %r11\n    jnc .Lb" + lab + "\n    testq %r11, %r11\n    js .Lb" + lab + "\n    cmpq $255, %r11\n    jg .Lb" + lab + "\n    movq %rax, %rcx\n    movq %r11, %rax\n    movb %al, 8(%rdi,%rcx)\n    movq %rdi, %rax\n    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    call buf_set\n.Lc" + lab + ":\n"
+fn lcall(nm, args, ctx, s) = let n = len(args) in if n <= 6 then (let rg = lregs(args, ctx, s) in if lbuf_inline(nm, n) == 1 then lres(rg.code + lbuf_fast(nm, rg.pfx + str(rg.nl)), lnext(rg)) else lres(rg.code + "    call " + nm + "\n", rg)) else (let nst = n - 6 in let spad = if nst % 2 == 1 then (nst + 1) * 8 else nst * 8 in let rg = lregargs(args, 0, 6, ctx, s) in let st = lstackltr(drop(args, 6), 0, ctx, rg) in lres("    subq $" + str(spad) + ", %rsp\n" + rg.code + st.code + lpops(5) + "    call " + nm + "\n    addq $" + str(spad) + ", %rsp\n", st))
 
 ## --- constructors and records: args evaluated in order, then popped into a fresh k*8-byte block ---
 fn lcell(lab, vals, n, ctx, s) = let a = lregs_eval(vals, ctx, s) in let b = lfields_leaf(vals, 8, ctx, a) in lres(a.code + "    movq $" + str((n + 1) * 8) + ", %rdi\n    call alloc\n    leaq " + lab + "(%rip), %rcx\n    movq %rcx, (%rax)\n" + lfields_pop(vals, 8) + b.code, b)
@@ -373,7 +379,10 @@ fn lbin_code(lab, op) = if op == "+" then lbin_add(lab) else if op == "-" then l
 fn lbin_gen(lab, op, a) = lres(a.code + lbin_code(lab, op), a)
 fn ladd_imm(lab, l, k, ctx, s) = let a = lax(l, ctx, s) in let d = str(k + k) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    addq $" + d + ", %rax\n    jno .Lc" + lab + "\n    subq $" + d + ", %rax\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call addv\n.Lc" + lab + ":\n", a)
 fn lsub_imm(lab, l, k, ctx, s) = let a = lax(l, ctx, s) in let d = str(k + k) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    subq $" + d + ", %rax\n    jno .Lc" + lab + "\n    addq $" + d + ", %rax\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call __rt_sub\n.Lc" + lab + ":\n", a)
-fn lbin_arith(op, l, r, ctx, s) = let lab = s.pfx + str(s.nl) in if op == "+" and lsmallnum(r) == 1 then ladd_imm(lab, l, lnumval(r), ctx, lnext(s)) else if op == "-" and lsmallnum(r) == 1 then lsub_imm(lab, l, lnumval(r), ctx, lnext(s)) else lbin_gen(lab, op, lbinargs(l, r, ctx, lnext(s)))
+## x % k and x / k for a literal k >= 2: a small x is divided in place (truncating, as __rt_imod / __rt_idiv; no zero
+## divisor, no overflow); a boxed or non-integer x goes to the runtime
+fn ldivmod_imm(lab, op, l, k, ctx, s) = let a = lax(l, ctx, s) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    sarq $1, %rax\n    cqto\n    movq $" + str(k) + ", %rcx\n    idivq %rcx\n" + (if op == "%" then "    leaq 1(%rdx,%rdx), %rax\n" else "    leaq 1(%rax,%rax), %rax\n") + "    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call " + lbin_rt(op) + "\n.Lc" + lab + ":\n", a)
+fn lbin_arith(op, l, r, ctx, s) = let lab = s.pfx + str(s.nl) in if (op == "%" or op == "/") and lsmallnum(r) == 1 and lnumval(r) >= 2 then ldivmod_imm(lab, op, l, lnumval(r), ctx, lnext(s)) else if op == "+" and lsmallnum(r) == 1 then ladd_imm(lab, l, lnumval(r), ctx, lnext(s)) else if op == "-" and lsmallnum(r) == 1 then lsub_imm(lab, l, lnumval(r), ctx, lnext(s)) else lbin_gen(lab, op, lbinargs(l, r, ctx, lnext(s)))
 fn lbin_tag(op, l, r, ctx, s) = if op == "==" then lsete(leqflags(l, r, ctx, s), "sete") else if op == "!=" then lsete(leqflags(l, r, ctx, s), "setne") else if op == "<" or op == ">" or op == "<=" or op == ">=" then lsete(lcmpflags(l, r, ctx, s), lsetcc(op)) else lbin_arith(op, l, r, ctx, s)
 fn lbin_dec(op, a) = lres(a.code + ldec_tail(op), a)
 fn lisdec2(l, r, ctx) = ldec_expr(l, ctx.dvars) and ldec_expr(r, ctx.dvars)
@@ -1194,7 +1203,7 @@ fn rw_pushc(args, env, st) = match args
     Cons(h, t) => if rw_simple(h, env) != "" then rw_pushc(t, env, st) else let r1 = rw_e(h, env, st, 0) in let r2 = rw_pushc(t, env, r1) in rw_r(r1.code + "    pushq %rax\n" + r2.code, r2)
 ## into the registers regs: from the last argument back, a complex one popped, a simple one moved
 fn rw_popc(args, regs, env) = rw_popc_go(rw_revl(args, Nil), rw_revl(rw_takel(regs, rw_len(args)), Nil), env)
-fn rw_popc_go(as, rs, env) = match as
+fn rw_popc_go(xas, rs, env) = match xas
     Nil        => ""
     Cons(a, t) => let s = rw_simple(a, env) in (if s != "" then "    movq " + s + ", " + rw_nth(rs, 0) + "\n" else "    popq " + rw_nth(rs, 0) + "\n") + rw_popc_go(t, rw_dropl(rs), env)
 fn rw_revl(xs, acc) = match xs

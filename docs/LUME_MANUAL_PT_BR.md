@@ -329,6 +329,27 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   janela de privacidade: `win_privacy_window_create`, `win_pump_messages`, `win_window_destroy`
                   `fs_native_path(p)`: o caminho no formato do Windows (de /c/x para a forma com letra de unidade e
                   barras invertidas); svc_install e win_spawn_as_session ja convertem o executavel
+                  tela, captura e entrada (agentes e visualizadores de acesso remoto; o processo passa a Per-Monitor-V2):
+                  `win_displays()` (indice, nome, x, y, largura, altura, dpi, escala, rotacao, primario, frequencia,
+                  monitor), `win_virtual_screen()`; `win_capture_open(indice)` (Desktop Duplication via Direct3D 11,
+                  GDI BitBlt quando nao houver: modo "dxgi" / "gdi"), `win_capture_frame(cap, timeout_ms)` e
+                  `win_capture_frame_into(cap, timeout_ms, buf)` -> status "frame" (BGRA, stride, retangulos sujos),
+                  "pointer", "timeout", "lost" (reabrir: troca de desktop, UAC, tela de bloqueio) ou "error", com a
+                  posicao do ponteiro; `win_capture_close`, `win_capture_gdi(x, y, w, h)`; `win_cursor()`,
+                  `win_cursor_shape(handle)` (largura, altura, hot_x, hot_y, cor e mascara BGRA, mono)
+                  entrada: `win_send_key(scancode, estendida, desce)` (Set 1), `win_send_vk(vk, desce)`,
+                  `win_send_text(s)` (Unicode), `win_send_mouse_move(x, y)` (absoluto no desktop virtual),
+                  `win_send_mouse_button(botao, desce)`, `win_send_mouse_wheel(delta, horizontal)` (1/120),
+                  `win_key_state(vk)`, `win_async_key_down(vk)`, `win_send_sas(como_usuario)` (Ctrl+Alt+Del)
+                  janela do visualizador (sem callback: o programa bombeia): `win_window_open(titulo, w, h)`,
+                  `win_window_events(hwnd)`, `win_window_alive`, `win_window_client_size`, `win_window_set_title`,
+                  `win_window_draw(hwnd, dados, w, h, stride)`, `win_window_draw_rect`; gancho WH_KEYBOARD_LL:
+                  `win_kbhook_install()`, `win_kbhook_swallow(hwnd, liga)`, `win_kbhook_events()`, `win_kbhook_remove`
+- Buffers de bytes (mutaveis): `buf_new(n)`, `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),
+                  `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off,
+                  n)`, `buf_addr(b)`; buf_get / buf_set com indice pequeno viram codigo de maquina inline (sem chamada)
+                  video: `buf_bgra_to_i420(src, stride, w, h, dst)` e `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
+                  faixa limitada, media 2x2 do croma, tamanhos impares; bytes escritos ou -1; quadro 1080p em poucos ms)
 - Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):
   - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                                `port_out32(p, v)`, `port_in32(p)`

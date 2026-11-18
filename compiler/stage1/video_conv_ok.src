@@ -1,0 +1,43 @@
+## video_conv_ok.src -- buf_bgra_to_i420 / buf_i420_to_bgra (rt_video.src): BT.601 limited range, odd sizes, refusals
+fn fill(b, i, n, bb, g, r) = if i >= n then b else let x = buf_set(buf_set(buf_set(buf_set(b, 4 * i, bb), 4 * i + 1, g), 4 * i + 2, r), 4 * i + 3, 255) in fill(b, i + 1, n, bb, g, r)
+fn solid(w, h, bb, g, r) = fill(buf_new(4 * w * h), 0, w * h, bb, g, r)
+fn all_eq(b, i, n, v) = if i >= n then true else if buf_get(b, i) != v then false else all_eq(b, i + 1, n, v)
+fn absd(a) = if a < 0 then 0 - a else a
+fn near(a, b, i, n, tol) = if i >= n then true else if absd(buf_get(a, i) - buf_get(b, i)) > tol then false else near(a, b, i + 1, n, tol)
+
+fn test_white_black_red() =
+    let d = buf_new(6) in
+    let nw = buf_bgra_to_i420(solid(2, 2, 255, 255, 255), 8, 2, 2, d) in
+    let w_ok = nw == 6 and all_eq(d, 0, 4, 235) and buf_get(d, 4) == 128 and buf_get(d, 5) == 128 in
+    let nb = buf_bgra_to_i420(solid(2, 2, 0, 0, 0), 8, 2, 2, d) in
+    let b_ok = nb == 6 and all_eq(d, 0, 4, 16) and buf_get(d, 4) == 128 and buf_get(d, 5) == 128 in
+    let nr = buf_bgra_to_i420(solid(2, 2, 0, 0, 255), 8, 2, 2, d) in
+    w_ok and b_ok and nr == 6 and all_eq(d, 0, 4, 82) and buf_get(d, 4) == 90 and buf_get(d, 5) == 240
+
+## 3x3: chroma planes are 2x2; a stride wider than the row is honoured
+fn test_odd_size_and_stride() =
+    let src = solid(4, 3, 0, 0, 0) in
+    let d = buf_new(9 + 2 * 4) in
+    let n = buf_bgra_to_i420(src, 16, 3, 3, d) in
+    n == 17 and all_eq(d, 0, 9, 16) and all_eq(d, 9, 17, 128)
+
+fn test_refusals() =
+    let s = solid(2, 2, 1, 2, 3) in
+    buf_bgra_to_i420(s, 8, 2, 2, buf_new(5)) == 0 - 1 and buf_bgra_to_i420(s, 4, 2, 2, buf_new(6)) == 0 - 1 and buf_bgra_to_i420(s, 8, 0, 2, buf_new(6)) == 0 - 1 and buf_bgra_to_i420(s, 8, 2, 3, buf_new(9)) == 0 - 1 and buf_i420_to_bgra(buf_new(5), 2, 2, buf_new(16), 8) == 0 - 1 and buf_i420_to_bgra(buf_new(6), 2, 2, buf_new(15), 8) == 0 - 1
+
+## gray and a colour survive the round trip within the rounding of 8-bit fixed point
+fn test_round_trip() =
+    let src = solid(4, 2, 40, 120, 200) in
+    let yuv = buf_new(8 + 2 * 2) in
+    let a = buf_bgra_to_i420(src, 16, 4, 2, yuv) in
+    let back = buf_new(32) in
+    let b = buf_i420_to_bgra(yuv, 4, 2, back, 16) in
+    a == 12 and b == 32 and near(src, back, 0, 32, 3) and buf_get(back, 3) == 255
+
+fn test_1080p_frame() =
+    let w = 1920 in
+    let h = 1080 in
+    let src = buf_new(4 * w * h) in
+    let yuv = buf_new(w * h * 3 / 2) in
+    let back = buf_new(4 * w * h) in
+    buf_bgra_to_i420(src, 4 * w, w, h, yuv) == w * h * 3 / 2 and buf_i420_to_bgra(yuv, w, h, back, 4 * w) == 4 * w * h and buf_get(back, 4 * w * h - 1) == 255 and buf_get(yuv, 0) == 16
