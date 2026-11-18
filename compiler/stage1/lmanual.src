@@ -12,7 +12,7 @@ fn man_norm_topic(raw) = if raw == "" or raw == "index" or raw == "indice" or ra
 ## ============================================================================
 
 fn man_en_index() = "# ============================================================================\n" +
-"# LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v1.1.0 / Wave 10)\n" +
+"# LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v1.2.0 / Wave 10)\n" +
 "# Edition 2026 | Zero-C Self-Hosted Steady State | \"Lume gera Lume\"\n" +
 "# ============================================================================\n\n" +
 "Lume is an AI-First AND Human-Friendly systems, verification, data, and neural\n" +
@@ -210,6 +210,9 @@ fn man_en_contracts() = "# CHAPTER 4: CONTRACTS, LAWS & FORMAL VERIFICATION\n\n"
 "  come from `requires` or from the path (`if a >= 4398046511104 then lim else a * p / 1000`), also inside a `let`;\n" +
 "  bounds up to 2^62 count. A factor may be a bounded linear expression (`(255 - c) * alfa`), and a division may be by a\n" +
 "  variable with a positive lower bound (`pool * p / soma`, `soma >= 1`); `lume certify` re-checks all of these.\n" +
+"- Recursion: a recursive call must satisfy the function's own `requires` (proved, or refuted with a\n" +
+"  counterexample); `lume certify` checks a recursive contract by induction, using the proven contracts of the\n" +
+"  certificate at the calls it does not unfold, and binds it to the source (`--check-source`).\n" +
 "- Booleans in proofs: a comparison used as a value (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,\n" +
 "  `not f(n)`) is proved as 1 / 0. A law about a function call uses the callee's proven `ensures` when the law's\n" +
 "  hypothesis implies the callee's `requires` (so a callee that calls others or multiplies bounded factors is fine).\n" +
@@ -271,6 +274,8 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "            `fs_read_range(path, offset, n)` (up to n bytes from offset, never the whole file; shorter at the end,\n" +
 "            \"\" past it), `fs_truncate(path, size)` (1 / 0), `fs_rename_noreplace(from, to)` (0 when `to` exists;\n" +
 "            renameat2 RENAME_NOREPLACE / MoveFileExW without REPLACE_EXISTING)\n" +
+"            `fs_read_dir` follows a symbolic link to a folder (as opendir); on Windows `fs_chmod` with group / other\n" +
+"            bits makes a private file or folder inherit its parent's ACL again (fs_mode then says 0755 / 0644)\n" +
 "- Owner-only files (keys, secrets): `fs_write_private(path, data)` writes a temporary created 0600 (O_EXCL, no\n" +
 "            symlink followed), fsyncs it and renames it over path: atomic, never readable by others, also on Windows\n" +
 "            (a protected DACL that grants the owner alone); `fs_create_private(path, data)` creates it only when it\n" +
@@ -280,6 +285,9 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "- OS keychain: `use keychain` -> `keychain_set(service, account, secret)`, `keychain_get(service, account)`\n" +
 "            (" + man_br("ok, value, err") + "), `keychain_delete(service, account)`: the Windows Credential Manager; on Linux an\n" +
 "            owner-only file, refused on read when others can reach it; secrets up to 2560 bytes\n" +
+"            `keychain_get_target(target)` reads (only) another program's generic credential by its exact target,\n" +
+"            e.g. the Rust keyring crate's \"agent.omegadesk\": value (UTF-16LE text) and raw (the blob)\n" +
+"            (with LUME_KEYCHAIN_DIR set it reads that directory instead; `keychain_set_target` writes there only)\n" +
 "            Errors (`err`): `not_found` ONLY when the entry does not exist; `access_denied`, `unavailable` (no store,\n" +
 "            no logon session, no directory), `corrupt`, `not_private`, `locked` (reserved): a store that cannot\n" +
 "            answer is never reported as absent, so a caller may fail closed on it\n" +
@@ -301,6 +309,32 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "            `buf_addr(b)` is the address of a buffer's bytes, to build the structures a call takes\n" +
 "- Process:  `os_arg_count()`, `os_arg_at(i)`,\n" +
 "            `os_getpid()`, `os_exit(code)`, `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`\n" +
+"            (the child leads a new process group; at the deadline the whole tree is killed: kill(-pgid) on Linux,\n" +
+"            a Job Object on Windows)\n" +
+"            `use process` -> `os_spawn_pipes(prog, args, new_group)` -> `" + man_br("ok, pid, out_fd, err_fd") + "` (stdout and\n" +
+"            stderr as pipes; stdin /dev/null), `os_fd_read_some(fd, max)` -> `" + man_br("n, data") + "` (n > 0, 0 end,\n" +
+"            -2 nothing now, -1 error; never blocks), `os_wait_nohang(pid)`, `os_wait_child(pid)`, `os_kill_tree(pid)`,\n" +
+"            `os_fd_close(fd)`, `os_run_capture_limit(prog, args, max_bytes, timeout_ms)` -> `" + man_br("status, exit_code, out,") + "\n" +
+"            `" + man_br("err, out_truncated, err_truncated, timed_out") + "` (at most max_bytes kept per stream, the rest\n" +
+"            drained; the tree killed at the deadline)\n" +
+"- System inventory: `use sysinfo` -> `fs_statvfs(path)` -> `" + man_br("ok, total_bytes, free_bytes, available_bytes, type") + "`,\n" +
+"            `net_interfaces()` -> a list of records (name, mac, up, addresses: ip, prefix, family; no loopback)\n" +
+"- Windows system (`use winsys`; on Linux every answer is \"absent\"): registry `reg_get_string(root, key, name)`,\n" +
+"            `reg_get_dword`, `reg_key_exists(root, key)`, `reg_value_exists` (root \"HKLM\", \"HKCU\", \"HKCR\", \"HKU\");\n" +
+"            sessions `wts_active_console_session()`, `wts_sessions()` (id, state, name), `wts_session_user(id)` (user,\n" +
+"            domain), `process_session_id(pid)`; `services_running()` (short names of the running services)\n" +
+"            services: `svc_install(name, display, description, exe, args, auto_start)`, `svc_start`, `svc_stop`,\n" +
+"            `svc_remove`, `svc_state(name)`; running as one: `svc_dispatch_start(name)` -> fd of events,\n" +
+"            `svc_next_event(fd)` (start, stop, shutdown, sessionchange with reason and session), `svc_set_status(state,\n" +
+"            exit_code, wait_hint)`, `svc_finish()`; user session: `win_find_session_process(name, session)`,\n" +
+"            `win_spawn_as_session(model_pid, cmdline, desktop)` (as SYSTEM), `win_proc_alive(h)`, `win_proc_exit_code`,\n" +
+"            `win_proc_terminate(h, code)`, `win_handle_close`; named pipes: `pipe_server_create(name, sddl)`,\n" +
+"            `pipe_server_accept(h, ms)` (client pid), `pipe_client_open(name, ms)`, `pipe_read_some`, `pipe_write_some`,\n" +
+"            `pipe_close` (non-blocking; h works with epoll); desktops: `win_input_desktop_open()`, `win_desktop_name`,\n" +
+"            `win_set_thread_desktop`, `win_desktop_close`; `win_privacy_window_create()` (black, topmost, whole virtual\n" +
+"            screen, excluded from capture), `win_pump_messages()`, `win_window_destroy(hwnd)`\n" +
+"            `fs_native_path(p)`: the path as Windows APIs and command lines take it (POSIX view /c/x becomes the drive\n" +
+"            form with backslashes; svc_install and win_spawn_as_session apply it to the executable themselves)\n" +
 "- Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):\n" +
 "  - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,\n" +
 "                            `port_out32(p, v)`, `port_in32(p)`\n" +
@@ -327,7 +361,8 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "uses its own, and the entry file keeps its names (a module's copy is renamed `name__module`, which\n" +
 "is how its tests are listed). A module that uses such a name without defining it gets the one owner\n" +
 "it imports (directly first); two candidates stop the build with `file:line:col` and ask for\n" +
-"`module.name`. `use json as j` then `j.read(s)` names `read` of `json`. A module in a folder is\n" +
+"`module.name`. `use json as j` then `j.read(s)` names `read` of `json`, even where a local named `read` is in\n" +
+"scope (the local holds only for the plain name). A module in a folder is\n" +
 "written by its last segment (`use net/http`, then `http.get(u)`); of two folders with the same last\n" +
 "segment, all but one need an alias (`use a/http` + `use b/http as hb`: `http.get`, `hb.get`), and two\n" +
 "without one stop at `file:line:col` with that fix. Each `use m` resolves next to the file that writes\n" +
@@ -1021,7 +1056,7 @@ fn man_en_errors() = "# CHAPTER 10: COMPILER DIAGNOSTIC CODES & HOW TO FIX THEM\
 ## ============================================================================
 
 fn man_pt_index() = "# ============================================================================\n" +
-"# LINGUAGEM LUME — MANUAL INTERNO PARA HUMANOS E IA (v1.1.0 / Onda 10)\n" +
+"# LINGUAGEM LUME — MANUAL INTERNO PARA HUMANOS E IA (v1.2.0 / Onda 10)\n" +
 "# Edicao 2026 | Zero-C Self-Hosted | \"Lume gera Lume\"\n" +
 "# ============================================================================\n\n" +
 "Bem-vindo ao Manual Interno da Lume! Embora a Lume tenha sido projetada como\n" +
@@ -1207,6 +1242,9 @@ fn man_pt_contracts() = "# CAPITULO 4: CONTRATOS, LEIS MATEMATICAS E VERIFICACAO
 "  then lim else a * p / 1000`), tambem dentro de um `let`; valem limites ate 2^62. Um fator pode ser uma expressao\n" +
 "  linear limitada (`(255 - c) * alfa`) e a divisao pode ser por variavel com limite inferior positivo (`pool * p /\n" +
 "  soma`, `soma >= 1`); o `lume certify` confere todos esses casos.\n" +
+"- Recursao: a chamada recursiva precisa cumprir o `requires` da propria funcao (provado, ou refutado com\n" +
+"  contraexemplo); o `lume certify` confere contrato recursivo por inducao, usando os contratos provados do\n" +
+"  certificado nas chamadas que nao expande, e liga ao fonte (`--check-source`).\n" +
 "- Booleanos nas provas: uma comparacao usada como valor (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,\n" +
 "  `not f(n)`) e provada como 1 / 0. Uma law sobre uma chamada usa o `ensures` ja provado da funcao chamada quando a\n" +
 "  hipotese da law implica o `requires` dela (vale para funcao que chama outras ou tem produto limitado).\n" +
@@ -1266,6 +1304,8 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "                   `fs_read_range(caminho, offset, n)` (ate n bytes a partir do offset, sem ler o arquivo inteiro;\n" +
 "                   menos no fim, \"\" depois dele), `fs_truncate(caminho, tamanho)` (1 / 0),\n" +
 "                   `fs_rename_noreplace(de, para)` (0 quando `para` ja existe; nunca substitui)\n" +
+"                   `fs_read_dir` segue link simbolico de pasta; no Windows `fs_chmod` com bits de grupo/outros faz o\n" +
+"                   arquivo ou pasta privado voltar a herdar a ACL da pasta-mae\n" +
 "- Arquivos so do dono (chaves, segredos): `fs_write_private(caminho, texto)` grava um temporario criado 0600\n" +
 "                   (O_EXCL, sem seguir link), faz fsync e renomeia por cima: atomico, nunca legivel por outros,\n" +
 "                   tambem no Windows (DACL protegida so com o dono); `fs_create_private(caminho, texto)` so cria\n" +
@@ -1275,6 +1315,9 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "- Chaveiro do SO: `use keychain` -> `keychain_set(servico, conta, segredo)`, `keychain_get(servico, conta)`\n" +
 "                   (" + man_br("ok, value, err") + "), `keychain_delete(servico, conta)`: Credential Manager no Windows; no Linux\n" +
 "                   um arquivo so do dono, recusado na leitura se outros o alcancam; segredo de ate 2560 bytes\n" +
+"                   `keychain_get_target(alvo)` le (so leitura) a credencial generica de outro programa pelo alvo exato\n" +
+"                   (ex.: a do crate keyring do Rust): value (texto UTF-16LE) e raw (o blob)\n" +
+"                   (com LUME_KEYCHAIN_DIR definido le esse diretorio; `keychain_set_target` grava so nele)\n" +
 "                   Erros (`err`): `not_found` SO quando a entrada nao existe; `access_denied`, `unavailable` (sem\n" +
 "                   cofre, sem sessao de logon, sem diretorio), `corrupt`, `not_private`, `locked` (reservado): um\n" +
 "                   cofre que nao responde nunca vira ausente, o chamador pode falhar fechado\n" +
@@ -1297,6 +1340,27 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "- Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`,\n" +
 "                  `os_getpid()`, `os_exit(cod)`, `os_run(cmd, args)`,\n" +
 "                  `os_run_capture_timeout(cmd, args, out, err, ms)`\n" +
+"                  (o filho abre um grupo de processos novo; no prazo a arvore inteira e morta: kill(-pgid) no Linux,\n" +
+"                  Job Object no Windows)\n" +
+"                  `use process` -> `os_spawn_pipes(prog, args, novo_grupo)` (stdout e stderr em pipes),\n" +
+"                  `os_fd_read_some(fd, max)` (n > 0, 0 fim, -2 nada agora, -1 erro; nunca bloqueia), `os_wait_nohang(pid)`,\n" +
+"                  `os_wait_child(pid)`, `os_kill_tree(pid)`, `os_fd_close(fd)`,\n" +
+"                  `os_run_capture_limit(prog, args, max_bytes, timeout_ms)` (no maximo max_bytes por stream, o resto\n" +
+"                  drenado; arvore morta no prazo; status, exit_code, out, err, out_truncated, err_truncated, timed_out)\n" +
+"- Inventario: `use sysinfo` -> `fs_statvfs(caminho)` (total, livre, disponivel, tipo), `net_interfaces()` (nome,\n" +
+"                  MAC, up, enderecos com prefixo; sem loopback; Linux e Windows)\n" +
+"- Sistema Windows (`use winsys`; no Linux tudo responde \"ausente\"): registro `reg_get_string(raiz, chave, nome)`,\n" +
+"                  `reg_get_dword`, `reg_key_exists`, `reg_value_exists`; sessoes `wts_active_console_session()`,\n" +
+"                  `wts_sessions()`, `wts_session_user(id)`, `process_session_id(pid)`; `services_running()`\n" +
+"                  servicos: `svc_install`, `svc_start`, `svc_stop`, `svc_remove`, `svc_state`; como servico:\n" +
+"                  `svc_dispatch_start`, `svc_next_event`, `svc_set_status`, `svc_finish`; sessao do usuario:\n" +
+"                  `win_find_session_process`, `win_spawn_as_session`, `win_proc_alive`, `win_proc_exit_code`,\n" +
+"                  `win_proc_terminate`, `win_handle_close`; named pipes: `pipe_server_create`, `pipe_server_accept`,\n" +
+"                  `pipe_client_open`, `pipe_read_some`, `pipe_write_some`, `pipe_close` (sem bloqueio; com epoll);\n" +
+"                  desktops: `win_input_desktop_open`, `win_desktop_name`, `win_set_thread_desktop`, `win_desktop_close`;\n" +
+"                  janela de privacidade: `win_privacy_window_create`, `win_pump_messages`, `win_window_destroy`\n" +
+"                  `fs_native_path(p)`: o caminho no formato do Windows (de /c/x para a forma com letra de unidade e\n" +
+"                  barras invertidas); svc_install e win_spawn_as_session ja convertem o executavel\n" +
 "- Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):\n" +
 "  - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,\n" +
 "                               `port_out32(p, v)`, `port_in32(p)`\n" +
@@ -1319,7 +1383,8 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "    `krn_slot_read(idx)` (tabela de estado de kernel de 1024 slots com zero alocacoes de heap)\n" +
 "- Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)\n\n" +
 "## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)\n" +
-"- Modulos: `use json as j` e depois `j.read(s)`; um modulo numa pasta e escrito pelo ultimo segmento (`use\n" +
+"- Modulos: `use json as j` e depois `j.read(s)` (sempre a funcao do modulo, mesmo com uma variavel local\n" +
+"  `read`); um modulo numa pasta e escrito pelo ultimo segmento (`use\n" +
 "  net/http` -> `http.get(u)`); de duas pastas com o mesmo ultimo segmento, todas menos uma precisam de alias\n" +
 "  (`use a/http` + `use b/http as hb`), e duas sem alias param em `arquivo:linha:coluna` com a correcao; cada\n" +
 "  `use m` e resolvido ao lado do arquivo que o escreve; nomes repetidos ficam separados (NOME__modulo)\n" +
@@ -2005,7 +2070,7 @@ fn man_use_pt(lang, topic) = if man_is_pt_lang(lang) == 1 then 1 else if lang ==
 
 fn man_render(lang, topic) = if man_use_pt(lang, topic) == 1 then man_render_pt(topic) else man_render_en(topic)
 
-fn man_json_summary(lang, topic) = let norm = man_norm_topic(topic) in let is_pt = man_use_pt(lang, topic) in let lang_tag = if is_pt == 1 then "pt-BR" else "en" in if norm == "unknown" then "{\"ok\":false,\"error\":\"unknown_manual_topic\",\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"1.1.0\",\"language\":\"" + lang_tag + "\",\"topic\":\"unknown\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":0}" else let text = if is_pt == 1 then man_render_pt(norm) else man_render_en(norm) in "{\"ok\":true,\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"1.1.0\",\"language\":\"" + lang_tag + "\",\"topic\":\"" + norm + "\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":" + str(count(text)) + "}"
+fn man_json_summary(lang, topic) = let norm = man_norm_topic(topic) in let is_pt = man_use_pt(lang, topic) in let lang_tag = if is_pt == 1 then "pt-BR" else "en" in if norm == "unknown" then "{\"ok\":false,\"error\":\"unknown_manual_topic\",\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"1.2.0\",\"language\":\"" + lang_tag + "\",\"topic\":\"unknown\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":0}" else let text = if is_pt == 1 then man_render_pt(norm) else man_render_en(norm) in "{\"ok\":true,\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"1.2.0\",\"language\":\"" + lang_tag + "\",\"topic\":\"" + norm + "\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":" + str(count(text)) + "}"
 
 fn man_export_file(lang, topic, out_path) = let eff_topic = if topic == "" or topic == "index" or topic == "indice" then "all" else topic in let norm = man_norm_topic(eff_topic) in let is_pt = man_use_pt(lang, topic) in let lang_tag = if is_pt == 1 then "pt-BR" else "en" in if norm == "unknown" then "{\"ok\":false,\"error\":\"unknown_manual_topic\",\"mode\":\"lume-manual-export\",\"language\":\"" + lang_tag + "\",\"topic\":\"unknown\",\"output\":\"" + out_path + "\",\"bytes\":0}" else let text = if is_pt == 1 then man_render_pt(norm) else man_render_en(norm) in let w = fs_write_sync(out_path, text) in if w != 1 then ctfail("lume manual --export: cannot write " + out_path + "\n") else "{\"ok\":true,\"mode\":\"lume-manual-export\",\"language\":\"" + lang_tag + "\",\"output\":\"" + out_path + "\",\"bytes\":" + str(count(text)) + "}"
 
@@ -2019,7 +2084,7 @@ fn man_cli_appendix(is_pt, synopsis) = if is_pt == 1 then "\n# APENDICE A: SINOP
 
 fn man_render_cli(lang, topic, synopsis) = if man_cli_topic(topic) == 1 then man_render(lang, topic) + man_cli_appendix(man_use_pt(lang, topic), synopsis) else man_render(lang, topic)
 
-fn man_json_summary_cli(lang, topic, synopsis) = let norm = man_norm_topic(topic) in if man_cli_topic(topic) == 0 then man_json_summary(lang, topic) else let is_pt = man_use_pt(lang, topic) in "{\"ok\":true,\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"1.1.0\",\"language\":\"" + (if is_pt == 1 then "pt-BR" else "en") + "\",\"topic\":\"" + norm + "\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":" + str(count(man_render_cli(lang, topic, synopsis))) + "}"
+fn man_json_summary_cli(lang, topic, synopsis) = let norm = man_norm_topic(topic) in if man_cli_topic(topic) == 0 then man_json_summary(lang, topic) else let is_pt = man_use_pt(lang, topic) in "{\"ok\":true,\"mode\":\"lume-internal-manual\",\"edition\":\"2026\",\"version\":\"1.2.0\",\"language\":\"" + (if is_pt == 1 then "pt-BR" else "en") + "\",\"topic\":\"" + norm + "\",\"chapters\":[\"overview\",\"syntax\",\"types\",\"contracts\",\"effects\",\"stdlib\",\"targets\",\"commands\",\"examples\",\"errors\"],\"chapter_count\":10,\"bilingual_pt_en\":true,\"char_length\":" + str(count(man_render_cli(lang, topic, synopsis))) + "}"
 
 fn man_export_file_cli(lang, topic, out_path, synopsis) = let eff_topic = if topic == "" or topic == "index" or topic == "indice" then "all" else topic in let norm = man_norm_topic(eff_topic) in let is_pt = man_use_pt(lang, topic) in if norm == "unknown" then man_export_file(lang, topic, out_path) else let text = (if is_pt == 1 then man_render_pt(norm) else man_render_en(norm)) + (if man_cli_topic(eff_topic) == 1 then man_cli_appendix(is_pt, synopsis) else "") in let w = fs_write_sync(out_path, text) in if w != 1 then ctfail("lume manual --export: cannot write " + out_path + "\n") else "{\"ok\":true,\"mode\":\"lume-manual-export\",\"language\":\"" + (if is_pt == 1 then "pt-BR" else "en") + "\",\"output\":\"" + out_path + "\",\"bytes\":" + str(count(text)) + "}"
 

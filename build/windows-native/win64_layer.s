@@ -47,6 +47,12 @@
     .extern KERNEL32.dll!SetCurrentDirectoryW
     .extern KERNEL32.dll!MoveFileExW
     .extern KERNEL32.dll!SetEndOfFile
+    .extern KERNEL32.dll!CreateThread
+    .extern KERNEL32.dll!CreateEventW
+    .extern KERNEL32.dll!WriteFile
+    .extern KERNEL32.dll!CreateJobObjectW
+    .extern KERNEL32.dll!AssignProcessToJobObject
+    .extern KERNEL32.dll!TerminateJobObject
     .extern KERNEL32.dll!GetFileType
     .extern KERNEL32.dll!RemoveDirectoryW
     .extern KERNEL32.dll!SetFileAttributesW
@@ -149,6 +155,14 @@ __win_syscall:
     je .Lws_dlsym
     cmpq $1011, %rax
     je .Lws_wcall
+    cmpq $1012, %rax
+    je .Lws_h2fd
+    cmpq $1013, %rax
+    je .Lws_fd2h
+    cmpq $1014, %rax
+    je .Lws_svc_start
+    cmpq $1015, %rax
+    je .Lws_svc_get
     cmpq $51, %rax
     je .Lws_getsockname
     cmpq $1001, %rax
@@ -203,6 +217,8 @@ __win_syscall:
     je .Lws_rename
     cmpq $316, %rax
     je .Lws_renameat2
+    cmpq $109, %rax
+    je .Lws_setpgid
     cmpq $77, %rax
     je .Lws_ftruncate
     cmpq $90, %rax
@@ -1103,6 +1119,79 @@ __win_syscall:
     testq %rax, %rax
     jz .Lws_fail
     jmp .Lws_zero
+# setpgid(0, 0) between a fork and its execve asks for a new process group: execve then creates the program suspended,
+# puts it in a new Job Object and only then resumes it, so nothing it starts escapes; kill(-pid) terminates the job.
+# Any other setpgid is accepted and does nothing (a Windows process is never moved between jobs here).
+.Lws_setpgid:
+    cmpq $0, .Lws_fk_mode(%rip)
+    je .Lws_zero
+    testq %r12, %r12
+    jnz .Lws_zero
+    movq $1, .Lws_fk_newgrp(%rip)
+    jmp .Lws_zero
+# the suspended process of execve (224(%rsp) process, 232 thread, 240 pid in the caller's frame): a new job, the process
+# in it, the thread resumed; (pid, job) kept in a 64-entry ring (the job handle it replaces is closed)
+.Lws_job_attach:
+    subq $56, %rsp
+    xorq %rcx, %rcx
+    xorq %rdx, %rdx
+    call CreateJobObjectW
+    movq %rax, 32(%rsp)
+    testq %rax, %rax
+    jz .Lws_ja_resume
+    movq %rax, %rcx
+    movq 288(%rsp), %rdx
+    call AssignProcessToJobObject
+    movq .Lws_jobs_next(%rip), %rax
+    andq $63, %rax
+    shlq $4, %rax
+    leaq .Lws_jobs(%rip), %rcx
+    addq %rax, %rcx
+    movq %rcx, 40(%rsp)
+    movq 8(%rcx), %rcx
+    testq %rcx, %rcx
+    jz .Lws_ja_store
+    call CloseHandle
+.Lws_ja_store:
+    movq 40(%rsp), %rcx
+    movq 304(%rsp), %rax
+    shlq $32, %rax
+    shrq $32, %rax
+    movq %rax, (%rcx)
+    movq 32(%rsp), %rax
+    movq %rax, 8(%rcx)
+    incq .Lws_jobs_next(%rip)
+.Lws_ja_resume:
+    movq 296(%rsp), %rcx
+    call ResumeThread
+    movq $0, .Lws_fk_newgrp(%rip)
+    addq $56, %rsp
+    ret
+# kill(-pid, sig): TerminateJobObject on the job of pid (exit code 128 + sig), when there is one; r12 = pid, r13 = sig
+.Lws_job_kill:
+    subq $40, %rsp
+    leaq .Lws_jobs(%rip), %rax
+    movq $64, %rcx
+.Lws_jk_find:
+    cmpq %r12, (%rax)
+    je .Lws_jk_have
+    addq $16, %rax
+    decq %rcx
+    jnz .Lws_jk_find
+    addq $40, %rsp
+    ret
+.Lws_jk_have:
+    movq 8(%rax), %rcx
+    testq %rcx, %rcx
+    jz .Lws_jk_out
+    testq %r13, %r13
+    jz .Lws_jk_out
+    movq %r13, %rdx
+    addq $128, %rdx
+    call TerminateJobObject
+.Lws_jk_out:
+    addq $40, %rsp
+    ret
 .Lws_lseek:
     call .Lws_fdh
     testq %rcx, %rcx
@@ -2368,7 +2457,7 @@ __win_ffi_resolve:
     movq %r13, %rcx
     andq $63, %rcx
     testq %rcx, %rcx
-    jnz .Lws_zero
+    jnz .Lws_chmod_open
     call .Lws_pv_sa_get
     testq %rax, %rax
     jz .Lws_eacces
@@ -2384,6 +2473,43 @@ __win_ffi_resolve:
     testq %rax, %rax
     jz .Lws_fail
     jmp .Lws_zero
+# group or other bits asked: the object stops being private. SetNamedSecurityInfoW(path, SE_FILE_OBJECT,
+# DACL | UNPROTECTED_DACL, 0, 0, empty ACL, 0) drops the explicit entries and the protection, and Windows applies the
+# entries inherited from the parent folder again (SetFileSecurityW would leave an empty DACL: no access at all).
+# advapi32!SetNamedSecurityInfoW is resolved on first use.
+.Lws_chmod_open:
+    cmpq $0, .Lws_sns_fn(%rip)
+    jne .Lws_cho_have
+    leaq .Lws_adv_dll(%rip), %rcx
+    xorq %rdx, %rdx
+    movq $2048, %r8
+    call LoadLibraryExA
+    testq %rax, %rax
+    jz .Lws_eacces
+    movq %rax, %rcx
+    leaq .Lws_adv_snsi(%rip), %rdx
+    call GetProcAddress
+    movq %rax, .Lws_sns_fn(%rip)
+    testq %rax, %rax
+    jz .Lws_eacces
+.Lws_cho_have:
+    leaq .Lws_empty_acl(%rip), %rax
+    movq $524290, (%rax)
+    leaq .Lws_wbuf(%rip), %rcx
+    movq $1, %rdx
+    movq $536870916, %r8
+    xorq %r9, %r9
+    movq $0, 32(%rsp)
+    leaq .Lws_empty_acl(%rip), %rax
+    movq %rax, 40(%rsp)
+    movq $0, 48(%rsp)
+    movq .Lws_sns_fn(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_zero
+    jmp .Lws_errmap
 # rsi = literal, rdi = string: rax = 1 when equal (clobbers rcx, rsi, rdi; no API call)
 .Lws_streq:
     movzbq (%rsi), %rax
@@ -3563,11 +3689,11 @@ __win_ffi_resolve:
     call GetProcAddress
     jmp .Lws_ret
 
-# pseudo system call 1011 (ENOSYS on Linux): call the Win64 function at r12 with the r14 integer arguments (0 .. 12) in
+# pseudo system call 1011 (ENOSYS on Linux): call the Win64 function at r12 with the r14 integer arguments (0 .. 14) in
 # the block of 64-bit words at r13 (at least 4 words long); rax = its result. Arguments 5 and up go above the 32-byte
 # shadow space, the first four in rcx, rdx, r8, r9; the stack is 16-byte aligned by __win_syscall.
 .Lws_wcall:
-    cmpq $12, %r14
+    cmpq $14, %r14
     jg .Lws_enosys
     movq $4, %rcx
 .Lws_wc_lp:
@@ -3585,6 +3711,184 @@ __win_ffi_resolve:
     movq %r12, %rax
     call *%rax
     jmp .Lws_ret
+
+# pseudo system call 1012: a Win32 HANDLE r12 becomes a descriptor of kind r13 (1 = pipe / file: read, write, epoll
+# and close work on it); rax = the descriptor. 1013: the HANDLE behind descriptor r12 (0 when there is none).
+.Lws_h2fd:
+    movq %r13, %r8
+    movq %r12, %r9
+    call .Lws_fd_new
+    jmp .Lws_ret
+.Lws_fd2h:
+    call .Lws_fdh
+    testq %rcx, %rcx
+    jz .Lws_zero
+    jmp .Lws_ret
+
+# pseudo system call 1014: run the service control dispatcher for the service named by the UTF-16 string r12 on a new
+# thread; rax = a descriptor that delivers one 16-byte record per event: {DWORD code, DWORD event type, DWORD session,
+# DWORD 0}. code 256: ServiceMain started (report SERVICE_RUNNING now); 257: the dispatcher failed, event type = the
+# Win32 error (1063: the program was not started by the service control manager); otherwise the control code
+# (1 STOP, 5 SHUTDOWN, 14 SESSIONCHANGE with the WTS reason and the session id, 15 PRESHUTDOWN, 4 INTERROGATE).
+# 1015: r12 = 0 the service status handle (for SetServiceStatus), 1 the event that lets ServiceMain return.
+.Lws_svc_start:
+    leaq .Lws_svc_name(%rip), %rdi
+    movq %r12, %rsi
+    movq $255, %rcx
+.Lws_svs_cp:
+    movzbq (%rsi), %rax
+    movzbq 1(%rsi), %rdx
+    movb %al, (%rdi)
+    movb %dl, 1(%rdi)
+    orq %rdx, %rax
+    testq %rax, %rax
+    jz .Lws_svs_named
+    addq $2, %rsi
+    addq $2, %rdi
+    decq %rcx
+    jnz .Lws_svs_cp
+    movb $0, (%rdi)
+    movb $0, 1(%rdi)
+.Lws_svs_named:
+    leaq .Lws_adv_dll(%rip), %rcx
+    xorq %rdx, %rdx
+    movq $2048, %r8
+    call LoadLibraryExA
+    testq %rax, %rax
+    jz .Lws_enosys
+    movq %rax, 96(%rsp)
+    movq %rax, %rcx
+    leaq .Lws_adv_sscd(%rip), %rdx
+    call GetProcAddress
+    movq %rax, .Lws_svc_fdisp(%rip)
+    movq 96(%rsp), %rcx
+    leaq .Lws_adv_rsch(%rip), %rdx
+    call GetProcAddress
+    movq %rax, .Lws_svc_freg(%rip)
+    cmpq $0, .Lws_svc_fdisp(%rip)
+    je .Lws_enosys
+    cmpq $0, .Lws_svc_freg(%rip)
+    je .Lws_enosys
+    leaq 80(%rsp), %rcx
+    leaq 88(%rsp), %rdx
+    xorq %r8, %r8
+    movq $65536, %r9
+    call CreatePipe
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jz .Lws_fail
+    movq 88(%rsp), %rax
+    movq %rax, .Lws_svc_wr(%rip)
+    xorq %rcx, %rcx
+    movq $1, %rdx
+    xorq %r8, %r8
+    xorq %r9, %r9
+    call CreateEventW
+    movq %rax, .Lws_svc_done(%rip)
+    xorq %rcx, %rcx
+    xorq %rdx, %rdx
+    leaq .Lws_svc_thread(%rip), %r8
+    xorq %r9, %r9
+    movq $0, 32(%rsp)
+    movq $0, 40(%rsp)
+    call CreateThread
+    testq %rax, %rax
+    jz .Lws_fail
+    movq %rax, %rcx
+    call CloseHandle
+    movq $1, %r8
+    movq 80(%rsp), %r9
+    call .Lws_fd_new
+    jmp .Lws_ret
+.Lws_svc_get:
+    movq .Lws_svc_status(%rip), %rax
+    testq %r12, %r12
+    jz .Lws_ret
+    movq .Lws_svc_done(%rip), %rax
+    jmp .Lws_ret
+# write the record {ecx code, edx event type, r8d session, 0} to the event pipe (any thread; volatile registers only)
+.Lws_svc_post:
+    subq $72, %rsp
+    shlq $32, %rcx
+    shrq $32, %rcx
+    shlq $32, %rdx
+    orq %rdx, %rcx
+    movq %rcx, 48(%rsp)
+    shlq $32, %r8
+    shrq $32, %r8
+    movq %r8, 56(%rsp)
+    movq .Lws_svc_wr(%rip), %rcx
+    leaq 48(%rsp), %rdx
+    movq $16, %r8
+    leaq 64(%rsp), %r9
+    movq $0, 32(%rsp)
+    call WriteFile
+    addq $72, %rsp
+    ret
+# the dispatcher thread: SERVICE_TABLE_ENTRYW {name, ServiceMain}, {0, 0}; when the dispatcher returns at once it failed
+.Lws_svc_thread:
+    subq $56, %rsp
+    leaq .Lws_svc_table(%rip), %rcx
+    leaq .Lws_svc_name(%rip), %rax
+    movq %rax, (%rcx)
+    leaq .Lws_svc_main(%rip), %rax
+    movq %rax, 8(%rcx)
+    movq $0, 16(%rcx)
+    movq $0, 24(%rcx)
+    movq .Lws_svc_fdisp(%rip), %rax
+    call *%rax
+    shlq $32, %rax
+    shrq $32, %rax
+    testq %rax, %rax
+    jnz .Lws_svt_out
+    call GetLastError
+    movq $257, %rcx
+    movq %rax, %rdx
+    xorq %r8, %r8
+    call .Lws_svc_post
+.Lws_svt_out:
+    xorq %rax, %rax
+    addq $56, %rsp
+    ret
+# ServiceMain(argc, argv): the control handler registered, "started" posted, then it waits for the done event
+.Lws_svc_main:
+    subq $56, %rsp
+    leaq .Lws_svc_name(%rip), %rcx
+    leaq .Lws_svc_handler(%rip), %rdx
+    xorq %r8, %r8
+    movq .Lws_svc_freg(%rip), %rax
+    call *%rax
+    movq %rax, .Lws_svc_status(%rip)
+    movq $256, %rcx
+    xorq %rdx, %rdx
+    xorq %r8, %r8
+    call .Lws_svc_post
+    movq .Lws_svc_done(%rip), %rcx
+    movq $4294967295, %rdx
+    call WaitForSingleObject
+    addq $56, %rsp
+    ret
+# HandlerEx(control, event type, event data, context): every control posted; SESSIONCHANGE carries the session id of
+# its WTSSESSION_NOTIFICATION {cbSize, dwSessionId}; the answer is NO_ERROR
+.Lws_svc_handler:
+    subq $56, %rsp
+    xorq %rax, %rax
+    movq %rcx, %r10
+    shlq $32, %r10
+    shrq $32, %r10
+    cmpq $14, %r10
+    jne .Lws_svh_post
+    testq %r8, %r8
+    jz .Lws_svh_post
+    movq (%r8), %rax
+    shrq $32, %rax
+.Lws_svh_post:
+    movq %rax, %r8
+    call .Lws_svc_post
+    xorq %rax, %rax
+    addq $56, %rsp
+    ret
 
 # pseudo system call 1008 (ENOSYS on Linux): the IPv4 unicast addresses of the adapters that are up, 4 bytes each
 # (network order) into buf r12 of r13 bytes; rax = the number of bytes written
@@ -4368,6 +4672,7 @@ __win_ffi_resolve:
     leaq 16(%rbp), %rax
     movq %rax, 104(%rcx)
     movq $1, .Lws_fk_mode(%rip)
+    movq $0, .Lws_fk_newgrp(%rip)
     movq $0, .Lws_fk_std(%rip)
     movq $0, .Lws_fk_std+8(%rip)
     movq $0, .Lws_fk_std+16(%rip)
@@ -4700,6 +5005,10 @@ __win_ffi_resolve:
     jz .Lws_ex_noenv
     movq $1024, 40(%rsp)
 .Lws_ex_noenv:
+    cmpq $0, .Lws_fk_newgrp(%rip)
+    je .Lws_ex_nosusp
+    orq $4, 40(%rsp)
+.Lws_ex_nosusp:
     movq $0, 56(%rsp)
     leaq 112(%rsp), %rax
     movq %rax, 64(%rsp)
@@ -4728,6 +5037,10 @@ __win_ffi_resolve:
     shrq $32, %rax
     jmp .Lws_errmap
 .Lws_ex_made:
+    cmpq $0, .Lws_fk_newgrp(%rip)
+    je .Lws_ex_nojob
+    call .Lws_job_attach
+.Lws_ex_nojob:
     movq 232(%rsp), %rcx
     call CloseHandle
     movq 240(%rsp), %rax
@@ -4909,6 +5222,11 @@ __win_ffi_resolve:
     movq $0, 16(%rbx)
     jmp .Lws_ret
 .Lws_kill:
+    testq %r12, %r12
+    jns .Lws_kill_pos
+    negq %r12
+    call .Lws_job_kill
+.Lws_kill_pos:
 # kill(own pid, sig): the process ends with 0xE0000000 | sig, which wait4 reports as that signal (sig 0: alive)
     call GetCurrentProcessId
     shlq $32, %rax
@@ -4952,6 +5270,16 @@ __win_ffi_resolve:
     shrq $32, %rax
     testq %rax, %rax
     jz .Lws_fail
+# both ends inheritable (HANDLE_FLAG_INHERIT), as a POSIX pipe is across fork: a forked child that dup2s an end onto
+# 0 / 1 / 2 and execs hands it to the new process (the child closes the ends it does not use before exec)
+    movq 80(%rsp), %rcx
+    movq $1, %rdx
+    movq $1, %r8
+    call SetHandleInformation
+    movq 88(%rsp), %rcx
+    movq $1, %rdx
+    movq $1, %r8
+    call SetHandleInformation
     movq $1, %r8
     movq 80(%rsp), %r9
     call .Lws_fd_new
@@ -5438,6 +5766,14 @@ __win_image_hi:
     .section .rodata
 .Lws_fk_var:
     .asciz "LUME_FORK"
+.Lws_adv_dll:
+    .asciz "advapi32.dll"
+.Lws_adv_snsi:
+    .asciz "SetNamedSecurityInfoW"
+.Lws_adv_sscd:
+    .asciz "StartServiceCtrlDispatcherW"
+.Lws_adv_rsch:
+    .asciz "RegisterServiceCtrlHandlerExW"
 .Lws_fk_one:
     .asciz "1"
 .Lws_ws_dll:
@@ -5582,6 +5918,18 @@ __lume_ffi_libs:
     .asciz "/dev/stdin"
     .section .bss
     .lcomm .Lws_wbuf, 65536
+    .lcomm .Lws_jobs, 1024
+    .lcomm .Lws_svc_name, 512
+    .lcomm .Lws_svc_table, 32
+    .lcomm .Lws_svc_wr, 8
+    .lcomm .Lws_svc_done, 8
+    .lcomm .Lws_svc_status, 8
+    .lcomm .Lws_svc_fdisp, 8
+    .lcomm .Lws_sns_fn, 8
+    .lcomm .Lws_empty_acl, 16
+    .lcomm .Lws_svc_freg, 8
+    .lcomm .Lws_jobs_next, 8
+    .lcomm .Lws_fk_newgrp, 8
     .lcomm .Lws_nbuf, 1024
     .lcomm .Lws_pbuf, 98304
     .lcomm .Lws_cbuf, 98304

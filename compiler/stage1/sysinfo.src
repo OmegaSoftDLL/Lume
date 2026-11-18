@@ -1,0 +1,134 @@
+## sysinfo.src -- disks and network interfaces for inventories (`use sysinfo`), the same on Linux and Windows.
+##
+## fs_statvfs(path) -> {ok, total_bytes, free_bytes, available_bytes, type}
+##     The file system that holds path: its size, the free bytes, the bytes an unprivileged user may still take, and
+##     its type ("ext4", "xfs", "btrfs", "tmpfs", "9p", "ntfs", "vfat", "exfat", ... or "0x<magic>" on Linux; the
+##     Windows file system name: "NTFS", "ReFS", "FAT32", "exFAT"). ok is 0 when path does not exist. Linux: statfs;
+##     Windows: GetVolumePathNameW, GetDiskFreeSpaceExW and GetVolumeInformationW through the layer's generic Win32
+##     call (1010 / 1011). A Windows path may be written "C:\dir", "C:/dir" or "/c/dir".
+## net_interfaces() -> [{name, mac, up, addresses: [{ip, prefix, family}]}]
+##     Every interface but the loopback: its name, its hardware address ("aa:bb:cc:dd:ee:ff", 8 bytes for some
+##     tunnels, "" when it has none),
+##     up (1 / 0), and its IPv4 (family 4) and IPv6 (family 6) addresses with the prefix length. Linux:
+##     /sys/class/net, SIOCGIFFLAGS, SIOCGIFCONF + SIOCGIFNETMASK (every IPv4 address, aliases included) and
+##     /proc/net/if_inet6; Windows: GetAdaptersAddresses.
+## Written in Lume over sys_call; the programs that use them never name a system call.
+
+fn si_win() = os_platform() == "windows"
+fn si_u32(b, o) = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3)
+fn si_u64(b, o) = si_u32(b, o) + 4294967296 * si_u32(b, o + 4)
+fn si_put64(b, o, v, k) = if k >= 8 then b else si_put64(buf_set(b, o + k, bit_and(bit_shr(v, 8 * k), 255)), o, v, k + 1)
+fn si_cz(s) = buf_from_str(s + chr(0))
+fn si_hd(d) = at("0123456789abcdef", d)
+fn si_hex2(v) = si_hd(v / 16) + si_hd(v % 16)
+fn si_hexs(v) = if v < 16 then si_hd(v) else si_hexs(v / 16) + si_hd(v % 16)
+fn si_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => si_rev(t, Cons(h, acc))
+fn si_len(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => si_len(t, n + 1)
+fn si_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, si_app(t, ys))
+
+## --- Win32 through the layer: 1010 finds dll!name, 1011 calls it with the integer arguments -----------------------
+fn si_fn(dll, name) = let d = si_cz(dll) in let n = si_cz(name) in sys_call(1010, buf_addr(d), buf_addr(n), 0, 0, 0)
+fn si_args(b, xs, o) = match xs
+    Nil        => b
+    Cons(h, t) => si_args(si_put64(b, o, h, 0), t, o + 8)
+fn si_call(dll, name, xs) = let fp = si_fn(dll, name) in if fp <= 0 then 0 - 1 else let n = si_len(xs, 0) in let a = si_args(buf_new(8 * n + 8), xs, 0) in sys_call(1011, fp, buf_addr(a), n, 0, 0)
+## UTF-8 -> UTF-16LE, NUL-terminated (surrogate pairs above U+FFFF)
+fn si_cp(s, i) = let c = ord_at(s, i) in if c < 128 then {cp: c, n: 1} else if c < 224 then {cp: (c - 192) * 64 + ord_at(s, i + 1) - 128, n: 2} else if c < 240 then {cp: ((c - 224) * 64 + ord_at(s, i + 1) - 128) * 64 + ord_at(s, i + 2) - 128, n: 3} else {cp: (((c - 240) * 64 + ord_at(s, i + 1) - 128) * 64 + ord_at(s, i + 2) - 128) * 64 + ord_at(s, i + 3) - 128, n: 4}
+fn si_units(s, i, acc) = if i >= count(s) then si_rev(acc, Nil) else let r = si_cp(s, i) in if r.cp >= 65536 then si_units(s, i + r.n, Cons(56320 + (r.cp - 65536) % 1024, Cons(55296 + (r.cp - 65536) / 1024, acc))) else si_units(s, i + r.n, Cons(r.cp, acc))
+fn si_wput(b, us, o) = match us
+    Nil        => b
+    Cons(u, t) => si_wput(buf_set(buf_set(b, o, u % 256), o + 1, u / 256), t, o + 2)
+fn si_wstr(s) = let us = si_units(s, 0, Nil) in si_wput(buf_new(2 * si_len(us, 0) + 2), us, 0)
+## UTF-16LE at offset o of b, up to the NUL -> UTF-8 (BMP)
+fn si_utf8(u) = if u < 128 then chr(u) else if u < 2048 then chr(192 + u / 64) + chr(128 + u % 64) else chr(224 + u / 4096) + chr(128 + (u / 64) % 64) + chr(128 + u % 64)
+fn si_wtext(b, o, lim) = if o < 0 or o + 1 >= lim then "" else let u = buf_get(b, o) + 256 * buf_get(b, o + 1) in if u == 0 then "" else si_utf8(u) + si_wtext(b, o + 2, lim)
+
+## --- fs_statvfs ------------------------------------------------------------------------------------------------------
+fn si_fstype(m) = if m == 61267 then "ext4" else if m == 1481003842 then "xfs" else if m == 2435016766 then "btrfs" else if m == 16914836 then "tmpfs" else if m == 16914839 then "9p" else if m == 26985 then "nfs" else if m == 19780 then "vfat" else if m == 1397118030 then "ntfs" else if m == 1936094318 then "ntfs3" else if m == 538032816 then "exfat" else if m == 1702057286 then "fuse" else if m == 2035054128 then "overlay" else if m == 4283649346 then "cifs" else if m == 4266872130 then "smb2" else if m == 1936814952 then "squashfs" else if m == 4076150800 then "f2fs" else if m == 801189825 then "zfs" else if m == 40864 then "proc" else if m == 1650812274 then "sysfs" else if m == 2240043254 then "ramfs" else "0x" + si_hexs(m)
+fn si_statfs_linux(path) = let b = buf_new(120) in let p = si_cz(path) in let r = sys_call(137, buf_addr(p), buf_addr(b), 0, 0, 0) in if r != 0 then {ok: 0, total_bytes: 0, free_bytes: 0, available_bytes: 0, type: ""} else let fr = si_u64(b, 72) in let bs = (if fr > 0 then fr else si_u64(b, 8)) in {ok: 1, total_bytes: si_u64(b, 16) * bs, free_bytes: si_u64(b, 24) * bs, available_bytes: si_u64(b, 32) * bs, type: si_fstype(si_u64(b, 0))}
+## "/c/dir" -> "C:\dir"; "C:/dir" -> "C:\dir"
+fn si_slashes(s, i, acc) = if i >= count(s) then acc else si_slashes(s, i + 1, acc + (if at(s, i) == "/" then chr(92) else at(s, i)))
+fn si_upper(c) = if ord_at(c, 0) >= 97 and ord_at(c, 0) <= 122 then chr(ord_at(c, 0) - 32) else c
+fn si_winpath(p) = if count(p) >= 2 and at(p, 0) == "/" and (count(p) == 2 or at(p, 2) == "/") then si_slashes(si_upper(at(p, 1)) + ":" + (if count(p) == 2 then "/" else slice(p, 2, count(p))), 0, "") else si_slashes(p, 0, "")
+fn si_statfs_win(path) = let wp = si_wstr(si_winpath(path)) in let root = buf_new(1040) in let v = si_call("kernel32.dll", "GetVolumePathNameW", Cons(buf_addr(wp), Cons(buf_addr(root), Cons(520, Nil)))) in let q = buf_new(24) in let d = si_call("kernel32.dll", "GetDiskFreeSpaceExW", Cons(buf_addr(wp), Cons(buf_addr(q), Cons(buf_addr(q) + 8, Cons(buf_addr(q) + 16, Nil))))) in if bit_and(d, 4294967295) == 0 then {ok: 0, total_bytes: 0, free_bytes: 0, available_bytes: 0, type: ""} else let fsn = buf_new(132) in let g = si_call("kernel32.dll", "GetVolumeInformationW", Cons(buf_addr(root), Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Cons(buf_addr(fsn), Cons(66, Nil))))))))) in {ok: 1, total_bytes: si_u64(q, 8), free_bytes: si_u64(q, 16), available_bytes: si_u64(q, 0), type: (if bit_and(g, 4294967295) == 0 then "" else si_wtext(fsn, 0, 132))}
+fn fs_statvfs(path) = if path == "" then {ok: 0, total_bytes: 0, free_bytes: 0, available_bytes: 0, type: ""} else if si_win() then si_statfs_win(path) else si_statfs_linux(path)
+
+## --- net_interfaces: Linux -------------------------------------------------------------------------------------------
+fn si_lines(s, i, start, acc) = if i >= count(s) then si_rev(if start < i then Cons(slice(s, start, i), acc) else acc, Nil) else if at(s, i) == chr(10) then si_lines(s, i + 1, i + 1, if start < i then Cons(slice(s, start, i), acc) else acc) else si_lines(s, i + 1, start, acc)
+fn si_words(s, i, start, acc) = if i >= count(s) then si_rev(if start < i then Cons(slice(s, start, i), acc) else acc, Nil) else if at(s, i) == " " or at(s, i) == chr(9) then si_words(s, i + 1, i + 1, if start < i then Cons(slice(s, start, i), acc) else acc) else si_words(s, i + 1, start, acc)
+fn si_nth(xs, k) = match xs
+    Nil        => ""
+    Cons(h, t) => if k == 0 then h else si_nth(t, k - 1)
+fn si_trim(s) = if count(s) > 0 and (at(s, count(s) - 1) == chr(10) or at(s, count(s) - 1) == " ") then si_trim(slice(s, 0, count(s) - 1)) else s
+## an ifreq (40 bytes) named n
+fn si_ifreq(n) = si_nameput(buf_new(40), n, 0)
+fn si_nameput(b, n, i) = if i >= count(n) or i >= 15 then b else si_nameput(buf_set(b, i, ord_at(n, i)), n, i + 1)
+fn si_flags(s, n) = let q = si_ifreq(n) in let r = sys_call(16, s, 35091, buf_addr(q), 0, 0) in if r != 0 then 0 - 1 else buf_get(q, 16) + 256 * buf_get(q, 17)
+fn si_dotted(b, o) = str(buf_get(b, o)) + "." + str(buf_get(b, o + 1)) + "." + str(buf_get(b, o + 2)) + "." + str(buf_get(b, o + 3))
+fn si_bits(v) = if v == 0 then 0 else (v % 2) + si_bits(v / 2)
+fn si_mask(s, data, i) = let q = buf_new(40) in let c = si_copy(q, data, i, 0, 16) in let r = sys_call(16, s, 35099, buf_addr(q), 0, 0) in if r != 0 then 32 else si_bits(buf_get(q, 20)) + si_bits(buf_get(q, 21)) + si_bits(buf_get(q, 22)) + si_bits(buf_get(q, 23))
+fn si_copy(d, s, o, k, n) = if k >= n then d else si_copy(buf_set(d, k, buf_get(s, o + k)), s, o, k + 1, n)
+fn si_cname(b, o, k) = if k >= 16 or buf_get(b, o + k) == 0 then "" else chr(buf_get(b, o + k)) + si_cname(b, o, k + 1)
+fn si_base(n) = si_base2(n, 0)
+fn si_base2(n, i) = if i >= count(n) then n else if at(n, i) == ":" then slice(n, 0, i) else si_base2(n, i + 1)
+## the IPv4 entries of SIOCGIFCONF: {name (alias label dropped), ip, prefix}
+fn si_v4_all(s) = let cap = 40 * 256 in let data = buf_new(cap) in let ifc = si_put64(si_put64(buf_new(16), 0, cap, 0), 8, buf_addr(data), 0) in let r = sys_call(16, s, 35090, buf_addr(ifc), 0, 0) in if r != 0 then Nil else si_v4_ents(s, data, 0, si_u32(ifc, 0))
+fn si_v4_ents(s, data, i, len) = if i + 40 > len then Nil else let rest = si_v4_ents(s, data, i + 40, len) in if buf_get(data, i + 16) != 2 then rest else Cons({name: si_base(si_cname(data, i, 0)), ip: si_dotted(data, i + 20), prefix: si_mask(s, data, i)}, rest)
+fn si_v4_of(n, es) = match es
+    Nil        => Nil
+    Cons(e, t) => if e.name == n then Cons({ip: e.ip, prefix: e.prefix, family: 4}, si_v4_of(n, t)) else si_v4_of(n, t)
+## /proc/net/if_inet6: "<32 hex> <index> <prefix> <scope> <flags> <name>"
+fn si_hv(c) = if c >= 48 and c <= 57 then c - 48 else if c >= 97 and c <= 102 then c - 87 else c - 55
+fn si_hexnum(s, i, n, acc) = if i >= n then acc else si_hexnum(s, i + 1, n, acc * 16 + si_hv(ord_at(s, i)))
+fn si_group(h, k) = si_hexnum(slice(h, 4 * k, 4 * k + 4), 0, 4, 0)
+fn si_zrun(h, k, cs, cl, bs, bl) = if k >= 8 then (if cl > bl then {s: cs, l: cl} else {s: bs, l: bl}) else if si_group(h, k) == 0 then (if cl == 0 then si_zrun(h, k + 1, k, 1, bs, bl) else si_zrun(h, k + 1, cs, cl + 1, bs, bl)) else (if cl > bl then si_zrun(h, k + 1, 0, 0, cs, cl) else si_zrun(h, k + 1, 0, 0, bs, bl))
+fn si_gtext(h, k, e) = if k >= e then "" else si_hexs(si_group(h, k)) + (if k + 1 < e then ":" else "") + si_gtext(h, k + 1, e)
+fn si_v6text(h) = let z = si_zrun(h, 0, 0, 0, 0, 0) in if z.l < 2 then si_gtext(h, 0, 8) else si_gtext(h, 0, z.s) + "::" + si_gtext(h, z.s + z.l, 8)
+fn si_v6_of(n, ls) = match ls
+    Nil        => Nil
+    Cons(l, t) => let w = si_words(l, 0, 0, Nil) in if si_len(w, 0) >= 6 and si_nth(w, 5) == n and si_nth(w, 3) != "10" then Cons({ip: si_v6text(si_nth(w, 0)), prefix: si_hexnum(si_nth(w, 2), 0, count(si_nth(w, 2)), 0), family: 6}, si_v6_of(n, t)) else si_v6_of(n, t)
+fn si_if_linux1(s, n, v4, v6) = let f = si_flags(s, n) in if f < 0 or bit_and(f, 8) != 0 then Nil else let m = si_trim(fs_read_file("/sys/class/net/" + n + "/address")) in Cons({name: n, mac: (if m == "00:00:00:00:00:00" then "" else m), up: bit_and(f, 1), addresses: si_app(si_v4_of(n, v4), si_v6_of(n, v6))}, Nil)
+fn si_if_linux_names(s, names, v4, v6) = match names
+    Nil        => Nil
+    Cons(n, t) => if n == "." or n == ".." then si_if_linux_names(s, t, v4, v6) else si_app(si_if_linux1(s, n, v4, v6), si_if_linux_names(s, t, v4, v6))
+fn si_if_linux() = let s = sys_call(41, 2, 2, 0, 0, 0) in if s < 0 then Nil else let r = si_if_linux_names(s, si_lines(fs_read_dir("/sys/class/net"), 0, 0, Nil), si_v4_all(s), si_lines(fs_read_file("/proc/net/if_inet6"), 0, 0, Nil)) in let c = sys_call(3, s, 0, 0, 0, 0) in r
+
+## --- net_interfaces: Windows (IP_ADAPTER_ADDRESSES_LH, x64 offsets) -------------------------------------------------
+fn si_off(b, ptr, lim) = let o = ptr - buf_addr(b) in if ptr == 0 or o < 0 or o > lim - 8 then 0 - 1 else o
+fn si_mac(b, o, n, k) = if k >= n then "" else si_hex2(buf_get(b, o + k)) + (if k + 1 < n then ":" else "") + si_mac(b, o, n, k + 1)
+fn si_v6bytes(b, o) = si_v6hex(b, o, 0)
+fn si_v6hex(b, o, k) = if k >= 16 then "" else si_hex2(buf_get(b, o + k)) + si_v6hex(b, o, k + 1)
+fn si_uni(b, u, lim) = if u < 0 then Nil else let rest = si_uni(b, si_off(b, si_u64(b, u + 8), lim), lim) in let sa = si_off(b, si_u64(b, u + 16), lim) in if sa < 0 then rest else let fam = buf_get(b, sa) + 256 * buf_get(b, sa + 1) in let pl = buf_get(b, u + 56) in if fam == 2 then Cons({ip: si_dotted(b, sa + 4), prefix: pl, family: 4}, rest) else if fam == 23 then Cons({ip: si_v6text(si_v6bytes(b, sa + 8)), prefix: pl, family: 6}, rest) else rest
+fn si_ads(b, o, lim) = if o < 0 then Nil else let rest = si_ads(b, si_off(b, si_u64(b, o + 8), lim), lim) in if si_u32(b, o + 100) == 24 then rest else let ml = si_u32(b, o + 88) in Cons({name: si_wtext(b, si_off(b, si_u64(b, o + 72), lim), lim), mac: (if ml > 0 and ml <= 8 then si_mac(b, o + 80, ml, 0) else ""), up: (if si_u32(b, o + 104) == 1 then 1 else 0), addresses: si_uni(b, si_off(b, si_u64(b, o + 24), lim), lim)}, rest)
+fn si_if_win2(cap) = let b = buf_new(cap) in let sz = si_put64(buf_new(8), 0, cap, 0) in let r = bit_and(si_call("iphlpapi.dll", "GetAdaptersAddresses", Cons(0, Cons(14, Cons(0, Cons(buf_addr(b), Cons(buf_addr(sz), Nil)))))), 4294967295) in if r == 111 and cap < 4194304 then si_if_win2(si_u32(sz, 0) + 4096) else if r != 0 then Nil else si_ads(b, 0, cap)
+fn net_interfaces() = if si_win() then si_if_win2(65536) else si_if_linux()
+
+## --- tests -----------------------------------------------------------------------------------------------------------
+fn test_statvfs_of_the_current_dir() = let r = fs_statvfs(".") in r.ok == 1 and r.total_bytes > 0 and r.free_bytes <= r.total_bytes and r.available_bytes <= r.free_bytes and count(r.type) > 0
+fn test_statvfs_missing_path() = (fs_statvfs("no_such_dir_sysinfo_probe/x")).ok == 0 and (fs_statvfs("")).ok == 0
+fn test_interfaces_have_no_loopback() = si_noloop(net_interfaces())
+fn si_noloop(xs) = match xs
+    Nil        => true
+    Cons(h, t) => if h.name == "lo" or si_hasip(h.addresses, "127.0.0.1") or si_hasip(h.addresses, "::1") then false else si_noloop(t)
+fn si_hasip(xs, ip) = match xs
+    Nil        => false
+    Cons(h, t) => if h.ip == ip then true else si_hasip(t, ip)
+fn test_some_interface_has_an_address() = si_anyaddr(net_interfaces())
+fn si_anyaddr(xs) = match xs
+    Nil        => false
+    Cons(h, t) => if si_len(h.addresses, 0) > 0 and si_okaddrs(h.addresses) then true else si_anyaddr(t)
+fn si_okaddrs(xs) = match xs
+    Nil        => true
+    Cons(h, t) => if count(h.ip) > 0 and h.prefix >= 0 and (h.family == 4 and h.prefix <= 32 or h.family == 6 and h.prefix <= 128) then si_okaddrs(t) else false
+fn test_mac_format() = si_macs(net_interfaces())
+fn si_macs(xs) = match xs
+    Nil        => true
+    Cons(h, t) => if h.mac == "" or count(h.mac) == 17 or count(h.mac) == 23 then si_macs(t) else false
+fn test_utf16_round_trip() = let b = si_wstr("C:" + chr(92) + "dados") in si_wtext(b, 0, 64) == "C:" + chr(92) + "dados" and si_winpath("/c/x/y") == "C:" + chr(92) + "x" + chr(92) + "y" and si_winpath("D:/a") == "D:" + chr(92) + "a"
+fn test_v6_text() = si_v6text("fe800000000000000000000000000001") == "fe80::1" and si_v6text("20010db8000000000000000000000000") == "2001:db8::"

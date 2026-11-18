@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-17
+
+Native Windows toolchain (`lumec --win64`, `lasm --pe`, the Win64 runtime layer) with results identical to Linux on
+the full test universe, and the requests of the first production application (LumeDesk).
+
+### Added
+- **Native Windows x86-64 toolchain:** every tool built as a PE executable by Lume itself; Win64 layer with fd table,
+  lazy memory, VEH, real fork, Winsock, epoll and io_uring emulation, C FFI with the Win64 ABI, DLLs written by Lume
+  (`lasm --pe --shared`), a native installer. Test files and programs give the same results on Linux and Windows.
+- **Runtime in Lume:** strlen/streq, 31 `fs_*`/`os_*`/`io_*` builtins, `read`/`readall`, X25519 and Ed25519 point
+  math are Lume source (`compiler/stage1/rt/*.src`, `lumec --raw` with register allocation and leaf routines).
+- **Files:** `fs_read_range(path, offset, n)`, `fs_truncate(path, size)`, `fs_rename_noreplace(from, to)`.
+- **Processes (`use process`):** `os_spawn_pipes`, `os_fd_read_some`, `os_wait_nohang`, `os_kill_tree`,
+  `os_run_capture_limit` (bounded output, the tree killed at the deadline); `os_run_capture_timeout` kills the whole
+  tree (a new process group on Linux, a Job Object created suspended on Windows).
+- **Inventory (`use sysinfo`):** `fs_statvfs(path)` and `net_interfaces()` (name, MAC, addresses with prefix).
+- **Windows system (`use winsys`):** registry reads (`reg_get_string`, `reg_get_dword`, `reg_key_exists`,
+  `reg_value_exists`), sessions (`wts_active_console_session`, `wts_sessions`, `wts_session_user`,
+  `process_session_id`), `services_running`; service management and the service dispatcher (events through an
+  epoll-able descriptor), processes in a user's session (`win_spawn_as_session`), local named pipes (non-blocking,
+  epoll-able, SDDL DACL, client pid), input desktop and the capture-excluded privacy window.
+- **Crypto (`use lcrypto_tls`):** AES-128/256 and AES-GCM, ECDSA P-256 (RFC 6979), X25519/Ed25519 over strs,
+  incremental `lcs_sha256_init/update/final` and `lcs_hmac_sha256_init/update/final`.
+- **Network:** IPv4/IPv6 interfaces, socket local address, non-blocking `net_tcp_connect_start/result`.
+- **`map`:** HalfSipHash-2-4 keyed per map with splitting buckets (collision-resistant), `map_keys`, `map_fold`.
+- **`lume fmt`:** long lines broken to the end of the expression (one `let` per line, `if` branches indented),
+  lambdas, `{r with ...}`, contracts and match arms included; idempotent and compiler-checked.
+- **`lume check --lex`**, record update `{r with f: v}`, module aliases and relative module resolution.
+
+### Changed
+- **Prover:** bounded products (McCormick, bounds up to 2^62, from `requires` or from the path, inside `let`/`if`),
+  booleans used as values proved as 1/0, laws that use the callee's proven `ensures`.
+- **Certificate kernel (`lcert`):** the four McCormick inequalities, linear-expression factors, division by a variable
+  with a positive lower bound, boolean equality, let/if lifted out of comparisons.
+- **Checks:** `[T2101]` follows records through functions and both branches of an `if`; `+` with a list is `[T0604]`
+  with the `seq_concat` fix-it; reserved words are refused as names at the declaration.
+- **Keychain error contract:** `not_found` only when the entry does not exist (`access_denied`, `unavailable`,
+  `corrupt`, `not_private`); the Win64 layer reports `ENOTDIR` like Linux.
+
+
 ### Added (Wave 14 -- clean-room verification, `[C0011]` constant-time crypto kernels, `2oo2D` split envelope, cross-module synergy & qualification `PASS`)
 - **`OmniProof-v4` & signed Tool Qualification Dossier `PASS` (`compiler/stage1/lqualify.src`, `compiler/stage1/lume_driver.src`):**
   `lume self-prove` runs `16` self-hosted proof batteries discharging `1,682` formal obligations (`0` runtime-checked or

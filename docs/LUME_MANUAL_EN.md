@@ -1,5 +1,5 @@
 # ============================================================================
-# LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v1.1.0 / Wave 10)
+# LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v1.2.0 / Wave 10)
 # Edition 2026 | Zero-C Self-Hosted Steady State | "Lume gera Lume"
 # ============================================================================
 
@@ -216,6 +216,9 @@ law clamp_implication(x: int, lo: int, hi: int) =
   come from `requires` or from the path (`if a >= 4398046511104 then lim else a * p / 1000`), also inside a `let`;
   bounds up to 2^62 count. A factor may be a bounded linear expression (`(255 - c) * alfa`), and a division may be by a
   variable with a positive lower bound (`pool * p / soma`, `soma >= 1`); `lume certify` re-checks all of these.
+- Recursion: a recursive call must satisfy the function's own `requires` (proved, or refuted with a
+  counterexample); `lume certify` checks a recursive contract by induction, using the proven contracts of the
+  certificate at the calls it does not unfold, and binds it to the source (`--check-source`).
 - Booleans in proofs: a comparison used as a value (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,
   `not f(n)`) is proved as 1 / 0. A law about a function call uses the callee's proven `ensures` when the law's
   hypothesis implies the callee's `requires` (so a callee that calls others or multiplies bounded factors is fine).
@@ -283,6 +286,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             `fs_read_range(path, offset, n)` (up to n bytes from offset, never the whole file; shorter at the end,
             "" past it), `fs_truncate(path, size)` (1 / 0), `fs_rename_noreplace(from, to)` (0 when `to` exists;
             renameat2 RENAME_NOREPLACE / MoveFileExW without REPLACE_EXISTING)
+            `fs_read_dir` follows a symbolic link to a folder (as opendir); on Windows `fs_chmod` with group / other
+            bits makes a private file or folder inherit its parent's ACL again (fs_mode then says 0755 / 0644)
 - Owner-only files (keys, secrets): `fs_write_private(path, data)` writes a temporary created 0600 (O_EXCL, no
             symlink followed), fsyncs it and renames it over path: atomic, never readable by others, also on Windows
             (a protected DACL that grants the owner alone); `fs_create_private(path, data)` creates it only when it
@@ -292,6 +297,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 - OS keychain: `use keychain` -> `keychain_set(service, account, secret)`, `keychain_get(service, account)`
             ({ok, value, err}), `keychain_delete(service, account)`: the Windows Credential Manager; on Linux an
             owner-only file, refused on read when others can reach it; secrets up to 2560 bytes
+            `keychain_get_target(target)` reads (only) another program's generic credential by its exact target,
+            e.g. the Rust keyring crate's "agent.omegadesk": value (UTF-16LE text) and raw (the blob)
+            (with LUME_KEYCHAIN_DIR set it reads that directory instead; `keychain_set_target` writes there only)
             Errors (`err`): `not_found` ONLY when the entry does not exist; `access_denied`, `unavailable` (no store,
             no logon session, no directory), `corrupt`, `not_private`, `locked` (reserved): a store that cannot
             answer is never reported as absent, so a caller may fail closed on it
@@ -313,6 +321,32 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             `buf_addr(b)` is the address of a buffer's bytes, to build the structures a call takes
 - Process:  `os_arg_count()`, `os_arg_at(i)`,
             `os_getpid()`, `os_exit(code)`, `os_run(cmd, args)`, `os_run_capture_timeout(cmd, args, out, err, ms)`
+            (the child leads a new process group; at the deadline the whole tree is killed: kill(-pgid) on Linux,
+            a Job Object on Windows)
+            `use process` -> `os_spawn_pipes(prog, args, new_group)` -> `{ok, pid, out_fd, err_fd}` (stdout and
+            stderr as pipes; stdin /dev/null), `os_fd_read_some(fd, max)` -> `{n, data}` (n > 0, 0 end,
+            -2 nothing now, -1 error; never blocks), `os_wait_nohang(pid)`, `os_wait_child(pid)`, `os_kill_tree(pid)`,
+            `os_fd_close(fd)`, `os_run_capture_limit(prog, args, max_bytes, timeout_ms)` -> `{status, exit_code, out,}
+            `{err, out_truncated, err_truncated, timed_out}` (at most max_bytes kept per stream, the rest
+            drained; the tree killed at the deadline)
+- System inventory: `use sysinfo` -> `fs_statvfs(path)` -> `{ok, total_bytes, free_bytes, available_bytes, type}`,
+            `net_interfaces()` -> a list of records (name, mac, up, addresses: ip, prefix, family; no loopback)
+- Windows system (`use winsys`; on Linux every answer is "absent"): registry `reg_get_string(root, key, name)`,
+            `reg_get_dword`, `reg_key_exists(root, key)`, `reg_value_exists` (root "HKLM", "HKCU", "HKCR", "HKU");
+            sessions `wts_active_console_session()`, `wts_sessions()` (id, state, name), `wts_session_user(id)` (user,
+            domain), `process_session_id(pid)`; `services_running()` (short names of the running services)
+            services: `svc_install(name, display, description, exe, args, auto_start)`, `svc_start`, `svc_stop`,
+            `svc_remove`, `svc_state(name)`; running as one: `svc_dispatch_start(name)` -> fd of events,
+            `svc_next_event(fd)` (start, stop, shutdown, sessionchange with reason and session), `svc_set_status(state,
+            exit_code, wait_hint)`, `svc_finish()`; user session: `win_find_session_process(name, session)`,
+            `win_spawn_as_session(model_pid, cmdline, desktop)` (as SYSTEM), `win_proc_alive(h)`, `win_proc_exit_code`,
+            `win_proc_terminate(h, code)`, `win_handle_close`; named pipes: `pipe_server_create(name, sddl)`,
+            `pipe_server_accept(h, ms)` (client pid), `pipe_client_open(name, ms)`, `pipe_read_some`, `pipe_write_some`,
+            `pipe_close` (non-blocking; h works with epoll); desktops: `win_input_desktop_open()`, `win_desktop_name`,
+            `win_set_thread_desktop`, `win_desktop_close`; `win_privacy_window_create()` (black, topmost, whole virtual
+            screen, excluded from capture), `win_pump_messages()`, `win_window_destroy(hwnd)`
+            `fs_native_path(p)`: the path as Windows APIs and command lines take it (POSIX view /c/x becomes the drive
+            form with backslashes; svc_install and win_spawn_as_session apply it to the executable themselves)
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):
   - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                             `port_out32(p, v)`, `port_in32(p)`
@@ -340,7 +374,8 @@ Names across modules: a name defined at the top level of two modules is kept apa
 uses its own, and the entry file keeps its names (a module's copy is renamed `name__module`, which
 is how its tests are listed). A module that uses such a name without defining it gets the one owner
 it imports (directly first); two candidates stop the build with `file:line:col` and ask for
-`module.name`. `use json as j` then `j.read(s)` names `read` of `json`. A module in a folder is
+`module.name`. `use json as j` then `j.read(s)` names `read` of `json`, even where a local named `read` is in
+scope (the local holds only for the plain name). A module in a folder is
 written by its last segment (`use net/http`, then `http.get(u)`); of two folders with the same last
 segment, all but one need an alias (`use a/http` + `use b/http as hb`: `http.get`, `hb.get`), and two
 without one stop at `file:line:col` with that fix. Each `use m` resolves next to the file that writes

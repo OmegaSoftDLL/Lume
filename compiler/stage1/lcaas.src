@@ -2920,7 +2920,26 @@ fn cs_vft_ps_fn(fn0) = match fn0
 fn cs_vcaller_ps_ft(mvs, fnm, ft) = let vps = cs_vcaller_ps(mvs) in if cs_isnil(vps) == 0 then vps else cs_vft_ps_m(cs_fnlookup(fnm, ft))
 fn cs_vchk_call_req(cnm, args, fnm, mvs, caller_mvs, ctx) = match mvs
     Nil          => {proofs: Nil, diags: Nil}
-    Cons(vsg, r) => if cs_isnil(vsg.reqs) == 1 then {proofs: Nil, diags: Nil} else let ra = cs_veval_args(args, Nil, Nil, ctx.ft, 0) in if ra.ok == 1 then let env = cs_vbind_ps(vsg.ps, ra.vals) in let rq = cs_veval_all_true(vsg.reqs, env, env, ctx.ft) in if rq.ok == 1 and rq.hold == 0 then let cex = cs_vfmt_env(env) in {proofs: Cons({name: cnm, kind: "call_requires", status: "refuted", obligation: cs_exprs_sexpr(vsg.reqs), term: "(implies (and) " + cs_expr_sexpr(cs_cert_conj(vsg.reqs)) + ")", counterexample: cex}, Nil), diags: Cons(cs_mkdiag("V0001", "contract", "contract error: call to '" + cnm + "' in '" + fnm + "' violates 'requires' precondition with counterexample: " + cex, "ensure arguments passed to '" + cnm + "' satisfy its 'requires' contract"), Nil)} else {proofs: Nil, diags: Nil} else let cps = cs_vcaller_ps(caller_mvs) in let creqs = cs_app(ctx.gconds, cs_vcaller_reqs(caller_mvs)) in if cs_isnil(cps) == 1 then {proofs: Nil, diags: Nil} else let lenv = cs_vlin_init_env(cps) in let chyps = (cs_vprove_reqs_hyps(creqs, lenv, ctx.ft)).hyps in let cex = cs_vchk_call_envs(cs_vgen_envs_hyps(cps, 0, cs_len(cps), chyps), args, vsg, creqs, ctx.ft) in if cex != "" then {proofs: Cons({name: cnm, kind: "call_requires", status: "refuted", obligation: cs_exprs_sexpr(vsg.reqs), term: "(implies (and) " + cs_expr_sexpr(cs_cert_conj(vsg.reqs)) + ")", counterexample: cex}, Nil), diags: Cons(cs_mkdiag("V0001", "contract", "contract error: call to '" + cnm + "' in '" + fnm + "' violates 'requires' precondition with counterexample: " + cex, "ensure arguments passed to '" + cnm + "' satisfy its 'requires' contract"), Nil)} else {proofs: Nil, diags: Nil}
+    Cons(vsg, r) => if cs_isnil(vsg.reqs) == 1 then {proofs: Nil, diags: Nil} else let ra = cs_veval_args(args, Nil, Nil, ctx.ft, 0) in if ra.ok == 1 then let env = cs_vbind_ps(vsg.ps, ra.vals) in let rq = cs_veval_all_true(vsg.reqs, env, env, ctx.ft) in if rq.ok == 1 and rq.hold == 0 then let cex = cs_vfmt_env(env) in {proofs: Cons({name: cnm, kind: "call_requires", status: "refuted", obligation: cs_exprs_sexpr(vsg.reqs), term: "(implies (and) " + cs_expr_sexpr(cs_cert_conj(vsg.reqs)) + ")", counterexample: cex}, Nil), diags: Cons(cs_mkdiag("V0001", "contract", "contract error: call to '" + cnm + "' in '" + fnm + "' violates 'requires' precondition with counterexample: " + cex, "ensure arguments passed to '" + cnm + "' satisfy its 'requires' contract"), Nil)} else {proofs: Nil, diags: Nil} else let cps = cs_vcaller_ps(caller_mvs) in let creqs = cs_app(ctx.gconds, cs_vcaller_reqs(caller_mvs)) in if cs_isnil(cps) == 1 then {proofs: Nil, diags: Nil} else let lenv = cs_vlin_init_env(cps) in let chyps = (cs_vprove_reqs_hyps(creqs, lenv, ctx.ft)).hyps in let cex = cs_vchk_call_envs(cs_vgen_envs_hyps(cps, 0, cs_len(cps), chyps), args, vsg, creqs, ctx.ft) in if cex != "" then {proofs: Cons({name: cnm, kind: "call_requires", status: "refuted", obligation: cs_exprs_sexpr(vsg.reqs), term: "(implies (and) " + cs_expr_sexpr(cs_cert_conj(vsg.reqs)) + ")", counterexample: cex}, Nil), diags: Cons(cs_mkdiag("V0001", "contract", "contract error: call to '" + cnm + "' in '" + fnm + "' violates 'requires' precondition with counterexample: " + cex, "ensure arguments passed to '" + cnm + "' satisfy its 'requires' contract"), Nil)} else if cnm == fnm then cs_vchk_rec_sym(cnm, args, vsg, cps, creqs, ctx) else {proofs: Nil, diags: Nil}
+## A recursive call whose requires the sampled environments did not refute is proved symbolically: "the caller's
+## requires and the path to the call imply the callee's requires at the arguments" is proved as a law. Refuted gives the
+## counterexample; not proven gives a runtime_checked obligation (the run-time check of requires stays, and the
+## contract can no longer read as fully proven: the recursion may stop with a requires violation).
+## a path condition kept as a 0 / 1 value: (if c 0 1) is "not c" (a comparison with the operator flipped), (if c 1 0) is c
+fn cs_flip(op) = if op == ">=" then "<" else if op == "<=" then ">" else if op == ">" then "<=" else if op == "<" then ">=" else if op == "==" then "!=" else if op == "!=" then "==" else ""
+fn cs_gcond_norm(e) = match e
+    If(c, t, e2) => if cs_expr_sexpr(t) == "0" and cs_expr_sexpr(e2) == "1" then cs_gcond_not(c) else if cs_expr_sexpr(t) == "1" and cs_expr_sexpr(e2) == "0" then c else e
+    _            => e
+fn cs_gcond_not(c) = match c
+    Bin(op, a, b) => if cs_flip(op) != "" then Bin(cs_flip(op), a, b) else Bin("==", c, Num(0))
+    _             => Bin("==", c, Num(0))
+fn cs_gconds_norm(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(cs_gcond_norm(h), cs_gconds_norm(t))
+fn cs_vchk_rec_sym(cnm, args, vsg, cps, creqs, ctx) = let req = cs_li_conj(cs_lw_insts(vsg.reqs, vsg.ps, args)) in let law = If(cs_li_conj(cs_gconds_norm(creqs)), req, cs_lw_true()) in let r = cs_vprove_law_decl(cnm + "__recursive_call", cps, law, ctx.ft, {ok: 0, ty: ""}) in let st = cs_lw_status(r.proofs) in if st == "proven" then {proofs: Nil, diags: Nil} else let cex = cs_rec_cex(r.proofs) in {proofs: Cons({name: cnm, kind: "call_requires", status: (if st == "refuted" then "refuted" else "runtime_checked"), obligation: cs_expr_sexpr(law), term: "(implies (and) " + cs_expr_sexpr(cs_cert_clean_top(law, ctx.ft)) + ")", counterexample: cex}, Nil), diags: (if st == "refuted" then Cons(cs_mkdiag("V0001", "contract", "contract error: the recursive call '" + cnm + "(...)' violates its own 'requires' with counterexample: " + cex, "widen the 'requires' of '" + cnm + "' or change the arguments of the recursive call so they satisfy it"), Nil) else Nil)}
+fn cs_rec_cex(pfs) = match pfs
+    Nil        => ""
+    Cons(h, t) => h.counterexample
 fn cs_vchk_rect_envs(envs, items, iv, caller_reqs, ft) = match envs
     Nil           => ""
     Cons(cenv, r) => let cr = cs_veval_all_true(caller_reqs, cenv, cenv, ft) in if cr.ok == 0 or cr.hold == 0 then cs_vchk_rect_envs(r, items, iv, caller_reqs, ft) else let rr = cs_veval_rec(items, cenv, cenv, ft, 0) in if rr.ok == 0 then cs_vchk_rect_envs(r, items, iv, caller_reqs, ft) else let env = cs_vfields_env(rr.fields) in let ri = cs_veval(iv.inv, env, env, ft, 0) in if ri.ok == 1 and ri.i == 0 then cs_vfmt_env(env) else cs_vchk_rect_envs(r, items, iv, caller_reqs, ft)
@@ -3843,21 +3862,37 @@ fn lc_count_budget(ps) = match ps
 ## The verdict of the certificate kernel itself (lcert.src, linked in): the same three checks `lcert` applies to an
 ## entry when it verifies the certificate (lk_verify_pair1). Before Wave 14 this function only looked at the status
 ## string, so `certify` could write "kernel_verified":true for a term the kernel then refused.
-fn lc_kernel_check_one(p) = if count(p.counterexample) != 0 then 0 else if p.kind == "wcet" then (if p.status == "budget_checked" then lk_check_wcet_term(p.term) else 0) else if p.kind == "termination" and p.status == "structural_checked" then lk_check_structural_term(p.term, p.name) else if p.status == "proven" and cs_cert_term_oversize(p.term) == 0 then lk_prove_term(p.term) else 0
+fn lc_kernel_check_one(p) = lc_kernel_check_one_cx(p, lc_cx_none())
+fn lc_kernel_check_one_cx(p, cx) = if count(p.counterexample) != 0 then 0 else if p.kind == "wcet" then (if p.status == "budget_checked" then lk_check_wcet_term(p.term) else 0) else if p.kind == "termination" and p.status == "structural_checked" then lk_check_structural_term(p.term, p.name) else if p.status == "proven" and cs_cert_term_oversize(p.term) == 0 then lk_prove_term_tab(p.term, cx.tab) else 0
 
-fn lc_kernel_check_all(ps) = match ps
+fn lc_kernel_check_all(ps) = lc_kernel_check_all_cx(ps, lc_cx_none())
+fn lc_kernel_check_all_cx(ps, cx) = match ps
     Nil        => 1
-    Cons(h, t) => if lc_kernel_check_one(h) == 1 then lc_kernel_check_all(t) else 0
+    Cons(h, t) => if lc_kernel_check_one_cx(h, cx) == 1 then lc_kernel_check_all_cx(t, cx) else 0
 
-fn lc_terms_json(ps) = match ps
+fn lc_terms_json(ps) = lc_terms_json_cx(ps, lc_cx_none())
+fn lc_terms_json_cx(ps, cx) = match ps
     Nil        => ""
-    Cons(h, t) => let item = "{\"name\":\"" + cs_jesc(h.name) + "\",\"kind\":\"" + cs_jesc(h.kind) + "\",\"term\":\"" + cs_jesc(h.term) + "\",\"checked\":" + (if lc_kernel_check_one(h) == 1 then "true" else "false") + "}" in if cs_isnil(t) == 1 then item else item + "," + lc_terms_json(t)
+    Cons(h, t) => let item = "{\"name\":\"" + cs_jesc(h.name) + "\",\"kind\":\"" + cs_jesc(h.kind) + "\",\"term\":\"" + cs_jesc(h.term) + "\"" + lc_params_field(h, cx) + ",\"checked\":" + (if lc_kernel_check_one_cx(h, cx) == 1 then "true" else "false") + "}" in if cs_isnil(t) == 1 then item else item + "," + lc_terms_json_cx(t, cx)
+## the parameters of a contract's function ("params":"n ms"), for the kernel's use of contracts by induction
+## (lcert.src section 3b); written only when the source is known
+fn lc_cx_none() = {vs: Nil, tab: Nil, on: 0}
+fn lc_cx(src, proofs) = let vs = cs_vcollect_vsigs((cs_parse_full(src)).prog) in {vs: vs, tab: lk_ct_table(lc_cands(proofs, vs)), on: 1}
+fn lc_ps_str(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => if cs_isnil(t) == 1 then h else h + " " + lc_ps_str(t)
+fn lc_params_of(nm, vs) = let m = cs_vsiglookup(nm, vs) in if cs_isnil(m) == 1 then {ok: 0, s: ""} else {ok: 1, s: lc_ps_str((cs_asthead(m)).ps)}
+fn lc_params_field(h, cx) = if cx.on == 0 or h.kind != "contract" then "" else let pm = lc_params_of(h.name, cx.vs) in if pm.ok == 0 then "" else ",\"params\":\"" + cs_jesc(pm.s) + "\""
+fn lc_cands(ps, vs) = match ps
+    Nil        => Nil
+    Cons(h, t) => let rest = lc_cands(t, vs) in if h.kind == "contract" and h.status == "proven" and count(h.counterexample) == 0 then (let pm = lc_params_of(h.name, vs) in let c = lk_ct_mk(h.name, pm.s, h.obligation) in if pm.ok == 1 and c.ok == 1 then Cons({term: h.term, ct: c}, rest) else rest) else rest
 
 fn lc_extract_sha_hdr(s) = if cs_startswith(s, "@sha256 ") == 1 then let le = cs_lineend(s, 0, count(s)) in {has: 1, sha: "sha256:" + cs_chomp(slice(s, 8, le)), rest: slice(s, le, count(s))} else {has: 0, sha: "", rest: s}
 
 fn lcert_certificate_hash(src_hash, proofs) = lc_sha256(src_hash + "|" + lc_terms_json(proofs) + "|" + cs_proofs_json(proofs))
+fn lcert_certificate_hash_cx(src_hash, proofs, cx) = lc_sha256(src_hash + "|" + lc_terms_json_cx(proofs, cx) + "|" + cs_proofs_json(proofs))
 
-fn lcert_certify_result(src, src_hash, r) = let total = cs_len(r.proofs) in let proven = lc_count_proven(r.proofs) in let budgeted = lc_count_budget(r.proofs) in let terms_str = lc_terms_json(r.proofs) in let k_ok = if r.ok == 1 and total > 0 and proven + budgeted == total and cs_contains_sub(terms_str, "\"checked\":false") == 0 then 1 else 0 in let obls_str = cs_proofs_json(r.proofs) in let cert_hash = lc_sha256(src_hash + "|" + terms_str + "|" + obls_str) in let badge = if k_ok == 1 then "Lume Verified ✓" else "unverified" in "{\"ok\":" + (if k_ok == 1 then "true" else "false") + ",\"badge\":\"" + cs_jesc(badge) + "\",\"kernel_verified\":" + (if k_ok == 1 then "true" else "false") + ",\"kernel_id\":\"lume-minimal-kernel-v1\",\"source_hash\":\"" + cs_jesc(src_hash) + "\",\"certificate_hash\":\"" + cs_jesc(cert_hash) + "\",\"proven_count\":" + str(proven) + ",\"budget_checked_count\":" + str(budgeted) + ",\"total_obligations\":" + str(total) + ",\"proof_terms\":[" + terms_str + "],\"obligations\":[" + obls_str + "]}"
+fn lcert_certify_result(src, src_hash, r) = let total = cs_len(r.proofs) in let proven = lc_count_proven(r.proofs) in let budgeted = lc_count_budget(r.proofs) in let terms_str = lc_terms_json_cx(r.proofs, lc_cx(src, r.proofs)) in let k_ok = if r.ok == 1 and total > 0 and proven + budgeted == total and cs_contains_sub(terms_str, "\"checked\":false") == 0 then 1 else 0 in let obls_str = cs_proofs_json(r.proofs) in let cert_hash = lc_sha256(src_hash + "|" + terms_str + "|" + obls_str) in let badge = if k_ok == 1 then "Lume Verified ✓" else "unverified" in "{\"ok\":" + (if k_ok == 1 then "true" else "false") + ",\"badge\":\"" + cs_jesc(badge) + "\",\"kernel_verified\":" + (if k_ok == 1 then "true" else "false") + ",\"kernel_id\":\"lume-minimal-kernel-v1\",\"source_hash\":\"" + cs_jesc(src_hash) + "\",\"certificate_hash\":\"" + cs_jesc(cert_hash) + "\",\"proven_count\":" + str(proven) + ",\"budget_checked_count\":" + str(budgeted) + ",\"total_obligations\":" + str(total) + ",\"proof_terms\":[" + terms_str + "],\"obligations\":[" + obls_str + "]}"
 
 fn lcert_certify(raw_src) = let sh = lc_extract_sha_hdr(raw_src) in let src = sh.rest in let src_hash = if sh.has == 1 and count(sh.sha) == 71 then sh.sha else lc_sha256(src) in lcert_certify_result(src, src_hash, caas_compile(src))
 

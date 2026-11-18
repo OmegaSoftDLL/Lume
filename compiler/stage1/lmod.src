@@ -294,7 +294,22 @@ fn ns_ksecond(t, h) = match t
     Cons(h2, t2) => h2
 fn ns_word(s, n, i, e, start, acc, st, cx) = if i > 0 and at(s, i - 1) == "." then ns_rw(s, n, e, start, acc, st, cx) else let w = slicen(s, n, i, e) in let m = if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) then ns_alias(cx.als, w) else "" in if m != "" then ns_qual(s, n, i, e, id_end(s, e + 1, n), m, start, acc, st, cx) else if e + 1 < n and at(s, e) == "." and isalpha(at(s, e + 1)) and contains(cx.bnd, w) == 0 and ns_len(ns_segmods(ns_usemods((ns_find(cx.recs, cx.mod)).lines), w)) >= 2 then ns_segamb(cx, i, w, ns_segmods(ns_usemods((ns_find(cx.recs, cx.mod)).lines), w)) else let t = ns_lookup(cx.mp, w) in if t == "" or ns_iskey(s, n, i, e, st) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" and contains(cx.bnd, w) == 1 then ns_rw(s, n, e, start, acc, st, cx) else if at(t, 0) == "?" then ctfail(cx.mod + ".src:" + str(cx.line) + ":" + str(i + 1) + ": lume: name error: '" + w + "' is defined in modules " + slice(t, 1, count(t)) + "; write " + ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) + "." + w + (if ns_lastseg(ns_kfirst(slice(t, 1, count(t)))) != ns_kfirst(slice(t, 1, count(t))) then " (or `use " + ns_kfirst(slice(t, 1, count(t))) + " as <alias>` and <alias>." + w + ")" else "") + "\n") else ns_rw(s, n, e, e, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
 fn ns_kfirst(s) = slice(s, 0, wordend(s, 0, count(s)))
-fn ns_qual(s, n, i, e, ne, m, start, acc, st, cx) = let nm = slicen(s, n, e + 1, ne) in if contains((ns_find(cx.recs, m)).defs, nm) == 0 then ns_rw(s, n, e, start, acc, st, cx) else let t = if ns_isdup(cx.gs, nm) == 1 then ns_target(m, nm, cx.entry) else nm in ns_rw(s, n, ne, ne, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
+fn ns_qual(s, n, i, e, ne, m, start, acc, st, cx) = let nm = slicen(s, n, e + 1, ne) in if contains((ns_find(cx.recs, m)).defs, nm) == 0 then ns_rw(s, n, e, start, acc, st, cx) else let t0 = if ns_isdup(cx.gs, nm) == 1 then ns_target(m, nm, cx.entry) else nm in let t = ns_qshadow(s, n, ne, nm, t0, cx) in ns_rw(s, n, ne, ne, Cons(t, Cons(slicen(s, n, start, i), acc)), st, cx)
+## `M.name(args)` where a local binding of the same name is in scope (`let name = ...`): the call goes to a reserved
+## forwarder lumeq<arity>__<target>, defined at the top level of the bundle (ns_qdefs), where no local can shadow it
+fn ns_qshadow(s, n, ne, nm, t, cx) = if contains(cx.bnd, nm) == 0 then t else let j = skipws(s, ne, n) in if j >= n or at(s, j) != "(" then t else "lumeq" + str(ns_argc(s, n, j + 1, 0, 0, 0)) + "__" + t
+## the arguments of a call whose "(" ends at j: top-level commas + 1 (0 for "()"); strings and nested brackets skipped
+fn ns_argc(s, n, i, depth, commas, any) = if i >= n then commas + any else let c = at(s, i) in if c == "\"" then ns_argc(s, n, ns_strend(s, n, i + 1), depth, commas, 1) else if c == "(" or c == "[" or c == "{" then ns_argc(s, n, i + 1, depth + 1, commas, 1) else if (c == ")" or c == "]" or c == "}") and depth == 0 then (if any == 0 then 0 else commas + 1) else if c == ")" or c == "]" or c == "}" then ns_argc(s, n, i + 1, depth - 1, commas, 1) else if c == "," and depth == 0 then ns_argc(s, n, i + 1, depth, commas + 1, 1) else ns_argc(s, n, i + 1, depth, commas, if isws(c) then any else 1)
+fn ns_strend(s, n, i) = if i >= n then n else if at(s, i) == "\\" then ns_strend(s, n, i + 2) else if at(s, i) == "\"" then i + 1 else ns_strend(s, n, i + 1)
+## the forwarders the bundle names: fn lumeq2__f(a0, a1) = f(a0, a1), one per distinct name
+fn ns_qnames(s, n, i, acc) = if i + 5 >= n then acc else if slicen(s, n, i, i + 5) == "lumeq" and (i == 0 or isalnum(at(s, i - 1)) == 0) then (let e = id_end(s, i, n) in let w = slicen(s, n, i, e) in ns_qnames(s, n, e, if contains(acc, w) == 1 then acc else Cons(w, acc))) else ns_qnames(s, n, i + 1, acc)
+fn ns_qsplit(w, i) = if i + 1 >= count(w) then 0 - 1 else if at(w, i) == "_" and at(w, i + 1) == "_" then i else ns_qsplit(w, i + 1)
+fn ns_qparams(k, i) = if i >= k then "" else "a" + str(i) + (if i + 1 < k then ", " else "") + ns_qparams(k, i + 1)
+fn ns_qdef(w) = let p = ns_qsplit(w, 5) in if p < 0 then "" else let k = toint(slice(w, 5, p)) in let t = slice(w, p + 2, count(w)) in "fn " + w + "(" + ns_qparams(k, 0) + ") = " + t + "(" + ns_qparams(k, 0) + ")\n"
+fn ns_qdefs_l(ws) = match ws
+    Nil        => ""
+    Cons(w, r) => ns_qdef(w) + ns_qdefs_l(r)
+fn ns_qdefs(text) = let ws = ns_qnames(text, count(text), 0, Nil) in if isnil(ws) == 1 then text else text + "\n\n## --- forwarders of qualified calls shadowed by a local name ---\n" + ns_qdefs_l(ws)
 
 fn ns_lines(lines, k, mp, cx) = match lines
     Nil        => Nil
@@ -326,7 +341,7 @@ fn resolve_one(nm, mods, grant, visiting, visited, chunks) = if contains(visited
 
 fn resolve_mod(m, mods, grant, visiting, visited, chunks) = let chk = checkcap(m.name, m.lines, grant) in let r = resolve_list(m.uses, mods, grant, visiting, visited, chunks) in {visited: Cons(m.name, r.visited), chunks: app(r.chunks, Cons(nsrec(m), Nil))}
 
-fn bundle(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n")
+fn bundle(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in ns_qdefs(joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n"))
 fn ns_needed(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, "io", Cons(st.entry.name, Nil), Nil, Nil) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in if ns_changed(recs, ns_apply(recs, st.entry.name)) == 1 then "needed" else "none"
 
 ## --- `@manifest` mode: parse & validate `lume.toml` in Lume-Core ---

@@ -4,6 +4,11 @@
 ## keychain_get(service, account)         -> {ok, value, err}
 ## keychain_delete(service, account)      -> {ok, err}
 ## keychain_backend()                     -> "os" | "file"
+## keychain_get_target(target)           -> {ok, value, raw, err}  read only: the Windows generic credential whose
+##     target is exactly `target` (another program's, e.g. the Rust keyring crate's "agent.omegadesk"); raw is the
+##     credential blob as stored, value is that blob read as UTF-16LE text (how the keyring crate stores a password)
+##     when its length is even, else raw. With LUME_KEYCHAIN_DIR set it reads DIR/target.hex(target) instead (the
+##     Credential Manager is never touched); keychain_set_target(target, blob) writes there (file backend only).
 ##
 ## Backends:
 ## - Windows: the Credential Manager (a generic credential "lume:SERVICE:ACCOUNT", persisted for this user on this
@@ -62,7 +67,18 @@ fn kc_get_os(service, account) = let r = os_keychain_get(kc_target(service, acco
 ## read must match; every path that is not "no such file" is a code other than not_found
 fn kc_cpath(p) = let b = buf_new(count(p) + 1) in kc_cpath_go(b, p, 0)
 fn kc_cpath_go(b, p, i) = if i >= count(p) then b else kc_cpath_go(buf_set(b, i, ord_at(p, i)), p, i + 1)
-fn kc_get_file(service, account) = if keychain_dir() == "" then {ok: 0, value: "", err: "unavailable"} else let p = kc_file(service, account) in let c = kc_cpath(p) in let fd = sys_call(2, buf_addr(c), 0, 0, 0, 0) in if fd < 0 then {ok: 0, value: "", err: kc_os_err(0 - fd, "unavailable")} else let size = sys_call(8, fd, 0, 2, 0, 0) in let z = sys_call(3, fd, 0, 0, 0, 0) in let pv = fs_is_private(p) in if pv == 0 then {ok: 0, value: "", err: "not_private"} else if pv != 1 then {ok: 0, value: "", err: "unavailable"} else if size < 0 then {ok: 0, value: "", err: "unavailable"} else let v = fs_read_file(p) in if count(v) != size then {ok: 0, value: "", err: "corrupt"} else {ok: 1, value: v, err: ""}
+fn kc_get_file(service, account) = if keychain_dir() == "" then {ok: 0, value: "", err: "unavailable"} else kc_get_path(kc_file(service, account))
+fn kc_get_path(p) = let c = kc_cpath(p) in let fd = sys_call(2, buf_addr(c), 0, 0, 0, 0) in if fd < 0 then {ok: 0, value: "", err: kc_os_err(0 - fd, "unavailable")} else let size = sys_call(8, fd, 0, 2, 0, 0) in let z = sys_call(3, fd, 0, 0, 0, 0) in let pv = fs_is_private(p) in if pv == 0 then {ok: 0, value: "", err: "not_private"} else if pv != 1 then {ok: 0, value: "", err: "unavailable"} else if size < 0 then {ok: 0, value: "", err: "unavailable"} else let v = fs_read_file(p) in if count(v) != size then {ok: 0, value: "", err: "corrupt"} else {ok: 1, value: v, err: ""}
+fn kc_u16(raw, i, acc) = if i + 1 >= count(raw) then acc else let u = ord_at(raw, i) + 256 * ord_at(raw, i + 1) in if u == 0 then acc else if u >= 55296 and u < 56320 and i + 3 < count(raw) then (let lo = ord_at(raw, i + 2) + 256 * ord_at(raw, i + 3) in let cp = 65536 + (u - 55296) * 1024 + (lo - 56320) in kc_u16(raw, i + 4, acc + chr(240 + cp / 262144) + chr(128 + (cp / 4096) % 64) + chr(128 + (cp / 64) % 64) + chr(128 + cp % 64))) else kc_u16(raw, i + 2, acc + (if u < 128 then chr(u) else if u < 2048 then chr(192 + u / 64) + chr(128 + u % 64) else chr(224 + u / 4096) + chr(128 + (u / 64) % 64) + chr(128 + u % 64)))
+## the file backend's place for a target: DIR/target.hex(target)
+fn kc_target_file(target) = keychain_dir() + "/target." + kc_hex(target)
+fn kc_target_rec(r) = if r.ok == 1 then {ok: 1, value: (if count(r.value) % 2 == 0 then kc_u16(r.value, 0, "") else r.value), raw: r.value, err: ""} else {ok: 0, value: "", raw: "", err: r.err}
+## with LUME_KEYCHAIN_DIR set (the file backend, as every keychain_* call then uses) the target is read from that
+## directory and the Credential Manager is never touched
+fn keychain_get_target(target) = if target == "" then {ok: 0, value: "", raw: "", err: "invalid"} else if keychain_backend() == "file" and os_getenv("LUME_KEYCHAIN_DIR") != "" then kc_target_rec(kc_get_path(kc_target_file(target))) else if os_platform() != "windows" or os_keychain_available() != 1 then {ok: 0, value: "", raw: "", err: "unavailable"} else let r = os_keychain_get(target) in if count(r) == 0 then {ok: 0, value: "", raw: "", err: "not_found"} else if slice(r, 0, 1) == "+" then (let raw = slice(r, 1, count(r)) in {ok: 1, value: (if count(raw) % 2 == 0 then kc_u16(raw, 0, "") else raw), raw: raw, err: ""}) else {ok: 0, value: "", raw: "", err: kc_os_err(toint(slice(r, 1, count(r))), "unavailable")}
+## keychain_set_target(target, blob) -> {ok, err}: only the file backend (LUME_KEYCHAIN_DIR set) writes a target, so tests
+## can stand in for another program's credential; the Credential Manager stays read only ("unavailable")
+fn keychain_set_target(target, blob) = if target == "" then {ok: 0, err: "invalid"} else if os_getenv("LUME_KEYCHAIN_DIR") == "" then {ok: 0, err: "unavailable"} else if kc_ready_dir() != 1 then {ok: 0, err: "unavailable"} else if fs_write_private(kc_target_file(target), blob) == 1 then {ok: 1, err: ""} else {ok: 0, err: "unavailable"}
 fn keychain_get(service, account) = let e = kc_check(service, account) in if e != "" then {ok: 0, value: "", err: e} else if keychain_backend() == "os" then kc_get_os(service, account) else kc_get_file(service, account)
 
 fn kc_del_os(service, account) = let r = os_keychain_delete(kc_target(service, account)) in if r == 1 then {ok: 1, err: ""} else if r == 0 then {ok: 0, err: "not_found"} else {ok: 0, err: kc_os_err(0 - r, "delete_failed")}

@@ -10,7 +10,7 @@
 <div align="center">
 
 [![CI](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml/badge.svg)](https://github.com/OmegaSoftDLL/lume/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.1.0-blue)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.1.0)
+[![Release](https://img.shields.io/badge/release-v1.2.0-blue)](https://github.com/OmegaSoftDLL/lume/releases/tag/v1.2.0)
 [![Zero-C Self-Hosted](https://img.shields.io/badge/self--hosted-100%25%20Lume%20%28Zero--C%29-success)](docs/PROJECT_STATE.md)
 [![OmniProof-v4](https://img.shields.io/badge/OmniProof--v4-1%2C682%20Proofs%20%C2%B7%20372%20Tests%20%C2%B7%20122%20Domains-00b4d8)](#formal-verification-binary-assurance--safety-certification)
 [![Tool Qualification Dossier](https://img.shields.io/badge/Qualification%20Dossier-PASS%20%28106%2F106%20Probes%20%C2%B7%2021%2F21%20Gates%20%C2%B7%200%2F9%2C618%20Uncovered%20MC%2FDC%29-success)](docs/certification/QUALIFICATION_DOSSIER.md)
@@ -36,7 +36,7 @@
 
 <img src="docs/assets/lume-mascot.jpg" alt="Lumi — Official Lume Bioluminescent Chameleon Mascot" width="240" align="right" />
 
-**Lume (`v1.1.0`, Edition 2026)** is a statically typed, formally verified **systems, artificial intelligence, cyber-physical, and quantum programming language** created by **Ricardo Bueno ([`@OmegaSoftDLL`](https://github.com/OmegaSoftDLL))**. Lume is designed from first principles to be written fluently by both human engineers and autonomous AI systems while enforcing machine-checked mathematical correctness from source contracts down to emitted native machine code.
+**Lume (`v1.2.0`, Edition 2026)** is a statically typed, formally verified **systems, artificial intelligence, cyber-physical, and quantum programming language** created by **Ricardo Bueno ([`@OmegaSoftDLL`](https://github.com/OmegaSoftDLL))**. Lume is designed from first principles to be written fluently by both human engineers and autonomous AI systems while enforcing machine-checked mathematical correctness from source contracts down to emitted native machine code.
 
 Unlike conventional toolchains that rely on external C/C++ compiler backends, third-party assemblers, or unverified runtime libraries, **Lume's entire production toolchain is written 100% in Lume itself**:
 
@@ -44,7 +44,7 @@ Unlike conventional toolchains that rely on external C/C++ compiler backends, th
 2. **Zero-C Self-Hosted Fixpoint (`lumec1 == lumec2 == lumec3`):** In steady state, Lume compiles, assembles, links, formats, tests, proves, and packages itself in **`~3.8 s`** with all external C compilers and system assemblers/linkers blocked (`lume zero-c`), verified across **`134` SHA-256-locked manifest files** (`MANIFEST.sha256`) and **`114` table-driven CLI commands (`226` command & alias names, `0` parity drift)**.
 3. **Clean-Room Mutual Verification:** No single component is trusted in isolation. Compiler proofs (`lcaas.src`) are re-checked by a standalone zero-compiler-import proof kernel (`lcert.src`); emitted x86-64, AArch64, and RISC-V machine code is verified against AST semantics by symbolic translation validators (`ltv.src`, `ltv_multiarch.src`) and runtime-helper verifiers (`ltv_rt.src`); `.smt2` proof obligations are independently discharged by both a clean-room native solver (`lsmt.src`) and external `z3`; structural coverage is confirmed on native binaries by a Masking MC/DC engine (`lmcdc.src`, **`0/9,618` uncovered conditions**); and critical kernels execute in **`2oo2D` dual-channel lockstep** (`lsafety_envelope.src`) against a clean-room RV32IM compiler (`lrv32_lowered.src`) sharing **`0/3,169` functions** with `lumec`.
 
-> 🇧🇷 **Resumo em Português (`pt-BR`):** A **Lume (`v1.1.0`, Edição 2026)** é uma linguagem de programação estaticamente tipada e formalmente verificada para **sistemas críticos, inteligência artificial, controle ciberfísico e computação quântica**, 100% auto-hospedada em código nativo (**Zero-C**, ponto fixo bit a bit `stage2 == stage3` em `~3,8 s` e verificada por *Diverse Double-Compilation*). Reúne provador matemático embarcado **`OmniProof-v4`** (**`1.682` obrigações formais provadas em `16` baterias**, **`0` refutadas ou pendentes em runtime**, **`372` testes unitários**, **`122` domínios soberanos**), validação simbólica de código de máquina (`ltv` em **`694` funções** + `ltv_rt` nos **`18/18` helpers de runtime** + checador `.smt2` *clean-room* `lsmt` & `z3`), **`0/9.618` condições MC/DC descobertas**, **`118` kernels criptográficos *constant-time* `[C0011]`** (TLS 1.3, X.509v3 Ed25519 e entropia NIST SP 800-90B), envelope **`2oo2D` *clean-room* RV32IM**, compactador atômico de memória (**`31,8×` mais rápido** e **`2.733×` menos RAM**), interoperabilidade poliglota **Camaleão para 9 ecossistemas (`[I0003]`)**, dossiê de qualificação assinado (**`lume qualify` `PASS`: `106/106` sondas e `21/21` gates**) e compilação direta para **27 arquiteturas**.
+> 🇧🇷 **Resumo em Português (`pt-BR`):** A **Lume (`v1.2.0`, Edição 2026)** é uma linguagem de programação estaticamente tipada e formalmente verificada para **sistemas críticos, inteligência artificial, controle ciberfísico e computação quântica**, 100% auto-hospedada em código nativo (**Zero-C**, ponto fixo bit a bit `stage2 == stage3` em `~3,8 s` e verificada por *Diverse Double-Compilation*). Reúne provador matemático embarcado **`OmniProof-v4`** (**`1.682` obrigações formais provadas em `16` baterias**, **`0` refutadas ou pendentes em runtime**, **`372` testes unitários**, **`122` domínios soberanos**), validação simbólica de código de máquina (`ltv` em **`694` funções** + `ltv_rt` nos **`18/18` helpers de runtime** + checador `.smt2` *clean-room* `lsmt` & `z3`), **`0/9.618` condições MC/DC descobertas**, **`118` kernels criptográficos *constant-time* `[C0011]`** (TLS 1.3, X.509v3 Ed25519 e entropia NIST SP 800-90B), envelope **`2oo2D` *clean-room* RV32IM**, compactador atômico de memória (**`31,8×` mais rápido** e **`2.733×` menos RAM**), interoperabilidade poliglota **Camaleão para 9 ecossistemas (`[I0003]`)**, dossiê de qualificação assinado (**`lume qualify` `PASS`: `106/106` sondas e `21/21` gates**) e compilação direta para **27 arquiteturas**.
 
 <br clear="right"/>
 
@@ -128,7 +128,7 @@ lume --version
 irm https://github.com/OmegaSoftDLL/lume/releases/latest/download/install.ps1 | iex
 
 # Option B: Direct archive extraction + persistent User PATH setup
-Invoke-WebRequest -Uri "https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-windows-x86_64.tar.gz" -OutFile "lume-win64.tar.gz"
+Invoke-WebRequest -Uri "https://github.com/OmegaSoftDLL/lume/releases/download/v1.2.0/lume-v1.2.0-windows-x86_64.tar.gz" -OutFile "lume-win64.tar.gz"
 mkdir "$HOME\.lume" -Force | Out-Null
 tar -xzf lume-win64.tar.gz --strip-components=1 -C "$HOME\.lume"
 
@@ -143,7 +143,7 @@ lume --version
 lume self verify
 ```
 
-> **Host level on Windows (and macOS, Linux AArch64/RISC-V):** these archives ship the seed toolchain (`lume0`) and the cross-compilation targets, not the native toolchain. `lume run` and `lume build --target x86_64-windows-pe` work; `check`, `test`, `prove` and `fmt` of Lume-Core `.src` files need the native toolchain and refuse on these hosts instead of guessing. A native Windows toolchain (Win64 runtime and PE output for `lume_driver`, `lumec`, `lasm`) is planned. Until it ships, run the full toolchain on Linux x86_64, for example under WSL.
+> **Windows x64 is native since `v1.2.0`:** the archive carries the full toolchain built as PE executables by Lume itself (`lumec`, `lasm`, `lcli`, every tool), with results identical to Linux on the whole test universe. **macOS and Linux AArch64/RISC-V** (`v1.1.0`) still ship the seed toolchain (`lume0`) and the cross-compilation targets.
 
 ### 4. OCI Container Image (GitHub Container Registry)
 
@@ -152,17 +152,17 @@ docker pull ghcr.io/omegasoftdll/lume:v1.1.0
 docker run --rm ghcr.io/omegasoftdll/lume:v1.1.0 --version
 ```
 
-### 5. Prebuilt Release Archives (`v1.1.0`)
+### 5. Prebuilt Release Archives (`v1.2.0` for Linux x86-64 and Windows x64; `v1.1.0` for the other platforms)
 
 | Platform / Architecture | Archive |
 | :--- | :--- |
-| **Linux x86-64 (`ELF64`)** | [`lume-v1.1.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-x86_64.tar.gz) |
+| **Linux x86-64 (`ELF64`)** | [`lume-v1.2.0-linux-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.2.0/lume-v1.2.0-linux-x86_64.tar.gz) |
 | **Linux ARM64 (`aarch64`)** | [`lume-v1.1.0-linux-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-aarch64.tar.gz) |
 | **Linux RISC-V 64 (`riscv64`)** | [`lume-v1.1.0-linux-riscv64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-linux-riscv64.tar.gz) |
 | **macOS Apple Silicon (`aarch64`)** | [`lume-v1.1.0-macos-aarch64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-aarch64.tar.gz) |
 | **macOS Intel (`x86_64`)** | [`lume-v1.1.0-macos-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-macos-x86_64.tar.gz) |
-| **Windows x64 (`PE32+`)** | [`lume-v1.1.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/lume-v1.1.0-windows-x86_64.tar.gz) |
-| **Cryptographic Checksums** | [`SHA256SUMS`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/SHA256SUMS) |
+| **Windows x64 (`PE32+`, native toolchain)** | [`lume-v1.2.0-windows-x86_64.tar.gz`](https://github.com/OmegaSoftDLL/lume/releases/download/v1.2.0/lume-v1.2.0-windows-x86_64.tar.gz) |
+| **Cryptographic Checksums** | [`SHA256SUMS` v1.2.0](https://github.com/OmegaSoftDLL/lume/releases/download/v1.2.0/SHA256SUMS), [`SHA256SUMS` v1.1.0](https://github.com/OmegaSoftDLL/lume/releases/download/v1.1.0/SHA256SUMS) |
 
 ### 6. AI Coding Agent Skill (`skills/lume`) & IDE Extensions (`editors/`)
 

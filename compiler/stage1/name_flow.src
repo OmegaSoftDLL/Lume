@@ -140,7 +140,12 @@ fn nf_pats(xs, ctx, acc) = match xs
     Cons(h, t) => nf_pats(t, ctx, nf_pat(h, ctx, acc))
 fn nf_call(nm, args, bound, ctx, acc) = if nf_is_list_ctor(nm) then nf_list_ctor(nm, of_len(args), ctx, acc) else if nf_internal(nm) == 1 then nf_bad("R0203", nm, "'" + nm + "' is an internal routine of the runtime and cannot be called", "use the public builtins, such as count, at, slice and str", acc) else if of_mem(nm, bound) == 1 then (if nf_taken_call(nm) == 1 then nf_bad("R0205", nm, "this call goes to the compiler's '" + nm + "', not to the local '" + nm + "' in scope (fix-it: rename the local)", "rename the local '" + nm + "'", acc) else nf_bad("fnval", nm, "", "", acc)) else let n = nf_arity(nm, ctx.defs) in if n >= 0 then nf_argc(nm, args, n, ctx, acc) else nf_call2(nm, args, nf_builtin_arity(nm), bound, ctx, acc)
 ## a call through a local needs closure conversion, even in a program that never builds a closure
-fn nf_call2(nm, args, n, bound, ctx, acc) = if n >= 0 then nf_argc(nm, args, n, ctx, acc) else if of_mem(nm, bound) == 1 then nf_bad("fnval", nm, "", "", acc) else if nf_callok(nm, ctx) == 1 then acc else nf_bad("R0200", nm, "call to undefined function '" + nm + "' (no visible definition in this bundle; fix-it: define '" + nm + "' or import the module providing it)", "define '" + nm + "' or import the module providing it", acc)
+## r.f(x) reads as the call f(r, x): when f is a record field that holds a function, the call is (r.f)(x)
+fn nf_noargs(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn nf_field_hint(nm, args) = if nf_noargs(args) == 1 then "" else "; if '" + nm + "' is a record field that holds a function, call it as (r." + nm + ")(...) or let g = r." + nm + " in g(...)"
+fn nf_call2(nm, args, n, bound, ctx, acc) = if n >= 0 then nf_argc(nm, args, n, ctx, acc) else if of_mem(nm, bound) == 1 then nf_bad("fnval", nm, "", "", acc) else if nf_callok(nm, ctx) == 1 then acc else nf_bad("R0200", nm, "call to undefined function '" + nm + "' (no visible definition in this bundle; fix-it: define '" + nm + "' or import the module providing it" + nf_field_hint(nm, args) + ")", "define '" + nm + "' or import the module providing it", acc)
 fn nf_exprs(xs, bound, ctx, acc) = match xs
     Nil        => acc
     Cons(h, t) => nf_exprs(t, bound, ctx, nf_expr(h, bound, ctx, acc))

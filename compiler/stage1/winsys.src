@@ -1,0 +1,244 @@
+## winsys.src -- Windows system APIs for agents and services (`use winsys`): registry, sessions, services.
+## Written in Lume over the layer's generic Win32 call (1010 finds dll!name, 1011 calls it); memory that Windows
+## allocates (session lists, query results) is copied out with RtlMoveMemory and freed with the matching call.
+## On Linux every function answers "absent": "", -1, 0 or an empty list.
+##
+## Registry (read only). root: "HKLM", "HKCU", "HKCR", "HKU" (or the HKEY_* names). key uses backslashes.
+##   reg_get_string(root, key, name) -> str      REG_SZ / REG_EXPAND_SZ (expanded); "" when absent
+##   reg_get_dword(root, key, name) -> int       REG_DWORD; -1 when absent or of another type
+##   reg_key_exists(root, key) -> 1 / 0          reg_value_exists(root, key, name) -> 1 / 0
+## Sessions.
+##   wts_active_console_session() -> int         the session of the physical console; -1 when there is none
+##   wts_sessions() -> [{id, state, name}]       state: "active", "connected", "disconnected", "listen", ...
+##   wts_session_user(id) -> {user, domain}      "" when no one is logged on in that session
+##   process_session_id(pid) -> int              -1 when the process does not exist
+## Services (inventory).
+##   services_running() -> [str]                 short names of the Win32 services that are running
+## Services (management, running as a service), processes in a user's session, local named pipes, desktops and the
+## privacy window: see their sections below.
+
+use process
+
+fn ws_win() = os_platform() == "windows"
+fn ws_u32(b, o) = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3)
+fn ws_u64(b, o) = ws_u32(b, o) + 4294967296 * ws_u32(b, o + 4)
+fn ws_put64(b, o, v, k) = if k >= 8 then b else ws_put64(buf_set(b, o + k, bit_and(bit_shr(v, 8 * k), 255)), o, v, k + 1)
+fn ws_cz(s) = buf_from_str(s + chr(0))
+fn ws_len(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => ws_len(t, n + 1)
+fn ws_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => ws_rev(t, Cons(h, acc))
+fn ws_args(b, xs, o) = match xs
+    Nil        => b
+    Cons(h, t) => ws_args(ws_put64(b, o, h, 0), t, o + 8)
+fn ws_fn(dll, name) = let d = ws_cz(dll) in let n = ws_cz(name) in sys_call(1010, buf_addr(d), buf_addr(n), 0, 0, 0)
+## the low 32 bits of the result (BOOL, DWORD, LSTATUS); ws_callq keeps all 64 (pointers, handles)
+fn ws_callq(dll, name, xs) = let fp = ws_fn(dll, name) in if fp <= 0 then 0 - 1 else let n = ws_len(xs, 0) in let a = ws_args(buf_new(8 * n + 8), xs, 0) in sys_call(1011, fp, buf_addr(a), n, 0, 0)
+fn ws_call(dll, name, xs) = bit_and(ws_callq(dll, name, xs), 4294967295)
+fn ws_l1(a) = Cons(a, Nil)
+fn ws_l2(a, b) = Cons(a, Cons(b, Nil))
+fn ws_l3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+fn ws_l4(a, b, c, d) = Cons(a, Cons(b, Cons(c, Cons(d, Nil))))
+fn ws_l5(a, b, c, d, e) = Cons(a, ws_l4(b, c, d, e))
+fn ws_l7(a, b, c, d, e, f, g) = Cons(a, Cons(b, ws_l5(c, d, e, f, g)))
+## UTF-8 <-> UTF-16LE
+fn ws_cp(s, i) = let c = ord_at(s, i) in if c < 128 then {cp: c, n: 1} else if c < 224 then {cp: (c - 192) * 64 + ord_at(s, i + 1) - 128, n: 2} else if c < 240 then {cp: ((c - 224) * 64 + ord_at(s, i + 1) - 128) * 64 + ord_at(s, i + 2) - 128, n: 3} else {cp: (((c - 240) * 64 + ord_at(s, i + 1) - 128) * 64 + ord_at(s, i + 2) - 128) * 64 + ord_at(s, i + 3) - 128, n: 4}
+fn ws_units(s, i, acc) = if i >= count(s) then ws_rev(acc, Nil) else let r = ws_cp(s, i) in if r.cp >= 65536 then ws_units(s, i + r.n, Cons(56320 + (r.cp - 65536) % 1024, Cons(55296 + (r.cp - 65536) / 1024, acc))) else ws_units(s, i + r.n, Cons(r.cp, acc))
+fn ws_wput(b, us, o) = match us
+    Nil        => b
+    Cons(u, t) => ws_wput(buf_set(buf_set(b, o, u % 256), o + 1, u / 256), t, o + 2)
+fn ws_wstr(s) = let us = ws_units(s, 0, Nil) in ws_wput(buf_new(2 * ws_len(us, 0) + 2), us, 0)
+fn ws_utf8(u) = if u < 128 then chr(u) else if u < 2048 then chr(192 + u / 64) + chr(128 + u % 64) else chr(224 + u / 4096) + chr(128 + (u / 64) % 64) + chr(128 + u % 64)
+fn ws_wtext(b, o, lim) = ws_wtext2(b, o, lim, "")
+fn ws_wtext2(b, o, lim, acc) = if o < 0 or o + 1 >= lim then acc else let u = buf_get(b, o) + 256 * buf_get(b, o + 1) in if u == 0 then acc else if u >= 55296 and u < 56320 and o + 3 < lim then (let lo = buf_get(b, o + 2) + 256 * buf_get(b, o + 3) in let cp = 65536 + (u - 55296) * 1024 + (lo - 56320) in ws_wtext2(b, o + 4, lim, acc + chr(240 + cp / 262144) + chr(128 + (cp / 4096) % 64) + chr(128 + (cp / 64) % 64) + chr(128 + cp % 64))) else ws_wtext2(b, o + 2, lim, acc + ws_utf8(u))
+## a NUL-terminated UTF-16 string at an address Windows owns: lstrlenW, then exactly those bytes copied
+fn ws_copy(addr, n) = let b = buf_new(n + 2) in let c = ws_callq("kernel32.dll", "RtlMoveMemory", ws_l3(buf_addr(b), addr, n)) in b
+fn ws_wtext_at(addr) = if addr == 0 then "" else let n = ws_call("kernel32.dll", "lstrlenW", ws_l1(addr)) in if n <= 0 then "" else ws_wtext(ws_copy(addr, 2 * n), 0, 2 * n + 2)
+
+## --- registry --------------------------------------------------------------------------------------------------------
+fn ws_root(r) = if r == "HKLM" or r == "HKEY_LOCAL_MACHINE" then 0 - 2147483646 else if r == "HKCU" or r == "HKEY_CURRENT_USER" then 0 - 2147483647 else if r == "HKCR" or r == "HKEY_CLASSES_ROOT" then 0 - 2147483648 else if r == "HKU" or r == "HKEY_USERS" then 0 - 2147483645 else 0
+## RegGetValueW(hkey, subkey, value, flags, type*, data*, size*); flags add RRF_SUBKEY_WOW6464KEY (the 64-bit view)
+fn ws_regget(root, key, name, flags, cap) = let h = ws_root(root) in if h == 0 or ws_win() == 0 then {rc: 2, data: buf_new(8), size: 0} else let k = ws_wstr(key) in let v = ws_wstr(name) in let d = buf_new(cap + 2) in let sz = ws_put64(buf_new(8), 0, cap, 0) in let rc = ws_call("advapi32.dll", "RegGetValueW", ws_l7(h, buf_addr(k), buf_addr(v), flags + 65536, 0, buf_addr(d), buf_addr(sz))) in {rc: rc, data: d, size: ws_u32(sz, 0)}
+fn reg_get_string(root, key, name) = let r = ws_regget(root, key, name, 6, 65536) in if r.rc != 0 then "" else ws_wtext(r.data, 0, r.size)
+fn reg_get_dword(root, key, name) = let r = ws_regget(root, key, name, 16, 8) in if r.rc != 0 then 0 - 1 else ws_u32(r.data, 0)
+fn reg_value_exists(root, key, name) = let h = ws_root(root) in if h == 0 or ws_win() == 0 then 0 else let k = ws_wstr(key) in let v = ws_wstr(name) in let rc = ws_call("advapi32.dll", "RegGetValueW", ws_l7(h, buf_addr(k), buf_addr(v), 65535 + 65536, 0, 0, 0)) in if rc == 0 then 1 else 0
+## RegOpenKeyExW(hkey, subkey, 0, KEY_READ | KEY_WOW64_64KEY, &h)
+fn reg_key_exists(root, key) = let h = ws_root(root) in if h == 0 or ws_win() == 0 then 0 else let k = ws_wstr(key) in let out = buf_new(8) in let rc = ws_call("advapi32.dll", "RegOpenKeyExW", ws_l5(h, buf_addr(k), 0, 131353, buf_addr(out))) in if rc != 0 then 0 else let c = ws_call("advapi32.dll", "RegCloseKey", ws_l1(ws_u64(out, 0))) in 1
+
+## --- sessions --------------------------------------------------------------------------------------------------------
+fn wts_active_console_session() = if ws_win() == 0 then 0 - 1 else let s = ws_call("kernel32.dll", "WTSGetActiveConsoleSessionId", Nil) in if s == 4294967295 then 0 - 1 else s
+fn ws_state(s) = if s == 0 then "active" else if s == 1 then "connected" else if s == 2 then "connect_query" else if s == 3 then "shadow" else if s == 4 then "disconnected" else if s == 5 then "idle" else if s == 6 then "listen" else if s == 7 then "reset" else if s == 8 then "down" else if s == 9 then "init" else "unknown"
+## WTSEnumerateSessionsW(server 0, 0, version 1, &info, &count); WTS_SESSION_INFOW = {DWORD id; LPWSTR name; state}
+fn wts_sessions() = if ws_win() == 0 then Nil else let pp = buf_new(8) in let pc = buf_new(8) in let ok = ws_call("wtsapi32.dll", "WTSEnumerateSessionsW", ws_l5(0, 0, 1, buf_addr(pp), buf_addr(pc))) in if ok == 0 then Nil else let p = ws_u64(pp, 0) in let n = ws_u32(pc, 0) in let b = ws_copy(p, 24 * n) in let r = ws_sess(b, 0, n) in let f = ws_callq("wtsapi32.dll", "WTSFreeMemory", ws_l1(p)) in r
+fn ws_sess(b, i, n) = if i >= n then Nil else Cons({id: ws_u32(b, 24 * i), state: ws_state(ws_u32(b, 24 * i + 16)), name: ws_wtext_at(ws_u64(b, 24 * i + 8))}, ws_sess(b, i + 1, n))
+## WTSQuerySessionInformationW(server 0, id, class, &buffer, &bytes): WTSUserName 5, WTSDomainName 7
+fn ws_query(id, cls) = let pp = buf_new(8) in let pn = buf_new(8) in let ok = ws_call("wtsapi32.dll", "WTSQuerySessionInformationW", ws_l5(0, id, cls, buf_addr(pp), buf_addr(pn))) in if ok == 0 then "" else let p = ws_u64(pp, 0) in let t = ws_wtext_at(p) in let f = ws_callq("wtsapi32.dll", "WTSFreeMemory", ws_l1(p)) in t
+fn wts_session_user(id) = if ws_win() == 0 or id < 0 then {user: "", domain: ""} else {user: ws_query(id, 5), domain: ws_query(id, 7)}
+fn process_session_id(pid) = if ws_win() == 0 then 0 - 1 else let out = buf_new(8) in let ok = ws_call("kernel32.dll", "ProcessIdToSessionId", ws_l2(pid, buf_addr(out))) in if ok == 0 then 0 - 1 else ws_u32(out, 0)
+
+## --- services (inventory) --------------------------------------------------------------------------------------------
+## OpenSCManagerW(0, 0, SC_MANAGER_ENUMERATE_SERVICE); EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32,
+## SERVICE_ACTIVE, buf, size, &needed, &returned, &resume, 0): ENUM_SERVICE_STATUS_PROCESSW entries of 56 bytes
+fn services_running() = if ws_win() == 0 then Nil else let scm = ws_callq("advapi32.dll", "OpenSCManagerW", ws_l3(0, 0, 4)) in if scm == 0 then Nil else let r = ws_svc_enum(scm, 262144) in let c = ws_call("advapi32.dll", "CloseServiceHandle", ws_l1(scm)) in r
+fn ws_svc_enum(scm, cap) = let b = buf_new(cap) in let need = buf_new(8) in let ret = buf_new(8) in let res = buf_new(8) in let args = Cons(scm, Cons(0, Cons(48, Cons(1, Cons(buf_addr(b), Cons(cap, Cons(buf_addr(need), Cons(buf_addr(ret), Cons(buf_addr(res), Cons(0, Nil)))))))))) in let ok = ws_call("advapi32.dll", "EnumServicesStatusExW", args) in if ok == 0 and cap < 8388608 and ws_u32(need, 0) > 0 then ws_svc_enum(scm, cap + ws_u32(need, 0) + 4096) else if ok == 0 then Nil else ws_svc_names(b, 0, ws_u32(ret, 0), cap)
+fn ws_svc_names(b, i, n, cap) = if i >= n then Nil else let p = ws_u64(b, 56 * i) - buf_addr(b) in Cons(ws_wtext(b, p, cap), ws_svc_names(b, i + 1, n, cap))
+
+## --- native paths ----------------------------------------------------------------------------------------------------
+##   fs_native_path(p) -> str   the path as Windows APIs and command lines take it: "/c/x/y" becomes drive C, folder x,
+##       file y with backslashes; "C:/x" gets backslashes too (the Lume runtime shows Windows paths in the POSIX view:
+##       os_arg_at(0), fs_current_dir()). On Linux p is returned unchanged. svc_install and win_spawn_as_session apply
+##       it to the executable themselves.
+fn ws_bs(s, i, acc) = if i >= count(s) then acc else ws_bs(s, i + 1, acc + (if at(s, i) == "/" then chr(92) else at(s, i)))
+fn ws_up(c) = if ord_at(c, 0) >= 97 and ord_at(c, 0) <= 122 then chr(ord_at(c, 0) - 32) else c
+fn ws_isletter(c) = ord_at(c, 0) >= 97 and ord_at(c, 0) <= 122 or ord_at(c, 0) >= 65 and ord_at(c, 0) <= 90
+fn fs_native_path(p) = if ws_win() == 0 then p else if count(p) >= 2 and at(p, 0) == "/" and ws_isletter(at(p, 1)) and (count(p) == 2 or at(p, 2) == "/") then ws_bs(ws_up(at(p, 1)) + ":" + (if count(p) == 2 then "/" else slice(p, 2, count(p))), 0, "") else ws_bs(p, 0, "")
+## the executable at the head of a command line (quoted or not) in native form; the rest as written
+fn ws_cmd_native(c) = if count(c) == 0 then c else if at(c, 0) == chr(34) then ws_cmd_q(c, 1) else ws_cmd_u(c, 0)
+fn ws_cmd_q(c, i) = if i >= count(c) then c else if at(c, i) == chr(34) then chr(34) + fs_native_path(slice(c, 1, i)) + slice(c, i, count(c)) else ws_cmd_q(c, i + 1)
+fn ws_cmd_u(c, i) = if i >= count(c) or at(c, i) == " " then fs_native_path(slice(c, 0, i)) + slice(c, i, count(c)) else ws_cmd_u(c, i + 1)
+
+## --- services: management (administrator rights) ---------------------------------------------------------------------
+##   svc_install(name, display, description, exe, args, auto_start) -> {ok, err}   the executable path between quotes;
+##       SERVICE_WIN32_OWN_PROCESS, LocalSystem, start automatic (auto_start == 1) or on demand
+##   svc_start(name), svc_stop(name), svc_remove(name) -> {ok, err};  svc_state(name) -> "running", "stopped",
+##       "start_pending", "stop_pending", "paused", ... or "" when the service does not exist
+fn ws_ok() = {ok: 1, err: ""}
+fn ws_err(what) = {ok: 0, err: what + " " + str(ws_gle())}
+fn ws_scm(access) = ws_callq("advapi32.dll", "OpenSCManagerW", ws_l3(0, 0, access))
+fn ws_svc_open(scm, name, access) = let n = ws_wstr(name) in ws_callq("advapi32.dll", "OpenServiceW", ws_l3(scm, buf_addr(n), access))
+fn ws_csh(h) = if h == 0 then 0 else ws_call("advapi32.dll", "CloseServiceHandle", ws_l1(h))
+fn svc_install(name, display, description, exe, args, auto_start) = if ws_win() == 0 then {ok: 0, err: "not windows"} else let scm = ws_scm(983103) in if scm == 0 then ws_err("OpenSCManagerW") else let nm = ws_wstr(name) in let dn = ws_wstr(display) in let bp = ws_wstr(chr(34) + fs_native_path(exe) + chr(34) + (if args == "" then "" else " " + args)) in let xs = Cons(scm, Cons(buf_addr(nm), Cons(buf_addr(dn), Cons(983551, Cons(16, Cons((if auto_start == 1 then 2 else 3), Cons(1, Cons(buf_addr(bp), Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Nil))))))))))))) in let svc = ws_callq("advapi32.dll", "CreateServiceW", xs) in if svc == 0 then (let r = ws_err("CreateServiceW") in let c = ws_csh(scm) in r) else let d = ws_wstr(description) in let sd = ws_put64(buf_new(8), 0, buf_addr(d), 0) in let c2 = ws_call("advapi32.dll", "ChangeServiceConfig2W", ws_l3(svc, 1, buf_addr(sd))) in let c = ws_csh(svc) + ws_csh(scm) in ws_ok()
+fn ws_svc_do(name, access, op) = if ws_win() == 0 then {ok: 0, err: "not windows"} else let scm = ws_scm(1) in if scm == 0 then ws_err("OpenSCManagerW") else let svc = ws_svc_open(scm, name, access) in if svc == 0 then (let r = ws_err("OpenServiceW") in let c = ws_csh(scm) in r) else let st = buf_new(64) in let ok = (if op == 1 then ws_call("advapi32.dll", "StartServiceW", ws_l3(svc, 0, 0)) else if op == 2 then ws_call("advapi32.dll", "ControlService", ws_l3(svc, 1, buf_addr(st))) else ws_call("advapi32.dll", "DeleteService", ws_l1(svc))) in let r = (if ok == 0 then ws_err(if op == 1 then "StartServiceW" else if op == 2 then "ControlService" else "DeleteService") else ws_ok()) in let c = ws_csh(svc) + ws_csh(scm) in r
+fn svc_start(name) = ws_svc_do(name, 16, 1)
+fn svc_stop(name) = ws_svc_do(name, 36, 2)
+fn svc_remove(name) = ws_svc_do(name, 65536, 3)
+fn ws_svc_state_name(s) = if s == 1 then "stopped" else if s == 2 then "start_pending" else if s == 3 then "stop_pending" else if s == 4 then "running" else if s == 5 then "continue_pending" else if s == 6 then "pause_pending" else if s == 7 then "paused" else "unknown"
+fn svc_state(name) = if ws_win() == 0 then "" else let scm = ws_scm(1) in if scm == 0 then "" else let svc = ws_svc_open(scm, name, 4) in if svc == 0 then (let c = ws_csh(scm) in "") else let b = buf_new(40) in let nb = buf_new(8) in let ok = ws_call("advapi32.dll", "QueryServiceStatusEx", ws_l5(svc, 0, buf_addr(b), 36, buf_addr(nb))) in let c = ws_csh(svc) + ws_csh(scm) in if ok == 0 then "" else ws_svc_state_name(ws_u32(b, 4))
+
+## --- services: running as one (the program the service control manager starts) --------------------------------------
+##   svc_dispatch_start(name) -> {ok, fd}   the dispatcher runs on its own thread; fd delivers the events (epoll sees it)
+##   svc_next_event(fd) -> {ok, kind, control, reason, session}   kind: "start" (report running now), "stop",
+##       "shutdown", "preshutdown", "sessionchange" (reason = the WTS_* code, session = its id), "interrogate",
+##       "error" (reason = the Win32 error; 1063: not started by the service control manager), "none" (nothing yet)
+##   svc_set_status(state, exit_code, wait_hint) -> 1 / 0   state: "start_pending", "running", "stop_pending",
+##       "stopped"; while running it accepts STOP, SHUTDOWN and SESSIONCHANGE
+##   svc_finish() lets ServiceMain return (after "stopped")
+fn svc_dispatch_start(name) = if ws_win() == 0 then {ok: 0, fd: 0 - 1} else let n = ws_wstr(name) in let fd = sys_call(1014, buf_addr(n), 0, 0, 0, 0) in if fd < 0 then {ok: 0, fd: 0 - 1} else {ok: 1, fd: fd}
+fn ws_ev_kind(c) = if c == 256 then "start" else if c == 257 then "error" else if c == 1 then "stop" else if c == 5 then "shutdown" else if c == 15 then "preshutdown" else if c == 14 then "sessionchange" else if c == 4 then "interrogate" else "control"
+fn svc_next_event(fd) = if fd < 0 then {ok: 0, kind: "none", control: 0, reason: 0, session: 0} else let r = os_fd_read_some_ws(fd) in if r.n < 16 then {ok: 0, kind: "none", control: 0, reason: 0, session: 0} else let b = buf_from_str(r.data) in let c = ws_u32(b, 0) in {ok: 1, kind: ws_ev_kind(c), control: c, reason: ws_u32(b, 4), session: ws_u32(b, 8)}
+## one record (16 bytes) when the pipe holds one: readiness through a one-shot epoll, then exactly 16 bytes
+fn os_fd_read_some_ws(fd) = let ep = sys_call(291, 0, 0, 0, 0, 0) in let ev = ws_put64(ws_put64(buf_new(16), 0, 25, 0), 4, fd, 0) in let a = sys_call(233, ep, 1, fd, buf_addr(ev), 0) in let out = buf_new(16) in let w = sys_call(232, ep, buf_addr(out), 1, 0, 0) in let c = sys_call(3, ep, 0, 0, 0, 0) in if w <= 0 then {n: 0, data: ""} else let b = buf_new(16) in let n = sys_call(0, fd, buf_addr(b), 16, 0, 0) in if n <= 0 then {n: 0, data: ""} else {n: n, data: buf_to_str(b, 0, n)}
+fn ws_state_code(s) = if s == "stopped" then 1 else if s == "start_pending" then 2 else if s == "stop_pending" then 3 else if s == "running" then 4 else 0
+## SERVICE_STATUS (28 bytes): type SERVICE_WIN32_OWN_PROCESS, state, controls accepted (STOP | SHUTDOWN | SESSIONCHANGE
+## while running), Win32 exit code, service exit code, check point, wait hint
+fn svc_set_status(state, exit_code, wait_hint) = if ws_win() == 0 then 0 else let h = sys_call(1015, 0, 0, 0, 0, 0) in let sc = ws_state_code(state) in if h == 0 or sc == 0 then 0 else let b = ws_put64(ws_put64(ws_put64(ws_put64(buf_new(32), 0, 16 + 4294967296 * sc, 0), 8, (if sc == 4 then 133 else 0) + 4294967296 * exit_code, 0), 16, 0, 0), 24, wait_hint, 0) in if ws_call("advapi32.dll", "SetServiceStatus", ws_l2(h, buf_addr(b))) == 0 then 0 else 1
+fn svc_finish() = if ws_win() == 0 then 0 else let e = sys_call(1015, 1, 0, 0, 0, 0) in if e == 0 then 0 else ws_call("kernel32.dll", "SetEvent", ws_l1(e))
+
+## --- process in a user's session (service running as SYSTEM in session 0) -------------------------------------------
+##   win_find_session_process(name, session) -> pid      the process named name (no case) in that session; -1
+##   win_spawn_as_session(model_pid, cmdline, desktop) -> {ok, pid, handle, err}
+##       the model process's token duplicated as a primary token, its environment block, CreateProcessAsUserW with
+##       CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, no inherited handles, the desktop given ("winsta0\default")
+##   win_proc_alive(h) -> 1 / 0 (WaitForSingleObject(h, 0); an exit code of 259 never reads as alive)
+##   win_proc_exit_code(h) -> int (-1 while alive or on error), win_proc_terminate(h, code) -> 1 / 0,
+##   win_handle_close(h) -> 1 / 0
+fn ws_l6(a, b, c, d, e, f) = Cons(a, ws_l5(b, c, d, e, f))
+fn ws_lower(s) = ws_lower2(s, 0, "")
+fn ws_lower2(s, i, acc) = if i >= count(s) then acc else let c = ord_at(s, i) in ws_lower2(s, i + 1, acc + (if c >= 65 and c <= 90 then chr(c + 32) else at(s, i)))
+fn ws_gle() = ws_call("kernel32.dll", "GetLastError", Nil)
+## PROCESSENTRY32W (x64): dwSize 0, th32ProcessID 8, szExeFile 44 (260 WCHAR); 568 bytes
+## WTSEnumerateProcessesW(0, 0, 1, &info, &count): WTS_PROCESS_INFOW = {DWORD session; DWORD pid; LPWSTR name; PSID}
+## (24 bytes) names every process with its session without opening it (winlogon.exe cannot be opened by a plain user);
+## the Toolhelp walk with ProcessIdToSessionId stays as the fallback
+fn win_find_session_process(name, session) = if ws_win() == 0 then 0 - 1 else let r = ws_find_wts(ws_lower(name), session) in if r != 0 - 2 then r else ws_find_th(name, session)
+fn ws_find_wts(lname, session) = let pp = buf_new(8) in let pc = buf_new(8) in let ok = ws_call("wtsapi32.dll", "WTSEnumerateProcessesW", ws_l5(0, 0, 1, buf_addr(pp), buf_addr(pc))) in if ok == 0 then 0 - 2 else let p = ws_u64(pp, 0) in let n = ws_u32(pc, 0) in let b = ws_copy(p, 24 * n) in let r = ws_find_wts2(b, 0, n, lname, session) in let f = ws_callq("wtsapi32.dll", "WTSFreeMemory", ws_l1(p)) in r
+fn ws_find_wts2(b, i, n, lname, session) = if i >= n then 0 - 1 else if ws_u32(b, 24 * i) == session and ws_lower(ws_wtext_at(ws_u64(b, 24 * i + 8))) == lname then ws_u32(b, 24 * i + 4) else ws_find_wts2(b, i + 1, n, lname, session)
+fn ws_find_th(name, session) = if ws_win() == 0 then 0 - 1 else let snap = ws_callq("kernel32.dll", "CreateToolhelp32Snapshot", ws_l2(2, 0)) in if snap == 0 - 1 or snap == 0 then 0 - 1 else let e = ws_put64(buf_new(568), 0, 568, 0) in let ok = ws_call("kernel32.dll", "Process32FirstW", ws_l2(snap, buf_addr(e))) in let r = ws_find_walk(snap, e, ok, ws_lower(name), session) in let c = ws_call("kernel32.dll", "CloseHandle", ws_l1(snap)) in r
+fn ws_find_walk(snap, e, ok, lname, session) = if ok == 0 then 0 - 1 else let pid = ws_u32(e, 8) in if ws_lower(ws_wtext(e, 44, 564)) == lname and process_session_id(pid) == session then pid else ws_find_walk(snap, e, ws_call("kernel32.dll", "Process32NextW", ws_l2(snap, buf_addr(e))), lname, session)
+fn ws_fail(err) = {ok: 0, pid: 0 - 1, handle: 0, err: err}
+fn win_spawn_as_session(model_pid, cmdline, desktop) = if ws_win() == 0 then ws_fail("not windows") else let hp = ws_callq("kernel32.dll", "OpenProcess", ws_l3(1024, 0, model_pid)) in if hp == 0 then ws_fail("OpenProcess " + str(ws_gle())) else let tb = buf_new(8) in let ot = ws_call("advapi32.dll", "OpenProcessToken", ws_l3(hp, 983551, buf_addr(tb))) in if ot == 0 then (let e = ws_gle() in let c = ws_call("kernel32.dll", "CloseHandle", ws_l1(hp)) in ws_fail("OpenProcessToken " + str(e))) else ws_spawn2(hp, ws_u64(tb, 0), cmdline, desktop)
+fn ws_spawn2(hp, tok, cmdline, desktop) = let pb = buf_new(8) in let d = ws_call("advapi32.dll", "DuplicateTokenEx", ws_l6(tok, 33554432, 0, 2, 1, buf_addr(pb))) in if d == 0 then (let e = ws_gle() in let c = ws_closes(Cons(tok, Cons(hp, Nil))) in ws_fail("DuplicateTokenEx " + str(e))) else ws_spawn3(hp, tok, ws_u64(pb, 0), cmdline, desktop)
+fn ws_spawn3(hp, tok, prim, cmdline, desktop) = let eb = buf_new(8) in let ce = ws_call("userenv.dll", "CreateEnvironmentBlock", ws_l3(buf_addr(eb), prim, 0)) in let env = (if ce == 0 then 0 else ws_u64(eb, 0)) in let cl = ws_wstr(ws_cmd_native(cmdline)) in let dt = ws_wstr(desktop) in let si = ws_put64(ws_put64(buf_new(104), 0, 104, 0), 16, buf_addr(dt), 0) in let pi = buf_new(24) in let args = Cons(prim, Cons(0, Cons(buf_addr(cl), Cons(0, Cons(0, Cons(0, Cons(134218752, Cons(env, Cons(0, Cons(buf_addr(si), Cons(buf_addr(pi), Nil))))))))))) in let ok = ws_call("advapi32.dll", "CreateProcessAsUserW", args) in let err = (if ok == 0 then ws_gle() else 0) in let de = (if env != 0 then ws_call("userenv.dll", "DestroyEnvironmentBlock", ws_l1(env)) else 0) in let c = ws_closes(Cons(prim, Cons(tok, Cons(hp, Nil)))) in if ok == 0 then ws_fail("CreateProcessAsUserW " + str(err)) else let ct = ws_call("kernel32.dll", "CloseHandle", ws_l1(ws_u64(pi, 8))) in {ok: 1, pid: ws_u32(pi, 16), handle: ws_u64(pi, 0), err: ""}
+fn ws_closes(hs) = match hs
+    Nil        => 0
+    Cons(h, t) => let c = ws_call("kernel32.dll", "CloseHandle", ws_l1(h)) in ws_closes(t)
+fn win_proc_alive(h) = if ws_win() == 0 or h == 0 then 0 else if ws_call("kernel32.dll", "WaitForSingleObject", ws_l2(h, 0)) == 258 then 1 else 0
+fn win_proc_exit_code(h) = if ws_win() == 0 or h == 0 or win_proc_alive(h) == 1 then 0 - 1 else let b = buf_new(8) in if ws_call("kernel32.dll", "GetExitCodeProcess", ws_l2(h, buf_addr(b))) == 0 then 0 - 1 else ws_u32(b, 0)
+fn win_proc_terminate(h, code) = if ws_win() == 0 or h == 0 then 0 else if ws_call("kernel32.dll", "TerminateProcess", ws_l2(h, code)) == 0 then 0 else 1
+fn win_handle_close(h) = if ws_win() == 0 or h == 0 then 0 else if ws_call("kernel32.dll", "CloseHandle", ws_l1(h)) == 0 then 0 else 1
+
+## --- local named pipes ------------------------------------------------------------------------------------------------
+##   pipe_server_create(name, sddl) -> {ok, h, err}   "\\.\pipe\" added when name lacks it; DACL from sddl ("" = default);
+##       byte mode, PIPE_NOWAIT (reads, writes and accept never block), PIPE_REJECT_REMOTE_CLIENTS, first instance
+##   pipe_server_accept(h, timeout_ms) -> {ok, client_pid}
+##   pipe_client_open(name, timeout_ms) -> {ok, h, err}  retries every 100 ms on ERROR_PIPE_BUSY / ERROR_FILE_NOT_FOUND
+##   pipe_read_some(h, max) -> {n, data}  n > 0, 0 closed, -2 nothing now, -1 error
+##   pipe_write_some(h, data) -> bytes written (0 when the pipe is full), -1 on error;  pipe_close(h) -> 1 / 0
+## h is a descriptor of the Lume runtime: epoll_add / epoll_wait_ev of `use netctl` see it like the fds of os_spawn_pipes.
+fn ws_pipename(n) = if count(n) >= 9 and slice(n, 0, 9) == chr(92) + chr(92) + "." + chr(92) + "pipe" + chr(92) then n else chr(92) + chr(92) + "." + chr(92) + "pipe" + chr(92) + n
+fn ws_pfail(err) = {ok: 0, h: 0 - 1, err: err}
+## the layer's descriptor table: 1012 wraps a HANDLE into a descriptor (kind pipe), 1013 gives the HANDLE back
+fn ws_fd_of(h) = sys_call(1012, h, 1, 0, 0, 0)
+fn ws_handle_of(fd) = sys_call(1013, fd, 0, 0, 0, 0)
+fn pipe_server_create(name, sddl) = if ws_win() == 0 then ws_pfail("not windows") else let sdp = buf_new(8) in let sd = (if sddl == "" then 0 else (let w = ws_wstr(sddl) in if ws_call("advapi32.dll", "ConvertStringSecurityDescriptorToSecurityDescriptorW", ws_l4(buf_addr(w), 1, buf_addr(sdp), 0)) == 0 then 0 - 1 else ws_u64(sdp, 0))) in if sd == 0 - 1 then ws_pfail("bad sddl " + str(ws_gle())) else let sa = ws_put64(ws_put64(buf_new(24), 0, 24, 0), 8, sd, 0) in let nm = ws_wstr(ws_pipename(name)) in let args = Cons(buf_addr(nm), Cons(524291, Cons(9, Cons(1, Cons(65536, Cons(65536, Cons(0, Cons(buf_addr(sa), Nil)))))))) in let h = ws_callq("kernel32.dll", "CreateNamedPipeW", args) in let err = (if h == 0 - 1 then ws_gle() else 0) in let f = (if sd != 0 then ws_callq("kernel32.dll", "LocalFree", ws_l1(sd)) else 0) in if h == 0 - 1 then ws_pfail("CreateNamedPipeW " + str(err)) else {ok: 1, h: ws_fd_of(h), err: ""}
+fn ws_now_ms() = os_monotonic_ns() / 1000000
+## PIPE_NOWAIT: ConnectNamedPipe answers at once; ERROR_PIPE_CONNECTED (535) means a client is in, ERROR_NO_DATA (232)
+## a client that came and left already, ERROR_PIPE_LISTENING (536) still waiting
+fn pipe_server_accept(h, timeout_ms) = if ws_win() == 0 then {ok: 0, client_pid: 0 - 1} else ws_accept(ws_handle_of(h), ws_now_ms() + timeout_ms)
+fn ws_accept(hd, deadline) = let r = ws_call("kernel32.dll", "ConnectNamedPipe", ws_l2(hd, 0)) in let e = (if r == 0 then ws_gle() else 536) in if e == 535 then ws_client_pid(hd) else if ws_now_ms() >= deadline then {ok: 0, client_pid: 0 - 1} else let z = os_sleep_ms(20) in ws_accept(hd, deadline)
+fn ws_client_pid(hd) = let b = buf_new(8) in if ws_call("kernel32.dll", "GetNamedPipeClientProcessId", ws_l2(hd, buf_addr(b))) == 0 then {ok: 1, client_pid: 0 - 1} else {ok: 1, client_pid: ws_u32(b, 0)}
+fn pipe_client_open(name, timeout_ms) = if ws_win() == 0 then ws_pfail("not windows") else ws_copen(ws_wstr(ws_pipename(name)), ws_now_ms() + timeout_ms)
+fn ws_copen(nm, deadline) = let h = ws_callq("kernel32.dll", "CreateFileW", ws_l7(buf_addr(nm), 3221225472, 0, 0, 3, 0, 0)) in if h != 0 - 1 then (let mode = ws_put64(buf_new(8), 0, 1, 0) in let s = ws_call("kernel32.dll", "SetNamedPipeHandleState", ws_l4(h, buf_addr(mode), 0, 0)) in {ok: 1, h: ws_fd_of(h), err: ""}) else let e = ws_gle() in if (e == 231 or e == 2) and ws_now_ms() < deadline then (let z = os_sleep_ms(100) in ws_copen(nm, deadline)) else ws_pfail("CreateFileW " + str(e))
+fn pipe_read_some(h, max) = if ws_win() == 0 or max <= 0 then {n: 0 - 1, data: ""} else let hd = ws_handle_of(h) in let b = buf_new(max) in let nb = buf_new(8) in let ok = ws_call("kernel32.dll", "ReadFile", ws_l5(hd, buf_addr(b), max, buf_addr(nb), 0)) in if ok != 0 then (let n = ws_u32(nb, 0) in if n > 0 then {n: n, data: buf_to_str(b, 0, n)} else {n: 0 - 2, data: ""}) else let e = ws_gle() in if e == 232 or e == 536 then {n: 0 - 2, data: ""} else if e == 109 then {n: 0, data: ""} else {n: 0 - 1, data: ""}
+fn pipe_write_some(h, data) = if ws_win() == 0 then 0 - 1 else if count(data) == 0 then 0 else let hd = ws_handle_of(h) in let b = buf_from_str(data) in let nb = buf_new(8) in let ok = ws_call("kernel32.dll", "WriteFile", ws_l5(hd, buf_addr(b), count(data), buf_addr(nb), 0)) in if ok != 0 then ws_u32(nb, 0) else 0 - 1
+fn pipe_close(h) = if h < 0 then 0 else if sys_call(3, h, 0, 0, 0, 0) == 0 then 1 else 0
+
+## --- desktops and the privacy window ---------------------------------------------------------------------------------
+##   win_input_desktop_open() -> h (0 on error), win_desktop_name(h) -> str, win_set_thread_desktop(h) -> 1 / 0,
+##   win_desktop_close(h) -> 1 / 0
+##   win_privacy_window_create() -> {ok, hwnd}: a black, topmost, tool window over the whole virtual screen,
+##       excluded from screen capture (SetWindowDisplayAffinity WDA_EXCLUDEFROMCAPTURE); win_pump_messages() drains
+##       the thread's message queue (call it from the loop); win_window_destroy(hwnd) -> 1 / 0
+fn win_input_desktop_open() = if ws_win() == 0 then 0 else ws_callq("user32.dll", "OpenInputDesktop", ws_l3(0, 0, 268435456))
+fn win_desktop_name(h) = if ws_win() == 0 or h == 0 then "" else let b = buf_new(520) in let nb = buf_new(8) in if ws_call("user32.dll", "GetUserObjectInformationW", ws_l5(h, 2, buf_addr(b), 512, buf_addr(nb))) == 0 then "" else ws_wtext(b, 0, 520)
+fn win_set_thread_desktop(h) = if ws_win() == 0 or h == 0 then 0 else if ws_call("user32.dll", "SetThreadDesktop", ws_l1(h)) == 0 then 0 else 1
+fn win_desktop_close(h) = if ws_win() == 0 or h == 0 then 0 else if ws_call("user32.dll", "CloseDesktop", ws_l1(h)) == 0 then 0 else 1
+fn ws_metric(k) = let v = ws_call("user32.dll", "GetSystemMetrics", ws_l1(k)) in if v >= 2147483648 then v - 4294967296 else v
+## WNDCLASSEXW (80 bytes): cbSize 0, lpfnWndProc 8 (user32!DefWindowProcW itself: no callback is needed), hInstance 24,
+## hbrBackground 48 (the stock black brush), lpszClassName 64
+fn win_privacy_window_create() = if ws_win() == 0 then {ok: 0, hwnd: 0} else let hi = ws_callq("kernel32.dll", "GetModuleHandleW", ws_l1(0)) in let cn = ws_wstr("LumePrivacyWindow") in let wc = ws_put64(ws_put64(ws_put64(ws_put64(ws_put64(buf_new(80), 0, 80, 0), 8, ws_fn("user32.dll", "DefWindowProcW"), 0), 24, hi, 0), 48, ws_callq("gdi32.dll", "GetStockObject", ws_l1(4)), 0), 64, buf_addr(cn), 0) in let at = ws_call("user32.dll", "RegisterClassExW", ws_l1(buf_addr(wc))) in let x = ws_metric(76) in let y = ws_metric(77) in let w = ws_metric(78) in let h = ws_metric(79) in let args = Cons(134217864, Cons(buf_addr(cn), Cons(buf_addr(cn), Cons(2415919104, Cons(x, Cons(y, Cons(w, Cons(h, Cons(0, Cons(0, Cons(hi, Cons(0, Nil)))))))))))) in let hwnd = ws_callq("user32.dll", "CreateWindowExW", args) in if hwnd == 0 then {ok: 0, hwnd: 0} else let a = ws_call("user32.dll", "SetWindowDisplayAffinity", ws_l2(hwnd, 17)) in let p = win_pump_messages() in {ok: 1, hwnd: hwnd}
+## MSG is 48 bytes; PeekMessageW(&msg, 0, 0, 0, PM_REMOVE) until the queue is empty
+fn win_pump_messages() = if ws_win() == 0 then 0 else ws_pump(buf_new(48), 0)
+fn ws_pump(m, n) = if n > 1000 or ws_call("user32.dll", "PeekMessageW", ws_l5(buf_addr(m), 0, 0, 0, 1)) == 0 then n else let t = ws_call("user32.dll", "TranslateMessage", ws_l1(buf_addr(m))) in let d = ws_callq("user32.dll", "DispatchMessageW", ws_l1(buf_addr(m))) in ws_pump(m, n + 1)
+fn win_window_destroy(hwnd) = if ws_win() == 0 or hwnd == 0 then 0 else let r = ws_call("user32.dll", "DestroyWindow", ws_l1(hwnd)) in let p = win_pump_messages() in if r == 0 then 0 else 1
+
+## --- tests -----------------------------------------------------------------------------------------------------------
+fn ws_has(xs, s) = match xs
+    Nil        => false
+    Cons(h, t) => if h == s then true else ws_has(t, s)
+fn test_registry_reads() = if ws_win() == 0 then reg_get_string("HKLM", "SOFTWARE", "x") == "" and reg_get_dword("HKLM", "SOFTWARE", "x") == 0 - 1 else let k = "SOFTWARE" + chr(92) + "Microsoft" + chr(92) + "Windows NT" + chr(92) + "CurrentVersion" in count(reg_get_string("HKLM", k, "CurrentBuild")) > 0 and reg_key_exists("HKLM", k) == 1 and reg_value_exists("HKLM", k, "CurrentBuild") == 1 and reg_value_exists("HKLM", k, "NoSuchValueLume") == 0 and reg_get_string("HKLM", k, "NoSuchValueLume") == "" and reg_key_exists("HKLM", k + chr(92) + "NoSuchKeyLume") == 0 and reg_get_dword("HKLM", k, "CurrentMajorVersionNumber") >= 10
+fn test_registry_bad_root() = reg_get_string("HKXX", "SOFTWARE", "x") == "" and reg_key_exists("HKXX", "SOFTWARE") == 0
+fn test_sessions() = if ws_win() == 0 then wts_active_console_session() == 0 - 1 and ws_len(wts_sessions(), 0) == 0 else let me = process_session_id(os_getpid()) in me >= 0 and ws_len(wts_sessions(), 0) > 0 and ws_has_id(wts_sessions(), me) and process_session_id(0 - 5) == 0 - 1
+fn ws_has_id(xs, id) = match xs
+    Nil        => false
+    Cons(h, t) => if h.id == id then true else ws_has_id(t, id)
+fn test_session_user() = if ws_win() == 0 then (wts_session_user(1)).user == "" else count((wts_session_user(process_session_id(os_getpid()))).user) > 0
+fn test_services_running() = if ws_win() == 0 then ws_len(services_running(), 0) == 0 else let s = services_running() in ws_len(s, 0) > 5 and (ws_has(s, "EventLog") or ws_has(s, "RpcSs") or ws_has(s, "Dhcp"))
+fn test_utf16_round_trip() = let t = "ação " + chr(240) + chr(159) + chr(152) + chr(128) in ws_wtext(ws_wstr(t), 0, 64) == t
+fn ws_rd_until(h, n) = if n <= 0 then "" else let r = pipe_read_some(h, 256) in if r.n > 0 then r.data else let z = os_sleep_ms(20) in ws_rd_until(h, n - 1)
+fn ws_pname() = "lume-winsys-test." + str(os_getpid())
+fn test_named_pipe_round_trip() = if ws_win() == 0 then (pipe_server_create("x", "")).ok == 0 and (pipe_client_open("x", 10)).ok == 0 else let s = pipe_server_create(ws_pname(), "") in let c = pipe_client_open(ws_pname(), 2000) in let a = pipe_server_accept(s.h, 3000) in let w1 = pipe_write_some(c.h, "hello server") in let r1 = ws_rd_until(s.h, 50) in let w2 = pipe_write_some(s.h, "hi client") in let r2 = ws_rd_until(c.h, 50) in let empty = pipe_read_some(c.h, 64) in let x = pipe_close(c.h) in let gone = ws_gone(s.h, 50) in let y = pipe_close(s.h) in s.ok == 1 and c.ok == 1 and a.ok == 1 and a.client_pid == os_getpid() and w1 == 12 and r1 == "hello server" and w2 == 9 and r2 == "hi client" and empty.n == 0 - 2 and gone == 1
+fn ws_gone(h, n) = if n <= 0 then 0 else let r = pipe_read_some(h, 16) in if r.n == 0 then 1 else let z = os_sleep_ms(20) in ws_gone(h, n - 1)
+fn test_named_pipe_with_epoll() = if ws_win() == 0 then true else let s = pipe_server_create(ws_pname() + "e", "") in let c = pipe_client_open(ws_pname() + "e", 2000) in let a = pipe_server_accept(s.h, 3000) in let ep = sys_call(291, 0, 0, 0, 0, 0) in let ev = ws_put64(ws_put64(buf_new(16), 0, 1, 0), 4, 7, 0) in let ad = sys_call(233, ep, 1, s.h, buf_addr(ev), 0) in let out = buf_new(16) in let before = sys_call(232, ep, buf_addr(out), 1, 0, 0) in let w = pipe_write_some(c.h, "x") in let after = sys_call(232, ep, buf_addr(out), 1, 500, 0) in let tag = ws_u32(out, 4) in let z = sys_call(3, ep, 0, 0, 0, 0) + pipe_close(c.h) + pipe_close(s.h) in ad == 0 and before == 0 and after == 1 and tag == 7
+fn test_named_pipe_refusals() = if ws_win() == 0 then true else let missing = pipe_client_open("lume-no-such-pipe-" + str(os_getpid()), 300) in let s = pipe_server_create(ws_pname() + "sy", "D:P(A;;GA;;;SY)") in let c = pipe_client_open(ws_pname() + "sy", 300) in let z = pipe_close(s.h) in missing.ok == 0 and s.ok == 1 and c.ok == 0
+fn test_session_process_and_spawn_refusal() = if ws_win() == 0 then win_find_session_process("winlogon.exe", 1) == 0 - 1 and (win_spawn_as_session(1, "x", "winsta0" + chr(92) + "default")).ok == 0 else let me = process_session_id(os_getpid()) in let wl = win_find_session_process("WINLOGON.EXE", me) in let sp = win_spawn_as_session(wl, "cmd.exe /c exit 0", "winsta0" + chr(92) + "default") in wl > 0 and win_find_session_process("no-such-process.exe", me) == 0 - 1 and (sp.ok == 1 or count(sp.err) > 0)
+fn test_process_handle_life() = if ws_win() == 0 then win_proc_alive(5) == 0 else let s = os_spawn_pipes("C:" + chr(92) + "Windows" + chr(92) + "System32" + chr(92) + "ping.exe", Cons("-n", Cons("20", Cons("127.0.0.1", Nil))), 0) in let h = ws_callq("kernel32.dll", "OpenProcess", ws_l3(1052673, 0, s.pid)) in let alive = win_proc_alive(h) in let code_alive = win_proc_exit_code(h) in let t = win_proc_terminate(h, 7) in let w = ws_call("kernel32.dll", "WaitForSingleObject", ws_l2(h, 5000)) in let dead = win_proc_alive(h) in let code = win_proc_exit_code(h) in let c = win_handle_close(h) in let z = os_fd_close(s.out_fd) + os_fd_close(s.err_fd) in h != 0 and alive == 1 and code_alive == 0 - 1 and t == 1 and dead == 0 and code == 7 and c == 1
+fn test_input_desktop() = if ws_win() == 0 then win_input_desktop_open() == 0 else let h = win_input_desktop_open() in let n = win_desktop_name(h) in let c = win_desktop_close(h) in h != 0 and ws_lower(n) == "default" and c == 1
+fn test_service_state_and_dispatcher_outside_scm() = if ws_win() == 0 then svc_state("EventLog") == "" and (svc_dispatch_start("x")).ok == 0 else let d = svc_dispatch_start("LumeNotAService") in let ev = ws_wait_ev(d.fd, 100) in svc_state("EventLog") == "running" and svc_state("NoSuchLumeSvc" + str(os_getpid())) == "" and d.ok == 1 and ev.kind == "error" and ev.reason == 1063
+fn ws_wait_ev(fd, n) = if n <= 0 then {ok: 0, kind: "none", control: 0, reason: 0, session: 0} else let e = svc_next_event(fd) in if e.ok == 1 then e else let z = os_sleep_ms(20) in ws_wait_ev(fd, n - 1)
+fn test_service_install_remove_when_admin() = if ws_win() == 0 then true else let scm = ws_scm(983103) in if scm == 0 then true else let c = ws_csh(scm) in let nm = "LumeWinsysTest" + str(os_getpid()) in let i = svc_install(nm, "Lume winsys test", "created and removed by winsys tests", "C:" + chr(92) + "Windows" + chr(92) + "System32" + chr(92) + "cmd.exe", "/c exit 0", 0) in let st = svc_state(nm) in let r = svc_remove(nm) in i.ok == 1 and st == "stopped" and r.ok == 1
+fn test_privacy_window_when_asked() = if ws_win() == 0 or os_getenv("LUME_TEST_GUI") != "1" then true else let w = win_privacy_window_create() in let z = os_sleep_ms(300) in let p = win_pump_messages() in let d = win_window_destroy(w.hwnd) in w.ok == 1 and d == 1
+fn ws_bsl() = chr(92)
+fn test_native_path() = if ws_win() == 0 then fs_native_path("/c/x/y") == "/c/x/y" else fs_native_path("/c/Users/x/a.exe") == "C:" + ws_bsl() + "Users" + ws_bsl() + "x" + ws_bsl() + "a.exe" and fs_native_path("D:/a/b") == "D:" + ws_bsl() + "a" + ws_bsl() + "b" and fs_native_path("/c") == "C:" + ws_bsl() and ws_cmd_native(chr(34) + "/c/p/a.exe" + chr(34) + " service run") == chr(34) + "C:" + ws_bsl() + "p" + ws_bsl() + "a.exe" + chr(34) + " service run" and ws_cmd_native("/d/a.exe --x /keep") == "D:" + ws_bsl() + "a.exe --x /keep"

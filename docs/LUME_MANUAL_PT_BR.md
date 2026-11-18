@@ -1,5 +1,5 @@
 # ============================================================================
-# LINGUAGEM LUME — MANUAL INTERNO PARA HUMANOS E IA (v1.1.0 / Onda 10)
+# LINGUAGEM LUME — MANUAL INTERNO PARA HUMANOS E IA (v1.2.0 / Onda 10)
 # Edicao 2026 | Zero-C Self-Hosted | "Lume gera Lume"
 # ============================================================================
 
@@ -204,6 +204,9 @@ law implicacao_clamp(x: int, lo: int, hi: int) =
   then lim else a * p / 1000`), tambem dentro de um `let`; valem limites ate 2^62. Um fator pode ser uma expressao
   linear limitada (`(255 - c) * alfa`) e a divisao pode ser por variavel com limite inferior positivo (`pool * p /
   soma`, `soma >= 1`); o `lume certify` confere todos esses casos.
+- Recursao: a chamada recursiva precisa cumprir o `requires` da propria funcao (provado, ou refutado com
+  contraexemplo); o `lume certify` confere contrato recursivo por inducao, usando os contratos provados do
+  certificado nas chamadas que nao expande, e liga ao fonte (`--check-source`).
 - Booleanos nas provas: uma comparacao usada como valor (`= a + n <= 1000`, `ensures result == (a + n <= 1000)`,
   `not f(n)`) e provada como 1 / 0. Uma law sobre uma chamada usa o `ensures` ja provado da funcao chamada quando a
   hipotese da law implica o `requires` dela (vale para funcao que chama outras ou tem produto limitado).
@@ -269,6 +272,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                    `fs_read_range(caminho, offset, n)` (ate n bytes a partir do offset, sem ler o arquivo inteiro;
                    menos no fim, "" depois dele), `fs_truncate(caminho, tamanho)` (1 / 0),
                    `fs_rename_noreplace(de, para)` (0 quando `para` ja existe; nunca substitui)
+                   `fs_read_dir` segue link simbolico de pasta; no Windows `fs_chmod` com bits de grupo/outros faz o
+                   arquivo ou pasta privado voltar a herdar a ACL da pasta-mae
 - Arquivos so do dono (chaves, segredos): `fs_write_private(caminho, texto)` grava um temporario criado 0600
                    (O_EXCL, sem seguir link), faz fsync e renomeia por cima: atomico, nunca legivel por outros,
                    tambem no Windows (DACL protegida so com o dono); `fs_create_private(caminho, texto)` so cria
@@ -278,6 +283,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Chaveiro do SO: `use keychain` -> `keychain_set(servico, conta, segredo)`, `keychain_get(servico, conta)`
                    ({ok, value, err}), `keychain_delete(servico, conta)`: Credential Manager no Windows; no Linux
                    um arquivo so do dono, recusado na leitura se outros o alcancam; segredo de ate 2560 bytes
+                   `keychain_get_target(alvo)` le (so leitura) a credencial generica de outro programa pelo alvo exato
+                   (ex.: a do crate keyring do Rust): value (texto UTF-16LE) e raw (o blob)
+                   (com LUME_KEYCHAIN_DIR definido le esse diretorio; `keychain_set_target` grava so nele)
                    Erros (`err`): `not_found` SO quando a entrada nao existe; `access_denied`, `unavailable` (sem
                    cofre, sem sessao de logon, sem diretorio), `corrupt`, `not_private`, `locked` (reservado): um
                    cofre que nao responde nunca vira ausente, o chamador pode falhar fechado
@@ -300,6 +308,27 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Sistema (`os`): `os_arg_count()`, `os_arg_at(i)`,
                   `os_getpid()`, `os_exit(cod)`, `os_run(cmd, args)`,
                   `os_run_capture_timeout(cmd, args, out, err, ms)`
+                  (o filho abre um grupo de processos novo; no prazo a arvore inteira e morta: kill(-pgid) no Linux,
+                  Job Object no Windows)
+                  `use process` -> `os_spawn_pipes(prog, args, novo_grupo)` (stdout e stderr em pipes),
+                  `os_fd_read_some(fd, max)` (n > 0, 0 fim, -2 nada agora, -1 erro; nunca bloqueia), `os_wait_nohang(pid)`,
+                  `os_wait_child(pid)`, `os_kill_tree(pid)`, `os_fd_close(fd)`,
+                  `os_run_capture_limit(prog, args, max_bytes, timeout_ms)` (no maximo max_bytes por stream, o resto
+                  drenado; arvore morta no prazo; status, exit_code, out, err, out_truncated, err_truncated, timed_out)
+- Inventario: `use sysinfo` -> `fs_statvfs(caminho)` (total, livre, disponivel, tipo), `net_interfaces()` (nome,
+                  MAC, up, enderecos com prefixo; sem loopback; Linux e Windows)
+- Sistema Windows (`use winsys`; no Linux tudo responde "ausente"): registro `reg_get_string(raiz, chave, nome)`,
+                  `reg_get_dword`, `reg_key_exists`, `reg_value_exists`; sessoes `wts_active_console_session()`,
+                  `wts_sessions()`, `wts_session_user(id)`, `process_session_id(pid)`; `services_running()`
+                  servicos: `svc_install`, `svc_start`, `svc_stop`, `svc_remove`, `svc_state`; como servico:
+                  `svc_dispatch_start`, `svc_next_event`, `svc_set_status`, `svc_finish`; sessao do usuario:
+                  `win_find_session_process`, `win_spawn_as_session`, `win_proc_alive`, `win_proc_exit_code`,
+                  `win_proc_terminate`, `win_handle_close`; named pipes: `pipe_server_create`, `pipe_server_accept`,
+                  `pipe_client_open`, `pipe_read_some`, `pipe_write_some`, `pipe_close` (sem bloqueio; com epoll);
+                  desktops: `win_input_desktop_open`, `win_desktop_name`, `win_set_thread_desktop`, `win_desktop_close`;
+                  janela de privacidade: `win_privacy_window_create`, `win_pump_messages`, `win_window_destroy`
+                  `fs_native_path(p)`: o caminho no formato do Windows (de /c/x para a forma com letra de unidade e
+                  barras invertidas); svc_install e win_spawn_as_session ja convertem o executavel
 - Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):
   - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                                `port_out32(p, v)`, `port_in32(p)`
@@ -323,7 +352,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Falha Segura:   `ctfail(msg)` (imprime erro no `stderr` e encerra com codigo != 0)
 
 ## 6.2 Modulos da Biblioteca Padrao (`use <modulo>`)
-- Modulos: `use json as j` e depois `j.read(s)`; um modulo numa pasta e escrito pelo ultimo segmento (`use
+- Modulos: `use json as j` e depois `j.read(s)` (sempre a funcao do modulo, mesmo com uma variavel local
+  `read`); um modulo numa pasta e escrito pelo ultimo segmento (`use
   net/http` -> `http.get(u)`); de duas pastas com o mesmo ultimo segmento, todas menos uma precisam de alias
   (`use a/http` + `use b/http as hb`), e duas sem alias param em `arquivo:linha:coluna` com a correcao; cada
   `use m` e resolvido ao lado do arquivo que o escreve; nomes repetidos ficam separados (NOME__modulo)

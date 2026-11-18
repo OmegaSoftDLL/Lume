@@ -1,0 +1,18 @@
+## process_tree_ok.src -- os_spawn_pipes, os_run_capture_limit and the process-tree kill of `use process`, and the
+## same tree kill in the builtin os_run_capture_timeout (LumeDesk RMM agent, repro29). Linux here (/bin/sh); the
+## Windows run uses cmd.exe through the same functions.
+use process
+
+fn sh() = if os_platform() == "windows" then "C:" + chr(92) + "Windows" + chr(92) + "System32" + chr(92) + "cmd.exe" else "/bin/sh"
+fn shc(cmd_unix, cmd_win) = if os_platform() == "windows" then Cons("/c", Cons(cmd_win, Nil)) else Cons("-c", Cons(cmd_unix, Nil))
+fn marker() = "process_tree_marker_" + str(os_getpid())
+
+fn test_capture_small_output() = let r = os_run_capture_limit(sh(), shc("echo hello; echo oops 1>&2; exit 3", "echo hello& echo oops 1>&2& exit /b 3"), 65536, 10000) in r.timed_out == 0 and r.exit_code == 3 and slice(r.out, 0, 5) == "hello" and slice(r.err, 0, 4) == "oops" and r.out_truncated == 0
+fn test_output_is_capped_without_blocking_the_child() = let r = os_run_capture_limit(sh(), shc("i=0; while [ $i -lt 4000 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done", "for /L %i in (1,1,4000) do @echo 0123456789012345678901234567890123456789"), 1000, 20000) in r.timed_out == 0 and count(r.out) == 1000 and r.out_truncated == 1 and r.exit_code == 0
+fn test_timeout_kills_the_whole_tree() = let m = marker() in let x = fs_remove(m) in let r = os_run_capture_limit(sh(), shc("(sleep 2; echo alive > " + m + ") & sleep 30", "start /b cmd /c \"ping -n 3 127.0.0.1 >nul & echo alive > " + m + "\" & ping -n 30 127.0.0.1 >nul"), 65536, 500) in let w = os_sleep_ms(3500) in let alive = fs_path_exists(m) in let y = fs_remove(m) in r.timed_out == 1 and alive == 0
+fn test_builtin_timeout_kills_the_whole_tree() = let m = marker() + "_b" in let x = fs_remove(m) in let st = os_run_capture_timeout(sh(), shc("(sleep 2; echo alive > " + m + ") & sleep 30", "start /b cmd /c \"ping -n 3 127.0.0.1 >nul & echo alive > " + m + "\" & ping -n 30 127.0.0.1 >nul"), m + ".out", m + ".err", 500) in let w = os_sleep_ms(3500) in let alive = fs_path_exists(m) in let y = fs_remove(m) + fs_remove(m + ".out") + fs_remove(m + ".err") in alive == 0
+fn test_spawn_pipes_and_read_some() = let s = os_spawn_pipes(sh(), shc("echo piped", "echo piped"), 1) in s.ok == 1 and s.pid > 0 and rd_until(s.out_fd, "", 200) == "piped" and os_wait_child(s.pid) == 0 and os_fd_close(s.out_fd) == 1 and os_fd_close(s.err_fd) == 1
+fn rd_until(fd, acc, n) = if n <= 0 then acc else let r = os_fd_read_some(fd, 4096) in if r.n > 0 then rd_until(fd, acc + r.data, n - 1) else if r.n == 0 then trimnl(acc) else let z = os_sleep_ms(10) in rd_until(fd, acc, n - 1)
+fn trimnl(s) = if count(s) > 0 and (ord_at(s, count(s) - 1) == 10 or ord_at(s, count(s) - 1) == 13 or ord_at(s, count(s) - 1) == 32) then trimnl(slice(s, 0, count(s) - 1)) else s
+fn test_bad_arguments() = (os_run_capture_limit(sh(), Nil, 10, 0)).status == 0 - 1 and (os_run_capture_limit(sh(), Nil, 0 - 1, 10)).status == 0 - 1
+fn test_missing_program() = let r = os_run_capture_limit("/definitely/missing-lume-prog", Nil, 100, 5000) in r.exit_code == 127 or r.status == 0 - 1

@@ -59,7 +59,7 @@ fn rt_wloop(fd, d, n) = if n <= 0 then 1 else let k = if n > 2147479552 then 214
 ## the whole file as a string, "" (the value 2: an empty short string) when it cannot be opened or read. A regular
 ## file is read into a string cell of its size (lseek to the end); a file of no known size (a pipe, /proc) is read in
 ## a buffer that doubles from 64 KiB. Shared lock (flock 1) while reading.
-fn fs_read_file(path) = let p = __rt_cstr(path) in let fd = sys_call(2, p, 0, 0, 0, 0) in if fd < 0 then 2 else let l = sys_call(73, fd, 1, 0, 0, 0) in let sz = sys_call(8, fd, 0, 2, 0, 0) in if sz <= 0 then rt_fsr_stream(fd, __lume_alloc_a(65536), 0, 65536) else let c = __rt_stralloc(sz) in if sys_call(8, fd, 0, 0, 0, 0) < 0 then rt_fsr_err(fd) else if rt_rloop(fd, c + 8, 0, sz) == 0 then rt_fsr_err(fd) else let u = sys_call(73, fd, 8, 0, 0, 0) in let cl = sys_call(3, fd, 0, 0, 0, 0) in if sz <= 7 then __rt_mkstrn(c + 8, sz) else c
+fn fs_read_file(path) = let p = __rt_cstr(path) in let fd = sys_call(2, p, 0, 0, 0, 0) in if fd < 0 then 2 else let l = sys_call(73, fd, 1, 0, 0, 0) in let sz = sys_call(8, fd, 0, 2, 0, 0) in if sz <= 0 then rt_fsr_stream(fd, __lume_alloc_a(65536), 0, 65536) else let c = __rt_stralloc(sz) in if sys_call(8, fd, 0, 0, 0, 0) < 0 then rt_fsr_err(fd) else rt_fsr_done(fd, c, sz, rt_rcount(fd, c + 8, 0, sz))
 ## fs_read_range(path, offset, n): up to n bytes from offset (open + lseek + read, never the whole file); shorter at
 ## the end of the file, "" past it, for n <= 0, a negative offset or a file that cannot be read
 fn fs_read_range(path, off, n) = let o = rt_int(off) in let m = rt_int(n) in if o < 0 or m <= 0 then 2 else rt_rrange(__rt_cstr(path), o, m)
@@ -74,6 +74,9 @@ fn rt_trunc(p, s) = let fd = sys_call(2, p, 1, 0, 0, 0) in if fd < 0 then mkint(
 ## refuses an existing target the same way
 fn fs_rename_noreplace(from, to) = let a = __rt_cstr(from) in let b = __rt_cstr(to) in let r = sys_call(316, 0 - 100, a, 0 - 100, b, 1) in if r == 0 - 22 then rt_rnx_link(a, b) else rt_fs_ok(r)
 fn rt_rnx_link(a, b) = let l = sys_call(86, a, b, 0, 0, 0) in if l < 0 then mkint(0) else rt_fs_ok(sys_call(87, a, 0, 0, 0, 0))
+## the end of a whole-file read: a file shorter than its stat size (sysfs reports 4096 for an 18-byte attribute) gives
+## the bytes it really has; a read error gives ""
+fn rt_fsr_done(fd, c, sz, got) = let u = sys_call(73, fd, 8, 0, 0, 0) in let cl = sys_call(3, fd, 0, 0, 0, 0) in if got <= 0 then 2 else if got == sz and sz > 7 then c else __rt_mkstrn(c + 8, got)
 fn rt_fsr_err(fd) = let c = sys_call(3, fd, 0, 0, 0, 0) in 2
 fn rt_rloop(fd, b, got, sz) = if got >= sz then 1 else let r = sys_call(0, fd, b + got, sz - got, 0, 0) in if r <= 0 then 0 else rt_rloop(fd, b, got + r, sz)
 fn rt_fsr_stream(fd, buf, used, cap) = if used >= cap then (let nb = __lume_alloc_a(cap * 2) in let c = rt_copyn(nb, buf, 0, used) in rt_fsr_stream(fd, nb, used, cap * 2)) else let r = sys_call(0, fd, buf + used, cap - used, 0, 0) in if r == 0 - 4 then rt_fsr_stream(fd, buf, used, cap) else if r < 0 then rt_fsr_err(fd) else if r == 0 then (let u = sys_call(73, fd, 8, 0, 0, 0) in let cl = sys_call(3, fd, 0, 0, 0, 0) in __rt_mkstrn(buf, used)) else rt_fsr_stream(fd, buf, used + r, cap)
@@ -98,7 +101,8 @@ fn rt_hexdec(b, h, i, n) = if i >= n then 1 else let hi = rt_nib(load8(h + i)) i
 
 ## the names in a directory, one per line ("\n" after each), without "." and ".."; "" when it cannot be read. Two
 ## passes over getdents64: the total size, then the copy into one buffer (a name that no longer fits ends the copy)
-fn fs_read_dir(path) = let p = __rt_cstr(path) in let fd = sys_call(2, p, 196608, 0, 0, 0) in if fd < 0 then 2 else let b = __lume_alloc_a(4096) in let total = rt_rd_count(fd, b, 0) in if total < 0 then rt_fsr_err(fd) else let c = sys_call(3, fd, 0, 0, 0, 0) in let out = __lume_alloc_a(total + 1) in let fd2 = sys_call(2, p, 196608, 0, 0, 0) in if fd2 < 0 then 2 else let e = rt_rd_copy(fd2, b, out, out + total) in if e == 0 then rt_fsr_err(fd2) else let z = store8(e, 0) in let c2 = sys_call(3, fd2, 0, 0, 0, 0) in mkstr(out)
+## O_DIRECTORY only (no O_NOFOLLOW): a folder reached through a symbolic link is listed, as opendir does
+fn fs_read_dir(path) = let p = __rt_cstr(path) in let fd = sys_call(2, p, 65536, 0, 0, 0) in if fd < 0 then 2 else let b = __lume_alloc_a(4096) in let total = rt_rd_count(fd, b, 0) in if total < 0 then rt_fsr_err(fd) else let c = sys_call(3, fd, 0, 0, 0, 0) in let out = __lume_alloc_a(total + 1) in let fd2 = sys_call(2, p, 65536, 0, 0, 0) in if fd2 < 0 then 2 else let e = rt_rd_copy(fd2, b, out, out + total) in if e == 0 then rt_fsr_err(fd2) else let z = store8(e, 0) in let c2 = sys_call(3, fd2, 0, 0, 0, 0) in mkstr(out)
 fn rt_dotname(nm) = if load8(nm) != 46 then 0 else if load8(nm + 1) == 0 then 1 else if load8(nm + 1) == 46 and load8(nm + 2) == 0 then 1 else 0
 fn rt_reclen(b, i) = load8(b + i + 16) + 256 * load8(b + i + 17)
 fn rt_rd_count(fd, b, acc) = let r = sys_call(217, fd, b, 4096, 0, 0) in if r < 0 then 0 - 1 else if r == 0 then acc else rt_rd_count(fd, b, rt_rd_cnt(b, 0, r, acc))
