@@ -161,8 +161,10 @@ Everything lives in `build/windows-native/` (git-ignored; the sources there were
   re-run (pr_l): 87 exit 0, 117 exit 3, 1 timeout (ledger_server). Windows programs re-run in progress (pr_w_0x).
 - `lume run` on an @freestanding kernel: same message and exit 3 on both (commit 350b68c).
 - The owner uses the native Windows toolchain installed in C:\Lume (native installer). After every tested step
-  rebuilt into inst/bin run `mem/update_install.ps1` and tell him. Never touch C:\Users\Ricardo.Bueno\LUMEDESK or
-  install over ~/.lume. The user PATH still resolves `lume` to the WSL release: change it only on his order.
+  rebuilt into inst/bin run `mem/update_install.ps1` and tell him. Never touch C:\Users\Ricardo.Bueno\LUMEDESK. Owner
+  authorization (2026-11-18): after a tested step, install with native_installer into /root/.lume (the LumeDesk
+  developer's WSL toolchain) and C:\Users\Ricardo.Bueno\.lume; never write there by other means (tests run in a
+  sandboxed home). The user PATH still resolves `lume` to the WSL release: change it only on his order.
 - Told the owner: macOS targets are only the verified-core subset (write/exit syscalls); a LumeDesk for macOS needs a
   Darwin runtime layer like the Win64 one. He has not decided yet whether to add it to §9.
 - Next: compare pr_w with pr_l, then the 30 gates (mem/gates_*.{sh,ps1}; six still call /bin/sh), then the 114 CLI

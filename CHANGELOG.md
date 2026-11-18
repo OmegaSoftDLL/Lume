@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `win_window_draw` with StretchDIBits); the WH_KEYBOARD_LL hook (`win_kbhook_*`, layer pseudo call 1016).
 - **Video colour conversion:** `buf_bgra_to_i420` and `buf_i420_to_bgra` (BT.601 limited range), runtime routines
   written in Lume (`compiler/stage1/rt/rt_video.src`).
+- **Block distortion for encoders:** `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`, `buf_satd16x16`
+  (SAD and 4x4 Hadamard SATD between two blocks of byte buffers with their own strides), runtime routines written
+  in Lume, checked against a reference in `compiler/stage1/video_sad_ok.src`. SAD uses SSE2 `psadbw`: the sixteen-by-
+  sixteen SAD of every macroblock of a 1080p frame takes 1.3 ms (25 ms without the vector instruction).
+- **SSE2 in lasm and --raw:** `movdqu`, `psadbw`, `paddq`, `paddd`, `paddw`, `psubw`, `pxor`, `psrldq` (byte-identical
+  to GNU as) and the --raw vector intrinsics `vec_sad16(p, q)` / `vec_sad8(p, q)`. Routines that use them
+  (`rt/rt_simd.src`) are linked only into programs that name them, so the frozen seed assembler never meets them.
 
 ### Changed
 - **Faster buffer and arithmetic loops:** `buf_get` / `buf_set` compile to inline machine code on the common path
@@ -35,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@freestanding` kernels; text and video routines stay shared.
 
 ### Fixed
+- **C0009 and the `ct_` prefix:** a C0009 inside a function named `ct_*` now says that the prefix made its
+  parameters secrets (all of them, or only those named `secret` / `secret_*`), and the manuals (EN / PT) document the
+  convention with an example.
 - **Types:** a value typed `any` (a `-> any` result) is accepted by any parameter, and a parameter typed `any`
   accepts any value; both were refused once the checker had seen another type.
 - **Shared libraries:** `lasm --shared` writes section headers (`.dynsym`, `.dynstr`, `.dynamic`, ...), so GNU ld

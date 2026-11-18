@@ -351,6 +351,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   n)`, `buf_addr(b)`; buf_get / buf_set com indice pequeno viram codigo de maquina inline (sem chamada)
                   video: `buf_bgra_to_i420(src, stride, w, h, dst)` e `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
                   faixa limitada, media 2x2 do croma, tamanhos impares; bytes escritos ou -1; quadro 1080p em poucos ms)
+                  distorcao de bloco para codificadores: `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`,
+                  `buf_satd16x16` (a, ai, sa, b, bi, sb): soma das diferencas absolutas, ou da diferenca transformada
+                  por Hadamard 4x4 / 2, entre o bloco n x n de a no byte ai (linhas a sa bytes) e o de b em bi; -1 se errado
 - Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):
   - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                                `port_out32(p, v)`, `port_in32(p)`
@@ -1067,7 +1070,7 @@ print run_lumeputer_demo()
 | `[D0273]` | Esquema de Tabela    | `comptime table_schema(T)`: `T` nao e um tipo registro nominal, ou uma coluna tem tipo nao suportado ou moeda invalida. |
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy` ou `mem_set` aponta para `.text`/`.rodata` (`[0x8000..0x3FFFF]`), inclusive `base + off` simbolico. Use endereco seguro de RAM (`>= 0x40000`). |
 | `[K0006]` | Pilha de Kernel      | Ciclo de recursao mutua ilimitada (`f -> g -> f`) em modulo `@freestanding` / `kernel_boot_entry`. Use loop tail-call ou iteracao limitada. |
-| `[C0009]` | Cripto Constant-Time | Branch `if`/`match`, divisao `/` ou `%` ou curto-circuito `and`/`or` dependente de segredo (`secret_*` ou funcao `ct_*`). Use acumulacao bitwise XOR/OR em tempo constante. |
+| `[C0009]` | Cripto Constant-Time | Branch `if`/`match`, divisao `/` ou `%`, curto-circuito `and`/`or` ou indice de memoria dependente de segredo. Segredos sao parametros chamados `secret` ou `secret_*`; numa funcao cujo nome comeca com `ct_`, todo parametro e segredo (so os `secret*`, se houver), entao `fn ct_tam(n) = if n == 0 then 1 else 2` falha e `fn tam(n) = ...` passa. Use acumulacao bitwise XOR/OR em tempo constante, ou tire o prefixo `ct_` se a funcao nao trata segredo. |
 | `[C0010]` | Constant-Time de Maquina | `lume tv`: o codigo emitido de uma `@secret fn`, ou de uma rotina que ela alcanca por `call`, tem desvio condicional, divisao ou acesso a memoria fora de frame e pilha. Escreva a funcao como kernel constant-time (`@secret` + `@no_alloc`). |
 | `[C0011]` | Kernel Constant-Time | Funcao `@secret` + `@no_alloc` com `requires`, `ensures` nao provado, condicional, comparacao, `/` ou `%`, shift por nao-literal, recursao, tipo que nao e `int` ou chamada de funcao que nao e kernel. Use mascaras, `ct_select(mask, a, b)` e `ct_eq(a, b)`. |
 | `[L0001]` | Lexico / Montador    | Literal de string nao terminado em um arquivo fonte (feche com aspas duplas); o `lasm` usa o mesmo codigo para instrucao ou diretiva desconhecida. |

@@ -373,6 +373,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             video: `buf_bgra_to_i420(src, stride, w, h, dst)` and `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
             limited range, 2x2 chroma average, odd sizes; the bytes written or -1 for a wrong argument; a 1080p
             frame in a few milliseconds, runtime routines written in Lume)
+            block distortion for encoders: `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`, `buf_satd16x16`
+            (a, ai, sa, b, bi, sb): sum of absolute differences, or of the 4x4 Hadamard-transformed difference / 2,
+            between the n x n block of a at byte ai (rows sa bytes apart) and the block of b at bi; -1 when wrong
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):
   - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                             `port_out32(p, v)`, `port_in32(p)`
@@ -1116,7 +1119,7 @@ print run_lumeputer_demo()
 | `[D0273]` | Table Schema         | `comptime table_schema(T)`: `T` is not a nominal record type, or a column has an unsupported type or an invalid money currency. |
 | `[K0005]` | Bare-Metal W^X / DMA | `mmio_volatile_write*`, `mem_copy`, or `mem_set` targets `.text`/`.rodata` (`[0x8000..0x3FFFF]`), including symbolic/affine `base + off`. Use a safe DMA RAM buffer (`>= 0x40000`). |
 | `[K0006]` | Kernel Stack Safety  | Unbounded mutual recursion cycle (`f -> g -> f`) in `@freestanding` / `kernel_boot_entry` module. Use tail-loop state or bounded iteration. |
-| `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup on `secret_*` or inside `ct_*`. Use bitwise XOR/OR mask accumulation. |
+| `[C0009]` | Constant-Time Crypto | Secret-dependent `if`/`match` branch, variable-latency `/` or `%`, short-circuit `and`/`or`, or secret-indexed memory lookup. Secrets are parameters named `secret` or `secret_*`; in a function whose name starts with `ct_` every parameter is a secret (only the `secret*` ones when it has some), so `fn ct_size(n) = if n == 0 then 1 else 2` fails and `fn size(n) = ...` passes. Use bitwise XOR/OR mask accumulation, or drop the `ct_` prefix when the function handles no secret. |
 | `[C0010]` | Machine Constant-Time | `lume tv`: the emitted code of a `@secret fn`, or of a routine it reaches by `call`, holds a conditional branch, a division or a memory access outside frame and stack. Write the function as a constant-time kernel (`@secret` + `@no_alloc`). |
 | `[C0011]` | Constant-Time Kernel | A `@secret` + `@no_alloc` function has a `requires`, an unproven `ensures`, a conditional, comparison, `/` or `%`, a shift by a non-literal, recursion, a non-`int` type or a call of a function that is not a kernel. Use masks, `ct_select(mask, a, b)` and `ct_eq(a, b)`. |
 | `[L0001]` | Lexer / Assembler    | Unterminated string literal in a source file (close it with a double quote); `lasm` uses the same code for an instruction or directive it does not know. |
