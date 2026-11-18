@@ -24,8 +24,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the runtime routine only for a boxed index, a wrong value or an out-of-range index, with the same diagnostics);
   `x % k` and `x / k` by a literal k >= 2 divide in place. A 1080p-sized buffer copy loop: 51 -> 10 ms on Linux,
   20 -> 7 ms on Windows.
+- **Faster allocation:** the collector keeps the whole chunks a collection frees mapped and zeroed for reuse, up to
+  the collection limit, instead of returning each to the OS and faulting it in again (peak RSS unchanged; everything
+  is still returned under `LUME_HEAP_CAP`). Steady allocation: 20 -> 8 ns per object, system time 0.16 -> 0.02 s on a
+  5-million-record loop.
+- **Faster field reads:** `r.name` checks a per-field cache inline (record shape -> field offset) and calls the
+  runtime only for another shape; misses still go through the full checks. A record build-and-read loop: 31 -> 19 ms
+  per million, closures 16 -> 8 ms.
+- **Runtime split:** the file-system part of the Lume runtime (`rt_fs`, `rt_io`) is no longer linked into
+  `@freestanding` kernels; text and video routines stay shared.
 
 ### Fixed
+- **Types:** a value typed `any` (a `-> any` result) is accepted by any parameter, and a parameter typed `any`
+  accepts any value; both were refused once the checker had seen another type.
+- **Shared libraries:** `lasm --shared` writes section headers (`.dynsym`, `.dynstr`, `.dynamic`, ...), so GNU ld
+  and lld can link a C host against a `.so` built by Lume; static `.a` builds go through the archive path again.
+- **Driver:** a tool that fails without printing anything (or is missing) is reported with its path and status, never
+  as an empty error.
+- **hostio:** `env -C DIR program` runs the program in DIR (the capstone gate's health check used it).
+- **hostio / fs_copy:** a bare program name (`env PATH=dir cc`) is looked up through `$PATH`, as execvp does, and
+  `fs_copy` gives a new file the permission bits of its source, as `cp` does (a copied program stays executable);
+  the Zero-C gate's toolchain blockers were not found, then not executable.
+- **Runtime:** `os_getenv` of an unset variable returned the next string of the runtime's data when the runtime was
+  assembled by the seed (`.byte 0` was dropped); the empty string is written as `.asciz ""`.
+- **Formatter:** `compiler/stage1/f4_core.src` and `lfmt.src` are in canonical form again after the line-breaking
+  formatter; incremental link mode records the f64 / decimal / crypto runtime flags.
 - **Windows:** programs run by `lume run` / `lume test` that create a Direct3D device no longer die at exit
   (0xC0000005 in the graphics driver, reported as status 139): scratch binaries are named `.exe`.
 - **CI:** the frozen seed (`lume0`) compiles the compiler again (a parameter was named `as`); the release workflow

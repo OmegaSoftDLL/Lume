@@ -70,6 +70,7 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - `type Nome = ...`            Define um Tipo Algebrico (ADT) ou registro.
 - `fn nome(a, b) = expr`       Define uma funcao.
 - `pub fn nome(a, b) = expr`   Define uma funcao publica exportada.
+- `fn f(x: any) -> any = x`    `any` desliga a checagem estatica: qualquer valor serve, o runtime confere o uso.
 - `const NOME: T = expr`       Define uma constante de modulo (disponivel em funcoes e contratos).
 - `law nome(a: int) = expr`    Define uma lei matematica universal provada pelo compilador.
 - `print <expr>`               Ponto de entrada executavel do programa.
@@ -699,7 +700,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 ## 8.1 Comandos Essenciais do Programador
   lume build [--incremental] [--memory] [--protect [hardened|max]] [--target <t>] <src> [-o <out>]
                                          (-o libX.so / X.dll: biblioteca compartilhada escrita pelo Lume,
-                                         funcoes pub exportadas; um teste declara ## @library libX.so = X.src)
+                                         funcoes pub exportadas; um programa C linka com cc ou ld;
+                                         um teste declara ## @library libX.so = X.src)
   lume run [--memory] <src> [args...]    Compila e executa imediatamente
   lume test <src.src>...                 Executa todos os testes `fn test_*()`
   lume check <src.src> [--json]          Verifica tipos, ownership e efeitos

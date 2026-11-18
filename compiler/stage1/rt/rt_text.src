@@ -14,3 +14,17 @@ fn streq(a, b) = let x = load8(a) in if x != load8(b) then 0 else if x == 0 then
 fn __rt_nofield_text(key, kind) = let pre = (if kind == 1 then "lume: record update `with`: the record has no field '" else "lume: this value has no field '") in let suf = (if kind == 1 then "' (fix-it: update only the fields the record has, or build a new record that adds it)\n" else "' (fix-it: read a field the record has, or check the value's type)\n") in let n = strlen(pre) + strlen(key) + strlen(suf) in let p = __lume_alloc_a(n + 1) in let a = rt_copy(p, pre, 0) in let b = rt_copy(p + a, key, 0) in let c = rt_copy(p + a + b, suf, 0) in let z = store8(p + a + b + c, 0) in p
 ## copies the C string src to dst (without its 0): the number of bytes copied
 fn rt_copy(dst, src, i) = let x = load8(src + i) in if x == 0 then i else let w = store8(dst + i, x) in rt_copy(dst, src, i + 1)
+
+## a Lume integer as a machine word: an immediate (n << 1 | 1) or a boxed cell (kind 3, value at +8); any other value
+## stops the program with the runtime's "not an int" message (as __rt_uint)
+fn rt_int(v) = if bit_and(v, 1) == 1 then bit_shr(v, 1) else if bit_and(v, 7) != 0 or v == 0 then __rt_not_int() else if load8(v) != 3 then __rt_not_int() else load64(v + 8)
+
+## r.name with a cache per field name (codegen passes `.lcomm __ic_NAME, 16`: the record descriptor last seen at a
+## read of NAME and the byte offset of NAME in records of that shape). Same descriptor: one load. Anything else goes
+## to recget, which keeps every check and message, and a record result refills the cache.
+fn __rt_recget_ic(r, key, ic) = if bit_and(r, 7) == 0 and r != 0 and load64(r) == load64(ic) and load64(ic + 8) != 0 then load64(r + load64(ic + 8)) else rt_ric_slow(r, key, ic)
+fn rt_ric_slow(r, key, ic) = let v = recget(r, key) in let z = rt_ric_fill(r, key, ic) in v
+fn rt_ric_fill(r, key, ic) = if bit_and(r, 7) != 0 or r == 0 then 0 else rt_ric_desc(r, key, ic, load64(r))
+fn rt_ric_desc(r, key, ic, d) = if bit_and(d, 7) != 0 or d == 0 then 0 else if load8(d + 8) != 4 then 0 else rt_ric_find(key, ic, d, 0, bit_shr(load64(d + 8), 8))
+fn rt_ric_find(key, ic, d, i, n) = if i >= n then 0 else if load64(d + 16 + i * 8) == key then rt_ric_set(ic, d, 8 + i * 8) else rt_ric_find(key, ic, d, i + 1, n)
+fn rt_ric_set(ic, d, off) = let a = store64(ic + 8, 0) in let b = store64(ic, d) in store64(ic + 8, off)

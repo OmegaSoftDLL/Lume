@@ -296,7 +296,11 @@ fn lrec(items, ctx, s) = lrec2(lvalsof(items), len(items), lshape(items, len(ite
 fn lrec2(vals, n, d, ctx) = if n == 0 then lres("    leaq " + d.lab + "(%rip), %rax\n", d) else lcell(d.lab, vals, n, ctx, d)
 fn lfield(nm, o, ctx, s) = lfield2(lkey(nm, s), o, ctx)
 fn lfield2(k, o, ctx) = if lisleaf(o) == 1 then lfield3(k, lload(o, "%rdi", ctx, k)) else lfield3(k, lfield4(lax(o, ctx, k)))
-fn lfield3(k, a) = lres(a.code + "    leaq " + k.lab + "(%rip), %rsi\n    call recget\n", a)
+## r.name goes through the field's cache: one .lcomm pair per field name (the record descriptor last seen at a read
+## of the name, the byte offset of the field in records of that shape). Same descriptor: two loads, inline. Any other
+## value calls __rt_recget_ic (rt/rt_text.src), which reads through recget (every check and message) and refills.
+fn lfield3(k, a) = lfield5(k, lentry("__ic" + slice(k.lab, 3, count(k.lab)), "    .lcomm __ic" + slice(k.lab, 3, count(k.lab)) + ", 16\n", a), a.code)
+fn lfield5(k, c, code) = let n = c.pfx + str(c.nl) in lres(code + "    testq $7, %rdi\n    jnz .Lfs" + n + "\n    testq %rdi, %rdi\n    jz .Lfs" + n + "\n    movq (%rdi), %rax\n    cmpq " + c.lab + "(%rip), %rax\n    jne .Lfs" + n + "\n    movq " + c.lab + "+8(%rip), %rax\n    movq (%rdi,%rax), %rax\n    jmp .Lfx" + n + "\n.Lfs" + n + ":\n    leaq " + k.lab + "(%rip), %rsi\n    leaq " + c.lab + "(%rip), %rdx\n    call __rt_recget_ic\n.Lfx" + n + ":\n", lnext(c))
 fn lfield4(a) = lres(a.code + "    movq %rax, %rdi\n", a)
 
 ## --- match (port of DMatch / atest / abind in data_asmgen.lume; same label + strlabel allocation order) ---

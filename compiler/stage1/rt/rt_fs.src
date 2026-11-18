@@ -26,10 +26,6 @@ fn os_unix_time() = let ts = __lume_alloc_a(16) in let r = sys_call(228, 0, ts, 
 ## a system call result as a Lume truth value: 1 when it did not fail (not negative), else 0
 fn rt_fs_ok(r) = if r < 0 then mkint(0) else mkint(1)
 
-## a Lume integer as a machine word: an immediate (n << 1 | 1) or a boxed cell (kind 3, value at +8); any other value
-## stops the program with the runtime's "not an int" message (as __rt_uint)
-fn rt_int(v) = if bit_and(v, 1) == 1 then bit_shr(v, 1) else if bit_and(v, 7) != 0 or v == 0 then __rt_not_int() else if load8(v) != 3 then __rt_not_int() else load64(v + 8)
-
 ## chmod(path, mode) with 0 <= mode <= 4095: 1 on success, else 0 (on Windows the layer maps it to the file's DACL)
 fn fs_chmod(path, mode) = let p = __rt_cstr(path) in let m = rt_int(mode) in if m < 0 or m > 4095 then mkint(0) else rt_fs_ok(sys_call(90, p, m, 0, 0, 0))
 
@@ -83,8 +79,10 @@ fn rt_fsr_stream(fd, buf, used, cap) = if used >= cap then (let nb = __lume_allo
 ## copies n bytes from s to d, eight at a time while it can
 fn rt_copyn(d, s, i, n) = if i + 8 <= n then (let a = store64(d + i, load64(s + i)) in rt_copyn(d, s, i + 8, n)) else if i < n then (let b = store8(d + i, load8(s + i)) in rt_copyn(d, s, i + 1, n)) else 0
 
-## copy the file src to dst (created or truncated) through a 64 KiB anonymous mapping: 1 on success, else 0
-fn fs_copy(src, dst) = let ps = __rt_cstr(src) in let pd = __rt_cstr(dst) in let buf = sys_call(9, 0, 65536, 3, 34, 0 - 1) in if buf < 0 then mkint(0) else let fi = sys_call(2, ps, 0, 0, 0, 0) in if fi < 0 then rt_cp_end(buf, 0) else let fo = sys_call(2, pd, 577, 420, 0, 0) in if fo < 0 then (let c = sys_call(3, fi, 0, 0, 0, 0) in rt_cp_end(buf, 0)) else let ok = rt_cp_loop(fi, fo, buf) in let c1 = sys_call(3, fo, 0, 0, 0, 0) in let ok2 = if c1 < 0 then 0 else ok in let c2 = sys_call(3, fi, 0, 0, 0, 0) in rt_cp_end(buf, ok2)
+## copy the file src to dst (created or truncated) through a 64 KiB anonymous mapping: 1 on success, else 0. A new
+## dst gets the permission bits of src (fstat st_mode at +24), as cp does: a copied program stays executable
+fn fs_copy(src, dst) = let ps = __rt_cstr(src) in let pd = __rt_cstr(dst) in let buf = sys_call(9, 0, 65536, 3, 34, 0 - 1) in if buf < 0 then mkint(0) else let fi = sys_call(2, ps, 0, 0, 0, 0) in if fi < 0 then rt_cp_end(buf, 0) else let fo = sys_call(2, pd, 577, rt_cp_mode(fi, buf), 0, 0) in if fo < 0 then (let c = sys_call(3, fi, 0, 0, 0, 0) in rt_cp_end(buf, 0)) else let ok = rt_cp_loop(fi, fo, buf) in let c1 = sys_call(3, fo, 0, 0, 0, 0) in let ok2 = if c1 < 0 then 0 else ok in let c2 = sys_call(3, fi, 0, 0, 0, 0) in rt_cp_end(buf, ok2)
+fn rt_cp_mode(fi, buf) = if sys_call(5, fi, buf, 0, 0, 0) < 0 then 420 else bit_and(load32(buf + 24), 4095)
 fn rt_cp_end(buf, ok) = let u = sys_call(11, buf, 65536, 0, 0, 0) in mkint(ok)
 fn rt_cp_loop(fi, fo, buf) = let r = sys_call(0, fi, buf, 65536, 0, 0) in if r < 0 then 0 else if r == 0 then 1 else if rt_wall(fo, buf, 0, r) == 0 then 0 else rt_cp_loop(fi, fo, buf)
 ## write all n bytes at b from offset i: 1, or 0 when a write fails

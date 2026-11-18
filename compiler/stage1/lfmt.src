@@ -31,12 +31,41 @@ fn lf_isindented(raw) = if count(raw) == 0 then 0 else lf_isws(at(raw, 0))
 
 fn lf_idend(s, i, n) = if i >= n then i else if lf_isalnum(at(s, i)) then lf_idend(s, i + 1, n) else i
 fn lf_numend(s, i, n) = if i >= n then i else if lf_isdigit(at(s, i)) then lf_numend(s, i + 1, n) else i
-fn lf_strend(s, i, n) = if i >= n then i else if at(s, i) == "\"" then i + 1 else if at(s, i) == "\\" then lf_strend(s, i + 2, n) else lf_strend(s, i + 1, n)
+fn lf_strend(s, i, n) =
+    if i >= n then
+        i
+    else if at(s, i) == "\"" then
+        i + 1
+    else if at(s, i) == "\\" then
+        lf_strend(s, i + 2, n)
+    else
+        lf_strend(s, i + 1, n)
 
 fn lf_two(s, i, n) = slicen(s, n, i, if i + 2 > n then n else i + 2)
 fn lf_istwo(t) = t == "==" or t == "!=" or t == "<=" or t == ">="
 
-fn lf_lex(s, i, n) = if i >= n then Nil else let c = at(s, i) in if lf_isws(c) or c == "\n" then lf_lex(s, i + 1, n) else if c == "#" then lf_lex(s, lf_nlpos(s, n, i), n) else if lf_isdigit(c) then let e = lf_numend(s, i, n) in Cons({kind: "int", text: slicen(s, n, i, e)}, lf_lex(s, e, n)) else if lf_isalpha(c) then let e = lf_idend(s, i, n) in Cons({kind: "id", text: slicen(s, n, i, e)}, lf_lex(s, e, n)) else if c == "\"" then let e = lf_strend(s, i + 1, n) in Cons({kind: "str", text: slicen(s, n, i, e)}, lf_lex(s, e, n)) else if lf_istwo(lf_two(s, i, n)) then Cons({kind: "op", text: lf_two(s, i, n)}, lf_lex(s, i + 2, n)) else Cons({kind: "op", text: c}, lf_lex(s, i + 1, n))
+fn lf_lex(s, i, n) =
+    if i >= n then
+        Nil
+    else
+        let c = at(s, i) in
+        if lf_isws(c) or c == "\n" then
+            lf_lex(s, i + 1, n)
+        else if c == "#" then
+            lf_lex(s, lf_nlpos(s, n, i), n)
+        else if lf_isdigit(c) then
+            let e = lf_numend(s, i, n) in
+            Cons({kind: "int", text: slicen(s, n, i, e)}, lf_lex(s, e, n))
+        else if lf_isalpha(c) then
+            let e = lf_idend(s, i, n) in
+            Cons({kind: "id", text: slicen(s, n, i, e)}, lf_lex(s, e, n))
+        else if c == "\"" then
+            let e = lf_strend(s, i + 1, n) in
+            Cons({kind: "str", text: slicen(s, n, i, e)}, lf_lex(s, e, n))
+        else if lf_istwo(lf_two(s, i, n)) then
+            Cons({kind: "op", text: lf_two(s, i, n)}, lf_lex(s, i + 2, n))
+        else
+            Cons({kind: "op", text: c}, lf_lex(s, i + 1, n))
 fn lf_lexall(s) = lf_lex(s, 0, count(s))
 
 ## --- list & string helpers (O(n log k) pairwise join, O(n) length-threaded line split) ---
@@ -63,7 +92,12 @@ fn lf_joinsep(xs, sep) = match xs
 fn lf_spaces(k) = if k <= 0 then "" else " " + lf_spaces(k - 1)
 fn lf_padright(s, w) = s + lf_spaces(w - count(s))
 
-fn lf_splitlinesn(s, n, i) = if i >= n then Nil else let e = lf_nlpos(s, n, i) in Cons(slicen(s, n, i, e), lf_splitlinesn(s, n, if e >= n then e else e + 1))
+fn lf_splitlinesn(s, n, i) =
+    if i >= n then
+        Nil
+    else
+        let e = lf_nlpos(s, n, i) in
+        Cons(slicen(s, n, i, e), lf_splitlinesn(s, n, if e >= n then e else e + 1))
 fn lf_splitlines(s) = lf_splitlinesn(s, count(s), 0)
 
 ## --- token-stream helpers ---
@@ -83,85 +117,347 @@ fn lf_isfieldsep(ts) = lf_headtext(ts) == "," or lf_headtext(ts) == ";"
 fn lf_isnextfield(ts) = lf_headtext(ts) != "" and lf_headtext(ts) != "}" and lf_headtext(lf_droponce(ts)) == ":"
 
 ## --- parser: types, expressions, records, calls, comptime, match ---
-fn lf_parsetype1(ts) = if lf_headtext(ts) == "[" then let r = lf_parsetype1(lf_droponce(ts)) in {ty: "[" + r.ty + "]", rest: lf_skiprk(r.rest)} else if lf_headtext(ts) == "table" and lf_headtext(lf_droponce(ts)) == "[" then let r = lf_parsetype1(lf_droponce(lf_droponce(ts))) in {ty: "table[" + r.ty + "]", rest: lf_skiprk(r.rest)} else if lf_headtext(ts) == "decimal" and lf_headtext(lf_droponce(ts)) == "(" then let p = lf_headtext(lf_droponce(lf_droponce(ts))) in let s = lf_headtext(lf_droponce(lf_droponce(lf_droponce(lf_droponce(ts))))) in {ty: "decimal(" + p + ", " + s + ")", rest: lf_skiprp(lf_droponce(lf_droponce(lf_droponce(lf_droponce(lf_droponce(ts))))))} else {ty: lf_headtext(ts), rest: lf_droponce(ts)}
-fn lf_parsevpfield(ts) = if lf_headtext(lf_droponce(ts)) == ":" then lf_parsetype1(lf_droponce(lf_droponce(ts))) else lf_parsetype1(ts)
-fn lf_parsetypelist(ts) = if lf_headtext(ts) == ")" then {items: Nil, rest: lf_droponce(ts)} else let r = lf_parsevpfield(ts) in if lf_headtext(r.rest) == "," then let rr = lf_parsetypelist(lf_droponce(r.rest)) in {items: Cons(r.ty, rr.items), rest: rr.rest} else {items: Cons(r.ty, Nil), rest: lf_skiprp(r.rest)}
-fn lf_parsevariants(ts) = let tag = lf_headtext(ts) in let t1 = lf_droponce(ts) in let vp = if lf_headtext(t1) == "(" then let a = lf_parsetypelist(lf_droponce(t1)) in {v: tag + "(" + lf_joinsep(a.items, ", ") + ")", rest: a.rest} else {v: tag, rest: t1} in if lf_headtext(vp.rest) == "|" then let rr = lf_parsevariants(lf_droponce(vp.rest)) in {items: Cons(vp.v, rr.items), rest: rr.rest} else {items: Cons(vp.v, Nil), rest: lf_skiprb(vp.rest)}
-fn lf_parsefieldmore(fstr, r) = if lf_isnextfield(r) then let rr = lf_parsefields(r) in {items: Cons(fstr, rr.items), rest: rr.rest} else {items: Cons(fstr, Nil), rest: lf_skiprb(r)}
-fn lf_parsefields(ts) = let fnm = lf_headtext(ts) in let r = lf_parsetype1(lf_dropkw(lf_droponce(ts), ":")) in let fstr = fnm + ": " + r.ty in if lf_isfieldsep(r.rest) then lf_parsefieldmore(fstr, lf_droponce(r.rest)) else lf_parsefieldmore(fstr, r.rest)
-fn lf_parsetypedecl(t) = let nm = lf_headtext(t) in let b = lf_dropkw(lf_droponce(t), "=") in if lf_headtext(b) == "record" then let fs = lf_parsefields(lf_dropkw(lf_droponce(b), "{")) in TypeD("type " + nm + " = record " + lf_joinsep(fs.items, ", ")) else let vs = lf_parsevariants(lf_dropkw(lf_dropkw(lf_dropkw(b, "enum"), "{"), "|")) in TypeD("type " + nm + " = enum " + lf_joinsep(vs.items, " | "))
+fn lf_parsetype1(ts) =
+    if lf_headtext(ts) == "[" then
+        let r = lf_parsetype1(lf_droponce(ts)) in
+        {ty: "[" + r.ty + "]", rest: lf_skiprk(r.rest)}
+    else if lf_headtext(ts) == "table" and lf_headtext(lf_droponce(ts)) == "[" then
+        let r = lf_parsetype1(lf_droponce(lf_droponce(ts))) in
+        {ty: "table[" + r.ty + "]", rest: lf_skiprk(r.rest)}
+    else if lf_headtext(ts) == "decimal" and lf_headtext(lf_droponce(ts)) == "(" then
+        let p = lf_headtext(lf_droponce(lf_droponce(ts))) in
+        let s = lf_headtext(lf_droponce(lf_droponce(lf_droponce(lf_droponce(ts))))) in
+        {ty: "decimal(" + p + ", " + s + ")", rest: lf_skiprp(lf_droponce(lf_droponce(lf_droponce(lf_droponce(lf_droponce(ts))))))}
+    else
+        {ty: lf_headtext(ts), rest: lf_droponce(ts)}
+fn lf_parsevpfield(ts) =
+    if lf_headtext(lf_droponce(ts)) == ":" then
+        lf_parsetype1(lf_droponce(lf_droponce(ts)))
+    else
+        lf_parsetype1(ts)
+fn lf_parsetypelist(ts) =
+    if lf_headtext(ts) == ")" then
+        {items: Nil, rest: lf_droponce(ts)}
+    else
+        let r = lf_parsevpfield(ts) in
+        if lf_headtext(r.rest) == "," then
+            let rr = lf_parsetypelist(lf_droponce(r.rest)) in
+            {items: Cons(r.ty, rr.items), rest: rr.rest}
+        else
+            {items: Cons(r.ty, Nil), rest: lf_skiprp(r.rest)}
+fn lf_parsevariants(ts) =
+    let tag = lf_headtext(ts) in
+    let t1 = lf_droponce(ts) in
+    let vp = if lf_headtext(t1) == "(" then let a = lf_parsetypelist(lf_droponce(t1)) in {v: tag + "(" + lf_joinsep(a.items, ", ") + ")", rest: a.rest} else {v: tag, rest: t1} in
+    if lf_headtext(vp.rest) == "|" then
+        let rr = lf_parsevariants(lf_droponce(vp.rest)) in
+        {items: Cons(vp.v, rr.items), rest: rr.rest}
+    else
+        {items: Cons(vp.v, Nil), rest: lf_skiprb(vp.rest)}
+fn lf_parsefieldmore(fstr, r) =
+    if lf_isnextfield(r) then
+        let rr = lf_parsefields(r) in
+        {items: Cons(fstr, rr.items), rest: rr.rest}
+    else
+        {items: Cons(fstr, Nil), rest: lf_skiprb(r)}
+fn lf_parsefields(ts) =
+    let fnm = lf_headtext(ts) in
+    let r = lf_parsetype1(lf_dropkw(lf_droponce(ts), ":")) in
+    let fstr = fnm + ": " + r.ty in
+    if lf_isfieldsep(r.rest) then
+        lf_parsefieldmore(fstr, lf_droponce(r.rest))
+    else
+        lf_parsefieldmore(fstr, r.rest)
+fn lf_parsetypedecl(t) =
+    let nm = lf_headtext(t) in
+    let b = lf_dropkw(lf_droponce(t), "=") in
+    if lf_headtext(b) == "record" then
+        let fs = lf_parsefields(lf_dropkw(lf_droponce(b), "{")) in
+        TypeD("type " + nm + " = record " + lf_joinsep(fs.items, ", "))
+    else
+        let vs = lf_parsevariants(lf_dropkw(lf_dropkw(lf_dropkw(b, "enum"), "{"), "|")) in
+        TypeD("type " + nm + " = enum " + lf_joinsep(vs.items, " | "))
 fn lf_parseuse(t) = UseD("use " + lf_headtext(t))
 
-fn lf_recentries(ts) = if lf_headtext(ts) == "}" then {items: Nil, rest: lf_droponce(ts)} else lf_recmore(lf_headtext(ts), lf_expr(lf_dropkw(lf_droponce(ts), ":")))
-fn lf_recmore(k, rv) = if lf_headtext(rv.rest) == "," then let rr = lf_recentries(lf_droponce(rv.rest)) in {items: Cons({key: k, val: rv.node}, rr.items), rest: rr.rest} else {items: Cons({key: k, val: rv.node}, Nil), rest: lf_skiprb(rv.rest)}
-fn lf_parseifelse(c, tb, rest) = if lf_headtext(rest) == "elif" then let r = lf_parseif(lf_droponce(rest)) in {node: If(c, tb, r.node), rest: r.rest} else let eb = lf_expr(lf_dropkw(rest, "else")) in {node: If(c, tb, eb.node), rest: eb.rest}
-fn lf_parseif(t) = let rc = lf_expr(t) in let tb = lf_expr(lf_dropkw(rc.rest, "then")) in lf_parseifelse(rc.node, tb.node, lf_dropkw(tb.rest, ";"))
-fn lf_parselet(t) = let nm = lf_headtext(t) in let rv = lf_expr(lf_dropkw(lf_droponce(t), "=")) in let rb = lf_expr(lf_dropin(rv.rest)) in {node: LetIn(nm, rv.node, rb.node), rest: rb.rest}
+fn lf_recentries(ts) =
+    if lf_headtext(ts) == "}" then
+        {items: Nil, rest: lf_droponce(ts)}
+    else
+        lf_recmore(lf_headtext(ts), lf_expr(lf_dropkw(lf_droponce(ts), ":")))
+fn lf_recmore(k, rv) =
+    if lf_headtext(rv.rest) == "," then
+        let rr = lf_recentries(lf_droponce(rv.rest)) in
+        {items: Cons({key: k, val: rv.node}, rr.items), rest: rr.rest}
+    else
+        {items: Cons({key: k, val: rv.node}, Nil), rest: lf_skiprb(rv.rest)}
+fn lf_parseifelse(c, tb, rest) =
+    if lf_headtext(rest) == "elif" then
+        let r = lf_parseif(lf_droponce(rest)) in
+        {node: If(c, tb, r.node), rest: r.rest}
+    else
+        let eb = lf_expr(lf_dropkw(rest, "else")) in
+        {node: If(c, tb, eb.node), rest: eb.rest}
+fn lf_parseif(t) =
+    let rc = lf_expr(t) in
+    let tb = lf_expr(lf_dropkw(rc.rest, "then")) in
+    lf_parseifelse(rc.node, tb.node, lf_dropkw(tb.rest, ";"))
+fn lf_parselet(t) =
+    let nm = lf_headtext(t) in
+    let rv = lf_expr(lf_dropkw(lf_droponce(t), "=")) in
+    let rb = lf_expr(lf_dropin(rv.rest)) in
+    {node: LetIn(nm, rv.node, rb.node), rest: rb.rest}
 fn lf_parsect(t) = let r = lf_prim(t) in {node: CT(r.node), rest: r.rest}
-fn lf_postloop(r) = if lf_headtext(r.rest) == "." then lf_postloop({node: Field(r.node, lf_headtext(lf_droponce(r.rest))), rest: lf_droponce(lf_droponce(r.rest))}) else r
+fn lf_postloop(r) =
+    if lf_headtext(r.rest) == "." then
+        lf_postloop({node: Field(r.node, lf_headtext(lf_droponce(r.rest))), rest: lf_droponce(lf_droponce(r.rest))})
+    else
+        r
 fn lf_post(ts) = lf_postloop(lf_prim(ts))
 
 fn lf_isbadholech(c) = c == ":" or c == "\"" or c == "\n" or c == "{" or c == "}" or c == "\\" or c == ";" or c == "'" or c == "#" or c == "$" or c == "@" or c == "`"
 fn lf_isjsblock(s, n) = n >= 7 and slice(s, 0, 7) == "return " or n >= 4 and slice(s, 0, 4) == "var " or n >= 6 and slice(s, 0, 6) == "const " or n >= 8 and slice(s, 0, 8) == "function" or n >= 3 and slice(s, 0, 3) == "if(" or n >= 4 and slice(s, 0, 4) == "for(" or n >= 6 and slice(s, 0, 6) == "while("
 fn lf_hasbadhole(s, i) = if i >= count(s) then 0 else if lf_isbadholech(at(s, i)) then 1 else lf_hasbadhole(s, i + 1)
 fn lf_isholehead(c) = lf_isalpha(c) or lf_isdigit(c) or c == "("
-fn lf_isvalidhole(s) = let n = count(s) in if n == 0 or lf_isjsblock(s, n) == 1 then 0 else if lf_isholehead(at(s, 0)) and lf_hasbadhole(s, 0) == 0 then 1 else 0
+fn lf_isvalidhole(s) =
+    let n = count(s) in
+    if n == 0 or lf_isjsblock(s, n) == 1 then
+        0
+    else if lf_isholehead(at(s, 0)) and lf_hasbadhole(s, 0) == 0 then
+        1
+    else
+        0
 fn lf_findcloseb(s, j) = if j >= count(s) then 0 - 1 else if at(s, j) == "}" then j else lf_findcloseb(s, j + 1)
-fn lf_findinterpbrace(s, i) = if i + 1 < count(s) and at(s, i + 1) == "{" then lf_findinterp(s, i + 2) else let j = lf_findcloseb(s, i + 1) in if i >= 2 and at(s, i - 2) == "/" and at(s, i - 1) == " " and j + 1 == count(s) then lf_findinterp(s, i + 1) else if j > i + 1 and lf_isvalidhole(slice(s, i + 1, j)) == 1 then i else lf_findinterp(s, i + 1)
-fn lf_findinterp(s, i) = if i >= count(s) then 0 - 1 else if at(s, i) == "{" then lf_findinterpbrace(s, i) else lf_findinterp(s, i + 1)
+fn lf_findinterpbrace(s, i) =
+    if i + 1 < count(s) and at(s, i + 1) == "{" then
+        lf_findinterp(s, i + 2)
+    else
+        let j = lf_findcloseb(s, i + 1) in
+        if i >= 2 and at(s, i - 2) == "/" and at(s, i - 1) == " " and j + 1 == count(s) then
+            lf_findinterp(s, i + 1)
+        else if j > i + 1 and lf_isvalidhole(slice(s, i + 1, j)) == 1 then
+            i
+        else
+            lf_findinterp(s, i + 1)
+fn lf_findinterp(s, i) =
+    if i >= count(s) then
+        0 - 1
+    else if at(s, i) == "{" then
+        lf_findinterpbrace(s, i)
+    else
+        lf_findinterp(s, i + 1)
 fn lf_sjoin(acc, piece) = match acc
     Nil => piece
     _   => Bin("+", acc, piece)
 fn lf_qstr(s) = Str("\"" + s + "\"")
 fn lf_strinterptail(acc, s) = if count(s) == 0 then acc else lf_sjoin(acc, lf_qstr(s))
-fn lf_strinterphole(acc, s, i) = let j = lf_findcloseb(s, i + 1) in let pre = slice(s, 0, i) in let hole = Call("str", Cons((lf_expr(lf_lexall(slice(s, i + 1, j)))).node, Nil)) in let acc1 = if count(pre) == 0 then acc else lf_sjoin(acc, lf_qstr(pre)) in lf_strinterploop(lf_sjoin(acc1, hole), slice(s, j + 1, count(s)))
-fn lf_strinterploop(acc, s) = let i = lf_findinterp(s, 0) in if i < 0 then lf_strinterptail(acc, s) else lf_strinterphole(acc, s, i)
-fn lf_strinterp(raw) = let s = slice(raw, 1, count(raw) - 1) in if lf_findinterp(s, 0) < 0 then Str(raw) else lf_strinterploop(Nil, s)
+fn lf_strinterphole(acc, s, i) =
+    let j = lf_findcloseb(s, i + 1) in
+    let pre = slice(s, 0, i) in
+    let hole = Call("str", Cons((lf_expr(lf_lexall(slice(s, i + 1, j)))).node, Nil)) in
+    let acc1 = if count(pre) == 0 then acc else lf_sjoin(acc, lf_qstr(pre)) in
+    lf_strinterploop(lf_sjoin(acc1, hole), slice(s, j + 1, count(s)))
+fn lf_strinterploop(acc, s) =
+    let i = lf_findinterp(s, 0) in
+    if i < 0 then
+        lf_strinterptail(acc, s)
+    else
+        lf_strinterphole(acc, s, i)
+fn lf_strinterp(raw) =
+    let s = slice(raw, 1, count(raw) - 1) in
+    if lf_findinterp(s, 0) < 0 then
+        Str(raw)
+    else
+        lf_strinterploop(Nil, s)
 
-fn lf_primbrace(t) = if lf_isrecbody(t) then let a = lf_recentries(t) in {node: Rec(a.items), rest: a.rest} else let r = lf_expr(t) in {node: r.node, rest: lf_skiprb(r.rest)}
-fn lf_primkw(kw, t) = if kw == "if" then lf_parseif(t) else if kw == "let" then lf_parselet(t) else if kw == "match" then lf_parsematch(t) else if kw == "comptime" then lf_parsect(t) else if kw == "do" then lf_expr(t) else lf_primid(kw, t)
-fn lf_primid(name, t) = if lf_headtext(t) == "(" then let a = lf_arglist(lf_droponce(t)) in {node: Call(name, a.items), rest: a.rest} else if lf_headtext(t) == "{" and lf_isrecbody(lf_droponce(t)) then let a = lf_recentries(lf_droponce(t)) in {node: RecT(name, a.items), rest: a.rest} else {node: Var(name), rest: t}
+fn lf_primbrace(t) =
+    if lf_isrecbody(t) then
+        let a = lf_recentries(t) in
+        {node: Rec(a.items), rest: a.rest}
+    else
+        let r = lf_expr(t) in
+        {node: r.node, rest: lf_skiprb(r.rest)}
+fn lf_primkw(kw, t) =
+    if kw == "if" then
+        lf_parseif(t)
+    else if kw == "let" then
+        lf_parselet(t)
+    else if kw == "match" then
+        lf_parsematch(t)
+    else if kw == "comptime" then
+        lf_parsect(t)
+    else if kw == "do" then
+        lf_expr(t)
+    else
+        lf_primid(kw, t)
+fn lf_primid(name, t) =
+    if lf_headtext(t) == "(" then
+        let a = lf_arglist(lf_droponce(t)) in
+        {node: Call(name, a.items), rest: a.rest}
+    else if lf_headtext(t) == "{" and lf_isrecbody(lf_droponce(t)) then
+        let a = lf_recentries(lf_droponce(t)) in
+        {node: RecT(name, a.items), rest: a.rest}
+    else
+        {node: Var(name), rest: t}
 fn lf_prim(ts) = match ts
     Nil        => {node: Num("0"), rest: Nil}
-    Cons(h, t) => if h.kind == "int" then {node: Num(h.text), rest: t} else if h.kind == "str" then {node: lf_strinterp(h.text), rest: t} else if h.kind == "id" then lf_primkw(h.text, t) else if h.text == "{" then lf_primbrace(t) else if h.text == "(" then let r = lf_expr(t) in {node: r.node, rest: lf_skiprp(r.rest)} else {node: Num("0"), rest: t}
+    Cons(h, t) => if h.kind == "int" then
+            {node: Num(h.text), rest: t}
+        else if h.kind == "str" then
+            {node: lf_strinterp(h.text), rest: t}
+        else if h.kind == "id" then
+            lf_primkw(h.text, t)
+        else if h.text == "{" then
+            lf_primbrace(t)
+        else if h.text == "(" then
+            let r = lf_expr(t) in
+            {node: r.node, rest: lf_skiprp(r.rest)}
+        else
+            {node: Num("0"), rest: t}
 fn lf_arglist(ts) = if lf_headtext(ts) == ")" then {items: Nil, rest: lf_droponce(ts)} else lf_argmore(lf_expr(ts))
-fn lf_argmore(r) = if lf_headtext(r.rest) == "," then let rr = lf_arglist(lf_droponce(r.rest)) in {items: Cons(r.node, rr.items), rest: rr.rest} else {items: Cons(r.node, Nil), rest: lf_skiprp(r.rest)}
+fn lf_argmore(r) =
+    if lf_headtext(r.rest) == "," then
+        let rr = lf_arglist(lf_droponce(r.rest)) in
+        {items: Cons(r.node, rr.items), rest: rr.rest}
+    else
+        {items: Cons(r.node, Nil), rest: lf_skiprp(r.rest)}
 
-fn lf_mulloop(r) = let op = lf_headtext(r.rest) in if op == "*" or op == "/" or op == "%" then let r2 = lf_post(lf_droponce(r.rest)) in lf_mulloop({node: Bin(op, r.node, r2.node), rest: r2.rest}) else r
+fn lf_mulloop(r) =
+    let op = lf_headtext(r.rest) in
+    if op == "*" or op == "/" or op == "%" then
+        let r2 = lf_post(lf_droponce(r.rest)) in
+        lf_mulloop({node: Bin(op, r.node, r2.node), rest: r2.rest})
+    else
+        r
 fn lf_mul(ts) = lf_mulloop(lf_post(ts))
-fn lf_addloop(r) = let op = lf_headtext(r.rest) in if op == "+" or op == "-" then let r2 = lf_mul(lf_droponce(r.rest)) in lf_addloop({node: Bin(op, r.node, r2.node), rest: r2.rest}) else r
+fn lf_addloop(r) =
+    let op = lf_headtext(r.rest) in
+    if op == "+" or op == "-" then
+        let r2 = lf_mul(lf_droponce(r.rest)) in
+        lf_addloop({node: Bin(op, r.node, r2.node), rest: r2.rest})
+    else
+        r
 fn lf_add(ts) = lf_addloop(lf_mul(ts))
-fn lf_cmploop(r) = let op = lf_headtext(r.rest) in if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" then let r2 = lf_add(lf_droponce(r.rest)) in lf_cmploop({node: Bin(op, r.node, r2.node), rest: r2.rest}) else r
+fn lf_cmploop(r) =
+    let op = lf_headtext(r.rest) in
+    if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" then
+        let r2 = lf_add(lf_droponce(r.rest)) in
+        lf_cmploop({node: Bin(op, r.node, r2.node), rest: r2.rest})
+    else
+        r
 fn lf_cmp(ts) = lf_cmploop(lf_add(ts))
-fn lf_andloop(r) = if lf_headtext(r.rest) == "and" then let r2 = lf_cmp(lf_droponce(r.rest)) in lf_andloop({node: Bin("and", r.node, r2.node), rest: r2.rest}) else r
+fn lf_andloop(r) =
+    if lf_headtext(r.rest) == "and" then
+        let r2 = lf_cmp(lf_droponce(r.rest)) in
+        lf_andloop({node: Bin("and", r.node, r2.node), rest: r2.rest})
+    else
+        r
 fn lf_booland(ts) = lf_andloop(lf_cmp(ts))
-fn lf_orloop(r) = if lf_headtext(r.rest) == "or" then let r2 = lf_booland(lf_droponce(r.rest)) in lf_orloop({node: Bin("or", r.node, r2.node), rest: r2.rest}) else r
+fn lf_orloop(r) =
+    if lf_headtext(r.rest) == "or" then
+        let r2 = lf_booland(lf_droponce(r.rest)) in
+        lf_orloop({node: Bin("or", r.node, r2.node), rest: r2.rest})
+    else
+        r
 fn lf_expr(ts) = lf_orloop(lf_booland(ts))
 
 fn lf_isarrow(ts) = lf_headtext(ts) == "=" and lf_headtext(lf_droponce(ts)) == ">"
-fn lf_dropamsep(ts) = if lf_headtext(ts) == "|" or lf_headtext(ts) == "," or lf_headtext(ts) == ";" then lf_droponce(ts) else ts
-fn lf_parsematch(t) = let sc = lf_expr(t) in let hb = if lf_headtext(sc.rest) == "{" then 1 else 0 in let ar = lf_parsearms(lf_dropkw(sc.rest, "{")) in {node: Match(sc.node, ar.items), rest: if hb == 1 then lf_skiprb(ar.rest) else ar.rest}
+fn lf_dropamsep(ts) =
+    if lf_headtext(ts) == "|" or lf_headtext(ts) == "," or lf_headtext(ts) == ";" then
+        lf_droponce(ts)
+    else
+        ts
+fn lf_parsematch(t) =
+    let sc = lf_expr(t) in
+    let hb = if lf_headtext(sc.rest) == "{" then 1 else 0 in
+    let ar = lf_parsearms(lf_dropkw(sc.rest, "{")) in
+    {node: Match(sc.node, ar.items), rest: if hb == 1 then lf_skiprb(ar.rest) else ar.rest}
 fn lf_parsearms(ts) = lf_armstart(ts, lf_parsepat(lf_dropkw(ts, "|")))
 fn lf_armstart(ts, p) = if lf_isarrow(p.rest) then lf_armmore(p) else {items: Nil, rest: ts}
-fn lf_armmore(p) = let b = lf_expr(lf_dropkw(lf_dropkw(p.rest, "="), ">")) in let rr = lf_parsearms(lf_dropamsep(b.rest)) in {items: Cons({pat: p.node, body: b.node}, rr.items), rest: rr.rest}
+fn lf_armmore(p) =
+    let b = lf_expr(lf_dropkw(lf_dropkw(p.rest, "="), ">")) in
+    let rr = lf_parsearms(lf_dropamsep(b.rest)) in
+    {items: Cons({pat: p.node, body: b.node}, rr.items), rest: rr.rest}
 fn lf_parsepat(ts) = match ts
     Nil        => {node: PWild, rest: Nil}
-    Cons(h, t) => if h.kind == "int" then {node: PInt(h.text), rest: t} else if h.text == "_" then {node: PWild, rest: t} else if lf_isctor(h.text) then lf_patcons(h.text, t) else {node: PBind(h.text), rest: t}
-fn lf_patcons(tag, t) = if lf_headtext(t) == "(" then let a = lf_patlist(lf_droponce(t)) in {node: PCons(tag, a.items), rest: a.rest} else {node: PCons(tag, Nil), rest: t}
+    Cons(h, t) => if h.kind == "int" then
+            {node: PInt(h.text), rest: t}
+        else if h.text == "_" then
+            {node: PWild, rest: t}
+        else if lf_isctor(h.text) then
+            lf_patcons(h.text, t)
+        else
+            {node: PBind(h.text), rest: t}
+fn lf_patcons(tag, t) =
+    if lf_headtext(t) == "(" then
+        let a = lf_patlist(lf_droponce(t)) in
+        {node: PCons(tag, a.items), rest: a.rest}
+    else
+        {node: PCons(tag, Nil), rest: t}
 fn lf_patlist(ts) = if lf_headtext(ts) == ")" then {items: Nil, rest: lf_droponce(ts)} else lf_patmore(lf_parsepat(ts))
-fn lf_patmore(r) = if lf_headtext(r.rest) == "," then let rr = lf_patlist(lf_droponce(r.rest)) in {items: Cons(r.node, rr.items), rest: rr.rest} else {items: Cons(r.node, Nil), rest: lf_skiprp(r.rest)}
+fn lf_patmore(r) =
+    if lf_headtext(r.rest) == "," then
+        let rr = lf_patlist(lf_droponce(r.rest)) in
+        {items: Cons(r.node, rr.items), rest: rr.rest}
+    else
+        {items: Cons(r.node, Nil), rest: lf_skiprp(r.rest)}
 
 ## --- parser: single statement (Fn, TypeD, Print, ExprS) ---
-fn lf_parseparams(ts) = if lf_headtext(ts) == ")" then {items: Nil, rest: lf_droponce(ts)} else lf_parseparam(lf_headtext(ts), lf_droponce(ts))
-fn lf_parseparam(nm, ts) = if lf_headtext(ts) == ":" then let r = lf_parsetype1(lf_droponce(ts)) in lf_parammore(nm + ": " + r.ty, r.rest) else lf_parammore(nm, ts)
-fn lf_parammore(nm, ts) = if lf_headtext(ts) == "," then let rr = lf_parseparams(lf_droponce(ts)) in {items: Cons(nm, rr.items), rest: rr.rest} else {items: Cons(nm, Nil), rest: lf_skiprp(ts)}
-fn lf_parseret(ts) = if lf_headtext(ts) == "-" and lf_headtext(lf_droponce(ts)) == ">" then let r = lf_parsetype1(lf_droponce(lf_droponce(ts))) in {ret: " -> " + r.ty, rest: r.rest} else {ret: "", rest: ts}
-fn lf_parsefn(t) = let nm = lf_headtext(t) in let ps = lf_parseparams(lf_dropkw(lf_droponce(t), "(")) in let rt = lf_parseret(ps.rest) in let b = lf_expr(lf_dropkw(rt.rest, "=")) in Fn(nm, ps.items, rt.ret, b.node)
+fn lf_parseparams(ts) =
+    if lf_headtext(ts) == ")" then
+        {items: Nil, rest: lf_droponce(ts)}
+    else
+        lf_parseparam(lf_headtext(ts), lf_droponce(ts))
+fn lf_parseparam(nm, ts) =
+    if lf_headtext(ts) == ":" then
+        let r = lf_parsetype1(lf_droponce(ts)) in
+        lf_parammore(nm + ": " + r.ty, r.rest)
+    else
+        lf_parammore(nm, ts)
+fn lf_parammore(nm, ts) =
+    if lf_headtext(ts) == "," then
+        let rr = lf_parseparams(lf_droponce(ts)) in
+        {items: Cons(nm, rr.items), rest: rr.rest}
+    else
+        {items: Cons(nm, Nil), rest: lf_skiprp(ts)}
+fn lf_parseret(ts) =
+    if lf_headtext(ts) == "-" and lf_headtext(lf_droponce(ts)) == ">" then
+        let r = lf_parsetype1(lf_droponce(lf_droponce(ts))) in
+        {ret: " -> " + r.ty, rest: r.rest}
+    else
+        {ret: "", rest: ts}
+fn lf_parsefn(t) =
+    let nm = lf_headtext(t) in
+    let ps = lf_parseparams(lf_dropkw(lf_droponce(t), "(")) in
+    let rt = lf_parseret(ps.rest) in
+    let b = lf_expr(lf_dropkw(rt.rest, "=")) in
+    Fn(nm, ps.items, rt.ret, b.node)
 fn lf_parseprint(t) = let e = lf_expr(t) in Print(e.node)
-fn lf_parseone(ts) = if lf_headtext(ts) == "fn" then lf_parsefn(lf_droponce(ts)) else if lf_headtext(ts) == "type" then lf_parsetypedecl(lf_droponce(ts)) else if lf_headtext(ts) == "use" then lf_parseuse(lf_droponce(ts)) else if lf_headtext(ts) == "print" then lf_parseprint(lf_droponce(ts)) else ExprS((lf_expr(ts)).node)
+fn lf_parseone(ts) =
+    if lf_headtext(ts) == "fn" then
+        lf_parsefn(lf_droponce(ts))
+    else if lf_headtext(ts) == "type" then
+        lf_parsetypedecl(lf_droponce(ts))
+    else if lf_headtext(ts) == "use" then
+        lf_parseuse(lf_droponce(ts))
+    else if lf_headtext(ts) == "print" then
+        lf_parseprint(lf_droponce(ts))
+    else
+        ExprS((lf_expr(ts)).node)
 
 ## --- canonical pretty-printer (precedence-aware minimal parens + aligned match arms) ---
-fn lf_opprec(op) = if op == "or" then 1 else if op == "and" then 2 else if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" then 3 else if op == "+" or op == "-" then 4 else if op == "*" or op == "/" or op == "%" then 5 else 6
+fn lf_opprec(op) =
+    if op == "or" then
+        1
+    else if op == "and" then
+        2
+    else if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" then
+        3
+    else if op == "+" or op == "-" then
+        4
+    else if op == "*" or op == "/" or op == "%" then
+        5
+    else
+        6
 fn lf_eprec(e) = match e
     If(c, t, e2)    => 0
     LetIn(nm, v, b) => 0
@@ -185,7 +481,11 @@ fn lf_maxpatlen(arms) = match arms
     Cons(h, t) => lf_imax(count(lf_fmtpat(h.pat)), lf_maxpatlen(t))
 ## the body of an arm is indented one level deeper on each of its lines, so the arms of a match nested in an arm sit
 ## 4 columns right of the outer arms (they used to share their column, which read ambiguously)
-fn lf_indent_go(s, i, n, acc) = if i >= n then acc else lf_indent_go(s, i + 1, n, acc + (if at(s, i) == "\n" then "\n    " else at(s, i)))
+fn lf_indent_go(s, i, n, acc) =
+    if i >= n then
+        acc
+    else
+        lf_indent_go(s, i + 1, n, acc + (if at(s, i) == "\n" then "\n    " else at(s, i)))
 fn lf_indent(s) = lf_indent_go(s, 0, count(s), "")
 fn lf_fmtarms(arms, w) = match arms
     Nil        => Nil
@@ -213,7 +513,10 @@ fn lf_fmte(e) = match e
     Bin(op, l, r)   => let p = lf_opprec(op) in lf_wrapl(l, p) + " " + op + " " + lf_wrapr(r, p)
     If(c, t, e2)    => "if " + lf_wrapthen(c) + " then " + lf_wrapthen(t) + " else " + lf_fmte(e2)
     LetIn(nm, v, b) => "let " + nm + " = " + lf_fmte(v) + " in " + lf_fmte(b)
-    Call(nm, args)  => if lf_isctor(nm) and lf_isnil(args) == 1 then nm else nm + "(" + lf_joinsep(lf_fmtes(args), ", ") + ")"
+    Call(nm, args)  => if lf_isctor(nm) and lf_isnil(args) == 1 then
+            nm
+        else
+            nm + "(" + lf_joinsep(lf_fmtes(args), ", ") + ")"
     CT(inner)       => "comptime(" + lf_fmte(inner) + ")"
     Rec(items)      => "{" + lf_joinsep(lf_fmtrecs(items), ", ") + "}"
     RecT(nm, items) => nm + "{" + lf_joinsep(lf_fmtrecs(items), ", ") + "}"
@@ -229,14 +532,26 @@ fn lf_width() = 120
 fn lf_hasnl(s, i) = if i >= count(s) then 0 else if at(s, i) == "\n" then 1 else lf_hasnl(s, i + 1)
 fn lf_fmtfn(head, body) = head + " = " + lf_fmte(body)
 ## e laid out at indentation ind (the text starts at column ind; later lines carry their own indentation)
-fn lf_fmtb(e, ind) = let flat = lf_fmte(e) in if ind + count(flat) <= lf_width() or lf_hasnl(flat, 0) == 1 then flat else lf_fmtb2(e, ind, flat)
+fn lf_fmtb(e, ind) =
+    let flat = lf_fmte(e) in
+    if ind + count(flat) <= lf_width() or lf_hasnl(flat, 0) == 1 then
+        flat
+    else
+        lf_fmtb2(e, ind, flat)
 fn lf_fmtb2(e, ind, flat) = match e
     LetIn(nm, v, b) => "let " + nm + " = " + lf_fmtb(v, ind + 8 + count(nm)) + " in\n" + lf_spaces(ind) + lf_fmtb(b, ind)
     If(c, t, e2)    => "if " + lf_wrapthen(c) + " then\n" + lf_spaces(ind + 4) + lf_fmtthen(t, ind + 4) + "\n" + lf_spaces(ind) + lf_fmtelse(e2, ind)
-    Call(nm, args)  => if lf_isnil(args) == 1 then flat else nm + "(\n" + lf_spaces(ind + 4) + lf_joinsep(lf_fmtbs(args, ind + 4), ",\n" + lf_spaces(ind + 4)) + ")"
+    Call(nm, args)  => if lf_isnil(args) == 1 then
+            flat
+        else
+            nm + "(\n" + lf_spaces(ind + 4) + lf_joinsep(lf_fmtbs(args, ind + 4), ",\n" + lf_spaces(ind + 4)) + ")"
     _               => flat
 fn lf_fmtthen(t, ind) = if lf_isif(t) == 1 then lf_wrapthen(t) else lf_fmtb(t, ind)
-fn lf_fmtelse(e2, ind) = if lf_isif(e2) == 1 then "else " + lf_fmtb(e2, ind) else "else\n" + lf_spaces(ind + 4) + lf_fmtb(e2, ind + 4)
+fn lf_fmtelse(e2, ind) =
+    if lf_isif(e2) == 1 then
+        "else " + lf_fmtb(e2, ind)
+    else
+        "else\n" + lf_spaces(ind + 4) + lf_fmtb(e2, ind + 4)
 fn lf_fmtbs(xs, ind) = match xs
     Nil        => Nil
     Cons(h, t) => Cons(lf_fmtb(h, ind), lf_fmtbs(t, ind))
@@ -248,11 +563,43 @@ fn lf_fmtstmt(s) = match s
     ExprS(v)             => lf_fmte(v)
     _                    => ""
 fn lf_fmtchunk(src) = lf_fmtstmt(lf_parseone(lf_lexall(src)))
-fn lf_real_ast(src) = if __lume_try_begin() == 0 then let p = parseprogram(src) in let z = __lume_try_end() in {ok: 1, prog: p} else {ok: 0, prog: Nil}
-fn lf_try_fmt(src) = if __lume_try_begin() == 0 then let o = lf_fmtchunk(src) in let z = __lume_try_end() in {ok: 1, text: o} else {ok: 0, text: src}
-fn lf_comment_at(s, n, i, instr) = if i >= n then 0 else let c = at(s, i) in if instr == 1 then (if c == "\\" then lf_comment_at(s, n, i + 2, 1) else if c == "\"" then lf_comment_at(s, n, i + 1, 0) else lf_comment_at(s, n, i + 1, 1)) else if c == "\"" then lf_comment_at(s, n, i + 1, 1) else if c == "#" then 1 else lf_comment_at(s, n, i + 1, 0)
+fn lf_real_ast(src) =
+    if __lume_try_begin() == 0 then
+        let p = parseprogram(src) in
+        let z = __lume_try_end() in
+        {ok: 1, prog: p}
+    else
+        {ok: 0, prog: Nil}
+fn lf_try_fmt(src) =
+    if __lume_try_begin() == 0 then
+        let o = lf_fmtchunk(src) in
+        let z = __lume_try_end() in
+        {ok: 1, text: o}
+    else
+        {ok: 0, text: src}
+fn lf_comment_at(s, n, i, instr) =
+    if i >= n then
+        0
+    else
+        let c = at(s, i) in
+        if instr == 1 then
+            (if c == "\\" then lf_comment_at(s, n, i + 2, 1) else if c == "\"" then lf_comment_at(s, n, i + 1, 0) else lf_comment_at(s, n, i + 1, 1))
+        else if c == "\"" then
+            lf_comment_at(s, n, i + 1, 1)
+        else if c == "#" then
+            1
+        else
+            lf_comment_at(s, n, i + 1, 0)
 fn lf_same(src, a, text) = let b = lf_real_ast(text) in if b.ok == 1 and a.prog == b.prog then text else src
-fn lf_safe2(src, out) = if out.ok == 0 then src else let a = lf_real_ast(src) in if a.ok == 0 then src else lf_same(src, a, out.text)
+fn lf_safe2(src, out) =
+    if out.ok == 0 then
+        src
+    else
+        let a = lf_real_ast(src) in
+        if a.ok == 0 then
+            src
+        else
+            lf_same(src, a, out.text)
 fn lf_safe(src) = if lf_comment_at(src, count(src), 0, 0) == 1 then src else lf_safe2(src, lf_try_fmt(src))
 
 ## --- long lines, by tokens: a one-line `fn` wider than lf_width() is written with one `let ... in` per line and the
@@ -261,42 +608,205 @@ fn lf_safe(src) = if lf_comment_at(src, count(src), 0, 0) == 1 then src else lf_
 ## `{r with ...}` and calls pass whole. The broken text replaces the line only when the compiler reads the same
 ## program from it (lf_same).
 fn lb_id(c) = lf_isalnum(c)
-fn lb_word(s, i, n, w) = let m = count(w) in i + m <= n and slicen(s, n, i, i + m) == w and (i == 0 or lb_id(at(s, i - 1)) == 0) and (i + m >= n or lb_id(at(s, i + m)) == 0)
+fn lb_word(s, i, n, w) =
+    let m = count(w) in
+    i + m <= n and slicen(s, n, i, i + m) == w and (i == 0 or lb_id(at(s, i - 1)) == 0) and (i + m >= n or lb_id(at(s, i + m)) == 0)
 ## the index just past the string literal that starts at i ("..." with escapes, or """...""")
-fn lb_str(s, i, n) = if i + 2 < n and slicen(s, n, i, i + 3) == "\"\"\"" then lb_str3(s, i + 3, n) else lb_str1(s, i + 1, n)
-fn lb_str1(s, i, n) = if i >= n then n else let c = at(s, i) in if c == "\\" then lb_str1(s, i + 2, n) else if c == "\"" then i + 1 else lb_str1(s, i + 1, n)
-fn lb_str3(s, i, n) = if i + 2 >= n then n else if slicen(s, n, i, i + 3) == "\"\"\"" then i + 3 else lb_str3(s, i + 1, n)
+fn lb_str(s, i, n) =
+    if i + 2 < n and slicen(s, n, i, i + 3) == "\"\"\"" then
+        lb_str3(s, i + 3, n)
+    else
+        lb_str1(s, i + 1, n)
+fn lb_str1(s, i, n) =
+    if i >= n then
+        n
+    else
+        let c = at(s, i) in
+        if c == "\\" then
+            lb_str1(s, i + 2, n)
+        else if c == "\"" then
+            i + 1
+        else
+            lb_str1(s, i + 1, n)
+fn lb_str3(s, i, n) =
+    if i + 2 >= n then
+        n
+    else if slicen(s, n, i, i + 3) == "\"\"\"" then
+        i + 3
+    else
+        lb_str3(s, i + 1, n)
 ## the first position at depth 0 of the word w, skipping (w, open) pairs: open opens a nested construct whose own w
 ## closes it (let/in, if/else); -1 when there is none
-fn lb_find(s, i, n, d, k, w, open) = if i >= n then 0 - 1 else let c = at(s, i) in if c == "\"" then lb_find(s, lb_str(s, i, n), n, d, k, w, open) else if c == "(" or c == "[" or c == "{" then lb_find(s, i + 1, n, d + 1, k, w, open) else if c == ")" or c == "]" or c == "}" then lb_find(s, i + 1, n, d - 1, k, w, open) else if d == 0 and lb_word(s, i, n, open) then lb_find(s, i + count(open), n, d, k + 1, w, open) else if d == 0 and lb_word(s, i, n, w) then (if k == 0 then i else lb_find(s, i + count(w), n, d, k - 1, w, open)) else lb_find(s, i + 1, n, d, k, w, open)
+fn lb_find(s, i, n, d, k, w, open) =
+    if i >= n then
+        0 - 1
+    else
+        let c = at(s, i) in
+        if c == "\"" then
+            lb_find(s, lb_str(s, i, n), n, d, k, w, open)
+        else if c == "(" or c == "[" or c == "{" then
+            lb_find(s, i + 1, n, d + 1, k, w, open)
+        else if c == ")" or c == "]" or c == "}" then
+            lb_find(s, i + 1, n, d - 1, k, w, open)
+        else if d == 0 and lb_word(s, i, n, open) then
+            lb_find(s, i + count(open), n, d, k + 1, w, open)
+        else if d == 0 and lb_word(s, i, n, w) then
+            (if k == 0 then i else lb_find(s, i + count(w), n, d, k - 1, w, open))
+        else
+            lb_find(s, i + 1, n, d, k, w, open)
 fn lb_trim(s) = lf_rtrim(lf_ltrim(s))
-fn lb_lay(e, ind) = let t = lb_trim(e) in if lb_word(t, 0, count(t), "let") then lb_lay_let(t, ind) else if lb_word(t, 0, count(t), "if") then lb_lay_if(t, ind) else t
-fn lb_lay_let(t, ind) = let n = count(t) in let k = lb_find(t, 3, n, 0, 0, "in", "let") in if k < 0 then t else lf_rtrim(slicen(t, n, 0, k)) + " in\n" + lf_spaces(ind) + lb_lay(slicen(t, n, k + 2, n), ind)
-fn lb_lay_if(t, ind) = let n = count(t) in let th = lb_find(t, 2, n, 0, 0, "then", "if") in let el = (if th < 0 then 0 - 1 else lb_find(t, th + 4, n, 0, 0, "else", "if")) in if el < 0 then t else lb_lay_if2(lb_trim(slicen(t, n, 2, th)), slicen(t, n, th + 4, el), lb_trim(slicen(t, n, el + 4, n)), ind)
+fn lb_lay(e, ind) =
+    let t = lb_trim(e) in
+    if lb_word(t, 0, count(t), "let") then
+        lb_lay_let(t, ind)
+    else if lb_word(t, 0, count(t), "if") then
+        lb_lay_if(t, ind)
+    else
+        t
+fn lb_lay_let(t, ind) =
+    let n = count(t) in
+    let k = lb_find(t, 3, n, 0, 0, "in", "let") in
+    if k < 0 then
+        t
+    else
+        lf_rtrim(slicen(t, n, 0, k)) + " in\n" + lf_spaces(ind) + lb_lay(slicen(t, n, k + 2, n), ind)
+fn lb_lay_if(t, ind) =
+    let n = count(t) in
+    let th = lb_find(t, 2, n, 0, 0, "then", "if") in
+    let el = if th < 0 then 0 - 1 else lb_find(t, th + 4, n, 0, 0, "else", "if") in
+    if el < 0 then
+        t
+    else
+        lb_lay_if2(lb_trim(slicen(t, n, 2, th)), slicen(t, n, th + 4, el), lb_trim(slicen(t, n, el + 4, n)), ind)
 fn lb_lay_if2(c, tb, eb, ind) = "if " + c + " then\n" + lf_spaces(ind + 4) + lb_lay(tb, ind + 4) + "\n" + lf_spaces(ind) + (if lb_word(eb, 0, count(eb), "if") then "else " + lb_lay(eb, ind) else "else\n" + lf_spaces(ind + 4) + lb_lay(eb, ind + 4))
 ## the " = " that ends the head of a one-line fn (depth 0, not part of ==, <=, >=, !=, =>)
-fn lb_eq(s, i, n, d) = if i + 2 >= n then 0 - 1 else let c = at(s, i) in if c == "\"" then lb_eq(s, lb_str(s, i, n), n, d) else if c == "(" or c == "[" or c == "{" then lb_eq(s, i + 1, n, d + 1) else if c == ")" or c == "]" or c == "}" then lb_eq(s, i + 1, n, d - 1) else if d == 0 and slicen(s, n, i, i + 3) == " = " then i else lb_eq(s, i + 1, n, d)
-fn lb_stmt(t) = let n = count(t) in let k = lb_eq(t, 0, n, 0) in if k < 0 then t else let body = lb_lay(slicen(t, n, k + 3, n), 4) in if lf_hasnl(body, 0) == 0 then t else slicen(t, n, 0, k) + " =\n    " + body
+fn lb_eq(s, i, n, d) =
+    if i + 2 >= n then
+        0 - 1
+    else
+        let c = at(s, i) in
+        if c == "\"" then
+            lb_eq(s, lb_str(s, i, n), n, d)
+        else if c == "(" or c == "[" or c == "{" then
+            lb_eq(s, i + 1, n, d + 1)
+        else if c == ")" or c == "]" or c == "}" then
+            lb_eq(s, i + 1, n, d - 1)
+        else if d == 0 and slicen(s, n, i, i + 3) == " = " then
+            i
+        else
+            lb_eq(s, i + 1, n, d)
+fn lb_stmt(t) =
+    let n = count(t) in
+    let k = lb_eq(t, 0, n, 0) in
+    if k < 0 then
+        t
+    else
+        let body = lb_lay(slicen(t, n, k + 3, n), 4) in
+        if lf_hasnl(body, 0) == 0 then
+            t
+        else
+            slicen(t, n, 0, k) + " =\n    " + body
 ## a declaration over several lines (requires / ensures): its long `= body` line is broken the same way
-fn lb_multi(o) = if lf_comment_at(o, count(o), 0, 0) == 1 or lf_startswith(o, "fn ") == 0 then o else let b = lf_joinsep(lb_eqlines(lf_splitlines(o)), "\n") in if b == o then o else let a = lf_real_ast(o) in if a.ok == 1 then lf_same(o, a, b) else o
+fn lb_multi(o) =
+    if lf_comment_at(o, count(o), 0, 0) == 1 or lf_startswith(o, "fn ") == 0 then
+        o
+    else
+        let b = lf_joinsep(lb_eqlines(lf_splitlines(o)), "\n") in
+        if b == o then
+            o
+        else
+            let a = lf_real_ast(o) in
+            if a.ok == 1 then
+                lf_same(o, a, b)
+            else
+                o
 fn lb_eqlines(ls) = match ls
     Nil        => Nil
     Cons(l, t) => Cons(lb_eqline(l), lb_eqlines(t))
 ## a long match arm: what follows its "=>" (depth 0) is broken, continuing four columns past the arm
-fn lb_arrow(s, i, n, d) = if i + 3 >= n then 0 - 1 else let c = at(s, i) in if c == "\"" then lb_arrow(s, lb_str(s, i, n), n, d) else if c == "(" or c == "[" or c == "{" then lb_arrow(s, i + 1, n, d + 1) else if c == ")" or c == "]" or c == "}" then lb_arrow(s, i + 1, n, d - 1) else if d == 0 and slicen(s, n, i, i + 4) == " => " then i else lb_arrow(s, i + 1, n, d)
-fn lb_armline(l) = let n = count(l) in let k = lb_arrow(l, 0, n, 0) in if k < 0 then l else let ind = n - count(lf_ltrim(l)) in let body = lb_lay(slicen(l, n, k + 4, n), ind + 4) in if lf_hasnl(body, 0) == 1 then slicen(l, n, 0, k) + " => " + body else l
-fn lb_eqline(l) = let t = lf_ltrim(l) in if count(l) > lf_width() and lf_startswith(t, "= ") == 0 then lb_armline(l) else if count(l) > lf_width() and lf_startswith(t, "= ") then (let ind = count(l) - count(t) in let body = lb_lay(slice(t, 2, count(t)), ind + 4) in if lf_hasnl(body, 0) == 1 then lf_spaces(ind) + "= " + body else l) else l
-fn lf_safe_brk(src) = let o = lf_safe(src) in if lf_hasnl(o, 0) == 1 then lb_multi(o) else if count(o) <= lf_width() or lf_startswith(o, "fn ") == 0 or lf_comment_at(o, count(o), 0, 0) == 1 then o else let b = lb_stmt(o) in if b == o then o else let a = lf_real_ast(o) in if a.ok == 1 then lf_same(o, a, b) else o
+fn lb_arrow(s, i, n, d) =
+    if i + 3 >= n then
+        0 - 1
+    else
+        let c = at(s, i) in
+        if c == "\"" then
+            lb_arrow(s, lb_str(s, i, n), n, d)
+        else if c == "(" or c == "[" or c == "{" then
+            lb_arrow(s, i + 1, n, d + 1)
+        else if c == ")" or c == "]" or c == "}" then
+            lb_arrow(s, i + 1, n, d - 1)
+        else if d == 0 and slicen(s, n, i, i + 4) == " => " then
+            i
+        else
+            lb_arrow(s, i + 1, n, d)
+fn lb_armline(l) =
+    let n = count(l) in
+    let k = lb_arrow(l, 0, n, 0) in
+    if k < 0 then
+        l
+    else
+        let ind = n - count(lf_ltrim(l)) in
+        let body = lb_lay(slicen(l, n, k + 4, n), ind + 4) in
+        if lf_hasnl(body, 0) == 1 then
+            slicen(l, n, 0, k) + " => " + body
+        else
+            l
+fn lb_eqline(l) =
+    let t = lf_ltrim(l) in
+    if count(l) > lf_width() and lf_startswith(t, "= ") == 0 then
+        lb_armline(l)
+    else if count(l) > lf_width() and lf_startswith(t, "= ") then
+        let ind = count(l) - count(t) in
+        let body = lb_lay(slice(t, 2, count(t)), ind + 4) in
+        if lf_hasnl(body, 0) == 1 then
+            lf_spaces(ind) + "= " + body
+        else
+            l
+    else
+        l
+fn lf_safe_brk(src) =
+    let o = lf_safe(src) in
+    if lf_hasnl(o, 0) == 1 then
+        lb_multi(o)
+    else if count(o) <= lf_width() or lf_startswith(o, "fn ") == 0 or lf_comment_at(o, count(o), 0, 0) == 1 then
+        o
+    else
+        let b = lb_stmt(o) in
+        if b == o then
+            o
+        else
+            let a = lf_real_ast(o) in
+            if a.ok == 1 then
+                lf_same(o, a, b)
+            else
+                o
 
 ## --- line grouping: group continuation lines (indented lines or unindented match arms) with statement ---
-fn lf_isarmline(tr) = if tr == "" or lf_startswith(tr, "#") or lf_startswith(tr, "fn ") or lf_startswith(tr, "type ") or lf_startswith(tr, "use ") or lf_startswith(tr, "print ") then 0 else lf_isarrow((lf_parsepat(lf_lexall(tr))).rest)
+fn lf_isarmline(tr) =
+    if tr == "" or lf_startswith(tr, "#") or lf_startswith(tr, "fn ") or lf_startswith(tr, "type ") or lf_startswith(tr, "use ") or lf_startswith(tr, "print ") then
+        0
+    else
+        lf_isarrow((lf_parsepat(lf_lexall(tr))).rest)
 fn lf_isbracecont(tr) = lf_startswith(tr, "= ") or lf_startswith(tr, "}") or lf_startswith(tr, "elif ") or lf_startswith(tr, "else") or lf_startswith(tr, "|")
-fn lf_iscont(raw, tr) = if tr == "" or lf_startswith(tr, "#") then 0 else if lf_isindented(raw) then 1 else if lf_isbracecont(tr) then 1 else lf_isarmline(tr)
+fn lf_iscont(raw, tr) =
+    if tr == "" or lf_startswith(tr, "#") then
+        0
+    else if lf_isindented(raw) then
+        1
+    else if lf_isbracecont(tr) then
+        1
+    else
+        lf_isarmline(tr)
 
 fn lf_takecont(lines) = match lines
     Nil        => {cont: Nil, rest: Nil}
     Cons(h, t) => let raw = lf_rtrim(h) in lf_takecont1(raw, lf_ltrim(raw), h, t)
-fn lf_takecont1(raw, tr, h, t) = if lf_iscont(raw, tr) == 1 then let r = lf_takecont(t) in {cont: Cons(raw, r.cont), rest: r.rest} else {cont: Nil, rest: Cons(h, t)}
+fn lf_takecont1(raw, tr, h, t) =
+    if lf_iscont(raw, tr) == 1 then
+        let r = lf_takecont(t) in
+        {cont: Cons(raw, r.cont), rest: r.rest}
+    else
+        {cont: Nil, rest: Cons(h, t)}
 
 fn lf_skipempty(lines) = match lines
     Nil        => Nil
@@ -305,6 +815,17 @@ fn lf_skipempty(lines) = match lines
 fn lf_fmtlines(lines) = match lines
     Nil        => Nil
     Cons(h, t) => let raw = lf_rtrim(h) in lf_fmtline1(raw, lf_ltrim(raw), t)
-fn lf_fmtline1(raw, tr, t) = if tr == "" then let t2 = lf_skipempty(t) in if lf_isnil(t2) == 1 then Nil else Cons("", lf_fmtlines(t2)) else if lf_startswith(tr, "#") then Cons(raw, lf_fmtlines(t)) else let c = lf_takecont(t) in Cons(lf_safe_brk(lf_joinsep(Cons(raw, c.cont), "\n")), lf_fmtlines(c.rest))
+fn lf_fmtline1(raw, tr, t) =
+    if tr == "" then
+        let t2 = lf_skipempty(t) in
+        if lf_isnil(t2) == 1 then
+            Nil
+        else
+            Cons("", lf_fmtlines(t2))
+    else if lf_startswith(tr, "#") then
+        Cons(raw, lf_fmtlines(t))
+    else
+        let c = lf_takecont(t) in
+        Cons(lf_safe_brk(lf_joinsep(Cons(raw, c.cont), "\n")), lf_fmtlines(c.rest))
 
 print lf_joinsep(lf_fmtlines(lf_skipempty(lf_splitlines(readall()))), "\n")

@@ -189,7 +189,14 @@ fn hio_env_restore(xs) = match xs
 fn hio_env_run(rest, run) = match rest
     Nil        => 0
     Cons(p, a) => run(p, a)
-fn hio_with_env(args, run) = let saved = hio_env_apply(hio_assigns(args)) in let r = hio_env_run(hio_after_assigns(args), run) in let z = hio_env_restore(saved) in r
+## env [-C DIR] [NAME=VALUE ...] program args: -C runs the program in DIR (the directory changes for that run only;
+## a DIR that cannot be entered gives env's status 125, as GNU env)
+fn hio_with_env(args, run) = if hio_is_cdir(args) then hio_env_in_dir(hio_first(hio_tail(args), ""), hio_tail(hio_tail(args)), run) else hio_env_plain(args, run)
+fn hio_is_cdir(args) = match args
+    Nil        => false
+    Cons(h, t) => h == "-C" and hio_first(t, "") != ""
+fn hio_env_in_dir(dir, rest, run) = let old = fs_current_dir() in if fs_chdir(dir) != 1 then 32000 else let r = hio_env_plain(rest, run) in let back = fs_chdir(old) in r
+fn hio_env_plain(args, run) = let saved = hio_env_apply(hio_assigns(args)) in let r = hio_env_run(hio_after_assigns(args), run) in let z = hio_env_restore(saved) in r
 ## ---- PATH lookup -------------------------------------------------------------------------------------------
 ## the entries of $PATH (":" on Linux; ";" on Windows, where entries are "C:\..." and become POSIX paths)
 fn hio_sep_end(s, i, sep) = if i >= count(s) or at(s, i) == sep then i else hio_sep_end(s, i + 1, sep)
@@ -203,7 +210,10 @@ fn hio_which_in(dirs, name) = match dirs
 fn hio_tool_exists(prog) = hio_emulated(prog) != "" or prog == "/usr/bin/env" or fs_path_exists(hio_resolve(prog)) == 1 or fs_path_exists(hio_resolve(prog) + ".exe") == 1
 fn hio_which(name) = hio_which_in(hio_path_dirs(), name)
 ## an absolute program path that does not exist on this host (e.g. /usr/bin/z3 on Windows) is looked up by name
-fn hio_resolve(prog) = if fs_path_exists(prog) == 1 or fs_path_exists(prog + ".exe") == 1 or (not hio_prefix(prog, "/usr/bin/") and not hio_prefix(prog, "/bin/") and not hio_prefix(prog, "/usr/local/bin/")) then prog else let w = hio_which(hio_base(prog)) in if w != "" then w else prog
+## a bare name (no "/") is looked up through $PATH, as execvp and env do: `env PATH=dir cc` must run dir/cc
+fn hio_has_slash(s, i) = if i >= count(s) then 0 else if at(s, i) == "/" or at(s, i) == "\\" then 1 else hio_has_slash(s, i + 1)
+fn hio_resolve(prog) = if prog != "" and hio_has_slash(prog, 0) == 0 then (let w = hio_which(prog) in if w != "" then w else prog) else hio_resolve_path(prog)
+fn hio_resolve_path(prog) = if fs_path_exists(prog) == 1 or fs_path_exists(prog + ".exe") == 1 or (not hio_prefix(prog, "/usr/bin/") and not hio_prefix(prog, "/bin/") and not hio_prefix(prog, "/usr/local/bin/")) then prog else let w = hio_which(hio_base(prog)) in if w != "" then w else prog
 
 ## ---- command lines --------------------------------------------------------------------------------------------
 ## a configured command line runs without a shell when it is only words (quotes allowed); one with shell syntax
@@ -251,3 +261,5 @@ fn test_hio_resolve_keeps_existing_and_relative() = hio_resolve("build") == "bui
 fn test_hio_command_words() = let w = hio_words("prog -a 'two words' \"x y\" z\\ w") in count(w) == 5 and hio_first(w, "") == "prog" and hio_has_meta("qemu-riscv64 -L . ch.elf", 0) == 0 and hio_has_meta("sed s/a/b/ | x", 0) == 1
 
 fn test_hio_rmdir_and_remove_contracts() = let d = "build/hostio_rmdir_probe" in let m = fs_mkdir(d) in let keep = fs_remove(d) in let gone = fs_rmdir(d) in keep == 0 and gone == 1 and fs_path_exists(d) == 0 and fs_rmdir(d) == 0
+fn test_hio_env_dash_c_runs_in_the_directory() = let d = "build/hostio_envc_probe" in let m = hio_mkdir_p(d) in let here = fs_current_dir() in let r = hio_with_env(Cons("-C", Cons(d, Cons("probe", Nil))), fn(p, a) => if fs_current_dir() == here then 1 else 0) in r == 0 and fs_current_dir() == here and hio_with_env(Cons("-C", Cons(d + "/missing", Cons("probe", Nil))), fn(p, a) => 0) == 32000
+fn test_hio_resolve_bare_name_through_path() = let r = hio_resolve("sh") in if os_platform() == "windows" then 1 else count(r) > 3 and slice(r, count(r) - 3, count(r)) == "/sh" and fs_path_exists(r) == 1

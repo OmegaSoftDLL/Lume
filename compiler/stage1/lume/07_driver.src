@@ -345,10 +345,15 @@ fn lil_rev_acc(xs, acc) = match xs
     Nil        => acc
     Cons(h, t) => lil_rev_acc(t, Cons(h, acc))
 fn lil_rev(xs) = lil_rev_acc(xs, Nil)
-fn lil_link_identity() = {is_krn: 0, isr_fn: "", has_sys: 0, has_tier: 0, has_mem: 0, uses_fs: 0, ffi_links: "", ffi_osigs: Nil, dt_s: "", relink: 1, funcs_raw: "", mains_s: "", mframe: 0}
+## does a module fragment's code mention `sub` (a builtin family it calls, or a helper it defines)? The link
+## step has no AST, so it decides which optional runtime parts (rt_f64, the decimal hooks, rt_crypto) to add
+## from the code; a false hit only adds runtime code.
+fn lil_has(s, sub) = lil_has_from(s, sub, 0, count(s), count(sub))
+fn lil_has_from(s, sub, i, n, m) = if i + m > n then 0 else if ord_at(s, i) == ord_at(sub, 0) and slice(s, i, i + m) == sub then 1 else lil_has_from(s, sub, i + 1, n, m)
+fn lil_link_identity() = {is_krn: 0, isr_fn: "", has_sys: 0, has_tier: 0, has_mem: 0, uses_fs: 0, ffi_links: "", ffi_osigs: Nil, dt_s: "", relink: 1, funcs_raw: "", mains_s: "", mframe: 0, has_f64: 0, has_dec: 0, has_crypto: 0}
 fn lil_link_analysis(mods) = match mods
     Nil        => lil_link_identity()
-    Cons(h, t) => let frag = lil_frag_parse(h.lines) in let z = lil_link_verify(h, frag) in let rest = lil_link_analysis(t) in {is_krn: (if frag.is_krn == 1 or rest.is_krn == 1 then 1 else 0), isr_fn: (if frag.isr != "-" then frag.isr else rest.isr_fn), has_sys: (if frag.has_sys == 1 or rest.has_sys == 1 then 1 else 0), has_tier: (if frag.has_tier == 1 or rest.has_tier == 1 then 1 else 0), has_mem: (if frag.has_mem == 1 or rest.has_mem == 1 then 1 else 0), uses_fs: (if frag.uses_fs == 1 or rest.uses_fs == 1 then 1 else 0), ffi_links: frag.ffi_links + rest.ffi_links, ffi_osigs: Nil, dt_s: frag.dt + rest.dt_s, relink: 1, funcs_raw: frag.funcs + rest.funcs_raw, mains_s: (if frag.role == "entry" then frag.mains else rest.mains_s), mframe: (if frag.role == "entry" then frag.mframe else rest.mframe)}
+    Cons(h, t) => let frag = lil_frag_parse(h.lines) in let z = lil_link_verify(h, frag) in let rest = lil_link_analysis(t) in {is_krn: (if frag.is_krn == 1 or rest.is_krn == 1 then 1 else 0), isr_fn: (if frag.isr != "-" then frag.isr else rest.isr_fn), has_sys: (if frag.has_sys == 1 or rest.has_sys == 1 then 1 else 0), has_tier: (if frag.has_tier == 1 or rest.has_tier == 1 then 1 else 0), has_mem: (if frag.has_mem == 1 or rest.has_mem == 1 then 1 else 0), uses_fs: (if frag.uses_fs == 1 or rest.uses_fs == 1 then 1 else 0), ffi_links: frag.ffi_links + rest.ffi_links, ffi_osigs: Nil, dt_s: frag.dt + rest.dt_s, relink: 1, funcs_raw: frag.funcs + rest.funcs_raw, mains_s: (if frag.role == "entry" then frag.mains else rest.mains_s), mframe: (if frag.role == "entry" then frag.mframe else rest.mframe), has_f64: (if rest.has_f64 == 1 then 1 else lil_has(frag.funcs, " f64")), has_dec: (if rest.has_dec == 1 then 1 else lil_has(frag.funcs, "__lume_dyn_add")), has_crypto: (if rest.has_crypto == 1 then 1 else lil_has(frag.funcs, " crypto_"))}
 
 ## --- mode entry points (dispatched from lumec_main) ---
 fn lumec_mode_asthash(input) = lil_hashblock(lil_lines(input, 0), "")

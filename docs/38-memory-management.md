@@ -20,7 +20,7 @@ The collector is **non-moving mark-sweep**, conservative for roots and for scann
 | Large objects | Their own run of chunks. |
 | Roots | Registers, stack, bss, every live arena. |
 | Pointers | Any word that points into a live object keeps it alive, interior pointers included. Atomic objects (string bytes) are not scanned. |
-| Sweep | Lazy. A collection only frees whole chunks, which go straight back to the OS through `madvise(MADV_DONTNEED)`. A partly live chunk is swept when its size class next needs memory, so the pause is the mark phase. |
+| Sweep | Lazy. A collection frees whole chunks. Up to the collection limit of them stay mapped, zeroed, for the next allocations (the heap grows back to that limit before the next collection anyway, so peak RSS does not change and the chunks are not faulted in again); the rest go back to the OS through `madvise(MADV_DONTNEED)`, and under `LUME_HEAP_CAP` all of them do. A partly live chunk is swept when its size class next needs memory, so the pause is the mark phase. |
 | Pacing | The next collection happens when the bytes allocated since the last one reach `max(64 MiB, 3 × live)`. A program below 64 MiB never collects. |
 | Zeroing | `alloc` always returns zeroed memory. |
 

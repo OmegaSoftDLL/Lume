@@ -42,3 +42,11 @@ fn deep(n, keep) = if n == 0 then sum_list(keep, 0) else let local = Cons(n, kee
 fn test_stack_roots_survive() = deep(100000, Nil) == 5000050000
 
 fn test_arena_is_not_collected() = let a = arena_new(4096) in let p = arena_alloc(a, 64) in let w = mmio_volatile_write64(p, 12345) in let z = forced(3, 0) in let v = mmio_volatile_read64(p) in let d = arena_destroy(a) in v == 12345
+
+## memory the collector reuses starts zeroed: whole chunks freed by a collection are kept for reuse, and a new
+## buffer (small and large) carved from them must read all zero, never the bytes of the dead buffers
+fn fill_buf(b, i, n) = if i >= n then b else let s = buf_set(b, i, 165) in fill_buf(b, i + 1, n)
+fn dirty_bufs(k, size) = if k == 0 then 0 else let b = fill_buf(buf_new(size), 0, size) in dirty_bufs(k - 1, size)
+fn all_zero(b, i, n) = if i >= n then 1 else if buf_get(b, i) != 0 then 0 else all_zero(b, i + 1, n)
+fn fresh_zero(k, size) = if k == 0 then 1 else if all_zero(buf_new(size), 0, size) == 0 then 0 else fresh_zero(k - 1, size)
+fn test_reused_memory_is_zero() = let a = dirty_bufs(3000, 4000) in let b = dirty_bufs(40, 200000) in let c = gc_collect() in let d = gc_collect() in fresh_zero(3000, 4000) == 1 and fresh_zero(40, 200000) == 1

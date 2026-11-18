@@ -73,6 +73,7 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `type Name = ...`            Algebraic Data Type (ADT) or record type definition.
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
+- `fn f(x: any) -> any = x`    `any` opts out of static typing: any value fits, the runtime checks its use.
 - `const NAME: T = expr`       Module-level constant (inlined into functions & contracts).
 - `law name(a: int) = expr`    Universal mathematical law proven across all inputs.
 - `print <expr>`               Top-level program entrypoint expression.
@@ -732,7 +733,8 @@ it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are
 ## 8.1 Core Toolchain & Developer Commands
   lume build [--incremental] [--memory] [--protect [hardened|max]] [--target <t>] <src> [-o <out>]
                                          (-o libX.so / X.dll: a shared library written by Lume, its pub
-                                         functions exported; a test says ## @library libX.so = X.src)
+                                         functions exported; a C host links it with cc or ld;
+                                         a test says ## @library libX.so = X.src)
   lume run [--memory] <src> [args...]    Compile and run source immediately
   lume test <src.src>...                 Run all `fn test_*()` unit tests
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check

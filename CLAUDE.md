@@ -29,6 +29,19 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 
 ## State on 2026-11-18 (newest first)
 
+- RULE (owner, inviolable): the repository is 100 % Lume. 192 non-Lume helper files under build/windows-native
+  (Perl, shell, PowerShell, Python) had been force-added and showed GitHub's language bar as "Perl 99%"; removed in
+  cf37ed6 (kept on disk). Never `git add -f` under build/; check `git diff --cached --name-only` before each commit.
+- CI repair round (main was a0c16d7, 7 of 17 jobs red): seed `.byte 0` -> `.asciz ""` (os_getenv of an unset
+  variable), runtime split rt_lume_core / rt_lume_os (kernels get no fs code; rt_int moved to rt_text), the three
+  gates get LUME_BIN_DIR=build/bin, runtime-refusal tests through `dyn(x: any)`, `any` accepted both ways
+  (06_typecheck tcompat), lasm --shared section headers, hostio `env -C` and PATH lookup of bare names, fs_copy keeps
+  the source mode, lcaas without `{r with}` (the Stage-0 checker on macOS has none), driver never fails silently.
+- Performance for LumeDesk (repro38 follow-up): GC keeps freed chunks mapped and zeroed up to the collection limit
+  (alloc 20 -> 8 ns, sys time 0.16 -> 0.02 s); field reads through an inline per-field cache (__ic_NAME, slow path
+  __rt_recget_ic in rt_text.src). The 64 MiB minimum collection limit is still above the agent's 15 MB target.
+  Next: SIMD (lasm packed encodings + --raw vector intrinsics), unboxed loops, --raw leaf mode with cold calls (2b).
+
 - v1.2.0 published (release, main = branch 75e880f). The tag's workflows failed before publishing (assets intact):
   the seed could not parse a parameter named `as` (renamed in 05_codegen / lcrypto_tls; fresh-clone seed bootstrap
   verified in WSL) and release.yml checked "lume 1.1.0" (now the tag's version). Not pushed yet.

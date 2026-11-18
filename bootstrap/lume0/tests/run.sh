@@ -456,8 +456,9 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     rm -f std_fs_ok_probe std_fs_ok_roundtrip std_fs_ok_append std_fs_ok_with std_fs_ok_with_err std_fs_ok_badmode std_fs_ok_uac std_fs_roundtrip_probe std_fs_append_probe std_fs_size_probe std_fs_with_probe std_fs_with_err_probe std_fs_uac_probe std_fs_mode_probe
     # #404: real memory management -- heap observability, scoped arenas, heap cap.
     # the guarantees that span several front-ends have their own Lume gates
+    # the gates start build/bin/lumec themselves: LUME_BIN_DIR (exported above for the probes) must name that directory
     for gate in ownership_gate runtime_sync_gate gc_gate; do
-        if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/harness/$gate.src -o ../../build/bin/$gate 2>"$ntmp/$gate.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | ../../build/bin/$gate >"$ntmp/$gate.out" 2>>"$ntmp/$gate.err"; then ok "$(cat "$ntmp/$gate.out")"; else bad "$gate"; tail -3 "$ntmp/$gate.err"; fi
+        if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/harness/$gate.src -o ../../build/bin/$gate 2>"$ntmp/$gate.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/$gate >"$ntmp/$gate.out" 2>>"$ntmp/$gate.err"; then ok "$(cat "$ntmp/$gate.out")"; else bad "$gate"; tail -3 "$ntmp/$gate.err"; fi
     done
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/gc_ok.src >"$ntmp/gc_ok.out" 2>"$ntmp/gc_ok.err"
     if grep -q " passed, 0 failed" "$ntmp/gc_ok.out"; then ok "collector: live data survives forced collections, garbage is freed (gc_ok.src)"; else bad "collector: gc_ok.src"; tail -5 "$ntmp/gc_ok.out"; fi
@@ -561,7 +562,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     done
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/dyn_type_fail.src -o "$ntmp/dyn_type_fail.elf" 2>"$ntmp/dt_build.err" || memfail=1
     dt_args=""
-    for dt_want in "no match arm" "no such field" "no such field" "no such field" "arithmetic needs integers" "arithmetic needs integers" "arithmetic needs integers" "integer overflow" "condition needs a boolean" "integer overflow" "integer overflow" "division by zero"; do
+    for dt_want in "no match arm" "has no" "has no" "has no" "arithmetic needs integers" "arithmetic needs integers" "arithmetic needs integers" "integer overflow" "condition needs a boolean" "integer overflow" "integer overflow" "division by zero"; do
         "$ntmp/dyn_type_fail.elf" $dt_args >"$ntmp/dt.out" 2>"$ntmp/dt.err"; dt_rc=$?
         if [ "$dt_rc" != 3 ] || ! grep -q "$dt_want" "$ntmp/dt.err"; then memfail=1; fi
         dt_args="$dt_args x"
@@ -581,7 +582,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     grep -q '(a < b) == c' "$ntmp/fmt_cmp.src" || memfail=1
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/rec_update_fail.src -o "$ntmp/rec_update_fail.elf" 2>"$ntmp/ruf.berr" || memfail=1
     "$ntmp/rec_update_fail.elf" >"$ntmp/ruf.out" 2>"$ntmp/ruf.err"; ruf_rc=$?
-    if [ "$ruf_rc" != 3 ] || ! grep -q "no such field" "$ntmp/ruf.err"; then memfail=1; fi
+    if [ "$ruf_rc" != 3 ] || ! grep -q "has no field" "$ntmp/ruf.err"; then memfail=1; fi
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/fn_values_ok.src -o "$ntmp/fn_values_ok.elf" 2>"$ntmp/fv_build.err" || memfail=1
     "$ntmp/fn_values_ok.elf" 2>&1 | diff -u ../../tests/memory/fn_values_ok.expected - >/dev/null || memfail=1
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/closures_ok.src -o "$ntmp/closures_ok.elf" 2>"$ntmp/cl_build.err" || memfail=1
@@ -848,7 +849,7 @@ PY
     # 6 automated gates `compile`/`conformance`/`api_compat`/`capability`/`budget`/`fixpoint`, and mandatory human approval).
     if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/evolve_demo.src >"$ntmp/ev_demo.out" 2>"$ntmp/ev_demo.err" && diff -u ../../tests/conformance/stage1/evolve_demo_asm.expected "$ntmp/ev_demo.out" >/dev/null; then ok "phase-2 E3: in-process self-evolution & governance engine (use levolve: AI fix-it repair + 6 gates + human approval)"; else bad "phase-2 E3: in-process self-evolution & governance engine (use levolve)"; cat "$ntmp/ev_demo.err" "$ntmp/ev_demo.out"; fi
     if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/evolve_evidence_ok.src >"$ntmp/ev_evidence.out" 2>"$ntmp/ev_evidence.err" && diff -u ../../tests/conformance/stage1/evolve_evidence_ok_asm.expected "$ntmp/ev_evidence.out" >/dev/null; then ok "phase-2 E3 (#330): evolve derives fail-closed gate and obligation evidence (PASS/FAIL/UNKNOWN)"; else bad "phase-2 E3 (#330): evolve derived evidence"; cat "$ntmp/ev_evidence.err" "$ntmp/ev_evidence.out"; fi
-    if LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/levidence.src >"$ntmp/levidence_test.out" 2>"$ntmp/levidence_test.err" && grep -q "24 passed, 0 failed" "$ntmp/levidence_test.out"; then ok "phase-2 E2 (#335/#337): portable evidence retention, material invalidation, dependency closure, missing identity, and tamper rejection"; else bad "phase-2 E2 (#335/#337): portable renewable evidence"; cat "$ntmp/levidence_test.err" "$ntmp/levidence_test.out"; fi
+    if LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/levidence.src >"$ntmp/levidence_test.out" 2>"$ntmp/levidence_test.err" && grep -Eq "^[0-9]+ passed, 0 failed" "$ntmp/levidence_test.out" && [ "$(grep -c "^  ok   test_" "$ntmp/levidence_test.out")" -ge 24 ]; then ok "phase-2 E2 (#335/#337): portable evidence retention, material invalidation, dependency closure, missing identity, and tamper rejection"; else bad "phase-2 E2 (#335/#337): portable renewable evidence"; cat "$ntmp/levidence_test.err" "$ntmp/levidence_test.out"; fi
     if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/ed25519_rfc8032_ok.src >"$ntmp/ed_rfc.out" 2>"$ntmp/ed_rfc.err" && diff -u ../../tests/conformance/stage1/ed25519_rfc8032_ok_asm.expected "$ntmp/ed_rfc.out" >/dev/null; then ok "phase-2 E3 (#222): ed25519_verify passes official RFC 8032 Section 7.1 test vectors (empty, 1B, 2B, 1024B, SHA(abc) + bit-flip/non-canonical rejection)"; else bad "phase-2 E3 (#222): ed25519_verify official RFC 8032 Section 7.1 test vectors"; cat "$ntmp/ed_rfc.err" "$ntmp/ed_rfc.out"; fi
     if command -v python3 >/dev/null 2>&1; then
         _sig_0001=$(tr -d '\r\n' < ../../evolve/proposals/0001_math_clamp/approval.sig)
@@ -931,7 +932,7 @@ PY
     if [ -x "$ntmp/fo.elf" ] && "$ntmp/fo.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/field_ok_asm.expected - >/dev/null; then ok "phase-2 F3c: field access on a let-bound anonymous record is inferred, type-checks, and runs"; else bad "phase-2 F3c: structural field inference (passing)"; cat "$ntmp/fo.err"; fi
     printf 'fn mkpt() -> int = let p = {x: 3, y: 4} in p.z\nprint mkpt()\n' >"$ntmp/f3cbad.src"
     "$ntmp/lc" <"$ntmp/f3cbad.src" >"$ntmp/f3cbad.s" 2>"$ntmp/f3cbad.err"; f3c=$?
-    if [ "$f3c" = 3 ] && [ ! -s "$ntmp/f3cbad.s" ] && grep -q "record 'p' has no field 'z'" "$ntmp/f3cbad.err"; then ok "phase-2 F3c: accessing a field an anonymous record lacks fails at compile time (exit 3, no asm)"; else bad "phase-2 F3c: unknown field access fails"; fi
+    if [ "$f3c" = 3 ] && [ ! -s "$ntmp/f3cbad.s" ] && grep -q "has no field 'z' (it has fields x, y)" "$ntmp/f3cbad.err"; then ok "phase-2 F3c: accessing a field an anonymous record lacks fails at compile time (exit 3, no asm)"; else bad "phase-2 F3c: unknown field access fails"; fi
     # phase-2 F3c (field-type inference): a record field's inferred type flows into argument checks.
     "$ntmp/lc" <../../compiler/stage1/field_type_ok.src >"$ntmp/ft.s" 2>"$ntmp/ft.err"; "$ntmp/lasm" <"$ntmp/ft.s" >"$ntmp/ft.elf" 2>/dev/null; chmod +x "$ntmp/ft.elf"
     if [ -x "$ntmp/ft.elf" ] && "$ntmp/ft.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/field_type_ok_asm.expected - >/dev/null; then ok "phase-2 F3c: a record field's type is inferred and type-checks as an argument, and runs"; else bad "phase-2 F3c: field-type inference (passing)"; cat "$ntmp/ft.err"; fi
