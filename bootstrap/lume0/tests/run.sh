@@ -495,6 +495,8 @@ DEPMAIN
     printf 'fn inner(b, i) = buf_get(b, i) + 1\nfn middle(b, i) = inner(b, i) * 2\nfn outer(n) = let b = buf_new(4) in middle(b, n) + 0\nprint outer(9)\n' >"$ntmp/stk.src"
     stk_rc=0; LUME_FL=off LUME_BIN_DIR="$ntmp" ../../lume run "$ntmp/stk.src" >/dev/null 2>"$ntmp/stk.err" || stk_rc=$?
     if [ "$stk_rc" = 3 ] && grep -q "^  at inner (.*stk.src:1)$" "$ntmp/stk.err" && grep -q "^  at middle (.*stk.src:2)$" "$ntmp/stk.err" && grep -q "^  at outer (.*stk.src:3)$" "$ntmp/stk.err"; then ok "run-time error prints the call stack with file:line (inner, middle, outer)"; else bad "run-time error call stack"; cat "$ntmp/stk.err"; fi
+    # a call through a parameter is the local function, not another module's global of the same name
+    if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/namespaces/localcall/localcall_ok.src 2>&1 | grep -q "3 passed, 0 failed"; then ok "a call through a parameter or let name is never checked against a global of the same name"; else bad "local callee vs global function"; fi
     # builtin contracts known to the prover: buf_bits_write (p + n or -1), buf_get, buf_len, after a let or as the result
     LUME_BIN_DIR="$ntmp" ../../lume prove ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.json" 2>/dev/null || true
     LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.out" 2>&1 || true

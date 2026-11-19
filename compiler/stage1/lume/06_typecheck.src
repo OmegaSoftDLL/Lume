@@ -509,7 +509,7 @@ fn tchkstmts(prog, tt) = match prog
     Nil        => 0
     Cons(h, t) => tchkstmt(h, tt) + tchkstmts(t, tt)
 fn tchkstmt(s0, tt) = match s0
-    Fn(nm, ps, body) => tchkfn(nm, body, twithlenv(tt, tfnlenv(nm, tt)), tt)
+    Fn(nm, ps, body) => tchkfn(nm, body, twithlenv(tt, app(tfnlenv(nm, tt), tshadow_any(ps, Nil))), tt)
     Print(v)         => tchke(v, tt)
     ExprS(v)         => tchke(v, tt)
     _                => 0
@@ -588,7 +588,7 @@ fn tchke(e, tt) = match e
     If(c, t, e2)    => if ttyann_str(e2) != "" then tchke(t, tt) + tchk_tyann(t, ttyann_str(e2), tt) else (let km = tknownl(e, tt, tt.lenv) in 0) + tchke(c, tt) + tchke(t, tt) + tchke(e2, tt)
     LetIn(nm, v, b)            => (if nm == "_vty_ok" then 0 else tchke(v, tt)) + tchke(b, tletbind(tt, nm, v))
     VarIn(nm, v, b)            => tchke(v, tt) + tchke(b, tletbind(tt, nm, v))
-    Call(nm, args)             => tchkquerycall(nm, args, tt) + tchk_tier_conc_call(nm, args, tt) + tchkcall(nm, args, tt) + tchkeargsc(nm, args, tglookup(nm, tt.gsigs), tt) + tchkinferargs(nm, args, tt) + tchk_letpoly_call(nm, args, tt)
+    Call(nm, args)             => if isnil(tlookuplenv(nm, tt.lenv)) == 0 then tchke_args(args, tt) else tchkquerycall(nm, args, tt) + tchk_tier_conc_call(nm, args, tt) + tchkcall(nm, args, tt) + tchkeargsc(nm, args, tglookup(nm, tt.gsigs), tt) + tchkinferargs(nm, args, tt) + tchk_letpoly_call(nm, args, tt)
     Var(nm)                    => tchkvar(nm, tt)
     Rec(items)      => tchkerec(items, tt)
     RecT(tn, items) => tchkrect(tn, items, tt) + tchkerec(items, tt)
@@ -1259,6 +1259,11 @@ fn tchkhops(hs, tt) = match hs
 fn tchkret_arms(nm, rt, arms, tt, lenv) = match arms
     Nil        => 0
     Cons(h, t) => tchkret_e(nm, rt, h.body, tt, tshadow_any(oa_pat_names(h.pat), lenv)) + tchkret_arms(nm, rt, t, tt, lenv)
+## a call through a parameter or a let-bound name is the local value's call: never checked against a global function
+## of the same name (a module's `fn env(n, body)` must not type a parameter called env elsewhere)
+fn tchke_args(args, tt) = match args
+    Nil        => 0
+    Cons(a, t) => tchke(a, tt) + tchke_args(t, tt)
 fn tshadow_any(names, lenv) = match names
     Nil        => lenv
     Cons(h, t) => Cons({k: h, v: TyAny}, tshadow_any(t, lenv))

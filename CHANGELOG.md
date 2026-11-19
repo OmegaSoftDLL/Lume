@@ -113,6 +113,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **A call through a parameter checked against a global function:** `fn name_of(env) = env("A")` was typed against
+  another module's `fn env(n: int, body)` ([T0500]); a call through a parameter or a let-bound name is now the local
+  value's call (tests/namespaces/localcall/localcall_ok.src).
+- **Item 15, faster codec blocks:** `buf_h264_quant4x4` computes qbits, f and the multipliers once per block and
+  handles two levels per 32-bit read and write (488 -> 288 ns per block); `buf_h264_intra4x4` vertical, horizontal and
+  DC write four 32-bit rows straight from the frame (250 / 236 / 136 -> 66 / 86 / 68 ns).
 - **macOS Stage-0 job (6 hours, 9 time-outs):** the frozen interpreter computed `len()` of a string by building a list
   of its characters (64 bytes each); once the bundled checker source passed 2 MiB every `len` of it allocated 128 MiB
   and forced a full collection. `len` and string indexing now count in place with a cached codepoint count (an
