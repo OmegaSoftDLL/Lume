@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to GNU as) and the --raw vector intrinsics `vec_sad16(p, q)` / `vec_sad8(p, q)`. Routines that use them
   (`rt/rt_simd.src`) are linked only into programs that name them, so the frozen seed assembler never meets them.
 
+- **SSE2 forward transform:** `buf_h264_fdct4x4` runs in SSE2 through the --raw intrinsic `vec_fdct4` (butterflies
+  and word transposes, exact mod 2^16): 375 -> 36 ns per block on Linux, 29 ns on Windows, same results (random
+  blocks in h264_blocks_ok.src).
+- **Bit writing for entropy coders:** `buf_bits_write(b, pos, v, n)`, `buf_bits_read(b, pos, n)`, `buf_bits_ue` /
+  `buf_bits_se` (Exp-Golomb), runtime routines in Lume (bits_ok.src checks them against a bit-by-bit reference).
+- **lasm:** packuswb, packssdw, pavgb, pmullw, psrad and psllw by an immediate; the assembler gate gained the family
+  `packed` (25 families byte-identical to GNU as).
 - **Version stability:** docs/STABILITY.md states the 1.x promise (a stable item is never removed or changed in
   1.x), the deprecation period (at least one whole MINOR release), the per-release checks on Linux and Windows and
   the 1.2 long-term-support line. A comment `## Deprecated: <message>` directly above a function marks it; every
@@ -91,6 +98,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **`lume fmt` and `priv fn`:** the syntax check before formatting refused `priv fn` ([P0003]); it is accepted, and
+  the formatter keeps the `priv` of every private function.
+- **buf_h264_luma_mc and the collector:** the luma window and the b1 table were separate allocations reached only
+  through a block the collector does not scan; a collection inside the call could free them, and the same call gave
+  different blocks. One allocation now holds all three (h264_mc_ok.src keeps the reproduction).
+- **`use std/NAME`:** a project module called h264.src hid the standard library's `use h264`; `use std/NAME` always
+  names the library module.
+- **W0003 and `priv fn`:** a name the entry file declares `priv fn` no longer counts as defined in two modules.
+- **Nested constant literals:** a list of constant lists (`[[10, 16, 13], [11, 18, 14]]`) and a record holding
+  records or lists were rebuilt on every call (6 million allocations per million calls); they are static data now,
+  like flat ones.
 - **Windows launcher at the prefix:** `C:\Lume\lume.exe` (next to `bin\`) found its tools one folder too high
   ("native driver tool failed: lcli status 32512").
 - **Git Bash:** the POSIX `lume` runs the native `lume.exe` when it is there; on the Stage-0 fallback `lume fmt`

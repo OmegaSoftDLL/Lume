@@ -98,6 +98,7 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - Atributos: `@export("C")`, `@secret`, `@no_alloc`, `@bound(cycles: N)`, `@interrupt`, `@freestanding`, `@repr(c)`.
 - Modulos: `use m as a` faz `a.nome` ser o `nome` de m; um nome definido em dois modulos importados fica separado
   como `nome__m`, e o uso sem qualificar e erro de ambiguidade com arquivo:linha:coluna.
+- `use std/NOME` nomeia o modulo NOME da biblioteca padrao mesmo quando o projeto tem um NOME.src (`use std/h264`).
 
 ## 2.2 Expressoes, Desestruturacao e Operadores Ergonomicos (DX 10/10)
 - Variavel local (`let..in`): `let a = 10 in let b = 20 in a + b`
@@ -398,6 +399,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   `buf_h264_chroma_mc` (mesmos argumentos, 1/8, bilinear), `buf_h264_deblock_edge(buf, q0, across,
                   along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: listas, um valor por 4 linhas de luma / 2 de
                   croma); todos devolvem -1 com argumento errado
+                  escrita de bits (codificadores de entropia, bit mais significativo primeiro): `buf_bits_write(b,
+                  pos, v, n)` (os n bits baixos de v, 1..32, no bit pos; devolve pos + n), `buf_bits_read(b, pos, n)`,
+                  `buf_bits_ue(b, pos, v)` / `buf_bits_se(b, pos, v)` (Exp-Golomb, devolvem a nova pos); -1 se errado
 - Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):
   - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                                `port_out32(p, v)`, `port_in32(p)`

@@ -463,6 +463,9 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     # every documented builtin called once (a builtin missing from a release fails to compile here), on every platform
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/builtins_regress_ok.src >"$ntmp/breg.out" 2>"$ntmp/breg.err"
     if grep -q " passed, 0 failed" "$ntmp/breg.out"; then ok "builtins regression: every documented builtin family answers as the reference says (builtins_regress_ok.src)"; else bad "builtins regression (builtins_regress_ok.src)"; tail -8 "$ntmp/breg.out" "$ntmp/breg.err"; fi
+    # bit writing for entropy coders against a bit-by-bit reference
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/bits_ok.src >"$ntmp/bits.out" 2>"$ntmp/bits.err"
+    if grep -q " passed, 0 failed" "$ntmp/bits.out"; then ok "buf_bits_write / read / ue / se (bits_ok.src)"; else bad "bit writing (bits_ok.src)"; tail -8 "$ntmp/bits.out" "$ntmp/bits.err"; fi
     # floating point in the language: f64 parameters take 3.0, use math, f32 rounding and buffers
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/math_ok.src >"$ntmp/math.out" 2>"$ntmp/math.err"
     if grep -q " passed, 0 failed" "$ntmp/math.out"; then ok "f64 parameters, use math, f32 rounding and f32 buffers (math_ok.src)"; else bad "use math (math_ok.src)"; tail -8 "$ntmp/math.out" "$ntmp/math.err"; fi

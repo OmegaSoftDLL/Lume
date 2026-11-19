@@ -368,6 +368,11 @@ fn pv_mods(ms) = match ms
     Cons(h, t) => Cons(pv_mod(h), pv_mods(t))
 
 ## --- the same name defined in two modules of one bundle: a warning (W0003), one per name -------------------------------
+## a name the entry file declares `priv fn` is its own: no warning for it (the other modules' private names are
+## already renamed per module before the names are compared)
+fn dup_drop(groups, privs) = match groups
+    Nil        => Nil
+    Cons(g, t) => if contains(privs, g.n) == 1 then dup_drop(t, privs) else Cons(g, dup_drop(t, privs))
 fn dup_warn(groups) = match groups
     Nil        => 0
     Cons(g, t) => let w = fs_append_sync("/dev/stderr", "lume: warning [W0003]: '" + g.n + "' is defined in modules " + joinsep(g.owners, ", ") + "; each module uses its own, and a use where two of them are visible is an ambiguity error (fix-it: rename one, make it `priv fn`, or write module.name)\n") in dup_warn(t)
@@ -399,7 +404,7 @@ fn dp_warn(ds, ms) = match ms
     Nil        => 0
     Cons(m, t) => let w = dp_warn1(ds, m) in dp_warn(ds, t)
 
-fn bundle(lines) = let st0 = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let st = {mods: pv_mods(st0.mods), entry: {name: st0.entry.name, uses: st0.entry.uses, lines: pv_drop(st0.entry.lines)}, grant: st0.grant} in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in let dw = dup_warn(ns_groups(ns_sort(ns_keys(recs, Nil)), Nil)) in let dpw = dp_warn(dp_all(Cons(st.entry, st0.mods), Nil), Cons(st.entry, st0.mods)) in ns_qdefs(joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n"))
+fn bundle(lines) = let st0 = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let st = {mods: pv_mods(st0.mods), entry: {name: st0.entry.name, uses: st0.entry.uses, lines: pv_drop(st0.entry.lines)}, grant: st0.grant} in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in let dw = dup_warn(dup_drop(ns_groups(ns_sort(ns_keys(recs, Nil)), Nil), pv_names(st0.entry.lines))) in let dpw = dp_warn(dp_all(Cons(st.entry, st0.mods), Nil), Cons(st.entry, st0.mods)) in ns_qdefs(joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n"))
 fn ns_needed(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, "io", Cons(st.entry.name, Nil), Nil, Nil) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in if ns_changed(recs, ns_apply(recs, st.entry.name)) == 1 then "needed" else "none"
 
 ## --- `@manifest` mode: parse & validate `lume.toml` in Lume-Core ---

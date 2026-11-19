@@ -101,6 +101,7 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - Attributes: `@export("C")`, `@secret`, `@no_alloc`, `@bound(cycles: N)`, `@interrupt`, `@freestanding`, `@repr(c)`.
 - Modules: `use m as a` makes `a.name` refer to m's `name`; a name defined in two imported modules is kept apart
   as `name__m`, and an unqualified use of it is an ambiguity error with file:line:col.
+- `use std/NAME` names the standard library's module NAME even when the project has a NAME.src (`use std/h264`).
 
 ## 2.2 Expressions, Destructuring & Ergonomic Operators (10/10 DX)
 - Local binding:      `let x = 10 in let y = 20 in x + y`
@@ -419,6 +420,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             di, ds)` (quarter samples, 6-tap), `buf_h264_chroma_mc` (same arguments, eighth samples, bilinear),
             `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: lists, one
             value per 4 luma / 2 chroma lines); all answer -1 on a wrong argument
+            bit writing (entropy coders, most significant bit first): `buf_bits_write(b, pos, v, n)` (the low n
+            bits of v, 1..32, at bit pos; answers pos + n), `buf_bits_read(b, pos, n)`, `buf_bits_ue(b, pos, v)` /
+            `buf_bits_se(b, pos, v)` (Exp-Golomb, answer the new pos); -1 on a wrong argument
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):
   - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                             `port_out32(p, v)`, `port_in32(p)`

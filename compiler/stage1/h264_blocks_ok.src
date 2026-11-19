@@ -56,3 +56,17 @@ fn test_wrong_arguments() = buf_h264_fdct4x4(buf_new(16), 0, buf_new(32), 0) == 
 ## Intra16x16 on a 17-wide frame: plane prediction of a ramp reproduces the ramp
 fn ramp() = let f = buf_new(32 * 18) in seq_loop(0, 32 * 18, f, fn(i, acc) => let z = buf_set(f, i, (i % 32) * 3 + (i / 32) * 2 + 10) in acc)
 fn test_intra16x16() = let f = ramp() in let d = buf_new(256) in let r = buf_h264_intra16x16(f, 32 + 1, 32, 3, 11, d) in let dv = buf_new(256) in let r2 = buf_h264_intra16x16(f, 32 + 1, 32, 0, 11, dv) in r == 0 and r2 == 0 and buf_get(dv, 0) == buf_get(f, 1) and buf_get(dv, 255) == buf_get(f, 16) and buf_get(d, 0) == buf_get(f, 33) and buf_get(d, 255) == buf_get(f, 32 * 16 + 16)
+
+## the forward transform in SSE2 against Y = C X C^T computed here, random blocks of residuals and of full int16
+## values (the stored result is the low 16 bits, as the scalar version stores it)
+fn fr_rnd(s) = (s * 1103515245 + 12345) % 2147483648
+fn fr_w16(b, o, v) = let u = (if v < 0 then v + 65536 else v) in let a = buf_set(b, o, u % 256) in buf_set(b, o + 1, (u / 256) % 256)
+fn fr_r16(b, o) = let v = buf_get(b, o) + buf_get(b, o + 1) * 256 in if v >= 32768 then v - 65536 else v
+fn fr_wrap(v) = let m = ((v % 65536) + 65536) % 65536 in if m >= 32768 then m - 65536 else m
+fn fr_fill(b, i, s, span) = if i >= 16 then s else let v = fr_rnd(s) % (2 * span + 1) - span in let z = fr_w16(b, i * 2, v) in fr_fill(b, i + 1, fr_rnd(s), span)
+fn fr_c(i, k) = if i == 0 then 1 else if i == 2 then (if k == 0 or k == 3 then 1 else 0 - 1) else if i == 1 then (if k == 0 then 2 else if k == 1 then 1 else if k == 2 then 0 - 1 else 0 - 2) else (if k == 0 then 1 else if k == 1 then 0 - 2 else if k == 2 then 2 else 0 - 1)
+fn fr_x(b, r, c) = fr_r16(b, (r * 4 + c) * 2)
+fn fr_y(b, i, j, k, l, acc) = if k >= 4 then acc else if l >= 4 then fr_y(b, i, j, k + 1, 0, acc) else fr_y(b, i, j, k, l + 1, acc + fr_c(i, k) * fr_x(b, k, l) * fr_c(j, l))
+fn fr_same(b, d, i) = if i >= 16 then 1 else if fr_r16(d, i * 2) != fr_wrap(fr_y(b, i / 4, i % 4, 0, 0, 0)) then 0 else fr_same(b, d, i + 1)
+fn fr_cases(n, s, span) = if n == 0 then 1 else let b = buf_new(32) in let d = buf_new(32) in let s2 = fr_fill(b, 0, s, span) in let z = buf_h264_fdct4x4(b, 0, d, 0) in if fr_same(b, d, 0) == 0 then 0 else fr_cases(n - 1, s2, span)
+fn test_fdct_random_blocks() = fr_cases(500, 11, 255) == 1 and fr_cases(200, 77, 32767) == 1

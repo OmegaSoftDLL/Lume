@@ -29,7 +29,7 @@ print square(7)
 ## 2. Sintaxe
 
 - `fn nome(a, b) = expr`, `pub fn` (exportada), `priv fn` (privada do modulo), `const NOME: T = expr`,
-  `type T = A(x) | B(x, y)`, `use modulo`, `use modulo as apelido`, `## comentario` (ate o fim da linha).
+  `type T = A(x) | B(x, y)`, `use modulo`, `use modulo as apelido`, `use std/NOME` (sempre o NOME da biblioteca padrao, mesmo que o projeto tenha um NOME.src), `## comentario` (ate o fim da linha).
 - Expressoes: `let x = e in corpo`, `if c then a else b`, `match v` com um `Padrao => expr` por linha,
   `fn(x) => expr` (closure; captura variaveis), `{a: 1, b: 2}` (registro), `r.a` (campo), `{ r with a: 3 }`
   (copia com um campo trocado), `[1, 2, 3]` (lista), `Cons(h, t)` / `Nil`.
@@ -147,6 +147,10 @@ argumento errado): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / 8x8 /
 dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pred, pi, res, ri, dst, di)`,
 `buf_h264_intra4x4 / intra16x16 (frame, fi, fs, modo, disponivel, dst)` (bits de disponivel: 1 esquerda, 2 topo,
 4 topo-direita, 8 topo-esquerda).
+
+Escrita de bits (estavel; bit mais significativo primeiro): `buf_bits_write(b, pos, v, n)` grava os n bits baixos de
+v (1..32) no bit pos e devolve pos + n, `buf_bits_read(b, pos, n)` os le, `buf_bits_ue(b, pos, v)` / `buf_bits_se(b,
+pos, v)` gravam codigos Exp-Golomb e devolvem a nova pos; cada um devolve -1 com argumento errado.
 
 ## 5a. Ponto flutuante (estavel)
 
@@ -272,7 +276,7 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 - O runtime tem uma thread so.
 - No maximo 6 parametros no codigo `--raw` do runtime; funcoes comuns aceitam qualquer numero.
-- Listas e registros literais constantes sao dados estaticos compartilhados: nunca sao alterados (valores Lume sao
+- Listas e registros literais constantes (tambem os aninhados) sao dados estaticos compartilhados: nunca sao alterados (valores Lume sao
   imutaveis).
 - O achatamento de registros inlineia funcoes pequenas; `LUME_FL=off` desliga (para medir alocacao ou ler o
   formato das chamadas no assembly).
@@ -280,7 +284,7 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 ## 11. Mudou nesta versao
 
-Entrou: `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
 Mudou: o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git

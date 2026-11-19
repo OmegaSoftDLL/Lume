@@ -31,3 +31,16 @@ fn reads(k, acc) = if k == 0 then acc else reads(k - 1, acc + (pt()).x)
 fn test_const_record() = let p = pt() in p.x == 3 and p.y == 4 and p.tag == "a tag longer than seven" and pt() == {x: 3, y: 4, tag: "a tag longer than seven"}
 fn test_const_record_with_copies() = let q = { pt() with x: 10 } in q.x == 10 and q.y == 4 and (pt()).x == 3
 fn test_const_record_no_allocation() = let before = heap_used() in let r = reads(1000000, 0) in r == 3000000 and heap_used() - before < 65536
+
+## nested constant literals (LumeDesk report: the inner lists were rebuilt per call, 6 million allocations per
+## million calls): lists of lists, records holding records and lists, all static data
+fn mf_tab() = [[10, 16, 13], [11, 18, 14], [13, 20, 16], [14, 23, 18], [16, 25, 20], [18, 29, 23]]
+fn mf(m, k) = seq_nth(seq_nth(mf_tab(), m), k)
+fn mf_loop(i, acc) = if i == 0 then acc else mf_loop(i - 1, acc + mf(i % 6, i % 3))
+fn cfg() = {name: "encoder", qp: {lo: 10, hi: 51}, modes: [0, 1, 2], deep: [[[1, 2], [3]], []]}
+fn cfg_loop(i, acc) = if i == 0 then acc else cfg_loop(i - 1, acc + (cfg()).qp.hi + seq_nth((cfg()).modes, 2))
+fn test_nested_list_values() = mf(0, 0) == 10 and mf(5, 2) == 23 and mf(3, 1) == 23 and seq_nth(mf_tab(), 2) == [13, 20, 16] and mf_tab() == mf_tab()
+fn test_nested_list_no_allocation() = let before = heap_used() in let r = mf_loop(1000000, 0) in r > 0 and heap_used() - before < 65536
+fn test_nested_record_values() = (cfg()).qp.lo == 10 and (cfg()).name == "encoder" and seq_nth(seq_nth(seq_nth((cfg()).deep, 0), 0), 1) == 2 and seq_nth((cfg()).deep, 1) == Nil and (cfg()).qp.hi == 51
+fn test_nested_record_copy() = let c = { cfg() with qp: {lo: 1, hi: 2} } in c.qp.hi == 2 and c.name == "encoder" and (cfg()).qp.hi == 51
+fn test_nested_record_no_allocation() = let before = heap_used() in let r = cfg_loop(1000000, 0) in r == 53000000 and heap_used() - before < 65536

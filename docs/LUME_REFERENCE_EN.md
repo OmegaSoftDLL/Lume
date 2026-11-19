@@ -29,7 +29,7 @@ print square(7)
 ## 2. Syntax
 
 - `fn name(a, b) = expr`, `pub fn` (exported), `priv fn` (private to its module), `const NAME: T = expr`,
-  `type T = A(x) | B(x, y)`, `use module`, `use module as alias`, `## comment` (to the end of the line).
+  `type T = A(x) | B(x, y)`, `use module`, `use module as alias`, `use std/NAME` (always the standard library's NAME, even when the project has a NAME.src), `## comment` (to the end of the line).
 - Expressions: `let x = e in body`, `if c then a else b`, `match v` with one `Pattern => expr` per line,
   `fn(x) => expr` (a closure; captures variables), `{a: 1, b: 2}` (record), `r.a` (field), `{ r with a: 3 }`
   (a copy with a field changed), `[1, 2, 3]` (a list), `Cons(h, t)` / `Nil`.
@@ -147,6 +147,10 @@ argument): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / 8x8 / 4x4 (a,
 dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pred, pi, res, ri, dst, di)`,
 `buf_h264_intra4x4 / intra16x16 (frame, fi, fs, mode, avail, dst)` (avail bits: 1 left, 2 top, 4 top-right,
 8 top-left).
+
+Bit writing (stable; most significant bit first): `buf_bits_write(b, pos, v, n)` writes the low n bits of v (1..32)
+at bit pos and answers pos + n, `buf_bits_read(b, pos, n)` answers them, `buf_bits_ue(b, pos, v)` / `buf_bits_se(b,
+pos, v)` write Exp-Golomb codes and answer the new pos; each answers -1 on a wrong argument.
 
 ## 5a. Floating point (stable)
 
@@ -273,14 +277,14 @@ line: `docs/STABILITY.md`). `grad`, `value_and_grad`, `jvp`,
 
 - The runtime is single-threaded.
 - At most 6 parameters in `--raw` runtime code; ordinary functions take any number.
-- Constant list and record literals are shared static data: they are never mutated (Lume values are immutable).
+- Constant list and record literals (nested ones too) are shared static data: they are never mutated (Lume values are immutable).
 - Record flattening inlines small functions; `LUME_FL=off` turns it off (for measuring allocation or reading the
   call shape in the assembly).
 - macOS targets cover the verified core only (write / exit); `winsys` exists only on Windows.
 
 ## 11. Changed in this version
 
-Added: `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
+Added: `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
 `chameleon_verify_boundary`, `priv fn`, warning [W0003], `LUME_FL`, constant literals in .rodata, per-site field
 cache, collection pacing `max(8 MiB, 3 x live)`.
 Changed: C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0
