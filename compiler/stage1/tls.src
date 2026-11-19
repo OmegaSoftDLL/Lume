@@ -1,0 +1,106 @@
+## tls.src -- a TLS 1.3 client (RFC 8446) over TCP in Lume (`use std/tls`), for HTTPS and other protocols.
+##   tls_request(host, port, data, ms)  connect, handshake, send data, read until the server closes:
+##                                      -> {ok, data, err}
+##   tls_system_roots()                 the trusted roots: SSL_CERT_FILE, else /etc/ssl/certs/ca-certificates.crt (and
+##                                      the other usual bundle paths) on Linux, the ROOT store through crypt32.dll on
+##                                      Windows (opened by the chameleon, lchameleon)
+## Handshake: X25519, TLS_AES_128_GCM_SHA256 or TLS_CHACHA20_POLY1305_SHA256, server certificates checked against the
+## roots and the host name (std/tlspki: RSA, RSA-PSS, ECDSA P-256 / P-384), the server's CertificateVerify and
+## Finished checked; middlebox-compatibility ChangeCipherSpec records and post-handshake tickets are skipped.
+use tlspki
+use lcrypto_tls
+use dns
+use netctl
+use lchameleon
+
+fn tl_fail(err) = {ok: 0, data: "", err: err}
+fn tl_byte(v) = pki_byte(v)
+fn tl_u16(v) = tl_byte(bit_shr(v, 8)) + tl_byte(bit_and(v, 255))
+fn tl_u24(v) = tl_byte(bit_shr(v, 16)) + tl_u16(bit_and(v, 65535))
+fn tl_vec8(s) = tl_byte(count(s)) + s
+fn tl_vec16(s) = tl_u16(count(s)) + s
+fn tl_g16(s, i) = ord_at(s, i) * 256 + ord_at(s, i + 1)
+fn tl_g24(s, i) = ord_at(s, i) * 65536 + ord_at(s, i + 1) * 256 + ord_at(s, i + 2)
+fn tl_rand(n) = let r = lct_random_bytes_checked(n) in if r.ok == 0 then "" else lcs_l2s(r.bytes)
+
+## --- HKDF and the key schedule (SHA-256) -----------------------------------------------------------------------------
+fn tl_extract(salt, ikm) = lcs_hmac_sha256(if salt == "" then pki_zeros(32) else salt, ikm)
+fn tl_expand(prk, info, len) = tl_expgo(prk, info, len, 1, "", "")
+fn tl_expgo(prk, info, len, i, prev, acc) = if count(acc) >= len then slice(acc, 0, len) else let t = lcs_hmac_sha256(prk, prev + info + tl_byte(i)) in tl_expgo(prk, info, len, i + 1, t, acc + t)
+fn tl_label(secret, label, ctx, len) = tl_expand(secret, tl_u16(len) + tl_vec8("tls13 " + label) + tl_vec8(ctx), len)
+fn tl_derive(secret, label, transcript) = tl_label(secret, label, pki_sha256(transcript), 32)
+fn tl_keys(secret, keylen) = {key: tl_label(secret, "key", "", keylen), iv: tl_label(secret, "iv", "", 12), seq: 0}
+
+## --- records ---------------------------------------------------------------------------------------------------------
+fn tl_nonce(iv, seq) = pki_xor(iv, pki_zeros(4) + lcs_be64s(seq))
+fn tl_seal(suite, k, ctype, data) = let pt = data + tl_byte(ctype) in let hdr = tl_byte(23) + tl_u16(771) + tl_u16(count(pt) + 16) in let ct = (if suite == 4865 then lcs_aes128_gcm_seal(k.key, tl_nonce(k.iv, k.seq), hdr, pt) else lcs_aead_seal(k.key, tl_nonce(k.iv, k.seq), hdr, pt)) in {rec: hdr + ct, k: {key: k.key, iv: k.iv, seq: k.seq + 1}}
+fn tl_open(suite, k, rec) = let hdr = slice(rec, 0, 5) in let body = slice(rec, 5, count(rec)) in let r = (if suite == 4865 then lcs_aes128_gcm_open(k.key, tl_nonce(k.iv, k.seq), hdr, body) else lcs_aead_open(k.key, tl_nonce(k.iv, k.seq), hdr, body)) in if r.ok == 0 then {ok: 0, ctype: 0, data: "", k: k} else let p = tl_unpad(r.plain, count(r.plain) - 1) in {ok: (if p < 0 then 0 else 1), ctype: (if p < 0 then 0 else ord_at(r.plain, p)), data: (if p < 0 then "" else slice(r.plain, 0, p)), k: {key: k.key, iv: k.iv, seq: k.seq + 1}}
+fn tl_unpad(s, i) = if i < 0 then 0 - 1 else if ord_at(s, i) != 0 then i else tl_unpad(s, i - 1)
+
+## --- the connection: {fd, ep, ms, buf} and reading whole records -----------------------------------------------------
+fn tl_fill(c, need) = if count(c.buf) >= need then {ok: 1, c: c} else let e = epoll_wait_ev(c.ep, c.ms) in if e.tag < 0 then {ok: 0, c: c} else let r = net_recv_some(c.fd, 65536) in if r.n > 0 then tl_fill({fd: c.fd, ep: c.ep, ms: c.ms, buf: c.buf + r.data}, need) else if r.n == 0 then {ok: 0, c: c} else tl_fill(c, need)
+## the next record: {ok, rec, c} (rec includes its 5-byte header)
+fn tl_record(c) = let a = tl_fill(c, 5) in if a.ok == 0 then {ok: 0, rec: "", c: a.c} else let n = tl_g16(a.c.buf, 3) in if n > 18432 then {ok: 0, rec: "", c: a.c} else let b = tl_fill(a.c, 5 + n) in if b.ok == 0 then {ok: 0, rec: "", c: b.c} else {ok: 1, rec: slice(b.c.buf, 0, 5 + n), c: {fd: b.c.fd, ep: b.c.ep, ms: b.c.ms, buf: slice(b.c.buf, 5 + n, count(b.c.buf))}}
+fn tl_send(c, data) = tl_sendgo(c.fd, data, 0)
+fn tl_sendgo(fd, data, tries) = if count(data) == 0 then 1 else if tries > 100000 then 0 else let n = net_send_some(fd, data) in if n < 0 then 0 else tl_sendgo(fd, slice(data, n, count(data)), tries + 1)
+
+## --- ClientHello ------------------------------------------------------------------------------------------------------
+fn tl_ext(t, body) = tl_u16(t) + tl_vec16(body)
+fn tl_hello(host, rnd, sid, xpub) = let exts = tl_ext(0, tl_vec16(tl_byte(0) + tl_vec16(host))) + tl_ext(10, tl_vec16(tl_u16(29))) + tl_ext(13, tl_vec16(tl_u16(1027) + tl_u16(1283) + tl_u16(2052) + tl_u16(2053) + tl_u16(2054) + tl_u16(1025) + tl_u16(1281) + tl_u16(1537))) + tl_ext(43, tl_vec8(tl_u16(772))) + tl_ext(45, tl_vec8(tl_byte(1))) + tl_ext(51, tl_vec16(tl_u16(29) + tl_vec16(xpub))) + tl_ext(16, tl_vec16(tl_vec8("http/1.1"))) in let body = tl_u16(771) + rnd + tl_vec8(sid) + tl_vec16(tl_u16(4865) + tl_u16(4867)) + tl_vec8(tl_byte(0)) + tl_vec16(exts) in tl_byte(1) + tl_u24(count(body)) + body
+
+## --- ServerHello: {ok, err, suite, peer} ------------------------------------------------------------------------------
+fn tl_exts(s, i, end, f) = if i + 4 > end then f else let t = tl_g16(s, i) in let n = tl_g16(s, i + 2) in tl_exts(s, i + 4 + n, end, if t == 43 then {ver: tl_g16(s, i + 4), key: f.key} else if t == 51 then {ver: f.ver, key: (if tl_g16(s, i + 4) == 29 then slice(s, i + 8, i + 8 + tl_g16(s, i + 6)) else "")} else f)
+fn tl_hrr() = lcs_unhex("cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c")
+fn tl_server_hello(m) = if count(m) < 44 or ord_at(m, 0) != 2 then {ok: 0, err: "expected ServerHello", suite: 0, peer: ""} else let b = 4 in let rnd = slice(m, b + 2, b + 34) in let sl = ord_at(m, b + 34) in let i = b + 35 + sl in let suite = tl_g16(m, i) in let f = tl_exts(m, i + 5, count(m), {ver: 0, key: ""}) in if rnd == tl_hrr() then {ok: 0, err: "the server asked for a HelloRetryRequest (it does not accept X25519)", suite: 0, peer: ""} else if f.ver != 772 then {ok: 0, err: "the server does not speak TLS 1.3", suite: 0, peer: ""} else if suite != 4865 and suite != 4867 then {ok: 0, err: "unexpected cipher suite", suite: 0, peer: ""} else if count(f.key) != 32 then {ok: 0, err: "no X25519 key share", suite: 0, peer: ""} else {ok: 1, err: "", suite: suite, peer: f.key}
+
+## --- the handshake messages after ServerHello: collect them from encrypted records ------------------------------------
+## st: {c, k (server handshake keys), suite, msgs (raw bytes not yet split)}; next message -> {ok, m, st}
+fn tl_nextmsg(st) = if count(st.msgs) >= 4 and count(st.msgs) >= 4 + tl_g24(st.msgs, 1) then (let n = 4 + tl_g24(st.msgs, 1) in {ok: 1, m: slice(st.msgs, 0, n), st: {c: st.c, k: st.k, suite: st.suite, msgs: slice(st.msgs, n, count(st.msgs))}}) else let r = tl_record(st.c) in if r.ok == 0 then {ok: 0, m: "", st: st} else let t = ord_at(r.rec, 0) in if t == 20 then tl_nextmsg({c: r.c, k: st.k, suite: st.suite, msgs: st.msgs}) else if t == 21 then {ok: 0, m: "alert", st: st} else if t != 23 then {ok: 0, m: "", st: st} else let o = tl_open(st.suite, st.k, r.rec) in if o.ok == 0 then {ok: 0, m: "decrypt", st: st} else if o.ctype == 21 then {ok: 0, m: "alert", st: st} else tl_nextmsg({c: r.c, k: o.k, suite: st.suite, msgs: (if o.ctype == 22 then st.msgs + o.data else st.msgs)})
+## the certificate list of a Certificate message: DER entries
+fn tl_certs(m) = let ctx = ord_at(m, 4) in let i = 5 + ctx in let total = tl_g24(m, i) in tl_certgo(m, i + 3, i + 3 + total)
+fn tl_certgo(m, i, end) = if i + 3 > end then Nil else let n = tl_g24(m, i) in let ext = tl_g16(m, i + 3 + n) in Cons(slice(m, i + 3, i + 3 + n), tl_certgo(m, i + 3 + n + 2 + ext, end))
+fn tl_cvcontent(th) = pki_ffs32() + "TLS 1.3, server CertificateVerify" + pki_zeros(1) + th
+fn pki_ffs32() = tl_spaces(64)
+fn tl_spaces(n) = if n == 0 then "" else " " + tl_spaces(n - 1)
+fn tl_cvok(key, alg, content, sig) = if alg == 1027 then key.kind == "ec" and key.curve == "p256" and ecdsa_verify("p256", key.pub, "sha256", content, sig) else if alg == 1283 then key.kind == "ec" and key.curve == "p384" and ecdsa_verify("p384", key.pub, "sha384", content, sig) else if alg == 2052 then key.kind == "rsa" and rsa_verify_pss(key.n, key.e, "sha256", content, sig) else if alg == 2053 then key.kind == "rsa" and rsa_verify_pss(key.n, key.e, "sha384", content, sig) else if alg == 2054 then key.kind == "rsa" and rsa_verify_pss(key.n, key.e, "sha512", content, sig) else false
+
+## --- the whole exchange -----------------------------------------------------------------------------------------------
+fn tls_request(host, port, data, ms) = let roots = tls_system_roots() in if lcs_isempty(roots) then tl_fail("no trusted roots found (set SSL_CERT_FILE to a PEM bundle)") else let fd = dns_tcp_connect_timeout(host, port, ms) in if fd < 0 then tl_fail("cannot connect to " + host + ":" + str(port)) else let ep = epoll_create_fd() in let a = epoll_add(ep, fd, 1, 1) in let r = tl_run({fd: fd, ep: ep, ms: ms, buf: ""}, host, data, roots) in let z1 = net_close(fd) in let z2 = net_close(ep) in r
+fn lcs_isempty(xs) = match xs
+    Nil        => true
+    Cons(h, t) => false
+fn tl_run(c, host, data, roots) = let xpriv = tl_rand(32) in let rnd = tl_rand(32) in let sid = tl_rand(32) in if count(xpriv) != 32 or count(rnd) != 32 then tl_fail("no system randomness") else let ch = tl_hello(host, rnd, sid, lcs_x25519_base(xpriv)) in let s1 = tl_send(c, tl_byte(22) + tl_u16(769) + tl_vec16(ch)) in if s1 != 1 then tl_fail("send failed") else let r = tl_record(c) in if r.ok == 0 then tl_fail("no ServerHello") else if ord_at(r.rec, 0) == 21 then tl_fail("the server refused the handshake (alert " + str(ord_at(r.rec, 6)) + ")") else if ord_at(r.rec, 0) != 22 then tl_fail("expected a handshake record") else tl_run2(r.c, host, data, roots, ch, slice(r.rec, 5, count(r.rec)), xpriv)
+fn tl_run2(c, host, data, roots, ch, shm, xpriv) = let sh = tl_server_hello(shm) in if sh.ok == 0 then tl_fail(sh.err) else let ss = lcs_x25519_shared(xpriv, sh.peer) in if ss.ok == 0 then tl_fail("bad X25519 share") else let keylen = (if sh.suite == 4865 then 16 else 32) in let early = tl_extract("", pki_zeros(32)) in let hs = tl_extract(tl_derive(early, "derived", ""), ss.secret) in let t1 = ch + shm in let chs = tl_derive(hs, "c hs traffic", t1) in let shs = tl_derive(hs, "s hs traffic", t1) in tl_run3({c: c, k: tl_keys(shs, keylen), suite: sh.suite, msgs: ""}, host, data, roots, {hs: hs, chs: chs, shs: shs, keylen: keylen}, t1)
+## EncryptedExtensions, Certificate, CertificateVerify, Finished
+fn tl_run3(st, host, data, roots, ks, tr) = let ee = tl_nextmsg(st) in if ee.ok == 0 or ord_at(ee.m, 0) != 8 then tl_fail("expected EncryptedExtensions" + tl_why(ee.m)) else let ce = tl_nextmsg(ee.st) in if ce.ok == 0 or ord_at(ce.m, 0) != 11 then tl_fail("expected Certificate" + tl_why(ce.m)) else let chain = tl_certs(ce.m) in let verr = tl_verify(chain, roots, host) in if verr != "" then tl_fail("certificate: " + verr) else let tr2 = tr + ee.m + ce.m in let cv = tl_nextmsg(ce.st) in if cv.ok == 0 or ord_at(cv.m, 0) != 15 then tl_fail("expected CertificateVerify" + tl_why(cv.m)) else let leaf = x509_parse(tl_first(chain)) in if tl_cvok(leaf.key, tl_g16(cv.m, 4), tl_cvcontent(pki_sha256(tr2)), slice(cv.m, 8, 8 + tl_g16(cv.m, 6))) == false then tl_fail("the server's CertificateVerify does not check") else tl_run4(cv.st, host, data, ks, tr2 + cv.m)
+fn tl_why(m) = if m == "alert" then " (the server sent an alert)" else if m == "decrypt" then " (a record did not decrypt)" else ""
+fn tl_first(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn tl_run4(st, host, data, ks, tr) = let fi = tl_nextmsg(st) in if fi.ok == 0 or ord_at(fi.m, 0) != 20 then tl_fail("expected Finished" + tl_why(fi.m)) else let want = lcs_hmac_sha256(tl_label(ks.shs, "finished", "", 32), pki_sha256(tr)) in if slice(fi.m, 4, count(fi.m)) != want then tl_fail("the server's Finished does not check") else let tr3 = tr + fi.m in let cfin = lcs_hmac_sha256(tl_label(ks.chs, "finished", "", 32), pki_sha256(tr3)) in let master = tl_extract(tl_derive(ks.hs, "derived", ""), pki_zeros(32)) in let cap = tl_derive(master, "c ap traffic", tr3) in let sap = tl_derive(master, "s ap traffic", tr3) in let fm = tl_seal(st.suite, tl_keys(ks.chs, ks.keylen), 22, tl_byte(20) + tl_u24(32) + cfin) in let ccs = tl_byte(20) + tl_u16(771) + tl_u16(1) + tl_byte(1) in let app = tl_seal(st.suite, tl_keys(cap, ks.keylen), 23, data) in let s = tl_send(fi.st.c, ccs + fm.rec + app.rec) in if s != 1 then tl_fail("send failed") else tl_read(fi.st.c, st.suite, tl_keys(sap, ks.keylen), "")
+## application data until close_notify or the end of the connection; post-handshake messages are skipped
+fn tl_read(c, suite, k, acc) = let r = tl_record(c) in if r.ok == 0 then {ok: 1, data: acc, err: ""} else let t = ord_at(r.rec, 0) in if t == 20 then tl_read(r.c, suite, k, acc) else if t != 23 then {ok: 1, data: acc, err: ""} else let o = tl_open(suite, k, r.rec) in if o.ok == 0 then {ok: 0, data: acc, err: "a record did not decrypt"} else if o.ctype == 21 then {ok: 1, data: acc, err: ""} else tl_read(r.c, suite, o.k, if o.ctype == 23 then acc + o.data else acc)
+
+## Windows keeps only the roots it has needed so far: when the chain ends at a root the stores do not hold yet, Windows
+## is asked to build the chain (CertGetCertificateChain, which fetches a missing root through automatic root update)
+## and the stores are read again; the decision is still x509_verify_chain's
+fn tl_verify(chain, roots, host) = let e = x509_verify_chain(chain, roots, host, os_unix_time()) in if e != "no trusted root for the chain" or os_platform() != "windows" then e else let f = tl_winfetch(tl_first(chain)) in x509_verify_chain(chain, tls_system_roots(), host, os_unix_time())
+fn tl_winfetch(leaf) = let c = chameleon_c_open("C:\\Windows\\System32\\crypt32.dll") in if c.ok != 1 or count(leaf) == 0 then 0 else let mk = chameleon_c_sym(c, "CertCreateCertificateContext") in let gc = chameleon_c_sym(c, "CertGetCertificateChain") in let fc = chameleon_c_sym(c, "CertFreeCertificateChain") in let fx = chameleon_c_sym(c, "CertFreeCertificateContext") in let der = buf_from_str(leaf) in let ctx = chameleon_c_call(mk, Cons(1, Cons(buf_addr(der), Cons(count(leaf), Nil)))) in if ctx == 0 then 0 else let para = buf_new(24) in let w = buf_set(para, 0, 24) in let out = buf_new(8) in let r = chameleon_c_call(gc, Cons(0, Cons(ctx, Cons(0, Cons(0, Cons(buf_addr(para), Cons(0, Cons(0, Cons(buf_addr(out), Nil))))))))) in let pc = tl_q(out, 0) in let z1 = (if pc != 0 then chameleon_c_call(fc, Cons(pc, Nil)) else 0) in let z2 = chameleon_c_call(fx, Cons(ctx, Nil)) in r
+## --- trusted roots ---------------------------------------------------------------------------------------------------
+fn tls_system_roots() = let env = os_getenv("SSL_CERT_FILE") in if env != "" then pki_pem_certs(fs_read_file(env)) else if os_platform() == "windows" then tl_winroots() else tl_firstpem(Cons("/etc/ssl/certs/ca-certificates.crt", Cons("/etc/pki/tls/certs/ca-bundle.crt", Cons("/etc/ssl/cert.pem", Cons("/etc/ssl/ca-bundle.pem", Nil)))))
+fn tl_firstpem(ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => if fs_path_exists(h) == 1 then pki_pem_certs(fs_read_file(h)) else tl_firstpem(t)
+## Windows: CertOpenSystemStoreW(0, L"ROOT") and CertEnumCertificatesInStore through the chameleon; each CERT_CONTEXT
+## holds pbCertEncoded at +8 and cbCertEncoded at +16, copied out with RtlMoveMemory
+fn tl_wstr(s) = let b = buf_new(count(s) * 2 + 2) in tl_wsgo(s, b, 0)
+fn tl_wsgo(s, b, i) = if i >= count(s) then b else let w = buf_set(b, i * 2, ord_at(s, i)) in tl_wsgo(s, b, i + 1)
+fn tl_winroots() = let c = chameleon_c_open("C:\\Windows\\System32\\crypt32.dll") in let k = chameleon_c_open("C:\\Windows\\System32\\kernel32.dll") in if c.ok != 1 or k.ok != 1 then Nil else let op = chameleon_c_sym(c, "CertOpenSystemStoreW") in let en = chameleon_c_sym(c, "CertEnumCertificatesInStore") in let mv = chameleon_c_sym(k, "RtlMoveMemory") in tl_app(tl_store(op, en, mv, "ROOT"), tl_store(op, en, mv, "AuthRoot"))
+## the certificates of one system store: ROOT (the roots in use) and AuthRoot (the third-party roots Windows has)
+fn tl_store(op, en, mv, nm) = let name = tl_wstr(nm) in let store = chameleon_c_call(op, Cons(0, Cons(buf_addr(name), Nil))) in if store == 0 then Nil else tl_wenum(en, mv, store, 0, 0)
+fn tl_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, tl_app(t, ys))
+fn tl_rd(mv, addr, n) = let b = buf_new(n) in let z = chameleon_c_call(mv, Cons(buf_addr(b), Cons(addr, Cons(n, Nil)))) in b
+fn tl_q(b, o) = buf_get(b, o) + buf_get(b, o + 1) * 256 + buf_get(b, o + 2) * 65536 + buf_get(b, o + 3) * 16777216 + buf_get(b, o + 4) * 4294967296 + buf_get(b, o + 5) * 1099511627776
+fn tl_wenum(en, mv, store, prev, k) = if k > 2000 then Nil else let ctx = chameleon_c_call(en, Cons(store, Cons(prev, Nil))) in if ctx == 0 then Nil else let hd = tl_rd(mv, ctx, 24) in let p = tl_q(hd, 8) in let n = buf_get(hd, 16) + buf_get(hd, 17) * 256 + buf_get(hd, 18) * 65536 in if chameleon_verify_boundary((if p != 0 then 1 else 0), 1, 1, n, 65536) != 1 then tl_wenum(en, mv, store, ctx, k + 1) else let der = tl_rd(mv, p, n) in Cons(buf_to_str(der, 0, n), tl_wenum(en, mv, store, ctx, k + 1))

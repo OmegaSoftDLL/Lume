@@ -497,6 +497,16 @@ DEPMAIN
     if [ "$stk_rc" = 3 ] && grep -q "^  at inner (.*stk.src:1)$" "$ntmp/stk.err" && grep -q "^  at middle (.*stk.src:2)$" "$ntmp/stk.err" && grep -q "^  at outer (.*stk.src:3)$" "$ntmp/stk.err"; then ok "run-time error prints the call stack with file:line (inner, middle, outer)"; else bad "run-time error call stack"; cat "$ntmp/stk.err"; fi
     # a call through a parameter is the local function, not another module's global of the same name
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/namespaces/localcall/localcall_ok.src 2>&1 | grep -q "3 passed, 0 failed"; then ok "a call through a parameter or let name is never checked against a global of the same name"; else bad "local callee vs global function"; fi
+    # packages with versions: publish two versions, add ^1.0, install picks 1.2.0, runs its tests, locks it, use finds it
+    pw=$(mktemp -d); cp -r ../../tests/registry/pkgver/* "$pw/"
+    LUME_BIN_DIR="$ntmp" ../../lume pkg publish "$pw/mathx_v1" --store="$pw/store" >/dev/null 2>&1; LUME_BIN_DIR="$ntmp" ../../lume pkg publish "$pw/mathx_v2" --store="$pw/store" >/dev/null 2>&1
+    LUME_BIN_DIR="$ntmp" ../../lume pkg add mathx@^1.0 "$pw/app" >/dev/null 2>&1; LUME_BIN_DIR="$ntmp" ../../lume pkg install "$pw/app" --store="$pw/store" >/dev/null 2>&1
+    if grep -q "^mathx 1.2.0 " "$pw/app/lume.lock" && LUME_BIN_DIR="$ntmp" ../../lume test "$pw/app/app.src" 2>&1 | grep -q " passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume pkg verify "$pw/app" >/dev/null 2>&1; then ok "packages: publish versions, add ^1.0, install the highest match with its tests, lume.lock, use"; else bad "packages: publish / add / install / lock"; cat "$pw/app/lume.lock" 2>/dev/null | tail -3; fi
+    rm -rf "$pw"
+    # standard library modules of item 19: hash, csv, utf8, datetime, regex, deflate, http (local server), tlspki (openssl vectors)
+    stdl_bad=""
+    for m in hash_ok csv_utf8_ok datetime_ok regex_ok deflate_ok http_ok tlspki_ok; do LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/$m.src > "$ntmp/stdl.out" 2>&1; grep -q " passed, 0 failed" "$ntmp/stdl.out" || stdl_bad="$stdl_bad $m"; done
+    if [ -z "$stdl_bad" ]; then ok "standard library: hash, csv, utf8, datetime, regex, deflate, http, tlspki"; else bad "standard library:$stdl_bad"; fi
     # builtin contracts known to the prover: buf_bits_write (p + n or -1), buf_get, buf_len, after a let or as the result
     LUME_BIN_DIR="$ntmp" ../../lume prove ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.json" 2>/dev/null || true
     LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.out" 2>&1 || true

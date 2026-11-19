@@ -1,0 +1,96 @@
+## deflate.src -- DEFLATE (RFC 1951) with the zlib (RFC 1950) and gzip (RFC 1952) wrappers, in Lume (`use std/deflate`)
+##   inflate_buf(b, off, n)    raw DEFLATE data -> {ok, buf, n, err}: stored, fixed and dynamic Huffman blocks
+##   deflate_buf(b, off, n)    -> {buf, n}: LZ77 (hash chains, 32 KiB window) with the fixed Huffman code
+##   zlib_decompress(b, n) / zlib_compress(b, n)    the 2-byte header and the Adler-32 trailer (checked)
+##   gunzip(b, n) / gzip(b, n)                      the gzip header (FEXTRA, FNAME, FCOMMENT, FHCRC) and the CRC-32 /
+##                                                  size trailer (checked)
+##   gunzip_str(s) / gzip_str(s)                    the same on strings (the bytes of s)
+## Results that can fail are {ok, buf, n, err}: ok 0 and err the reason on corrupt input.
+use hash
+
+## --- growable output: {b, n} ----------------------------------------------------------------------------------------
+fn df_out() = {b: buf_new(4096), n: 0}
+fn df_grow(o, need) = if o.n + need <= buf_len(o.b) then o else let nb = buf_new((buf_len(o.b) + need) * 2) in let c = buf_copy(nb, 0, o.b, 0, o.n) in {b: nb, n: o.n}
+fn df_put(o, v) = let g = df_grow(o, 1) in let w = buf_set(g.b, g.n, v) in {b: g.b, n: g.n + 1}
+fn df_copy(o, dist, len) = let g = df_grow(o, len) in let z = df_cp(g.b, g.n, dist, len) in {b: g.b, n: g.n + len}
+fn df_cp(b, n, dist, len) = if len == 0 then 0 else let w = buf_set(b, n, buf_get(b, n - dist)) in df_cp(b, n + 1, dist, len - 1)
+fn df_bad(err) = {ok: 0, buf: buf_new(0), n: 0, err: err}
+
+## --- bits, least significant first: the bit position p counts from off ---------------------------------------------
+fn df_bit(b, p) = bit_and(bit_shr(buf_get(b, bit_shr(p, 3)), bit_and(p, 7)), 1)
+fn df_bits(b, p, k) = df_bits_go(b, p, k, 0, 0)
+fn df_bits_go(b, p, k, i, acc) = if i >= k then acc else df_bits_go(b, p, k, i + 1, acc + bit_shl(df_bit(b, p + i), i))
+
+## --- canonical Huffman tables: {cnt, sym} as 16-bit arrays (cnt[0..15], sym in code order) ---------------------------
+fn df_w16(t, i, v) = let a = buf_set(t, i * 2, bit_and(v, 255)) in buf_set(t, i * 2 + 1, bit_shr(v, 8))
+fn df_r16(t, i) = buf_get(t, i * 2) + buf_get(t, i * 2 + 1) * 256
+fn df_table(lens, n) = let cnt = buf_new(32) in let a = df_count(lens, cnt, 0, n) in let offs = buf_new(32) in let b = df_offs(cnt, offs, 1, 0) in let sym = buf_new(n * 2 + 2) in let c = df_syms(lens, offs, sym, 0, n) in {cnt: cnt, sym: sym}
+fn df_count(lens, cnt, i, n) = if i >= n then 0 else let l = df_r16(lens, i) in let w = (if l > 0 then df_w16(cnt, l, df_r16(cnt, l) + 1) else 0) in df_count(lens, cnt, i + 1, n)
+fn df_offs(cnt, offs, l, acc) = if l > 15 then 0 else let w = df_w16(offs, l, acc) in df_offs(cnt, offs, l + 1, acc + df_r16(cnt, l))
+fn df_syms(lens, offs, sym, i, n) = if i >= n then 0 else let l = df_r16(lens, i) in let w = (if l > 0 then (let o = df_r16(offs, l) in let z = df_w16(sym, o, i) in df_w16(offs, l, o + 1)) else 0) in df_syms(lens, offs, sym, i + 1, n)
+## decode one symbol at bit p: {s, p}; s = -1 on a bad code
+fn df_dec(b, p, t, nbits) = df_dec_go(b, p, t, 1, 0, 0, 0)
+fn df_dec_go(b, p, t, len, code, first, index) = if len > 15 then {s: 0 - 1, p: p} else let c2 = code + df_bit(b, p) in let count = df_r16(t.cnt, len) in if c2 - first < count then {s: df_r16(t.sym, index + c2 - first), p: p + 1} else df_dec_go(b, p + 1, t, len + 1, c2 * 2, (first + count) * 2, index + count)
+
+## --- the fixed code and the length / distance bases ------------------------------------------------------------------
+fn df_fixed_lit() = let l = buf_new(288 * 2) in let a = df_fill(l, 0, 144, 8) in let b = df_fill(l, 144, 256, 9) in let c = df_fill(l, 256, 280, 7) in let d = df_fill(l, 280, 288, 8) in df_table(l, 288)
+fn df_fixed_dist() = let l = buf_new(30 * 2) in let a = df_fill(l, 0, 30, 5) in df_table(l, 30)
+fn df_fill(l, i, e, v) = if i >= e then 0 else let w = df_w16(l, i, v) in df_fill(l, i + 1, e, v)
+fn df_nth(xs, i) = match xs
+    Nil        => 0
+    Cons(h, t) => if i == 0 then h else df_nth(t, i - 1)
+fn df_lbase(i) = df_nth([3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258], i)
+fn df_lext(i) = if i < 8 or i == 28 then 0 else (i - 4) / 4
+fn df_dbase(i) = df_nth([1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577], i)
+fn df_dext(i) = if i < 4 then 0 else (i - 2) / 2
+
+## --- inflate --------------------------------------------------------------------------------------------------------
+fn inflate_buf(b, off, n) = df_blocks(b, off * 8, (off + n) * 8, df_out())
+fn df_blocks(b, p, end, o) = if p + 3 > end then df_bad("truncated data") else let final = df_bit(b, p) in let typ = df_bits(b, p + 1, 2) in let r = (if typ == 0 then df_stored(b, p + 3, end, o) else if typ == 1 then df_huff(b, p + 3, end, o, df_fixed_lit(), df_fixed_dist()) else if typ == 2 then df_dynamic(b, p + 3, end, o) else {ok: 0, p: p, o: o, err: "reserved block type"}) in if r.ok == 0 then df_bad(r.err) else if final == 1 then {ok: 1, buf: r.o.b, n: r.o.n, err: "", next: bit_shr(r.p + 7, 3)} else df_blocks(b, r.p, end, r.o)
+fn df_stored(b, p, end, o) = let q = bit_shl(bit_shr(p + 7, 3), 3) in let i = bit_shr(q, 3) in if q + 32 > end then {ok: 0, p: p, o: o, err: "truncated stored block"} else let len = buf_get(b, i) + buf_get(b, i + 1) * 256 in let nlen = buf_get(b, i + 2) + buf_get(b, i + 3) * 256 in if bit_xor(len, nlen) != 65535 then {ok: 0, p: p, o: o, err: "stored block length check"} else if q + 32 + len * 8 > end then {ok: 0, p: p, o: o, err: "truncated stored block"} else let g = df_grow(o, len) in let c = buf_copy(g.b, g.n, b, i + 4, len) in {ok: 1, p: q + 32 + len * 8, o: {b: g.b, n: g.n + len}, err: ""}
+fn df_huff(b, p, end, o, lt, dt) = if p > end then {ok: 0, p: p, o: o, err: "truncated data"} else let r = df_dec(b, p, lt, 0) in if r.s < 0 then {ok: 0, p: p, o: o, err: "bad literal/length code"} else if r.s < 256 then df_huff(b, r.p, end, df_put(o, r.s), lt, dt) else if r.s == 256 then {ok: 1, p: r.p, o: o, err: ""} else if r.s > 285 then {ok: 0, p: p, o: o, err: "bad length symbol"} else df_match(b, r.p, end, o, lt, dt, r.s - 257)
+fn df_match(b, p, end, o, lt, dt, li) = let len = df_lbase(li) + df_bits(b, p, df_lext(li)) in let p2 = p + df_lext(li) in let d = df_dec(b, p2, dt, 0) in if d.s < 0 or d.s > 29 then {ok: 0, p: p, o: o, err: "bad distance code"} else let dist = df_dbase(d.s) + df_bits(b, d.p, df_dext(d.s)) in if dist > o.n then {ok: 0, p: p, o: o, err: "distance too far back"} else df_huff(b, d.p + df_dext(d.s), end, df_copy(o, dist, len), lt, dt)
+fn df_clorder(i) = df_nth([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15], i)
+fn df_dynamic(b, p, end, o) = let hlit = df_bits(b, p, 5) + 257 in let hdist = df_bits(b, p + 5, 5) + 1 in let hclen = df_bits(b, p + 10, 4) + 4 in let cl = buf_new(38) in let a = df_cl(b, p + 14, cl, 0, hclen) in let ct = df_table(cl, 19) in let lens = buf_new((hlit + hdist) * 2) in let r = df_lens(b, p + 14 + hclen * 3, ct, lens, 0, hlit + hdist, 0) in if r.ok == 0 then {ok: 0, p: p, o: o, err: r.err} else let ll = buf_new(hlit * 2) in let c1 = buf_copy(ll, 0, lens, 0, hlit * 2) in let dl = buf_new(hdist * 2) in let c2 = buf_copy(dl, 0, lens, hlit * 2, hdist * 2) in df_huff(b, r.p, end, o, df_table(ll, hlit), df_table(dl, hdist))
+fn df_cl(b, p, cl, i, n) = if i >= n then 0 else let w = df_w16(cl, df_clorder(i), df_bits(b, p + i * 3, 3)) in df_cl(b, p, cl, i + 1, n)
+fn df_lens(b, p, ct, lens, i, n, prev) = if i >= n then {ok: 1, p: p, err: ""} else let r = df_dec(b, p, ct, 0) in if r.s < 0 then {ok: 0, p: p, err: "bad code-length code"} else if r.s < 16 then (let w = df_w16(lens, i, r.s) in df_lens(b, r.p, ct, lens, i + 1, n, r.s)) else if r.s == 16 then (if i == 0 then {ok: 0, p: p, err: "repeat with no previous length"} else df_rep(b, r.p + 2, ct, lens, i, n, prev, 3 + df_bits(b, r.p, 2))) else if r.s == 17 then df_rep(b, r.p + 3, ct, lens, i, n, 0, 3 + df_bits(b, r.p, 3)) else df_rep(b, r.p + 7, ct, lens, i, n, 0, 11 + df_bits(b, r.p, 7))
+fn df_rep(b, p, ct, lens, i, n, v, k) = if i + k > n then {ok: 0, p: p, err: "code lengths overflow"} else let z = df_fill(lens, i, i + k, v) in df_lens(b, p, ct, lens, i + k, n, v)
+
+## --- deflate: LZ77 with hash chains, fixed Huffman ------------------------------------------------------------------
+## bit writer {o, acc, k}: k pending bits in acc
+fn dw_new() = {o: df_out(), acc: 0, k: 0}
+fn dw_bits(w, v, k) = dw_flush({o: w.o, acc: w.acc + bit_shl(v, w.k), k: w.k + k})
+fn dw_flush(w) = if w.k < 8 then w else dw_flush({o: df_put(w.o, bit_and(w.acc, 255)), acc: bit_shr(w.acc, 8), k: w.k - 8})
+fn dw_end(w) = if w.k == 0 then w.o else df_put(w.o, bit_and(w.acc, 255))
+fn dw_rev(v, k, acc) = if k == 0 then acc else dw_rev(bit_shr(v, 1), k - 1, acc * 2 + bit_and(v, 1))
+## a Huffman code is sent most significant bit first: reverse it for the LSB-first writer
+fn dw_code(w, code, k) = dw_bits(w, dw_rev(code, k, 0), k)
+fn dw_lit(w, s) = if s < 144 then dw_code(w, 48 + s, 8) else if s < 256 then dw_code(w, 400 + s - 144, 9) else if s < 280 then dw_code(w, s - 256, 7) else dw_code(w, 192 + s - 280, 8)
+fn dw_lenidx(len, i) = if i >= 28 or df_lbase(i + 1) > len then i else dw_lenidx(len, i + 1)
+fn dw_distidx(d, i) = if i >= 29 or df_dbase(i + 1) > d then i else dw_distidx(d, i + 1)
+fn dw_match(w, len, dist) = let li = dw_lenidx(len, 0) in let w1 = dw_lit(w, 257 + li) in let w2 = dw_bits(w1, len - df_lbase(li), df_lext(li)) in let di = dw_distidx(dist, 0) in let w3 = dw_code(w2, di, 5) in dw_bits(w3, dist - df_dbase(di), df_dext(di))
+## hash of the 3 bytes at i; head[h] = last position + 1 with that hash, prev[i % 32768] = the one before
+fn dz_hash(b, i) = bit_and(buf_get(b, i) * 1024 + buf_get(b, i + 1) * 32 + buf_get(b, i + 2), 32767)
+fn dz_r32(t, i) = buf_get(t, i * 4) + buf_get(t, i * 4 + 1) * 256 + buf_get(t, i * 4 + 2) * 65536 + buf_get(t, i * 4 + 3) * 16777216
+fn dz_w32(t, i, v) = let a = buf_set(t, i * 4, bit_and(v, 255)) in let b = buf_set(t, i * 4 + 1, bit_and(bit_shr(v, 8), 255)) in let c = buf_set(t, i * 4 + 2, bit_and(bit_shr(v, 16), 255)) in buf_set(t, i * 4 + 3, bit_shr(v, 24))
+fn dz_insert(st, i) = let h = dz_hash(st.b, i) in let a = dz_w32(st.prev, bit_and(i, 32767), dz_r32(st.head, h)) in dz_w32(st.head, h, i + 1)
+fn dz_mlen(b, x, y, k, max) = if k >= max or buf_get(b, x + k) != buf_get(b, y + k) then k else dz_mlen(b, x, y, k + 1, max)
+## the longest match for position i among the chain: {len, dist}
+fn dz_best(st, i, cand, chain, best) = if cand <= 0 or chain == 0 or i - (cand - 1) > 32768 then best else let c = cand - 1 in let max = (if st.e - i < 258 then st.e - i else 258) in let l = dz_mlen(st.b, c, i, 0, max) in let b2 = (if l > best.len then {len: l, dist: i - c} else best) in if l >= max then b2 else dz_best(st, i, dz_r32(st.prev, bit_and(c, 32767)), chain - 1, b2)
+fn dz_ins_run(st, i, k) = if k == 0 then 0 else let z = (if i + 2 < st.e then dz_insert(st, i) else 0) in dz_ins_run(st, i + 1, k - 1)
+fn dz_go(st, i, w) = if i >= st.e then w else if i + 2 >= st.e then dz_go(st, i + 1, dw_lit(w, buf_get(st.b, i))) else let m = dz_best(st, i, dz_r32(st.head, dz_hash(st.b, i)), 32, {len: 0, dist: 0}) in if m.len >= 3 then (let z = dz_ins_run(st, i, m.len) in dz_go(st, i + m.len, dw_match(w, m.len, m.dist))) else (let z = dz_insert(st, i) in dz_go(st, i + 1, dw_lit(w, buf_get(st.b, i))))
+fn deflate_buf(b, off, n) = let st = {b: b, e: off + n, head: buf_new(32768 * 4), prev: buf_new(32768 * 4)} in let w0 = dw_bits(dw_bits(dw_new(), 1, 1), 1, 2) in let w = dz_go(st, off, w0) in let o = dw_end(dw_lit(w, 256)) in {buf: o.b, n: o.n}
+
+## --- zlib and gzip wrappers -----------------------------------------------------------------------------------------
+fn df_be32(b, i) = buf_get(b, i) * 16777216 + buf_get(b, i + 1) * 65536 + buf_get(b, i + 2) * 256 + buf_get(b, i + 3)
+fn df_le32(b, i) = buf_get(b, i) + buf_get(b, i + 1) * 256 + buf_get(b, i + 2) * 65536 + buf_get(b, i + 3) * 16777216
+fn zlib_decompress(b, n) = if n < 6 then df_bad("truncated zlib data") else let cmf = buf_get(b, 0) in let flg = buf_get(b, 1) in if bit_and(cmf, 15) != 8 or (cmf * 256 + flg) % 31 != 0 then df_bad("not zlib data") else if bit_and(flg, 32) != 0 then df_bad("zlib preset dictionary not supported") else let r = inflate_buf(b, 2, n - 2) in if r.ok == 0 then r else if r.next + 4 > n then df_bad("truncated zlib trailer") else if df_be32(b, r.next) != adler32_buf(r.buf, 0, r.n) then df_bad("zlib Adler-32 mismatch") else r
+fn df_bytes(o, v, k) = if k == 0 then o else df_bytes(df_put(o, bit_and(v, 255)), bit_shr(v, 8), k - 1)
+fn df_bytes_be(o, v) = df_put(df_put(df_put(df_put(o, bit_shr(v, 24)), bit_and(bit_shr(v, 16), 255)), bit_and(bit_shr(v, 8), 255)), bit_and(v, 255))
+fn df_cat(o, b, n) = let g = df_grow(o, n) in let c = buf_copy(g.b, g.n, b, 0, n) in {b: g.b, n: g.n + n}
+fn zlib_compress(b, n) = let d = deflate_buf(b, 0, n) in let o = df_cat(df_put(df_put(df_out(), 120), 156), d.buf, d.n) in let f = df_bytes_be(o, adler32_buf(b, 0, n)) in {buf: f.b, n: f.n}
+fn df_skipz(b, i, n) = if i >= n then n else if buf_get(b, i) == 0 then i + 1 else df_skipz(b, i + 1, n)
+fn gunzip(b, n) = if n < 18 or buf_get(b, 0) != 31 or buf_get(b, 1) != 139 or buf_get(b, 2) != 8 then df_bad("not gzip data") else let flg = buf_get(b, 3) in let i1 = (if bit_and(flg, 4) != 0 then 12 + buf_get(b, 10) + buf_get(b, 11) * 256 else 10) in let i2 = (if bit_and(flg, 8) != 0 then df_skipz(b, i1, n) else i1) in let i3 = (if bit_and(flg, 16) != 0 then df_skipz(b, i2, n) else i2) in let i4 = (if bit_and(flg, 2) != 0 then i3 + 2 else i3) in let r = inflate_buf(b, i4, n - i4) in if r.ok == 0 then r else if r.next + 8 > n then df_bad("truncated gzip trailer") else if df_le32(b, r.next) != crc32_buf(r.buf, 0, r.n) then df_bad("gzip CRC-32 mismatch") else if df_le32(b, r.next + 4) != bit_and(r.n, 4294967295) then df_bad("gzip size mismatch") else r
+fn gzip(b, n) = let d = deflate_buf(b, 0, n) in let h = df_bytes(df_bytes(df_put(df_put(df_put(df_put(df_out(), 31), 139), 8), 0), 0, 4), 255 * 256, 2) in let o = df_cat(h, d.buf, d.n) in let f = df_bytes(df_bytes(o, crc32_buf(b, 0, n), 4), n, 4) in {buf: f.b, n: f.n}
+fn gzip_str(s) = let b = buf_from_str(s) in let g = gzip(b, buf_len(b)) in buf_to_str(g.buf, 0, g.n)
+fn gunzip_str(s) = let b = buf_from_str(s) in let r = gunzip(b, buf_len(b)) in if r.ok == 0 then ctfail("gunzip: " + r.err + "\n") else buf_to_str(r.buf, 0, r.n)

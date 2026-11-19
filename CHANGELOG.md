@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Standard library (item 19), in Lume with tests:** `use std/hash` (CRC-32, Adler-32, MD5, SHA-1, SHA-256 against the
+  published vectors), `csv` (RFC 4180), `utf8` (characters over byte strings), `datetime` (civil dates, ISO 8601,
+  US / EU / Sydney daylight rules), `regex` (backtracking: groups, alternation, lazy quantifiers, replace with $1),
+  `deflate` (inflate of stored / fixed / dynamic blocks, LZ77 deflate, zlib and gzip with checked trailers; zlib and
+  Python read what it writes), `http` (HTTP/1.1 client: chunked, gzip, redirects, deadlines) and HTTPS through `tls`:
+  a TLS 1.3 client (X25519, AES-128-GCM / ChaCha20-Poly1305) whose server certificates are checked by `tlspki` (RSA
+  PKCS #1 v1.5 and PSS, ECDSA P-256 / P-384, SHA-384 / SHA-512, X.509 chains, host names with wildcards) against the
+  system roots: SSL_CERT_FILE, the Linux bundle, or the Windows ROOT / AuthRoot stores read through `lchameleon`
+  (when a root is not there yet, Windows is asked to fetch it and the chain is checked again in Lume). `bignum`:
+  integers of any size with Montgomery arithmetic. Checked against example.org, google.com and github.com on Linux and
+  Windows, and against local TLS 1.3 servers: a wrong host and an untrusted root are refused.
+- **Package versions (item 19):** `lume pkg publish [dir] --store=DIR` runs the package's tests and stores
+  NAME/VERSION immutably with the SHA-256 of its files; `lume pkg add NAME[@REQ]` writes the dependency into
+  lume.toml (REQ `1.2.3`, `^1.2`, `~1.2.3` or `*`); `lume pkg install --store=DIR` resolves each dependency to the
+  highest stored version it allows, copies it to lume_modules/, checks its hash, runs its tests there and adds a
+  `[packages]` block (name, version, hash) to lume.lock, which `lume pkg verify` checks; `use NAME` finds an installed
+  package. The store can also be named by LUME_PKG_STORE (tests/registry/pkgver).
 - **`lume verify [--jobs=N] <file.src>...`:** check, test, prove, fmt --check and certify for many files in N worker
   processes (os_fork, default 2). Each file's result is cached under build/cache/verify by the SHA-256 of its whole
   bundle (the file and every module it imports) and of the tools, so an unchanged file never runs again and a change

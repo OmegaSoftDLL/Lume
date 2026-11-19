@@ -22,6 +22,11 @@ contam nele; `LUME_FL=off` as mantem; um laco de cauda e uma chamada).
 (padrao 2); o resultado de cada arquivo fica em cache pelo SHA-256 do pacote inteiro e das ferramentas, entao depois de
 uma mudanca so o modulo alterado e os arquivos que o importam rodam de novo.
 
+Pacotes: `lume pkg publish [dir] --store=DIR` roda os testes do pacote e guarda NOME/VERSAO imutavel com o SHA-256;
+`lume pkg add NOME@REQ` grava `nome = "REQ"` em `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `*`);
+`lume pkg install --store=DIR` instala as maiores versoes compativeis em `lume_modules/`, roda os testes delas e grava
+versoes e hashes no `lume.lock`; `use NOME` encontra um pacote instalado.
+
 Exemplos oficiais: `examples/topics/*.src` (um arquivo por assunto, cada um rodado por `lume test`) e
 `examples/diagnostics/` (para um codigo de diagnostico, `CODIGO_nome.bad` o mostra e `CODIGO_nome.fixed.src` e o
 programa corrigido); `tests/docs/examples_gate.src` roda todos a cada versao.
@@ -237,6 +242,15 @@ Rede (estavel): `net_udp_bind_addr(ip, porta)` (socket, -1 na falha), `net_udp_s
 | Modulo | O que oferece | Estado |
 | --- | --- | --- |
 | `h264` | `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (luma em 1/4 de amostra, 6 taps, 8.4.2.2.1), `buf_h264_chroma_mc(...)` (mesmos argumentos, croma bilinear em 1/8, 8.4.2.2.2), `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (8.7.2.3 / 8.7.2.4; bs e tc0 sao listas, um valor por 4 linhas de luma / 2 de croma); 0, ou -1 com argumento errado; coordenadas presas a figura | estavel |
+| `hash` | `crc32`, `adler32`, `md5`, `sha1`, `sha256` (strings; `*_buf` para buffers), `hex32` | estavel |
+| `csv` | `csv_parse(texto)` (RFC 4180: aspas, separadores e quebras de linha dentro de campos), `csv_format(linhas)`, `csv_parse_sep` / `csv_format_sep`, `csv_field` | estavel |
+| `utf8` | `utf8_len`, `utf8_decode` / `utf8_encode`, `utf8_char`, `utf8_cp`, `utf8_slice`, `utf8_upper` / `utf8_lower` (ASCII + Latin-1), `utf8_reverse`, `utf8_valid` (strings sao bytes; estas contam caracteres) | estavel |
+| `datetime` | `dt_from_unix`, `dt_to_unix`, `dt_iso`, `dt_parse_iso`, `dt_weekday`, `dt_add_days` / `dt_add_months`, `dt_offset(fuso, t)` / `dt_local` / `dt_iso_local` (deslocamentos fixos, horario de verao EUA / UE / Sydney) | estavel |
+| `regex` | `re_match`, `re_search`, `re_find`, `re_find_all`, `re_groups`, `re_replace` (`$1`), `re_split`: classes, `\d \w \s`, ancoras, grupos, alternancia, quantificadores gulosos e preguicosos | estavel |
+| `deflate` | `inflate_buf` / `deflate_buf`, `zlib_decompress` / `zlib_compress`, `gunzip` / `gzip`, `gunzip_str` / `gzip_str` (Adler-32 / CRC-32 conferidos) | estavel |
+| `http` | `http_get`, `http_post`, `http_request(metodo, url, cabecalhos, corpo, ms)`, `http_header`: chunked, gzip, redirecionamentos, prazos; `https://` pelo `tls` | estavel |
+| `tls` | `tls_request(host, porta, dados, ms)`: cliente TLS 1.3 (X25519, AES-128-GCM / ChaCha20-Poly1305); o certificado do servidor e conferido contra as raizes do sistema (`SSL_CERT_FILE`, o pacote do Linux, os repositorios do Windows pelo `lchameleon`) e o nome do host | estavel |
+| `tlspki`, `bignum` | RSA (PKCS #1 v1.5, PSS), ECDSA P-256 / P-384, SHA-384 / SHA-512, parse X.509 e validacao de cadeia, PEM; inteiros de qualquer tamanho com `bn_modexp` de Montgomery | estavel |
 | `seq` | `seq_map`, `seq_filter`, `seq_fold`, `seq_loop(a, b, acc, f)` (laco sobre a..b-1 sem lista), `seq_while`, `seq_nth`, `seq_range`, `seq_concat` | estavel |
 | `arena` | `heap_stats()`, `gc_collect()`, `gc_count()`, `arena_new / alloc / reset / destroy` | estavel |
 | `netctl`, `dns` | TCP com timeout, sockets nao bloqueantes, epoll, DNS | estavel |
@@ -311,7 +325,7 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 ## 11. Mudou nesta versao
 
-Entrou: `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
 Mudou: o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git

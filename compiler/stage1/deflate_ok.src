@@ -1,0 +1,30 @@
+## deflate_ok.src -- `use std/deflate`: data written by zlib / gzip (stored, fixed and dynamic blocks) decodes to the
+## original bytes, and what deflate_buf / zlib_compress / gzip write decodes back (round trips, long matches)
+use deflate
+
+fn v_dyn() = "78daf329cd4d5548cecf2d284a2d2e4e2d5648cc4b5148494512707175f3710c715548492c49d453f019553eaa7c54f9a8f251e5a3ca4795e356cec0c8c4ccc2cac6cec1c9c5cdc3cbc72f2028242c222a262e2129252d232b27afa0a8a4aca2aaa6aea1a9a5ada3aba76f6068646c626a666e6169656d636b67efe0e8e40c34d1ddc3d3cbdbc7d7cf3f2030283824342c3c22322a3a26362e3e2131293925352d3d23332b3b27372fbfa0b0a8b8a4b4acbca2b2aabaa6b6aebea1b1a9b9a5b5adbda3b3abbba7b7af7fc2c44993a74c9d367dc6cc59b3e7cc9d377fc1c2458b972c5db67cc5ca55abd7ac5db77ec3c64d9bb76cddb67dc7ce5dbbf7ecddb7ffc0c143878f1c3d76fcc4c953a7cf9c3d77fec2c54b97af5cbd76fdc6cd5bb7efdcbd77ffc1c3478f9f3c7df6fcc5cb57afdfbc7df7fec3c74f9fbf7cfdf6fdc7cf5fbffffcfdf71f00351616ce"
+fn v_stored() = "7801011100eeff73746f72656420626c6f636b20746573743c2a069d"
+fn v_fixed() = "4b4c4a4e44420a699915a9290a19a56969b9897900"
+fn v_gz() = "1f8b08080000000002ff6e6f74652e747874004bafca2c5028cf2cc950485448cbcc4955c84bcc4de54a2741140009f6fa6c42000000"
+fn hexv(c) = if c >= "0" and c <= "9" then ord(c) - 48 else ord(c) - 87
+fn unhex(s) = let b = buf_new(count(s) / 2) in unhex_go(s, b, 0)
+fn unhex_go(s, b, i) = if i >= count(s) / 2 then b else let w = buf_set(b, i, hexv(at(s, 2 * i)) * 16 + hexv(at(s, 2 * i + 1))) in unhex_go(s, b, i + 1)
+fn rep(s, k) = if k == 0 then "" else s + rep(s, k - 1)
+fn allbytes() = let b = buf_new(256) in allb(b, 0)
+fn allb(b, i) = if i >= 256 then b else let w = buf_set(b, i, i) in allb(b, i + 1)
+fn bufeq(a, an, b, bn) = an == bn and bufeq_go(a, b, 0, an)
+fn bufeq_go(a, b, i, n) = if i >= n then true else if buf_get(a, i) != buf_get(b, i) then false else bufeq_go(a, b, i + 1, n)
+fn expect_dyn() = let t = buf_from_str(rep("Lume compresses and decompresses DEFLATE data. ", 40)) in let all = buf_new(buf_len(t) + 256) in let c = buf_copy(all, 0, t, 0, buf_len(t)) in let d = buf_copy(all, buf_len(t), allbytes(), 0, 256) in all
+
+fn test_zlib_dynamic() = let v = unhex(v_dyn()) in let r = zlib_decompress(v, buf_len(v)) in let e = expect_dyn() in r.ok == 1 and bufeq(r.buf, r.n, e, buf_len(e))
+fn test_zlib_stored() = let v = unhex(v_stored()) in let r = zlib_decompress(v, buf_len(v)) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == "stored block test"
+fn test_raw_fixed() = let v = unhex(v_fixed()) in let r = inflate_buf(v, 0, buf_len(v)) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == "abcabcabcabcabc fixed huffman"
+fn test_gzip_named() = let v = unhex(v_gz()) in let r = gunzip(v, buf_len(v)) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == rep("gzip with a file name" + chr(10), 3)
+fn test_corrupt() = let v = unhex(v_gz()) in let w = buf_set(v, 30, bit_xor(buf_get(v, 30), 255)) in (gunzip(v, buf_len(v))).ok == 0 and (zlib_decompress(buf_from_str("xx"), 2)).ok == 0
+fn rt(s) = let b = buf_from_str(s) in let d = deflate_buf(b, 0, buf_len(b)) in let r = inflate_buf(d.buf, 0, d.n) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == s
+fn test_round_trip() = rt("") and rt("a") and rt("hello hello hello hello") and rt(rep("x", 1000)) and rt(rep("abcdefghij", 500) + "tail")
+fn test_compresses() = let s = rep("the same line again and again" + chr(10), 200) in let b = buf_from_str(s) in let d = deflate_buf(b, 0, buf_len(b)) in d.n * 10 < buf_len(b)
+fn test_zlib_gzip_round_trip() = let s = rep("zlib and gzip wrappers ", 80) in let b = buf_from_str(s) in let z = zlib_compress(b, buf_len(b)) in let r = zlib_decompress(z.buf, z.n) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == s and gunzip_str(gzip_str(s)) == s
+## a distance past 4 KiB and binary bytes
+fn test_far_match() = let all = allbytes() in let big = buf_new(256 * 40) in let f = fill40(big, all, 0) in let d = deflate_buf(big, 0, buf_len(big)) in let r = inflate_buf(d.buf, 0, d.n) in r.ok == 1 and bufeq(r.buf, r.n, big, buf_len(big))
+fn fill40(big, all, k) = if k >= 40 then 0 else let c = buf_copy(big, k * 256, all, 0, 256) in fill40(big, all, k + 1)

@@ -1,0 +1,61 @@
+## datetime.src -- dates, times and time zones in Lume (`use std/datetime`). Times are Unix seconds (UTC); a date-time
+## is the record {y, mo, d, h, mi, s}. Proleptic Gregorian calendar, no leap seconds.
+##   dt_from_unix(t)                 -> {y, mo, d, h, mi, s} in UTC
+##   dt_to_unix(y, mo, d, h, mi, s)  -> Unix seconds of that UTC date-time
+##   dt_days_from_civil(y, mo, d)    days since 1970-01-01 (negative before)
+##   dt_weekday(t)                   0 Sunday .. 6 Saturday
+##   dt_leap(y) / dt_days_in_month(y, mo)
+##   dt_add_days(t, n) / dt_add_months(t, n)   (a day past the end of the month is clamped)
+##   dt_iso(t)                       "2026-11-19T13:05:00Z"
+##   dt_parse_iso(s)                 Unix seconds from "YYYY-MM-DD", "YYYY-MM-DDTHH:MM[:SS][.fff](Z|+HH:MM|-HH:MM)";
+##                                   -1 when malformed (a time without a zone is UTC)
+##   dt_offset(zone, t)              the zone's offset from UTC at instant t, in seconds; zone is "UTC", "+03:00" /
+##                                   "-0530" or a named zone: America/Sao_Paulo, America/New_York, America/Chicago,
+##                                   America/Denver, America/Los_Angeles (US daylight rule), Europe/London,
+##                                   Europe/Lisbon, Europe/Paris, Europe/Berlin, Europe/Madrid, Europe/Rome (EU rule),
+##                                   Asia/Tokyo, Asia/Shanghai, Asia/Kolkata, Australia/Sydney (southern rule)
+##   dt_local(zone, t)               {y, mo, d, h, mi, s} local time in that zone
+##   dt_iso_local(zone, t)           "2026-11-19T10:05:00-03:00"
+
+## days from civil (Howard Hinnant's algorithm)
+fn dt_floordiv(a, b) = if a >= 0 then a / b else 0 - ((0 - a + b - 1) / b)
+fn dt_days_from_civil(y0, m, d) = let y = (if m <= 2 then y0 - 1 else y0) in let era = dt_floordiv(y, 400) in let yoe = y - era * 400 in let mp = (if m > 2 then m - 3 else m + 9) in let doy = (153 * mp + 2) / 5 + d - 1 in let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy in era * 146097 + doe - 719468
+fn dt_civil(z0) = let z = z0 + 719468 in let era = dt_floordiv(z, 146097) in let doe = z - era * 146097 in let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 in let doy = doe - (365 * yoe + yoe / 4 - yoe / 100) in let mp = (5 * doy + 2) / 153 in let d = doy - (153 * mp + 2) / 5 + 1 in let m = (if mp < 10 then mp + 3 else mp - 9) in {y: yoe + era * 400 + (if m <= 2 then 1 else 0), mo: m, d: d}
+fn dt_from_unix(t) = let days = dt_floordiv(t, 86400) in let sec = t - days * 86400 in let c = dt_civil(days) in {y: c.y, mo: c.mo, d: c.d, h: sec / 3600, mi: (sec % 3600) / 60, s: sec % 60}
+fn dt_to_unix(y, mo, d, h, mi, s) = dt_days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s
+fn dt_weekday(t) = let days = dt_floordiv(t, 86400) in ((days % 7) + 11) % 7
+fn dt_leap(y) = (y % 4 == 0 and y % 100 != 0) or y % 400 == 0
+fn dt_days_in_month(y, mo) = if mo == 2 then (if dt_leap(y) then 29 else 28) else if mo == 4 or mo == 6 or mo == 9 or mo == 11 then 30 else 31
+fn dt_add_days(t, n) = t + n * 86400
+fn dt_add_months(t, n) = let r = dt_from_unix(t) in let m0 = r.mo - 1 + n in let y = r.y + dt_floordiv(m0, 12) in let mo = m0 - dt_floordiv(m0, 12) * 12 + 1 in let d = (if r.d > dt_days_in_month(y, mo) then dt_days_in_month(y, mo) else r.d) in dt_to_unix(y, mo, d, r.h, r.mi, r.s)
+
+fn dt_p2(n) = if n < 10 then "0" + str(n) else str(n)
+fn dt_p4(n) = if n < 10 then "000" + str(n) else if n < 100 then "00" + str(n) else if n < 1000 then "0" + str(n) else str(n)
+fn dt_fmt(r) = dt_p4(r.y) + "-" + dt_p2(r.mo) + "-" + dt_p2(r.d) + "T" + dt_p2(r.h) + ":" + dt_p2(r.mi) + ":" + dt_p2(r.s)
+fn dt_iso(t) = dt_fmt(dt_from_unix(t)) + "Z"
+fn dt_zfmt(off) = if off == 0 then "Z" else (if off < 0 then "-" else "+") + dt_p2((if off < 0 then 0 - off else off) / 3600) + ":" + dt_p2(((if off < 0 then 0 - off else off) % 3600) / 60)
+
+## --- parsing --------------------------------------------------------------------------------------------------------
+fn dt_digits(s, i, k) = if k == 0 then 0 else if i >= count(s) or at(s, i) < "0" or at(s, i) > "9" then 0 - 1000000000 else let r = dt_digits(s, i + 1, k - 1) in if r < 0 then r else (ord(at(s, i)) - 48) * dt_pow10(k - 1) + r
+fn dt_pow10(k) = if k == 0 then 1 else 10 * dt_pow10(k - 1)
+fn dt_ch(s, i, c) = i < count(s) and at(s, i) == c
+fn dt_parse_iso(s) = let y = dt_digits(s, 0, 4) in let mo = dt_digits(s, 5, 2) in let d = dt_digits(s, 8, 2) in if y < 0 or mo < 1 or mo > 12 or d < 1 or not dt_ch(s, 4, "-") or not dt_ch(s, 7, "-") or d > dt_days_in_month(y, mo) then 0 - 1 else if count(s) == 10 then dt_to_unix(y, mo, d, 0, 0, 0) else if not (dt_ch(s, 10, "T") or dt_ch(s, 10, " ")) then 0 - 1 else dt_ptime(s, dt_days_from_civil(y, mo, d) * 86400)
+fn dt_ptime(s, base) = let h = dt_digits(s, 11, 2) in let mi = dt_digits(s, 14, 2) in if h < 0 or h > 23 or mi < 0 or mi > 59 or not dt_ch(s, 13, ":") then 0 - 1 else let sec = (if dt_ch(s, 16, ":") then dt_digits(s, 17, 2) else 0) in let i = (if dt_ch(s, 16, ":") then 19 else 16) in if sec < 0 or sec > 60 then 0 - 1 else let j = dt_frac(s, i) in let z = dt_pzone(s, j) in if z == 0 - 1000000 then 0 - 1 else base + h * 3600 + mi * 60 + sec - z
+fn dt_frac(s, i) = if dt_ch(s, i, ".") then dt_fracd(s, i + 1) else i
+fn dt_fracd(s, i) = if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then dt_fracd(s, i + 1) else i
+## the zone at i in seconds east of UTC; -1000000 when malformed
+fn dt_pzone(s, i) = if i >= count(s) or dt_ch(s, i, "Z") and i + 1 == count(s) then 0 else if (dt_ch(s, i, "+") or dt_ch(s, i, "-")) then dt_pzone2(s, i) else 0 - 1000000
+fn dt_pzone2(s, i) = let h = dt_digits(s, i + 1, 2) in let mi = (if dt_ch(s, i + 3, ":") then dt_digits(s, i + 4, 2) else dt_digits(s, i + 3, 2)) in if h < 0 or mi < 0 then 0 - 1000000 else (if dt_ch(s, i, "-") then 0 - 1 else 1) * (h * 3600 + mi * 60)
+
+## --- time zones -----------------------------------------------------------------------------------------------------
+## the Unix second of the n-th weekday wd (0 Sunday) of month mo at hour h UTC; n = -1 is the last one
+fn dt_nth(y, mo, wd, n, h) = if n > 0 then (let first = dt_days_from_civil(y, mo, 1) in let fw = dt_weekday(first * 86400) in (first + (wd - fw + 7) % 7 + (n - 1) * 7) * 86400 + h * 3600) else (let last = dt_days_from_civil(y, mo, dt_days_in_month(y, mo)) in let lw = dt_weekday(last * 86400) in (last - (lw - wd + 7) % 7) * 86400 + h * 3600)
+## US: second Sunday of March 2:00 local to first Sunday of November 2:00 local (std offset so)
+fn dt_us(so, t) = let y = (dt_from_unix(t + so)).y in let a = dt_nth(y, 3, 0, 2, 2) - so in let b = dt_nth(y, 11, 0, 1, 2) - so - 3600 in if t >= a and t < b then so + 3600 else so
+## EU: last Sunday of March 01:00 UTC to last Sunday of October 01:00 UTC
+fn dt_eu(so, t) = let y = (dt_from_unix(t)).y in if t >= dt_nth(y, 3, 0, 0 - 1, 1) and t < dt_nth(y, 10, 0, 0 - 1, 1) then so + 3600 else so
+## Australia (NSW): first Sunday of October 2:00 standard to first Sunday of April 3:00 daylight (= 2:00 standard)
+fn dt_au(so, t) = let y = (dt_from_unix(t + so)).y in let end1 = dt_nth(y, 4, 0, 1, 2) - so in let start1 = dt_nth(y, 10, 0, 1, 2) - so in if t < end1 or t >= start1 then so + 3600 else so
+fn dt_offset(zone, t) = if zone == "UTC" or zone == "Z" or zone == "GMT" then 0 else if zone == "America/Sao_Paulo" then 0 - 10800 else if zone == "America/New_York" then dt_us(0 - 18000, t) else if zone == "America/Chicago" then dt_us(0 - 21600, t) else if zone == "America/Denver" then dt_us(0 - 25200, t) else if zone == "America/Los_Angeles" then dt_us(0 - 28800, t) else if zone == "Europe/London" or zone == "Europe/Lisbon" then dt_eu(0, t) else if zone == "Europe/Paris" or zone == "Europe/Berlin" or zone == "Europe/Madrid" or zone == "Europe/Rome" then dt_eu(3600, t) else if zone == "Asia/Tokyo" then 32400 else if zone == "Asia/Shanghai" then 28800 else if zone == "Asia/Kolkata" then 19800 else if zone == "Australia/Sydney" then dt_au(36000, t) else (let z = dt_pzone(zone, 0) in if z == 0 - 1000000 then ctfail("datetime: unknown time zone '" + zone + "'\n") else z)
+fn dt_local(zone, t) = dt_from_unix(t + dt_offset(zone, t))
+fn dt_iso_local(zone, t) = let off = dt_offset(zone, t) in dt_fmt(dt_from_unix(t + off)) + dt_zfmt(off)

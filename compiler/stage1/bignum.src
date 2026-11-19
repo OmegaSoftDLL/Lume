@@ -1,0 +1,113 @@
+## bignum.src -- non-negative integers of any size in Lume (`use std/bignum`), for RSA and elliptic curves.
+## A number is a list of 24-bit limbs, least significant first (products of two limbs stay far below 2^63).
+##   bn_from_bytes(s) / bn_from_hex(h) / bn_small(v)   big-endian bytes / hex / a small int -> number
+##   bn_to_bytes(x, len) / bn_to_hex(x)                 -> big-endian bytes (left-padded to len) / hex
+##   bn_cmp(a, b) (-1, 0, 1), bn_is_zero(x), bn_bits(x), bn_bit(x, i)
+##   bn_add(a, b), bn_sub(a, b) (a >= b), bn_mul(a, b), bn_mod(a, m), bn_shr1(x)
+##   bn_mont(m) -> a Montgomery context for an odd modulus m; bn_modexp(b, e, m) = b^e mod m;
+##   bn_mulmod(a, b, ctx) / bn_tomont / bn_frommont; bn_invmod(a, p) = a^(p-2) mod p (p prime)
+
+fn bn_b() = 16777216
+fn bn_mask() = 16777215
+fn bn_norm(x) = bn_rev(bn_dropz(bn_rev(x, Nil)), Nil)
+fn bn_dropz(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h == 0 then bn_dropz(t) else xs
+fn bn_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => bn_rev(t, Cons(h, acc))
+fn bn_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + bn_len(t)
+fn bn_hd(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => h
+fn bn_tl(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn bn_small(v) = bn_norm(bn_split(v))
+fn bn_split(v) = if v == 0 then Nil else Cons(bit_and(v, 16777215), bn_split(bit_shr(v, 24)))
+fn bn_is_zero(x) = bn_isnil(bn_norm(x))
+
+## --- bytes and hex --------------------------------------------------------------------------------------------------
+fn bn_from_bytes(s) = bn_norm(bn_fb(s, count(s) - 1, Nil, 0, 0, 0))
+## read bytes from the end (least significant) in groups of three
+fn bn_fb(s, i, acc, v, k, sh) = if i < 0 then bn_rev(if k > 0 then Cons(v, acc) else acc, Nil) else let v2 = v + ord_at(s, i) * bit_shl(1, sh) in if k == 2 then bn_fb(s, i - 1, Cons(v2, acc), 0, 0, 0) else bn_fb(s, i - 1, acc, v2, k + 1, sh + 8)
+fn bn_hexv(c) = if c >= "0" and c <= "9" then ord(c) - 48 else if c >= "a" and c <= "f" then ord(c) - 87 else ord(c) - 55
+fn bn_unhex(h) = bn_uh(h, 0, "")
+fn bn_uh(h, i, acc) = if i + 1 >= count(h) + 1 then acc else if i >= count(h) then acc else bn_uh(h, i + 2, acc + bn_byte(bn_hexv(at(h, i)) * 16 + bn_hexv(at(h, i + 1))))
+fn bn_byte(v) = let b = buf_new(1) in let w = buf_set(b, 0, v) in buf_to_str(b, 0, 1)
+fn bn_from_hex(h) = bn_from_bytes(bn_unhex(if count(h) % 2 == 1 then "0" + h else h))
+## big-endian bytes of x, exactly len bytes (higher bytes dropped, missing ones zero)
+fn bn_to_bytes(x, len) = let b = buf_new(len) in let z = bn_tb(x, b, len - 1, 0) in buf_to_str(b, 0, len)
+fn bn_tb(x, b, i, k) = match x
+    Nil        => 0
+    Cons(h, t) => let a = bn_put(b, i, bit_and(h, 255)) in let c = bn_put(b, i - 1, bit_and(bit_shr(h, 8), 255)) in let d = bn_put(b, i - 2, bit_shr(h, 16)) in bn_tb(t, b, i - 3, k + 1)
+fn bn_put(b, i, v) = if i < 0 then 0 else buf_set(b, i, v)
+fn bn_to_hex(x) = let n = (bn_bits(x) + 7) / 8 in bn_hexs(bn_to_bytes(x, if n == 0 then 1 else n), 0)
+fn bn_hexs(s, i) = if i >= count(s) then "" else at("0123456789abcdef", ord_at(s, i) / 16) + at("0123456789abcdef", ord_at(s, i) % 16) + bn_hexs(s, i + 1)
+
+## --- comparison and bits --------------------------------------------------------------------------------------------
+fn bn_cmp(a, b) = let x = bn_norm(a) in let y = bn_norm(b) in let la = bn_len(x) in let lb = bn_len(y) in if la != lb then (if la < lb then 0 - 1 else 1) else bn_cmpr(bn_rev(x, Nil), bn_rev(y, Nil))
+fn bn_cmpr(a, b) = match a
+    Nil        => 0
+    Cons(h, t) => let g = bn_hd(b) in if h < g then 0 - 1 else if h > g then 1 else bn_cmpr(t, bn_tl(b))
+fn bn_bits(x) = let n = bn_norm(x) in let l = bn_len(n) in if l == 0 then 0 else (l - 1) * 24 + bn_bl(bn_last(n), 0)
+fn bn_last(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if bn_isnil(t) then h else bn_last(t)
+fn bn_isnil(xs) = match xs
+    Nil        => true
+    Cons(h, t) => false
+fn bn_bl(v, k) = if v == 0 then k else bn_bl(bit_shr(v, 1), k + 1)
+fn bn_limb(x, i) = match x
+    Nil        => 0
+    Cons(h, t) => if i == 0 then h else bn_limb(t, i - 1)
+fn bn_bit(x, i) = bit_and(bit_shr(bn_limb(x, i / 24), i % 24), 1)
+
+## --- arithmetic -----------------------------------------------------------------------------------------------------
+fn bn_add(a, b) = bn_norm(bn_addc(a, b, 0))
+fn bn_addc(a, b, c) = match a
+    Nil        => if bn_isnil(b) then (if c > 0 then Cons(c, Nil) else Nil) else bn_addc(Cons(0, Nil), b, c)
+    Cons(h, t) => let s = h + bn_hd(b) + c in Cons(bit_and(s, 16777215), bn_addc(t, bn_tl(b), bit_shr(s, 24)))
+fn bn_sub(a, b) = bn_norm(bn_subc(a, b, 0))
+fn bn_subc(a, b, br) = match a
+    Nil        => Nil
+    Cons(h, t) => let d = h - bn_hd(b) - br in if d < 0 then Cons(d + 16777216, bn_subc(t, bn_tl(b), 1)) else Cons(d, bn_subc(t, bn_tl(b), 0))
+## x * v + c for a limb v
+fn bn_mul1(x, v, c) = match x
+    Nil        => (if c > 0 then bn_split(c) else Nil)
+    Cons(h, t) => let p = h * v + c in Cons(bit_and(p, 16777215), bn_mul1(t, v, bit_shr(p, 24)))
+fn bn_mul(a, b) = bn_norm(bn_mulg(bn_norm(a), bn_norm(b)))
+fn bn_mulg(a, b) = match a
+    Nil        => Nil
+    Cons(h, t) => bn_addc(bn_mul1(b, h, 0), Cons(0, bn_mulg(t, b)), 0)
+fn bn_shr1(x) = bn_norm(bn_s1(bn_norm(x)))
+fn bn_s1(x) = match x
+    Nil        => Nil
+    Cons(h, t) => Cons(bit_or(bit_shr(h, 1), bit_shl(bit_and(bn_hd(t), 1), 23)), bn_s1(t))
+fn bn_shl_limbs(x, k) = if k == 0 then x else Cons(0, bn_shl_limbs(x, k - 1))
+## a mod m by shift-and-subtract (m > 0); fine for one-off reductions
+fn bn_mod(a, m) = let x = bn_norm(a) in if bn_cmp(x, m) < 0 then x else bn_modgo(x, m, bn_bits(x) - bn_bits(m))
+fn bn_modgo(x, m, k) = if k < 0 then x else let mk = bn_shlb(m, k) in bn_modgo(if bn_cmp(x, mk) >= 0 then bn_sub(x, mk) else x, m, k - 1)
+fn bn_shlb(x, k) = bn_norm(bn_shlbits(bn_shl_limbs(x, k / 24), k % 24))
+fn bn_shlbits(x, s) = if s == 0 then x else bn_sb(x, s, 0)
+fn bn_sb(x, s, c) = match x
+    Nil        => (if c > 0 then Cons(c, Nil) else Nil)
+    Cons(h, t) => let v = bit_shl(h, s) + c in Cons(bit_and(v, 16777215), bn_sb(t, s, bit_shr(v, 24)))
+
+## --- Montgomery arithmetic (R = 2^(24 k)) ---------------------------------------------------------------------------
+## -m^-1 mod 2^24 by Newton's iteration on the low limb
+fn bn_newton(m0, x, k) = if k == 0 then x else bn_newton(m0, bit_and(x * (2 - bit_and(m0 * x, 16777215)), 16777215), k - 1)
+fn bn_pad(x, k) = if k <= 0 then Nil else Cons(bn_hd(x), bn_pad(bn_tl(x), k - 1))
+fn bn_mont(m) = let mn = bn_norm(m) in let k = bn_len(mn) in let inv = bn_newton(bn_hd(mn), 1, 6) in let r2 = bn_mod(bn_shl_limbs(bn_small(1), 2 * k), mn) in {m: bn_pad(mn, k), k: k, minv: bit_and(16777216 - inv, 16777215), r2: bn_pad(r2, k)}
+## t = (t + a_i b + u m) / 2^24, one limb of a at a time, t kept at k + 1 limbs
+fn bn_mm(a, b, c) = let t = bn_mmgo(bn_pad(a, c.k), b, c, bn_pad(Nil, c.k + 1), c.k) in let r = bn_pad(t, c.k + 1) in if bn_cmp(r, c.m) >= 0 then bn_pad(bn_sub(r, c.m), c.k) else bn_pad(r, c.k)
+fn bn_mmgo(a, b, c, t, n) = if n == 0 then t else let t1 = bn_addc(t, bn_mul1(b, bn_hd(a), 0), 0) in let u = bit_and(bn_hd(t1) * c.minv, 16777215) in let t2 = bn_addc(t1, bn_mul1(c.m, u, 0), 0) in bn_mmgo(bn_tl(a), b, c, bn_pad(bn_tl(t2), c.k + 1), n - 1)
+fn bn_tomont(x, c) = bn_mm(bn_mod(x, c.m), c.r2, c)
+fn bn_frommont(x, c) = bn_norm(bn_mm(x, bn_small(1), c))
+fn bn_mulmod(a, b, c) = bn_mm(a, b, c)
+## left-to-right square and multiply on Montgomery forms
+fn bn_modexp(b, e, m) = let c = bn_mont(m) in let bm = bn_tomont(b, c) in let one = bn_tomont(bn_small(1), c) in bn_frommont(bn_pw(bm, e, bn_bits(e) - 1, one, c), c)
+fn bn_pw(bm, e, i, acc, c) = if i < 0 then acc else let s = bn_mm(acc, acc, c) in bn_pw(bm, e, i - 1, if bn_bit(e, i) == 1 then bn_mm(s, bm, c) else s, c)
+fn bn_invmod(a, p) = bn_modexp(a, bn_sub(p, bn_small(2)), p)

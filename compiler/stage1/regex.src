@@ -1,0 +1,84 @@
+## regex.src -- regular expressions in Lume (`use std/regex`): a backtracking matcher over UTF-8 strings.
+## Syntax: literals, . (any character but a line break), [abc] [a-z0-9_] [^...] classes, \d \w \s \D \W \S (also in
+## classes), \. \* \\ ... escapes, \n \t \r, ^ $ anchors, (group) with captures, (?:group) without, a|b alternation,
+## * + ? {m} {m,} {m,n} quantifiers (greedy; add ? for lazy: *? +? ?? {m,n}?).
+##   re_match(p, s)          true when p matches the whole of s
+##   re_search(p, s)         {start, end} of the first match (start -1 when none)
+##   re_find(p, s)           the first matching text ("" when none)
+##   re_find_all(p, s)       every non-overlapping match, left to right
+##   re_groups(p, s)         the captures of the first match: [whole, group1, group2, ...] (Nil when none)
+##   re_replace(p, s, r)     every match replaced by r; $0 .. $9 in r insert the captures
+##   re_split(p, s)          the pieces of s between matches
+## A malformed pattern stops with "regex: ..." and the position.
+
+## --- compiling: a node is {k, ...}: "c" char text, "any", "cls" (items, neg), "bol", "eol", "open"/"close" n,
+## "alt" (alternatives, each a node list), "rep" (body list, lo, hi, lazy, at) ------------------------------------------
+fn rx_err(p, i, m) = ctfail("regex: " + m + " at " + str(i) + " in '" + p + "'\n")
+fn rx_clen(s, i) = let c = ord_at(s, i) in if c < 192 then 1 else if c < 224 then 2 else if c < 240 then 3 else 4
+fn rx_ch(s, i) = slice(s, i, i + rx_clen(s, i))
+fn rx_compile(p) = let r = rx_alts(p, 0, {n: 1}) in if r.i < count(p) then rx_err(p, r.i, "unbalanced )") else r.nodes
+## alternatives up to ) or the end: {nodes, i, g}
+fn rx_alts(p, i, g) = let a = rx_seq(p, i, g, Nil) in if a.i < count(p) and at(p, a.i) == "|" then (let b = rx_alts(p, a.i + 1, a.g) in {nodes: Cons({k: "alt", alts: Cons(a.nodes, rx_altlist(b.nodes))}, Nil), i: b.i, g: b.g}) else {nodes: a.nodes, i: a.i, g: a.g}
+fn rx_altlist(ns) = match ns
+    Cons(h, t) => if h.k == "alt" and rx_isnil(t) then h.alts else Cons(ns, Nil)
+    Nil        => Cons(Nil, Nil)
+fn rx_isnil(xs) = match xs
+    Nil        => true
+    Cons(h, t) => false
+fn rx_seq(p, i, g, acc) = if i >= count(p) or at(p, i) == "|" or at(p, i) == ")" then {nodes: rx_rev(acc, Nil), i: i, g: g} else let a = rx_atom(p, i, g) in let q = rx_quant(p, a.i, a.node) in rx_seq(p, q.i, a.g, Cons(q.node, acc))
+fn rx_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rx_rev(t, Cons(h, acc))
+fn rx_atom(p, i, g) = let c = at(p, i) in if c == "(" then rx_group(p, i, g) else if c == "[" then rx_class(p, i + 1, g) else if c == "." then {node: {k: "any"}, i: i + 1, g: g} else if c == "^" then {node: {k: "bol"}, i: i + 1, g: g} else if c == "$" then {node: {k: "eol"}, i: i + 1, g: g} else if c == chr(92) then rx_escape(p, i + 1, g) else if c == "*" or c == "+" or c == "?" then rx_err(p, i, "quantifier without an operand") else {node: {k: "c", c: rx_ch(p, i)}, i: i + rx_clen(p, i), g: g}
+fn rx_group(p, i, g) = let cap = not (i + 2 < count(p) and at(p, i + 1) == "?" and at(p, i + 2) == ":") in let st = (if cap then i + 1 else i + 3) in let n = g.n in let r = rx_alts(p, st, {n: (if cap then n + 1 else n)}) in if r.i >= count(p) or at(p, r.i) != ")" then rx_err(p, i, "unclosed (") else {node: {k: "alt", alts: (if cap then Cons(Cons({k: "open", n: n}, rx_app(rx_one(r.nodes), Cons({k: "close", n: n}, Nil))), Nil) else Cons(rx_one(r.nodes), Nil))}, i: r.i + 1, g: r.g}
+fn rx_one(ns) = ns
+fn rx_app(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, rx_app(t, ys))
+fn rx_esc_cls(c) = if c == "d" then {items: Cons({lo: "0", hi: "9"}, Nil), neg: false} else if c == "w" then {items: Cons({lo: "a", hi: "z"}, Cons({lo: "A", hi: "Z"}, Cons({lo: "0", hi: "9"}, Cons({lo: "_", hi: "_"}, Nil)))), neg: false} else if c == "s" then {items: Cons({lo: " ", hi: " "}, Cons({lo: chr(9), hi: chr(13)}, Nil)), neg: false} else {items: Nil, neg: false}
+fn rx_lit(c) = if c == "n" then chr(10) else if c == "t" then chr(9) else if c == "r" then chr(13) else c
+fn rx_escape(p, i, g) = if i >= count(p) then rx_err(p, i, "trailing backslash") else let c = at(p, i) in if c == "d" or c == "w" or c == "s" then {node: {k: "cls", items: (rx_esc_cls(c)).items, neg: false}, i: i + 1, g: g} else if c == "D" or c == "W" or c == "S" then {node: {k: "cls", items: (rx_esc_cls(rx_lowc(c))).items, neg: true}, i: i + 1, g: g} else {node: {k: "c", c: rx_lit(rx_ch(p, i))}, i: i + rx_clen(p, i), g: g}
+fn rx_lowc(c) = if c == "D" then "d" else if c == "W" then "w" else "s"
+fn rx_class(p, i, g) = let neg = i < count(p) and at(p, i) == "^" in let r = rx_items(p, (if neg then i + 1 else i), Nil, true) in {node: {k: "cls", items: r.items, neg: neg}, i: r.i, g: g}
+fn rx_items(p, i, acc, first) = if i >= count(p) then rx_err(p, i, "unclosed [") else if at(p, i) == "]" and not first then {items: acc, i: i + 1} else if at(p, i) == chr(92) and i + 1 < count(p) and (at(p, i + 1) == "d" or at(p, i + 1) == "w" or at(p, i + 1) == "s") then rx_items(p, i + 2, rx_app((rx_esc_cls(at(p, i + 1))).items, acc), false) else let a = (if at(p, i) == chr(92) and i + 1 < count(p) then {c: rx_lit(rx_ch(p, i + 1)), n: 1 + rx_clen(p, i + 1)} else {c: rx_ch(p, i), n: rx_clen(p, i)}) in if i + a.n + 1 < count(p) and at(p, i + a.n) == "-" and at(p, i + a.n + 1) != "]" then (let b = rx_ch(p, i + a.n + 1) in rx_items(p, i + a.n + 1 + count(b), Cons({lo: a.c, hi: b}, acc), false)) else rx_items(p, i + a.n, Cons({lo: a.c, hi: a.c}, acc), false)
+fn rx_num(p, i, acc, any) = if i < count(p) and at(p, i) >= "0" and at(p, i) <= "9" then rx_num(p, i + 1, acc * 10 + ord(at(p, i)) - 48, 1) else {v: (if any == 1 then acc else 0 - 1), i: i}
+fn rx_quant(p, i, node) = if i >= count(p) then {node: node, i: i} else let c = at(p, i) in if c == "*" then rx_lazy(p, i + 1, node, 0, 1000000000) else if c == "+" then rx_lazy(p, i + 1, node, 1, 1000000000) else if c == "?" then rx_lazy(p, i + 1, node, 0, 1) else if c == "{{" then rx_brace(p, i, node) else {node: node, i: i}
+fn rx_brace(p, i, node) = let a = rx_num(p, i + 1, 0, 0) in if a.v < 0 then {node: node, i: i} else if a.i < count(p) and at(p, a.i) == "}}" then rx_lazy(p, a.i + 1, node, a.v, a.v) else if a.i < count(p) and at(p, a.i) == "," then (let b = rx_num(p, a.i + 1, 0, 0) in if b.i < count(p) and at(p, b.i) == "}}" then rx_lazy(p, b.i + 1, node, a.v, (if b.v < 0 then 1000000000 else b.v)) else rx_err(p, i, "malformed {{m,n}}")) else rx_err(p, i, "malformed {{m,n}}")
+fn rx_lazy(p, i, node, lo, hi) = let lz = i < count(p) and at(p, i) == "?" in {node: {k: "rep", body: Cons(node, Nil), lo: lo, hi: hi, lazy: lz, at: 0 - 1}, i: (if lz then i + 1 else i)}
+
+## --- matching: m(ns, s, i, caps) -> {e, caps}, e = -1 when it fails; caps is a list of {n, st, en} ---------------------
+fn rx_incls(items, c) = match items
+    Nil        => false
+    Cons(h, t) => if (h.lo == c) or (count(c) == count(h.lo) and count(c) == count(h.hi) and c >= h.lo and c <= h.hi) then true else rx_incls(t, c)
+fn rx_fail(caps) = {e: 0 - 1, caps: caps}
+fn rx_m(ns, s, i, caps) = match ns
+    Nil        => {e: i, caps: caps}
+    Cons(n, r) => rx_m1(n, r, s, i, caps)
+fn rx_m1(n, r, s, i, caps) = if n.k == "c" then (if i + count(n.c) <= count(s) and slice(s, i, i + count(n.c)) == n.c then rx_m(r, s, i + count(n.c), caps) else rx_fail(caps)) else if n.k == "any" then (if i < count(s) and at(s, i) != chr(10) then rx_m(r, s, i + rx_clen(s, i), caps) else rx_fail(caps)) else if n.k == "cls" then (if i < count(s) and rx_incls(n.items, rx_ch(s, i)) != n.neg then rx_m(r, s, i + rx_clen(s, i), caps) else rx_fail(caps)) else if n.k == "bol" then (if i == 0 then rx_m(r, s, i, caps) else rx_fail(caps)) else if n.k == "eol" then (if i == count(s) then rx_m(r, s, i, caps) else rx_fail(caps)) else if n.k == "open" then rx_m(r, s, i, Cons({n: n.n, st: i, en: 0 - 1}, caps)) else if n.k == "close" then rx_m(r, s, i, rx_close(caps, n.n, i)) else if n.k == "alt" then rx_alt(n.alts, r, s, i, caps) else rx_rep(n, r, s, i, caps)
+fn rx_close(caps, k, i) = match caps
+    Nil        => Nil
+    Cons(h, t) => if h.n == k and h.en < 0 then Cons({n: k, st: h.st, en: i}, t) else Cons(h, rx_close(t, k, i))
+fn rx_alt(alts, r, s, i, caps) = match alts
+    Nil        => rx_fail(caps)
+    Cons(a, t) => let x = rx_m(rx_app(a, r), s, i, caps) in if x.e >= 0 then x else rx_alt(t, r, s, i, caps)
+## one more iteration of the body (when allowed and it advances) then the rest, or the rest; lazy tries the rest first
+fn rx_rep(n, r, s, i, caps) = let more = (if n.hi > 0 and i != n.at then rx_app(n.body, Cons({k: "rep", body: n.body, lo: (if n.lo > 0 then n.lo - 1 else 0), hi: n.hi - 1, lazy: n.lazy, at: i}, r)) else Nil) in if n.lo > 0 then (if rx_isnil(more) then rx_fail(caps) else rx_m(more, s, i, caps)) else if n.lazy then (let x = rx_m(r, s, i, caps) in if x.e >= 0 or rx_isnil(more) then x else rx_m(more, s, i, caps)) else (let x = (if rx_isnil(more) then rx_fail(caps) else rx_m(more, s, i, caps)) in if x.e >= 0 then x else rx_m(r, s, i, caps))
+
+## --- the API ----------------------------------------------------------------------------------------------------------
+fn rx_from(ns, s, i) = if i > count(s) then {st: 0 - 1, e: 0 - 1, caps: Nil} else let x = rx_m(ns, s, i, Nil) in if x.e >= 0 then {st: i, e: x.e, caps: x.caps} else if i >= count(s) then {st: 0 - 1, e: 0 - 1, caps: Nil} else rx_from(ns, s, i + rx_clen(s, i))
+fn re_match(p, s) = let x = rx_m(rx_app(rx_compile(p), Cons({k: "eol"}, Nil)), s, 0, Nil) in x.e == count(s)
+fn re_search(p, s) = let r = rx_from(rx_compile(p), s, 0) in {start: r.st, end: r.e}
+fn re_find(p, s) = let r = rx_from(rx_compile(p), s, 0) in if r.st < 0 then "" else slice(s, r.st, r.e)
+fn re_find_all(p, s) = rx_all(rx_compile(p), s, 0)
+fn rx_all(ns, s, i) = let r = rx_from(ns, s, i) in if r.st < 0 then Nil else Cons(slice(s, r.st, r.e), rx_all(ns, s, (if r.e > r.st then r.e else r.e + rx_clen(s, r.e))))
+fn rx_cap(caps, k, s) = match caps
+    Nil        => ""
+    Cons(h, t) => if h.n == k and h.en >= 0 then slice(s, h.st, h.en) else rx_cap(t, k, s)
+fn rx_ngroups(p, i, n) = if i >= count(p) then n else if at(p, i) == chr(92) then rx_ngroups(p, i + 2, n) else if at(p, i) == "(" and not (i + 1 < count(p) and at(p, i + 1) == "?") then rx_ngroups(p, i + 1, n + 1) else rx_ngroups(p, i + 1, n)
+fn rx_glist(caps, s, k, n) = if k > n then Nil else Cons(rx_cap(caps, k, s), rx_glist(caps, s, k + 1, n))
+fn re_groups(p, s) = let r = rx_from(rx_compile(p), s, 0) in if r.st < 0 then Nil else Cons(slice(s, r.st, r.e), rx_glist(r.caps, s, 1, rx_ngroups(p, 0, 0)))
+fn rx_subst(rep, i, s, r, acc) = if i >= count(rep) then acc else if at(rep, i) == "$" and i + 1 < count(rep) and at(rep, i + 1) >= "0" and at(rep, i + 1) <= "9" then rx_subst(rep, i + 2, s, r, acc + (if at(rep, i + 1) == "0" then slice(s, r.st, r.e) else rx_cap(r.caps, ord(at(rep, i + 1)) - 48, s))) else rx_subst(rep, i + 1, s, r, acc + at(rep, i))
+fn re_replace(p, s, rep) = rx_repl(rx_compile(p), s, rep, 0, "")
+fn rx_repl(ns, s, rep, i, acc) = let r = rx_from(ns, s, i) in if r.st < 0 then acc + slice(s, i, count(s)) else if r.e > r.st then rx_repl(ns, s, rep, r.e, acc + slice(s, i, r.st) + rx_subst(rep, 0, s, r, "")) else (if r.st >= count(s) then acc + slice(s, i, count(s)) + rx_subst(rep, 0, s, r, "") else rx_repl(ns, s, rep, r.st + rx_clen(s, r.st), acc + slice(s, i, r.st) + rx_subst(rep, 0, s, r, "") + rx_ch(s, r.st)))
+fn re_split(p, s) = rx_split(rx_compile(p), s, 0, 0)
+fn rx_split(ns, s, from, i) = let r = rx_from(ns, s, i) in if r.st < 0 or (r.e == r.st and r.st >= count(s)) then Cons(slice(s, from, count(s)), Nil) else if r.e == r.st then rx_split(ns, s, from, r.st + rx_clen(s, r.st)) else Cons(slice(s, from, r.st), rx_split(ns, s, r.e, r.e))

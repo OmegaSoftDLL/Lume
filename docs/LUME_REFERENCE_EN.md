@@ -22,6 +22,11 @@ caller; `LUME_FL=off` keeps them; a tail loop is one call).
 (default 2); each file's result is cached by the SHA-256 of its whole bundle and of the tools, so after a change only
 the changed module and the files that import it run again.
 
+Packages: `lume pkg publish [dir] --store=DIR` runs the package's tests and stores NAME/VERSION immutably with its
+SHA-256; `lume pkg add NAME@REQ` writes `name = "REQ"` under `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `*`);
+`lume pkg install --store=DIR` takes the highest matching versions into `lume_modules/`, runs their tests and writes
+the versions and hashes into `lume.lock`; `use NAME` finds an installed package.
+
 Official examples: `examples/topics/*.src` (one file per topic, each run by `lume test`) and
 `examples/diagnostics/` (for a diagnostic code, `CODE_name.bad` gives it and `CODE_name.fixed.src` is the corrected
 program); `tests/docs/examples_gate.src` runs all of them on every release.
@@ -238,6 +243,15 @@ Network (stable): `net_udp_bind_addr(ip, port)` (a socket, -1 on failure), `net_
 | Module | What it gives | Status |
 | --- | --- | --- |
 | `h264` | `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (quarter-sample 6-tap luma, 8.4.2.2.1), `buf_h264_chroma_mc(...)` (same arguments, eighth-sample bilinear, 8.4.2.2.2), `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (8.7.2.3 / 8.7.2.4; bs and tc0 lists, one value per 4 luma / 2 chroma lines); 0, or -1 on a wrong argument; coordinates clamped to the picture | stable |
+| `hash` | `crc32`, `adler32`, `md5`, `sha1`, `sha256` (strings; `*_buf` for buffers), `hex32` | stable |
+| `csv` | `csv_parse(text)` (RFC 4180: quotes, separators and line breaks inside fields), `csv_format(rows)`, `csv_parse_sep` / `csv_format_sep`, `csv_field` | stable |
+| `utf8` | `utf8_len`, `utf8_decode` / `utf8_encode`, `utf8_char`, `utf8_cp`, `utf8_slice`, `utf8_upper` / `utf8_lower` (ASCII + Latin-1), `utf8_reverse`, `utf8_valid` (strings are bytes; these count characters) | stable |
+| `datetime` | `dt_from_unix`, `dt_to_unix`, `dt_iso`, `dt_parse_iso`, `dt_weekday`, `dt_add_days` / `dt_add_months`, `dt_offset(zone, t)` / `dt_local` / `dt_iso_local` (fixed offsets, US / EU / Sydney daylight rules) | stable |
+| `regex` | `re_match`, `re_search`, `re_find`, `re_find_all`, `re_groups`, `re_replace` (`$1`), `re_split`: classes, `\d \w \s`, anchors, groups, alternation, greedy and lazy quantifiers | stable |
+| `deflate` | `inflate_buf` / `deflate_buf`, `zlib_decompress` / `zlib_compress`, `gunzip` / `gzip`, `gunzip_str` / `gzip_str` (Adler-32 / CRC-32 checked) | stable |
+| `http` | `http_get`, `http_post`, `http_request(method, url, headers, body, ms)`, `http_header`: chunked, gzip, redirects, deadlines; `https://` through `tls` | stable |
+| `tls` | `tls_request(host, port, data, ms)`: TLS 1.3 client (X25519, AES-128-GCM / ChaCha20-Poly1305); the server certificate is checked against the system roots (`SSL_CERT_FILE`, the Linux bundle, the Windows stores through `lchameleon`) and the host name | stable |
+| `tlspki`, `bignum` | RSA (PKCS #1 v1.5, PSS), ECDSA P-256 / P-384, SHA-384 / SHA-512, X.509 parsing and chain validation, PEM; integers of any size with Montgomery `bn_modexp` | stable |
 | `seq` | `seq_map`, `seq_filter`, `seq_fold`, `seq_loop(a, b, acc, f)` (a loop over a..b-1 without a list), `seq_while`, `seq_nth`, `seq_range`, `seq_concat` | stable |
 | `arena` | `heap_stats()`, `gc_collect()`, `gc_count()`, `arena_new / alloc / reset / destroy` | stable |
 | `netctl`, `dns` | TCP with timeouts, non-blocking sockets, epoll, DNS | stable |
@@ -311,7 +325,7 @@ line: `docs/STABILITY.md`). `grad`, `value_and_grad`, `jvp`,
 
 ## 11. Changed in this version
 
-Added: `lume verify` (many files, N processes, per-file cache), the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
+Added: `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS with TLS 1.3), `tlspki`, `bignum`, package versions (`lume pkg publish / add / install`, `[packages]` in lume.lock), `lume verify` (many files, N processes, per-file cache), the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
 `chameleon_verify_boundary`, `priv fn`, warning [W0003], `LUME_FL`, constant literals in .rodata, per-site field
 cache, collection pacing `max(8 MiB, 3 x live)`.
 Changed: W0004 also sees parameters typed `f64` and results of `f64(...)`; `buf_sad4x4` runs in SSE2; C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0

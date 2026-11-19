@@ -1,0 +1,146 @@
+## tlspki.src -- the public-key side of the TLS client (`use std/tlspki`): SHA-384 / SHA-512, RSA signature checks
+## (PKCS #1 v1.5 and PSS, RFC 8017), ECDSA on P-256 and P-384 (FIPS 186-4), DER and X.509 certificates and chain
+## validation against trust anchors. Strings are bytes throughout.
+##   pki_sha256(s) / pki_sha384(s) / pki_sha512(s)        raw digests
+##   rsa_verify_pkcs1(n, e, hash, msg, sig)                hash "sha256" | "sha384" | "sha512"; n, e big-endian bytes
+##   rsa_verify_pss(n, e, hash, msg, sig)                  salt length = digest length (what TLS 1.3 uses)
+##   ecdsa_verify(curve, pub, hash, msg, sig)              curve "p256" | "p384"; pub 04|X|Y; sig DER SEQUENCE{r, s}
+##   x509_parse(der)                                       -> {ok, err, tbs, sigalg, sig, issuer, subject, nb, na, key,
+##                                                             ca, dns}
+##   x509_verify_chain(chain, anchors, host, now)          chain: DER certificates, leaf first; anchors: DER roots;
+##                                                          -> "" when valid, else the reason
+##   pki_pem_certs(text)                                    the DER certificates of a PEM bundle
+use lcrypto_tls
+use bignum
+use datetime
+
+## --- digests --------------------------------------------------------------------------------------------------------
+fn pki_sha256(s) = lcs_sha256(s)
+fn pki_s512(s, st, k) = let bs = lcs_s2l(s) in let n = lct_len(bs) in let r = lct_s512_run(bs, n, n, st) in pki_take(lcs_l2s(lct_w64_push(r.a, lct_w64_push(r.b, lct_w64_push(r.c, lct_w64_push(r.d, lct_w64_push(r.e, lct_w64_push(r.f, lct_w64_push(r.g, lct_w64_push(r.h, Nil))))))))), k)
+fn pki_take(s, k) = slice(s, 0, k)
+fn pki_sha384(s) = pki_s512(s, {a: lct_w64(3418070365, 3238371032), b: lct_w64(1654270250, 914150663), c: lct_w64(2438529370, 812702999), d: lct_w64(355462360, 4144912697), e: lct_w64(1731405415, 4290775857), f: lct_w64(2394180231, 1750603025), g: lct_w64(3675008525, 1694076839), h: lct_w64(1203062813, 3204075428)}, 48)
+fn pki_sha512(s) = lcs_l2s(lct_sha512(lcs_s2l(s)))
+fn pki_hash(name, s) = if name == "sha256" then pki_sha256(s) else if name == "sha384" then pki_sha384(s) else pki_sha512(s)
+fn pki_hlen(name) = if name == "sha256" then 32 else if name == "sha384" then 48 else 64
+fn pki_byte(v) = let b = buf_new(1) in let w = buf_set(b, 0, v) in buf_to_str(b, 0, 1)
+fn pki_zeros(n) = if n <= 0 then "" else buf_to_str(buf_new(n), 0, n)
+fn pki_xor(a, b) = let n = count(a) in let o = buf_new(n) in pki_xorgo(a, b, o, 0, n)
+fn pki_xorgo(a, b, o, i, n) = if i >= n then buf_to_str(o, 0, n) else let w = buf_set(o, i, bit_xor(ord_at(a, i), ord_at(b, i))) in pki_xorgo(a, b, o, i + 1, n)
+
+## --- RSA ------------------------------------------------------------------------------------------------------------
+fn pki_strip0(s) = if count(s) > 1 and ord_at(s, 0) == 0 then pki_strip0(slice(s, 1, count(s))) else s
+fn rsa_em(n, e, sig) = let nn = bn_from_bytes(n) in let k = count(pki_strip0(n)) in if count(sig) != k then "" else let s = bn_from_bytes(sig) in if bn_cmp(s, nn) >= 0 then "" else bn_to_bytes(bn_modexp(s, bn_from_bytes(e), nn), k)
+fn pki_digestinfo(hash) = lcs_unhex(if hash == "sha256" then "3031300d060960864801650304020105000420" else if hash == "sha384" then "3041300d060960864801650304020205000430" else "3051300d060960864801650304020305000440")
+fn rsa_verify_pkcs1(n, e, hash, msg, sig) = let em = rsa_em(n, e, sig) in let t = pki_digestinfo(hash) + pki_hash(hash, msg) in let k = count(em) in if k < count(t) + 11 then false else em == pki_zeros(1) + pki_byte(1) + pki_ffs(k - count(t) - 3) + pki_zeros(1) + t
+fn pki_ffs(n) = if n <= 0 then "" else pki_byte(255) + pki_ffs(n - 1)
+fn pki_be32(v) = pki_byte(bit_shr(v, 24)) + pki_byte(bit_and(bit_shr(v, 16), 255)) + pki_byte(bit_and(bit_shr(v, 8), 255)) + pki_byte(bit_and(v, 255))
+fn pki_mgf1(hash, seed, len) = pki_mgfgo(hash, seed, len, 0, "")
+fn pki_mgfgo(hash, seed, len, c, acc) = if count(acc) >= len then slice(acc, 0, len) else pki_mgfgo(hash, seed, len, c + 1, acc + pki_hash(hash, seed + pki_be32(c)))
+## RFC 8017 9.1.2 with sLen = hLen; emBits = modBits - 1
+fn rsa_verify_pss(n, e, hash, msg, sig) = let em0 = rsa_em(n, e, sig) in if em0 == "" then false else let modbits = bn_bits(bn_from_bytes(n)) in let embits = modbits - 1 in let emlen = (embits + 7) / 8 in let em = slice(em0, count(em0) - emlen, count(em0)) in let lead = count(em0) - emlen in let hl = pki_hlen(hash) in if (lead == 1 and ord_at(em0, 0) != 0) or emlen < 2 * hl + 2 or ord_at(em, emlen - 1) != 188 then false else pki_pss2(hash, msg, em, emlen, hl, 8 * emlen - embits)
+fn pki_pss2(hash, msg, em, emlen, hl, topbits) = let masked = slice(em, 0, emlen - hl - 1) in let h = slice(em, emlen - hl - 1, emlen - 1) in if bit_shr(ord_at(masked, 0), 8 - topbits) != 0 and topbits > 0 then false else let db0 = pki_xor(masked, pki_mgf1(hash, h, emlen - hl - 1)) in let db = pki_byte(bit_and(ord_at(db0, 0), bit_shr(255, topbits))) + slice(db0, 1, count(db0)) in let ps = emlen - 2 * hl - 2 in if slice(db, 0, ps) != pki_zeros(ps) or ord_at(db, ps) != 1 then false else let salt = slice(db, ps + 1, count(db)) in pki_hash(hash, pki_zeros(8) + pki_hash(hash, msg) + salt) == h
+
+## --- ECDSA on short Weierstrass curves with a = -3 (Jacobian coordinates, Montgomery field) ------------------------
+fn ec_curve(name) = if name == "p256" then {p: bn_from_hex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff"), n: bn_from_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551"), b: bn_from_hex("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b"), gx: bn_from_hex("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"), gy: bn_from_hex("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"), len: 32} else {p: bn_from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff"), n: bn_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973"), b: bn_from_hex("b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef"), gx: bn_from_hex("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7"), gy: bn_from_hex("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f"), len: 48}
+## field ops on Montgomery forms (lists padded to the modulus length)
+fn fe_add(a, b, f) = let s = bn_add(a, b) in if bn_cmp(s, f.m) >= 0 then bn_sub(s, f.m) else s
+fn fe_sub(a, b, f) = if bn_cmp(a, b) >= 0 then bn_sub(a, b) else bn_sub(bn_add(a, f.m), b)
+fn fe_mul(a, b, f) = bn_mm(a, b, f)
+## point {x, y, z} in Jacobian coordinates, z = 0 at infinity
+fn ec_inf() = {x: bn_small(0), y: bn_small(0), z: bn_small(0)}
+fn ec_isinf(q) = bn_is_zero(q.z)
+## doubling with a = -3: dbl-2001-b
+fn ec_dbl(q, f) = if ec_isinf(q) or bn_is_zero(q.y) then ec_inf() else let d = fe_mul(q.z, q.z, f) in let g = fe_mul(q.y, q.y, f) in let be = fe_mul(q.x, g, f) in let al0 = fe_mul(fe_sub(q.x, d, f), fe_add(q.x, d, f), f) in let al = fe_add(fe_add(al0, al0, f), al0, f) in let b4 = fe_add(fe_add(be, be, f), fe_add(be, be, f), f) in let x3 = fe_sub(fe_mul(al, al, f), fe_add(b4, b4, f), f) in let yz = fe_add(q.y, q.z, f) in let z3 = fe_sub(fe_sub(fe_mul(yz, yz, f), g, f), d, f) in let g2 = fe_mul(g, g, f) in let g8 = fe_add(fe_add(fe_add(g2, g2, f), fe_add(g2, g2, f), f), fe_add(fe_add(g2, g2, f), fe_add(g2, g2, f), f), f) in {x: x3, y: fe_sub(fe_mul(al, fe_sub(b4, x3, f), f), g8, f), z: z3}
+## addition: add-2007-bl
+fn ec_add(p, q, f) = if ec_isinf(p) then q else if ec_isinf(q) then p else let z1z1 = fe_mul(p.z, p.z, f) in let z2z2 = fe_mul(q.z, q.z, f) in let u1 = fe_mul(p.x, z2z2, f) in let u2 = fe_mul(q.x, z1z1, f) in let s1 = fe_mul(fe_mul(p.y, q.z, f), z2z2, f) in let s2 = fe_mul(fe_mul(q.y, p.z, f), z1z1, f) in if bn_cmp(u1, u2) == 0 then (if bn_cmp(s1, s2) == 0 then ec_dbl(p, f) else ec_inf()) else ec_add2(p, q, f, z1z1, z2z2, u1, u2, s1, s2)
+fn ec_add2(p, q, f, z1z1, z2z2, u1, u2, s1, s2) = let h = fe_sub(u2, u1, f) in let h2 = fe_add(h, h, f) in let i = fe_mul(h2, h2, f) in let j = fe_mul(h, i, f) in let r0 = fe_sub(s2, s1, f) in let r = fe_add(r0, r0, f) in let v = fe_mul(u1, i, f) in let x3 = fe_sub(fe_sub(fe_mul(r, r, f), j, f), fe_add(v, v, f), f) in let s1j = fe_mul(s1, j, f) in let y3 = fe_sub(fe_mul(r, fe_sub(v, x3, f), f), fe_add(s1j, s1j, f), f) in let zz = fe_add(p.z, q.z, f) in let z3 = fe_mul(fe_sub(fe_sub(fe_mul(zz, zz, f), z1z1, f), z2z2, f), h, f) in {x: x3, y: y3, z: z3}
+## u1 G + u2 Q by one shared double-and-add (Shamir's trick)
+fn ec_twin(g, q, gq, u1, u2, i, acc, f) = if i < 0 then acc else let d = ec_dbl(acc, f) in let a = bn_bit(u1, i) in let b = bn_bit(u2, i) in ec_twin(g, q, gq, u1, u2, i - 1, if a == 1 and b == 1 then ec_add(d, gq, f) else if a == 1 then ec_add(d, g, f) else if b == 1 then ec_add(d, q, f) else d, f)
+fn ec_aff(x, y, f) = {x: bn_tomont(x, f), y: bn_tomont(y, f), z: bn_tomont(bn_small(1), f)}
+## the affine x of a Jacobian point: X / Z^2
+fn ec_x(q, f, p) = let zi = bn_invmod(bn_frommont(q.z, f), p) in bn_mod(bn_mul(bn_frommont(q.x, f), bn_mul(zi, zi)), p)
+fn ec_oncurve(x, y, c) = bn_cmp(bn_mod(bn_mul(y, y), c.p), bn_mod(bn_sub(bn_add(bn_add(bn_mul(x, bn_mul(x, x)), c.b), bn_mul(bn_small(3), c.p)), bn_mul(bn_small(3), x)), c.p)) == 0
+## DER SEQUENCE { INTEGER r, INTEGER s }
+fn ec_sigrs(sig) = let a = der_at(sig, 0) in if a.tag != 48 then {ok: 0, r: Nil, s: Nil} else let r = der_at(sig, a.start) in let s = der_at(sig, r.end) in if r.tag != 2 or s.tag != 2 or s.end != a.end then {ok: 0, r: Nil, s: Nil} else {ok: 1, r: bn_from_bytes(slice(sig, r.start, r.end)), s: bn_from_bytes(slice(sig, s.start, s.end))}
+fn ecdsa_verify(curve, pub, hash, msg, sig) = let c = ec_curve(curve) in let rs = ec_sigrs(sig) in if rs.ok == 0 or count(pub) != 2 * c.len + 1 or ord_at(pub, 0) != 4 then false else let qx = bn_from_bytes(slice(pub, 1, 1 + c.len)) in let qy = bn_from_bytes(slice(pub, 1 + c.len, 1 + 2 * c.len)) in if bn_is_zero(rs.r) or bn_is_zero(rs.s) or bn_cmp(rs.r, c.n) >= 0 or bn_cmp(rs.s, c.n) >= 0 or bn_cmp(qx, c.p) >= 0 or bn_cmp(qy, c.p) >= 0 or ec_oncurve(qx, qy, c) == false then false else ec_verify2(c, qx, qy, rs, pki_hash(hash, msg))
+fn ec_verify2(c, qx, qy, rs, h) = let hl = (if count(h) > c.len then slice(h, 0, c.len) else h) in let e = bn_mod(bn_from_bytes(hl), c.n) in let w = bn_invmod(rs.s, c.n) in let u1 = bn_mod(bn_mul(e, w), c.n) in let u2 = bn_mod(bn_mul(rs.r, w), c.n) in let f = bn_mont(c.p) in let g = ec_aff(c.gx, c.gy, f) in let q = ec_aff(qx, qy, f) in let x = ec_twin(g, q, ec_add(g, q, f), u1, u2, c.len * 8 - 1, ec_inf(), f) in if ec_isinf(x) then false else bn_cmp(bn_mod(ec_x(x, f, c.p), c.n), rs.r) == 0
+
+## --- DER --------------------------------------------------------------------------------------------------------------
+## the element at i: {tag, start, end} (contents start..end); tag -1 when malformed
+fn der_at(s, i) = if i + 2 > count(s) then {tag: 0 - 1, start: 0, end: 0} else let t = ord_at(s, i) in let l0 = ord_at(s, i + 1) in if l0 < 128 then der_ok(t, i + 2, l0, s) else let nb = l0 - 128 in if nb < 1 or nb > 3 or i + 2 + nb > count(s) then {tag: 0 - 1, start: 0, end: 0} else der_ok(t, i + 2 + nb, der_len(s, i + 2, nb, 0), s)
+fn der_len(s, i, k, acc) = if k == 0 then acc else der_len(s, i + 1, k - 1, acc * 256 + ord_at(s, i))
+fn der_ok(t, st, l, s) = if st + l > count(s) then {tag: 0 - 1, start: 0, end: 0} else {tag: t, start: st, end: st + l}
+fn der_body(s, e) = slice(s, e.start, e.end)
+fn der_raw(s, i, e) = slice(s, i, e.end)
+## the children of a constructed element (start..end) as a list of {tag, start, end, at}
+fn der_kids(s, i, end) = if i >= end then Nil else let e = der_at(s, i) in if e.tag < 0 then Nil else Cons({tag: e.tag, start: e.start, end: e.end, at: i}, der_kids(s, e.end, end))
+fn der_nth(xs, k) = match xs
+    Nil        => {tag: 0 - 1, start: 0, end: 0, at: 0}
+    Cons(h, t) => if k == 0 then h else der_nth(t, k - 1)
+fn der_len_list(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + der_len_list(t)
+
+## --- X.509 ------------------------------------------------------------------------------------------------------------
+fn oid_hex(s, e) = lcs_hex(der_body(s, e))
+fn x509_bad(err) = {ok: 0, err: err, tbs: "", sigalg: "", sig: "", issuer: "", subject: "", nb: 0, na: 0, key: {kind: "", n: "", e: "", curve: "", pub: ""}, ca: false, dns: Nil}
+fn x509_sigalg(h) = if h == "2a864886f70d01010b" then "rsa-sha256" else if h == "2a864886f70d01010c" then "rsa-sha384" else if h == "2a864886f70d01010d" then "rsa-sha512" else if h == "2a8648ce3d040302" then "ecdsa-sha256" else if h == "2a8648ce3d040303" then "ecdsa-sha384" else if h == "2a8648ce3d040304" then "ecdsa-sha512" else "unsupported"
+## time: UTCTime YYMMDDHHMMSSZ or GeneralizedTime YYYYMMDDHHMMSSZ
+fn x509_d2(s, i) = (ord_at(s, i) - 48) * 10 + ord_at(s, i + 1) - 48
+fn x509_time(s, e) = let t = der_body(s, e) in if e.tag == 23 and count(t) >= 12 then (let yy = x509_d2(t, 0) in dt_to_unix(if yy < 50 then 2000 + yy else 1900 + yy, x509_d2(t, 2), x509_d2(t, 4), x509_d2(t, 6), x509_d2(t, 8), x509_d2(t, 10))) else if e.tag == 24 and count(t) >= 14 then dt_to_unix(x509_d2(t, 0) * 100 + x509_d2(t, 2), x509_d2(t, 4), x509_d2(t, 6), x509_d2(t, 8), x509_d2(t, 10), x509_d2(t, 12)) else 0 - 1
+fn x509_key(s, spki) = let ks = der_kids(s, spki.start, spki.end) in let alg = der_nth(ks, 0) in let bits = der_nth(ks, 1) in let aks = der_kids(s, alg.start, alg.end) in let oid = oid_hex(s, der_nth(aks, 0)) in let kb = slice(s, bits.start + 1, bits.end) in if oid == "2a864886f70d010101" then x509_rsakey(kb) else if oid == "2a8648ce3d0201" then {kind: "ec", n: "", e: "", curve: (if oid_hex(s, der_nth(aks, 1)) == "2a8648ce3d030107" then "p256" else if oid_hex(s, der_nth(aks, 1)) == "2b81040022" then "p384" else "unsupported"), pub: kb} else {kind: "unsupported", n: "", e: "", curve: "", pub: ""}
+fn x509_rsakey(kb) = let sq = der_at(kb, 0) in let n = der_at(kb, sq.start) in let e = der_at(kb, n.end) in {kind: "rsa", n: pki_strip0(der_body(kb, n)), e: der_body(kb, e), curve: "", pub: ""}
+## extensions: basicConstraints CA flag and the subjectAltName dNSName entries
+fn x509_exts(s, ext, acc) = match ext
+    Nil        => acc
+    Cons(h, t) => x509_exts(s, t, x509_ext1(s, der_kids(s, h.start, h.end), acc))
+fn x509_ext1(s, ks, acc) = let oid = oid_hex(s, der_nth(ks, 0)) in let v = der_nth(ks, der_len_list(ks) - 1) in if oid == "551d13" then {ca: x509_ca(s, v), dns: acc.dns} else if oid == "551d11" then {ca: acc.ca, dns: x509_san(s, v)} else acc
+fn x509_ca(s, v) = let sq = der_at(s, v.start) in let k = der_at(s, sq.start) in k.tag == 1 and k.end > k.start and ord_at(s, k.start) != 0 and k.end <= sq.end
+fn x509_san(s, v) = let sq = der_at(s, v.start) in x509_names(s, der_kids(s, sq.start, sq.end))
+fn x509_names(s, ks) = match ks
+    Nil        => Nil
+    Cons(h, t) => if h.tag == 130 then Cons(ht_lc(der_body(s, h)), x509_names(s, t)) else x509_names(s, t)
+fn ht_lc(s) = pki_lc(s, 0, "")
+fn pki_lc(s, i, acc) = if i >= count(s) then acc else let c = at(s, i) in pki_lc(s, i + 1, acc + (if c >= "A" and c <= "Z" then chr(ord(c) + 32) else c))
+fn x509_parse(der) = let c = der_at(der, 0) in if c.tag != 48 or c.end != count(der) then x509_bad("not a DER certificate") else let top = der_kids(der, c.start, c.end) in let tbs = der_nth(top, 0) in let sa = der_nth(top, 1) in let sg = der_nth(top, 2) in if der_len_list(top) != 3 or tbs.tag != 48 or sg.tag != 3 then x509_bad("malformed certificate") else x509_parse2(der, tbs, sa, sg)
+fn x509_parse2(der, tbs, sa, sg) = let ks0 = der_kids(der, tbs.start, tbs.end) in let ks = (if (der_nth(ks0, 0)).tag == 160 then x509_drop1(ks0) else ks0) in let issuer = der_nth(ks, 2) in let val = der_nth(ks, 3) in let subj = der_nth(ks, 4) in let spki = der_nth(ks, 5) in let vk = der_kids(der, val.start, val.end) in let ex = x509_extlist(der, ks) in let sak = der_kids(der, sa.start, sa.end) in {ok: 1, err: "", tbs: slice(der, tbs.at, tbs.end), sigalg: x509_sigalg(oid_hex(der, der_nth(sak, 0))), sig: slice(der, sg.start + 1, sg.end), issuer: slice(der, issuer.at, issuer.end), subject: slice(der, subj.at, subj.end), nb: x509_time(der, der_nth(vk, 0)), na: x509_time(der, der_nth(vk, 1)), key: x509_key(der, spki), ca: ex.ca, dns: ex.dns}
+fn x509_drop1(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn x509_extlist(der, ks) = match ks
+    Nil        => {ca: false, dns: Nil}
+    Cons(h, t) => if h.tag == 163 then (let sq = der_at(der, h.start) in x509_exts(der, der_kids(der, sq.start, sq.end), {ca: false, dns: Nil})) else x509_extlist(der, t)
+## a signature made by key over data with the certificate's algorithm name
+fn pki_sigcheck(key, alg, data, sig) = if alg == "rsa-sha256" or alg == "rsa-sha384" or alg == "rsa-sha512" then key.kind == "rsa" and rsa_verify_pkcs1(key.n, key.e, slice(alg, 4, 10), data, sig) else if alg == "ecdsa-sha256" or alg == "ecdsa-sha384" or alg == "ecdsa-sha512" then key.kind == "ec" and key.curve != "unsupported" and ecdsa_verify(key.curve, key.pub, "sha" + slice(alg, 9, 12), data, sig) else false
+
+## --- names and chains -------------------------------------------------------------------------------------------------
+## a host matches a dNSName exactly or through one leading wildcard label (*.example.org matches a.example.org only)
+fn pki_dot(s, i) = if i >= count(s) then 0 - 1 else if at(s, i) == "." then i else pki_dot(s, i + 1)
+fn pki_hostmatch(host, name) = if name == host then true else if count(name) > 2 and slice(name, 0, 2) == "*." then (let d = pki_dot(host, 0) in d > 0 and slice(host, d, count(host)) == slice(name, 1, count(name))) else false
+fn pki_anyhost(host, ns) = match ns
+    Nil        => false
+    Cons(h, t) => if pki_hostmatch(host, h) then true else pki_anyhost(host, t)
+fn pki_timeok(c, now) = c.nb >= 0 and c.na >= 0 and now >= c.nb and now <= c.na
+## the anchor (parsed) whose subject is the issuer and whose key checks the signature
+fn pki_anchor(c, anchors) = match anchors
+    Nil        => false
+    Cons(a, t) => let pa = x509_parse(a) in if pa.ok == 1 and pa.subject == c.issuer and pki_sigcheck(pa.key, c.sigalg, c.tbs, c.sig) then true else pki_anchor(c, t)
+fn pki_isanchor(der, anchors) = match anchors
+    Nil        => false
+    Cons(a, t) => if a == der then true else pki_isanchor(der, t)
+fn x509_verify_chain(chain, anchors, host, now) = match chain
+    Nil        => "empty certificate chain"
+    Cons(leafd, rest) => let leaf = x509_parse(leafd) in if leaf.ok == 0 then "leaf: " + leaf.err else if pki_anyhost(ht_lc(host), leaf.dns) == false then "the certificate is not for " + host else pki_walk(leaf, leafd, rest, anchors, now, 0)
+fn pki_walk(c, der, rest, anchors, now, depth) = if depth > 6 then "chain too long" else if pki_timeok(c, now) == false then "certificate outside its validity period" else if pki_isanchor(der, anchors) then "" else if pki_anchor(c, anchors) then "" else pki_next(c, rest, anchors, now, depth)
+fn pki_next(c, rest, anchors, now, depth) = match rest
+    Nil        => "no trusted root for the chain"
+    Cons(nd, t) => let n = x509_parse(nd) in if n.ok == 0 then "intermediate: " + n.err else if n.subject != c.issuer then "chain out of order" else if n.ca == false then "intermediate is not a CA" else if pki_sigcheck(n.key, c.sigalg, c.tbs, c.sig) == false then "bad certificate signature (" + c.sigalg + ")" else pki_walk(n, nd, t, anchors, now, depth + 1)
+
+## --- PEM ----------------------------------------------------------------------------------------------------------------
+fn pki_b64v(c) = if c >= "A" and c <= "Z" then ord(c) - 65 else if c >= "a" and c <= "z" then ord(c) - 71 else if c >= "0" and c <= "9" then ord(c) + 4 else if c == "+" then 62 else if c == "/" then 63 else 0 - 1
+fn pki_b64(s) = let o = buf_new(count(s)) in let n = pki_b64go(s, 0, o, 0, 0, 0) in buf_to_str(o, 0, n)
+fn pki_b64go(s, i, o, n, acc, k) = if i >= count(s) then n else let v = pki_b64v(at(s, i)) in if v < 0 then pki_b64go(s, i + 1, o, n, acc, k) else let a2 = acc * 64 + v in if k == 3 then (let w1 = buf_set(o, n, bit_shr(a2, 16)) in let w2 = buf_set(o, n + 1, bit_and(bit_shr(a2, 8), 255)) in let w3 = buf_set(o, n + 2, bit_and(a2, 255)) in pki_b64go(s, i + 1, o, n + 3, 0, 0)) else (if k == 2 and pki_padat(s, i + 1) then (let w1 = buf_set(o, n, bit_shr(a2, 10)) in let w2 = buf_set(o, n + 1, bit_and(bit_shr(a2, 2), 255)) in n + 2) else if k == 1 and pki_padat(s, i + 1) then (let w1 = buf_set(o, n, bit_shr(a2, 4)) in n + 1) else pki_b64go(s, i + 1, o, n, a2, k + 1))
+fn pki_padat(s, i) = i < count(s) and at(s, i) == "="
+fn pki_find(s, w, i) = if i + count(w) > count(s) then 0 - 1 else if slice(s, i, i + count(w)) == w then i else pki_find(s, w, i + 1)
+fn pki_pem_certs(text) = pki_pemgo(text, 0)
+fn pki_pemgo(t, i) = let a = pki_find(t, "-----BEGIN CERTIFICATE-----", i) in if a < 0 then Nil else let b = pki_find(t, "-----END CERTIFICATE-----", a) in if b < 0 then Nil else Cons(pki_b64(slice(t, a + 27, b)), pki_pemgo(t, b + 25))

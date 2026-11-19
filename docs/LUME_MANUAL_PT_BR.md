@@ -250,6 +250,8 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 ## 4.4 Comandos de Prova e Autocura
 - `lume prove <arquivo.src>`           Prova todos os contratos e leis.
 - `lume verify [--jobs=N] <arquivo.src>...`  check, test, prove, fmt --check e certify em muitos arquivos; cache por arquivo.
+- `lume pkg publish|add|install`         versoes de pacotes: store com testes, requisitos `^`/`~`, lume_modules/, lume.lock.
+- `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  biblioteca padrao: hashes, CSV, UTF-8, datas e fusos, regex, gzip, HTTP e HTTPS.
   Contratos dos builtins: `buf_bits_write` e `p + n` ou `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (quando o
   resultado tem nome num `let` ou e devolvido); limite no `requires` os operandos de uma clausula para ela nao estourar.
 - Exemplos oficiais: `examples/topics/*.src` (rode cada um com `lume test`) e `examples/diagnostics/` (por codigo, o

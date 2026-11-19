@@ -1,0 +1,24 @@
+## csv_utf8_ok.src -- `use std/csv` (RFC 4180 quoting) and `use std/utf8` (characters over byte strings)
+use csv
+use utf8
+
+fn q() = chr(34)
+fn crlf() = chr(13) + chr(10)
+fn test_csv_plain() = csv_parse("a,b,c" + crlf() + "1,2,3" + crlf()) == [["a", "b", "c"], ["1", "2", "3"]]
+fn test_csv_quotes() = csv_parse(q() + "x, y" + q() + "," + q() + "say " + q() + q() + "hi" + q() + q() + q() + chr(10) + "z,") == [["x, y", "say " + q() + "hi" + q()], ["z", ""]]
+fn test_csv_newline_in_field() = csv_parse(q() + "line1" + chr(10) + "line2" + q() + ",end") == [["line1" + chr(10) + "line2", "end"]]
+fn test_csv_round_trip() = let rows = [["name", "note"], ["Ana", "a, b"], ["Bo", "he said " + q() + "ok" + q()]] in csv_parse(csv_format(rows)) == rows
+fn test_csv_separator() = csv_parse_sep("a;b" + chr(10) + "c;d", ";") == [["a", "b"], ["c", "d"]] and csv_field(["a", "b"], 1) == "b" and csv_field(["a"], 5) == ""
+fn test_utf8_len() = utf8_len("ação") == 4 and count("ação") == 6 and utf8_len("") == 0 and utf8_len("€𝄞") == 2
+fn test_utf8_decode_encode() = utf8_decode("aç€𝄞") == [97, 231, 8364, 119070] and utf8_encode([97, 231, 8364, 119070]) == "aç€𝄞"
+fn test_utf8_index() = utf8_char("ação", 1) == "ç" and utf8_cp("ação", 2) == 227 and utf8_slice("ação!", 1, 4) == "ção" and utf8_char("ab", 9) == ""
+fn test_utf8_case() = utf8_upper("ação é") == "AÇÃO É" and utf8_lower("ÁRVORE") == "árvore" and utf8_reverse("aç€") == "€ça"
+## raw bytes (chr(n) above 127 encodes a character, so ill-formed input is built in a buffer)
+fn bytes(xs) = let b = buf_new(bytes_n(xs, 0)) in bytes_go(b, xs, 0)
+fn bytes_n(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => bytes_n(t, n + 1)
+fn bytes_go(b, xs, i) = match xs
+    Nil        => buf_to_str(b, 0, buf_len(b))
+    Cons(h, t) => let w = buf_set(b, i, h) in bytes_go(b, t, i + 1)
+fn test_utf8_valid() = utf8_valid("ação €") and utf8_valid(bytes([192, 128])) == false and utf8_valid(bytes([237, 160, 128])) == false and utf8_valid(bytes([244, 144, 128, 128])) == false and utf8_len(bytes([97, 255, 98])) == 3
