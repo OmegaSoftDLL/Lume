@@ -18,6 +18,10 @@ no lugar (`--check`, `--stdout`), `lume manual [capitulo]` mostra o manual (`--p
 tempo proprio e total, chamadas e alocacoes, e o tempo do GC, no stderr ao terminar (funcoes expandidas no chamador
 contam nele; `LUME_FL=off` as mantem; um laco de cauda e uma chamada).
 
+Exemplos oficiais: `examples/topics/*.src` (um arquivo por assunto, cada um rodado por `lume test`) e
+`examples/diagnostics/` (para um codigo de diagnostico, `CODIGO_nome.bad` o mostra e `CODIGO_nome.fixed.src` e o
+programa corrigido); `tests/docs/examples_gate.src` roda todos a cada versao.
+
 ```lume
 fn square(x) = x * x
 print square(7)
@@ -68,7 +72,9 @@ print 7 % 3
 
 O programa para com exit 3 e uma linha no stderr em: overflow de inteiro, divisao por zero, indice fora de uma
 lista ou buffer, campo que o registro nao tem, valor do tipo errado para a operacao, `match` sem braco. O
-`lume test` mostra essa parada como teste que falhou e segue com os outros.
+`lume test` mostra essa parada como teste que falhou e segue com os outros. Depois da mensagem vem as chamadas
+que levaram ate ali, da mais interna para fora, uma linha `  at NOME (arquivo.src:LINHA)` cada (uma funcao expandida
+no chamador e uma chamada de cauda nao deixam linha; `LUME_FL=off` mantem as funcoes pequenas como chamadas).
 
 ```lume
 print 9223372036854775807 + 1
@@ -260,6 +266,23 @@ print half(10)
 5
 ```
 
+Contratos dos builtins: o provador sabe o que alguns builtins devolvem, quando o resultado da chamada tem nome num
+`let` ou e o resultado da funcao: `buf_bits_write(b, p, v, n)` e `p + n` ou `-1`; `buf_get(b, i)` e 0..255 (um
+indice fora do buffer para o programa); `buf_len(b)` e `count(s)` sao >= 0; `buf_sad*` / `buf_satd*` sao >= -1;
+`buf_h264_quant4x4` e -1..16. Uma clausula que o provador prova nao pode ela mesma parar o programa: `p + n` pode
+estourar, entao limite p e n no `requires`.
+
+```lume
+fn put3(b: buf, p: int, v: int) -> int
+    requires p >= 0 and p <= 1000000000
+    ensures result == p + 3 or result == 0 - 1
+    = buf_bits_write(b, p, v, 3)
+print put3(buf_new(4), 0, 5)
+```
+```output
+3
+```
+
 ## 9. Convencoes e nomes reservados
 
 Palavras-chave: `if then else elif let in var mut match not and or own with spawn do defer errdefer comptime
@@ -284,9 +307,9 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 ## 11. Mudou nesta versao
 
-Entrou: `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
-Mudou: o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
+Mudou: o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
 Bash o `lume` roda o `lume.exe` nativo; `fs_copy` mantem as permissoes da origem.
 Saiu: nada.

@@ -2502,7 +2502,37 @@ fn vprove_body_let_cl(nm, v2, b, hyps, lenv, ctx) = match v2
     _            => 0
 fn vprove_body_let(nm, v, b, hyps, lenv, ctx) = match v
     If(c, t, e2) => if vnorm_if_changed(c) == 1 then vprove_body_let(nm, vnorm_if(c, t, e2), b, hyps, lenv, ctx) else let rp = vcond_pos(c, hyps, lenv, ctx.fns, ctx.d) in let rn = vcond_neg(c, hyps, lenv, ctx.fns, ctx.d) in if rp.ok == 1 and rn.ok == 1 and vprove_body_let(nm, t, b, app(rp.hyps, hyps), lenv, ctx) == 1 and vprove_body_let(nm, e2, b, app(rn.hyps, hyps), lenv, ctx) == 1 then 1 else 0
-    _            => let gfn = n4_is_grad_let(v) in if gfn != "" then vprove_body(n4_subst_call(b, nm, "__ad_grad_" + gfn), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else if vis_struct_expr(v) == 1 then vprove_body(vtemp_subst_var(b, nm, v), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else let hy = app(vev_new(v, 2, hyps, lenv, ctx.fns, ctx.d), hyps) in let lv = vlin_expr(v, hy, lenv, ctx.fns, ctx.d) in if lv.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_let_cl(nm, vlift_e(v, lenv, ctx.fns, 0), b, Cons(vlift_mark(), hyps), lenv, ctx)) else vprove_body(b, app(vcollect_div_hyps_e(v, hy, lenv, ctx.fns, ctx.d), hy), Cons({k: nm, v: lv}, vdf_ev_push(v, 0, hy, lenv, ctx.fns, ctx.d, Cons({k: "?let", v: vlin_err()}, lenv))), ctx.enss, ctx.fns, ctx.d)
+    _            => let gfn = n4_is_grad_let(v) in if gfn != "" then vprove_body(n4_subst_call(b, nm, "__ad_grad_" + gfn), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else if vis_struct_expr(v) == 1 then vprove_body(vtemp_subst_var(b, nm, v), hyps, lenv, ctx.enss, ctx.fns, ctx.d) else let hy = app(vev_new(v, 2, hyps, lenv, ctx.fns, ctx.d), hyps) in let lv = vbi_lin(v, vlin_expr(v, hy, lenv, ctx.fns, ctx.d), nm, lenv, ctx.fns) in if lv.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_let_cl(nm, vlift_e(v, lenv, ctx.fns, 0), b, Cons(vlift_mark(), hyps), lenv, ctx)) else let hz = app(vcollect_div_hyps_e(v, hy, lenv, ctx.fns, ctx.d), hy) in vbi_go(vbi_alts_e(v, lv, hz, lenv, ctx.fns, ctx.d), b, hz, Cons({k: nm, v: lv}, vdf_ev_push(v, 0, hy, lenv, ctx.fns, ctx.d, Cons({k: "?let", v: vlin_err()}, lenv))), ctx)
+
+## Builtin contracts: what the prover may assume about the result t of a builtin call, as alternatives (each a list of
+## rows >= 0; the body after the `let` must hold under every alternative). A user function of the same name hides them.
+##   buf_bits_write(b, p, v, n)  result == p + n  or  result == -1
+##   buf_len(b), count(s)        result >= 0
+##   buf_get(b, i)               0 <= result <= 255 (an index outside the buffer stops the program)
+##   buf_sad*/buf_satd*          result >= -1
+##   buf_h264_quant4x4           -1 <= result <= 16
+## the result of a builtin call named by a `let` is a variable of its own (unique per let: lenv grows at every let), never
+## a term shared by calls with the same arguments (buf_get may answer differently after a buf_set)
+fn vbi_lin(v, lv, nm, lenv, fns) = match v
+    Call(cnm, args) => if lv.ok == 1 then lv else if vbi_known(cnm, len(args)) == 1 and isnil(vfnlookup(cnm, fns)) == 1 then vlin_var("bi:" + nm + ":" + str(len(lenv))) else lv
+    _               => lv
+fn vbi_eq(t, e) = if t.ok == 0 or e.ok == 0 then Nil else vct_rows2(vlin_sub(t, e), vlin_sub(e, t))
+fn vbi_lo(t, lo) = let r = vlin_sub(t, vlin_const(lo)) in if r.ok == 0 then Nil else Cons(r, Nil)
+fn vbi_one(rows) = if isnil(rows) == 1 then Nil else Cons(rows, Nil)
+fn vbi_bits(t, ep, hyps, lenv, fns, d) = let e = vbi_eq(t, ep) in if isnil(e) == 1 then vbi_one(vbi_lo(t, 0 - 1)) else Cons(e, Cons(vct_rows(t, 0 - 1, 0 - 1), Nil))
+fn vbi_sad(cnm) = if cnm == "buf_sad4x4" or cnm == "buf_sad8x8" or cnm == "buf_sad16x16" or cnm == "buf_satd4x4" or cnm == "buf_satd16x16" then 1 else 0
+fn vbi_known(cnm, n) = if cnm == "buf_bits_write" and n == 4 or cnm == "buf_len" and n == 1 or cnm == "count" and n == 1 or cnm == "buf_get" and n == 2 or vbi_sad(cnm) == 1 and n == 6 or cnm == "buf_h264_quant4x4" and n == 6 then 1 else 0
+fn vbi_alts(cnm, args, t, hyps, lenv, cx) = if isnil(vfnlookup(cnm, cx.fns)) == 0 or t.ok == 0 or vbi_known(cnm, len(args)) == 0 then Nil else if cnm == "buf_bits_write" then vbi_bits(t, vlin_add(vlin_expr(ohd_e(ptl(args)), hyps, lenv, cx.fns, cx.d), vlin_expr(ohd_e(ptl(ptl(ptl(args)))), hyps, lenv, cx.fns, cx.d)), hyps, lenv, cx.fns, cx.d) else if cnm == "buf_len" or cnm == "count" then vbi_one(vbi_lo(t, 0)) else if cnm == "buf_get" then vbi_one(vct_rows(t, 0, 255)) else if cnm == "buf_h264_quant4x4" then vbi_one(vct_rows(t, 0 - 1, 16)) else vbi_one(vbi_lo(t, 0 - 1))
+fn vbi_alts_e(v, t, hyps, lenv, fns, d) = match v
+    Call(cnm, args) => vbi_alts(cnm, args, t, hyps, lenv, {fns: fns, d: d})
+    _               => Nil
+fn vbi_tail(body, fns) = match body
+    Call(cnm, args) => if vbi_known(cnm, len(args)) == 1 and isnil(vfnlookup(cnm, fns)) == 1 then 1 else 0
+    _               => 0
+fn vbi_go(alts, b, hy, lenv, ctx) = if isnil(alts) == 1 then vprove_body(b, hy, lenv, ctx.enss, ctx.fns, ctx.d) else vbi_all(alts, b, hy, lenv, ctx)
+fn vbi_all(alts, b, hy, lenv, ctx) = match alts
+    Nil        => 1
+    Cons(h, r) => if vprove_body(b, app(h, hy), lenv, ctx.enss, ctx.fns, ctx.d) == 1 then vbi_all(r, b, hy, lenv, ctx) else 0
 
 ## `result.<field>` / `ret.<field>` bindings for a record-literal result; a field that is not an integer term is left unbound
 fn vrec_penv(items, hyps, lenv, cx, acc) = match items
@@ -2522,7 +2552,7 @@ fn vprove_body(body, hyps, lenv, enss, fns, d) = match body
     If(c, t, e2)    => if vnorm_if_changed(c) == 1 then vprove_body(vnorm_if(c, t, e2), hyps, lenv, enss, fns, d) else let rp = vcond_pos(c, hyps, lenv, fns, d) in let rn = vcond_neg(c, hyps, lenv, fns, d) in if rp.ok == 0 or rn.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_cl(vlift_e(c, lenv, fns, 0), t, e2, {hyps: Cons(vlift_mark(), hyps), lenv: lenv, enss: enss, fns: fns, d: d})) else if rp.ok == 1 and rn.ok == 1 and vprove_body_alts(vne_alts(c, 0, rp, hyps, lenv, {fns: fns, d: d}), t, hyps, vdf_ev_push(c, 0, app(rp.hyps, hyps), lenv, fns, d, lenv), {enss: enss, fns: fns, d: d}) == 1 and vprove_body_alts(vne_alts(c, 1, rn, hyps, lenv, {fns: fns, d: d}), e2, hyps, vdf_ev_push(c, 0, app(rn.hyps, hyps), lenv, fns, d, lenv), {enss: enss, fns: fns, d: d}) == 1 then 1 else 0
     Rec(items)      => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in vdf_leaf(enss, hy, vrec_penv(items, hy, lenv, {fns: fns, d: d}, vlin_env_base(lenv, lenv)), lenv, vdf_items_terms(items, vdf_q(hy, lenv, fns, d), Nil), fns, d)
     RecT(tn, items) => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in vdf_leaf(enss, hy, vrec_penv(items, hy, lenv, {fns: fns, d: d}, vlin_env_base(lenv, lenv)), lenv, vdf_items_terms(items, vdf_q(hy, lenv, fns, d), Nil), fns, d)
-    _               => let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in let dhyps = app(vcollect_div_hyps_e(body, hy, lenv, fns, d), hy) in let lb = vlin_expr(body, dhyps, lenv, fns, d) in if lb.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_lifted(vlift_e(body, lenv, fns, 0), Cons(vlift_mark(), hyps), lenv, {enss: enss, fns: fns, d: d})) else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, vlin_env_base(lenv, lenv))) in vdf_leaf(enss, dhyps, penv, lenv, vdf_terms(body, 0, vdf_q(dhyps, lenv, fns, d), Nil), fns, d)
+    _               => if vbi_tail(body, fns) == 1 then vprove_body(LetIn("vbi_result", body, Var("vbi_result")), hyps, lenv, enss, fns, d) else let hy = app(vev_new(body, 2, hyps, lenv, fns, d), hyps) in let dhyps = app(vcollect_div_hyps_e(body, hy, lenv, fns, d), hy) in let lb = vlin_expr(body, dhyps, lenv, fns, d) in if lb.ok == 0 then (if vlift_ok(hyps) == 0 then 0 else vprove_body_lifted(vlift_e(body, lenv, fns, 0), Cons(vlift_mark(), hyps), lenv, {enss: enss, fns: fns, d: d})) else let penv = Cons({k: "result", v: lb}, Cons({k: "ret", v: lb}, vlin_env_base(lenv, lenv))) in vdf_leaf(enss, dhyps, penv, lenv, vdf_terms(body, 0, vdf_q(dhyps, lenv, fns, d), Nil), fns, d)
 
 fn vprove_req1(req, rest_reqs, hyps, ctx) = match req
     Bin(op, a, b) => if op == "and" then vprove_req1(a, Cons(b, rest_reqs), hyps, ctx) else if op == "or" then (if vprove_req1(a, rest_reqs, hyps, ctx) == 1 and vprove_req1(b, rest_reqs, hyps, ctx) == 1 then 1 else 0) else let r1 = vcond_pos(req, hyps, ctx.lenv, ctx.fns, 0) in if r1.ok == 0 then 0 else vprove_with_reqs(rest_reqs, app(r1.hyps, hyps), ctx)

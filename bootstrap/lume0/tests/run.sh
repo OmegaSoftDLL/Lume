@@ -488,6 +488,17 @@ DEPMAIN
     if grep -qx "6765" "$ntmp/prof.out" && grep -Eq " 21891 +0  fib$" "$ntmp/prof.err" && grep -q "^lume profile: " "$ntmp/prof.err" && [ ! -e "$ntmp/lume-profile.out" ]; then ok "lume run --profile: calls, self/total time and allocations per function"; else bad "lume run --profile"; cat "$ntmp/prof.out" "$ntmp/prof.err" | tail -8; fi
     # the factual reference: every example in docs/LUME_REFERENCE_{EN,PT_BR}.md gives the output written under it
     if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/docs/ref_examples_gate.src -o ../../build/bin/ref_examples_gate 2>"$ntmp/refg.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/ref_examples_gate >"$ntmp/refg.out" 2>>"$ntmp/refg.err"; then ok "$(cat "$ntmp/refg.out")"; else bad "factual reference examples (ref_examples_gate)"; tail -12 "$ntmp/refg.err"; fi
+    # the official examples: examples/topics pass lume test; every examples/diagnostics/CODE_*.bad reports CODE and its
+    # .fixed.src passes (tests/docs/examples_gate.src)
+    if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/docs/examples_gate.src -o ../../build/bin/examples_gate 2>"$ntmp/exg.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/examples_gate >"$ntmp/exg.out" 2>>"$ntmp/exg.err"; then ok "$(cat "$ntmp/exg.out")"; else bad "official examples (examples_gate)"; tail -20 "$ntmp/exg.err"; fi
+    # run-time error: the call stack with file:line after the message (rt_trace)
+    printf 'fn inner(b, i) = buf_get(b, i) + 1\nfn middle(b, i) = inner(b, i) * 2\nfn outer(n) = let b = buf_new(4) in middle(b, n) + 0\nprint outer(9)\n' >"$ntmp/stk.src"
+    stk_rc=0; LUME_FL=off LUME_BIN_DIR="$ntmp" ../../lume run "$ntmp/stk.src" >/dev/null 2>"$ntmp/stk.err" || stk_rc=$?
+    if [ "$stk_rc" = 3 ] && grep -q "^  at inner (.*stk.src:1)$" "$ntmp/stk.err" && grep -q "^  at middle (.*stk.src:2)$" "$ntmp/stk.err" && grep -q "^  at outer (.*stk.src:3)$" "$ntmp/stk.err"; then ok "run-time error prints the call stack with file:line (inner, middle, outer)"; else bad "run-time error call stack"; cat "$ntmp/stk.err"; fi
+    # builtin contracts known to the prover: buf_bits_write (p + n or -1), buf_get, buf_len, after a let or as the result
+    LUME_BIN_DIR="$ntmp" ../../lume prove ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.json" 2>/dev/null || true
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.out" 2>&1 || true
+    if [ "$(grep -o '"status":"proven"' "$ntmp/bic.json" | wc -l)" -eq 4 ] && grep -q "2 passed, 0 failed" "$ntmp/bic.out"; then ok "prover: builtin contracts (buf_bits_write, buf_get, buf_len) prove 4/4"; else bad "prover: builtin contracts"; head -c 600 "$ntmp/bic.json"; tail -3 "$ntmp/bic.out"; fi
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/gc_ok.src >"$ntmp/gc_ok.out" 2>"$ntmp/gc_ok.err"
     if grep -q " passed, 0 failed" "$ntmp/gc_ok.out"; then ok "collector: live data survives forced collections, garbage is freed (gc_ok.src)"; else bad "collector: gc_ok.src"; tail -5 "$ntmp/gc_ok.out"; fi
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/gc_stress_ok.src -o "$ntmp/gc_stress_ok.elf" 2>"$ntmp/gcs_build.err"

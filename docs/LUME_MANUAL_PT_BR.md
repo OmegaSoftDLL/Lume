@@ -249,6 +249,11 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 
 ## 4.4 Comandos de Prova e Autocura
 - `lume prove <arquivo.src>`           Prova todos os contratos e leis.
+  Contratos dos builtins: `buf_bits_write` e `p + n` ou `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (quando o
+  resultado tem nome num `let` ou e devolvido); limite no `requires` os operandos de uma clausula para ela nao estourar.
+- Exemplos oficiais: `examples/topics/*.src` (rode cada um com `lume test`) e `examples/diagnostics/` (por codigo, o
+  programa `.bad` que falha e o `.fixed.src` corrigido).
+- Um erro em tempo de execucao (exit 3) mostra a pilha depois da mensagem: `  at NOME (arquivo.src:LINHA)`, da mais interna para fora.
 - `lume certify <arquivo.src> --json`  Gera certificado criptografico de prova.
 - `lume heal <arquivo.src>`            Repara automaticamente contratos violados!
 - `lume equiv <spec.src> <rapido.src>` Prova que duas funcoes fazem a mesma coisa.

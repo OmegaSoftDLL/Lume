@@ -725,7 +725,7 @@ fn cs_exprty(e, tt) = match e
     LetIn(nm, v, b)         => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_exprty(b, tt2)
     VarIn(nm, v, b)         => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_exprty(b, tt2)
     Match(sc, arms)         => cs_exprty_arms(arms, tt)
-    Call(nm, args)          => let tr = cs_exprty_tier(nm, args, tt) in if tr != "" then tr else if nm == "money_parse" or nm == "money_make" then cs_exprty_money(args) else if cs_isupper(at(nm, 0)) then cs_ctorty(cs_clookup(nm, tt.ctors)) else cs_sig_rty_empty(cs_siglookup(nm, tt.sigs))
+    Call(nm, args)          => let tr = cs_exprty_tier(nm, args, tt) in if tr != "" then tr else if cs_f64_builtin(nm) == 1 and cs_isnil(cs_siglookup(nm, tt.sigs)) == 1 then "f64" else if nm == "money_parse" or nm == "money_make" then cs_exprty_money(args) else if cs_isupper(at(nm, 0)) then cs_ctorty(cs_clookup(nm, tt.ctors)) else cs_sig_rty_empty(cs_siglookup(nm, tt.sigs))
     Var(nm)                 => if cs_isupper(at(nm, 0)) then cs_ctorty(cs_clookup(nm, tt.ctors)) else cs_glookup_empty(nm, tt.lenv)
     _                       => ""
 fn cs_ctorty(m) = match m
@@ -876,6 +876,8 @@ fn cs_asthead(xs) = match xs
 
 ## f64 arithmetic: two f64, or an f64 and an operand of unknown type (a decimal literal such as 3.0 becomes an f64
 ## there); an int next to an f64 must be converted explicitly with f64(n)
+## builtins whose result is an f64 (the f64 parameter wrapper is a call to f64, so a parameter `x: f64` is typed too)
+fn cs_f64_builtin(nm) = if nm == "f64" or nm == "f32" or nm == "tofloat" or nm == "f64_add" or nm == "f64_sub" or nm == "f64_mul" or nm == "f64_div" or nm == "f64_sqrt" or nm == "buf_f32_get" then 1 else 0
 fn cs_f64_pair(ta, tb) = if (ta == "f64" or tb == "f64") and (ta == "f64" or ta == "") and (tb == "f64" or tb == "") then 1 else 0
 fn cs_chk_bin_op(op, a, b, tt) = let ta = cs_exprty(a, tt) in let tb = cs_exprty(b, tt) in if (op == "-" or op == "*" or op == "/" or op == "+" or op == "<" or op == ">" or op == "<=" or op == ">=") and cs_f64_pair(ta, tb) == 1 then Nil else if (op == "-" or op == "*" or op == "/" or op == "+") and (ta == "f64" or tb == "f64") and (ta == "int" or tb == "int") then Cons(cs_mkwarn("W0004", "typecheck", "warning: operator '" + op + "' mixes f64 and int; the int is converted at run time", "write f64(n) to say so, or f64_int(x) for an int result"), Nil) else if (op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%") and (ta != "" and ta != "int" or tb != "" and tb != "int") then Cons(cs_mkdiag("T2001", "typecheck", "type error: arithmetic operator '" + op + "' cannot be applied to " + (if ta != "" then ta else "int") + " and " + (if tb != "" then tb else "int"), "use int operands with '" + op + "'"), Nil) else if (op == "+" or op == "<" or op == ">" or op == "<=" or op == ">=") and ta != "" and tb != "" and ta != tb then Cons(cs_mkdiag("T2001", "typecheck", "type error: operator '" + op + "' cannot be applied to " + ta + " and " + tb, "convert both operands of '" + op + "' to the same type"), Nil) else Nil
 fn cs_chk_field_rec(oty, nm, m) = match m

@@ -14,6 +14,9 @@
 ##   buf_h264_intra16x16(frame, fi, fs, mode, avail, dst)  the 4 Intra16x16 predictions (8.3.3: vertical, horizontal,
 ##                                               DC, plane) into 256 bytes; avail bits 1 left, 2 top, 8 top-left
 
+## scratch: one static block (runtime/rt_die's .bss __rtc_scratch, 4096 bytes) instead of an allocation per call; the
+## runtime is single-threaded and no codec builtin calls another, so the parts never overlap: luma MC window and b1
+## table at 0 (3616 bytes), inverse transform at 3616 (128), intra 4x4 neighbours at 3744 (112), deblocking at 3856 (56)
 fn rtc_isbuf(b) = if b == 0 or bit_and(b, 7) != 0 then 0 else if load8(b) != 15 then 0 else 1
 fn rtc_len(b) = bit_shr(load64(b), 8)
 fn rtc_fits(b, o, n) = if rtc_isbuf(b) == 0 or o < 0 then 0 else if o > rtc_len(b) then 0 else if o + n <= rtc_len(b) then 1 else 0
@@ -36,7 +39,7 @@ fn rtc_cols(t, k, inv) = if k >= 4 then 0 else let z = (if inv == 1 then rtc_inv
 fn rtc_round6(t, i) = if i >= 16 then 0 else let v = load64(t + i * 8) + 32 in let w = store64(t + i * 8, (if v >= 0 then bit_shr(v, 6) else 0 - bit_shr(63 - v, 6))) in rtc_round6(t, i + 1)
 ## the forward transform runs in SSE2 (vec_fdct4, exact mod 2^16); the inverse stays scalar: its intermediates can
 ## pass 16 bits before the final >> 6
-fn rtc_tr(src, si, dst, di, inv) = if rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else if inv == 0 then (let z = vec_fdct4(src + 8 + si, dst + 8 + di) in mkint(0)) else let t = __lume_alloc_a(128) in let a = rtc_load16(src + 8 + si, t, 0) in let b = rtc_rows(t, 0, inv) in let c = rtc_cols(t, 0, inv) in let d = (if inv == 1 then rtc_round6(t, 0) else 0) in let e = rtc_store16(t, dst + 8 + di, 0) in mkint(0)
+fn rtc_tr(src, si, dst, di, inv) = if rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else if inv == 0 then (let z = vec_fdct4(src + 8 + si, dst + 8 + di) in mkint(0)) else let t = (sym_addr("__rtc_scratch") + 3616) in let a = rtc_load16(src + 8 + si, t, 0) in let b = rtc_rows(t, 0, inv) in let c = rtc_cols(t, 0, inv) in let d = (if inv == 1 then rtc_round6(t, 0) else 0) in let e = rtc_store16(t, dst + 8 + di, 0) in mkint(0)
 fn buf_h264_fdct4x4(src, si, dst, di) = rtc_tr(src, rt_int(si), dst, rt_int(di), 0)
 fn buf_h264_idct4x4(src, si, dst, di) = rtc_tr(src, rt_int(si), dst, rt_int(di), 1)
 
@@ -48,7 +51,13 @@ fn rtc_v(q, k) = if q == 0 then (if k == 0 then 10 else if k == 1 then 16 else 1
 ## qd = qp * 256 + intra (one parameter for both): level i, then the next
 fn rtc_q(src, dst, i, qd, nz) = if i >= 16 then nz else let qp = bit_shr(qd, 8) in let qbits = 15 + qp / 6 in let f = bit_shl(1, qbits) / (if bit_and(qd, 1) == 1 then 3 else 6) in let w = rtc_r16(src + i * 2) in let z = bit_shr(rtc_abs(w) * rtc_mf(qp % 6, rtc_cls(i)) + f, qbits) in let s = rtc_w16(dst + i * 2, (if w < 0 then 0 - z else z)) in rtc_q(src, dst, i + 1, qd, nz + (if z != 0 then 1 else 0))
 fn buf_h264_quant4x4(src, si, qp, intra, dst, di) = rtc_quant(src, rt_int(si), rt_int(qp), rt_int(intra), dst, rt_int(di))
-fn rtc_quant(src, si, qp, intra, dst, di) = if qp < 0 or qp > 51 or rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else mkint(rtc_q(src + 8 + si, dst + 8 + di, 0, qp * 256 + (if intra != 0 then 1 else 0), 0))
+## one level: w at k, multiplier mf, fq = f * 32 + qbits; answers 1 when the level is nonzero
+fn rtc_qe(src, dst, k, mf, fq) = let w = rtc_r16(src + k * 2) in let z = bit_shr((if w < 0 then 0 - w else w) * mf + bit_shr(fq, 5), bit_and(fq, 31)) in let s = rtc_w16(dst + k * 2, (if w < 0 then 0 - z else z)) in if z != 0 then 1 else 0
+## a row of 4 levels; mm = the multipliers of the even and odd columns (row 0 / 2: classes 0 2 0 2, row 1 / 3: 2 1 2 1)
+fn rtc_qrow(src, dst, k, mm, fq) = let a = rtc_qe(src, dst, k, bit_shr(mm, 16), fq) in let b = rtc_qe(src, dst, k + 1, bit_and(mm, 65535), fq) in let c = rtc_qe(src, dst, k + 2, bit_shr(mm, 16), fq) in let d = rtc_qe(src, dst, k + 3, bit_and(mm, 65535), fq) in a + b + c + d
+## qbits, f and the three multipliers once per block (they were recomputed, with a division, for every level)
+fn rtc_q4(src, dst, qp, intra) = let qb = 15 + qp / 6 in let fq = (bit_shl(1, qb) / (if intra != 0 then 3 else 6)) * 32 + qb in let r = qp % 6 in let me = rtc_mf(r, 0) * 65536 + rtc_mf(r, 2) in let mo = rtc_mf(r, 2) * 65536 + rtc_mf(r, 1) in let a = rtc_qrow(src, dst, 0, me, fq) in let b = rtc_qrow(src, dst, 4, mo, fq) in let c = rtc_qrow(src, dst, 8, me, fq) in let d = rtc_qrow(src, dst, 12, mo, fq) in a + b + c + d
+fn rtc_quant(src, si, qp, intra, dst, di) = if qp < 0 or qp > 51 or rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else mkint(rtc_q4(src + 8 + si, dst + 8 + di, qp, intra))
 fn rtc_dq(src, dst, i, qp) = if i >= 16 then 0 else let z = rtc_r16(src + i * 2) in let w = rtc_w16(dst + i * 2, bit_shl(z * rtc_v(qp % 6, rtc_cls(i)), qp / 6)) in rtc_dq(src, dst, i + 1, qp)
 fn buf_h264_dequant4x4(src, si, qp, dst, di) = rtc_dequant(src, rt_int(si), rt_int(qp), dst, rt_int(di))
 fn rtc_dequant(src, si, qp, dst, di) = if qp < 0 or qp > 51 or rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else let z = rtc_dq(src + 8 + si, dst + 8 + di, 0, qp) in mkint(0)
@@ -86,8 +95,12 @@ fn rtc_hd(n, x, y) = let z = 2 * y - x in if z >= 0 and bit_and(z, 1) == 0 then 
 fn rtc_vl(n, x, y) = if bit_and(y, 1) == 0 then bit_shr(rtc_nb(n, x + bit_shr(y, 1)) + rtc_nb(n, x + bit_shr(y, 1) + 1) + 1, 1) else bit_shr(rtc_nb(n, x + bit_shr(y, 1)) + 2 * rtc_nb(n, x + bit_shr(y, 1) + 1) + rtc_nb(n, x + bit_shr(y, 1) + 2) + 2, 2)
 fn rtc_hu(n, x, y) = let z = x + 2 * y in if z > 5 then rtc_py(n, 3) else if z == 5 then bit_shr(rtc_py(n, 2) + 3 * rtc_py(n, 3) + 2, 2) else if bit_and(z, 1) == 0 then bit_shr(rtc_py(n, y + bit_shr(x, 1)) + rtc_py(n, y + bit_shr(x, 1) + 1) + 1, 1) else bit_shr(rtc_py(n, y + bit_shr(x, 1)) + 2 * rtc_py(n, y + bit_shr(x, 1) + 1) + rtc_py(n, y + bit_shr(x, 1) + 2) + 2, 2)
 ## the block needs a row above (fi >= fs + 1) when top or top-left is used and a column to the left (fi >= 1)
+## vertical (0): the 4 samples above, as one word per row; horizontal (1): the left sample of each row repeated
+fn rtc_rep4(v) = v * 16843009
+fn rtc_fill4(d, v) = let w = rtc_rep4(v) in let a = store32(d, w) in let b = store32(d + 4, w) in let c = store32(d + 8, w) in store32(d + 12, w)
+fn rtc_i4fast(b, fs, mode, d) = let z = (if mode == 0 then (let t = load32(b - fs) in let a = store32(d, t) in let c = store32(d + 4, t) in let e = store32(d + 8, t) in store32(d + 12, t)) else (let a = store32(d, rtc_rep4(load8(b - 1))) in let c = store32(d + 4, rtc_rep4(load8(b + fs - 1))) in let e = store32(d + 8, rtc_rep4(load8(b + 2 * fs - 1))) in store32(d + 12, rtc_rep4(load8(b + 3 * fs - 1))))) in mkint(0)
 fn buf_h264_intra4x4(frame, fi, fs, mode, avail, dst) = rtc_i4(frame, rt_int(fi), rt_int(fs), rt_int(mode) * 16 + bit_and(rt_int(avail), 15), dst)
-fn rtc_i4(f, fi, fs, ma, dst) = let mode = bit_shr(ma, 4) in let av = bit_and(ma, 15) in if mode < 0 or mode > 8 or fs < 8 or fi < fs + 1 or rtc_fits(f, fi - fs - 1, 4 * fs + 9) == 0 or rtc_fits(dst, 0, 16) == 0 then mkint(0 - 1) else let n = __lume_alloc_a(112) in let g = rtc_gather(f + 8 + fi, fs, n, av) in let z = (if mode == 2 then rtc_fill(dst + 8, 0, rtc_dc4(n, av)) else rtc_m4(n, dst + 8, mode, 0)) in mkint(0)
+fn rtc_i4(f, fi, fs, ma, dst) = let mode = bit_shr(ma, 4) in let av = bit_and(ma, 15) in if mode < 0 or mode > 8 or fs < 8 or fi < fs + 1 or rtc_fits(f, fi - fs - 1, 4 * fs + 9) == 0 or rtc_fits(dst, 0, 16) == 0 then mkint(0 - 1) else if mode <= 1 then rtc_i4fast(f + 8 + fi, fs, mode, dst + 8) else let n = (sym_addr("__rtc_scratch") + 3744) in let g = rtc_gather(f + 8 + fi, fs, n, av) in let z = (if mode == 2 then rtc_fill4(dst + 8, rtc_dc4(n, av)) else rtc_m4(n, dst + 8, mode, 0)) in mkint(0)
 
 ## --- Intra16x16 prediction ----------------------------------------------------------------------------------------------
 fn rtc_v16(f, fs, d, i) = if i >= 256 then 0 else let w = store8(d + i, load8(f - fs + bit_and(i, 15))) in rtc_v16(f, fs, d, i + 1)
@@ -137,7 +150,7 @@ fn rtc_mc(ref, dst, a, b, g, q) = let sh = bit_and(q, 3) in let qq = bit_shr(q, 
 ## one allocation per call holds the context (128 bytes), the luma window (at most 22 x 22, 488 reserved) and the
 ## b1 table (at most 17 x 8 x 22 bytes): a second allocation could run the collector, which does not look inside this
 ## block, and free a window it only reaches through here (LumeDesk report: different blocks for the same call)
-fn rtc_mc2(plane, d, sd, g, qq, sh) = let c = __lume_alloc_a(3616) in let qx = bit_and(qq, 1073741823) - 536870912 in let qy = bit_shr(qq, 30) - 536870912 in let m = bit_shl(1, sh) - 1 in let s0 = store64(c, plane) in let s1 = store64(c + 8, bit_and(sd, 65535)) in let s8 = store64(c + 48, bit_shr(sd, 16)) in let s2 = store64(c + 16, bit_and(g, 65535)) in let s3 = store64(c + 24, bit_and(bit_shr(g, 16), 65535)) in let s4 = store64(c + 32, bit_and(qx, m) + bit_and(qy, m) * (m + 1)) in let s5 = store64(c + 40, bit_and(bit_shr(g, 32), 255)) in let s6 = store64(c + 56, bit_and(bit_shr(g, 40), 255)) in let s7 = store64(c + 64, sh - 2) in rtc_mc3(c, d, qx, qy, sh)
+fn rtc_mc2(plane, d, sd, g, qq, sh) = let c = sym_addr("__rtc_scratch") in let qx = bit_and(qq, 1073741823) - 536870912 in let qy = bit_shr(qq, 30) - 536870912 in let m = bit_shl(1, sh) - 1 in let s0 = store64(c, plane) in let s1 = store64(c + 8, bit_and(sd, 65535)) in let s8 = store64(c + 48, bit_shr(sd, 16)) in let s2 = store64(c + 16, bit_and(g, 65535)) in let s3 = store64(c + 24, bit_and(bit_shr(g, 16), 65535)) in let s4 = store64(c + 32, bit_and(qx, m) + bit_and(qy, m) * (m + 1)) in let s5 = store64(c + 40, bit_and(bit_shr(g, 32), 255)) in let s6 = store64(c + 56, bit_and(bit_shr(g, 40), 255)) in let s7 = store64(c + 64, sh - 2) in rtc_mc3(c, d, qx, qy, sh)
 fn rtc_mc3(c, d, qx, qy, sh) = let z = (if sh == 2 then rtc_lmc(c, d, rtc_asr(qx, 2), rtc_asr(qy, 2)) else rtc_mrows(c, d, rtc_asr(qx, sh), rtc_asr(qy, sh), load64(c + 56))) in mkint(0)
 ## luma fast path: the (w + 6) x (h + 6) window around the block is copied once (clamping only there, 72 window,
 ## 80 its stride), and the horizontal 6-tap intermediates b1 of every window row are kept as words (88 table,
@@ -184,7 +197,7 @@ fn rtc_dlines(x, p, k, n) = if k >= n then 0 else let seg = (if load64(x + 40) =
 ## the samples a line touches lie between q0 - r across and q0 + (r - 1) across (r = 4 luma, 2 chroma)
 fn rtc_dfits(buf, q0, across, along, lines, r) = let e1 = q0 + (lines - 1) * along in let lo1 = (if across > 0 then q0 - r * across else q0 + (r - 1) * across) in let hi1 = (if across > 0 then q0 + (r - 1) * across else q0 - r * across) in let lo2 = lo1 + (lines - 1) * along in let hi2 = hi1 + (lines - 1) * along in if rtc_isbuf(buf) == 0 then 0 else if lo1 < 0 or lo2 < 0 or hi1 >= rtc_len(buf) or hi2 >= rtc_len(buf) then 0 else 1
 fn rtc_dbk(buf, q0, a, b, cp) = let across = bit_and(a, 33554431) - 16777216 in let along = bit_shr(a, 25) - 16777216 in let lines = bit_and(b, 255) in let ch = bit_and(bit_shr(b, 8), 1) in if across == 0 or lines < 1 or lines > (if ch == 1 then 8 else 16) or rtc_dfits(buf, q0, across, along, lines, (if ch == 1 then 2 else 4)) == 0 then mkint(0 - 1) else rtc_dbk2(buf + 8 + q0, across, along, b, cp, lines)
-fn rtc_dbk2(p, across, along, b, cp, lines) = let x = __lume_alloc_a(56) in let s1 = store64(x + 8, across) in let s2 = store64(x + 16, along) in let s3 = store64(x + 24, bit_and(bit_shr(b, 16), 255)) in let s4 = store64(x + 32, bit_and(bit_shr(b, 24), 255)) in let s5 = store64(x + 40, bit_and(bit_shr(b, 8), 1)) in let s6 = store64(x + 48, cp) in let z = rtc_dlines(x, p, 0, lines) in mkint(0)
+fn rtc_dbk2(p, across, along, b, cp, lines) = let x = (sym_addr("__rtc_scratch") + 3856) in let s1 = store64(x + 8, across) in let s2 = store64(x + 16, along) in let s3 = store64(x + 24, bit_and(bit_shr(b, 16), 255)) in let s4 = store64(x + 32, bit_and(bit_shr(b, 24), 255)) in let s5 = store64(x + 40, bit_and(bit_shr(b, 8), 1)) in let s6 = store64(x + 48, cp) in let z = rtc_dlines(x, p, 0, lines) in mkint(0)
 fn buf_h264_dbk5(buf, q0, a, b, cp) = rtc_dbk(buf, rt_int(q0), rt_int(a), rt_int(b), rt_int(cp))
 
 ## --- bit writing for entropy coders (CAVLC, Exp-Golomb headers): bits go most significant first, bit 0 of the

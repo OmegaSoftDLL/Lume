@@ -1,0 +1,43 @@
+## examples_gate.src -- the official examples (examples/topics, examples/diagnostics) are run on every release:
+##   every topic file passes `lume test` with at least one test and no failure;
+##   every diagnostic example NAME.bad (copied to a .src file) gives its code with the command named on its second line
+##   (`## command: lume build|check|prove|agent check`), and NAME.fixed.src gives no such code, exits 0 and passes `lume test`.
+## Input: `@root <repository>` on stdin. The lists below are the catalogue: a missing file fails the gate.
+use hostio
+
+fn eg_topics() = Cons("01_basics", Cons("02_lists", Cons("03_records", Cons("04_types", Cons("05_strings", Cons("06_contracts", Cons("07_buffers", Cons("08_floats", Cons("09_modules", Cons("10_files", Nil))))))))))
+fn eg_diags() = Cons("L0001_unterminated_string", Cons("L0003_digit_glued_to_name", Cons("P0003_two_functions", Cons("R0200_undefined_function", Cons("R0202_builtin_arguments", Cons("D0002_duplicate_function", Cons("T0601_int_condition", Cons("T0602_bool_returned_as_int", Cons("T0604_plus_never_converts", Cons("T1002_match_missing_variant", Cons("C1001_comptime_overflow", Cons("W0003_duplicate_name", Cons("W0004_f64_int_mix", Cons("V0001_contract_refuted", Nil))))))))))))))
+
+fn eg_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else eg_line_end(s, i + 1)
+fn eg_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else slice(input, 6, eg_line_end(input, 0))
+fn eg_contains(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else eg_contains(text, part, i + 1)
+fn eg_exit(st) = if st % 256 == 0 then st / 256 else st
+fn eg_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + eg_len(t)
+
+## run `lume ARGS`: {code, text} with stdout and stderr together
+fn eg_run(root, dir, args) = let out = dir + "/run.out" in let st = hio_osrun_ct(hio_lume_cmd(root), args, out, out + ".err", 600000) in {code: eg_exit(st), text: fs_read_file(out) + fs_read_file(out + ".err")}
+
+## `lume test FILE` passed with at least one test and no failure
+fn eg_tested(r) = r.code == 0 and eg_contains(r.text, " passed, 0 failed", 0) == 1 and eg_contains(r.text, "\n0 passed", 0) == 0 and slice(r.text, 0, 8) != "0 passed"
+fn eg_topic(root, dir, name) = let f = root + "/examples/topics/" + name + ".src" in if fs_path_exists(f) == 0 then "topic " + name + ": missing file\n" else let r = eg_run(root, dir, Cons("test", Cons(f, Nil))) in if eg_tested(r) then "" else "topic " + name + ": lume test did not pass:\n" + r.text + "\n"
+fn eg_topics_all(root, dir, xs) = match xs
+    Nil        => ""
+    Cons(h, t) => eg_topic(root, dir, h) + eg_topics_all(root, dir, t)
+
+## the command of a diagnostic example, from its second line `## command: lume NAME ...`
+fn eg_command(text) = let a = eg_line_end(text, 0) + 1 in let p = "## command: lume " in if a + count(p) > count(text) or slice(text, a, a + count(p)) != p then "" else let b = a + count(p) in slice(text, b, eg_word_end(text, b))
+fn eg_word_end(s, i) = if i >= count(s) or at(s, i) == " " or at(s, i) == "\n" then i else eg_word_end(s, i + 1)
+fn eg_args(cmd, file, dir) = if cmd == "agent" then Cons("agent", Cons("check", Cons(file, Nil))) else if cmd == "build" then Cons("build", Cons(file, Cons("-o", Cons(dir + "/diag.bin", Nil)))) else Cons(cmd, Cons(file, Nil))
+fn eg_has_code(text, code) = eg_contains(text, "[" + code + "]", 0) == 1 or eg_contains(text, "\"code\":\"" + code + "\"", 0) == 1
+fn eg_diag(root, dir, name) = let code = slice(name, 0, 5) in let base = root + "/examples/diagnostics/" + name in let bad = fs_read_file(base + ".bad") in let cmd = eg_command(bad) in if bad == "" or fs_path_exists(base + ".fixed.src") == 0 then "diagnostic " + name + ": missing .bad or .fixed.src\n" else if cmd == "" then "diagnostic " + name + ": no `## command: lume ...` line\n" else eg_diag2(root, dir, name, code, cmd, bad, base + ".fixed.src")
+fn eg_diag2(root, dir, name, code, cmd, bad, fixed) = let copy = dir + "/" + name + ".src" in let w = fs_write_sync(copy, bad) in let rb = eg_run(root, dir, eg_args(cmd, copy, dir)) in let rf = eg_run(root, dir, eg_args(cmd, fixed, dir)) in if eg_has_code(rb.text, code) == false then "diagnostic " + name + ": lume " + cmd + " on the .bad copy did not report " + code + ":\n" + rb.text + "\n" else if rf.code != 0 or eg_has_code(rf.text, code) then "diagnostic " + name + ": the .fixed.src still fails or reports " + code + " (exit " + str(rf.code) + "):\n" + rf.text + "\n" else let rt = eg_run(root, dir, Cons("test", Cons(fixed, Nil))) in if eg_tested(rt) then "" else "diagnostic " + name + ": lume test on the .fixed.src did not pass:\n" + rt.text + "\n"
+fn eg_diags_all(root, dir, xs) = match xs
+    Nil        => ""
+    Cons(h, t) => eg_diag(root, dir, h) + eg_diags_all(root, dir, t)
+
+fn eg_main(root) = let dir = root + "/build/examples-gate" in let m = hio_mkdir_p(dir) in let ft = eg_topics_all(root, dir, eg_topics()) in let fd = eg_diags_all(root, dir, eg_diags()) in if ft != "" or fd != "" then ctfail("examples gate failed:\n" + ft + fd) else "OK: " + str(eg_len(eg_topics())) + " topic examples pass lume test; " + str(eg_len(eg_diags())) + " diagnostic examples report their code and their fixed versions pass"
+fn eg_dispatch(input) = let root = eg_root(input) in if root == "" then ctfail("examples gate requires @root\n") else eg_main(root)
+
+print eg_dispatch(readall())

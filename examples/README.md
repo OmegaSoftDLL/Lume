@@ -1,5 +1,18 @@
 # Examples
 
+## Official examples (checked on every release)
+
+- `topics/` -- one `.src` file per topic, each runs with `lume test examples/topics/NAME.src`: `01_basics`,
+  `02_lists`, `03_records`, `04_types`, `05_strings`, `06_contracts` (also `lume prove`), `07_buffers`, `08_floats`,
+  `09_modules`, `10_files`.
+- `diagnostics/` -- for each diagnostic code, `CODE_name.bad` is a program that gives it (its second line names the
+  command) and `CODE_name.fixed.src` is the corrected program.
+
+`tests/docs/examples_gate.src` runs both in the test battery: a topic that stops passing, a diagnostic that changes
+code or a fixed program that fails blocks the release.
+
+## Older examples
+
 | File | Stage | Shows |
 |---|---|---|
 | `01_hello.lume` | 0 | script mode, interpolation |

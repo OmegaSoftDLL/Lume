@@ -262,6 +262,11 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 
 ## 4.4 Autonomous Verification & Self-Healing Commands
 - `lume prove <file.src>`              Prove all contracts and laws (`QF_LIA` / `QF_ALIA`).
+  Builtin contracts: `buf_bits_write` is `p + n` or `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (when the
+  result is named with `let` or returned); bound the operands of a clause in `requires` so the clause cannot overflow.
+- Official examples: `examples/topics/*.src` (run each with `lume test`) and `examples/diagnostics/` (per code, the
+  failing `.bad` program and the corrected `.fixed.src`).
+- A run-time error (exit 3) prints the call stack after its message: `  at NAME (file.src:LINE)`, innermost first.
 - `lume certify <file.src> --json`     Emit standalone cryptographic proof certificate.
 - `lume verify-cert <file.src>`        Replay proof certificate in standalone `lcert` kernel.
 - `lume heal <file.src>`               Auto-repair refuted `ensures` contracts from counterexamples.

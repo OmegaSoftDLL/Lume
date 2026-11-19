@@ -18,6 +18,10 @@ in place (`--check`, `--stdout`), `lume manual [chapter]` prints the manual (`--
 the self and total time, calls and allocations, and the GC time, on stderr at exit (inlined functions count in their
 caller; `LUME_FL=off` keeps them; a tail loop is one call).
 
+Official examples: `examples/topics/*.src` (one file per topic, each run by `lume test`) and
+`examples/diagnostics/` (for a diagnostic code, `CODE_name.bad` gives it and `CODE_name.fixed.src` is the corrected
+program); `tests/docs/examples_gate.src` runs all of them on every release.
+
 ```lume
 fn square(x) = x * x
 print square(7)
@@ -68,7 +72,9 @@ print 7 % 3
 
 A program stops with exit code 3 and one line on stderr on: integer overflow, division by zero, an index outside a
 list, string or buffer, a field a record does not have, a value of the wrong kind for an operation, a `match` with
-no arm. `lume test` reports such a stop as a failed test and goes on with the others.
+no arm. `lume test` reports such a stop as a failed test and goes on with the others. After the message come the
+calls that led there, innermost first, one `  at NAME (file.src:LINE)` line each (a function inlined into its caller
+and a tail call leave no line; `LUME_FL=off` keeps small functions as calls).
 
 ```lume
 print 9223372036854775807 + 1
@@ -261,6 +267,23 @@ print half(10)
 5
 ```
 
+Builtin contracts: the prover knows what some builtins answer, when the call's result is named with `let` or is
+the function's result: `buf_bits_write(b, p, v, n)` is `p + n` or `-1`; `buf_get(b, i)` is 0..255 (an index
+outside the buffer stops the program); `buf_len(b)` and `count(s)` are >= 0; `buf_sad*` / `buf_satd*` are >= -1;
+`buf_h264_quant4x4` is -1..16. A clause the prover proves must not trap itself: `p + n` can overflow, so bound
+p and n in `requires`.
+
+```lume
+fn put3(b: buf, p: int, v: int) -> int
+    requires p >= 0 and p <= 1000000000
+    ensures result == p + 3 or result == 0 - 1
+    = buf_bits_write(b, p, v, 3)
+print put3(buf_new(4), 0, 5)
+```
+```output
+3
+```
+
 ## 9. Conventions and reserved names
 
 Keywords: `if then else elif let in var mut match not and or own with spawn do defer errdefer comptime quote
@@ -284,9 +307,9 @@ line: `docs/STABILITY.md`). `grad`, `value_and_grad`, `jvp`,
 
 ## 11. Changed in this version
 
-Added: `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
+Added: the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
 `chameleon_verify_boundary`, `priv fn`, warning [W0003], `LUME_FL`, constant literals in .rodata, per-site field
 cache, collection pacing `max(8 MiB, 3 x live)`.
-Changed: C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0
+Changed: W0004 also sees parameters typed `f64` and results of `f64(...)`; `buf_sad4x4` runs in SSE2; C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0
 fallback; on Git Bash `lume` runs the native `lume.exe`; `fs_copy` keeps the source's permission bits.
 Removed: nothing.

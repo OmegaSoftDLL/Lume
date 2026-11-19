@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Call stack on run-time errors:** after the message, one `  at NAME (file.src:LINE)` line per frame, innermost
+  first. The code generator emits a table of the program's functions (address, name, file and line from the bundle
+  markers and the map the driver names in LUME_SRC_MAP); `rt_trace` (compiler/stage1/rt/rt_trace.src, Lume) walks the
+  frame chain with every frame checked before it is read. Inlined functions and tail calls leave no line.
+- **Codec builtins without allocation:** `buf_h264_luma_mc`, `buf_h264_deblock_edge`, `buf_h264_intra4x4` and
+  `buf_h264_idct4x4` use a static 4 KiB scratch block of the runtime instead of an allocation per call.
+- **Builtin contracts in the prover:** `lume prove` knows that `buf_bits_write(b, p, v, n)` answers `p + n` or `-1`,
+  `buf_get` 0..255, `buf_len` / `count` >= 0, `buf_sad*` / `buf_satd*` >= -1 and `buf_h264_quant4x4` -1..16, when the
+  call's result is named with `let` or is the function's result (each `let` gets a variable of its own; a disjunctive
+  contract is proved case by case). `tests/prove/builtin_contracts_ok.src`.
+- **Official examples:** `examples/topics/` (basics, lists, records, types, strings, contracts, buffers, floats,
+  modules, files; each passes `lume test`) and `examples/diagnostics/` (for 14 diagnostic codes the failing program
+  `CODE_name.bad` and the corrected `CODE_name.fixed.src`); `tests/docs/examples_gate.src` runs them in the battery.
+- **`buf_sad4x4` in SSE2** (`vec_sad4`, one psadbw per row) instead of a byte loop.
+
 - **Screen, capture, input and windows on Windows (`use winsys`):** `win_displays()` (rectangle, effective DPI, scale,
   rotation, primary, refresh; the process becomes Per-Monitor-V2 aware), `win_virtual_screen()`; Desktop Duplication
   capture through Direct3D 11 written in Lume over COM vtables (`win_capture_open/frame/frame_into/close`: BGRA frames,
@@ -98,6 +113,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **macOS Stage-0 job (6 hours, 9 time-outs):** the frozen interpreter computed `len()` of a string by building a list
+  of its characters (64 bytes each); once the bundled checker source passed 2 MiB every `len` of it allocated 128 MiB
+  and forced a full collection. `len` and string indexing now count in place with a cached codepoint count (an
+  all-ASCII string indexes in O(1)): the interpreted `lume agent check` takes 55 s instead of more than 1000 s. The
+  generated runtime text is also split into functions of at most 400 lines, and lmod's deprecation scan skips lines
+  that cannot hold a marker.
+- **W0004** never fired on parameters typed `f64`: the checker did not type `f64(...)`, the parameter wrapper.
 - **`lume fmt` and `priv fn`:** the syntax check before formatting refused `priv fn` ([P0003]); it is accepted, and
   the formatter keeps the `priv` of every private function.
 - **buf_h264_luma_mc and the collector:** the luma window and the b1 table were separate allocations reached only
