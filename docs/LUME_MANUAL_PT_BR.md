@@ -94,7 +94,7 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - `grad`, `value_and_grad`, `jvp`, `vjp` sao os operadores de autodiff: uma chamada deles sobre uma funcao e
   derivada ([N0400]); nao de esses nomes as suas funcoes.
 - Em `ensures`: `result` e o valor devolvido e `old(x)` o valor de x na entrada. `_` como corpo e um buraco para
-  `lume intent` / sintese. `kernel_boot_entry` e a entrada de um kernel `@freestanding` ([K0006]).
+  sintese pelo comando intent. `kernel_boot_entry` e a entrada de um kernel `@freestanding` ([K0006]).
 - Atributos: `@export("C")`, `@secret`, `@no_alloc`, `@bound(cycles: N)`, `@interrupt`, `@freestanding`, `@repr(c)`.
 - Modulos: `use m as a` faz `a.nome` ser o `nome` de m; um nome definido em dois modulos importados fica separado
   como `nome__m`, e o uso sem qualificar e erro de ambiguidade com arquivo:linha:coluna.

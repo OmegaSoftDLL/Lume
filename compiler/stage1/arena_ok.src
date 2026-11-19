@@ -21,7 +21,6 @@ use arena
 ## 300k small records on the plain heap: nothing is ever freed, so `used`
 ## must grow monotonically (the gap regions close today and GC closes in
 ## general -- it cannot be reclaimed by reset because it is not in an arena).
-fn rec_fill(i) = if i == 0 then 0 else let r = {cellv: i} in rec_fill(i - 1)
 
 ## 50k individual per-cell arena allocations (the per-cell path, with the
 ## boxed runtime's per-call argument garbage measured into the bounds).
@@ -96,8 +95,10 @@ fn test_arena_many_small_allocs_drop() =
 
 ## Same shape WITHOUT an arena: 300k live records, used grows monotonically
 ## and never comes back.
+## (the records are kept in a list: a record nobody reads is not allocated at all since the record flattening pass)
+fn rec_keep(i, acc) = if i == 0 then acc else rec_keep(i - 1, Cons({cellv: i}, acc))
 fn test_without_arena_monotonic_growth() =
     let before = heap_stats() in
-    let f = rec_fill(300000) in
+    let xs = rec_keep(300000, Nil) in
     let after = heap_stats() in
-    f == 0 and after.used >= before.used + 4000000 and heap_peak_used() >= after.used
+    count(xs) == 300000 and after.used >= before.used + 4000000 and heap_peak_used() >= after.used

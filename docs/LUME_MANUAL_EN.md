@@ -97,7 +97,7 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `grad`, `value_and_grad`, `jvp`, `vjp` are the autodiff operators: a call of one of them on a function is
   differentiated ([N0400]), so do not name your own functions after them.
 - In `ensures`: `result` is the returned value and `old(x)` the value of x at entry. `_` as a body is a hole for
-  `lume intent` / synthesis. `kernel_boot_entry` is the entry of a `@freestanding` kernel ([K0006]).
+  synthesis by the intent command. `kernel_boot_entry` is the entry of a `@freestanding` kernel ([K0006]).
 - Attributes: `@export("C")`, `@secret`, `@no_alloc`, `@bound(cycles: N)`, `@interrupt`, `@freestanding`, `@repr(c)`.
 - Modules: `use m as a` makes `a.name` refer to m's `name`; a name defined in two imported modules is kept apart
   as `name__m`, and an unqualified use of it is an ambiguity error with file:line:col.
