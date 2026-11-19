@@ -2,10 +2,11 @@
 ##   Linux: /dev/net/tun + ioctl(TUNSETIFF, IFF_TUN | IFF_NO_PI): every read is one IP packet, every write sends one.
 ##          tun_set_ipv4 / tun_set_mtu / tun_set_up configure the interface through ioctls on an AF_INET socket.
 ##          Needs CAP_NET_ADMIN (root). The descriptor works with epoll (use net / the os_epoll_* builtins).
-##   Windows: Wintun (wintun.dll, the WireGuard driver; found next to the program, in System32 or in the folder named by
-##          LUME_WINTUN_DLL). Needs an elevated process. tun_wait blocks on the session's read event.
+##   Windows: Wintun (wintun.dll, the WireGuard driver) loaded only through the chameleon (lchameleon chameleon_c_open:
+##          a signed DLL inside System32 or Program Files). Needs an elevated process. tun_wait blocks on the read event.
 ## Every function answers a record or a number; a failure says why (errno, or the Win32 error), never in silence.
 use winsys
+use lchameleon
 
 ## --- bytes --------------------------------------------------------------------------------------------------------
 fn tun_put(b, o, s, i) = if i >= count(s) then b else tun_put(buf_set(b, o + i, ord_at(s, i)), o, s, i + 1)
@@ -13,7 +14,8 @@ fn tun_put16(b, o, v) = let x = buf_set(b, o, bit_and(v, 255)) in buf_set(b, o +
 fn tun_put32(b, o, v) = let x = tun_put16(b, o, bit_and(v, 65535)) in tun_put16(b, o + 2, bit_and(bit_shr(v, 16), 65535))
 fn tun_cstr(s) = tun_put(buf_new(count(s) + 1), 0, s, 0)
 fn tun_name_at(b, o, i, acc) = if i >= 16 or buf_get(b, o + i) == 0 then acc else tun_name_at(b, o, i + 1, acc + chr(buf_get(b, o + i)))
-fn tun_fail(why) = {ok: 0, fd: 0 - 1, sess: 0, name: "", err: why}
+fn tun_nolib() = {ok: 0, h: 0, err: ""}
+fn tun_fail(why) = {ok: 0, fd: 0 - 1, sess: 0, name: "", err: why, lib: tun_nolib()}
 
 ## "a.b.c.d" -> its four bytes as a list, or Nil when it is not a dotted IPv4 address
 fn tun_digits(s, i, n, v, k) = if i >= n then {v: v, i: i, k: k} else let c = ord_at(s, i) in if c < 48 or c > 57 then {v: v, i: i, k: k} else tun_digits(s, i + 1, n, v * 10 + c - 48, k + 1)
@@ -37,7 +39,7 @@ fn tun_put_bytes(b, o, xs) = match xs
 fn tun_ifreq(name) = tun_put(buf_new(40), 0, name, 0)
 fn tun_errno(r) = " (errno " + str(0 - r) + (if r == 0 - 1 or r == 0 - 13 then ": needs CAP_NET_ADMIN, run as root" else if r == 0 - 2 or r == 0 - 19 then ": no TUN driver (/dev/net/tun)" else "") + ")"
 fn tun_open_linux(name) = if count(name) > 15 then tun_fail("interface name longer than 15 bytes: " + name) else let fd = sys_call(2, buf_addr(tun_cstr("/dev/net/tun")), 524290, 0, 0, 0) in if fd < 0 then tun_fail("cannot open /dev/net/tun" + tun_errno(fd)) else tun_setiff(fd, tun_put16(tun_ifreq(name), 16, 4097))
-fn tun_setiff(fd, ifr) = let r = sys_call(16, fd, 1074025674, buf_addr(ifr), 0, 0) in if r < 0 then (let c = sys_call(3, fd, 0, 0, 0, 0) in tun_fail("TUNSETIFF failed" + tun_errno(r))) else {ok: 1, fd: fd, sess: 0, name: tun_name_at(ifr, 0, 0, ""), err: ""}
+fn tun_setiff(fd, ifr) = let r = sys_call(16, fd, 1074025674, buf_addr(ifr), 0, 0) in if r < 0 then (let c = sys_call(3, fd, 0, 0, 0, 0) in tun_fail("TUNSETIFF failed" + tun_errno(r))) else {ok: 1, fd: fd, sess: 0, name: tun_name_at(ifr, 0, 0, ""), err: "", lib: tun_nolib()}
 ## one ioctl on a throwaway AF_INET datagram socket: 0, or the negative errno
 fn tun_sock_ioctl(req, ifr) = let s = sys_call(41, 2, 2, 0, 0, 0) in if s < 0 then s else let r = sys_call(16, s, req, buf_addr(ifr), 0, 0) in let c = sys_call(3, s, 0, 0, 0, 0) in r
 fn tun_sockaddr(name, octets) = tun_put_bytes(tun_put16(tun_ifreq(name), 16, 2), 20, octets)
@@ -46,17 +48,25 @@ fn tun_linux_mtu(name, mtu) = let r = tun_sock_ioctl(35106, tun_put32(tun_ifreq(
 ## SIOCGIFFLAGS, then SIOCSIFFLAGS with IFF_UP | IFF_RUNNING added
 fn tun_linux_up(name) = let ifr = tun_ifreq(name) in let r = tun_sock_ioctl(35091, ifr) in if r < 0 then "SIOCGIFFLAGS failed" + tun_errno(r) else let f = buf_get(ifr, 16) + 256 * buf_get(ifr, 17) in let r2 = tun_sock_ioctl(35092, tun_put16(ifr, 16, bit_or(f, 65))) in if r2 < 0 then "SIOCSIFFLAGS failed" + tun_errno(r2) else ""
 
-## --- Windows (Wintun) ----------------------------------------------------------------------------------------------
-fn tun_dll() = let d = os_getenv("LUME_WINTUN_DLL") in if d != "" then d else "wintun.dll"
-fn tun_wcall(name, xs) = ws_callq(tun_dll(), name, xs)
-fn tun_open_win(name) = if ws_fn(tun_dll(), "WintunCreateAdapter") <= 0 then tun_fail("wintun.dll not found (install Wintun, put wintun.dll next to the program, or set LUME_WINTUN_DLL)") else let w = ws_wstr(name) in let t = ws_wstr("Lume") in let ad = tun_wcall("WintunCreateAdapter", Cons(buf_addr(w), Cons(buf_addr(t), Cons(0, Nil)))) in if ad == 0 then tun_fail("WintunCreateAdapter failed (Win32 error " + str(ws_callq("kernel32.dll", "GetLastError", Nil)) + "; an elevated process is needed)") else tun_win_session(ad, name)
-fn tun_win_session(ad, name) = let s = tun_wcall("WintunStartSession", Cons(ad, Cons(4194304, Nil))) in if s == 0 then (let c = tun_wcall("WintunCloseAdapter", Cons(ad, Nil)) in tun_fail("WintunStartSession failed (Win32 error " + str(ws_callq("kernel32.dll", "GetLastError", Nil)) + ")")) else {ok: 1, fd: ad, sess: s, name: name, err: ""}
+## --- Windows (Wintun through the chameleon) -------------------------------------------------------------------------
+## wintun.dll enters only through chameleon_c_open (lchameleon): an absolute path inside System32 or Program Files with
+## a valid Authenticode signature. Without LUME_WINTUN_DLL the places tried are %SystemRoot%\System32\wintun.dll and
+## %ProgramFiles%\WireGuard\wintun.dll; never the current folder or a folder other users can write. Every value
+## Wintun returns is unverified until chameleon_verify_boundary promotes it.
+fn tun_bs() = chr(92)
+fn tun_dll_path() = let e = os_getenv("LUME_WINTUN_DLL") in if e != "" then e else let a = os_getenv("SystemRoot") + tun_bs() + "System32" + tun_bs() + "wintun.dll" in if fs_path_exists(a) == 1 then a else os_getenv("ProgramFiles") + tun_bs() + "WireGuard" + tun_bs() + "wintun.dll"
+fn tun_wcall(lib, name, xs) = chameleon_c_call(chameleon_c_sym(lib, name), xs)
+fn tun_nz(p) = if p != 0 then 1 else 0
+fn tun_lasterr() = str(ws_callq("kernel32.dll", "GetLastError", Nil))
+fn tun_open_win(name) = let lib = chameleon_c_open(tun_dll_path()) in if lib.ok != 1 then tun_fail("Wintun: " + lib.err) else tun_win_adapter(lib, name)
+fn tun_win_adapter(lib, name) = let w = ws_wstr(name) in let t = ws_wstr("Lume") in let ad = tun_wcall(lib, "WintunCreateAdapter", Cons(buf_addr(w), Cons(buf_addr(t), Cons(0, Nil)))) in if chameleon_verify_boundary(tun_nz(ad), 1, 1, 0, 0) != 1 then tun_fail("WintunCreateAdapter failed (Win32 error " + tun_lasterr() + "; an elevated process is needed)") else tun_win_session(lib, ad, name)
+fn tun_win_session(lib, ad, name) = let s = tun_wcall(lib, "WintunStartSession", Cons(ad, Cons(4194304, Nil))) in if chameleon_verify_boundary(tun_nz(s), 1, 1, 0, 0) != 1 then (let c = tun_wcall(lib, "WintunCloseAdapter", Cons(ad, Nil)) in tun_fail("WintunStartSession failed (Win32 error " + tun_lasterr() + ")")) else {ok: 1, fd: ad, sess: s, name: name, err: "", lib: lib}
 ## one packet into buf: its size, 0 when none is waiting, -1 when it does not fit (the packet is dropped)
-fn tun_win_read(t, buf) = let sz = buf_new(8) in let p = tun_wcall("WintunReceivePacket", Cons(t.sess, Cons(buf_addr(sz), Nil))) in if p == 0 then 0 else let n = ws_u32(sz, 0) in let ok = (if n <= buf_len(buf) then ws_callq("kernel32.dll", "RtlMoveMemory", Cons(buf_addr(buf), Cons(p, Cons(n, Nil)))) else 0) in let r = tun_wcall("WintunReleaseReceivePacket", Cons(t.sess, Cons(p, Nil))) in if n <= buf_len(buf) then n else 0 - 1
-fn tun_win_write(t, buf, n) = let p = tun_wcall("WintunAllocateSendPacket", Cons(t.sess, Cons(n, Nil))) in if p == 0 then 0 - 1 else let c = ws_callq("kernel32.dll", "RtlMoveMemory", Cons(p, Cons(buf_addr(buf), Cons(n, Nil)))) in let s = tun_wcall("WintunSendPacket", Cons(t.sess, Cons(p, Nil))) in n
+fn tun_win_read(t, buf) = let sz = buf_new(8) in let p = tun_wcall(t.lib, "WintunReceivePacket", Cons(t.sess, Cons(buf_addr(sz), Nil))) in if p == 0 then 0 else let n = ws_u32(sz, 0) in let ok = chameleon_verify_boundary(tun_nz(p), 1, 1, n, buf_len(buf)) in let c = (if ok == 1 then ws_callq("kernel32.dll", "RtlMoveMemory", Cons(buf_addr(buf), Cons(p, Cons(n, Nil)))) else 0) in let r = tun_wcall(t.lib, "WintunReleaseReceivePacket", Cons(t.sess, Cons(p, Nil))) in if ok == 1 then n else 0 - 1
+fn tun_win_write(t, buf, n) = let p = tun_wcall(t.lib, "WintunAllocateSendPacket", Cons(t.sess, Cons(n, Nil))) in if chameleon_verify_boundary(tun_nz(p), 1, 1, n, 65535) != 1 then 0 - 1 else let c = ws_callq("kernel32.dll", "RtlMoveMemory", Cons(p, Cons(buf_addr(buf), Cons(n, Nil)))) in let s = tun_wcall(t.lib, "WintunSendPacket", Cons(t.sess, Cons(p, Nil))) in n
 ## the address through the IP Helper API (MIB_UNICASTIPADDRESS_ROW: SOCKADDR_INET at 0, InterfaceLuid at 32,
 ## OnLinkPrefixLength at 60, DadState at 64)
-fn tun_win_ipv4(t, addr, prefix) = let ip = tun_parse_ipv4(addr) in if tun_isnil(ip) == 1 or prefix < 0 or prefix > 32 then "not an IPv4 address / prefix: " + addr + "/" + str(prefix) else let row = buf_new(80) in let i = ws_callq("iphlpapi.dll", "InitializeUnicastIpAddressEntry", Cons(buf_addr(row), Nil)) in let l = tun_wcall("WintunGetAdapterLUID", Cons(t.fd, Cons(buf_addr(row) + 32, Nil))) in let a = tun_put_bytes(tun_put16(row, 0, 2), 4, ip) in let p = buf_set(row, 60, prefix) in let d = tun_put32(row, 64, 4) in let r = ws_callq("iphlpapi.dll", "CreateUnicastIpAddressEntry", Cons(buf_addr(row), Nil)) in if r != 0 then "CreateUnicastIpAddressEntry failed (Win32 error " + str(r) + ")" else ""
+fn tun_win_ipv4(t, addr, prefix) = let ip = tun_parse_ipv4(addr) in if tun_isnil(ip) == 1 or prefix < 0 or prefix > 32 then "not an IPv4 address / prefix: " + addr + "/" + str(prefix) else let row = buf_new(80) in let i = ws_callq("iphlpapi.dll", "InitializeUnicastIpAddressEntry", Cons(buf_addr(row), Nil)) in let l = tun_wcall(t.lib, "WintunGetAdapterLUID", Cons(t.fd, Cons(buf_addr(row) + 32, Nil))) in let a = tun_put_bytes(tun_put16(row, 0, 2), 4, ip) in let p = buf_set(row, 60, prefix) in let d = tun_put32(row, 64, 4) in let r = ws_callq("iphlpapi.dll", "CreateUnicastIpAddressEntry", Cons(buf_addr(row), Nil)) in if r != 0 then "CreateUnicastIpAddressEntry failed (Win32 error " + str(r) + ")" else ""
 
 ## --- the API ---------------------------------------------------------------------------------------------------------
 ## tun_open(name) -> {ok, fd, sess, name, err}: the interface (ok 1) or why it could not be made (ok 0, err)
@@ -68,9 +78,9 @@ fn tun_write(t, buf, n) = if t.ok != 1 or n < 0 or n > buf_len(buf) then 0 - 1 e
 ## reads return 0 instead of blocking (Linux O_NONBLOCK; a Wintun session never blocks)
 fn tun_set_nonblocking(t) = if t.ok != 1 then 0 else if t.sess != 0 then 1 else let fl = sys_call(72, t.fd, 3, 0, 0, 0) in if fl < 0 then 0 else if sys_call(72, t.fd, 4, bit_or(fl, 2048), 0, 0) < 0 then 0 else 1
 ## wait up to ms milliseconds for a packet: 1 when one is waiting, 0 on timeout
-fn tun_wait(t, ms) = if t.ok != 1 then 0 else if t.sess != 0 then (let e = tun_wcall("WintunGetReadWaitEvent", Cons(t.sess, Nil)) in if ws_callq("kernel32.dll", "WaitForSingleObject", Cons(e, Cons(ms, Nil))) == 0 then 1 else 0) else let pfd = tun_put16(tun_put32(buf_new(8), 0, t.fd), 4, 1) in let r = sys_call(7, buf_addr(pfd), 1, ms, 0, 0) in if r > 0 then 1 else 0
+fn tun_wait(t, ms) = if t.ok != 1 then 0 else if t.sess != 0 then (let e = tun_wcall(t.lib, "WintunGetReadWaitEvent", Cons(t.sess, Nil)) in if ws_callq("kernel32.dll", "WaitForSingleObject", Cons(e, Cons(ms, Nil))) == 0 then 1 else 0) else let pfd = tun_put16(tun_put32(buf_new(8), 0, t.fd), 4, 1) in let r = sys_call(7, buf_addr(pfd), 1, ms, 0, 0) in if r > 0 then 1 else 0
 ## address, MTU, link up: "" on success, else the reason
 fn tun_set_ipv4(t, addr, prefix) = if t.ok != 1 then "the interface is not open" else if t.sess != 0 then tun_win_ipv4(t, addr, prefix) else tun_linux_ipv4(t.name, addr, prefix)
 fn tun_set_mtu(t, mtu) = if t.ok != 1 then "the interface is not open" else if mtu < 68 or mtu > 65535 then "MTU outside 68..65535: " + str(mtu) else if t.sess != 0 then "" else tun_linux_mtu(t.name, mtu)
 fn tun_set_up(t) = if t.ok != 1 then "the interface is not open" else if t.sess != 0 then "" else tun_linux_up(t.name)
-fn tun_close(t) = if t.ok != 1 then 0 else if t.sess != 0 then (let e = tun_wcall("WintunEndSession", Cons(t.sess, Nil)) in let c = tun_wcall("WintunCloseAdapter", Cons(t.fd, Nil)) in 1) else (if sys_call(3, t.fd, 0, 0, 0, 0) == 0 then 1 else 0)
+fn tun_close(t) = if t.ok != 1 then 0 else if t.sess != 0 then (let e = tun_wcall(t.lib, "WintunEndSession", Cons(t.sess, Nil)) in let c = tun_wcall(t.lib, "WintunCloseAdapter", Cons(t.fd, Nil)) in 1) else (if sys_call(3, t.fd, 0, 0, 0, 0) == 0 then 1 else 0)

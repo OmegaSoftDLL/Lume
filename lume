@@ -39,6 +39,15 @@ if [ -z "${LUME0_BIN:-}" ] && [ ! -e "$L0" ] && [ "$(uname -s 2>/dev/null || ech
     L0="$ROOT/bootstrap/lume0/lume0.exe"
 fi
 
+# Git Bash / MSYS2 / Cygwin on Windows: hand everything to the native Windows driver (lume.exe) when it is there, the
+# same one `lume.cmd` and PowerShell run; the Stage-0 fallback below is only for hosts without a native toolchain.
+case "$(uname -s 2>/dev/null || echo unknown)" in
+    MINGW* | MSYS* | CYGWIN*)
+        for _exe in "${LUME_WIN_EXE:-}" "$ROOT/bin/lume.exe" "$ROOT/build/windows-native/inst/bin/lume.exe" /c/Lume/bin/lume.exe; do
+            if [ -n "$_exe" ] && [ -f "$_exe" ]; then exec "$_exe" "$@"; fi
+        done
+        ;;
+esac
 # Route what has no native equivalent to the legacy dispatcher.
 if [ "$(uname -s 2>/dev/null || echo unknown)" != "Linux" ] || [ "$(uname -m 2>/dev/null || echo unknown)" != "x86_64" ] || [ -n "${LUME0_RUNNER:-}" ]; then
     exec "$LEGACY" "$@"
@@ -151,6 +160,31 @@ if [ ! -x "$DRIVER" ]; then
         chmod +x "$LUMEC"
         rm -f "$BIN/lumec.s"
         FROM_SEED=1
+        # The seed's code generator has miscompiled the compiler before (a name clash inside data_asm_cc.lume made
+        # the stage-0 lumec fail later with "no field ..."): prove the stage-0 compiler right before trusting it.
+        cat > "$BIN/seed_smoke.src" <<'SMOKE'
+fn add1(x) = x + 1
+fn code(s, i) = ord(at(s, i))
+fn mk(v) = {a: v, b: v * 2}
+fn total(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => h + total(t)
+print add1(41)
+print code("A", 0)
+print (mk(5)).b
+print total([1, 2, 3])
+print "ok"
+SMOKE
+        _smoke_ok=0
+        if "$LUMEC" < "$BIN/seed_smoke.src" > "$BIN/seed_smoke.s" 2> "$BIN/seed_smoke.err" && "$L0" asm "$BIN/seed_smoke.s" "$BIN/seed_smoke" >/dev/null 2>&1 && chmod +x "$BIN/seed_smoke" && [ "$("$BIN/seed_smoke" 2>&1 | tr '\n' ' ')" = "42 65 10 6 ok " ]; then _smoke_ok=1; fi
+        if [ "$_smoke_ok" != 1 ]; then
+            echo "lume: bootstrap stopped: the stage-0 compiler built by the seed gives wrong code (smoke test $BIN/seed_smoke.src)." >&2
+            echo "lume: the compiler sources compile, but the seed's code generator (compiler/stage1/data_asm_cc.lume) mistranslates them." >&2
+            echo "lume: check compiler/stage1/lumec.src with a native lumec; if that is clean, rename the newest compiler functions (a name clash in the seed)." >&2
+            head -c 400 "$BIN/seed_smoke.err" >&2
+            rm -f "$LUMEC"; exit 1
+        fi
+        rm -f "$BIN/seed_smoke.src" "$BIN/seed_smoke.s" "$BIN/seed_smoke.err" "$BIN/seed_smoke"
     fi
     if [ ! -x "$LASM" ]; then
         "$LUMEC" < "$SRC/lasm.src" > "$BIN/lasm.s" || { echo "lume: bootstrap failed compiling lasm" >&2; exit 1; }

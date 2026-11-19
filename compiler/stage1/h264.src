@@ -1,0 +1,46 @@
+## h264.src -- `use h264`: H.264 motion compensation and deblocking with the standard's argument lists (ITU-T H.264
+## 8.4.2.2 and 8.7.2). The runtime routines take at most six arguments, so each function here checks and packs its
+## integers and calls one (buf_h264_lmc6, buf_h264_cmc6, buf_h264_dbk5). Like the other buf_h264_* builtins they
+## answer 0, or -1 on a wrong argument; buffers are byte buffers (buf_new) addressed by offset and stride.
+##
+##   buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)
+##       luma prediction of the w x h block (w, h in 4, 8, 16) at (x, y) moved by the vector (mx, my) in quarter
+##       samples: the 6-tap filter (1, -5, 20, 20, -5, 1) for the half samples b, h, j, averages for the quarters
+##       (8.4.2.2.1). The reference picture is rw x rh bytes at ri, rows rs apart; coordinates outside it are clamped.
+##       The w x h result goes to dst at di, rows ds apart.
+##   buf_h264_chroma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)
+##       chroma prediction (8.4.2.2.2), the vector in eighth samples (the luma vector of 4:2:0 as it is), bilinear
+##       ((8 - xf)(8 - yf) A + xf (8 - yf) B + (8 - xf) yf C + xf yf D + 32) >> 6; x, y in chroma samples; w, h in
+##       2, 4, 8, 16.
+##   buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)
+##       filters one edge in place (8.7.2.3 weak, 8.7.2.4 strong): q0 is the offset of the first line's q0 sample,
+##       p_i = q0 - (i + 1) across, q_i = q0 + i across, line k is k along further (a vertical edge: across 1, along
+##       the stride; a horizontal edge: across the stride, along 1). bs and tc0 are lists with one value per segment
+##       of 4 luma lines (2 chroma lines, 4:2:0): bS 0..4 and the tC0 of table 8-17 for that bS. lines: 1..16
+##       luma, 1..8 chroma; chroma 1 uses the chroma filters.
+
+fn h264_u16(v) = v >= 0 and v <= 65535
+fn h264_q(v) = v > 0 - 536870912 and v < 536870912
+fn h264_off(v) = v >= 0 and v < 70368744177664
+fn h264_mc_ok(ri, rs, rw, rh, di, ds) = h264_off(ri) and h264_u16(rs) and h264_u16(rw) and h264_u16(rh) and h264_off(di) and h264_u16(ds)
+fn h264_geom(rw, rh, w, h) = rw + rh * 65536 + w * 4294967296 + h * 1099511627776
+fn h264_pos(qx, qy) = qx + 536870912 + (qy + 536870912) * 1073741824
+fn h264_wh(w, h) = w >= 1 and w <= 16 and h >= 1 and h <= 16
+
+pub fn buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds) / {io} = if h264_mc_ok(ri, rs, rw, rh, di, ds) and h264_wh(w, h) and h264_q(4 * x + mx) and h264_q(4 * y + my) then buf_h264_lmc6(ref, dst, ri * 65536 + rs, di * 65536 + ds, h264_geom(rw, rh, w, h), h264_pos(4 * x + mx, 4 * y + my)) else 0 - 1
+pub fn buf_h264_chroma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds) / {io} = if h264_mc_ok(ri, rs, rw, rh, di, ds) and h264_wh(w, h) and h264_q(8 * x + mx) and h264_q(8 * y + my) then buf_h264_cmc6(ref, dst, ri * 65536 + rs, di * 65536 + ds, h264_geom(rw, rh, w, h), h264_pos(8 * x + mx, 8 * y + my)) else 0 - 1
+
+## bS (4 bits) and tC0 (8 bits) of each segment packed into one word: bS k at bits 4k, tC0 k at bits 16 + 8k
+fn h264_pack(bs, tc, k, acc) = match bs
+    Nil        => acc
+    Cons(b, t) => h264_pack2(b, t, tc, k, acc)
+fn h264_pack2(b, t, tc, k, acc) = let c = h264_head(tc) in if k >= 4 or b < 0 or b > 4 or c < 0 or c > 255 then 0 - 1 else h264_pack(t, h264_tail(tc), k + 1, acc + b * h264_pow(16, k) + c * 65536 * h264_pow(256, k))
+fn h264_head(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => h
+fn h264_tail(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn h264_pow(b, k) = if k == 0 then 1 else b * h264_pow(b, k - 1)
+fn h264_span(v) = v > 0 - 16777216 and v < 16777216
+pub fn buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma) / {io} = let cp = h264_pack(bs, tc0, 0, 0) in if cp < 0 or h264_span(across) == false or h264_span(along) == false or lines < 1 or lines > 16 or alpha < 0 or alpha > 255 or beta < 0 or beta > 255 or q0 < 0 then 0 - 1 else buf_h264_dbk5(buf, q0, across + 16777216 + (along + 16777216) * 33554432, lines + (if chroma != 0 then 256 else 0) + alpha * 65536 + beta * 16777216, cp)

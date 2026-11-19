@@ -31,6 +31,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to GNU as) and the --raw vector intrinsics `vec_sad16(p, q)` / `vec_sad8(p, q)`. Routines that use them
   (`rt/rt_simd.src`) are linked only into programs that name them, so the frozen seed assembler never meets them.
 
+- **H.264 motion compensation and deblocking** (`use h264`, runtime routines in Lume): `buf_h264_luma_mc` (quarter-
+  sample 6-tap luma, 8.4.2.2.1), `buf_h264_chroma_mc` (eighth-sample bilinear chroma, 8.4.2.2.2) and
+  `buf_h264_deblock_edge` (weak and strong filters of one edge, 8.7.2.3 / 8.7.2.4), checked against a reference
+  written from the standard's formulas (`compiler/stage1/h264_mc_ok.src`).
+- **Profiler:** `lume run --profile f.src [args]` compiles the program with counters (rdtsc at each function entry
+  and after each return to a caller) and prints on stderr at exit, also after a trap or `os_exit`: per function the
+  self and total time, calls and allocations, plus the GC runs and time, sorted by self time. Same numbers on Linux
+  and Windows.
+- **Factual reference manual:** `lume manual ref` (`lume manual --pt referencia`) and `docs/LUME_REFERENCE_{EN,PT_BR}.md`
+  list only what works today, with a status per builtin and module (stable / linux / windows / experimental /
+  privileged), known limits and a "changed in this version" section; every example in it is run by
+  `tests/docs/ref_examples_gate.src` with the exact output written under it. `lume manual vision` marks the design
+  and research material of chapters 1-10 as such.
+- **Builtins regression test:** `compiler/stage1/builtins_regress_ok.src` calls every documented builtin family; a
+  builtin missing from a release fails to compile there. It runs on Linux and Windows.
+- **H.264 building blocks** (runtime routines in Lume, `rt/rt_codec.src`): `buf_h264_fdct4x4` / `idct4x4`,
+  `quant4x4` / `dequant4x4`, `sub4x4`, `recon4x4`, `intra4x4` (9 modes), `intra16x16` (4 modes), checked against a
+  reference written from the standard's formulas (`compiler/stage1/h264_blocks_ok.src`).
+- **Module-private functions:** `priv fn` is renamed per module by the bundler, so other modules cannot call it and
+  it never collides with their names; one name defined in two modules gives warning [W0003].
+- **The chameleon's C ABI door on Windows:** `chameleon_c_open(path)` loads a DLL only from an absolute path inside
+  System32 or Program Files with a valid Authenticode signature (WinVerifyTrust), dependencies resolved from its
+  folder and System32; `chameleon_c_sym` / `chameleon_c_call` answer `unverified[int]`; `chameleon_verify_boundary`
+  (documented before, now real) promotes a value. `use tun` on Windows loads Wintun only through it.
+- **Record flattening:** small functions (builtins only) and functions returning a record literal are inlined, and
+  a record whose fields only are read lives in locals: `consome(produz(z))` 1.3 s -> 64 ms. `LUME_FL=off` turns it
+  off (it is part of the driver's cache key).
+
 ### Changed
 - **Faster buffer and arithmetic loops:** `buf_get` / `buf_set` compile to inline machine code on the common path
   (the runtime routine only for a boxed index, a wrong value or an out-of-range index, with the same diagnostics);
@@ -54,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **Windows launcher at the prefix:** `C:\Lume\lume.exe` (next to `bin\`) found its tools one folder too high
+  ("native driver tool failed: lcli status 32512").
+- **Git Bash:** the POSIX `lume` runs the native `lume.exe` when it is there; on the Stage-0 fallback `lume fmt`
+  refuses instead of rewriting a file wrongly (it dropped `+%` and contracts).
+- **Bootstrap guard:** the stage-0 compiler built by the seed must pass a smoke program before anything is built with
+  it (shim, `lume bootstrap`, Zero-C); a miscompiling seed stops the bootstrap with the cause.
+- **Manuals:** the reserved-names table (2.1.1) and loops with `seq_loop` in both languages; `use tun` describes the
+  chameleon rule (the old text suggested a DLL next to the program).
 - **Field reads, two record shapes:** the inline field cache is one per read site, no longer one per field name. A
   producer reading its input and a consumer reading the producer's output (different shapes, same field names)
   evicted each other on every read: `consome(produz(z))` took 1.3 s for 500 000 rounds, now 148 ms, the sum of its

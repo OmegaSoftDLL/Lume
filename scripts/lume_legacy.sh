@@ -1257,6 +1257,16 @@ cmd_fmt() {
         esac
     done
     [ "$_nfiles" -ge 1 ] || usage
+    # The Stage-0 formatter (the seed, used where the native toolchain cannot run) does not know the whole language
+    # (it turned `a +% b` into `a + 0` and dropped requires/ensures): it refuses to touch a .src file instead of
+    # rewriting it wrongly. A read-only --check or --stdout is refused too, so nobody copies its output back.
+    if ! is_linux_x86_64 || [ -n "${LUME0_ASAN:-}" ]; then
+        for _arg in "$@"; do
+            case "$_arg" in
+                *.src) echo "lume fmt: refused: this host runs the Stage-0 formatter, which does not format all of Lume and would change $_arg. Run lume fmt with the native toolchain (lume.exe on Windows, Linux x86-64)." >&2; exit 3 ;;
+            esac
+        done
+    fi
     _rc=0
     for _arg in "$@"; do
         case "$_arg" in

@@ -1,0 +1,58 @@
+## h264_blocks_ok.src -- the buf_h264_* builtins against references written from the H.264 formulas with plain lists.
+## `lume test compiler/stage1/h264_blocks_ok.src`
+use seq
+
+## --- int16 blocks in buffers --------------------------------------------------------------------------------------
+fn put16(b, o, v) = let u = if v < 0 then v + 65536 else v in let x = buf_set(b, o, u % 256) in buf_set(b, o + 1, u / 256)
+fn get16(b, o) = let v = buf_get(b, o) + 256 * buf_get(b, o + 1) in if v >= 32768 then v - 65536 else v
+fn fill16(b, xs, i) = match xs
+    Nil        => b
+    Cons(h, t) => fill16(put16(b, i * 2, h), t, i + 1)
+fn block16(xs) = fill16(buf_new(32), xs, 0)
+fn read16(b, i) = if i >= 16 then Nil else Cons(get16(b, i * 2), read16(b, i + 1))
+fn pseudo(n, x, acc) = if n == 0 then acc else let v = (x * 1103515245 + 12345) % 2147483648 in pseudo(n - 1, v, Cons(v / 65536 % 511 - 255, acc))
+
+## --- references ------------------------------------------------------------------------------------------------------
+fn at4(xs, r, c) = seq_nth(xs, r * 4 + c)
+fn fwd_row(x0, x1, x2, x3) = Cons(x0 + x1 + x2 + x3, Cons(2 * (x0 - x3) + (x1 - x2), Cons((x0 + x3) - (x1 + x2), Cons((x0 - x3) - 2 * (x1 - x2), Nil))))
+fn sar(v, k) = if v >= 0 then v / (1 + k * 0 + (if k == 1 then 1 else if k == 6 then 63 else 0)) else 0 - ((0 - v + (if k == 1 then 1 else 63)) / (if k == 1 then 2 else 64))
+fn half(v) = if v >= 0 then v / 2 else 0 - ((1 - v) / 2)
+fn inv_row(w0, w1, w2, w3) = let e = w0 + w2 in let f = w0 - w2 in let g = half(w1) - w3 in let h = w1 + half(w3) in Cons(e + h, Cons(f + g, Cons(f - g, Cons(e - h, Nil))))
+fn rows(xs, r, f) = if r >= 4 then Nil else seq_concat(f(at4(xs, r, 0), at4(xs, r, 1), at4(xs, r, 2), at4(xs, r, 3)), rows(xs, r + 1, f))
+fn transpose(xs) = seq_map(seq_range(0, 16), fn(i) => at4(xs, i % 4, i / 4))
+fn ref_fdct(xs) = transpose(rows(transpose(rows(xs, 0, fwd_row)), 0, fwd_row))
+fn shr6(v) = if v >= 0 then v / 64 else 0 - ((63 - v) / 64)
+fn ref_idct(ws) = seq_map(transpose(rows(transpose(rows(ws, 0, inv_row)), 0, inv_row)), fn(v) => shr6(v + 32))
+fn cls(i) = let r = i / 4 in let c = i % 4 in if r % 2 == 0 and c % 2 == 0 then 0 else if r % 2 == 1 and c % 2 == 1 then 1 else 2
+fn mf(q, k) = seq_nth(seq_nth([[13107, 5243, 8066], [11916, 4660, 7490], [10082, 4194, 6554], [9362, 3647, 5825], [8192, 3355, 5243], [7282, 2893, 4559]], q), k)
+fn vq(q, k) = seq_nth(seq_nth([[10, 16, 13], [11, 18, 14], [13, 20, 16], [14, 23, 18], [16, 25, 20], [18, 29, 23]], q), k)
+fn pow2(k) = if k == 0 then 1 else 2 * pow2(k - 1)
+fn iabs(v) = if v < 0 then 0 - v else v
+fn ref_q1(w, i, qp, intra) = let qbits = 15 + qp / 6 in let f = pow2(qbits) / (if intra == 1 then 3 else 6) in let z = (iabs(w) * mf(qp % 6, cls(i)) + f) / pow2(qbits) in if w < 0 then 0 - z else z
+fn ref_quant(ws, qp, intra) = seq_map(seq_range(0, 16), fn(i) => ref_q1(seq_nth(ws, i), i, qp, intra))
+fn ref_dequant(zs, qp) = seq_map(seq_range(0, 16), fn(i) => seq_nth(zs, i) * vq(qp % 6, cls(i)) * pow2(qp / 6))
+
+## --- tests -------------------------------------------------------------------------------------------------------------
+fn fdct_of(xs) = let o = buf_new(32) in let r = buf_h264_fdct4x4(block16(xs), 0, o, 0) in read16(o, 0)
+fn idct_of(xs) = let o = buf_new(32) in let r = buf_h264_idct4x4(block16(xs), 0, o, 0) in read16(o, 0)
+fn seeds_ok(k, f) = if k == 0 then 1 else if f(pseudo(16, k * 7919, Nil)) == 0 then 0 else seeds_ok(k - 1, f)
+fn test_fdct_matches_reference() = seeds_ok(40, fn(xs) => if fdct_of(xs) == ref_fdct(xs) then 1 else 0) == 1
+fn test_idct_matches_reference() = seeds_ok(40, fn(xs) => if idct_of(ref_fdct(xs)) == ref_idct(ref_fdct(xs)) then 1 else 0) == 1
+fn q_ok(xs, qp, intra) = let w = ref_fdct(xs) in let o = buf_new(32) in let nz = buf_h264_quant4x4(block16(w), 0, qp, intra, o, 0) in let z = read16(o, 0) in z == ref_quant(w, qp, intra) and nz == seq_count(0, 16, fn(i) => seq_nth(z, i) != 0)
+fn dq_ok(zs, qp) = let o = buf_new(32) in let r = buf_h264_dequant4x4(block16(zs), 0, qp, o, 0) in read16(o, 0) == ref_dequant(zs, qp)
+fn test_quant_dequant_match_reference() = seeds_ok(12, fn(xs) => if q_ok(xs, 26, 1) and q_ok(xs, 10, 0) and q_ok(xs, 40, 1) and dq_ok(ref_quant(ref_fdct(xs), 26, 1), 26) and dq_ok(ref_quant(ref_fdct(xs), 40, 0), 40) then 1 else 0) == 1
+## a flat residual of 8 survives transform, quant at QP 4, dequant and inverse exactly
+fn test_round_trip_flat() = let xs = seq_map(seq_range(0, 16), fn(i) => 8) in let w = buf_new(32) in let a = buf_h264_fdct4x4(block16(xs), 0, w, 0) in let z = buf_new(32) in let b = buf_h264_quant4x4(w, 0, 4, 1, z, 0) in let d = buf_new(32) in let c = buf_h264_dequant4x4(z, 0, 4, d, 0) in let r = buf_new(32) in let e = buf_h264_idct4x4(d, 0, r, 0) in read16(r, 0) == xs
+
+## residual and reconstruction
+fn test_sub_and_recon() = let a = buf_new(64) in let s = seq_loop(0, 64, 0, fn(i, acc) => let z = buf_set(a, i, (i * 37) % 256) in acc) in let p = buf_new(16) in let t = seq_loop(0, 16, 0, fn(i, acc) => let z = buf_set(p, i, 100) in acc) in let res = buf_new(32) in let r1 = buf_h264_sub4x4(a, 2, 16, p, 0, res) in let back = buf_new(16) in let r2 = buf_h264_recon4x4(p, 0, res, 0, back, 0) in r1 == 0 and r2 == 0 and seq_loop(0, 16, 1, fn(i, ok) => if buf_get(back, i) == buf_get(a, 2 + (i / 4) * 16 + i % 4) then ok else 0) == 1
+
+## Intra4x4: a frame whose row above is 10 20 30 40 | 50 60 70 80 and left column 1 2 3 4, top-left 5
+fn frame4() = let f = buf_new(16 * 6) in let a = seq_loop(0, 8, 0, fn(i, acc) => let z = buf_set(f, 16 + 4 + i, 10 * (i + 1)) in acc) in let b = seq_loop(0, 4, 0, fn(i, acc) => let z = buf_set(f, 32 + 16 * i + 3, i + 1) in acc) in let c = buf_set(f, 16 + 3, 5) in f
+fn pred4(mode, avail) = let d = buf_new(16) in let r = buf_h264_intra4x4(frame4(), 36, 16, mode, avail, d) in if r != 0 then Nil else seq_map(seq_range(0, 16), fn(i) => buf_get(d, i))
+fn test_intra4x4_modes() = pred4(0, 15) == [10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40] and pred4(1, 15) == [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4] and pred4(2, 15) == seq_map(seq_range(0, 16), fn(i) => 14) and pred4(2, 0) == seq_map(seq_range(0, 16), fn(i) => 128) and seq_nth(pred4(3, 15), 0) == 20 and seq_nth(pred4(3, 15), 15) == 78 and seq_nth(pred4(4, 15), 0) == 5 and seq_nth(pred4(4, 15), 1) == 11 and seq_nth(pred4(8, 15), 15) == 4
+fn test_wrong_arguments() = buf_h264_fdct4x4(buf_new(16), 0, buf_new(32), 0) == 0 - 1 and buf_h264_quant4x4(buf_new(32), 0, 52, 1, buf_new(32), 0) == 0 - 1 and buf_h264_intra4x4(buf_new(64), 0, 16, 0, 15, buf_new(16)) == 0 - 1 and buf_h264_intra4x4(frame4(), 36, 16, 9, 15, buf_new(16)) == 0 - 1
+
+## Intra16x16 on a 17-wide frame: plane prediction of a ramp reproduces the ramp
+fn ramp() = let f = buf_new(32 * 18) in seq_loop(0, 32 * 18, f, fn(i, acc) => let z = buf_set(f, i, (i % 32) * 3 + (i / 32) * 2 + 10) in acc)
+fn test_intra16x16() = let f = ramp() in let d = buf_new(256) in let r = buf_h264_intra16x16(f, 32 + 1, 32, 3, 11, d) in let dv = buf_new(256) in let r2 = buf_h264_intra16x16(f, 32 + 1, 32, 0, 11, dv) in r == 0 and r2 == 0 and buf_get(dv, 0) == buf_get(f, 1) and buf_get(dv, 255) == buf_get(f, 16) and buf_get(d, 0) == buf_get(f, 33) and buf_get(d, 255) == buf_get(f, 32 * 16 + 16)

@@ -1,0 +1,281 @@
+# Referencia da Lume (factual) — v1.2.0
+
+Esta e a referencia do que funciona hoje. Ela nao tem roteiro nem material de visao: isso esta em
+`lume manual --pt visao` e nos outros capitulos, que misturam os dois. Cada exemplo abaixo e executado por
+`tests/docs/ref_examples_gate.src` (na bateria de testes) com a toolchain instalada; o bloco embaixo de cada exemplo
+e a saida exata dele.
+
+Estados: **estavel** = Linux x86-64 e Windows x64, mesmo comportamento; **linux** / **windows** = so naquela
+plataforma; **experimental** = funciona, a API ainda pode mudar; **privilegiado** = precisa de root (Linux) ou de
+processo elevado (Windows).
+
+## 1. Programas e comandos
+
+Um programa e um arquivo `.src`. As linhas `print` de topo rodam em ordem. `lume run f.src [args]` compila e roda,
+`lume build f.src -o saida` grava um executavel nativo (`saida.exe` no Windows), `lume test f.src` roda cada
+`fn test_*()` que devolve um valor verdade, `lume check f.src` checa os tipos sem rodar, `lume fmt f.src` formata
+no lugar (`--check`, `--stdout`), `lume manual [capitulo]` mostra o manual (`--pt` em portugues). `lume run --profile f.src` mostra por funcao o
+tempo proprio e total, chamadas e alocacoes, e o tempo do GC, no stderr ao terminar (funcoes expandidas no chamador
+contam nele; `LUME_FL=off` as mantem; um laco de cauda e uma chamada).
+
+```lume
+fn square(x) = x * x
+print square(7)
+```
+```output
+49
+```
+
+## 2. Sintaxe
+
+- `fn nome(a, b) = expr`, `pub fn` (exportada), `priv fn` (privada do modulo), `const NOME: T = expr`,
+  `type T = A(x) | B(x, y)`, `use modulo`, `use modulo as apelido`, `## comentario` (ate o fim da linha).
+- Expressoes: `let x = e in corpo`, `if c then a else b`, `match v` com um `Padrao => expr` por linha,
+  `fn(x) => expr` (closure; captura variaveis), `{a: 1, b: 2}` (registro), `r.a` (campo), `{ r with a: 3 }`
+  (copia com um campo trocado), `[1, 2, 3]` (lista), `Cons(h, t)` / `Nil`.
+- Inteiros tem 64 bits; um overflow para o programa (exit 3). `/` trunca em direcao a zero, `%` tem o sinal do
+  operando da esquerda. `*` `/` `%` ligam mais forte que `+` `-`. Comparacoes e `and` / `or` / `not` dao
+  booleanos, impressos como `1` / `0`.
+- Strings sao bytes (UTF-8): `count` conta bytes, `+` junta duas strings e nada converte sozinho (`str(x)` faz uma
+  string, `toint(s)` le um numero).
+
+```lume
+type Shape = Circle(r) | Rect(w, h)
+fn area(s) = match s
+    Circle(r)  => 3 * r * r
+    Rect(w, h) => w * h
+print area(Circle(2))
+print area(Rect(3, 4))
+let p = {x: 1, y: 2}
+print p.x + p.y
+let q = { p with y: 10 }
+print q.y
+print 7 / 2
+print 0 - 7 / 2
+print 7 % 3
+```
+```output
+12
+12
+3
+10
+3
+-3
+1
+```
+
+## 3. Erros em tempo de execucao
+
+O programa para com exit 3 e uma linha no stderr em: overflow de inteiro, divisao por zero, indice fora de uma
+lista ou buffer, campo que o registro nao tem, valor do tipo errado para a operacao, `match` sem braco. O
+`lume test` mostra essa parada como teste que falhou e segue com os outros.
+
+```lume
+print 9223372036854775807 + 1
+```
+```output
+exit 3
+stderr: lume: integer overflow
+```
+
+## 4. Builtins basicos (estavel)
+
+| Builtin | Resposta | Com argumento errado |
+| --- | --- | --- |
+| `count(s)` | bytes de uma string, ou elementos de uma lista | para num valor sem tamanho |
+| `at(s, i)` | o byte em i como string de um byte | `""` quando i esta fora |
+| `slice(s, a, b)` | bytes a..b-1, limitados a string | — |
+| `ord_at(s, i)` | o byte em i como int (0..255) | para quando i esta fora |
+| `chr(n)` | a string de um byte n (0..255) | para fora de 0..255 |
+| `str(v)` | o texto de um valor | — |
+| `toint(s)` | o inteiro escrito em s | `0` quando s nao e inteiro (confira o texto antes) |
+| `print v` / `emit(s)` / `flush()` | escrevem no stdout | — |
+
+```lume
+print count("héllo")
+print slice("abcdef", 1, 4)
+print ord_at("A", 0)
+print chr(66)
+print str(42) + "!"
+print toint("123") + 1
+print bit_and(12, 10)
+print bit_shl(1, 4)
+print at("ab", 5) == ""
+print toint("abc")
+print slice("abc", 2, 9)
+print count([1, 2, 3])
+```
+```output
+6
+bcd
+65
+B
+42!
+124
+8
+16
+1
+0
+c
+3
+```
+
+## 5. Buffers de bytes (estavel)
+
+`buf_new(n)` (n bytes zerados), `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),
+`buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,
+`buf_addr(b)` (endereco do byte 0, para chamadas de sistema). Indice fora do buffer ou valor fora de 0..255 para o
+programa.
+
+```lume
+let b = buf_new(4)
+let s = buf_set(b, 0, 255)
+print buf_len(b)
+print buf_get(b, 0)
+print buf_get(b, 1)
+```
+```output
+4
+255
+0
+```
+
+Video e codec (estavel; os argumentos sao buffers, deslocamentos em bytes e strides; cada um devolve -1 com
+argumento errado): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / 8x8 / 4x4 (a, ai, sa, b, bi, sb)` e
+`buf_satd4x4 / 16x16 (iguais)` (SSE2), `buf_h264_fdct4x4 / idct4x4 (src, si, dst, di)` (blocos int16),
+`buf_h264_quant4x4 (src, si, qp, intra, dst, di)` (devolve os niveis nao nulos), `buf_h264_dequant4x4 (src, si, qp,
+dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pred, pi, res, ri, dst, di)`,
+`buf_h264_intra4x4 / intra16x16 (frame, fi, fs, modo, disponivel, dst)` (bits de disponivel: 1 esquerda, 2 topo,
+4 topo-direita, 8 topo-esquerda).
+
+## 5a. Ponto flutuante (estavel)
+
+`f64` e um double IEEE 754: `f64(x)` cria um a partir de inteiro, decimal, outro f64 ou texto (`f64("1e-9")`,
+`f64("inf")`, `f64("nan")`); `+ - * /` e `< > <= >=` funcionam sobre ele (um operando inteiro ou decimal e
+convertido), `==` compara por valor. `print` / `str` dao o texto mais curto que volta ao mesmo double. Funcoes:
+`f64_sqrt`, `f64_abs`, `f64_floor`, `f64_ceil`, `f64_round` (meio para longe de zero), `f64_int` (em direcao a zero,
+para int), `f64_sin`, `f64_cos`, `f64_tan`, `f64_atan2(y, x)`, `f64_exp`, `f64_log`, `f64_log10`, `f64_pow(x, y)`,
+`f64_is_nan`, `f64_str(x, casas)`, `f64_bits` / `f64_from_bits`. Um literal com ponto (`1.5`) e um decimal exato, nao
+f64: escreva `f64(1.5)` ou `f64("1.5")`. Comparar com NaN para o programa (teste com `f64_is_nan`). Ainda nao existe
+tipo f32.
+
+```lume
+fn hypot(a, b) = f64_sqrt(a * a + b * b)
+print hypot(f64(3), f64(4))
+print hypot(f64(3), f64(4)) == f64(5)
+print f64(1) / f64(3)
+print f64_str(f64("2.5"), 2)
+print f64_is_nan(f64("nan"))
+print f64_int(f64_floor(f64("-2.5")))
+print f64_pow(f64(2), f64(10))
+```
+```output
+5.0
+1
+0.3333333333333333
+2.50
+1
+-3
+1024.0
+```
+
+## 6. Arquivos e sistema operacional (estavel)
+
+| Builtin | Resposta |
+| --- | --- |
+| `fs_read_file(p)` | o conteudo, `""` quando nao da para ler |
+| `fs_write_sync(p, s)` / `fs_append_sync(p, s)` | 1, ou 0 na falha |
+| `fs_path_exists(p)` / `fs_remove(p)` / `fs_mkdir(p)` / `fs_copy(a, b)` | 1, ou 0 |
+| `os_getenv(nome)` | o valor, `""` quando nao existe |
+| `os_platform()` | `"linux"` ou `"windows"` |
+| `os_arg_count()` / `os_arg_at(i)` | os argumentos do programa |
+| `os_monotonic_ns()` | relogio monotonico em nanossegundos |
+| `os_exit(codigo)` | encerra o programa |
+
+```lume
+print fs_write_sync("ref_probe.txt", "hi")
+print fs_read_file("ref_probe.txt")
+print fs_remove("ref_probe.txt")
+print fs_path_exists("ref_probe.txt")
+print fs_read_file("no_such_file.txt") == ""
+print os_getenv("LUME_SURELY_UNSET_VAR") == ""
+```
+```output
+1
+hi
+1
+0
+1
+1
+```
+
+Rede (estavel): `net_udp_bind_addr(ip, porta)` (socket, -1 na falha), `net_udp_send_to(fd, ip, porta, dados)`
+(bytes enviados), `net_udp_recv_from(fd, max)` (o datagrama, `""` sem nada), `net_last_peer_ip()`,
+`net_last_peer_port()`, `net_tcp_connect_addr(ip, porta)` (socket, -1 quando recusado), `net_close(fd)`;
+`use netctl` acrescenta timeouts e E/S nao bloqueante com epoll.
+
+## 7. Modulos da biblioteca padrao
+
+| Modulo | O que oferece | Estado |
+| --- | --- | --- |
+| `h264` | `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (luma em 1/4 de amostra, 6 taps, 8.4.2.2.1), `buf_h264_chroma_mc(...)` (mesmos argumentos, croma bilinear em 1/8, 8.4.2.2.2), `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (8.7.2.3 / 8.7.2.4; bs e tc0 sao listas, um valor por 4 linhas de luma / 2 de croma); 0, ou -1 com argumento errado; coordenadas presas a figura | estavel |
+| `seq` | `seq_map`, `seq_filter`, `seq_fold`, `seq_loop(a, b, acc, f)` (laco sobre a..b-1 sem lista), `seq_while`, `seq_nth`, `seq_range`, `seq_concat` | estavel |
+| `arena` | `heap_stats()`, `gc_collect()`, `gc_count()`, `arena_new / alloc / reset / destroy` | estavel |
+| `netctl`, `dns` | TCP com timeout, sockets nao bloqueantes, epoll, DNS | estavel |
+| `tun` | interfaces TUN: `tun_open`, `tun_read`, `tun_write`, `tun_wait`, `tun_set_ipv4`, `tun_set_mtu`, `tun_set_up`, `tun_close` | linux + windows, privilegiado; no Windows o Wintun so entra pelo `lchameleon` |
+| `lchameleon` | fronteiras externas: `chameleon_c_open(caminho)` (Windows: DLL assinada dentro de System32 / Program Files), `chameleon_c_sym`, `chameleon_c_call` (devolvem `unverified[int]`), `chameleon_verify_boundary` | `chameleon_c_*`: windows; guardas: estavel |
+| `winsys` | monitores, captura, entrada, janelas, registro, servicos, sessoes, named pipes | windows |
+| `lcrypto_tls` | AES-GCM, ECDSA P-256, X25519, Ed25519, SHA-256 | estavel |
+
+```lume
+use seq
+print seq_loop(0, 5, 0, fn(i, acc) => acc + i)
+print seq_map([1, 2, 3], fn(x) => x * 10)
+print seq_fold([1, 2, 3], 0, fn(acc, x) => acc + x)
+```
+```output
+10
+Cons(10, Cons(20, Cons(30, Nil)))
+6
+```
+
+## 8. Contratos
+
+`requires` / `ensures` depois dos parametros; `lume prove` prova o que consegue, o resto e conferido em tempo de
+execucao (a violacao para o programa, exit 3). `result` e o valor devolvido, `old(x)` o valor na entrada.
+
+```lume
+fn half(x) requires x >= 0 ensures result >= 0 = x / 2
+print half(10)
+```
+```output
+5
+```
+
+## 9. Convencoes e nomes reservados
+
+Palavras-chave: `if then else elif let in var mut match not and or own with spawn do defer errdefer comptime
+quote splice scope shard fn pub priv use as type const law print requires ensures true false`. Nome com inicial
+maiuscula e construtor. Builtins do runtime e os prefixos `__rt_` / `__lume_` nao podem nomear funcao ([R0201]).
+`ct_` no inicio do nome de uma funcao torna os parametros segredos ([C0009] num desvio sobre eles); parametros
+`secret` / `secret_*` sao segredos em qualquer funcao. Funcoes `test_*` sao as que o `lume test` roda. `grad`,
+`value_and_grad`, `jvp`, `vjp` sao operadores de autodiff. Um nome definido em dois modulos da o aviso [W0003].
+
+## 10. Limites conhecidos
+
+- O runtime tem uma thread so.
+- No maximo 6 parametros no codigo `--raw` do runtime; funcoes comuns aceitam qualquer numero.
+- Listas e registros literais constantes sao dados estaticos compartilhados: nunca sao alterados (valores Lume sao
+  imutaveis).
+- O achatamento de registros inlineia funcoes pequenas; `LUME_FL=off` desliga (para medir alocacao ou ler o
+  formato das chamadas no assembly).
+- Os alvos macOS cobrem so o nucleo verificado (write / exit); `winsys` existe so no Windows.
+
+## 11. Mudou nesta versao
+
+Entrou: `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+`chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
+ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
+Mudou: o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
+Bash o `lume` roda o `lume.exe` nativo; `fs_copy` mantem as permissoes da origem.
+Saiu: nada.

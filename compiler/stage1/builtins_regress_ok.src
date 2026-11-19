@@ -1,0 +1,27 @@
+## builtins_regress_ok.src -- every documented builtin is called at least once (`lume test`, on Linux and Windows).
+## A builtin that disappears from a release makes this file fail to compile ("undefined function"); one that changes
+## its answer fails its test. Families follow the factual reference (docs/LUME_REFERENCE_EN.md).
+use seq
+use arena
+use h264
+
+fn test_core_text() = count("abc") == 3 and at("abc", 1) == "b" and slice("abcdef", 1, 3) == "bc" and ord_at("A", 0) == 65 and ord("A") == 65 and chr(66) == "B" and str(42) == "42" and toint("17") == 17 and utf8_chr(233) == "é"
+fn test_core_bits() = bit_and(12, 10) == 8 and bit_or(12, 10) == 14 and bit_xor(12, 10) == 6 and bit_shl(1, 4) == 16 and bit_shr(16, 4) == 1
+
+fn test_buffers() = let b = buf_new(8) in let s = buf_set(b, 0, 7) in let c = buf_new(8) in let k = buf_copy(c, 4, b, 0, 1) in buf_len(b) == 8 and buf_get(b, 0) == 7 and buf_get(c, 4) == 7 and buf_to_str(buf_from_str("xyz"), 0, 3) == "xyz" and buf_addr(b) != 0
+
+## video and codec families: each answers -1 on a wrong argument and a value on a right one
+fn test_video_colour() = let src = buf_new(16 * 16 * 4) in let dst = buf_new(16 * 16 * 3 / 2) in buf_bgra_to_i420(src, 64, 16, 16, dst) > 0 and buf_i420_to_bgra(dst, 16, 16, src, 64) > 0 and buf_bgra_to_i420(7, 64, 16, 16, dst) == 0 - 1
+fn test_sad_satd() = let a = buf_new(256) in buf_sad16x16(a, 0, 16, a, 0, 16) == 0 and buf_sad8x8(a, 0, 16, a, 0, 16) == 0 and buf_sad4x4(a, 0, 16, a, 0, 16) == 0 and buf_satd4x4(a, 0, 16, a, 0, 16) == 0 and buf_satd16x16(a, 0, 16, a, 0, 16) == 0 and buf_sad4x4(a, 0, 2, a, 0, 16) == 0 - 1
+fn test_h264() = let w = buf_new(32) in let z = buf_new(32) in let f = buf_new(64 * 20) in let p = buf_new(256) in buf_h264_fdct4x4(w, 0, z, 0) == 0 and buf_h264_idct4x4(z, 0, w, 0) == 0 and buf_h264_quant4x4(w, 0, 26, 1, z, 0) == 0 and buf_h264_dequant4x4(z, 0, 26, w, 0) == 0 and buf_h264_sub4x4(f, 65, 64, p, 0, w) == 0 and buf_h264_recon4x4(p, 0, w, 0, z, 0) == 0 and buf_h264_intra4x4(f, 65, 64, 0, 15, p) == 0 and buf_h264_intra16x16(f, 65, 64, 2, 3, p) == 0 and buf_h264_fdct4x4(7, 0, z, 0) == 0 - 1
+
+fn test_files() = let a = fs_write_sync("regress_probe.txt", "a") in let b = fs_append_sync("regress_probe.txt", "b") in let c = fs_copy("regress_probe.txt", "regress_probe2.txt") in let r = fs_read_file("regress_probe2.txt") in let e = fs_path_exists("regress_probe.txt") in let x = fs_remove("regress_probe.txt") in let y = fs_remove("regress_probe2.txt") in a == 1 and b == 1 and c == 1 and r == "ab" and e == 1 and x == 1 and y == 1 and fs_read_file("regress_absent_probe.txt") == ""
+fn test_os() = (os_platform() == "linux" or os_platform() == "windows") and os_getenv("LUME_REGRESS_UNSET_VAR") == "" and os_monotonic_ns() > 0 and os_unix_time() > 1700000000 and os_arg_count() >= 0 and os_setenv("LUME_REGRESS_VAR", "v") == 1 and os_getenv("LUME_REGRESS_VAR") == "v"
+fn test_network() = let fd = net_udp_bind_addr("127.0.0.1", 47417) in let s = net_udp_send_to(fd, "127.0.0.1", 47417, "ok") in let r = net_udp_recv_from(fd, 16) in let p = net_last_peer_port() in let c = net_close(fd) in fd >= 0 and s == 2 and r == "ok" and p == 47417 and net_tcp_connect_addr("127.0.0.1", 1) == 0 - 1
+
+fn test_f64() = f64_sqrt(f64(16)) == f64(4) and f64_int(f64_floor(f64("2.7"))) == 2 and f64_int(f64_ceil(f64("2.2"))) == 3 and f64_int(f64_round(f64("2.5"))) == 3 and f64_abs(f64(0) - f64(2)) == f64(2) and f64_is_nan(f64("nan")) == 1 and f64_str(f64("1.5"), 1) == "1.5" and f64_int(f64_pow(f64(2), f64(8))) == 256 and f64_from_bits(f64_bits(f64(3))) == f64(3) and f64_int(f64_exp(f64(0))) == 1 and f64_int(f64_log(f64(1))) == 0 and f64_int(f64_log10(f64(100))) == 2 and f64_int(f64_cos(f64(0))) == 1 and f64_int(f64_sin(f64(0))) == 0 and f64_int(f64_tan(f64(0))) == 0 and f64_int(f64_atan2(f64(0), f64(1))) == 0
+
+fn test_memory() = let h = heap_stats() in let g = gc_count() in let c = gc_collect() in h.used >= 0 and gc_count() == g + 1
+
+fn test_seq_module() = seq_loop(0, 4, 0, fn(i, acc) => acc + i) == 6 and seq_nth([5, 6, 7], 2) == 7 and seq_fold([1, 2], 0, fn(acc, x) => acc + x) == 3
+fn test_h264_module() = let f = buf_new(256) in let d = buf_new(256) in buf_h264_luma_mc(f, 0, 16, 16, 16, 0, 0, 1, 2, 4, 4, d, 0, 16) == 0 and buf_h264_chroma_mc(f, 0, 16, 16, 16, 0, 0, 3, 5, 2, 2, d, 0, 16) == 0 and buf_h264_deblock_edge(f, 72, 1, 16, 4, [4], 40, 10, [0], 0) == 0 and buf_h264_luma_mc(f, 0, 16, 16, 16, 0, 0, 0, 0, 3, 4, d, 0, 16) == 0 - 1

@@ -1027,7 +1027,7 @@ fn luses_f64_stmt(s0) = match s0
 
 fn lis_crypto_name(nm) = count(nm) > 7 and slice(nm, 0, 7) == "crypto_"
 ## the optional runtime part also carries the SSE2 block-distortion builtins (rt/rt_simd.src)
-fn lis_optrt_name(nm) = lis_crypto_name(nm) or (count(nm) > 7 and slice(nm, 0, 7) == "buf_sad") or (count(nm) > 8 and slice(nm, 0, 8) == "buf_satd")
+fn lis_optrt_name(nm) = lis_crypto_name(nm) or (count(nm) > 7 and slice(nm, 0, 7) == "buf_sad") or (count(nm) > 8 and slice(nm, 0, 8) == "buf_satd") or (count(nm) > 9 and slice(nm, 0, 9) == "buf_h264_")
 fn luses_crypto_prog(prog) = match prog
     Nil        => 0
     Cons(h, t) => if luses_crypto_stmt(h) == 1 then 1 else luses_crypto_prog(t)
@@ -1105,7 +1105,288 @@ fn runtime_krn_tail() = rt_krn_head() + rt_idiv() + rt_rec_update() + rt_boxes()
 ## assembles the final assembly from those pieces. The single-unit driver `lgen` is exactly
 ## `lgen_emit(lgen_analysis(prog0, ""))` — an empty label prefix reproduces the historical output
 ## byte-for-byte. Module mode runs `lgen_analysis(prog, "<module>-scoped prefix")` and caches the pieces.
-fn lgen_analysis(prog0, pfx) = let ffi_osigs = lcollect_ffi_osigs(prog0, prog0) in let ffi_links = lcollect_ffi_links(prog0) in let is_krn = lhas_free_osig(prog0) in let isr_fn = lfind_isr_fn(prog0) in let prog = if isnil(ffi_osigs) == 1 then prog0 else lffi_rw_prog(prog0, ffi_osigs) in let has_sys = if is_krn == 1 or isr_fn != "" or luses_sys_prog(prog) == 1 then 1 else 0 in let has_tier = luses_tier_prog(prog) in let has_mem = if is_krn == 1 then 0 else luses_mem_prog(prog) in let uses_fs = luses_fs_prog(prog) in let has_f64 = if is_krn == 1 then 0 else luses_f64_prog(prog) in let has_dec = if is_krn == 1 then 0 else lhas_fn(prog, "__lume_dyn_add") in let has_crypto = if is_krn == 1 then 0 else luses_crypto_prog(prog) in let mlocals = app(lmlocals(prog), lsds(0, lmdprog(prog))) in let s0 = {nl: 0, ns: 0, dt: Nil, pfx: pfx, cts: lct_names(prog0)} in let gs = lstmts(prog, mlocals, if has_mem == 1 then lhs_seed(s0) else s0) in let funcs_l = gs.funcs in let mains_l = gs.mains in {prog: prog, ffi_osigs: ffi_osigs, ffi_links: ffi_links, is_krn: is_krn, isr_fn: isr_fn, has_sys: has_sys, has_tier: has_tier, has_mem: has_mem, uses_fs: uses_fs, has_f64: has_f64, has_dec: has_dec, has_crypto: has_crypto, mframe: lframe(len(mlocals)), dt_s: ldt_text(gs.dt), relink: 0, funcs_raw: joinall(own funcs_l), mains_s: joinall(own mains_l)}
+## --- record flattening (LumeDesk, 2026-11-18): small calls inlined, records that never escape kept in locals ---------
+## (prefix rxq_: functions named lfl_* were miscompiled by the seed code generator, data_asm_cc.lume, a name clash)
+## A small non-recursive function (tiny, or returning a record literal; Num / Str / Var / Bin / If / LetIn / Call /
+## Field / Rec only) is inlined where it is called: its parameters become fresh lets holding the arguments (call-by-value, evaluated in
+## order; at most one argument that is not a variable, a number, a string or a field of a variable, so no effect
+## changes order) and its own lets are renamed fresh. Then a record that only has its fields read is replaced by one
+## local per field: `let r = {a: x, b: y} in r.a + r.b`, `({a: x}).a`, a record returned by an inlined helper and read
+## by an inlined consumer. Nothing is inlined into or out of @secret functions or kernels, into a function whose
+## locals share a name with what the callee calls, or across a node the pass does not know (match, closures...):
+## those stay calls, which is always correct.
+fn rxq_ok(e) = match e
+    Num(n)          => 1
+    Str(s)          => 1
+    Var(x)          => 1
+    Bin(op, l, r)   => if rxq_ok(l) == 1 then rxq_ok(r) else 0
+    If(c, t, e2)    => if rxq_ok(c) == 1 and rxq_ok(t) == 1 then rxq_ok(e2) else 0
+    LetIn(nm, v, b) => if rxq_ok(v) == 1 then rxq_ok(b) else 0
+    Call(nm, args)  => rxq_ok_args(args)
+    Field(o, k)     => rxq_ok(o)
+    Rec(items)      => rxq_ok_items(items)
+    _               => 0
+fn rxq_ok_args(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if rxq_ok(h) == 1 then rxq_ok_args(t) else 0
+fn rxq_ok_items(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if rxq_ok(h.val) == 1 then rxq_ok_items(t) else 0
+fn rxq_size(e) = match e
+    Bin(op, l, r)   => 1 + rxq_size(l) + rxq_size(r)
+    If(c, t, e2)    => 1 + rxq_size(c) + rxq_size(t) + rxq_size(e2)
+    LetIn(nm, v, b) => 1 + rxq_size(v) + rxq_size(b)
+    Call(nm, args)  => 1 + rxq_size_args(args)
+    Field(o, k)     => 1 + rxq_size(o)
+    Rec(items)      => 1 + rxq_size_items(items)
+    _               => 1
+fn rxq_size_args(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => rxq_size(h) + rxq_size_args(t)
+fn rxq_size_items(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => rxq_size(h.val) + rxq_size_items(t)
+## every name a body calls or reads (a superset of what it needs from the caller's scope)
+fn rxq_names(e, acc) = match e
+    Var(x)          => Cons(x, acc)
+    Bin(op, l, r)   => rxq_names(l, rxq_names(r, acc))
+    If(c, t, e2)    => rxq_names(c, rxq_names(t, rxq_names(e2, acc)))
+    LetIn(nm, v, b) => rxq_names(v, rxq_names(b, acc))
+    Call(nm, args)  => Cons(nm, rxq_names_args(args, acc))
+    Field(o, k)     => rxq_names(o, acc)
+    Rec(items)      => rxq_names_items(items, acc)
+    _               => acc
+fn rxq_names_args(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rxq_names(h, rxq_names_args(t, acc))
+fn rxq_names_items(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rxq_names(h.val, rxq_names_items(t, acc))
+## the names a function binds: its parameters and every let of its body
+fn rxq_binders(e, acc) = match e
+    Bin(op, l, r)   => rxq_binders(l, rxq_binders(r, acc))
+    If(c, t, e2)    => rxq_binders(c, rxq_binders(t, rxq_binders(e2, acc)))
+    LetIn(nm, v, b) => Cons(nm, rxq_binders(v, rxq_binders(b, acc)))
+    Call(nm, args)  => rxq_binders_args(args, acc)
+    Field(o, k)     => rxq_binders(o, acc)
+    Rec(items)      => rxq_binders_items(items, acc)
+    _               => acc
+fn rxq_binders_args(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rxq_binders(h, rxq_binders_args(t, acc))
+fn rxq_binders_items(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rxq_binders(h.val, rxq_binders_items(t, acc))
+fn rxq_any_in(xs, ys) = match xs
+    Nil        => 0
+    Cons(h, t) => if omem(h, ys) == 1 then 1 else rxq_any_in(t, ys)
+fn rxq_simple(e) = match e
+    Num(n)      => 1
+    Str(s)      => 1
+    Var(x)      => 1
+    Field(o, k) => rxq_simple(o)
+    _           => 0
+fn rxq_complex_args(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => (if rxq_simple(h) == 1 then 0 else 1) + rxq_complex_args(t)
+fn rxq_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + rxq_len(t)
+
+## what is worth inlining: a tiny function (12 nodes at most, builtins only: `esc`, `s4`, an accessor), or one that returns a record
+## literal (200 nodes at most: a producer whose record the caller can keep in locals). Inlining nests two levels at
+## most and stops after about 4000 expansions in one function, so code size stays bounded.
+## a tiny function is inlined only when it calls nothing but builtins and constructors (`esc`, `s4`, accessors): one
+## that calls the program's own functions (it may build a big value and return a small one) stays a call, so a dead
+## value does not linger in the caller's frame where the conservative collector would still see it
+fn rxq_builtins_only(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if isctor(h) or nf_builtin_arity(h) >= 0 then rxq_builtins_only(t) else 0
+fn rxq_returns_rec(e) = match e
+    Rec(items)      => 1
+    LetIn(nm, v, b) => rxq_returns_rec(b)
+    _               => 0
+## the candidate table: {nm, ps, body} of every function that may be inlined
+fn rxq_secret(nm, cts) = omem(nm, cts) == 1 or omem("secret:" + nm, cts) == 1
+fn rxq_table(prog, cts) = match prog
+    Nil        => Nil
+    Cons(h, t) => rxq_table1(h, cts, rxq_table(t, cts))
+fn rxq_table1(s0, cts, rest) = match s0
+    Fn(nm, ps, body) => if (not rxq_secret(nm, cts)) and rxq_ok(body) == 1 and ((rxq_size(body) <= 12 and rxq_builtins_only(rxq_calls(body, Nil)) == 1) or (rxq_returns_rec(body) == 1 and rxq_size(body) <= 200)) and omem(nm, rxq_names(body, Nil)) == 0 and rxq_any_in(rxq_calls(body, Nil), rxq_binders(body, ps)) == 0 then Cons({nm: nm, ps: ps, body: body, ext: rxq_minus(rxq_names(body, Nil), rxq_binders(body, ps))}, rest) else rest
+    _                => rest
+## the names a body calls (a call of a parameter or a let is a closure call: such a body is not inlined)
+fn rxq_calls(e, acc) = match e
+    Bin(op, l, r)   => rxq_calls(l, rxq_calls(r, acc))
+    If(c, t, e2)    => rxq_calls(c, rxq_calls(t, rxq_calls(e2, acc)))
+    LetIn(nm, v, b) => rxq_calls(v, rxq_calls(b, acc))
+    Call(nm, args)  => Cons(nm, rxq_calls_args(args, acc))
+    Field(o, k)     => rxq_calls(o, acc)
+    Rec(items)      => rxq_calls_items(items, acc)
+    _               => acc
+fn rxq_calls_args(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rxq_calls(h, rxq_calls_args(t, acc))
+fn rxq_calls_items(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => rxq_calls(h.val, rxq_calls_items(t, acc))
+## what a body names from outside itself (its parameters and lets taken out)
+fn rxq_minus(xs, ys) = match xs
+    Nil        => Nil
+    Cons(h, t) => if omem(h, ys) == 1 then rxq_minus(t, ys) else Cons(h, rxq_minus(t, ys))
+fn rxq_find(nm, tbl) = match tbl
+    Nil        => Nil
+    Cons(h, t) => if h.nm == nm then Cons(h, Nil) else rxq_find(nm, t)
+
+## renaming of an inlined body: parameters to the temporaries, every let to a fresh name
+fn rxq_lookup(x, m) = match m
+    Nil        => x
+    Cons(h, t) => if h.from == x then h.to else rxq_lookup(x, t)
+fn rxq_ren(e, m, k) = match e
+    Var(x)          => {e: Var(rxq_lookup(x, m)), k: k}
+    Bin(op, l, r)   => let a = rxq_ren(l, m, k) in let b = rxq_ren(r, m, a.k) in {e: Bin(op, a.e, b.e), k: b.k}
+    If(c, t, e2)    => let a = rxq_ren(c, m, k) in let b = rxq_ren(t, m, a.k) in let d = rxq_ren(e2, m, b.k) in {e: If(a.e, b.e, d.e), k: d.k}
+    LetIn(nm, v, b) => let a = rxq_ren(v, m, k) in let fresh = "_fl" + str(a.k) in let bb = rxq_ren(b, Cons({from: nm, to: fresh}, m), a.k + 1) in {e: LetIn(fresh, a.e, bb.e), k: bb.k}
+    Call(nm, args)  => let a = rxq_ren_args(args, m, k) in {e: Call(nm, a.xs), k: a.k}
+    Field(o, f)     => let a = rxq_ren(o, m, k) in {e: Field(a.e, f), k: a.k}
+    Rec(items)      => let a = rxq_ren_items(items, m, k) in {e: Rec(a.xs), k: a.k}
+    _               => {e: e, k: k}
+fn rxq_ren_args(xs, m, k) = match xs
+    Nil        => {xs: Nil, k: k}
+    Cons(h, t) => let a = rxq_ren(h, m, k) in let b = rxq_ren_args(t, m, a.k) in {xs: Cons(a.e, b.xs), k: b.k}
+fn rxq_ren_items(xs, m, k) = match xs
+    Nil        => {xs: Nil, k: k}
+    Cons(h, t) => let a = rxq_ren(h.val, m, k) in let b = rxq_ren_items(t, m, a.k) in {xs: Cons({key: h.key, val: a.e}, b.xs), k: b.k}
+## parameters -> temporaries (the map) and the lets that hold the arguments, first argument outermost
+fn rxq_pmap(ps, k) = match ps
+    Nil        => {m: Nil, k: k}
+    Cons(h, t) => let r = rxq_pmap(t, k + 1) in {m: Cons({from: h, to: "_fl" + str(k)}, r.m), k: r.k}
+fn rxq_wrap(m, args, body) = match m
+    Nil        => body
+    Cons(h, t) => rxq_wrap1(h.to, t, args, body)
+fn rxq_wrap1(to, mt, args, body) = match args
+    Nil           => body
+    Cons(a, rest) => LetIn(to, a, rxq_wrap(mt, rest, body))
+
+## inlining inside one expression: cx = {tbl, binders (the caller's names), depth (bounds nested inlining)}
+fn rxq_in(e, cx, k) = match e
+    Bin(op, l, r)   => let a = rxq_in(l, cx, k) in let b = rxq_in(r, cx, a.k) in {e: Bin(op, a.e, b.e), k: b.k}
+    If(c, t, e2)    => let a = rxq_in(c, cx, k) in let b = rxq_in(t, cx, a.k) in let d = rxq_in(e2, cx, b.k) in {e: If(a.e, b.e, d.e), k: d.k}
+    LetIn(nm, v, b) => let a = rxq_in(v, cx, k) in let bb = rxq_in(b, cx, a.k) in {e: LetIn(nm, a.e, bb.e), k: bb.k}
+    Field(o, f)     => let a = rxq_in(o, cx, k) in {e: Field(a.e, f), k: a.k}
+    Rec(items)      => let a = rxq_in_items(items, cx, k) in {e: Rec(a.xs), k: a.k}
+    Call(nm, args)  => let a = rxq_in_args(args, cx, k) in rxq_call(nm, a.xs, rxq_find(nm, cx.tbl), cx, a.k)
+    _               => {e: e, k: k}
+fn rxq_in_args(xs, cx, k) = match xs
+    Nil        => {xs: Nil, k: k}
+    Cons(h, t) => let a = rxq_in(h, cx, k) in let b = rxq_in_args(t, cx, a.k) in {xs: Cons(a.e, b.xs), k: b.k}
+fn rxq_in_items(xs, cx, k) = match xs
+    Nil        => {xs: Nil, k: k}
+    Cons(h, t) => let a = rxq_in(h.val, cx, k) in let b = rxq_in_items(t, cx, a.k) in {xs: Cons({key: h.key, val: a.e}, b.xs), k: b.k}
+fn rxq_call(nm, args, found, cx, k) = match found
+    Nil        => {e: Call(nm, args), k: k}
+    Cons(f, t) => if cx.depth >= 2 or k - 1000000 > 4000 or omem(nm, cx.binders) == 1 or rxq_len(f.ps) != rxq_len(args) or rxq_complex_args(args) > 1 or rxq_any_in(f.ext, cx.binders) == 1 then {e: Call(nm, args), k: k} else rxq_expand(f, args, cx, k)
+fn rxq_expand(f, args, cx, k) = let pm = rxq_pmap(f.ps, k) in let rb = rxq_ren(f.body, pm.m, pm.k) in let inner = rxq_in(rb.e, {tbl: cx.tbl, binders: cx.binders, depth: cx.depth + 1}, rb.k) in {e: rxq_wrap(pm.m, args, inner.e), k: inner.k}
+
+## scalar replacement after inlining
+fn rxq_is_fresh(x) = count(x) > 3 and slice(x, 0, 3) == "_fl"
+fn rxq_has_key(items, k) = match items
+    Nil        => 0
+    Cons(h, t) => if h.key == k then 1 else rxq_has_key(t, k)
+## does x reach anything but `x.k` (k a key of the record) in e?
+fn rxq_fields_only(x, items, e) = match e
+    Var(y)          => if y == x then 0 else 1
+    Num(n)          => 1
+    Str(s)          => 1
+    Field(o, k)     => if rxq_isvar(o, x) == 1 then rxq_has_key(items, k) else rxq_fields_only(x, items, o)
+    Bin(op, l, r)   => if rxq_fields_only(x, items, l) == 1 then rxq_fields_only(x, items, r) else 0
+    If(c, t, e2)    => if rxq_fields_only(x, items, c) == 1 and rxq_fields_only(x, items, t) == 1 then rxq_fields_only(x, items, e2) else 0
+    LetIn(nm, v, b) => if rxq_fields_only(x, items, v) == 0 then 0 else if nm == x then 1 else rxq_fields_only(x, items, b)
+    Call(nm, args)  => rxq_fields_only_args(x, items, args)
+    Rec(its)        => rxq_fields_only_items(x, items, its)
+    _               => if omentions_var(x, e) == 1 then 0 else 1
+fn rxq_fields_only_args(x, items, xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if rxq_fields_only(x, items, h) == 1 then rxq_fields_only_args(x, items, t) else 0
+fn rxq_fields_only_items(x, items, xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if rxq_fields_only(x, items, h.val) == 1 then rxq_fields_only_items(x, items, t) else 0
+fn rxq_isvar(e, x) = match e
+    Var(y) => if y == x then 1 else 0
+    _      => 0
+## x.k -> the local of field k (m: key -> local)
+fn rxq_sub(x, m, e) = match e
+    Field(o, k)     => if rxq_isvar(o, x) == 1 then Var(rxq_lookup(k, m)) else Field(rxq_sub(x, m, o), k)
+    Bin(op, l, r)   => Bin(op, rxq_sub(x, m, l), rxq_sub(x, m, r))
+    If(c, t, e2)    => If(rxq_sub(x, m, c), rxq_sub(x, m, t), rxq_sub(x, m, e2))
+    LetIn(nm, v, b) => LetIn(nm, rxq_sub(x, m, v), if nm == x then b else rxq_sub(x, m, b))
+    Call(nm, args)  => Call(nm, rxq_sub_args(x, m, args))
+    Rec(its)        => Rec(rxq_sub_items(x, m, its))
+    _               => e
+fn rxq_sub_args(x, m, xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(rxq_sub(x, m, h), rxq_sub_args(x, m, t))
+fn rxq_sub_items(x, m, xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons({key: h.key, val: rxq_sub(x, m, h.val)}, rxq_sub_items(x, m, t))
+## one local per field, the values evaluated in the order written
+fn rxq_fmap(items, k) = match items
+    Nil        => {m: Nil, k: k}
+    Cons(h, t) => let r = rxq_fmap(t, k + 1) in {m: Cons({from: h.key, to: "_fl" + str(k)}, r.m), k: r.k}
+fn rxq_fwrap(m, items, body) = match m
+    Nil        => body
+    Cons(h, t) => rxq_fwrap1(h.to, t, items, body)
+fn rxq_fwrap1(to, mt, items, body) = match items
+    Nil            => body
+    Cons(it, rest) => LetIn(to, it.val, rxq_fwrap(mt, rest, body))
+fn rxq_simp(e, k) = match e
+    LetIn(nm, v, b) => let a = rxq_simp(v, k) in let bb = rxq_simp(b, a.k) in rxq_let(nm, a.e, bb.e, bb.k)
+    Field(o, f)     => let a = rxq_simp(o, k) in rxq_field(a.e, f, a.k)
+    Bin(op, l, r)   => let a = rxq_simp(l, k) in let b = rxq_simp(r, a.k) in {e: Bin(op, a.e, b.e), k: b.k}
+    If(c, t, e2)    => let a = rxq_simp(c, k) in let b = rxq_simp(t, a.k) in let d = rxq_simp(e2, b.k) in {e: If(a.e, b.e, d.e), k: d.k}
+    Call(nm, args)  => let a = rxq_simp_args(args, k) in {e: Call(nm, a.xs), k: a.k}
+    Rec(items)      => let a = rxq_simp_items(items, k) in {e: Rec(a.xs), k: a.k}
+    _               => {e: e, k: k}
+fn rxq_simp_args(xs, k) = match xs
+    Nil        => {xs: Nil, k: k}
+    Cons(h, t) => let a = rxq_simp(h, k) in let b = rxq_simp_args(t, a.k) in {xs: Cons(a.e, b.xs), k: b.k}
+fn rxq_simp_items(xs, k) = match xs
+    Nil        => {xs: Nil, k: k}
+    Cons(h, t) => let a = rxq_simp(h.val, k) in let b = rxq_simp_items(t, a.k) in {xs: Cons({key: h.key, val: a.e}, b.xs), k: b.k}
+## let x = (let y = v in b) in body -> let y = v in let x = b in body (y fresh, so nothing is captured)
+fn rxq_let(nm, v, body, k) = match v
+    LetIn(y, v2, b2) => if rxq_is_fresh(y) then rxq_let(y, v2, LetIn(nm, b2, body), k) else rxq_let2(nm, v, body, k)
+    _                => rxq_let2(nm, v, body, k)
+fn rxq_let2(nm, v, body, k) = match v
+    Rec(items) => if rxq_fields_only(nm, items, body) == 1 then (let fm = rxq_fmap(items, k) in rxq_simp(rxq_fwrap(fm.m, items, rxq_sub(nm, fm.m, body)), fm.k)) else {e: LetIn(nm, v, body), k: k}
+    _          => {e: LetIn(nm, v, body), k: k}
+## (let y = v in b).f -> let y = v in b.f; ({..., f: x, ...}).f -> the fields' locals, then x
+fn rxq_field(o, f, k) = match o
+    LetIn(y, v, b) => let r = rxq_field(b, f, k) in {e: LetIn(y, v, r.e), k: r.k}
+    Rec(items)     => if rxq_has_key(items, f) == 1 then (let fm = rxq_fmap(items, k) in {e: rxq_fwrap(fm.m, items, Var(rxq_lookup(f, fm.m))), k: fm.k}) else {e: Field(o, f), k: k}
+    _              => {e: Field(o, f), k: k}
+
+## the whole program (kernels untouched)
+## LUME_FL=off turns the pass off; LUME_FL_LIMIT=N keeps only the first N candidates (for bisecting a miscompile)
+fn rxq_prog(prog, cts) = if os_getenv("LUME_FL") == "off" then prog else rxq_prog2(prog, rxq_take(rxq_table(prog, cts), rxq_limit()), cts)
+fn rxq_limit() = let v = os_getenv("LUME_FL_LIMIT") in if v == "" then 1000000 else toint(v)
+fn rxq_take(xs, n) = if n <= 0 then Nil else match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(h, rxq_take(t, n - 1))
+fn rxq_prog2(prog, tbl, cts) = match tbl
+    Nil        => prog
+    Cons(h, t) => rxq_stmts(prog, tbl, cts)
+fn rxq_stmts(prog, tbl, cts) = match prog
+    Nil        => Nil
+    Cons(h, t) => Cons(rxq_stmt(h, tbl, cts), rxq_stmts(t, tbl, cts))
+fn rxq_stmt(s0, tbl, cts) = match s0
+    Fn(nm, ps, body) => if rxq_secret(nm, cts) then s0 else Fn(nm, ps, rxq_body(body, tbl, rxq_binders(body, ps), 0 - 1))
+    Print(v)         => Print(rxq_body(v, tbl, rxq_binders(v, Nil), 0 - 1))
+    ExprS(v)         => ExprS(rxq_body(v, tbl, rxq_binders(v, Nil), 0 - 1))
+    _                => s0
+fn rxq_body(e, tbl, binders, unused) = let a = rxq_in(e, {tbl: tbl, binders: binders, depth: 0}, 1000000) in let s1 = rxq_simp(a.e, a.k) in (rxq_simp(s1.e, s1.k)).e
+## the program the generator works on: FFI calls rewritten, then record flattening (never in kernels)
+fn lgen_prog(prog0, ffi_osigs, is_krn, isr_fn) = let prog1 = (if isnil(ffi_osigs) == 1 then prog0 else lffi_rw_prog(prog0, ffi_osigs)) in if is_krn == 1 or isr_fn != "" then prog1 else rxq_prog(prog1, lct_names(prog0))
+fn lgen_analysis(prog0, pfx) = let ffi_osigs = lcollect_ffi_osigs(prog0, prog0) in let ffi_links = lcollect_ffi_links(prog0) in let is_krn = lhas_free_osig(prog0) in let isr_fn = lfind_isr_fn(prog0) in let prog = lgen_prog(prog0, ffi_osigs, is_krn, isr_fn) in let has_sys = if is_krn == 1 or isr_fn != "" or luses_sys_prog(prog) == 1 then 1 else 0 in let has_tier = luses_tier_prog(prog) in let has_mem = if is_krn == 1 then 0 else luses_mem_prog(prog) in let uses_fs = luses_fs_prog(prog) in let has_f64 = if is_krn == 1 then 0 else luses_f64_prog(prog) in let has_dec = if is_krn == 1 then 0 else lhas_fn(prog, "__lume_dyn_add") in let has_crypto = if is_krn == 1 then 0 else luses_crypto_prog(prog) in let mlocals = app(lmlocals(prog), lsds(0, lmdprog(prog))) in let s0 = {nl: 0, ns: 0, dt: Nil, pfx: pfx, cts: lct_names(prog0)} in let gs = lstmts(prog, mlocals, if has_mem == 1 then lhs_seed(s0) else s0) in let funcs_l = gs.funcs in let mains_l = gs.mains in {prog: prog, ffi_osigs: ffi_osigs, ffi_links: ffi_links, is_krn: is_krn, isr_fn: isr_fn, has_sys: has_sys, has_tier: has_tier, has_mem: has_mem, uses_fs: uses_fs, has_f64: has_f64, has_dec: has_dec, has_crypto: has_crypto, mframe: lframe(len(mlocals)), dt_s: ldt_text(gs.dt), relink: 0, funcs_raw: joinall(own funcs_l), mains_s: joinall(own mains_l)}
 ## --- peephole: the stack shuffles of the expression code, rewritten into register moves --------------------------------
 ## The expression code keeps a left operand on the stack while it evaluates the right one. Where nothing between the push
 ## and the pop touches the stack (no call, no %rsp operand), the value can stay in a register instead:
@@ -1143,8 +1424,75 @@ fn lp_addnl(ls, acc) = match ls
 fn lp_join(ls) = joinall(own lp_addnl(ls, Nil))
 fn lpeep(text) = if text == "" then text else lp_join(lp_go(lp_go(lp_lines(text, 0, count(text), Nil), Nil), Nil))
 
-fn lgen_emit(a) = let funcs_s = (if a.is_krn == 1 then "    .kernel\n" else "") + a.ffi_links + lpeep(a.funcs_raw) + lffi_stubs(a.ffi_osigs) in let mprol = "    movq %rsp, %rbp\n" + (if a.mframe > 0 then "    subq $" + str(a.mframe) + ", %rsp\n" else "") in let bss = runtime_bss_head() + (if a.has_mem == 1 or a.is_krn == 0 then "    .lcomm .Lrt_ar_table, 96\n" else "") + (if a.has_sys == 1 then "    .lcomm .Lrt_irq32_cnt, 8\n    .lcomm .Lrt_pf14_cnt, 8\n    .lcomm .Lrt_pf14_addr, 8\n    .lcomm .Lrt_ctx_sp_a, 8\n    .lcomm .Lrt_ctx_sp_b, 8\n    .lcomm .Lrt_ctx_sw_cnt, 8\n    .lcomm .Lrt_hw_scratch, 8192\n    .lcomm .Lrt_static_arena, 65536\n" else "") + (if a.is_krn == 1 then "" else runtime_bss_gc()) in let rodata = runtime_rodata_head() + (if a.has_crypto == 1 then rt_crypto_rodata() else "") + (if a.is_krn == 1 then "" else runtime_rodata_gc()) + (if a.has_mem == 1 then ".Lrt_ar_msg_secret:\n    .asciz \"lume: arena error: a secret arena is never compressed (decompression timing leaks it, [C0009])\\n\"\n.Lrt_ar_msg_many:\n    .asciz \"lume: arena error: too many live arenas (the runtime supports 4)\\n\"\n.Lrt_ar_msg_dead:\n    .asciz \"lume: arena error: no live arena at this handle (arena_new first)\\n\"\n.Lrt_ar_msg_handle:\n    .asciz \"lume: arena error: invalid arena handle\\n\"\n.Lrt_ar_msg_budget:\n    .asciz \"lume: arena error: arena capacity exceeded (arena_new cap_hint is a hard budget)\\n\"\n.Lrt_ar_msg_size:\n    .asciz \"lume: arena error: arena_alloc size must be positive\\n\"\n" else "") + (if a.has_tier == 1 then ".Lrt_uaf_msg:\n    .asciz \"lume: ownership error [O0001]: use of dropped rc/arc reference\\n\"\n" else "") + (if a.has_sys == 1 then ".Lrt_idt_ptr:\n    .byte 255, 15, 0, 80, 0, 0, 0, 0, 0, 0\n.Lrt_ap_tramp:\n    .byte 250, 49, 192, 142, 216, 142, 192, 142, 208, 188, 0, 112, 15, 32, 224, 12, 32, 15, 34, 224, 102, 184, 0, 16, 0, 0, 15, 34, 216, 102, 185, 128, 0, 0, 192, 15, 50, 128, 204, 1, 15, 48, 15, 1, 22, 216, 124, 15, 32, 192, 102, 13, 1, 0, 0, 128, 15, 34, 192, 234, 64, 112, 8, 0, 102, 184, 16, 0, 142, 216, 142, 192, 142, 208, 72, 199, 196, 0, 240, 7, 0, 72, 199, 193, 0, 88, 0, 0, 72, 199, 192, 1, 0, 0, 0, 72, 135, 1, 72, 133, 192, 117, 241, 72, 139, 65, 8, 72, 1, 192, 72, 131, 192, 12, 72, 137, 65, 16, 72, 199, 1, 0, 0, 0, 0, 72, 199, 192, 1, 0, 0, 0, 240, 72, 15, 193, 65, 24, 15, 174, 240, 250, 244, 235, 252\n" else "") in let heapinit = if a.is_krn == 1 then "    movq $1017, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    movq $1019, %rdx\n    movq $128, %rax\n    outb %al, %dx\n    movq $1016, %rdx\n    movq $3, %rax\n    outb %al, %dx\n    movq $1017, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    movq $1019, %rdx\n    movq $3, %rax\n    outb %al, %dx\n    movq $2097152, %rax\n    movq %rax, .Lrt_heap_cur(%rip)\n    movq $4128768, %rax\n    movq %rax, .Lrt_heap_end(%rip)\n" else runtime_hosted_init() in let base_rt0 = if a.is_krn == 1 then runtime_krn_tail() else if a.uses_fs == 1 then runtime_tail() + runtime_argv_tail() + runtime_fs_tail() else runtime_tail() + runtime_argv_tail() in let base_rtf = if a.is_krn == 1 then base_rt0 + rt_f64_stub() else base_rt0 + (if a.has_f64 == 1 then rt_f64() else rt_f64_stub()) + (if a.has_dec == 1 then rt_dec_dyn() else rt_dec_dyn_stub()) + (if a.has_crypto == 1 then rt_crypto() else "") in let base_rt = if a.has_tier == 1 then base_rtf + runtime_tier_tail() else base_rtf in let base_rtm = if a.has_mem == 1 then base_rt + runtime_mem_tail() else base_rt in let rtail = if a.has_sys == 1 then base_rtm + runtime_sys_tail(a.isr_fn, a.is_krn) else base_rtm in let exittail = if a.is_krn == 1 then "    movq $244, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    cli\n    hlt\n" else "    movq $60, %rax\n    xorq %rdi, %rdi\n    syscall\n" in joinall(own Cons(bss, Cons(rodata, Cons(if a.relink == 1 then ldt_relink(a.dt_s) else a.dt_s, Cons("    .section .text\n", Cons(funcs_s, Cons(rtail, Cons("    .globl _start\n_start:\n", Cons(heapinit, Cons(mprol, Cons(lpeep(a.mains_s), Cons(exittail, Nil))))))))))))
-fn lgen(prog0) = lgen_emit(lgen_analysis(prog0, ""))
+fn lgen_emit(a) = let funcs_s = (if a.is_krn == 1 then "    .kernel\n" else "") + a.ffi_links + lpf_funcs(lpeep(a.funcs_raw), a) + lffi_stubs(a.ffi_osigs) in let mprol = "    movq %rsp, %rbp\n" + (if a.mframe > 0 then "    subq $" + str(a.mframe) + ", %rsp\n" else "") in let bss = runtime_bss_head() + (if a.has_mem == 1 or a.is_krn == 0 then "    .lcomm .Lrt_ar_table, 96\n" else "") + (if a.has_sys == 1 then "    .lcomm .Lrt_irq32_cnt, 8\n    .lcomm .Lrt_pf14_cnt, 8\n    .lcomm .Lrt_pf14_addr, 8\n    .lcomm .Lrt_ctx_sp_a, 8\n    .lcomm .Lrt_ctx_sp_b, 8\n    .lcomm .Lrt_ctx_sw_cnt, 8\n    .lcomm .Lrt_hw_scratch, 8192\n    .lcomm .Lrt_static_arena, 65536\n" else "") + (if a.is_krn == 1 then "" else runtime_bss_gc()) in let rodata = runtime_rodata_head() + (if a.has_crypto == 1 then rt_crypto_rodata() else "") + (if a.is_krn == 1 then "" else runtime_rodata_gc()) + (if a.has_mem == 1 then ".Lrt_ar_msg_secret:\n    .asciz \"lume: arena error: a secret arena is never compressed (decompression timing leaks it, [C0009])\\n\"\n.Lrt_ar_msg_many:\n    .asciz \"lume: arena error: too many live arenas (the runtime supports 4)\\n\"\n.Lrt_ar_msg_dead:\n    .asciz \"lume: arena error: no live arena at this handle (arena_new first)\\n\"\n.Lrt_ar_msg_handle:\n    .asciz \"lume: arena error: invalid arena handle\\n\"\n.Lrt_ar_msg_budget:\n    .asciz \"lume: arena error: arena capacity exceeded (arena_new cap_hint is a hard budget)\\n\"\n.Lrt_ar_msg_size:\n    .asciz \"lume: arena error: arena_alloc size must be positive\\n\"\n" else "") + (if a.has_tier == 1 then ".Lrt_uaf_msg:\n    .asciz \"lume: ownership error [O0001]: use of dropped rc/arc reference\\n\"\n" else "") + (if a.has_sys == 1 then ".Lrt_idt_ptr:\n    .byte 255, 15, 0, 80, 0, 0, 0, 0, 0, 0\n.Lrt_ap_tramp:\n    .byte 250, 49, 192, 142, 216, 142, 192, 142, 208, 188, 0, 112, 15, 32, 224, 12, 32, 15, 34, 224, 102, 184, 0, 16, 0, 0, 15, 34, 216, 102, 185, 128, 0, 0, 192, 15, 50, 128, 204, 1, 15, 48, 15, 1, 22, 216, 124, 15, 32, 192, 102, 13, 1, 0, 0, 128, 15, 34, 192, 234, 64, 112, 8, 0, 102, 184, 16, 0, 142, 216, 142, 192, 142, 208, 72, 199, 196, 0, 240, 7, 0, 72, 199, 193, 0, 88, 0, 0, 72, 199, 192, 1, 0, 0, 0, 72, 135, 1, 72, 133, 192, 117, 241, 72, 139, 65, 8, 72, 1, 192, 72, 131, 192, 12, 72, 137, 65, 16, 72, 199, 1, 0, 0, 0, 0, 72, 199, 192, 1, 0, 0, 0, 240, 72, 15, 193, 65, 24, 15, 174, 240, 250, 244, 235, 252\n" else "") in let heapinit = if a.is_krn == 1 then "    movq $1017, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    movq $1019, %rdx\n    movq $128, %rax\n    outb %al, %dx\n    movq $1016, %rdx\n    movq $3, %rax\n    outb %al, %dx\n    movq $1017, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    movq $1019, %rdx\n    movq $3, %rax\n    outb %al, %dx\n    movq $2097152, %rax\n    movq %rax, .Lrt_heap_cur(%rip)\n    movq $4128768, %rax\n    movq %rax, .Lrt_heap_end(%rip)\n" else runtime_hosted_init() in let base_rt0 = if a.is_krn == 1 then runtime_krn_tail() else if a.uses_fs == 1 then runtime_tail() + runtime_argv_tail() + runtime_fs_tail() else runtime_tail() + runtime_argv_tail() in let base_rtf = if a.is_krn == 1 then base_rt0 + rt_f64_stub() else base_rt0 + (if a.has_f64 == 1 then rt_f64() else rt_f64_stub()) + (if a.has_dec == 1 then rt_dec_dyn() else rt_dec_dyn_stub()) + (if a.has_crypto == 1 then rt_crypto() else "") in let base_rt = if a.has_tier == 1 then base_rtf + runtime_tier_tail() else base_rtf in let base_rtm = if a.has_mem == 1 then base_rt + runtime_mem_tail() else base_rt in let rtail = if a.has_sys == 1 then base_rtm + runtime_sys_tail(a.isr_fn, a.is_krn) else base_rtm in let exittail = if a.is_krn == 1 then "    movq $244, %rdx\n    xorq %rax, %rax\n    outb %al, %dx\n    cli\n    hlt\n" else "    movq $60, %rax\n    xorq %rdi, %rdi\n    syscall\n" in joinall(own Cons(bss, Cons(rodata, Cons(if a.relink == 1 then ldt_relink(a.dt_s) else a.dt_s, Cons("    .section .text\n", Cons(funcs_s, Cons(rtail, Cons("    .globl _start\n_start:\n", Cons(heapinit, Cons(mprol, Cons(lpf_mains(lpeep(a.mains_s), a), Cons(exittail, Nil))))))))))))
+## --- profiler: `lume run --profile` compiles with LUME_PROFILE naming the output file. The generated code then keeps,
+## per user function, the calls, the time in its own code (self), the time below an outer call (total), the allocations,
+## and the GC time, and writes them to that file at exit (the driver prints the table). Time is rdtsc, attributed at each
+## function entry and after each return to a caller (a self tail loop is one call); every sequence saves the registers
+## it uses and sits where no flags are live. Data block __prof_data: header 112 bytes (0 t0, 8 ts0, 24 t1, 32 ts1,
+## 48 gc ticks, 56 last stamp, 64 current id, 72 slots, 80 done, 88 gc start, 96 gc count), then six arrays of slots
+## words: self, total, calls, allocs, outer start, depth. Slot 0 is the top-level code. Not for kernels.
+fn lpf_on() = if os_getenv("LUME_PROFILE") == "" then 0 else 1
+fn lpf_tsc() = "    rdtsc\n    shlq $32, %rdx\n    orq %rdx, %rax\n"
+fn lpf_save() = "    pushq %rax\n    pushq %rdx\n    pushq %rcx\n    pushq %rsi\n    leaq __prof_data(%rip), %rsi\n"
+fn lpf_rest() = "    popq %rsi\n    popq %rcx\n    popq %rdx\n    popq %rax\n"
+fn lpf_off(arr, slots, id) = 112 + arr * slots * 8 + id * 8
+## charge the time since the last stamp (rax = now) to the running function, then `id` runs
+fn lpf_switch(id) = "    movq 64(%rsi), %rcx\n    movq %rax, %rdx\n    subq 56(%rsi), %rdx\n    movq %rax, 56(%rsi)\n    addq %rdx, 112(%rsi,%rcx,8)\n    movq $" + str(id) + ", %rcx\n    movq %rcx, 64(%rsi)\n"
+fn lpf_bump(off, by) = "    movq " + str(off) + "(%rsi), %rcx\n    addq $" + by + ", %rcx\n    movq %rcx, " + str(off) + "(%rsi)\n"
+fn lpf_entry(id, slots) = lpf_save() + lpf_tsc() + lpf_switch(id) + lpf_bump(lpf_off(2, slots, id), "1") + lpf_rest()
+fn lpf_pre(m, slots, lab) = lpf_save() + lpf_bump(lpf_off(5, slots, m), "1") + "    cmpq $1, %rcx\n    jne " + lab + "\n" + lpf_tsc() + "    movq %rax, " + str(lpf_off(4, slots, m)) + "(%rsi)\n" + lab + ":\n" + lpf_rest()
+fn lpf_post(k, m, slots, lab) = lpf_save() + lpf_tsc() + lpf_switch(k) + lpf_bump(lpf_off(5, slots, m), "-1") + "    testq %rcx, %rcx\n    jne " + lab + "\n    subq " + str(lpf_off(4, slots, m)) + "(%rsi), %rax\n    addq %rax, " + str(lpf_off(1, slots, m)) + "(%rsi)\n" + lab + ":\n" + lpf_rest()
+
+## the user functions: labels of the function text followed by the ordinary prologue; ids from 1
+fn lpf_lab(h) = if count(h) >= 2 and at(h, count(h) - 1) == ":" and at(h, 0) != " " and at(h, 0) != "." then slice(h, 0, count(h) - 1) else ""
+fn lpf_names(ls, acc) = match ls
+    Nil        => rev(acc)
+    Cons(h, t) => lpf_names2(lpf_lab(h), t, acc)
+fn lpf_names2(nm, t, acc) = if nm != "" and lpf_is_prol(t) == 1 then lpf_names(t, Cons(nm, acc)) else lpf_names(t, acc)
+fn lpf_is_prol(t) = match t
+    Nil        => 0
+    Cons(a, r) => if a == "    pushq %rbp" then lpf_is_prol2(r) else 0
+fn lpf_is_prol2(r) = match r
+    Nil        => 0
+    Cons(b, z) => if b == "    movq %rsp, %rbp" then 1 else 0
+fn lpf_id(nms, nm, i) = match nms
+    Nil        => 0
+    Cons(h, t) => if h == nm then i else lpf_id(t, nm, i + 1)
+fn lpf_slots(nms) = len(nms) + 1
+
+## rewrite a text: an entry after the prologue of each user function, pre/post around each call of one.
+## st: {cur: running id, pend: id waiting for its prologue, k: label counter, pfx}
+fn lpf_rw(ls, nms, st, acc) = match ls
+    Nil        => joinall(own rev(acc))
+    Cons(h, t) => lpf_rw1(h, t, nms, st, acc)
+fn lpf_rw1(h, t, nms, st, acc) = let nm = lpf_lab(h) in let id = if nm == "" then 0 else lpf_id(nms, nm, 1) in if id > 0 then lpf_rw(t, nms, {cur: id, pend: id, k: st.k, pfx: st.pfx}, Cons(h + "\n", acc)) else if h == "    movq %rsp, %rbp" and st.pend > 0 then lpf_rw(t, nms, {cur: st.cur, pend: 0, k: st.k, pfx: st.pfx}, Cons(h + "\n" + lpf_entry(st.pend, lpf_slots(nms)), acc)) else lpf_rw3(h, t, nms, st, acc)
+fn lpf_rw3(h, t, nms, st, acc) = let m = if count(h) > 9 and slice(h, 0, 9) == "    call " then lpf_id(nms, slice(h, 9, count(h)), 1) else 0 in if m > 0 then lpf_rw2(h, t, nms, st, acc, m) else lpf_rw(t, nms, st, Cons(h + "\n", acc))
+fn lpf_rw2(h, t, nms, st, acc, m) = let slots = lpf_slots(nms) in let lab = ".Lpf_" + st.pfx + str(st.k) in lpf_rw(t, nms, {cur: st.cur, pend: st.pend, k: st.k + 1, pfx: st.pfx}, Cons(lpf_pre(m, slots, lab + "a") + h + "\n" + lpf_post(st.cur, m, slots, lab + "b"), acc))
+fn lpf_text(text, nms, pfx) = if text == "" then text else lpf_rw(lp_lines(text, 0, count(text), Nil), nms, {cur: 0, pend: 0, k: 0, pfx: pfx}, Nil)
+
+## whole program: count allocations, time the collector, write the file before every exit
+fn lpf_exit_near(t, n) = if n == 0 then 0 else lpf_exit_near2(t, n)
+fn lpf_exit_near2(t, n) = match t
+    Nil        => 0
+    Cons(a, r) => if a == "    syscall" then 1 else lpf_exit_near(r, n - 1)
+fn lpf_glob(ls, slots, acc) = match ls
+    Nil        => joinall(own rev(acc))
+    Cons(h, t) => lpf_glob(t, slots, Cons(lpf_glob1(h, t, slots), acc))
+fn lpf_glob1(h, t, slots) = if h == "alloc:" or h == "__lume_alloc_a:" then h + "\n    pushq %rdx\n" + lpf_save() + "    movq 64(%rsi), %rcx\n    leaq " + str(lpf_off(3, slots, 0)) + "(%rsi,%rcx,8), %rdx\n    movq (%rdx), %rcx\n    addq $1, %rcx\n    movq %rcx, (%rdx)\n" + lpf_rest() + "    popq %rdx\n" else if h == "__gc_collect:" then lpf_gcwrap() + "__gc_collect_body:\n" else if (h == "    movq $60, %rax" or h == "    movq $231, %rax") and lpf_exit_near(t, 3) == 1 then "    call __prof_report\n" + h + "\n" else h + "\n"
+fn lpf_gcwrap() = "__gc_collect:\n" + lpf_save() + lpf_tsc() + "    movq %rax, 88(%rsi)\n" + lpf_rest() + "    subq $8, %rsp\n    pushq %rax\n    xorq %rax, %rax\n    movq %rax, 8(%rsp)\n    popq %rax\n    call __gc_collect_body\n    addq $8, %rsp\n" + lpf_save() + lpf_tsc() + "    subq 88(%rsi), %rax\n    addq %rax, 48(%rsi)\n" + lpf_rest() + "    ret\n"
+fn lpf_init(slots) = "    leaq __prof_data(%rip), %rsi\n" + lpf_tsc() + "    movq %rax, (%rsi)\n    movq %rax, 56(%rsi)\n    movq $" + str(slots) + ", %rcx\n    movq %rcx, 72(%rsi)\n    addq $8, %rsi\n    movq $1, %rdi\n    movq $228, %rax\n    syscall\n"
+fn lpf_join(nms) = match nms
+    Nil        => ""
+    Cons(h, t) => h + "\n" + lpf_join(t)
+fn lpf_rep_head() = "__prof_report:\n    pushq %rax\n    pushq %rcx\n    pushq %rdx\n    pushq %rsi\n    pushq %rdi\n    pushq %r8\n    pushq %r9\n    pushq %r10\n    pushq %r11\n    leaq __prof_data(%rip), %rsi\n    movq 80(%rsi), %rcx\n    testq %rcx, %rcx\n    jne .Lpf_rep_out\n    movq $1, %rcx\n    movq %rcx, 80(%rsi)\n" + lpf_tsc() + "    movq %rax, 24(%rsi)\n    movq 64(%rsi), %rcx\n    movq %rax, %rdx\n    subq 56(%rsi), %rdx\n    movq %rax, 56(%rsi)\n    addq %rdx, 112(%rsi,%rcx,8)\n    movq __gc_count(%rip), %rcx\n    movq %rcx, 96(%rsi)\n    addq $32, %rsi\n    movq $1, %rdi\n    movq $228, %rax\n    syscall\n"
+fn lpf_rep_tail() = ".Lpf_rep_out:\n    popq %r11\n    popq %r10\n    popq %r9\n    popq %r8\n    popq %rdi\n    popq %rsi\n    popq %rdx\n    popq %rcx\n    popq %rax\n    ret\n"
+fn lpf_report(path, nms) = let slots = lpf_slots(nms) in let names = "(top level)\n" + lpf_join(nms) in let size = 112 + 6 * slots * 8 in lpf_rep_head() + "    leaq __prof_path(%rip), %rdi\n    movq $577, %rsi\n    movq $420, %rdx\n    movq $2, %rax\n    syscall\n    testq %rax, %rax\n    js .Lpf_rep_out\n    pushq %rax\n    pushq %rax\n    movq %rax, %rdi\n    leaq __prof_data(%rip), %rsi\n    movq $" + str(size) + ", %rdx\n    movq $1, %rax\n    syscall\n    movq (%rsp), %rdi\n    leaq __prof_names(%rip), %rsi\n    movq $" + str(count(names)) + ", %rdx\n    movq $1, %rax\n    syscall\n    movq (%rsp), %rdi\n    movq $3, %rax\n    syscall\n    popq %rax\n    popq %rax\n" + lpf_rep_tail() + "    .section .rodata\n__prof_path:\n    .asciz \"" + lsesc(path) + "\"\n__prof_names:\n    .asciz \"" + lsesc(names) + "\"\n    .section .text\n"
+fn lpf_fnames(a) = let ft = lpeep(a.funcs_raw) in lpf_names(lp_lines(ft, 0, count(ft), Nil), Nil)
+fn lpf_final(text, a) = if lpf_on() == 0 or a.is_krn == 1 then text else let nms = lpf_fnames(a) in let slots = lpf_slots(nms) in "    .section .bss\n    .lcomm __prof_data, " + str(112 + 6 * slots * 8) + "\n" + lpf_glob(lp_lines(text, 0, count(text), Nil), slots, Nil) + "    .section .text\n" + lpf_report(os_getenv("LUME_PROFILE"), nms)
+fn lpf_funcs(text, a) = if lpf_on() == 0 or a.is_krn == 1 then text else lpf_text(text, lpf_names(lp_lines(text, 0, count(text), Nil), Nil), "f")
+fn lpf_mains(text, a) = if lpf_on() == 0 or a.is_krn == 1 then text else let nms = lpf_fnames(a) in lpf_init(lpf_slots(nms)) + lpf_text(text, nms, "m")
+fn lgen(prog0) = let a = lgen_analysis(prog0, "") in lpf_final(lgen_emit(a), a)
 
 
 ## --- runtime (copied verbatim from data_asmgen.lume) ---

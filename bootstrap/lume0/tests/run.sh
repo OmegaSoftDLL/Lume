@@ -460,6 +460,15 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     for gate in ownership_gate runtime_sync_gate gc_gate; do
         if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/harness/$gate.src -o ../../build/bin/$gate 2>"$ntmp/$gate.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/$gate >"$ntmp/$gate.out" 2>>"$ntmp/$gate.err"; then ok "$(cat "$ntmp/$gate.out")"; else bad "$gate"; tail -3 "$ntmp/$gate.err"; fi
     done
+    # every documented builtin called once (a builtin missing from a release fails to compile here), on every platform
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/builtins_regress_ok.src >"$ntmp/breg.out" 2>"$ntmp/breg.err"
+    if grep -q " passed, 0 failed" "$ntmp/breg.out"; then ok "builtins regression: every documented builtin family answers as the reference says (builtins_regress_ok.src)"; else bad "builtins regression (builtins_regress_ok.src)"; tail -8 "$ntmp/breg.out" "$ntmp/breg.err"; fi
+    # lume run --profile: per-function counters written at exit (calls of fib(20) = 21891), the program output unchanged
+    printf 'fn fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)\nprint fib(20)\n' > "$ntmp/prof_fib.src"
+    (cd "$ntmp" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" run --profile prof_fib.src >prof.out 2>prof.err)
+    if grep -qx "6765" "$ntmp/prof.out" && grep -Eq " 21891 +0  fib$" "$ntmp/prof.err" && grep -q "^lume profile: " "$ntmp/prof.err" && [ ! -e "$ntmp/lume-profile.out" ]; then ok "lume run --profile: calls, self/total time and allocations per function"; else bad "lume run --profile"; cat "$ntmp/prof.out" "$ntmp/prof.err" | tail -8; fi
+    # the factual reference: every example in docs/LUME_REFERENCE_{EN,PT_BR}.md gives the output written under it
+    if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/docs/ref_examples_gate.src -o ../../build/bin/ref_examples_gate 2>"$ntmp/refg.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/ref_examples_gate >"$ntmp/refg.out" 2>>"$ntmp/refg.err"; then ok "$(cat "$ntmp/refg.out")"; else bad "factual reference examples (ref_examples_gate)"; tail -12 "$ntmp/refg.err"; fi
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/gc_ok.src >"$ntmp/gc_ok.out" 2>"$ntmp/gc_ok.err"
     if grep -q " passed, 0 failed" "$ntmp/gc_ok.out"; then ok "collector: live data survives forced collections, garbage is freed (gc_ok.src)"; else bad "collector: gc_ok.src"; tail -5 "$ntmp/gc_ok.out"; fi
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/gc_stress_ok.src -o "$ntmp/gc_stress_ok.elf" 2>"$ntmp/gcs_build.err"
@@ -504,9 +513,11 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     "$ntmp/lasm" --strict "$ntmp/dup.s" >"$ntmp/dup.elf" 2>"$ntmp/dup.err" && edgef=1
     grep -q "\[L0010\]" "$ntmp/dup.err" || edgef=1
     if [ "$edgef" = 0 ]; then ok "values: chr out of 0..255 and count of a record stop, a label defined twice is a link error ([L0010])"; else bad "values: fail-closed edges"; cat "$ntmp/crf.err" "$ntmp/cr.err" "$ntmp/dup.err" 2>/dev/null | tail -5; fi
-    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/arena_ok.src >"$ntmp/arena_ok.out" 2>"$ntmp/arena_ok.err"
+    # these two measure the heap filling with records that are never read: record flattening would (rightly) remove
+    # those allocations, so it is off for them
+    LUME_FL=off LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/arena_ok.src >"$ntmp/arena_ok.out" 2>"$ntmp/arena_ok.err"
     if grep -q "8 passed, 0 failed" "$ntmp/arena_ok.out"; then ok "#404: heap_stats + arenas (bump/reset/destroy, 1M-cell bulk used-drop, monotonic no-arena growth)"; else bad "#404: heap_stats + scoped arena"; cat "$ntmp/arena_ok.out" "$ntmp/arena_ok.err"; fi
-    if LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/arena_mem.src >"$ntmp/arena_mem.out" 2>"$ntmp/arena_mem.err" && grep -q "^arena_drop 1" "$ntmp/arena_mem.out" && grep -q "^monotonic_growth 1" "$ntmp/arena_mem.out" && grep -q "^vmhwm_at_least_24m 1" "$ntmp/arena_mem.out"; then ok "#404: memory-peak evidence (heap_stats used drop + peak high-water + VmHWM peak RSS)"; else bad "#404: memory-peak evidence"; cat "$ntmp/arena_mem.out" "$ntmp/arena_mem.err"; fi
+    if LUME_FL=off LUME_BIN_DIR="$ntmp" ../../lume run ../../compiler/stage1/arena_mem.src >"$ntmp/arena_mem.out" 2>"$ntmp/arena_mem.err" && grep -q "^arena_drop 1" "$ntmp/arena_mem.out" && grep -q "^monotonic_growth 1" "$ntmp/arena_mem.out" && grep -q "^vmhwm_at_least_24m 1" "$ntmp/arena_mem.out"; then ok "#404: memory-peak evidence (heap_stats used drop + peak high-water + VmHWM peak RSS)"; else bad "#404: memory-peak evidence"; cat "$ntmp/arena_mem.out" "$ntmp/arena_mem.err"; fi
     memfail=0
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/heap_cap_fail.src -o "$ntmp/heap_cap_fail.elf" 2>"$ntmp/hcf_build.err" || memfail=1
     LUME_HEAP_CAP=32m "$ntmp/heap_cap_fail.elf" >"$ntmp/hcf.out" 2>"$ntmp/hcf.err"; hcf_rc=$?
@@ -648,7 +659,8 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     # literal 42 and calls `id` with a single register argument: `movq $42` and `call id` are present, and there is NO
     # `popq %rsi` (which a surviving second argument would have produced).
     printf 'fn id(comptime T: type, x: T) = x\nprint id(int, 42)\n' >"$ntmp/c3e.src"
-    "$ntmp/lc" <"$ntmp/c3e.src" >"$ntmp/c3e.s" 2>/dev/null
+    # the call shape is the point here: record flattening (which would inline `id`) is off for this compile
+    LUME_FL=off "$ntmp/lc" <"$ntmp/c3e.src" >"$ntmp/c3e.s" 2>/dev/null
     awk '/^_start:/{p=1} p{print}' "$ntmp/c3e.s" >"$ntmp/c3e_main.s"
     c3e_ok=1
     grep -q 'call id' "$ntmp/c3e_main.s" || c3e_ok=0
@@ -731,7 +743,8 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     "$ntmp/lc" <"$ntmp/m2bad2.src" >"$ntmp/m2bad2.s" 2>"$ntmp/m2bad2.err"; m2b2=$?
     if [ "$m2b1" = 3 ] && [ ! -s "$ntmp/m2bad1.s" ] && grep -q "'unquote' may only appear inside 'quote(...)'" "$ntmp/m2bad1.err" && [ "$m2b2" = 3 ] && [ ! -s "$ntmp/m2bad2.s" ] && grep -q "'unquote' expects exactly 1 argument" "$ntmp/m2bad2.err"; then ok "phase-2 M2: unquote outside quote or with wrong arity fails at compile time (exit 3, no asm)"; else bad "phase-2 M2: unquote outside quote or with wrong arity fails at compile time"; fi
     # phase-2 C4: `comptime assert` -- a condition evaluated entirely at compile time that leaves no runtime check.
-    "$ntmp/lc" <../../compiler/stage1/comptime_assert.src >"$ntmp/ca.s" 2>"$ntmp/ca.err"; "$ntmp/lasm" <"$ntmp/ca.s" >"$ntmp/ca.elf" 2>/dev/null; chmod +x "$ntmp/ca.elf"
+    # it counts the calls left in the assembly, so record flattening (which would inline `sq`) is off here
+    LUME_FL=off "$ntmp/lc" <../../compiler/stage1/comptime_assert.src >"$ntmp/ca.s" 2>"$ntmp/ca.err"; "$ntmp/lasm" <"$ntmp/ca.s" >"$ntmp/ca.elf" 2>/dev/null; chmod +x "$ntmp/ca.elf"
     ca_ok=1
     { [ -x "$ntmp/ca.elf" ] && "$ntmp/ca.elf" 2>/dev/null | diff -u ../../tests/conformance/stage1/comptime_assert_asm.expected - >/dev/null; } || ca_ok=0
     # PROOF the passing asserts ran at compile time: the assert's `sq(5)` is folded away, so the only `call sq`

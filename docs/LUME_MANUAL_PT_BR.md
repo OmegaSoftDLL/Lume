@@ -17,6 +17,11 @@ seguranca matematica e controle total da maquina.
   lume manual --pt --export <f>   Exportar o manual completo em Markdown (.md)
   lume help <capitulo>            Atalho direto para qualquer capitulo
 
+## PARA QUEM PROGRAMA E PARA IAs
+  lume manual --pt referencia   Referencia factual: so o que funciona hoje, estado de cada builtin e modulo,
+                                cada exemplo executado pela bateria de testes (comece por aqui)
+  lume manual --pt visao        Material de visao e pesquisa (os capitulos 1-10 o misturam com a referencia)
+
 ## CAPITULOS DO MANUAL (10 CAPITULOS)
   1. visao-geral (overview)   Arquitetura (.lume vs .src), Inicio Rapido e Fluxo
   2. sintaxe     (syntax)     Gramatica Completa, fn/type/match/let e Regras do Compilador
@@ -70,10 +75,29 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - `type Nome = ...`            Define um Tipo Algebrico (ADT) ou registro.
 - `fn nome(a, b) = expr`       Define uma funcao.
 - `pub fn nome(a, b) = expr`   Define uma funcao publica exportada.
+- `priv fn nome(a, b) = expr`  Funcao privada do modulo: outros modulos nao a chamam e ela nunca colide com os nomes deles.
 - `fn f(x: any) -> any = x`    `any` desliga a checagem estatica: qualquer valor serve, o runtime confere o uso.
 - `const NOME: T = expr`       Define uma constante de modulo (disponivel em funcoes e contratos).
 - `law nome(a: int) = expr`    Define uma lei matematica universal provada pelo compilador.
 - `print <expr>`               Ponto de entrada executavel do programa.
+
+## 2.1.1 Palavras Reservadas e Nomes com Significado Especial
+- Palavras-chave (nunca sao nomes): `if then else elif let in var mut match not and or own with spawn do defer errdefer`
+  `comptime quote splice scope shard fn pub use as type const law print requires ensures true false`.
+- Nome com inicial maiuscula e construtor (`Nil`, `Cons`, as variantes do seu `type`), nunca funcao ou variavel.
+- Builtins do runtime (`count`, `at`, `slice`, `ord`, `str`, `buf_get`, ... veja `lume manual --pt biblioteca`) e os prefixos
+  `__rt_` e `__lume_` pertencem ao runtime: uma funcao com esse nome e recusada com [R0201].
+- `ct_` no inicio do nome de uma funcao torna todos os parametros segredos (so os `secret` / `secret_*`, se houver):
+  `if`, `match`, `/`, `%`, `and` / `or` ou indice de tabela sobre eles da [C0009]. Parametros chamados `secret` ou
+  `secret_*` sao segredos em qualquer funcao.
+- Funcoes `test_*` sao as que o `lume test` roda; uma `pub fn` sem `test_` de mesmo nome recebe o aviso P35.
+- `grad`, `value_and_grad`, `jvp`, `vjp` sao os operadores de autodiff: uma chamada deles sobre uma funcao e
+  derivada ([N0400]); nao de esses nomes as suas funcoes.
+- Em `ensures`: `result` e o valor devolvido e `old(x)` o valor de x na entrada. `_` como corpo e um buraco para
+  `lume intent` / sintese. `kernel_boot_entry` e a entrada de um kernel `@freestanding` ([K0006]).
+- Atributos: `@export("C")`, `@secret`, `@no_alloc`, `@bound(cycles: N)`, `@interrupt`, `@freestanding`, `@repr(c)`.
+- Modulos: `use m as a` faz `a.nome` ser o `nome` de m; um nome definido em dois modulos importados fica separado
+  como `nome__m`, e o uso sem qualificar e erro de ambiguidade com arquivo:linha:coluna.
 
 ## 2.2 Expressoes, Desestruturacao e Operadores Ergonomicos (DX 10/10)
 - Variavel local (`let..in`): `let a = 10 in let b = 20 in a + b`
@@ -292,8 +316,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                    cofre que nao responde nunca vira ausente, o chamador pode falhar fechado
 - Ambiente: `os_getenv(nome)` ("" se ausente), `os_env_has(nome)` (1 se existe, mesmo vazia)
 - Interfaces virtuais (VPN): `use tun` -> `tun_open(nome)` -> {ok, fd, sess, name, err} (Linux /dev/net/tun como
-                   root, Windows Wintun em processo elevado: wintun.dll ao lado do programa, no System32 ou em
-                   LUME_WINTUN_DLL), `tun_read(t, buf)` (um pacote IP: o tamanho, 0 sem pacote, -1), `tun_write(t, buf,
+                   root; Windows Wintun em processo elevado, carregado so pelo camaleao (`chameleon_c_open`): caminho
+                   absoluto dentro de System32 ou Program Files com assinatura Authenticode valida (LUME_WINTUN_DLL,
+                   senao System32\wintun.dll, depois Program Files\WireGuard\wintun.dll); a pasta do programa, a
+                   pasta atual, pastas de usuario e nome relativo sao recusados), `tun_read(t, buf)` (um pacote IP: o
+                   tamanho, 0 sem pacote, -1), `tun_write(t, buf,
                    n)`, `tun_wait(t, ms)`, `tun_set_nonblocking(t)`, `tun_set_ipv4(t, end, prefixo)`, `tun_set_mtu(t, mtu)`,
                    `tun_set_up(t)` ("" ou o motivo), `tun_close(t)`; no Linux o fd funciona com epoll
 - Controle de rede: `use netctl` -> `net_tcp_connect_addr_timeout(ip, porta, ms)` (o socket, ou -1 se recusado,
@@ -359,6 +386,14 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   distorcao de bloco para codificadores: `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`,
                   `buf_satd16x16` (a, ai, sa, b, bi, sb): soma das diferencas absolutas, ou da diferenca transformada
                   por Hadamard 4x4 / 2, entre o bloco n x n de a no byte ai (linhas a sa bytes) e o de b em bi; -1 se errado
+                  blocos H.264: `buf_h264_fdct4x4` / `idct4x4(src, si, dst, di)` (int16 4x4), `buf_h264_quant4x4(src,
+                  si, qp, intra, dst, di)` (niveis nao nulos), `buf_h264_dequant4x4(src, si, qp, dst, di)`,
+                  `buf_h264_sub4x4(a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4(pred, pi, res, ri, dst, di)`,
+                  `buf_h264_intra4x4` / `intra16x16(frame, fi, fs, modo, disp, dst)`; com `use h264`:
+                  `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (1/4 de amostra, 6 taps),
+                  `buf_h264_chroma_mc` (mesmos argumentos, 1/8, bilinear), `buf_h264_deblock_edge(buf, q0, across,
+                  along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: listas, um valor por 4 linhas de luma / 2 de
+                  croma); todos devolvem -1 com argumento errado
 - Hardware, Kernel Bare-Metal e Console Nativo (`@freestanding` / `.kernel` / `.iso`):
   - Portas I/O (8/16/32 bits): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                                `port_out32(p, v)`, `port_in32(p)`
@@ -387,6 +422,13 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   net/http` -> `http.get(u)`); de duas pastas com o mesmo ultimo segmento, todas menos uma precisam de alias
   (`use a/http` + `use b/http as hb`), e duas sem alias param em `arquivo:linha:coluna` com a correcao; cada
   `use m` e resolvido ao lado do arquivo que o escreve; nomes repetidos ficam separados (NOME__modulo)
+- `use seq`            Repeticao sem recursao escrita a mao: `seq_map`, `seq_filter`, `seq_fold`, `seq_foldr`,
+                       `seq_any`, `seq_all`, `seq_find`, `seq_range`, `seq_loop(a, b, acc, f)`, `seq_while(estado, cond, passo)`,
+                       `seq_count`, `seq_bytes`, `seq_loop_inv(a, b, acc, passo, inv)` (`lume prove` prova o contrato por
+                       inducao no invariante); recursao de cauda, um milhao de passos em pilha constante; lambdas
+                       `fn(x) => ...` capturam variaveis. Lacos: `seq_loop(0, n, acc0, fn(i, acc) => ...)` e o `for i in 0..n`
+                       sobre um acumulador, sem montar lista: `fn soma_buf(b) = seq_loop(0, buf_len(b), 0, fn(i, acc) => acc +
+                       buf_get(b, i))`; `seq_loop_down(a, b, acc, f)` conta para baixo, `seq_while(s, cond, passo)` repete enquanto cond(s)
 - `use text`           Achar por conteudo, nao por coluna: `str_find(s, sub, desde)` (indice ou -1),
                        `str_find_last`, `str_contains`, `str_after(s, rotulo)`, `str_before`, `str_between`,
                        `str_trim`, `str_lines` / `str_line(s, n)` (so "\n" quebra linha, como sed e awk),
@@ -711,6 +753,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                                          funcoes pub exportadas; um programa C linka com cc ou ld;
                                          um teste declara ## @library libX.so = X.src)
   lume run [--memory] <src> [args...]    Compila e executa imediatamente
+  lume run --profile <src> [args]   Executa com contadores; na saida o stderr mostra, por funcao, ms proprio /
+                                    % proprio / ms total / chamadas / alocacoes, e as coletas e o tempo do GC
+                                    (ordenado pelo tempo proprio; LUME_PROFILE_TOP=N linhas). Funcoes que o
+                                    compilador expandiu contam no chamador (LUME_FL=off as mantem); um laco de
+                                    cauda e uma chamada.
   lume test <src.src>...                 Executa todos os testes `fn test_*()`
   lume check <src.src> [--json]          Verifica tipos, ownership e efeitos
   lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL
@@ -1082,6 +1129,7 @@ print run_lumeputer_demo()
 | `[L0010]` | Ligacao              | Um simbolo definido duas vezes na mesma imagem, o que mandaria chamadas para a rotina errada. |
 | `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |
+| `[W0003]` | Nome Duplicado       | Um nome definido em dois modulos do mesmo programa (aviso: cada modulo fica com o seu). Renomeie um, use `priv fn` ou escreva `modulo.nome` onde os dois sao visiveis. |
 
 # APENDICE A: SINOPSE DE TODOS OS COMANDOS
 
@@ -1096,7 +1144,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume describe|--describe [--json]
   lume targets|--targets [--json]
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
-  lume run [--memory] <source.src> [program-arguments]
+  lume run [--memory] [--profile] <source.src> [program-arguments]
   lume test <source.src>...
   lume check [--json] [--lex] <source.src>
   lume compile [--json] [--run] <source.src>

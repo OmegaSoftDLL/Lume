@@ -1,0 +1,47 @@
+## ref_examples_gate.src -- every example of the factual reference (docs/LUME_REFERENCE_EN.md and _PT_BR.md) is run
+## with `lume run` and must give exactly the output block written under it: the reference only shows what works.
+## An output block lists the stdout lines; a line `exit N` is the expected exit code (0 when absent) and a line
+## `stderr: TEXT` a text stderr must contain. Input: `@root <repository>` on stdin.
+use hostio
+
+fn rg_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else rg_line_end(s, i + 1)
+fn rg_lines(s, i) = if i >= count(s) then Nil else let e = rg_line_end(s, i) in Cons(slice(s, i, e), rg_lines(s, e + 1))
+fn rg_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else slice(input, 6, rg_line_end(input, 0))
+fn rg_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
+
+## the body of a fenced block: the lines up to the closing ``` and what follows it
+fn rg_block(ls, acc) = match ls
+    Nil        => {body: acc, rest: Nil}
+    Cons(h, t) => if h == "```" then {body: acc, rest: t} else rg_block(t, acc + h + "\n")
+## the (code, expected) pairs of a document
+fn rg_pairs(ls) = match ls
+    Nil        => Nil
+    Cons(h, t) => if h == "```lume" then rg_pair(rg_block(t, "")) else rg_pairs(t)
+fn rg_pair(code) = rg_pair2(code.body, rg_skip_blank(code.rest))
+fn rg_skip_blank(ls) = match ls
+    Nil        => Nil
+    Cons(h, t) => if h == "" then rg_skip_blank(t) else ls
+fn rg_pair2(body, ls) = match ls
+    Nil        => Nil
+    Cons(h, t) => if h == "```output" then (let out = rg_block(t, "") in Cons({code: body, out: out.body}, rg_pairs(out.rest))) else Cons({code: body, out: "@missing"}, rg_pairs(ls))
+
+## what an output block expects: stdout text, exit code, stderr fragments
+fn rg_expect(ls, so, code, errs) = match ls
+    Nil        => {stdout: so, code: code, errs: errs}
+    Cons(h, t) => if rg_starts(h, "exit ") then rg_expect(t, so, toint(slice(h, 5, count(h))), errs) else if rg_starts(h, "stderr: ") then rg_expect(t, so, code, Cons(slice(h, 8, count(h)), errs)) else rg_expect(t, so + h + "\n", code, errs)
+fn rg_contains(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else rg_contains(text, part, i + 1)
+fn rg_all_in(text, xs) = match xs
+    Nil        => 1
+    Cons(h, t) => if rg_contains(text, h, 0) == 1 then rg_all_in(text, t) else 0
+fn rg_exit(st) = if st % 256 == 0 then st / 256 else st
+
+## run one example; "" when it matches, else a description of the difference
+fn rg_run(root, dir, doc, k, p) = let src = dir + "/ex" + str(k) + ".src" in let w = fs_write_sync(src, p.code) in let out = dir + "/ex" + str(k) + ".out" in let st = hio_osrun_ct(hio_lume_cmd(root), Cons("run", Cons(src, Nil)), out, out + ".err", 300000) in let e = rg_expect(rg_lines(p.out, 0), "", 0, Nil) in let got = fs_read_file(out) in let err = fs_read_file(out + ".err") in if p.out == "@missing" then doc + " example " + str(k) + ": no ```output block under it\n" else if got != e.stdout then doc + " example " + str(k) + ": stdout differs\n--- expected\n" + e.stdout + "--- got\n" + got + err else if rg_exit(st) != e.code then doc + " example " + str(k) + ": exit " + str(rg_exit(st)) + ", expected " + str(e.code) + "\n" + err else if rg_all_in(err, e.errs) == 0 then doc + " example " + str(k) + ": stderr lacks an expected text\n" + err else ""
+fn rg_run_all(root, dir, doc, ps, k, acc) = match ps
+    Nil        => {fails: acc, n: k}
+    Cons(h, t) => rg_run_all(root, dir, doc, t, k + 1, acc + rg_run(root, dir, doc, k, h))
+fn rg_doc(root, dir, name) = let text = fs_read_file(root + "/docs/" + name) in if text == "" then {fails: name + ": cannot read the reference\n", n: 0} else rg_run_all(root, dir, name, rg_pairs(rg_lines(text, 0)), 0, "")
+fn rg_main(root) = let dir = root + "/build/ref-gate" in let m = hio_mkdir_p(dir) in let en = rg_doc(root, dir, "LUME_REFERENCE_EN.md") in let pt = rg_doc(root, dir, "LUME_REFERENCE_PT_BR.md") in if en.fails != "" or pt.fails != "" then ctfail("reference examples gate failed:\n" + en.fails + pt.fails) else "OK: " + str(en.n + pt.n) + " examples of the factual reference (EN " + str(en.n) + ", PT " + str(pt.n) + ") run with the exact output written under them"
+fn rg_dispatch(input) = let root = rg_root(input) in if root == "" then ctfail("reference examples gate requires @root\n") else rg_main(root)
+
+print rg_dispatch(readall())

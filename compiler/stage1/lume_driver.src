@@ -15,7 +15,9 @@ fn ld_dir(path0) = let path = ld_fwd(path0) in let slash = ld_rfind_slash(path, 
 
 fn ld_base(path0) = let path = ld_fwd(path0) in let slash = ld_rfind_slash(path, count(path) - 1) in slice(path, slash + 1, count(path))
 
-fn ld_root() = let bin = ld_dir(os_arg_at(0)) in let parent = ld_dir(bin) in let r0 = if ld_base(parent) == "build" then let root = ld_dir(parent) in if root == "" then "." else root else parent in let r = if r0 != "" and r0 != "." then r0 else if ld_exists_bin("build/bin/lumec") == 1 or ld_exists_bin("bin/lumec") == 1 or fs_path_exists("compiler/stage1/lume_driver.src") == 1 then "." else if ld_exists_bin("../build/bin/lumec") == 1 or ld_exists_bin("../bin/lumec") == 1 then ".." else if ld_exists_bin("/usr/local/lib/lume/bin/lumec") == 1 then "/usr/local/lib/lume" else if ld_exists_bin(hio_lume_home() + "/bin/lumec") == 1 then hio_lume_home() else "." in let m = if fs_path_exists(r + "/build") == 0 then fs_mkdir(r + "/build") else 1 in let m2 = if fs_path_exists(r + "/build/native-test") == 0 then fs_mkdir(r + "/build/native-test") else 1 in r
+## the launcher may sit at the prefix itself (C:\Lume\lume.exe, next to bin/): then that folder is the root
+fn ld_root() = let bin = ld_dir(os_arg_at(0)) in if bin != "" and ld_exists_bin(bin + "/bin/lcli") == 1 then bin else ld_root2(bin)
+fn ld_root2(bin) = let parent = ld_dir(bin) in let r0 = if ld_base(parent) == "build" then let root = ld_dir(parent) in if root == "" then "." else root else parent in let r = if r0 != "" and r0 != "." then r0 else if ld_exists_bin("build/bin/lumec") == 1 or ld_exists_bin("bin/lumec") == 1 or fs_path_exists("compiler/stage1/lume_driver.src") == 1 then "." else if ld_exists_bin("../build/bin/lumec") == 1 or ld_exists_bin("../bin/lumec") == 1 then ".." else if ld_exists_bin("/usr/local/lib/lume/bin/lumec") == 1 then "/usr/local/lib/lume" else if ld_exists_bin(hio_lume_home() + "/bin/lumec") == 1 then hio_lume_home() else "." in let m = if fs_path_exists(r + "/build") == 0 then fs_mkdir(r + "/build") else 1 in let m2 = if fs_path_exists(r + "/build/native-test") == 0 then fs_mkdir(r + "/build/native-test") else 1 in r
 
 ## a tool exists as <path> (Linux) or <path>.exe (Windows); the process layer starts either from <path>
 ## the host's native program format: Windows programs on Windows (lumec --win64 + lasm --pe), ELF elsewhere
@@ -63,7 +65,9 @@ fn ld_exe(p) = if os_platform() == "windows" then p + ".exe" else p
 
 fn ld_cache_dir(root) = let d = root + "/build/driver-cache" in let m = if fs_path_exists(d) == 0 then fs_mkdir(d) else 1 in d
 
-fn ld_cache_file(root, kind, cid) = ld_cache_dir(root) + "/" + kind + "_" + cid
+## LUME_FL / LUME_FL_LIMIT change what the compiler emits (record flattening), so they are part of the cache key
+fn ld_cache_tag() = (if os_getenv("LUME_PROFILE") == "" then "" else "_prof") + (if os_getenv("LUME_FL") == "" then "" else "_fl" + os_getenv("LUME_FL")) + (if os_getenv("LUME_FL_LIMIT") == "" then "" else "_fll" + os_getenv("LUME_FL_LIMIT"))
+fn ld_cache_file(root, kind, cid) = ld_cache_dir(root) + "/" + kind + "_" + cid + ld_cache_tag()
 
 ## 1 when tmp became path: by rename when /bin/mv exists (atomic for a reader), else by rewriting path
 ## publish tmp as path: an atomic rename, else (another file system) a copy; tmp is gone afterwards
@@ -253,9 +257,44 @@ fn ld_json_fail(result) = let z = fs_write_sync("/dev/stdout", result + "\n") in
 fn ld_is_freestanding(text) = (count(text) >= 13 and slice(text, 0, 13) == "@freestanding") or ld_contains_at(text, "\n@freestanding", 0) == 1
 fn ld_run_with_args(root, source, prog_args) = if fs_path_exists(source) == 1 and ld_is_freestanding(fs_read_file(source)) then ctfail("lume run: " + source + " is a bare-metal kernel (@freestanding) and does not run on the host; build its image with `lume build " + source + " -o <name>.kernel` and boot it on the machine or in QEMU\n") else let binary = ld_exe(ld_scratch(root, "run")) in let built = ld_build(root, source, binary) in let rc = if built != 0 then built else ld_wait_exit(hio_osrun(binary, prog_args)) in let z = ld_build_clean(binary) in rc
 
+## `lume run --profile f.src [args]`: the program is compiled with counters (LUME_PROFILE names the file it writes at
+## exit, in the current folder), run, and the table goes to stderr: per function the time in its own code (self), the
+## time inside its outermost call (total), calls and allocations; the GC runs and time; sorted by self time.
+fn ldp_file() = "lume-profile.out"
+fn ldp_u64(s, o) = ldp_u64b(s, o, 7, 0)
+fn ldp_u64b(s, o, i, acc) = if i < 0 then acc else ldp_u64b(s, o, i - 1, acc * 256 + ord_at(s, o + i))
+fn ldp_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else ldp_line_end(s, i + 1)
+fn ldp_names(s, i) = if i >= count(s) then Nil else let e = ldp_line_end(s, i) in Cons(slice(s, i, e), ldp_names(s, e + 1))
+fn ldp_rows(d, nms, slots, k) = match nms
+    Nil        => Nil
+    Cons(h, t) => if k >= slots then Nil else Cons({name: h, self: ldp_u64(d, 112 + k * 8), total: ldp_u64(d, 112 + slots * 8 + k * 8), calls: ldp_u64(d, 112 + 2 * slots * 8 + k * 8), allocs: ldp_u64(d, 112 + 3 * slots * 8 + k * 8)}, ldp_rows(d, t, slots, k + 1))
+fn ldp_ins(r, xs) = match xs
+    Nil        => Cons(r, Nil)
+    Cons(h, t) => if r.self >= h.self then Cons(r, xs) else Cons(h, ldp_ins(r, t))
+fn ldp_sort(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => ldp_sort(t, if h.calls > 0 or h.self > 0 then ldp_ins(h, acc) else acc)
+fn ldp_pad(s, w) = if count(s) >= w then s else ldp_pad(" " + s, w)
+fn ldp_pad2(n) = if n < 10 then "0" + str(n) else str(n)
+fn ldp_ms(us) = str(us / 1000) + "." + ldp_pad2(us % 1000 / 10)
+fn ldp_pct(x, all) = if all <= 0 then "0.0" else let p = x * 1000 / all in str(p / 10) + "." + str(p % 10)
+fn ldp_take(xs, n) = if n <= 0 then Nil else ldp_take2(xs, n)
+fn ldp_take2(xs, n) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(h, ldp_take(t, n - 1))
+fn ldp_fmt(rows, per_us, all) = match rows
+    Nil        => ""
+    Cons(r, t) => ldp_pad(ldp_ms(r.self / per_us), 10) + ldp_pad(ldp_pct(r.self, all), 8) + ldp_pad(if r.name == "(top level)" then ldp_ms(all / per_us) else ldp_ms(r.total / per_us), 11) + ldp_pad(str(r.calls), 11) + ldp_pad(str(r.allocs), 11) + "  " + r.name + "\n" + ldp_fmt(t, per_us, all)
+fn ldp_sum_calls(rows) = match rows
+    Nil        => 0
+    Cons(r, t) => r.calls + ldp_sum_calls(t)
+fn ldp_top() = let t = toint(os_getenv("LUME_PROFILE_TOP")) in if t > 0 then t else 30
+fn ldp_report(d) = if count(d) < 112 then "lume profile: the program wrote no profile (it was killed, or it is a kernel)\n" else let slots = ldp_u64(d, 72) in let ticks = ldp_u64(d, 24) - ldp_u64(d, 0) in let ns = (ldp_u64(d, 32) - ldp_u64(d, 8)) * 1000000000 + ldp_u64(d, 40) - ldp_u64(d, 16) in let per0 = if ns > 0 then ticks * 1000 / ns else 1 in let per_us = if per0 > 0 then per0 else 1 in let rows = ldp_rows(d, ldp_names(d, 112 + 6 * slots * 8), slots, 0) in let sorted = ldp_sort(rows, Nil) in let gc = ldp_u64(d, 48) in "lume profile: " + ldp_ms(ns / 1000) + " ms wall, " + str(ldp_sum_calls(rows)) + " calls, GC " + str(ldp_u64(d, 96)) + " runs " + ldp_ms(gc / per_us) + " ms (" + ldp_pct(gc, ticks) + "% of the run, inside the self time below)\n" + "   self ms  self %   total ms      calls     allocs  function\n" + ldp_fmt(ldp_take(sorted, ldp_top()), per_us, ticks) + (if count(sorted) > ldp_top() then "  (" + str(count(sorted) - ldp_top()) + " more functions; LUME_PROFILE_TOP=N shows N)\n" else "")
+fn ld_run_profile(root, source) = let path = ldp_file() in let r0 = fs_remove(path) in let e = os_setenv("LUME_PROFILE", path) in let rc = ld_run_with_args(root, source, ld_args_from(4)) in let d = fs_read_file(path) in let r1 = fs_remove(path) in let w = fs_write_sync("/dev/stderr", ldp_report(d)) in rc
+
 fn ld_run(root, source) = ld_run_with_args(root, source, ld_args_from(3))
 
-fn ld_run_entry(root) = if os_arg_at(2) == "--memory" then (if os_arg_count() < 4 then ctfail("usage: lume_driver run [--memory] <source.src> [args]\n") else let rc = ld_run_with_args(root, os_arg_at(3), ld_args_from(4)) in let zm = ld_report_memory("run") in os_exit(rc)) else os_exit(ld_run(root, os_arg_at(2)))
+fn ld_run_entry(root) = if os_arg_at(2) == "--profile" then (if os_arg_count() < 4 then ctfail("usage: lume run --profile <source.src> [args]\n") else os_exit(ld_run_profile(root, os_arg_at(3)))) else if os_arg_at(2) == "--memory" then (if os_arg_count() < 4 then ctfail("usage: lume_driver run [--memory] <source.src> [args]\n") else let rc = ld_run_with_args(root, os_arg_at(3), ld_args_from(4)) in let zm = ld_report_memory("run") in os_exit(rc)) else os_exit(ld_run(root, os_arg_at(2)))
 
 ## packed artifacts: `.lcaps` and `.lumb` are stored through the compactor when that makes them smaller, and every
 ## reader accepts both forms (the magic of mem_pack tells them apart)
@@ -646,8 +685,10 @@ fn ld_self_args(args, prefix, from) = match args
 
 fn ld_self_entry(root, first) = let action = if first == "" then "status" else first in let args = ld_self_args(ld_args_from(2), root, root + "/build/bin") in if action == "status" or action == "verify" then ld_self_verify(root, action, args.prefix) else if action == "update" then ld_self_update(root, args.prefix, args.from) else if action == "prove" or action == "prove-all" then ld_self_prove_entry(root) else ctfail("usage: lume_driver self [status|verify|update|prove|prove-all] [--prefix <dir>] [--from <bin-dir>] [--json]\n")
 
-fn ld_bundle_grant(root, source, out, grant) = let bundled = out + ".bundled.src" in let src_text = fs_read_file(source) in if slice(src_text, 0, 4) != "use " and ld_contains_at(src_text, "\nuse ", 0) == 0 then let cap = if grant == "pure" then ld_iocap_lines(ld_lines(src_text, 0)) else "" in if cap != "" then ctfail("lume: capability error: module '" + ld_entry_name(source) + "' uses I/O capability '" + cap + "' not granted by lume.toml (allow = [\"pure\"])\n") else let written = fs_write_sync(bundled, src_text) in let wm = ld_write_bundle_map_from(bundled, source) in if written != 1 then ctfail("native bundling cannot copy source\n") else bundled else let dir = ld_dir(source) in let cm = ld_collect_mem(root, dir, ld_imports_text(src_text), Nil) in let wm = ld_write_bundle_map(bundled, cm.paths, source) in let req_text = "@grant " + grant + "\n" + ld_ijoin(cm.chunks) + "@entry " + ld_entry_name(source) + "\n" + ld_canon_uses(src_text, root, dir, dir, cm.seen) + "\n@end\n" in let bcid = lc_sha256("bundle-v7:" + lc_sha256(req_text) + ":" + ld_tool_id(root, "lmod")) in let bhit = ld_cache_lookup(root, "bundle", bcid) in if bhit.hit == 1 then let wb = fs_write_sync(bundled, bhit.payload) in if wb != 1 then ctfail("native bundling cannot write cached bundle\n") else bundled else let tdir = ld_tmp_dir(root) in let pid = str(os_getpid()) in let request = tdir + "/lume-bundle-" + pid + ".in" in let errors = tdir + "/lume-bundle-" + pid + ".err" in let started = fs_write_sync(request, req_text) in if started != 1 then ctfail("native bundling cannot initialize request\n") else let status = os_run_input_capture_timeout(ld_tool(root, "lmod"), Nil, request, bundled, errors, 900000) in if status != 0 then ctfail("native bundling failed:\n" + ld_tool_err(errors, ld_tool(root, "lmod"), status)) else let wb1 = ld_cache_store(root, "bundle", bcid, fs_read_file(bundled)) in let r1 = fs_remove(request) in let r2 = ld_remove_if_present(errors) in bundled
+fn ld_bundle_grant(root, source, out, grant) = let bundled = out + ".bundled.src" in let src_text = fs_read_file(source) in if slice(src_text, 0, 4) != "use " and ld_contains_at(src_text, "\nuse ", 0) == 0 then let cap = if grant == "pure" then ld_iocap_lines(ld_lines(src_text, 0)) else "" in if cap != "" then ctfail("lume: capability error: module '" + ld_entry_name(source) + "' uses I/O capability '" + cap + "' not granted by lume.toml (allow = [\"pure\"])\n") else let written = fs_write_sync(bundled, src_text) in let wm = ld_write_bundle_map_from(bundled, source) in if written != 1 then ctfail("native bundling cannot copy source\n") else bundled else let dir = ld_dir(source) in let cm = ld_collect_mem(root, dir, ld_imports_text(src_text), Nil) in let wm = ld_write_bundle_map(bundled, cm.paths, source) in let req_text = "@grant " + grant + "\n" + ld_ijoin(cm.chunks) + "@entry " + ld_entry_name(source) + "\n" + ld_canon_uses(src_text, root, dir, dir, cm.seen) + "\n@end\n" in let bcid = lc_sha256("bundle-v7:" + lc_sha256(req_text) + ":" + ld_tool_id(root, "lmod")) in let bhit = ld_cache_lookup(root, "bundle", bcid) in if bhit.hit == 1 then let wb = fs_write_sync(bundled, bhit.payload) in if wb != 1 then ctfail("native bundling cannot write cached bundle\n") else bundled else let tdir = ld_tmp_dir(root) in let pid = str(os_getpid()) in let request = tdir + "/lume-bundle-" + pid + ".in" in let errors = tdir + "/lume-bundle-" + pid + ".err" in let started = fs_write_sync(request, req_text) in if started != 1 then ctfail("native bundling cannot initialize request\n") else let status = os_run_input_capture_timeout(ld_tool(root, "lmod"), Nil, request, bundled, errors, 900000) in if status != 0 then ctfail("native bundling failed:\n" + ld_tool_err(errors, ld_tool(root, "lmod"), status)) else let wn = ld_show_warnings(fs_read_file(errors)) in let wb1 = ld_cache_store(root, "bundle", bcid, fs_read_file(bundled)) in let r1 = fs_remove(request) in let r2 = ld_remove_if_present(errors) in bundled
 
+## lmod's warnings (W0003: one name defined in two modules) reach the user even when bundling succeeds
+fn ld_show_warnings(t) = if t == "" then 0 else fs_append_sync("/dev/stderr", t)
 fn ld_find_sub(text, part, i) = if i + count(part) > count(text) then count(text) else if slice(text, i, i + count(part)) == part then i else ld_find_sub(text, part, i + 1)
 
 fn ld_json_skip_ws(text, i) = if i >= count(text) then i else if at(text, i) == " " or at(text, i) == "\t" or at(text, i) == "\r" or at(text, i) == "\n" then ld_json_skip_ws(text, i + 1) else i
@@ -1201,7 +1242,7 @@ fn ld_cmd_table_text() = "" +
 "describe|--describe;describe;--json;;;lcli;;\n" +
 "targets|--targets;targets;--json;;;ltarget;;\n" +
 "build;build;-o= --target= --incremental --memory --protect --profile= --lsym= --link= -l= -l* --emit-c-header= --build-timeout-ms= --dwarf -g --keep-proven-checks --critical --entry=;;none|standard|hardened|max|debug|release|ship;;;<source.src>\n" +
-"run;run;--memory;;;;L;<source.src> [program-arguments]\n" +
+"run;run;--memory --profile;;;;L;<source.src> [program-arguments]\n" +
 "test;test;;;;ltest;;<source.src>...\n" +
 "check;check;--json --lex;;;lcaas;;<source.src>\n" +
 "compile;compile;--json --run;;;;;<source.src>\n" +

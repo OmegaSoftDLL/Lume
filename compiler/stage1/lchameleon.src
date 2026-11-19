@@ -15,6 +15,7 @@
 ##   to `verified[T]` after passing a proven `QF_LIA` boundary guard (`requires` / `ensures`).
 
 use fs_sha256_file
+use winsys
 
 ## ============================================================================
 ## 1. FORMAL QF_LIA LAWS & WCET-BOUNDED POLYGLOT BOUNDARY GUARDS (9 ECOSYSTEMS)
@@ -58,6 +59,42 @@ fn cham_c_struct_aligned_size(raw_bytes: int, align_pad: int) -> int / pure
   requires raw_bytes >= 1 and align_pad >= 0 and align_pad <= 15
   ensures result == raw_bytes + align_pad and result >= 1
 = raw_bytes + align_pad
+
+## 1a-bis. The C ABI door on Windows: the only way foreign machine code enters a Lume program (LumeDesk rule)
+## chameleon_c_open(path) loads a DLL only when (1) the path is absolute and inside a folder that only administrators
+## can write (%SystemRoot%\System32, %ProgramFiles%, %ProgramFiles(x86)%) -- never the current folder, a user
+## folder or a relative name, so a planted DLL cannot run as SYSTEM; (2) its Authenticode signature verifies
+## (WinVerifyTrust, no network revocation check); (3) LoadLibraryExW resolves its own dependencies from its folder
+## and System32 only. chameleon_c_sym / chameleon_c_call answer unverified[int]: promote a value with
+## chameleon_verify_boundary (non-null, aligned, in range, byte length within the capacity) before trusting it.
+## On Linux the door is the `[ffi] libs` of lume.toml and `extern "c" fn`; chameleon_c_open says so.
+fn cham_low(s, i, acc) = if i >= count(s) then acc else let c = ord_at(s, i) in cham_low(s, i + 1, acc + (if c >= 65 and c <= 90 then chr(c + 32) else if c == 47 then chr(92) else chr(c)))
+fn cham_norm(p) = cham_low(p, 0, "")
+fn cham_root(name) = let v = cham_norm(os_getenv(name)) in if v == "" then "" else if slice(v, count(v) - 1, count(v)) == chr(92) then v else v + chr(92)
+fn cham_under(p, root) = root != "" and count(p) > count(root) and slice(p, 0, count(root)) == root
+fn cham_has_dotdot(p, i) = if i + 3 > count(p) then false else if slice(p, i, i + 3) == ".." + chr(92) or slice(p, i, i + 3) == chr(92) + ".." then true else cham_has_dotdot(p, i + 1)
+## absolute (C:\...), no "..", inside System32 or Program Files: folders other users cannot write
+fn cham_trusted_path(path) = let p = cham_norm(path) in count(p) > 3 and ord_at(p, 1) == 58 and ord_at(p, 2) == 92 and not cham_has_dotdot(p, 0) and (cham_under(p, cham_root("SystemRoot") + "system32" + chr(92)) or cham_under(p, cham_root("ProgramFiles")) or cham_under(p, cham_root("ProgramFiles(x86)")))
+fn cham_put32(b, o, v) = let a = buf_set(b, o, bit_and(v, 255)) in let c = buf_set(b, o + 1, bit_and(bit_shr(v, 8), 255)) in let d = buf_set(b, o + 2, bit_and(bit_shr(v, 16), 255)) in buf_set(b, o + 3, bit_and(bit_shr(v, 24), 255))
+## WINTRUST_ACTION_GENERIC_VERIFY_V2 {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}
+fn cham_guid() = cham_bytes(buf_new(16), [107, 197, 170, 0, 68, 205, 208, 17, 140, 194, 0, 192, 79, 194, 149, 238], 0)
+fn cham_bytes(b, xs, i) = match xs
+    Nil        => b
+    Cons(h, t) => cham_bytes(buf_set(b, i, h), t, i + 1)
+## WINTRUST_FILE_INFO (32 bytes) and WINTRUST_DATA (88 bytes, x64): UI none, revocation none, file, verify then close
+fn cham_sig_ok(path) = let w = ws_wstr(path) in let fi = ws_put64(cham_put32(buf_new(32), 0, 32), 8, buf_addr(w), 0) in let wd = cham_put32(ws_put64(cham_put32(cham_put32(cham_put32(cham_put32(cham_put32(buf_new(88), 0, 88), 24, 2), 28, 0), 32, 1), 48, 1), 40, buf_addr(fi), 0), 72, 16) in let g = cham_guid() in let r = ws_callq("wintrust.dll", "WinVerifyTrust", Cons(0 - 1, Cons(buf_addr(g), Cons(buf_addr(wd), Nil)))) in let c = ws_callq("wintrust.dll", "WinVerifyTrust", Cons(0 - 1, Cons(buf_addr(g), Cons(buf_addr(cham_put32(wd, 48, 2)), Nil)))) in r == 0
+fn cham_lib_fail(why) = {ok: 0, h: 0, err: why}
+fn chameleon_c_open(path) = if os_platform() != "windows" then cham_lib_fail("chameleon_c_open is the Windows C ABI door; on Linux use [ffi] libs in lume.toml with extern \"c\" fn") else if not cham_trusted_path(path) then cham_lib_fail("refused: " + path + " is not an absolute path inside System32 or Program Files (folders other users cannot write)") else if fs_path_exists(path) == 0 then cham_lib_fail("not found: " + path) else if not cham_sig_ok(path) then cham_lib_fail("refused: " + path + " has no valid Authenticode signature") else cham_load(path)
+fn cham_load(path) = let w = ws_wstr(path) in let h = ws_callq("kernel32.dll", "LoadLibraryExW", Cons(buf_addr(w), Cons(0, Cons(2304, Nil)))) in if h == 0 then cham_lib_fail("LoadLibraryExW failed for " + path + " (Win32 error " + str(ws_callq("kernel32.dll", "GetLastError", Nil)) + ")") else {ok: 1, h: h, err: ""}
+fn chameleon_c_sym(lib, name) -> unverified[int] = if lib.ok != 1 then 0 else ws_callq("kernel32.dll", "GetProcAddress", Cons(lib.h, Cons(buf_addr(ws_cz(name)), Nil)))
+fn chameleon_c_call(fp, args) -> unverified[int] = if fp == 0 then 0 else let n = ws_len(args, 0) in let a = ws_args(buf_new(8 * n + 8), args, 0) in sys_call(1011, fp, buf_addr(a), n, 0, 0)
+## the promotion gate: 1 when a foreign value may be trusted (non-null pointer, aligned, inside its range, a byte
+## length within the capacity), else 0
+@bound(cycles: 32)
+fn chameleon_verify_boundary(ptr_non_null: int, aligned: int, in_range: int, byte_len: int, max_cap: int) -> int / pure
+  requires max_cap >= 0
+  ensures result == 0 or result == 1
+= if ptr_non_null == 1 and aligned == 1 and in_range == 1 and byte_len >= 0 and byte_len <= max_cap then 1 else 0
 
 ## 1b. Rust (`cdylib` / Cargo FFI) Ownership Transfer & Unwind Guard:
 @bound(cycles: 32)

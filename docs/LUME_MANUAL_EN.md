@@ -17,6 +17,11 @@ hardware/OS targets without a C toolchain, and inspected interactively.
   lume manual --export <file.md> Generate full Markdown manual file on disk
   lume help <chapter>            Alias for lume manual <chapter>
 
+## FOR PROGRAMMERS AND AIs
+  lume manual ref               Factual reference: only what works today, a status per builtin and module,
+                                every example run by the test suite (start here)
+  lume manual vision            Vision and research material (chapters 1-10 mix it with the reference)
+
 ## MANUAL CHAPTERS (10 CHAPTERS)
   1. overview   (visao-geral)  Architecture (.lume vs .src), Quickstart & Workflow
   2. syntax     (sintaxe)      Complete Grammar, fn/type/match/let & Compiler Rules
@@ -73,10 +78,29 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `type Name = ...`            Algebraic Data Type (ADT) or record type definition.
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
+- `priv fn name(a, b) = expr`  Module-private function: other modules cannot call it and it never collides with their names.
 - `fn f(x: any) -> any = x`    `any` opts out of static typing: any value fits, the runtime checks its use.
 - `const NAME: T = expr`       Module-level constant (inlined into functions & contracts).
 - `law name(a: int) = expr`    Universal mathematical law proven across all inputs.
 - `print <expr>`               Top-level program entrypoint expression.
+
+## 2.1.1 Reserved Words and Names With a Special Meaning
+- Keywords (never a name): `if then else elif let in var mut match not and or own with spawn do defer errdefer`
+  `comptime quote splice scope shard fn pub use as type const law print requires ensures true false`.
+- A capitalized name is a constructor (`Nil`, `Cons`, your `type` variants), never a function or a variable.
+- Runtime builtins (`count`, `at`, `slice`, `ord`, `str`, `buf_get`, ... see `lume manual stdlib`) and the prefixes
+  `__rt_` and `__lume_` belong to the runtime: a function with such a name is refused with [R0201].
+- `ct_` at the start of a function name makes all its parameters secrets (only `secret` / `secret_*` ones when it
+  has some): an `if`, `match`, `/`, `%`, `and` / `or` or table index on them is [C0009]. Parameters named `secret` or
+  `secret_*` are secrets in any function.
+- `test_*` functions are what `lume test` runs; a `pub fn` without a `test_` of the same name gets warning P35.
+- `grad`, `value_and_grad`, `jvp`, `vjp` are the autodiff operators: a call of one of them on a function is
+  differentiated ([N0400]), so do not name your own functions after them.
+- In `ensures`: `result` is the returned value and `old(x)` the value of x at entry. `_` as a body is a hole for
+  `lume intent` / synthesis. `kernel_boot_entry` is the entry of a `@freestanding` kernel ([K0006]).
+- Attributes: `@export("C")`, `@secret`, `@no_alloc`, `@bound(cycles: N)`, `@interrupt`, `@freestanding`, `@repr(c)`.
+- Modules: `use m as a` makes `a.name` refer to m's `name`; a name defined in two imported modules is kept apart
+  as `name__m`, and an unqualified use of it is an ambiguity error with file:line:col.
 
 ## 2.2 Expressions, Destructuring & Ergonomic Operators (10/10 DX)
 - Local binding:      `let x = 10 in let y = 20 in x + y`
@@ -306,8 +330,11 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             answer is never reported as absent, so a caller may fail closed on it
 - Environment: `os_getenv(name)` ("" when absent), `os_env_has(name)` (1 when set, even to "")
 - Virtual interfaces (VPN): `use tun` -> `tun_open(name)` -> {ok, fd, sess, name, err} (Linux /dev/net/tun as
-            root, Windows Wintun in an elevated process: wintun.dll next to the program, in System32 or named by
-            LUME_WINTUN_DLL), `tun_read(t, buf)` (one IP packet: its length, 0 when none waits, -1), `tun_write(t, buf,
+            root; Windows Wintun in an elevated process, loaded only through the chameleon (`chameleon_c_open`): an
+            absolute path inside System32 or Program Files with a valid Authenticode signature (LUME_WINTUN_DLL, else
+            System32\wintun.dll, then Program Files\WireGuard\wintun.dll); the program's folder, the current
+            folder, user folders and relative names are refused), `tun_read(t, buf)` (one IP packet: its length,
+            0 when none waits, -1), `tun_write(t, buf,
             n)`, `tun_wait(t, ms)`, `tun_set_nonblocking(t)`, `tun_set_ipv4(t, addr, prefix)`, `tun_set_mtu(t, mtu)`,
             `tun_set_up(t)` ("" or the reason), `tun_close(t)`; on Linux the fd works with epoll
 - Network control: `use netctl` -> `net_tcp_connect_addr_timeout(ip, port, ms)` (the socket, or -1 when refused,
@@ -381,6 +408,13 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             block distortion for encoders: `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`, `buf_satd16x16`
             (a, ai, sa, b, bi, sb): sum of absolute differences, or of the 4x4 Hadamard-transformed difference / 2,
             between the n x n block of a at byte ai (rows sa bytes apart) and the block of b at bi; -1 when wrong
+            H.264 blocks: `buf_h264_fdct4x4` / `idct4x4(src, si, dst, di)` (int16 4x4), `buf_h264_quant4x4(src, si,
+            qp, intra, dst, di)` (nonzero levels), `buf_h264_dequant4x4(src, si, qp, dst, di)`, `buf_h264_sub4x4(a, ai,
+            sa, pred, pi, dst)`, `buf_h264_recon4x4(pred, pi, res, ri, dst, di)`, `buf_h264_intra4x4` / `intra16x16(frame,
+            fi, fs, mode, avail, dst)`; with `use h264`: `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst,
+            di, ds)` (quarter samples, 6-tap), `buf_h264_chroma_mc` (same arguments, eighth samples, bilinear),
+            `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: lists, one
+            value per 4 luma / 2 chroma lines); all answer -1 on a wrong argument
 - Hardware & Bare-Metal Kernel Primitives (Always Available in `@freestanding` / `.kernel`):
   - Port I/O (8/16/32-bit): `port_out8(p, v)`, `port_in8(p)`, `port_out16(p, v)`, `port_in16(p)`,
                             `port_out32(p, v)`, `port_in32(p)`
@@ -422,6 +456,9 @@ it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are
                        `seq_while(state, cond, step)`, `seq_count`, `seq_bytes`, `seq_loop_inv(a, b, acc, step, inv)`
                        (`lume prove` proves its contract by induction on the invariant); tail-recursive, linear,
                        a million steps in constant stack; lambdas `fn(x) => ...` may capture variables
+                       Loops: `seq_loop(0, n, acc0, fn(i, acc) => ...)` is `for i in 0..n` over an accumulator,
+                       with no list built: `fn buf_sum(b) = seq_loop(0, buf_len(b), 0, fn(i, acc) => acc + buf_get(b, i))`;
+                       `seq_loop_down(a, b, acc, f)` counts down, `seq_while(s, cond, step)` repeats while cond(s)
 - `use text`           Find by content, not by column: `str_find(s, sub, from)` (index or -1), `str_find_last`,
                        `str_contains`, `str_after(s, label)`, `str_before`, `str_between`, `str_trim`,
                        `str_lines` / `str_line(s, n)` (only "\n" breaks a line, as sed and awk count),
@@ -744,6 +781,10 @@ it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are
                                          functions exported; a C host links it with cc or ld;
                                          a test says ## @library libX.so = X.src)
   lume run [--memory] <src> [args...]    Compile and run source immediately
+  lume run --profile <src> [args]   Run with counters; on exit stderr gets, per function, self ms / self % /
+                                    total ms / calls / allocations, and the GC runs and time (sorted by self
+                                    time; LUME_PROFILE_TOP=N rows). Functions the compiler inlined count in
+                                    their caller (LUME_FL=off keeps them); a tail loop is one call.
   lume test <src.src>...                 Run all `fn test_*()` unit tests
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check
   lume check --lex <file>...             Lexical check only (strings, escapes, comments), FILE:LINE:COL
@@ -1131,6 +1172,7 @@ print run_lumeputer_demo()
 | `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
 | `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |
+| `[W0003]` | Duplicate Name       | One name is defined in two modules of the same program (a warning: each module keeps its own). Rename one, make it `priv fn`, or write `module.name` where both are visible. |
 
 # APPENDIX A: SYNOPSIS OF EVERY COMMAND
 
@@ -1145,7 +1187,7 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
   lume describe|--describe [--json]
   lume targets|--targets [--json]
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
-  lume run [--memory] <source.src> [program-arguments]
+  lume run [--memory] [--profile] <source.src> [program-arguments]
   lume test <source.src>...
   lume check [--json] [--lex] <source.src>
   lume compile [--json] [--run] <source.src>
