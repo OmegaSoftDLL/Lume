@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`lume verify [--jobs=N] <file.src>...`:** check, test, prove, fmt --check and certify for many files in N worker
+  processes (os_fork, default 2). Each file's result is cached under build/cache/verify by the SHA-256 of its whole
+  bundle (the file and every module it imports) and of the tools, so an unchanged file never runs again and a change
+  re-verifies only the changed module and the files that import it (LumeDesk: 130 files, 1 h 16 per full run).
 - **Call stack on run-time errors:** after the message, one `  at NAME (file.src:LINE)` line per frame, innermost
   first. The code generator emits a table of the program's functions (address, name, file and line from the bundle
   markers and the map the driver names in LUME_SRC_MAP); `rt_trace` (compiler/stage1/rt/rt_trace.src, Lume) walks the
@@ -119,6 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Item 15, faster codec blocks:** `buf_h264_quant4x4` computes qbits, f and the multipliers once per block and
   handles two levels per 32-bit read and write (488 -> 288 ns per block); `buf_h264_intra4x4` vertical, horizontal and
   DC write four 32-bit rows straight from the frame (250 / 236 / 136 -> 66 / 86 / 68 ns).
+- **Item 15, inverse transform and diagonal intra modes:** `buf_h264_idct4x4` works a row at a time from 32-bit reads
+  (513 -> 238 ns); the six diagonal Intra4x4 modes read every sample from one edge line and its 2- and 3-tap filters,
+  computed once per block (674 -> 375 ns); `h264_blocks_ok.src` checks all six with and without the top-right samples.
 - **macOS Stage-0 job (6 hours, 9 time-outs):** the frozen interpreter computed `len()` of a string by building a list
   of its characters (64 bytes each); once the bundled checker source passed 2 MiB every `len` of it allocated 128 MiB
   and forced a full collection. `len` and string indexing now count in place with a cached codepoint count (an

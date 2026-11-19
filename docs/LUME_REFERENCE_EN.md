@@ -18,6 +18,10 @@ in place (`--check`, `--stdout`), `lume manual [chapter]` prints the manual (`--
 the self and total time, calls and allocations, and the GC time, on stderr at exit (inlined functions count in their
 caller; `LUME_FL=off` keeps them; a tail loop is one call).
 
+`lume verify [--jobs=N] a.src b.src ...` runs check, test, prove, fmt --check and certify on many files in N processes
+(default 2); each file's result is cached by the SHA-256 of its whole bundle and of the tools, so after a change only
+the changed module and the files that import it run again.
+
 Official examples: `examples/topics/*.src` (one file per topic, each run by `lume test`) and
 `examples/diagnostics/` (for a diagnostic code, `CODE_name.bad` gives it and `CODE_name.fixed.src` is the corrected
 program); `tests/docs/examples_gate.src` runs all of them on every release.
@@ -307,7 +311,7 @@ line: `docs/STABILITY.md`). `grad`, `value_and_grad`, `jvp`,
 
 ## 11. Changed in this version
 
-Added: the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
+Added: `lume verify` (many files, N processes, per-file cache), the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
 `chameleon_verify_boundary`, `priv fn`, warning [W0003], `LUME_FL`, constant literals in .rodata, per-site field
 cache, collection pacing `max(8 MiB, 3 x live)`.
 Changed: W0004 also sees parameters typed `f64` and results of `f64(...)`; `buf_sad4x4` runs in SSE2; C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0

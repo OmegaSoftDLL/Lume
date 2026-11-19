@@ -18,6 +18,10 @@ no lugar (`--check`, `--stdout`), `lume manual [capitulo]` mostra o manual (`--p
 tempo proprio e total, chamadas e alocacoes, e o tempo do GC, no stderr ao terminar (funcoes expandidas no chamador
 contam nele; `LUME_FL=off` as mantem; um laco de cauda e uma chamada).
 
+`lume verify [--jobs=N] a.src b.src ...` roda check, test, prove, fmt --check e certify em muitos arquivos com N processos
+(padrao 2); o resultado de cada arquivo fica em cache pelo SHA-256 do pacote inteiro e das ferramentas, entao depois de
+uma mudanca so o modulo alterado e os arquivos que o importam rodam de novo.
+
 Exemplos oficiais: `examples/topics/*.src` (um arquivo por assunto, cada um rodado por `lume test`) e
 `examples/diagnostics/` (para um codigo de diagnostico, `CODIGO_nome.bad` o mostra e `CODIGO_nome.fixed.src` e o
 programa corrigido); `tests/docs/examples_gate.src` roda todos a cada versao.
@@ -307,7 +311,7 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 ## 11. Mudou nesta versao
 
-Entrou: a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
 Mudou: o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
