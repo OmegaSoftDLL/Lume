@@ -42,7 +42,23 @@ fn mkvsig(nm, ps, reqs, enss) = if isnil(reqs) == 0 or isnil(enss) == 0 then VCo
 fn parsefnp(t, pubf, freef) = let kc = kw_check(headtext(t), "a function", headpos(t)) in parsefn2(headtext(t), pubf, freef, checkparams(parseparams(dropkw(droponce(t), "("))))
 fn parsefn2(nm, pubf, freef, ps) = parsefn3(nm, pubf, freef, ps, parseret(ps.rest))
 fn parsefn3(nm, pubf, freef, ps, rt) = if (freef / 32) % 2 == 1 and headtext(rt.rest) != "=" and headtext(rt.rest) != "{" then {node: Nil, sg: mksig(nm, ps, rt.ty), osg: mkosig(nm, pubf, freef, ps.plist, rt.ty, rt.fromp), ksg: mkksig_f(nm, rt.effs, freef), vsg: mkvsig(nm, ps.items, rt.reqs, rt.enss), tsg: mktsig(nm, ps.items, rt.terms), rest: rt.rest} else parsefn4(nm, pubf, freef, ps, rt, expr(dropkw(rt.rest, "=")))
-fn parsefn4(nm, pubf, freef, ps, rt, b) = {node: Fn(nm, ps.items, b.node), sg: mksig(nm, ps, rt.ty), osg: mkosig(nm, pubf, freef, ps.plist, rt.ty, rt.fromp), ksg: mkksig_f(nm, rt.effs, freef), vsg: mkvsig(nm, ps.items, rt.reqs, rt.enss), tsg: mktsig(nm, ps.items, rt.terms), rest: b.rest}
+## f64 boundaries: a parameter declared `: f64` is converted with f64(x) on entry (an f64 stays, a decimal literal
+## such as 3.0 becomes the double); the result is not wrapped, so a tail call stays a tail call
+fn pf64_is(ty) = match ty
+    TyName(n) => if n == "f64" then 1 else 0
+    _         => 0
+fn pf64_head(tys) = match tys
+    Nil        => TyAny
+    Cons(h, t) => h
+fn pf64_tail(tys) = match tys
+    Nil        => Nil
+    Cons(h, t) => t
+fn pf64_wrap(items, tys, body) = match items
+    Nil        => body
+    Cons(p, rest) => pf64_wrap2(p, pf64_head(tys), rest, pf64_tail(tys), body)
+fn pf64_wrap2(p, ty, rest, tys, body) = let inner = pf64_wrap(rest, tys, body) in if pf64_is(ty) == 1 then LetIn(p, Call("f64", Cons(Var(p), Nil)), inner) else inner
+fn pf64_body(ps, rty, body) = pf64_wrap(ps.items, ps.tys, body)
+fn parsefn4(nm, pubf, freef, ps, rt, b) = {node: Fn(nm, ps.items, pf64_body(ps, rt.ty, b.node)), sg: mksig(nm, ps, rt.ty), osg: mkosig(nm, pubf, freef, ps.plist, rt.ty, rt.fromp), ksg: mkksig_f(nm, rt.effs, freef), vsg: mkvsig(nm, ps.items, rt.reqs, rt.enss), tsg: mktsig(nm, ps.items, rt.terms), rest: b.rest}
 fn parsefn(t) = parsefnp(t, 0, 0)
 fn isany(t) = match t
     TyAny => 1

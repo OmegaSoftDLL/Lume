@@ -157,7 +157,12 @@ compares by value. `print` / `str` give the shortest text that reads back to the
 int), `f64_sin`, `f64_cos`, `f64_tan`, `f64_atan2(y, x)`, `f64_exp`, `f64_log`, `f64_log10`, `f64_pow(x, y)`,
 `f64_is_nan`, `f64_str(x, decimals)`, `f64_bits` / `f64_from_bits`. A literal with a point (`1.5`) is an exact
 decimal, not an f64: write `f64(1.5)` or `f64("1.5")`. A comparison with NaN stops the program (test with
-`f64_is_nan`). There is no f32 type yet.
+`f64_is_nan`). A parameter declared `x: f64` converts what it receives with `f64(x)` on entry, so a decimal literal
+works there: `fn hyp(a: f64, b: f64) -> f64 = sqrt(a * a + b * b)` and `hyp(3.0, 4.0)`. `use math` gives `sqrt exp log
+log10 pow sin cos tan atan2 floor ceil round abs_f fmin fmax tofloat is_nan is_inf`, `f32(x)` (nearest single
+precision, ties to even) and `buf_f32_get(b, off)` / `buf_f32_set(b, off, x)` (4 bytes, little endian). `lume check`
+warns [W0004] where an int meets an f64 (it is converted at run time); `lume prove` marks a contract over f64
+`runtime_checked` with the reason (the integer prover does not decide floating point).
 
 ```lume
 fn hypot(a, b) = f64_sqrt(a * a + b * b)
@@ -258,7 +263,10 @@ Keywords: `if then else elif let in var mut match not and or own with spawn do d
 splice scope shard fn pub priv use as type const law print requires ensures true false`. A capitalized name is a
 constructor. Runtime builtins and the prefixes `__rt_` / `__lume_` cannot name a function ([R0201]). `ct_` at the
 start of a function name makes its parameters secrets ([C0009] on a branch over them); parameters named `secret`
-/ `secret_*` are secrets anywhere. `test_*` functions are what `lume test` runs. `grad`, `value_and_grad`, `jvp`,
+/ `secret_*` are secrets anywhere. `test_*` functions are what `lume test` runs. A comment
+`## Deprecated: <message>` directly above a function marks it: a call from another module warns [W0005] with the
+message, and it keeps working for at least one whole MINOR release (versions, deprecation and the long-term-support
+line: `docs/STABILITY.md`). `grad`, `value_and_grad`, `jvp`,
 `vjp` are autodiff operators. A name defined in two modules gives warning [W0003].
 
 ## 10. Known limits
@@ -272,7 +280,7 @@ start of a function name makes its parameters secrets ([C0009] on a branch over 
 
 ## 11. Changed in this version
 
-Added: `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
+Added: `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
 `chameleon_verify_boundary`, `priv fn`, warning [W0003], `LUME_FL`, constant literals in .rodata, per-site field
 cache, collection pacing `max(8 MiB, 3 x live)`.
 Changed: C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0

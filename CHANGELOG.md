@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to GNU as) and the --raw vector intrinsics `vec_sad16(p, q)` / `vec_sad8(p, q)`. Routines that use them
   (`rt/rt_simd.src`) are linked only into programs that name them, so the frozen seed assembler never meets them.
 
+- **Version stability:** docs/STABILITY.md states the 1.x promise (a stable item is never removed or changed in
+  1.x), the deprecation period (at least one whole MINOR release), the per-release checks on Linux and Windows and
+  the 1.2 long-term-support line. A comment `## Deprecated: <message>` directly above a function marks it; every
+  call from another module warns [W0005] with the message (the bundler reads the comment, so no tool changes).
+- **Floating point in the language:** a parameter declared `: f64` converts its argument with `f64(x)` (a
+  decimal literal such as `3.0` is accepted there by both checkers); f64 arithmetic and comparisons pass `lume check`;
+  `use math` adds sqrt, exp, log, log10, pow, sin, cos, tan, atan2, floor, ceil, round, abs_f, fmin, fmax, tofloat,
+  is_nan, is_inf, f32 (single-precision rounding, ties to even) and buf_f32_get / buf_f32_set; warning [W0004] where
+  an int meets an f64; `lume prove` gives the reason when a contract over f64 is runtime_checked.
 - **H.264 motion compensation and deblocking** (`use h264`, runtime routines in Lume): `buf_h264_luma_mc` (quarter-
   sample 6-tap luma, 8.4.2.2.1), `buf_h264_chroma_mc` (eighth-sample bilinear chroma, 8.4.2.2.2) and
   `buf_h264_deblock_edge` (weak and strong filters of one edge, 8.7.2.3 / 8.7.2.4), checked against a reference

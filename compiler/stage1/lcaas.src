@@ -720,7 +720,7 @@ fn cs_exprty(e, tt) = match e
     WithHandlerE(en, hs, b) => cs_exprty(b, tt)
     ScopeE(snm, b)          => cs_exprty(b, tt)
     Field(o, nm)            => let oty = cs_exprty(o, tt) in if oty != "" then cs_field_ty_rec(nm, cs_rlookup(oty, tt.recs)) else ""
-    Bin(op, a, b)           => let ta = cs_exprty(a, tt) in let tb = cs_exprty(b, tt) in if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or" then "int" else if op == "+" and (ta == "str" or tb == "str") then "str" else if ta == "int" and tb == "int" then "int" else ""
+    Bin(op, a, b)           => let ta = cs_exprty(a, tt) in let tb = cs_exprty(b, tt) in if op == "==" or op == "!=" or op == "<" or op == ">" or op == "<=" or op == ">=" or op == "and" or op == "or" then "int" else if op == "+" and (ta == "str" or tb == "str") then "str" else if ta == "int" and tb == "int" then "int" else if cs_f64_pair(ta, tb) == 1 then "f64" else ""
     If(c, t, e2)            => let tt1 = cs_exprty(t, tt) in let te = cs_exprty(e2, tt) in if tt1 != "" and tt1 == te then tt1 else if tt1 != "" and te == "" then tt1 else if te != "" and tt1 == "" then te else ""
     LetIn(nm, v, b)         => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_exprty(b, tt2)
     VarIn(nm, v, b)         => let vty = cs_exprty(v, tt) in let tt2 = {ctors: tt.ctors, recs: tt.recs, sigs: tt.sigs, gsigs: tt.gsigs, decl: tt.decl, ft: tt.ft, lenv: Cons({k: nm, v: vty}, tt.lenv)} in cs_exprty(b, tt2)
@@ -874,7 +874,10 @@ fn cs_asthead(xs) = match xs
     Nil        => Num(0)
     Cons(h, t) => h
 
-fn cs_chk_bin_op(op, a, b, tt) = let ta = cs_exprty(a, tt) in let tb = cs_exprty(b, tt) in if (op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%") and (ta != "" and ta != "int" or tb != "" and tb != "int") then Cons(cs_mkdiag("T2001", "typecheck", "type error: arithmetic operator '" + op + "' cannot be applied to " + (if ta != "" then ta else "int") + " and " + (if tb != "" then tb else "int"), "use int operands with '" + op + "'"), Nil) else if (op == "+" or op == "<" or op == ">" or op == "<=" or op == ">=") and ta != "" and tb != "" and ta != tb then Cons(cs_mkdiag("T2001", "typecheck", "type error: operator '" + op + "' cannot be applied to " + ta + " and " + tb, "convert both operands of '" + op + "' to the same type"), Nil) else Nil
+## f64 arithmetic: two f64, or an f64 and an operand of unknown type (a decimal literal such as 3.0 becomes an f64
+## there); an int next to an f64 must be converted explicitly with f64(n)
+fn cs_f64_pair(ta, tb) = if (ta == "f64" or tb == "f64") and (ta == "f64" or ta == "") and (tb == "f64" or tb == "") then 1 else 0
+fn cs_chk_bin_op(op, a, b, tt) = let ta = cs_exprty(a, tt) in let tb = cs_exprty(b, tt) in if (op == "-" or op == "*" or op == "/" or op == "+" or op == "<" or op == ">" or op == "<=" or op == ">=") and cs_f64_pair(ta, tb) == 1 then Nil else if (op == "-" or op == "*" or op == "/" or op == "+") and (ta == "f64" or tb == "f64") and (ta == "int" or tb == "int") then Cons(cs_mkwarn("W0004", "typecheck", "warning: operator '" + op + "' mixes f64 and int; the int is converted at run time", "write f64(n) to say so, or f64_int(x) for an int result"), Nil) else if (op == "-" or op == "*" or op == "/" or op == "%" or op == "+%" or op == "-%" or op == "*%") and (ta != "" and ta != "int" or tb != "" and tb != "int") then Cons(cs_mkdiag("T2001", "typecheck", "type error: arithmetic operator '" + op + "' cannot be applied to " + (if ta != "" then ta else "int") + " and " + (if tb != "" then tb else "int"), "use int operands with '" + op + "'"), Nil) else if (op == "+" or op == "<" or op == ">" or op == "<=" or op == ">=") and ta != "" and tb != "" and ta != tb then Cons(cs_mkdiag("T2001", "typecheck", "type error: operator '" + op + "' cannot be applied to " + ta + " and " + tb, "convert both operands of '" + op + "' to the same type"), Nil) else Nil
 fn cs_chk_field_rec(oty, nm, m) = match m
     Nil        => Nil
     Cons(d, r) => if cs_hasfield(nm, d.fields) == 1 then Nil else let cand = cs_best_cand(nm, cs_field_names(d.fields), "", 0 - 999) in Cons(cs_mkdiag("T1003", "typecheck", "type error: record '" + oty + "' has no field '" + nm + "'", if cand == "" then "check field name '" + nm + "' on '" + oty + "'" else "replace unknown field '" + nm + "' on '" + oty + "' with '" + cand + "'"), Nil)
@@ -3832,7 +3835,9 @@ fn cs_holes_json_items(hs) = match hs
     Nil        => Nil
     Cons(h, t) => Cons(cs_hole_json(h), cs_holes_json_items(t))
 fn cs_holes_json(hs) = cs_joinsep(cs_holes_json_items(hs), ",")
-fn cs_proof_json(p) = "{\"name\":\"" + cs_jesc(p.name) + "\",\"kind\":\"" + cs_jesc(p.kind) + "\",\"status\":\"" + cs_jesc(p.status) + "\",\"obligation\":\"" + cs_jesc(p.obligation) + "\",\"counterexample\":\"" + cs_jesc(p.counterexample) + "\"}"
+## a contract over f64 cannot be decided by the integer prover: say so instead of a bare runtime_checked
+fn cs_proof_reason(p) = if p.status == "runtime_checked" and cs_contains_sub(p.obligation, "f64") == 1 then ",\"reason\":\"floating point (f64) is outside the integer prover (QF_LIA), so this contract is checked at run time\"" else ""
+fn cs_proof_json(p) = "{\"name\":\"" + cs_jesc(p.name) + "\",\"kind\":\"" + cs_jesc(p.kind) + "\",\"status\":\"" + cs_jesc(p.status) + "\",\"obligation\":\"" + cs_jesc(p.obligation) + "\",\"counterexample\":\"" + cs_jesc(p.counterexample) + "\"" + cs_proof_reason(p) + "}"
 fn cs_proofs_json_items(ps) = match ps
     Nil        => Nil
     Cons(h, t) => Cons(cs_proof_json(h), cs_proofs_json_items(t))

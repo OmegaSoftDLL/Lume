@@ -372,7 +372,34 @@ fn dup_warn(groups) = match groups
     Nil        => 0
     Cons(g, t) => let w = fs_append_sync("/dev/stderr", "lume: warning [W0003]: '" + g.n + "' is defined in modules " + joinsep(g.owners, ", ") + "; each module uses its own, and a use where two of them are visible is an ambiguity error (fix-it: rename one, make it `priv fn`, or write module.name)\n") in dup_warn(t)
 
-fn bundle(lines) = let st0 = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let st = {mods: pv_mods(st0.mods), entry: {name: st0.entry.name, uses: st0.entry.uses, lines: pv_drop(st0.entry.lines)}, grant: st0.grant} in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in let dw = dup_warn(ns_groups(ns_sort(ns_keys(recs, Nil)), Nil)) in ns_qdefs(joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n"))
+## --- deprecation (W0005): a comment `## Deprecated: <message>` directly above a function marks it; every module that
+## calls it from outside its own module gets one warning per name, with the message (the Go convention, so no tool has
+## to parse a new form, and the code keeps compiling for the whole deprecation period)
+fn dp_note(line) = let s = trim(line) in if startswith(s, "## Deprecated:") then trim(slice(s, 14, count(s))) else if startswith(s, "## deprecated:") then trim(slice(s, 14, count(s))) else "@none"
+fn dp_fn(line) = let s = trim(line) in let s1 = (if startswith(s, "pub ") then trim(slice(s, 4, count(s))) else if startswith(s, "priv ") then trim(slice(s, 5, count(s))) else s) in if startswith(s1, "fn ") then dp_fn2(s1, count(s1)) else ""
+fn dp_fn2(s, n) = let a = skipws(s, 3, n) in slice(s, a, id_end(s, a, n))
+fn dp_scan(lines, mname, pend, acc) = match lines
+    Nil        => acc
+    Cons(h, t) => dp_scan1(h, t, mname, pend, acc)
+fn dp_scan1(h, t, mname, pend, acc) = if dp_note(h) != "@none" then dp_scan(t, mname, dp_note(h), acc) else if pend != "" and dp_fn(h) != "" then dp_scan(t, mname, "", Cons({n: dp_fn(h), msg: pend, m: mname}, acc)) else if trim(h) == "" or startswith(trim(h), "##") then dp_scan(t, mname, pend, acc) else dp_scan(t, mname, "", acc)
+fn dp_all(ms, acc) = match ms
+    Nil        => acc
+    Cons(m, t) => dp_all(t, dp_scan(m.lines, m.name, "", acc))
+## a call `name(` outside a comment, the name not part of a longer identifier
+fn dp_idc(c) = (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_"
+fn dp_at(s, w, i) = let k = count(w) in if i + k + 1 > count(s) then 0 else if slice(s, i, i + k) == w and at(s, i + k) == "(" and (i == 0 or dp_idc(at(s, i - 1)) == false) then 1 else 0
+fn dp_in(s, w, i) = if i + count(w) >= count(s) then 0 else if i + 1 < count(s) and at(s, i) == "#" and at(s, i + 1) == "#" then 0 else if dp_at(s, w, i) == 1 then 1 else dp_in(s, w, i + 1)
+fn dp_uses(lines, w) = match lines
+    Nil        => 0
+    Cons(h, t) => if dp_in(h, w, 0) == 1 and dp_fn(h) != w then 1 else dp_uses(t, w)
+fn dp_warn1(ds, m) = match ds
+    Nil        => 0
+    Cons(d, t) => let w = (if d.m != m.name and dp_uses(m.lines, d.n) == 1 then fs_append_sync("/dev/stderr", "lume: warning [W0005]: '" + d.n + "' (module " + d.m + ") is deprecated: " + d.msg + " (used in " + m.name + ")\n") else 0) in dp_warn1(t, m)
+fn dp_warn(ds, ms) = match ms
+    Nil        => 0
+    Cons(m, t) => let w = dp_warn1(ds, m) in dp_warn(ds, t)
+
+fn bundle(lines) = let st0 = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let st = {mods: pv_mods(st0.mods), entry: {name: st0.entry.name, uses: st0.entry.uses, lines: pv_drop(st0.entry.lines)}, grant: st0.grant} in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in let dw = dup_warn(ns_groups(ns_sort(ns_keys(recs, Nil)), Nil)) in let dpw = dp_warn(dp_all(Cons(st.entry, st0.mods), Nil), Cons(st.entry, st0.mods)) in ns_qdefs(joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n"))
 fn ns_needed(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, "io", Cons(st.entry.name, Nil), Nil, Nil) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in if ns_changed(recs, ns_apply(recs, st.entry.name)) == 1 then "needed" else "none"
 
 ## --- `@manifest` mode: parse & validate `lume.toml` in Lume-Core ---

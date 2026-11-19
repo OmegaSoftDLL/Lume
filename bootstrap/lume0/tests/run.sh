@@ -463,6 +463,22 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     # every documented builtin called once (a builtin missing from a release fails to compile here), on every platform
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/builtins_regress_ok.src >"$ntmp/breg.out" 2>"$ntmp/breg.err"
     if grep -q " passed, 0 failed" "$ntmp/breg.out"; then ok "builtins regression: every documented builtin family answers as the reference says (builtins_regress_ok.src)"; else bad "builtins regression (builtins_regress_ok.src)"; tail -8 "$ntmp/breg.out" "$ntmp/breg.err"; fi
+    # floating point in the language: f64 parameters take 3.0, use math, f32 rounding and buffers
+    LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/math_ok.src >"$ntmp/math.out" 2>"$ntmp/math.err"
+    if grep -q " passed, 0 failed" "$ntmp/math.out"; then ok "f64 parameters, use math, f32 rounding and f32 buffers (math_ok.src)"; else bad "use math (math_ok.src)"; tail -8 "$ntmp/math.out" "$ntmp/math.err"; fi
+    # deprecation: `## Deprecated: msg` above a function warns [W0005] where another module calls it, the program still runs
+    mkdir -p "$ntmp/dep"
+    cat > "$ntmp/dep/geo.src" <<'DEPGEO'
+## Deprecated: use new_area
+pub fn old_area(w, h) = w * h
+pub fn new_area(w, h) = w * h
+DEPGEO
+    cat > "$ntmp/dep/main.src" <<'DEPMAIN'
+use geo
+print old_area(3, 4)
+DEPMAIN
+    (cd "$ntmp/dep" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" run main.src >dep.out 2>dep.err)
+    if grep -qx "12" "$ntmp/dep/dep.out" && grep -q "W0005.*old_area.*module geo.*deprecated: use new_area" "$ntmp/dep/dep.err"; then ok "deprecation: [W0005] at a use from another module, the program unchanged"; else bad "deprecation warning [W0005]"; cat "$ntmp/dep/dep.out" "$ntmp/dep/dep.err" | tail -6; fi
     # lume run --profile: per-function counters written at exit (calls of fib(20) = 21891), the program output unchanged
     printf 'fn fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)\nprint fib(20)\n' > "$ntmp/prof_fib.src"
     (cd "$ntmp" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" run --profile prof_fib.src >prof.out 2>prof.err)

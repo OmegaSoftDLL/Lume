@@ -186,6 +186,10 @@ fn taxa(p) = match p
                       `f64_ceil`, `f64_round`, `f64_sqrt`, `f64_abs`, `f64_sin`, `f64_cos`, `f64_tan`,
                       `f64_atan2`, `f64_exp`, `f64_log`, `f64_log10`, `f64_pow`, `f64_is_nan`,
                       `f64_bits`, `f64_from_bits`. Comparar com NaN para o programa (use f64_is_nan).
+                      Um parametro declarado `x: f64` converte o argumento com f64(x) (entao `3.0`
+                      funciona ali). `use math`: sqrt exp log log10 pow sin cos tan atan2 floor ceil
+                      round abs_f fmin fmax tofloat is_nan is_inf, f32(x) (precisao simples, empate
+                      para o par), buf_f32_get(b, off) / buf_f32_set(b, off, x). [W0004]: int com f64.
 - `money[BRL]`        Dinheiro tipado por moeda (`money[BRL]`, `money[USD]`). Somar moedas
                       diferentes sem conversao explicita gera erro em tempo de compilacao!
 - `table[T]`          Tabela relacional tipada com suporte a `persist table` (WAL duravel).
@@ -1130,6 +1134,8 @@ print run_lumeputer_demo()
 | `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |
 | `[W0003]` | Nome Duplicado       | Um nome definido em dois modulos do mesmo programa (aviso: cada modulo fica com o seu). Renomeie um, use `priv fn` ou escreva `modulo.nome` onde os dois sao visiveis. |
+| `[W0004]` | f64 com int          | Um operador aritmetico mistura f64 e int (aviso: o int e convertido em execucao). Escreva `f64(n)` para deixar explicito, ou `f64_int(x)` para um resultado int. |
+| `[W0005]` | Obsoleto             | A funcao esta marcada com `## Deprecated: <mensagem>` (comentario logo acima dela) e e chamada de outro modulo. Ela continua funcionando por pelo menos uma versao MINOR inteira (docs/STABILITY.md); passe para a substituta indicada. |
 
 # APENDICE A: SINOPSE DE TODOS OS COMANDOS
 

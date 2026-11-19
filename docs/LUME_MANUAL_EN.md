@@ -198,6 +198,10 @@ fn area(s) = match s
                       `f64_from_bits` (the 64 bits as an int, for binary formats). A comparison with
                       NaN stops the program: test with `f64_is_nan`. Linux and Windows print the same
                       digits.
+                      A parameter declared `x: f64` converts its argument with f64(x) (so `3.0` works
+                      there). `use math`: sqrt exp log log10 pow sin cos tan atan2 floor ceil round
+                      abs_f fmin fmax tofloat is_nan is_inf, f32(x) (single precision, ties to even),
+                      buf_f32_get(b, off) / buf_f32_set(b, off, x). [W0004]: an int meets an f64.
 - `money[CCY]`        Currency-parameterized monetary type (`money[BRL]`, `money[USD]`);
                       mixing currencies (`money[BRL] + money[USD]`) is a compile-time error!
 - `table[Row]`        In-memory or WAL-persisted (`persist table`) relational table.
@@ -1173,6 +1177,8 @@ print run_lumeputer_demo()
 | `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |
 | `[W0003]` | Duplicate Name       | One name is defined in two modules of the same program (a warning: each module keeps its own). Rename one, make it `priv fn`, or write `module.name` where both are visible. |
+| `[W0004]` | f64 Meets int        | An arithmetic operator mixes an f64 and an int (a warning: the int is converted at run time). Write `f64(n)` to say so, or `f64_int(x)` for an int result. |
+| `[W0005]` | Deprecated           | The function is marked `## Deprecated: <message>` (comment directly above it) and is called from another module. It keeps working for at least one whole MINOR release (docs/STABILITY.md); move to the replacement the message names. |
 
 # APPENDIX A: SYNOPSIS OF EVERY COMMAND
 

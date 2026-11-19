@@ -156,8 +156,12 @@ convertido), `==` compara por valor. `print` / `str` dao o texto mais curto que 
 `f64_sqrt`, `f64_abs`, `f64_floor`, `f64_ceil`, `f64_round` (meio para longe de zero), `f64_int` (em direcao a zero,
 para int), `f64_sin`, `f64_cos`, `f64_tan`, `f64_atan2(y, x)`, `f64_exp`, `f64_log`, `f64_log10`, `f64_pow(x, y)`,
 `f64_is_nan`, `f64_str(x, casas)`, `f64_bits` / `f64_from_bits`. Um literal com ponto (`1.5`) e um decimal exato, nao
-f64: escreva `f64(1.5)` ou `f64("1.5")`. Comparar com NaN para o programa (teste com `f64_is_nan`). Ainda nao existe
-tipo f32.
+f64: escreva `f64(1.5)` ou `f64("1.5")`. Comparar com NaN para o programa (teste com `f64_is_nan`). Um parametro declarado `x: f64` converte o que recebe com `f64(x)` na entrada, entao um literal
+decimal funciona ali: `fn hyp(a: f64, b: f64) -> f64 = sqrt(a * a + b * b)` e `hyp(3.0, 4.0)`. `use math` da `sqrt exp
+log log10 pow sin cos tan atan2 floor ceil round abs_f fmin fmax tofloat is_nan is_inf`, `f32(x)` (precisao simples
+mais proxima, empate para o par) e `buf_f32_get(b, off)` / `buf_f32_set(b, off, x)` (4 bytes, little endian). O
+`lume check` avisa [W0004] onde um int encontra um f64 (convertido em execucao); o `lume prove` marca um contrato
+com f64 como `runtime_checked` com o motivo (o provador de inteiros nao decide ponto flutuante).
 
 ```lume
 fn hypot(a, b) = f64_sqrt(a * a + b * b)
@@ -258,7 +262,10 @@ Palavras-chave: `if then else elif let in var mut match not and or own with spaw
 quote splice scope shard fn pub priv use as type const law print requires ensures true false`. Nome com inicial
 maiuscula e construtor. Builtins do runtime e os prefixos `__rt_` / `__lume_` nao podem nomear funcao ([R0201]).
 `ct_` no inicio do nome de uma funcao torna os parametros segredos ([C0009] num desvio sobre eles); parametros
-`secret` / `secret_*` sao segredos em qualquer funcao. Funcoes `test_*` sao as que o `lume test` roda. `grad`,
+`secret` / `secret_*` sao segredos em qualquer funcao. Funcoes `test_*` sao as que o `lume test` roda. Um
+comentario `## Deprecated: <mensagem>` logo acima de uma funcao a marca: uma chamada de outro modulo avisa [W0005]
+com a mensagem, e ela continua funcionando por pelo menos uma versao MINOR inteira (versoes, obsolescencia e a linha
+de suporte longo: `docs/STABILITY.md`). `grad`,
 `value_and_grad`, `jvp`, `vjp` sao operadores de autodiff. Um nome definido em dois modulos da o aviso [W0003].
 
 ## 10. Limites conhecidos
@@ -273,7 +280,7 @@ maiuscula e construtor. Builtins do runtime e os prefixos `__rt_` / `__lume_` na
 
 ## 11. Mudou nesta versao
 
-Entrou: `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
 Mudou: o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
