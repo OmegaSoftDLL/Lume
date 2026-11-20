@@ -1,0 +1,39 @@
+## h264_me_ok.src -- buf_h264_me16 (motion search of one 16x16 macroblock) against the same search written here with
+## buf_sad16x16, buf_h264_luma_mc and buf_satd16x16. `lume test compiler/stage1/h264_me_ok.src`
+use h264
+
+fn w32(b, o, v) = let u = if v < 0 then v + 4294967296 else v in let a = buf_set(b, o, u % 256) in let c = buf_set(b, o + 1, (u / 256) % 256) in let d = buf_set(b, o + 2, (u / 65536) % 256) in buf_set(b, o + 3, u / 16777216)
+fn rd32(b, o) = let u = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3) in if u >= 2147483648 then u - 4294967296 else u
+
+fn pix(x, y, k) = if (x / 3 + y / 5 + k) % 7 == 0 then 235 else if y % 16 < 2 then 30 else 16 + (x * 3 + y * 2 + k * 5) % 200
+fn fillpic(b, w, h, k, dx, dy, i) = if i >= w * h then b else let q = buf_set(b, i, pix(i % w + dx, i / w + dy, k)) in fillpic(b, w, h, k, dx, dy, i + 1)
+## the picture content moved by (dx, dy): a block of the current picture is found at (+dx, +dy) in the reference
+fn pic(w, h, k, dx, dy) = fillpic(buf_new(w * h), w, h, k, dx, dy, 0)
+
+fn cfg_new(rs, pw, ph, mx, my, pmx, pmy, r, lam, lvl) = let c = buf_new(1088) in let a = w32(c, 0, rs) in let b = w32(c, 4, pw) in let d = w32(c, 8, ph) in let e = w32(c, 12, mx) in let f = w32(c, 16, my) in let g = w32(c, 20, pmx) in let h = w32(c, 24, pmy) in let i = w32(c, 28, r) in let j = w32(c, 32, lam) in let k = w32(c, 36, lvl) in c
+
+## --- the reference search -------------------------------------------------------------------------------------------
+fn lg(k) = if k <= 1 then 0 else 1 + lg(k / 2)
+fn seb(v) = let k = if v > 0 then 2 * v - 1 else 0 - 2 * v in 2 * lg(k + 1) + 1
+fn fl4(v) = if v >= 0 then v / 4 else 0 - ((0 - v + 3) / 4)
+## s = {src, si, ss, ref, rs, pw, ph, mx, my, pmx, pmy, r, lam}
+fn mvb(s, qx, qy) = s.lam * (seb(qx - s.pmx) + seb(qy - s.pmy))
+fn inside(s, x, y) = x >= 0 - s.r and x <= s.r and y >= 0 - s.r and y <= s.r and s.mx + x >= 0 and s.my + y >= 0 and s.mx + x + 16 <= s.pw and s.my + y + 16 <= s.ph
+fn icost(s, x, y) = if inside(s, x, y) == false then 1099511627776 else buf_sad16x16(s.src, s.si, s.ss, s.ref, (s.my + y) * s.rs + s.mx + x, s.rs) + mvb(s, 4 * x, 4 * y)
+fn itry(s, b, x, y) = let c = icost(s, x, y) in if c < b.c then {x: x, y: y, c: c} else b
+fn itry4(s, b, cx, cy) = itry(s, itry(s, itry(s, itry(s, b, cx + 1, cy), cx - 1, cy), cx, cy + 1), cx, cy - 1)
+fn dia2(s, b, n) = if n >= 64 then b else let b1 = itry4(s, b, b.x, b.y) in if b1.c < b.c then dia2(s, b1, n + 1) else b
+fn pred(s, qx, qy) = let p = buf_new(256) in let r = buf_h264_luma_mc(s.ref, 0, s.rs, s.pw, s.ph, s.mx, s.my, qx, qy, 16, 16, p, 0, 16) in p
+fn scost(s, qx, qy) = buf_satd16x16(s.src, s.si, s.ss, pred(s, qx, qy), 0, 16) + mvb(s, qx, qy)
+fn qtry(s, b, qx, qy) = let c = scost(s, qx, qy) in if c < b.c then {x: qx, y: qy, c: c} else b
+fn ring(s, b, d) = let x = b.x in let y = b.y in qtry(s, qtry(s, qtry(s, qtry(s, qtry(s, qtry(s, qtry(s, qtry(s, b, x - d, y - d), x, y - d), x + d, y - d), x - d, y), x + d, y), x - d, y + d), x, y + d), x + d, y + d)
+fn ref_me(s, lvl) = let b0 = itry(s, itry(s, {x: 0, y: 0, c: 1099511627776}, 0, 0), fl4(s.pmx + 2), fl4(s.pmy + 2)) in let bi = dia2(s, b0, 0) in let q0 = {x: 4 * bi.x, y: 4 * bi.y, c: if lvl == 0 then bi.c else scost(s, 4 * bi.x, 4 * bi.y)} in let q1 = if lvl >= 1 then ring(s, q0, 2) else q0 in if lvl >= 2 then ring(s, q1, 1) else q1
+
+fn same_range(a, ao, b, bo, n, i) = if i >= n then true else if buf_get(a, ao + i) != buf_get(b, bo + i) then false else same_range(a, ao, b, bo, n, i + 1)
+fn check(src, ref, w, h, mx, my, pmx, pmy, r, lam, lvl) = let cfg = cfg_new(w, w, h, mx, my, pmx, pmy, r, lam, lvl) in let got = buf_h264_me16(src, my * w + mx, w, ref, cfg) in let s = {src: src, si: my * w + mx, ss: w, ref: ref, rs: w, pw: w, ph: h, mx: mx, my: my, pmx: pmx, pmy: pmy, r: r, lam: lam} in let want = ref_me(s, lvl) in got == want.c and rd32(cfg, 40) == want.x and rd32(cfg, 44) == want.y and rd32(cfg, 48) == want.c and same_range(cfg, 640, pred(s, want.x, want.y), 0, 256, 0)
+
+fn test_finds_a_whole_sample_shift() = let w = 96 in let h = 64 in let ref = pic(w, h, 0, 0, 0) in let src = pic(w, h, 0, 3, 0 - 2) in let cfg = cfg_new(w, w, h, 32, 16, 0, 0, 16, 1, 0) in let c = buf_h264_me16(src, 16 * w + 32, w, ref, cfg) in rd32(cfg, 40) == 12 and rd32(cfg, 44) == 0 - 8 and check(src, ref, w, h, 32, 16, 0, 0, 16, 1, 0)
+fn test_integer_search_matches_the_reference() = let w = 96 in let h = 64 in let ref = pic(w, h, 0, 0, 0) in let src = pic(w, h, 1, 2, 1) in check(src, ref, w, h, 32, 16, 4, 0 - 3, 8, 4, 0) and check(src, ref, w, h, 0, 0, 0 - 9, 6, 16, 2, 0)
+fn test_half_and_quarter_refinement() = let w = 96 in let h = 64 in let ref = pic(w, h, 0, 0, 0) in let src = pic(w, h, 0, 5, 3) in check(src, ref, w, h, 32, 16, 0, 0, 16, 4, 1) and check(src, ref, w, h, 32, 16, 6, 2, 16, 4, 2) and check(src, ref, w, h, 80, 48, 0 - 3, 1, 4, 8, 2)
+fn test_range_zero_stays_at_the_origin() = let w = 96 in let h = 64 in let ref = pic(w, h, 0, 0, 0) in let src = pic(w, h, 0, 3, 0) in let cfg = cfg_new(w, w, h, 32, 16, 12, 0, 0, 1, 0) in let c = buf_h264_me16(src, 16 * w + 32, w, ref, cfg) in rd32(cfg, 40) == 0 and rd32(cfg, 44) == 0 and check(src, ref, w, h, 32, 16, 12, 0, 0, 1, 0)
+fn test_wrong_arguments_answer_minus_one() = let ref = pic(64, 48, 0, 0, 0) in buf_h264_me16(ref, 0, 64, ref, buf_new(100)) == 0 - 1 and buf_h264_me16(ref, 0, 64, ref, cfg_new(64, 64, 48, 56, 0, 0, 0, 8, 1, 0)) == 0 - 1 and buf_h264_me16(ref, 0, 64, ref, cfg_new(64, 64, 48, 0, 0, 0, 0, 8, 1, 3)) == 0 - 1 and buf_h264_me16(ref, 0, 64, buf_new(10), cfg_new(64, 64, 48, 0, 0, 0, 0, 8, 1, 0)) == 0 - 1

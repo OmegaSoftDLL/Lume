@@ -1,0 +1,64 @@
+## h264_mbpc_ok.src -- buf_h264_mb_pc (one chroma plane of an inter macroblock) against the same plane coded here:
+## buf_h264_chroma_mc, the block builtins for the 4x4 parts, and the chroma DC path (2x2 Hadamard, quantization and
+## scaling of 8.5.11, qPc of table 8-15) written from the standard's formulas. `lume test compiler/stage1/h264_mbpc_ok.src`
+use h264
+use seq
+
+fn w32(b, o, v) = let u = if v < 0 then v + 4294967296 else v in let a = buf_set(b, o, u % 256) in let c = buf_set(b, o + 1, (u / 256) % 256) in let d = buf_set(b, o + 2, (u / 65536) % 256) in buf_set(b, o + 3, u / 16777216)
+fn rd32(b, o) = let u = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3) in if u >= 2147483648 then u - 4294967296 else u
+fn get16(b, o) = let v = buf_get(b, o) + 256 * buf_get(b, o + 1) in if v >= 32768 then v - 65536 else v
+fn put16(b, o, v) = let u = if v < 0 then v + 65536 else v in let x = buf_set(b, o, u % 256) in buf_set(b, o + 1, u / 256)
+
+fn pix(x, y, k) = if (x / 3 + y / 5 + k) % 7 == 0 then 200 else if y % 8 < 1 then 60 else 64 + (x * 5 + y * 3 + k * 11) % 120
+fn fillpic(b, w, h, k, i) = if i >= w * h then b else let q = buf_set(b, i, pix(i % w, i / w, k)) in fillpic(b, w, h, k, i + 1)
+fn pic(w, h, k) = fillpic(buf_new(w * h), w, h, k, 0)
+fn cfg_new(rs, qy, off, pw, ph, bx, by, vx, vy) = let c = buf_new(512) in let a = w32(c, 0, rs) in let b = w32(c, 4, qy) in let d = w32(c, 8, off) in let e = w32(c, 12, pw) in let f = w32(c, 16, ph) in let g = w32(c, 20, bx) in let h = w32(c, 24, by) in let i = w32(c, 28, vx) in let j = w32(c, 32, vy) in c
+
+## --- the standard's chroma DC path -----------------------------------------------------------------------------------
+fn qpc(q) = if q < 30 then q else seq_nth([29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39], q - 30)
+fn mf0(r) = seq_nth([13107, 11916, 10082, 9362, 8192, 7282], r)
+fn v0(r) = seq_nth([10, 11, 13, 14, 16, 18], r)
+fn pow2(k) = if k == 0 then 1 else 2 * pow2(k - 1)
+fn iabs(v) = if v < 0 then 0 - v else v
+fn sgn(v, z) = if v < 0 then 0 - z else z
+fn fdiv2(v) = if v >= 0 then v / 2 else 0 - ((1 - v) / 2)
+## 2x2 Hadamard of [c0 c1; c2 c3] in raster order
+fn had(c0, c1, c2, c3) = [c0 + c1 + c2 + c3, c0 - c1 + c2 - c3, c0 + c1 - c2 - c3, c0 - c1 - c2 + c3]
+fn qdc(f, q) = let qb = 15 + q / 6 in sgn(f, (iabs(f) * mf0(q % 6) + 2 * (pow2(qb) / 6)) / pow2(qb + 1))
+fn dqdc(g, q) = fdiv2(g * v0(q % 6) * pow2(q / 6))
+
+fn nzlist(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => (if h != 0 then 1 else 0) + nzlist(t)
+fn bxo(b) = (b % 2) * 4
+fn byo(b) = (b / 2) * 4
+fn zz(k) = buf_get(buf_from_str("ABEIFCDGJMNKHLOP"), k) - 65
+fn blk8(p, b) = let d = buf_new(16) in blk8f(p, b, d, 0)
+fn blk8f(p, b, d, i) = if i >= 16 then d else let w = buf_set(d, i, buf_get(p, (byo(b) + i / 4) * 8 + bxo(b) + i % 4)) in blk8f(p, b, d, i + 1)
+fn coefs(src, si, ss, pred, b) = let res = buf_new(32) in let r = buf_h264_sub4x4(src, si + byo(b) * ss + bxo(b), ss, blk8(pred, b), 0, res) in let w = buf_new(32) in let r2 = buf_h264_fdct4x4(res, 0, w, 0) in w
+fn aclev(w, q) = let lev = buf_new(32) in let n = buf_h264_quant4x4(w, 0, q, 0, lev, 0) in put16(lev, 0, 0)
+fn nzcount(lev, i) = if i >= 16 then 0 else (if get16(lev, i * 2) != 0 then 1 else 0) + nzcount(lev, i + 1)
+fn recon(rec, rb, rs, pred, b, lev, dc, q) = let dq = buf_new(32) in let r = buf_h264_dequant4x4(lev, 0, q, dq, 0) in let s = put16(dq, 0, dc) in let rr = buf_new(32) in let r2 = buf_h264_idct4x4(dq, 0, rr, 0) in let rc = buf_new(16) in let r3 = buf_h264_recon4x4(blk8(pred, b), 0, rr, 0, rc, 0) in copyback(rc, rec, rb + byo(b) * rs + bxo(b), rs, 0)
+fn copyback(rc, rec, rb, rs, i) = if i >= 16 then 0 else let w = buf_set(rec, rb + (i / 4) * rs + i % 4, buf_get(rc, i)) in copyback(rc, rec, rb, rs, i + 1)
+fn copypred(pred, rec, rb, rs, i) = if i >= 64 then 0 else let w = buf_set(rec, rb + (i / 8) * rs + i % 8, buf_get(pred, i)) in copypred(pred, rec, rb, rs, i + 1)
+fn zzcopy(lev, out, o, k) = if k >= 16 then 0 else let w = put16(out, o + k * 2, get16(lev, zz(k) * 2)) in zzcopy(lev, out, o, k + 1)
+
+fn ref_pc(src, si, ss, ref, rec, rs, qy, off, pw, ph, bx, by, vx, vy) = let qi = qy + off in let q = qpc(if qi < 0 then 0 else if qi > 51 then 51 else qi) in let pred = buf_new(64) in let r = buf_h264_chroma_mc(ref, 0, rs, pw, ph, bx, by, vx, vy, 8, 8, pred, 0, 8) in let w0 = coefs(src, si, ss, pred, 0) in let w1 = coefs(src, si, ss, pred, 1) in let w2 = coefs(src, si, ss, pred, 2) in let w3 = coefs(src, si, ss, pred, 3) in let f = had(get16(w0, 0), get16(w1, 0), get16(w2, 0), get16(w3, 0)) in let z = seq_map(f, fn(v) => qdc(v, q)) in let g = had(seq_nth(z, 0), seq_nth(z, 1), seq_nth(z, 2), seq_nth(z, 3)) in let dc = seq_map(g, fn(v) => dqdc(v, q)) in let l0 = aclev(w0, q) in let l1 = aclev(w1, q) in let l2 = aclev(w2, q) in let l3 = aclev(w3, q) in let na = nzcount(l0, 0) + nzcount(l1, 0) + nzcount(l2, 0) + nzcount(l3, 0) in let nd = nzlist(z) in let rb = by * rs + bx in let rr = (if na + nd == 0 then copypred(pred, rec, rb, rs, 0) else let a = recon(rec, rb, rs, pred, 0, l0, seq_nth(dc, 0), q) in let b = recon(rec, rb, rs, pred, 1, l1, seq_nth(dc, 1), q) in let c = recon(rec, rb, rs, pred, 2, l2, seq_nth(dc, 2), q) in recon(rec, rb, rs, pred, 3, l3, seq_nth(dc, 3), q)) in {total: na + nd, nd: nd, z: z, levs: [l0, l1, l2, l3], cbp: if na > 0 then 2 else if nd > 0 then 1 else 0}
+
+fn same_range(a, ao, b, bo, n, i) = if i >= n then true else if buf_get(a, ao + i) != buf_get(b, bo + i) then false else same_range(a, ao, b, bo, n, i + 1)
+fn same_blk(a, b, rb, rs, y) = if y >= 8 then true else if same_range(a, rb + y * rs, b, rb + y * rs, 8, 0) == false then false else same_blk(a, b, rb, rs, y + 1)
+fn levs_ok(cfg, ls, b) = match ls
+    Nil        => true
+    Cons(h, t) => let o = buf_new(32) in let z = zzcopy(h, o, 0, 0) in same_range(cfg, 64 + b * 32, o, 0, 32, 0) and buf_get(cfg, 40 + b) == nzcount(h, 0) and levs_ok(cfg, t, b + 1)
+fn dcs_ok(cfg, z, k) = match z
+    Nil        => true
+    Cons(h, t) => get16(cfg, 48 + k * 2) == h and dcs_ok(cfg, t, k + 1)
+
+fn check(bx, by, vx, vy, qy, off) = let w = 48 in let h = 32 in let ref = pic(w, h, 0) in let src = pic(w, h, 1) in let rec1 = buf_new(w * h) in let rec2 = buf_new(w * h) in let cfg = cfg_new(w, qy, off, w, h, bx, by, vx, vy) in let got = buf_h264_mb_pc(src, by * w + bx, w, ref, rec1, cfg) in let want = ref_pc(src, by * w + bx, w, ref, rec2, w, qy, off, w, h, bx, by, vx, vy) in got == want.total and buf_get(cfg, 44) == want.nd and rd32(cfg, 200) == want.cbp and dcs_ok(cfg, want.z, 0) and levs_ok(cfg, want.levs, 0) and same_blk(rec1, rec2, by * w + bx, w, 0)
+
+fn test_integer_and_eighth_vectors() = check(8, 8, 0, 0, 26, 0) and check(8, 8, 16, 0 - 8, 26, 0) and check(8, 8, 3, 5, 26, 0) and check(16, 16, 0 - 7, 1, 30, 0)
+fn test_chroma_qp_table_and_offset() = check(8, 8, 2, 2, 36, 0) and check(8, 8, 2, 2, 40, 6) and check(8, 8, 2, 2, 20, 0 - 12) and check(8, 8, 2, 2, 51, 12)
+fn test_low_qp_codes_everything() = check(8, 8, 1, 3, 0, 0)
+fn test_vector_outside_the_plane() = check(0, 0, 0 - 50, 0 - 60, 26, 0) and check(40, 24, 70, 55, 26, 0)
+fn test_a_static_block_codes_nothing() = let w = 48 in let ref = pic(w, 32, 0) in let rec = buf_new(w * 32) in let cfg = cfg_new(w, 26, 0, w, 32, 8, 8, 0, 0) in buf_h264_mb_pc(ref, 8 * w + 8, w, ref, rec, cfg) == 0 and rd32(cfg, 200) == 0 and same_range(rec, 8 * w + 8, ref, 8 * w + 8, 8, 0)
+fn test_wrong_arguments_answer_minus_one() = let ref = pic(48, 32, 0) in let rec = buf_new(48 * 32) in buf_h264_mb_pc(ref, 0, 48, ref, rec, buf_new(100)) == 0 - 1 and buf_h264_mb_pc(ref, 0, 48, ref, rec, cfg_new(48, 52, 0, 48, 32, 0, 0, 0, 0)) == 0 - 1 and buf_h264_mb_pc(ref, 0, 48, ref, rec, cfg_new(48, 26, 13, 48, 32, 0, 0, 0, 0)) == 0 - 1 and buf_h264_mb_pc(ref, 0, 48, ref, rec, cfg_new(48, 26, 0, 48, 32, 44, 0, 0, 0)) == 0 - 1

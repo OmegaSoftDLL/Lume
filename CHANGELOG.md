@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`buf_h264_me16(src, si, ss, ref, cfg)`: motion search of a 16x16 macroblock (item 15).** (0, 0) and the
+  predicted vector, a small diamond on SAD (SSE2) + lambda x vector bits within the range, then optionally the 8 half
+  and quarter neighbours on the SATD of the interpolated prediction; deterministic, ties keep the earlier candidate, and
+  a ring is skipped when no candidate can be cheaper (same result). Equal to the same search written with
+  `buf_sad16x16`, `buf_h264_luma_mc` and `buf_satd16x16` (compiler/stage1/h264_me_ok.src). 1080p scroll with the right
+  predicted vector: ~8 ms per frame at whole samples, ~19 ms with quarter refinement; a 320x200 window ~0.3 ms.
+- **`buf_h264_mb_pc(src, si, ss, ref, rec, cfg)`: one chroma plane of an inter macroblock (item 15).** Eighth-sample
+  prediction, the 2x2 DC Hadamard with the chroma DC quantization and scaling (8.5.11), the AC levels, qPc from table
+  8-15 with chroma_qp_index_offset, and the reconstruction; DC levels, zigzag AC levels, counts and the plane's part of
+  the coded_block_pattern come back in cfg. Checked against the standard's formulas (compiler/stage1/h264_mbpc_ok.src).
+  ~4 us per plane and macroblock.
 - **`buf_h264_mb_p(src, si, ss, ref, rec, cfg)`: a whole inter 16x16 macroblock in one call (item 15).** The
   quarter-sample luma prediction for one motion vector (as `buf_h264_luma_mc`), then the 16 blocks are subtracted,
   transformed, quantized with the inter rounding and reconstructed into rec; nonzero counts, zigzag levels and the
