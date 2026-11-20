@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`buf_h264_mb_ic(srcu, srcv, recu, recv, cfg)`: intra chroma of a macroblock (item 15).** One
+  intra_chroma_pred_mode for Cb and Cr (DC with the per-4x4 rules of 8.3.4, horizontal, vertical, plane) chosen by
+  SATD over both planes, then each plane coded as `buf_h264_mb_pc` does with the intra rounding (the inter chroma and
+  the intra chroma now share one plane coder). Checked against the predictions and the DC path written from the
+  standard (compiler/stage1/h264_mbic_ok.src). With it a keyframe is complete in macroblock calls: luma by
+  `buf_h264_mb_i16` / `buf_h264_mb_i4`, chroma by this one.
+- **`buf_h264_mb_i16(src, si, ss, rec, ri, cfg)`: a whole Intra16x16 macroblock (item 15).** The mode of least SATD
+  among those the neighbours allow, then the 16 residual blocks with the luma DC through the 4x4 Hadamard and its
+  quantization, the AC levels, and the decoding of 8.5.10 (both sides of the qp 36 rule) into rec; a decide-only flag
+  answers the cost without touching rec, so an encoder compares it with `buf_h264_mb_i4` before coding either. Checked
+  against `buf_h264_intra16x16`, the block builtins and the DC formulas (compiler/stage1/h264_mbi16_ok.src). On a
+  1080p screen keyframe 40% of the macroblocks choose it (the flat areas, far fewer bits).
 - **`buf_h264_me16(src, si, ss, ref, cfg)`: motion search of a 16x16 macroblock (item 15).** (0, 0) and the
   predicted vector, a small diamond on SAD (SSE2) + lambda x vector bits within the range, then optionally the 8 half
   and quarter neighbours on the SATD of the interpolated prediction; deterministic, ties keep the earlier candidate, and

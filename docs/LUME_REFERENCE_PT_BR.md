@@ -328,6 +328,19 @@ pequeno sobre SAD + lambda x bits do vetor dentro do alcance, depois (nivel 1 / 
 de amostra pelo SATD da predicao interpolada. cfg (1088 bytes): rs, largura, altura, x, y do macrobloco, previsto
 pmx, pmy (quartos de amostra), alcance, lambda, nivel; sai mvx, mvy (40, 44), o custo (48) e a predicao do vetor
 (640..895). Cerca de 1 us por macrobloco em amostras inteiras com o vetor previsto certo, 2 us com quarto.
+`buf_h264_mb_i16 (src, si, ss, rec, ri, cfg)` codifica um macrobloco Intra16x16 inteiro: o modo (vertical,
+horizontal, DC, plano, conforme os vizinhos) de menor SATD; sem o flag de so decidir, os 16 blocos sao
+transformados, os coeficientes DC passam pela Hadamard 4x4 e pela quantizacao de DC luma, os AC pela 4x4, e a
+decodificacao de 8.5.10 vai para rec. cfg (896 bytes): rs, qp, flags (1 = so decidir: responde o custo e nao mexe
+em rec, para comparar antes com `buf_h264_mb_i4`), vizinhos (1 esquerda, 2 topo, 8 topo-esquerda); sai o modo (16),
+contagem DC (20), os 16 niveis DC em zigzag (24..55), contagens AC por bloco (64..79), niveis em zigzag por bloco
+(96 + 32 x bloco, CAVLC a partir de + 2, maxc 15), cbp (608: 0 ou 15) e a predicao (640..895). Responde o SATD.
+`buf_h264_mb_ic (srcu, srcv, recu, recv, cfg)` codifica a croma intra de um macrobloco: o intra_chroma_pred_mode
+(0 DC com as regras por bloco de 8.3.4, 1 horizontal, 2 vertical, 3 plano) de menor SATD sobre Cb e Cr juntos,
+depois os dois planos como `buf_h264_mb_pc` faz mas com o arredondamento intra (salvo so decidir). cfg (1344 bytes):
+rs, ss, QPY, offset de croma, si, ri (os dois planos), vizinhos (1 esquerda, 2 topo, 8 topo-esquerda), flags (1 so
+decidir); sai o modo (32) e o custo (36), as saidas de Cb em 512 + os offsets de `buf_h264_mb_pc` (predicao
+768..831), as de Cr em 1024 + os mesmos (predicao 1280..1343). Responde o custo.
 
 Escrita de bits (estavel; bit mais significativo primeiro): `buf_bits_write(b, pos, v, n)` grava os n bits baixos de
 v (1..32) no bit pos e devolve pos + n, `buf_bits_read(b, pos, n)` os le, `buf_bits_ue(b, pos, v)` / `buf_bits_se(b,
@@ -491,7 +504,7 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 ## 11. Mudou nesta versao
 
-Entrou: `buf_h264_mb_i4`, `buf_h264_mb_p`, `buf_h264_mb_pc` (macroblocos Intra4x4, inter luma e inter croma inteiros numa chamada), `buf_h264_me16` (busca de movimento), a tabela de todos os codigos de diagnostico (secao 3a) e exemplos de diagnostico para 68 codigos, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc` (macroblocos Intra4x4, inter luma e inter croma inteiros numa chamada), `buf_h264_me16` (busca de movimento), a tabela de todos os codigos de diagnostico (secao 3a) e exemplos de diagnostico para 68 codigos, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
 Mudou: o [E0305] deixa com o remetente um int ou bool copiado para dentro ou para fora do registro enviado; um delimitador ainda aberto no fim do arquivo e [P0001] (era [P0002]); exemplos de `lume agent kernel` rodam no gate dos exemplos; o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
