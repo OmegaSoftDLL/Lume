@@ -13,6 +13,8 @@
 ##                                               2 top, 4 top-right, 8 top-left (a missing top-right repeats D)
 ##   buf_h264_intra16x16(frame, fi, fs, mode, avail, dst)  the 4 Intra16x16 predictions (8.3.3: vertical, horizontal,
 ##                                               DC, plane) into 256 bytes; avail bits 1 left, 2 top, 8 top-left
+##   buf_h264_mb_i4(src, si, ss, rec, ri, cfg)   a whole Intra4x4 macroblock: mode decision, transform, quantization
+##                                               and reconstruction of its 16 blocks in one call (see its section)
 
 ## scratch: one static block (runtime/rt_die's .bss __rtc_scratch, 4096 bytes) instead of an allocation per call; the
 ## runtime is single-threaded and no codec builtin calls another, so the parts never overlap: luma MC window and b1
@@ -142,9 +144,11 @@ fn rtc_sgtop(f, top, n, i) = if i >= 4 then 0 else let w = store64(n + i * 8, rt
 fn rtc_sgtr(f, top, n, i) = if i >= 4 then 0 else let w = store64(n + 32 + i * 8, rtc_sl(f, top + 4 + i)) in rtc_sgtr(f, top, n, i + 1)
 fn rtc_sgleft(f, fi, fs, n, i) = if i >= 4 then 0 else let w = store64(n + 64 + i * 8, rtc_sl(f, fi - 1 + i * fs)) in rtc_sgleft(f, fi, fs, n, i + 1)
 fn rtc_sgather(f, fi, fs, n, av) = let top = fi - fs in let a = rtc_sgtop(f, top, n, 0) in let b = (if bit_and(av, 4) != 0 then rtc_sgtr(f, top, n, 0) else rtc_rep(n, 4, load64(n + 24))) in let c = rtc_sgleft(f, fi, fs, n, 0) in store64(n + 96, rtc_sl(f, top - 1))
-fn rtc_i4edge(f, fi, fs, ma, dst) = let mode = bit_shr(ma, 4) in let av = bit_and(ma, 15) in if rtc_fits(f, fi, 3 * fs + 4) == 0 or rtc_i4need(f, fi, fs, av) == 0 then mkint(0 - 1) else let n = (sym_addr("__rtc_scratch") + 3744) in let g = rtc_sgather(f, fi, fs, n, av) in let z = (if mode == 2 then rtc_fill4(dst + 8, rtc_dc4(n, av)) else rtc_m4(n, dst + 8, mode, 0)) in mkint(0)
+fn rtc_i4edge(f, fi, fs, ma, d) = let mode = bit_shr(ma, 4) in let av = bit_and(ma, 15) in if rtc_fits(f, fi, 3 * fs + 4) == 0 or rtc_i4need(f, fi, fs, av) == 0 then mkint(0 - 1) else let n = (sym_addr("__rtc_scratch") + 3744) in let g = rtc_sgather(f, fi, fs, n, av) in let z = (if mode == 2 then rtc_fill4(d, rtc_dc4(n, av)) else rtc_m4(n, d, mode, 0)) in mkint(0)
 fn buf_h264_intra4x4(frame, fi, fs, mode, avail, dst) = rtc_i4(frame, rt_int(fi), rt_int(fs), rt_int(mode) * 16 + bit_and(rt_int(avail), 15), dst)
-fn rtc_i4(f, fi, fs, ma, dst) = let mode = bit_shr(ma, 4) in let av = bit_and(ma, 15) in if mode < 0 or mode > 8 or fs < 8 or fi < 0 or rtc_fits(dst, 0, 16) == 0 then mkint(0 - 1) else if fi < fs + 1 or rtc_fits(f, fi - fs - 1, 4 * fs + 9) == 0 then rtc_i4edge(f, fi, fs, ma, dst) else if mode <= 1 then rtc_i4fast(f + 8 + fi, fs, mode, dst + 8) else if mode == 2 then (let z = rtc_fill4(dst + 8, rtc_dcf(f + 8 + fi, fs, av)) in mkint(0)) else if mode >= 3 then rtc_diag(f + 8 + fi, fs, av, dst + 8, mode) else let n = (sym_addr("__rtc_scratch") + 3744) in let g = rtc_gather(f + 8 + fi, fs, n, av) in let z = (if mode == 2 then rtc_fill4(dst + 8, rtc_dc4(n, av)) else rtc_m4(n, dst + 8, mode, 0)) in mkint(0)
+fn rtc_i4(f, fi, fs, ma, dst) = if rtc_fits(dst, 0, 16) == 0 then mkint(0 - 1) else rtc_i4p(f, fi, fs, ma, dst + 8)
+## the prediction into 16 bytes at the raw address d (mkint(0), or mkint(-1) on a wrong argument)
+fn rtc_i4p(f, fi, fs, ma, d) = let mode = bit_shr(ma, 4) in let av = bit_and(ma, 15) in if mode < 0 or mode > 8 or fs < 8 or fi < 0 then mkint(0 - 1) else if fi < fs + 1 or rtc_fits(f, fi - fs - 1, 4 * fs + 9) == 0 then rtc_i4edge(f, fi, fs, ma, d) else if mode <= 1 then rtc_i4fast(f + 8 + fi, fs, mode, d) else if mode == 2 then (let z = rtc_fill4(d, rtc_dcf(f + 8 + fi, fs, av)) in mkint(0)) else rtc_diag(f + 8 + fi, fs, av, d, mode)
 
 ## --- Intra16x16 prediction ----------------------------------------------------------------------------------------------
 fn rtc_v16(f, fs, d, i) = if i >= 256 then 0 else let w = store8(d + i, load8(f - fs + bit_and(i, 15))) in rtc_v16(f, fs, d, i + 1)
@@ -166,6 +170,78 @@ fn rtc_i16need(f, fi, fs, mode, av) = if mode == 0 then rtc_i16top(f, fi, fs) el
 fn buf_h264_intra16x16(frame, fi, fs, mode, avail, dst) = rtc_i16(frame, rt_int(fi), rt_int(fs), rt_int(mode) * 16 + bit_and(rt_int(avail), 15), dst)
 fn rtc_i16(f, fi, fs, ma, dst) = let mode = bit_shr(ma, 4) in let av = bit_and(ma, 15) in if mode < 0 or mode > 3 or fs < 16 or fi < 0 or rtc_fits(dst, 0, 256) == 0 or rtc_fits(f, fi, 15 * fs + 16) == 0 or rtc_i16need(f, fi, fs, mode, av) == 0 then mkint(0 - 1) else let p = f + 8 + fi in let z = (if mode == 0 then rtc_v16(p, fs, dst + 8, 0) else if mode == 1 then rtc_h16(p, fs, dst + 8, 0) else if mode == 2 then rtc_fill16(dst + 8, 0, rtc_dc16(p, fs, av)) else rtc_plane(p, fs, dst + 8)) in mkint(0)
 fn rtc_fill16(d, i, v) = if i >= 256 then 0 else let w = store8(d + i, v) in rtc_fill16(d, i + 1, v)
+
+## --- one whole Intra4x4 macroblock ---------------------------------------------------------------------------------------
+## buf_h264_mb_i4(src, si, ss, rec, ri, cfg): the 16 luma 4x4 blocks of the macroblock at src + si (rows ss apart), in
+## decoding order (luma4x4BlkIdx: 8x8 quadrants in raster order, 4x4 blocks in raster order inside each): for each
+## block the 9 predictions allowed by its neighbours are made from the reconstruction rec (macroblock at ri, rows
+## cfg.rs apart), each costs SATD(source - prediction) + lambda x (1 when it is the predicted mode, else 4), the
+## cheapest wins (lower mode on a tie), and the block is transformed, quantized (intra rounding), dequantized,
+## inverse transformed and reconstructed into rec, so the next block predicts from it as a decoder will.
+## cfg is a buffer of at least 592 bytes; in: rs (int32 at 0), qp (4), lambda (8), the macroblock's neighbours (12:
+## 1 left, 2 top, 4 top-right, 8 top-left), the Intra4x4 modes of the left macroblock's right column (bytes 16..19,
+## rows 0..3) and of the top macroblock's bottom row (20..23, columns 0..3), 255 where that block has no Intra4x4
+## mode. Out: per block in luma4x4BlkIdx order the chosen mode (bytes 32..47), its total nonzero levels (48..63), the
+## 16 levels in zigzag order as int16 (64 + 32 * blk, ready for buf_h264_cavlc6) and the mode code (576..591: 255 =
+## prev_intra4x4_pred_mode_flag 1, else rem_intra4x4_pred_mode). Answers the summed cost, or -1 on a wrong argument.
+## Working storage: scratch 0..255 (prediction, best prediction, residual, transform, levels, dequantized,
+## reconstructed residual) and 256..415 (the context below); the luma MC window that also lives there is never in use
+## at the same time.
+fn rtc_zz(k) = if k < 8 then (if k < 4 then (if k == 0 then 0 else if k == 1 then 1 else if k == 2 then 4 else 8) else (if k == 4 then 5 else if k == 5 then 2 else if k == 6 then 3 else 6)) else (if k < 12 then (if k == 8 then 9 else if k == 9 then 12 else if k == 10 then 13 else 10) else (if k == 12 then 7 else if k == 13 then 11 else if k == 14 then 14 else 15))
+fn rtc_bx(b) = 4 * (bit_and(b, 1) + 2 * bit_and(bit_shr(b, 2), 1))
+fn rtc_by(b) = 4 * (bit_and(bit_shr(b, 1), 1) + 2 * bit_and(bit_shr(b, 3), 1))
+fn rtc_bidx(x, y) = (bit_shr(y, 3) * 2 + bit_shr(x, 3)) * 4 + bit_and(bit_shr(y, 2), 1) * 2 + bit_and(bit_shr(x, 2), 1)
+## neighbours of the block at (bx, by), block index b, from the macroblock's neighbours mav (6.4.11.4)
+fn rtc_tlav(bx, by, mav) = if bx > 0 and by > 0 then 8 else if bx > 0 then (if bit_and(mav, 2) != 0 then 8 else 0) else if by > 0 then (if bit_and(mav, 1) != 0 then 8 else 0) else (if bit_and(mav, 8) != 0 then 8 else 0)
+fn rtc_trav(bx, by, b, mav) = if by == 0 then (if bx < 12 then (if bit_and(mav, 2) != 0 then 4 else 0) else (if bit_and(mav, 4) != 0 then 4 else 0)) else if bx == 12 then 0 else if rtc_bidx(bx + 4, by - 4) < b then 4 else 0
+fn rtc_bav(bx, by, b, mav) = (if bx > 0 or bit_and(mav, 1) != 0 then 1 else 0) + (if by > 0 or bit_and(mav, 2) != 0 then 2 else 0) + rtc_tlav(bx, by, mav) + rtc_trav(bx, by, b, mav)
+## the Intra4x4 mode of the block on the left / above (255 when it has none), and the predicted mode (8.3.1.1)
+fn rtc_nml(c, bx, by, mav) = if bx > 0 then load8(c + 32 + rtc_bidx(bx - 4, by)) else if bit_and(mav, 1) == 0 then 255 else load8(c + 16 + bit_shr(by, 2))
+fn rtc_nmt(c, bx, by, mav) = if by > 0 then load8(c + 32 + rtc_bidx(bx, by - 4)) else if bit_and(mav, 2) == 0 then 255 else load8(c + 20 + bit_shr(bx, 2))
+fn rtc_pmode(a, b) = if a > 8 or b > 8 then 2 else if a < b then a else b
+## a mode is possible when the samples it reads are: 0, 3, 7 the top; 1, 8 the left; 4, 5, 6 top, left and top-left
+fn rtc_mok(m, av) = if m == 2 then 1 else if m == 0 or m == 3 or m == 7 then (if bit_and(av, 2) != 0 then 1 else 0) else if m == 1 or m == 8 then (if bit_and(av, 1) != 0 then 1 else 0) else (if bit_and(av, 11) == 11 then 1 else 0)
+## context words at x: 0 rec, 8 block offset in rec, 16 rs, 24 source block address, 32 ss, 40 neighbours, 48 predicted
+## mode, 56 lambda, 64 best cost, 72 best mode, 80 cfg data, 88 source macroblock address, 96 ri, 104 mav, 112 qp,
+## 120 error, 128 summed cost
+fn rtc_cp16(a, b) = let p = store64(b, load64(a)) in store64(b + 8, load64(a + 8))
+## diagonal modes of an interior block: the edge line (rtc_edge) is made once per block (x + 136 = 1 when made), and
+## each sample is one byte of it at the offset the table gives (scratch 3968 + 16 * (mode - 3) + i, built once from
+## the same formulas as rtc_dv; 4064 = 1 once built)
+fn rtc_dvo(mode, x, y) = if mode == 3 then 22 + x + y else if mode == 4 then 20 + x - y else if mode == 5 then rtc_ovr(x, y) else if mode == 6 then rtc_ohd(x, y) else if mode == 7 then (if bit_and(y, 1) == 0 then 37 + x + bit_shr(y, 1) else 22 + x + bit_shr(y, 1)) else rtc_ohu(x, y)
+fn rtc_ovr(x, y) = let z = 2 * x - y in if z >= 0 and bit_and(z, 1) == 0 then 36 + x - bit_shr(y, 1) else if z >= 0 then 20 + x - bit_shr(y, 1) else if z == 0 - 1 then 20 else 21 - y
+fn rtc_ohd(x, y) = let z = 2 * y - x in if z >= 0 and bit_and(z, 1) == 0 then 35 - y + bit_shr(x, 1) else if z >= 0 then 20 - y + bit_shr(x, 1) else if z == 0 - 1 then 20 else 19 + x
+fn rtc_ohu(x, y) = let z = x + 2 * y in if z > 5 then 1 else if z == 5 then 16 else if bit_and(z, 1) == 0 then 34 - y - bit_shr(x, 1) else 18 - y - bit_shr(x, 1)
+fn rtc_otab(tb, k) = if k >= 96 then 0 else let w = store8(tb + k, rtc_dvo(3 + bit_shr(k, 4), bit_and(k, 3), bit_and(bit_shr(k, 2), 3))) in rtc_otab(tb, k + 1)
+fn rtc_tab() = let s = sym_addr("__rtc_scratch") in if load64(s + 4064) == 1 then s + 3968 else let a = rtc_otab(s + 3968, 0) in let b = store64(s + 4064, 1) in s + 3968
+fn rtc_dfast(t, d, tb, i) = if i >= 16 then 0 else let w = store8(d + i, load8(t + load8(tb + i))) in rtc_dfast(t, d, tb, i + 1)
+fn rtc_pred(x, m, s) = if m >= 3 and load64(x + 136) == 1 then (let z = rtc_dfast(sym_addr("__rtc_scratch") + 3912, s, rtc_tab() + 16 * (m - 3), 0) in mkint(0)) else rtc_i4p(load64(x), load64(x + 8), load64(x + 16), m * 16 + load64(x + 40), s)
+fn rtc_try(x, m) = let s = x - 256 in let r = rtc_pred(x, m, s) in if r == mkint(0 - 1) then 0 else let c = rts_satd4(load64(x + 24), load64(x + 32), s, 4) + load64(x + 56) * (if m == load64(x + 48) then 1 else 4) in if c < load64(x + 64) then (let a = store64(x + 64, c) in let b = store64(x + 72, m) in rtc_cp16(s, s + 16)) else 0
+## an untried mode m' >= m costs at least lambda (when it is the predicted one) or 4 lambda: once the best cost is at
+## that floor no later mode can win (a tie keeps the lower mode), so the search stops with the same decision
+fn rtc_floor(x, m) = let lam = load64(x + 56) in let bc = load64(x + 64) in if bc <= lam then 1 else if load64(x + 48) < m and bc <= 4 * lam then 1 else 0
+fn rtc_srch(x, m) = if m > 8 or rtc_floor(x, m) == 1 then 0 else let z = (if rtc_mok(m, load64(x + 40)) == 1 then rtc_try(x, m) else 0) in rtc_srch(x, m + 1)
+## reconstruct into the frame: clip(prediction + residual), rows fs apart
+fn rtc_recf(p, r, d, fs, i) = if i >= 16 then 0 else let w = store8(d + bit_shr(i, 2) * fs + bit_and(i, 3), rtc_clip(load8(p + i) + rtc_r16(r + i * 2))) in rtc_recf(p, r, d, fs, i + 1)
+## the zigzag copy: two bytes per level, the scan positions as straight-line code
+fn rtc_mv2(lev, i, o, k) = let a = store8(o + k * 2, load8(lev + i * 2)) in store8(o + k * 2 + 1, load8(lev + i * 2 + 1))
+fn rtc_zzout(lev, o, k) = let a0 = rtc_mv2(lev, 0, o, 0) in let a1 = rtc_mv2(lev, 1, o, 1) in let a2 = rtc_mv2(lev, 4, o, 2) in let a3 = rtc_mv2(lev, 8, o, 3) in let a4 = rtc_mv2(lev, 5, o, 4) in let a5 = rtc_mv2(lev, 2, o, 5) in let a6 = rtc_mv2(lev, 3, o, 6) in let a7 = rtc_mv2(lev, 6, o, 7) in let a8 = rtc_mv2(lev, 9, o, 8) in let a9 = rtc_mv2(lev, 12, o, 9) in let b0 = rtc_mv2(lev, 13, o, 10) in let b1 = rtc_mv2(lev, 10, o, 11) in let b2 = rtc_mv2(lev, 7, o, 12) in let b3 = rtc_mv2(lev, 11, o, 13) in let b4 = rtc_mv2(lev, 14, o, 14) in rtc_mv2(lev, 15, o, 15)
+## dequantization of a block whose levels are mostly zero: V and the shift once per block, a zero level costs a test
+fn rtc_dq1(src, dst, i, v, sh) = let z = rtc_r16(src + i * 2) in rtc_w16(dst + i * 2, if z == 0 then 0 else bit_shl(z * v, sh))
+fn rtc_dqr(src, dst, r, ve, vo, sh) = let a = rtc_dq1(src, dst, r * 4, ve, sh) in let b = rtc_dq1(src, dst, r * 4 + 1, vo, sh) in let c = rtc_dq1(src, dst, r * 4 + 2, ve, sh) in rtc_dq1(src, dst, r * 4 + 3, vo, sh)
+fn rtc_dqf(src, dst, qp) = let q = qp % 6 in let sh = qp / 6 in let v0 = rtc_v(q, 0) in let v1 = rtc_v(q, 1) in let v2 = rtc_v(q, 2) in let a = rtc_dqr(src, dst, 0, v0, v2, sh) in let b = rtc_dqr(src, dst, 1, v2, v1, sh) in let c = rtc_dqr(src, dst, 2, v0, v2, sh) in rtc_dqr(src, dst, 3, v2, v1, sh)
+## without a nonzero level the reconstruction is the prediction (4 rows of 4 bytes); else dequantize, inverse
+## transform and add
+fn rtc_cpf(p, d, fs) = let a = store32(d, load32(p)) in let b = store32(d + fs, load32(p + 4)) in let c = store32(d + 2 * fs, load32(p + 8)) in store32(d + 3 * fs, load32(p + 12))
+fn rtc_recon_blk(s, d, fs, qp) = let a3 = rtc_dqf(s + 96, s + 128, qp) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, d, fs, 0)
+## residual, transform, quantization, reconstruction and the outputs of block b (its best prediction is at s + 16)
+fn rtc_enc(x, b) = let s = x - 256 in let c = load64(x + 80) in let qp = load64(x + 112) in let m = load64(x + 72) in let a1 = rtc_sub(load64(x + 24), load64(x + 32), s + 16, s + 32, 0) in let a2 = vec_fdct4(s + 32, s + 64) in let nz = rtc_q4(s + 64, s + 96, qp, 1) in let rf = load64(x) in let a4 = (if nz == 0 then rtc_cpf(s + 16, rf + 8 + load64(x + 8), load64(x + 16)) else rtc_recon_blk(s, rf + 8 + load64(x + 8), load64(x + 16), qp)) in let a5 = store8(c + 32 + b, m) in let a6 = store8(c + 48 + b, nz) in let a7 = rtc_zzout(s + 96, c + 64 + b * 32, 0) in let pm = load64(x + 48) in store8(c + 576 + b, (if m == pm then 255 else if m < pm then m else m - 1))
+fn rtc_blk(x, b) = let c = load64(x + 80) in let mav = load64(x + 104) in let bx = rtc_bx(b) in let by = rtc_by(b) in let a1 = store64(x + 8, load64(x + 96) + by * load64(x + 16) + bx) in let a2 = store64(x + 24, load64(x + 88) + by * load64(x + 32) + bx) in let a3 = store64(x + 40, rtc_bav(bx, by, b, mav)) in let a7 = rtc_edge1(x) in let a4 = store64(x + 48, rtc_pmode(rtc_nml(c, bx, by, mav), rtc_nmt(c, bx, by, mav))) in let a5 = store64(x + 64, 1099511627776) in let a6 = store64(x + 72, 0) in let z = rtc_srch(x, 0) in if load64(x + 64) == 1099511627776 then store64(x + 120, 1) else let e = rtc_enc(x, b) in store64(x + 128, load64(x + 128) + load64(x + 64))
+## an interior block (a row above, a column on the left, all inside rec) gets its edge line once
+fn rtc_edge1(x) = let f = load64(x) in let fi = load64(x + 8) in let fs = load64(x + 16) in if fi >= fs + 1 and rtc_fits(f, fi - fs - 1, 4 * fs + 9) == 1 then (let e = rtc_edge(sym_addr("__rtc_scratch") + 3912, f + 8 + fi, fs, load64(x + 40)) in store64(x + 136, 1)) else store64(x + 136, 0)
+fn rtc_mbloop(x, b) = if b >= 16 or load64(x + 120) != 0 then 0 else let z = rtc_blk(x, b) in rtc_mbloop(x, b + 1)
+fn buf_h264_mb_i4(src, si, ss, rec, ri, cfg) = rtc_mbi4(src, rt_int(si), rt_int(ss), rec, rt_int(ri), cfg)
+fn rtc_mbi4(src, si, ss, rec, ri, cfg) = if rtc_fits(cfg, 0, 592) == 0 then mkint(0 - 1) else let c = cfg + 8 in let rs = load32(c) in let qp = load32(c + 4) in if ss < 16 or rs < 16 or qp > 51 or si < 0 or ri < 0 or rtc_fits(src, si, 15 * ss + 16) == 0 or rtc_fits(rec, ri, 15 * rs + 16) == 0 then mkint(0 - 1) else let x = sym_addr("__rtc_scratch") + 256 in let a1 = store64(x, rec) in let a2 = store64(x + 16, rs) in let a3 = store64(x + 32, ss) in let a4 = store64(x + 56, load32(c + 8)) in let a5 = store64(x + 80, c) in let a6 = store64(x + 88, src + 8 + si) in let a7 = store64(x + 96, ri) in let a8 = store64(x + 104, bit_and(load32(c + 12), 15)) in let a9 = store64(x + 112, qp) in let b1 = store64(x + 120, 0) in let b2 = store64(x + 128, 0) in let z = rtc_mbloop(x, 0) in if load64(x + 120) != 0 then mkint(0 - 1) else mkint(load64(x + 128))
 
 ## --- motion compensation (8.4.2.2) --------------------------------------------------------------------------------------
 ## The runtime takes at most six arguments, so `use h264` (h264.src) packs the standard's argument lists:

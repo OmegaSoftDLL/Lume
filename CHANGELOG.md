@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`buf_h264_mb_i4(src, si, ss, rec, ri, cfg)`: a whole Intra4x4 macroblock in one call (item 15).** For each of
+  the 16 blocks in decoding order it makes the predictions the neighbours allow, costs each with SATD + lambda x the
+  mode bits (1 predicted, 4 otherwise), transforms, quantizes and reconstructs the cheapest into rec, and writes the
+  modes, nonzero counts, zigzag levels (ready for `buf_h264_cavlc6`) and mode codes into cfg. It gives exactly the
+  result of the block builtins called one by one (compiler/stage1/h264_mb_ok.src checks modes, levels, codes and the
+  reconstruction on interior, edge and corner macroblocks and at QP 0 and 51) and replaces 16 x 9 calls and their
+  glue. The diagonal modes are filled from one edge line per block through an offset table, a block without nonzero
+  levels is reconstructed by copying its prediction, and the mode search stops when no remaining mode can win (same
+  decisions). A 1080p luma frame, Intra4x4 everywhere: ~120 ms on screen content, ~230 ms on textured content
+  (keyframe today: ~2 s in the encoder).
 - **Diagnostic codes, all of them, with examples (item 20):** the reference (section 3a, EN and PT, also in
   `lume manual ref`) lists every code the tools report: what it means, which tool reports it and its example.
   `examples/diagnostics/` grew from 14 to 68 codes (`.bad` gives the code, `.fixed.src` is the corrected program);

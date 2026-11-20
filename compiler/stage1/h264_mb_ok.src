@@ -1,0 +1,58 @@
+## h264_mb_ok.src -- buf_h264_mb_i4 (one whole Intra4x4 macroblock in one call) against the same macroblock encoded
+## block by block with the separate builtins (buf_h264_intra4x4, buf_satd4x4, sub4x4, fdct4x4, quant4x4,
+## dequant4x4, idct4x4, recon4x4) and the mode rules of 8.3.1.1 written out here.
+## `lume test compiler/stage1/h264_mb_ok.src`
+
+fn w32(b, o, v) = let a = buf_set(b, o, v % 256) in let c = buf_set(b, o + 1, (v / 256) % 256) in let d = buf_set(b, o + 2, (v / 65536) % 256) in buf_set(b, o + 3, v / 16777216)
+fn get16(b, o) = let v = buf_get(b, o) + 256 * buf_get(b, o + 1) in if v >= 32768 then v - 65536 else v
+fn put16(b, o, v) = let u = if v < 0 then v + 65536 else v in let x = buf_set(b, o, u % 256) in buf_set(b, o + 1, u / 256)
+
+## a picture with edges, gradients and flat areas (screen-like content), w x h bytes
+fn pix(x, y, k) = if (x / 3 + y / 5 + k) % 7 == 0 then 235 else if y % 16 < 2 then 30 else 16 + (x * 3 + y * 2 + k * 5) % 200
+fn fillpic(b, w, h, k, i) = if i >= w * h then b else let q = buf_set(b, i, pix(i % w, i / w, k)) in fillpic(b, w, h, k, i + 1)
+fn pic(w, h, k) = fillpic(buf_new(w * h), w, h, k, 0)
+
+fn cfg_new(rs, qp, lam, mav, lm, tm) = let c = buf_new(592) in let a = w32(c, 0, rs) in let b = w32(c, 4, qp) in let d = w32(c, 8, lam) in let e = w32(c, 12, mav) in let f = setm(c, 16, lm, 0) in setm(c, 20, tm, 0)
+fn setm(c, o, xs, i) = match xs
+    Nil        => c
+    Cons(h, t) => let w = buf_set(c, o + i, h) in setm(c, o, t, i + 1)
+
+## --- the reference: same decisions with the block builtins ---------------------------------------------------------
+fn bx(b) = 4 * (b % 2 + 2 * ((b / 4) % 2))
+fn by(b) = 4 * ((b / 2) % 2 + 2 * ((b / 8) % 2))
+fn bidx(x, y) = ((y / 8) * 2 + x / 8) * 4 + ((y / 4) % 2) * 2 + (x / 4) % 2
+fn has(m, k) = (m / k) % 2 == 1
+fn tl(x, y, mav) = if x > 0 and y > 0 then 8 else if x > 0 then (if has(mav, 2) then 8 else 0) else if y > 0 then (if has(mav, 1) then 8 else 0) else (if has(mav, 8) then 8 else 0)
+fn tr(x, y, b, mav) = if y == 0 then (if x < 12 then (if has(mav, 2) then 4 else 0) else (if has(mav, 4) then 4 else 0)) else if x == 12 then 0 else if bidx(x + 4, y - 4) < b then 4 else 0
+fn bav(x, y, b, mav) = (if x > 0 or has(mav, 1) then 1 else 0) + (if y > 0 or has(mav, 2) then 2 else 0) + tl(x, y, mav) + tr(x, y, b, mav)
+fn mok(m, av) = if m == 2 then true else if m == 0 or m == 3 or m == 7 then has(av, 2) else if m == 1 or m == 8 then has(av, 1) else has(av, 1) and has(av, 2) and has(av, 8)
+fn pmode(a, b) = if a > 8 or b > 8 then 2 else if a < b then a else b
+fn zz(k) = buf_get(buf_from_str("ABEIFCDGJMNKHLOP"), k) - 65
+
+## ref state: {out: cfg-shaped buffer, cost}
+fn ref_mb(src, si, ss, rec, ri, cfg) = let rs = rd32(cfg, 0) in let qp = rd32(cfg, 4) in let lam = rd32(cfg, 8) in let mav = rd32(cfg, 12) in let out = buf_new(592) in ref_blk(src, si, ss, rec, ri, rs, qp, lam, mav, cfg, out, 0, 0)
+fn rd32(b, o) = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3)
+fn nml(cfg, out, x, y, mav) = if x > 0 then buf_get(out, 32 + bidx(x - 4, y)) else if has(mav, 1) then buf_get(cfg, 16 + y / 4) else 255
+fn nmt(cfg, out, x, y, mav) = if y > 0 then buf_get(out, 32 + bidx(x, y - 4)) else if has(mav, 2) then buf_get(cfg, 20 + x / 4) else 255
+fn ref_blk(src, si, ss, rec, ri, rs, qp, lam, mav, cfg, out, b, acc) = if b >= 16 then {out: out, cost: acc} else let x = bx(b) in let y = by(b) in let av = bav(x, y, b, mav) in let pm = pmode(nml(cfg, out, x, y, mav), nmt(cfg, out, x, y, mav)) in let best = search(src, si + y * ss + x, ss, rec, ri + y * rs + x, rs, av, pm, lam, 0, {m: 0, c: 1099511627776}) in let z = encode(src, si + y * ss + x, ss, rec, ri + y * rs + x, rs, qp, best.m, av, out, b, pm) in ref_blk(src, si, ss, rec, ri, rs, qp, lam, mav, cfg, out, b + 1, acc + best.c)
+fn search(src, sb, ss, rec, rb, rs, av, pm, lam, m, best) = if m > 8 then best else if mok(m, av) == false then search(src, sb, ss, rec, rb, rs, av, pm, lam, m + 1, best) else let p = buf_new(16) in let r = buf_h264_intra4x4(rec, rb, rs, m, av, p) in let c = buf_satd4x4(src, sb, ss, p, 0, 4) + lam * (if m == pm then 1 else 4) in search(src, sb, ss, rec, rb, rs, av, pm, lam, m + 1, if r == 0 and c < best.c then {m: m, c: c} else best)
+fn encode(src, sb, ss, rec, rb, rs, qp, m, av, out, b, pm) = let p = buf_new(16) in let r0 = buf_h264_intra4x4(rec, rb, rs, m, av, p) in let res = buf_new(32) in let r1 = buf_h264_sub4x4(src, sb, ss, p, 0, res) in let w = buf_new(32) in let r2 = buf_h264_fdct4x4(res, 0, w, 0) in let lev = buf_new(32) in let nz = buf_h264_quant4x4(w, 0, qp, 1, lev, 0) in let dq = buf_new(32) in let r3 = buf_h264_dequant4x4(lev, 0, qp, dq, 0) in let rr = buf_new(32) in let r4 = buf_h264_idct4x4(dq, 0, rr, 0) in let rc = buf_new(16) in let r5 = buf_h264_recon4x4(p, 0, rr, 0, rc, 0) in let r6 = copyback(rc, rec, rb, rs, 0) in let a = buf_set(out, 32 + b, m) in let c = buf_set(out, 48 + b, nz) in let d = zzcopy(lev, out, 64 + b * 32, 0) in buf_set(out, 576 + b, if m == pm then 255 else if m < pm then m else m - 1)
+fn copyback(rc, rec, rb, rs, i) = if i >= 16 then 0 else let w = buf_set(rec, rb + (i / 4) * rs + i % 4, buf_get(rc, i)) in copyback(rc, rec, rb, rs, i + 1)
+fn zzcopy(lev, out, o, k) = if k >= 16 then 0 else let w = put16(out, o + k * 2, get16(lev, zz(k) * 2)) in zzcopy(lev, out, o, k + 1)
+
+## --- comparison -----------------------------------------------------------------------------------------------------
+fn same_range(a, b, i, n) = if i >= n then true else if buf_get(a, i) != buf_get(b, i) then false else same_range(a, b, i + 1, n)
+fn same_mb(a, b, ri, rs, y) = if y >= 16 then true else if same_range(buf_from_str(buf_to_str(a, ri + y * rs, 16)), buf_from_str(buf_to_str(b, ri + y * rs, 16)), 0, 16) == false then false else same_mb(a, b, ri, rs, y + 1)
+fn outs_same(c, o) = same_range(buf_from_str(buf_to_str(c, 32, 560)), buf_from_str(buf_to_str(o, 32, 560)), 0, 560)
+
+## one macroblock both ways on fresh copies of the same reconstruction; true when every output and the reconstruction agree
+fn check(w, h, mx, my, qp, lam, mav, lm, tm) = let src = pic(w, h, 0) in let rec1 = pic(w, h, 2) in let rec2 = pic(w, h, 2) in let ri = my * w + mx in let cfg = cfg_new(w, qp, lam, mav, lm, tm) in let got = buf_h264_mb_i4(src, ri, w, rec1, ri, cfg) in let want = ref_mb(src, ri, w, rec2, ri, cfg) in got == want.cost and outs_same(cfg, want.out) and same_mb(rec1, rec2, ri, w, 0)
+
+fn test_interior_macroblock_matches_the_block_builtins() = check(64, 48, 16, 16, 26, 4, 15, [1, 3, 8, 0], [2, 4, 255, 6])
+fn test_top_left_macroblock_without_neighbours() = check(64, 48, 0, 0, 26, 4, 0, [255, 255, 255, 255], [255, 255, 255, 255])
+fn test_top_row_and_left_column() = check(64, 48, 32, 0, 30, 6, 1, [0, 1, 2, 3], [255, 255, 255, 255]) and check(64, 48, 0, 16, 20, 2, 6, [255, 255, 255, 255], [5, 5, 7, 8])
+fn test_right_column_without_top_right() = check(64, 48, 48, 16, 36, 8, 11, [8, 8, 1, 1], [0, 0, 0, 0])
+fn test_qp_extremes() = check(64, 48, 16, 16, 0, 0, 15, [2, 2, 2, 2], [2, 2, 2, 2]) and check(64, 48, 16, 16, 51, 30, 15, [2, 2, 2, 2], [2, 2, 2, 2])
+fn test_outputs_are_consistent() = let src = pic(64, 48, 0) in let rec = pic(64, 48, 2) in let cfg = cfg_new(64, 26, 4, 15, [1, 3, 8, 0], [2, 4, 255, 6]) in let r = buf_h264_mb_i4(src, 16 * 64 + 16, 64, rec, 16 * 64 + 16, cfg) in r > 0 and modes_ok(cfg, 0)
+fn modes_ok(c, b) = if b >= 16 then true else if buf_get(c, 32 + b) > 8 or buf_get(c, 48 + b) > 16 or (buf_get(c, 576 + b) != 255 and buf_get(c, 576 + b) > 7) then false else modes_ok(c, b + 1)
+fn test_wrong_arguments_answer_minus_one() = let src = pic(64, 48, 0) in let rec = pic(64, 48, 2) in buf_h264_mb_i4(src, 0, 64, rec, 0, buf_new(100)) == 0 - 1 and buf_h264_mb_i4(src, 40 * 64, 64, rec, 0, cfg_new(64, 26, 4, 0, [], [])) == 0 - 1 and buf_h264_mb_i4(src, 0, 64, rec, 0, cfg_new(64, 52, 4, 0, [], [])) == 0 - 1 and buf_h264_mb_i4(src, 0, 8, rec, 0, cfg_new(64, 26, 4, 0, [], [])) == 0 - 1
