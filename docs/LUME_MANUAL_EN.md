@@ -812,6 +812,11 @@ it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are
                                     the program's output is unchanged. When the commands run out, the program
                                     runs to its end. Steps go from call to call (a function's start or return),
                                     not expression by expression; nothing is inlined in a debug build.
+  lume debug --dap                  The same debugger as a Debug Adapter Protocol server on stdin / stdout
+                                    (Content-Length framing or one JSON per line) for editors and AI agents:
+                                    launch (program, args, stopOnEntry), setBreakpoints, setFunctionBreakpoints,
+                                    configurationDone, stackTrace, scopes, variables, evaluate, continue, next,
+                                    stepIn, stepOut, disconnect; events stopped, output, exited, terminated.
   lume test <src.src>...                 Run all `fn test_*()` unit tests
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check
   lume check --lex <file>...             Lexical check only (strings, escapes, comments), FILE:LINE:COL
@@ -1216,7 +1221,7 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
   lume describe|--describe [--json]
   lume targets|--targets [--json]
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
-  lume debug [--commands <value>] [-x <value>] <source.src> [program-arguments]
+  lume debug [--commands <value>] [-x <value>] [--dap] <source.src> [program-arguments]
   lume run [--memory] [--profile] <source.src> [program-arguments]
   lume test <source.src>...
   lume check [--json] [--lex] <source.src>

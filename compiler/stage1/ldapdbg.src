@@ -1,0 +1,112 @@
+## ldapdbg.src -- `lume debug --dap`: a Debug Adapter Protocol server on standard input / output (Content-Length
+## framing, or one JSON object per line) that drives the real debugger of `lume debug`, so an editor or an AI agent
+## gets breakpoints, stepping, the call stack and the variables of a running Lume program.
+## launch builds the program with the debugger's hooks and a followed command file (LUME_DEBUG="+FILE": at the end of
+## the file the debugger waits for more lines), then starts it through a small monitor process (os_fork, then
+## os_spawn_capture with standard output / error to files, os_waitpid_status, the exit code written to a file: the
+## program's exit status, or 128 + the signal that stopped it). Every
+## request becomes debugger commands appended to the command file and followed by `mark`; the answer is what the
+## debugger wrote up to `debug: mark` into its own output file (the first command is `output FILE`: the debugger
+## appends there, so reading the file while the program runs never disturbs it, on Linux or Windows). A resumed program answers when it stops again (its `mark` is
+## read then) or ends (the monitor's exit file).
+## Requests: initialize, launch (program, args, stopOnEntry), setBreakpoints (lines: the debugger stops at the start
+## of the function declared at or before the line, the reply gives that line), setFunctionBreakpoints,
+## configurationDone, threads, stackTrace, scopes, variables, evaluate (a variable of the frame), continue, next,
+## stepIn, stepOut, disconnect, terminate. Events: initialized, stopped (breakpoint, step, exception for a run-time
+## error), output (the program's standard output and error), exited, terminated.
+use linteractive
+use hostio
+
+fn ldp_q(s) = "\"" + lj_escape_text(s, 0) + "\""
+fn ldp_has(text, part) = li_contains(text, part)
+fn ldp_find(text, part, i) = if i + count(part) > count(text) then 0 - 1 else if slice(text, i, i + count(part)) == part then i else ldp_find(text, part, i + 1)
+fn ldp_line_end(s, i) = if i >= count(s) or at(s, i) == "\n" then i else ldp_line_end(s, i + 1)
+fn ldp_digits(s, i, acc) = if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then ldp_digits(s, i + 1, acc * 10 + ord(at(s, i)) - 48) else acc
+fn ldp_base(p, i, b) = if i >= count(p) then slice(p, b, count(p)) else if at(p, i) == "/" or at(p, i) == "\\" then ldp_base(p, i + 1, i + 1) else ldp_base(p, i + 1, b)
+fn ldp_dir(p, i, b) = if i >= count(p) then (if b < 0 then "." else slice(p, 0, b)) else if at(p, i) == "/" or at(p, i) == "\\" then ldp_dir(p, i + 1, i) else ldp_dir(p, i + 1, b)
+
+## --- session: framed (Content-Length or lines), seq, the work files, positions read so far, breakpoint commands ----
+fn ldp_new(root) = {framed: 0, seq: 1, root: root, dir: "", bin: "", cmd: "", err: "", out: "", dbg: "", exitf: "", pidf: "", epos: 0, opos: 0, erpos: 0, lbps: "", fbps: "", stop_entry: 0, started: 0, ended: 0, done: 0, progdir: "."}
+fn ldp_emit(st, body) = let w = li_send(st.framed, body) in {st with seq: st.seq + 1}
+fn ldp_resp(st, req, ok, body) = ldp_emit(st, "{\"seq\":" + str(st.seq) + ",\"type\":\"response\",\"request_seq\":" + str((lj_get(req, "seq")).num) + ",\"success\":" + (if ok == 1 then "true" else "false") + ",\"command\":" + ldp_q((lj_get(req, "command")).text) + (if body == "" then "" else ",\"body\":" + body) + "}")
+fn ldp_fail(st, req, message) = ldp_emit(st, "{\"seq\":" + str(st.seq) + ",\"type\":\"response\",\"request_seq\":" + str((lj_get(req, "seq")).num) + ",\"success\":false,\"command\":" + ldp_q((lj_get(req, "command")).text) + ",\"message\":" + ldp_q(message) + "}")
+fn ldp_event(st, ev, body) = ldp_emit(st, "{\"seq\":" + str(st.seq) + ",\"type\":\"event\",\"event\":" + ldp_q(ev) + (if body == "" then "" else ",\"body\":" + body) + "}")
+
+## --- talking to the debugger ------------------------------------------------------------------------------------------
+fn ldp_send(st, cmds) = let w = fs_append_sync(st.cmd, cmds) in st
+fn ldp_exited(st) = fs_path_exists(st.exitf) == 1
+## wait until the debugger wrote `debug: mark` after position epos (or the program ended): {st, text, ended}
+fn ldp_wait(st, limit_ms, waited) = let all = (if fs_path_exists(st.dbg) == 1 then fs_read_file(st.dbg) else "") in let k = ldp_find(all, "debug: mark\n", st.epos) in if k >= 0 then {st: {st with epos: k + 12}, text: slice(all, st.epos, k), ended: 0} else if ldp_exited(st) then {st: {st with epos: count(all)}, text: slice(all, st.epos, count(all)), ended: 1} else if limit_ms > 0 and waited >= limit_ms then {st: st, text: "", ended: 0 - 1} else let z = os_sleep_ms(2) in ldp_wait(st, limit_ms, waited + 2)
+fn ldp_ask(st, cmds) = let s2 = ldp_send(st, cmds + "mark\n") in ldp_wait(s2, 15000, 0)
+## the program's own output since last time, as output events (standard output, then the lines of standard error that
+## are not the debugger's)
+fn ldp_relay_out(st) = let all = (if fs_path_exists(st.out) == 1 then fs_read_file(st.out) else "") in if count(all) <= st.opos then st else let s2 = ldp_event(st, "output", "{\"category\":\"stdout\",\"output\":" + ldp_q(slice(all, st.opos, count(all))) + "}") in {s2 with opos: count(all)}
+fn ldp_progerr(text, i, acc) = if i >= count(text) then acc else let e = ldp_line_end(text, i) in let l = slice(text, i, e) in ldp_progerr(text, e + 1, if l == "" or ldp_isdbg(l) then acc else acc + l + "\n")
+fn ldp_isdbg(l) = (count(l) >= 6 and slice(l, 0, 6) == "debug:") or (count(l) >= 12 and slice(l, 0, 12) == "(lume debug)") or (count(l) >= 2 and slice(l, 0, 2) == "  ") or (count(l) >= 2 and slice(l, 0, 2) == "* ")
+fn ldp_relay_err(st) = let all = (if fs_path_exists(st.err) == 1 then fs_read_file(st.err) else "") in if count(all) <= st.erpos then {st: st, text: ""} else let p = ldp_progerr(slice(all, st.erpos, count(all)), 0, "") in let s1 = {st with erpos: count(all)} in if p == "" then {st: s1, text: ""} else {st: ldp_event(s1, "output", "{\"category\":\"stderr\",\"output\":" + ldp_q(p) + "}"), text: p}
+
+## --- launch -----------------------------------------------------------------------------------------------------------
+fn ldp_items_str(items) = match items
+    Nil        => Nil
+    Cons(h, t) => Cons(h.text, ldp_items_str(t))
+fn ldp_launch(st, req) = let a = lj_get(req, "arguments") in let prog = (lj_get(a, "program")).text in if prog == "" or fs_path_exists(prog) == 0 then ldp_fail(st, req, "launch needs \"program\": a .src file that exists") else let dir = st.root + "/build/lume-dap-" + str(os_getpid()) in let m = hio_mkdir_p(dir) in let s1 = {st with dir: dir, bin: dir + "/program", cmd: dir + "/commands", err: dir + "/stderr", out: dir + "/stdout", dbg: dir + "/debug.out", exitf: dir + "/exit", pidf: dir + "/pid", stop_entry: (if (lj_get(a, "stopOnEntry")).num == 1 then 1 else 0), progdir: ldp_dir(prog, 0, 0 - 1)} in ldp_launch2(s1, req, prog, ldp_items_str((lj_get(a, "args")).items))
+fn ldp_launch2(st, req, prog, args) = let c = fs_write_sync(st.cmd, "output " + st.dbg + "\n") in let x = (if fs_path_exists(st.exitf) == 1 then fs_remove(st.exitf) else 1) in let y = (if fs_path_exists(st.dbg) == 1 then fs_remove(st.dbg) else 1) in let e = os_setenv("LUME_DEBUG", "+" + st.cmd) in let rc = os_run_capture_timeout(os_arg_at(0), Cons("build", Cons(prog, Cons("-o", Cons(st.bin, Nil)))), st.dir + "/build.out", st.dir + "/build.err", 600000) in let u = os_setenv("LUME_DEBUG", "") in if rc != 0 then ldp_fail(st, req, "the program does not build: " + fs_read_file(st.dir + "/build.out") + fs_read_file(st.dir + "/build.err")) else ldp_start(st, req, args)
+## the monitor: starts the program (output to files), waits for it and writes its exit status
+fn ldp_start(st, req, args) = let pid = os_fork() in if pid == 0 then ldp_monitor(st, args) else let r = ldp_ready(st, 0) in if r == 0 then ldp_fail(st, req, "the program did not reach the debugger") else let s2 = ldp_resp({st with started: 1}, req, 1, "") in s2
+fn ldp_monitor(st, args) = let p = os_spawn_capture(st.bin, args, st.out, st.err) in let w = fs_write_sync(st.pidf, str(p)) in let s = os_waitpid_status(p) in let w2 = fs_write_sync(st.exitf, str(if s % 256 == 0 then s / 256 else 128 + s % 128)) in os_exit(0)
+fn ldp_ready(st, waited) = if fs_path_exists(st.dbg) == 1 and ldp_has(fs_read_file(st.dbg), "debug: output to") == 1 then 1 else if waited >= 30000 or ldp_exited(st) then 0 else let z = os_sleep_ms(5) in ldp_ready(st, waited + 5)
+
+## --- breakpoints ------------------------------------------------------------------------------------------------------
+## line breakpoints are kept as "SOURCE\tbreak FILE:LINE" lines, function ones as "break NAME" lines; every change
+## deletes all in the debugger and sets them again
+fn ldp_dropsrc(lines, src, i, acc) = if i >= count(lines) then acc else let e = ldp_line_end(lines, i) in let l = slice(lines, i, e) in ldp_dropsrc(lines, src, e + 1, if l == "" or ldp_find(l, src + "\t", 0) == 0 then acc else acc + l + "\n")
+fn ldp_cmds_of(lines, i, acc) = if i >= count(lines) then acc else let e = ldp_line_end(lines, i) in let l = slice(lines, i, e) in let t = ldp_find(l, "\t", 0) in ldp_cmds_of(lines, e + 1, acc + (if t >= 0 then slice(l, t + 1, count(l)) + "\n" else if l == "" then "" else l + "\n"))
+## the answer to one `break`: verified, and the line where the debugger stops
+fn ldp_bpres(text, want) = let k = ldp_find(text, "debug: breakpoint at ", 0) in if k < 0 then "{\"verified\":false,\"line\":" + str(want) + ",\"message\":" + ldp_q(ldp_firstline(text)) + "}" else let e = ldp_line_end(text, k) in let l = slice(text, k, e) in let c = ldp_lastcolon(l, 0, 0 - 1) in "{\"verified\":true,\"line\":" + str(if c >= 0 then ldp_digits(l, c + 1, 0) else want) + "}"
+fn ldp_lastcolon(s, i, b) = if i >= count(s) then b else ldp_lastcolon(s, i + 1, if at(s, i) == ":" then i else b)
+fn ldp_firstline(text) = let i = ldp_skipecho(text, 0) in slice(text, i, ldp_line_end(text, i))
+fn ldp_skipecho(text, i) = if i < count(text) and ldp_find(text, "(lume debug) ", i) == i then ldp_skipecho(text, ldp_line_end(text, i) + 1) else i
+fn ldp_reset_bps(st, except_src) = let r = ldp_ask(st, "delete\n" + ldp_cmds_of(ldp_dropsrc(st.lbps, except_src, 0, ""), 0, "") + ldp_cmds_of(st.fbps, 0, "")) in r.st
+fn ldp_setlines(st, src, bps, acc, lines) = match bps
+    Nil        => {st: {st with lbps: ldp_dropsrc(st.lbps, src, 0, "") + lines}, body: acc}
+    Cons(b, t) => let line = (lj_get(b, "line")).num in let cmd = "break " + ldp_base(src, 0, 0) + ":" + str(line) in let r = ldp_ask(st, cmd + "\n") in ldp_setlines(r.st, src, t, acc + (if acc == "" then "" else ",") + ldp_bpres(r.text, line), lines + src + "\t" + cmd + "\n")
+fn ldp_setbps(st, req) = let a = lj_get(req, "arguments") in let src = (lj_path2(a, "source", "path")).text in let s1 = ldp_reset_bps(st, src) in let r = ldp_setlines(s1, src, (lj_get(a, "breakpoints")).items, "", "") in ldp_resp(r.st, req, 1, "{\"breakpoints\":[" + r.body + "]}")
+fn ldp_setfns(st, bps, acc, lines) = match bps
+    Nil        => {st: {st with fbps: lines}, body: acc}
+    Cons(b, t) => let cmd = "break " + (lj_get(b, "name")).text in let r = ldp_ask(st, cmd + "\n") in ldp_setfns(r.st, t, acc + (if acc == "" then "" else ",") + ldp_bpres(r.text, 0), lines + cmd + "\n")
+fn ldp_setfnbps(st, req) = let s1 = {st with fbps: ""} in let s2 = ldp_reset_bps(s1, "\n") in let r = ldp_setfns(s2, (lj_path2(req, "arguments", "breakpoints")).items, "", "") in ldp_resp(r.st, req, 1, "{\"breakpoints\":[" + r.body + "]}")
+
+## --- running ----------------------------------------------------------------------------------------------------------
+## resume with a debugger command and report the next stop, or the end of the program
+fn ldp_resume(st, cmd, reason) = let s1 = ldp_send(st, cmd + "\nmark\n") in let r = ldp_wait(s1, 0, 0) in let e = ldp_relay_err(ldp_relay_out(r.st)) in if r.ended == 1 then ldp_finish(e.st) else ldp_stopped(e.st, r.text, reason, e.text)
+fn ldp_stopped(st, text, reason, errtext) = let k = ldp_find(text, "debug: stopped ", 0) in let l = (if k >= 0 then slice(text, k, ldp_line_end(text, k)) else "debug: stopped") in let why = (if ldp_has(l, "on the error") == 1 then "exception" else reason) in ldp_event(st, "stopped", "{\"reason\":" + ldp_q(why) + ",\"description\":" + ldp_q(slice(l, 7, count(l))) + ",\"threadId\":1,\"allThreadsStopped\":true" + (if why == "exception" then ",\"text\":" + ldp_q(errtext) else "") + "}")
+fn ldp_finish(st) = let code = toint(ldp_trimnl(fs_read_file(st.exitf))) in let s0 = ldp_relay_out(st) in let s1 = (ldp_relay_err(s0)).st in let s2 = ldp_event(s1, "exited", "{\"exitCode\":" + str(code) + "}") in let s3 = ldp_event(s2, "terminated", "") in {s3 with ended: 1}
+fn ldp_trimnl(s) = if count(s) > 0 and (at(s, count(s) - 1) == "\n" or at(s, count(s) - 1) == " ") then ldp_trimnl(slice(s, 0, count(s) - 1)) else s
+fn ldp_go(st, req, cmd, reason) = let s1 = ldp_resp(st, req, 1, (if cmd == "c" then "{\"allThreadsContinued\":true}" else "")) in ldp_resume(s1, cmd, reason)
+
+## --- inspecting -------------------------------------------------------------------------------------------------------
+## a call stack line: "* #K NAME(ARGS) at FILE:LINE" / "  #K NAME(ARGS)" / "  #K (top level)"
+fn ldp_frames(st, text, i, acc) = if i >= count(text) then acc else let e = ldp_line_end(text, i) in let l = slice(text, i, e) in ldp_frames(st, text, e + 1, if count(l) > 3 and (slice(l, 0, 3) == "* #" or slice(l, 0, 3) == "  #") and ldp_has(l, "(top level)") == 0 then acc + (if acc == "" then "" else ",") + ldp_frame(st, l) else acc)
+fn ldp_frame(st, l) = let k = ldp_digits(l, 3, 0) in let sp = ldp_find(l, " ", 3) in let at_k = ldp_find(l, " at ", 3) in let name = (if at_k > 0 then slice(l, sp + 1, at_k) else slice(l, sp + 1, count(l))) in let loc = (if at_k > 0 then slice(l, at_k + 4, count(l)) else "") in let c = ldp_lastcolon(loc, 0, 0 - 1) in let file = (if c > 0 then slice(loc, 0, c) else "") in let line = (if c >= 0 then ldp_digits(loc, c + 1, 0) else 0) in "{\"id\":" + str(k + 1) + ",\"name\":" + ldp_q(name) + ",\"line\":" + str(line) + ",\"column\":1" + (if file != "" then ",\"source\":{\"name\":" + ldp_q(ldp_base(file, 0, 0)) + ",\"path\":" + ldp_q(ldp_path(st, file)) + "}" else "") + "}"
+fn ldp_path(st, file) = if count(file) > 0 and (at(file, 0) == "/" or (count(file) > 1 and at(file, 1) == ":")) then file else st.progdir + "/" + file
+fn ldp_stack(st, req) = let r = ldp_ask(st, "bt\n") in ldp_resp(r.st, req, 1, "{\"stackFrames\":[" + ldp_frames(r.st, r.text, 0, "") + "]}")
+fn ldp_scopes(st, req) = let f = (lj_path2(req, "arguments", "frameId")).num in ldp_resp(st, req, 1, "{\"scopes\":[{\"name\":\"Locals\",\"variablesReference\":" + str(f) + ",\"expensive\":false}]}")
+## "  NAME = VALUE" lines of the answer
+fn ldp_vars(text, i, acc) = if i >= count(text) then acc else let e = ldp_line_end(text, i) in let l = slice(text, i, e) in let q = ldp_find(l, " = ", 0) in ldp_vars(text, e + 1, if count(l) > 2 and slice(l, 0, 2) == "  " and q > 2 then acc + (if acc == "" then "" else ",") + "{\"name\":" + ldp_q(slice(l, 2, q)) + ",\"value\":" + ldp_q(slice(l, q + 3, count(l))) + ",\"variablesReference\":0}" else acc)
+fn ldp_variables(st, req) = let f = (lj_path2(req, "arguments", "variablesReference")).num in let r = ldp_ask(st, "frame " + str(f - 1) + "\nlocals\n") in ldp_resp(r.st, req, 1, "{\"variables\":[" + ldp_vars(r.text, 0, "") + "]}")
+fn ldp_evaluate(st, req) = let a = lj_get(req, "arguments") in let f = (lj_get(a, "frameId")).num in let expr = (lj_get(a, "expression")).text in let r = ldp_ask(st, (if f > 0 then "frame " + str(f - 1) + "\n" else "") + "print " + expr + "\n") in let v = ldp_vals(r.text, 0, "") in if v == "" then ldp_fail(r.st, req, ldp_firstline(ldp_afterframe(r.text))) else ldp_resp(r.st, req, 1, "{\"result\":" + ldp_q(v) + ",\"variablesReference\":0}")
+fn ldp_afterframe(text) = let k = ldp_find(text, "debug: frame", 0) in if k < 0 then text else slice(text, ldp_line_end(text, k) + 1, count(text))
+fn ldp_vals(text, i, acc) = if i >= count(text) then acc else let e = ldp_line_end(text, i) in let l = slice(text, i, e) in let q = ldp_find(l, " = ", 0) in ldp_vals(text, e + 1, if count(l) > 2 and slice(l, 0, 2) == "  " and q > 2 then acc + (if acc == "" then "" else ", ") + slice(l, q + 3, count(l)) else acc)
+
+## --- the end ----------------------------------------------------------------------------------------------------------
+fn ldp_kill(st) = if st.ended == 0 and fs_path_exists(st.pidf) == 1 and ldp_exited(st) == false then (let p = toint(ldp_trimnl(fs_read_file(st.pidf))) in let s = ldp_send(st, "quit\n") in let z = os_sleep_ms(50) in if ldp_exited(st) then 0 else os_kill(p, 9)) else 0
+fn ldp_stop(st, req) = let k = (if st.started == 1 then ldp_kill(st) else 0) in let s1 = ldp_resp(st, req, 1, "") in {s1 with done: 1}
+
+## --- requests ---------------------------------------------------------------------------------------------------------
+fn ldp_caps() = "{\"supportsConfigurationDoneRequest\":true,\"supportsFunctionBreakpoints\":true,\"supportsTerminateRequest\":true,\"supportsEvaluateForHovers\":true}"
+fn ldp_handle(st, req) = let c = (lj_get(req, "command")).text in if c == "initialize" then ldp_event(ldp_resp(st, req, 1, ldp_caps()), "initialized", "") else if c == "launch" then ldp_launch(st, req) else if c == "setBreakpoints" then ldp_need(st, req, 1) else if c == "setFunctionBreakpoints" then ldp_need(st, req, 2) else if c == "setExceptionBreakpoints" then ldp_resp(st, req, 1, "{\"breakpoints\":[]}") else if c == "configurationDone" then ldp_need(st, req, 3) else if c == "threads" then ldp_resp(st, req, 1, "{\"threads\":[{\"id\":1,\"name\":\"main\"}]}") else ldp_handle2(st, req, c)
+fn ldp_handle2(st, req, c) = if c == "stackTrace" then ldp_need(st, req, 4) else if c == "scopes" then ldp_scopes(st, req) else if c == "variables" then ldp_need(st, req, 5) else if c == "evaluate" then ldp_need(st, req, 6) else if c == "continue" then ldp_need(st, req, 7) else if c == "next" then ldp_need(st, req, 8) else if c == "stepIn" then ldp_need(st, req, 9) else if c == "stepOut" then ldp_need(st, req, 10) else if c == "disconnect" or c == "terminate" then ldp_stop(st, req) else ldp_fail(st, req, "lume debug --dap does not support '" + c + "'")
+## requests that need a launched program
+fn ldp_need(st, req, k) = if st.started == 0 then ldp_fail(st, req, "launch the program first") else if st.ended == 1 and k >= 3 then ldp_fail(st, req, "the program has ended") else if k == 1 then ldp_setbps(st, req) else if k == 2 then ldp_setfnbps(st, req) else if k == 3 then ldp_resume(ldp_resp(st, req, 1, ""), (if st.stop_entry == 1 then "s" else "c"), (if st.stop_entry == 1 then "entry" else "breakpoint")) else if k == 4 then ldp_stack(st, req) else if k == 5 then ldp_variables(st, req) else if k == 6 then ldp_evaluate(st, req) else if k == 7 then ldp_go(st, req, "c", "breakpoint") else if k == 8 then ldp_go(st, req, "n", "step") else if k == 9 then ldp_go(st, req, "s", "step") else ldp_go(st, req, "f", "step")
+fn ldp_loop(st) = let m = li_read_message() in if m.eof == 1 then ldp_kill(st) else if m.ok == 0 then ldp_loop(st) else let req = lj_parse(m.text) in if req.ok == 0 then ldp_loop(st) else let s2 = ldp_handle({st with framed: m.framed}, req) in if s2.done == 1 then 0 else ldp_loop(s2)
+fn ldp_main(root) = ldp_loop(ldp_new(root))

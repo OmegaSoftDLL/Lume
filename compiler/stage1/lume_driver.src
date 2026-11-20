@@ -1,5 +1,6 @@
 use fs_sha256_file
 use linteractive
+use ldapdbg
 use capsule
 use lgenesis
 use lsentience
@@ -301,9 +302,10 @@ fn ld_run(root, source) = ld_run_with_args(root, source, ld_args_from(3))
 ## `lume debug [--commands FILE] [-x CMD]... f.src [args]`: the program is built with a call of the debugger at each
 ## function's start and return (LUME_DEBUG names the command file, "-" for standard input; compiler/stage1/rt/
 ## rt_debug.src) and run; the debugger writes to standard error, the program's own output is unchanged
-fn ld_debug_usage() = "usage: lume debug [--commands <file>] [-x <command>]... <source.src> [program-arguments]\n"
+fn ld_debug_usage() = "usage: lume debug [--commands <file>] [-x <command>]... <source.src> [program-arguments]\n       lume debug --dap   (a Debug Adapter Protocol server on standard input / output)\n"
 fn ldd_args(i, n, cmds, file) = if i >= n then {i: i, cmds: cmds, file: file} else let h = os_arg_at(i) in if h == "-x" and i + 1 < n then ldd_args(i + 2, n, cmds + os_arg_at(i + 1) + "\n", file) else if ld_starts(h, "-x=") == 1 then ldd_args(i + 1, n, cmds + slice(h, 3, count(h)) + "\n", file) else if h == "--commands" and i + 1 < n then ldd_args(i + 2, n, cmds, os_arg_at(i + 1)) else if ld_starts(h, "--commands=") == 1 then ldd_args(i + 1, n, cmds, slice(h, 11, count(h))) else {i: i, cmds: cmds, file: file}
-fn ld_debug_entry(root) = let n = os_arg_count() in let o = ldd_args(2, n, "", "") in if o.i >= n then ctfail(ld_debug_usage()) else if o.file != "" and fs_path_exists(o.file) == 0 then ctfail("lume debug: cannot read the command file " + o.file + "\n") else let cmds = (if o.cmds != "" and o.file != "" then fs_read_file(o.file) + "\n" + o.cmds else o.cmds) in let tmp = (if cmds != "" then ld_scratch(root, "debug") + ".cmd" else "") in let w = (if tmp != "" then fs_write_sync(tmp, cmds) else 0) in let path = (if tmp != "" then tmp else if o.file != "" then o.file else "-") in let e = os_setenv("LUME_DEBUG", path) in let rc = ld_run_with_args(root, os_arg_at(o.i), ld_args_from(o.i + 1)) in let z = (if tmp != "" then ld_remove_if_present(tmp) else 0) in os_exit(rc)
+fn ld_debug_entry(root) = if os_arg_count() >= 3 and os_arg_at(2) == "--dap" then os_exit(ldp_main(root)) else ld_debug_run(root)
+fn ld_debug_run(root) = let n = os_arg_count() in let o = ldd_args(2, n, "", "") in if o.i >= n then ctfail(ld_debug_usage()) else if o.file != "" and fs_path_exists(o.file) == 0 then ctfail("lume debug: cannot read the command file " + o.file + "\n") else let cmds = (if o.cmds != "" and o.file != "" then fs_read_file(o.file) + "\n" + o.cmds else o.cmds) in let tmp = (if cmds != "" then ld_scratch(root, "debug") + ".cmd" else "") in let w = (if tmp != "" then fs_write_sync(tmp, cmds) else 0) in let path = (if tmp != "" then tmp else if o.file != "" then o.file else "-") in let e = os_setenv("LUME_DEBUG", path) in let rc = ld_run_with_args(root, os_arg_at(o.i), ld_args_from(o.i + 1)) in let z = (if tmp != "" then ld_remove_if_present(tmp) else 0) in os_exit(rc)
 
 fn ld_run_entry(root) = if os_arg_at(2) == "--profile" then (if os_arg_count() < 4 then ctfail("usage: lume run --profile <source.src> [args]\n") else os_exit(ld_run_profile(root, os_arg_at(3)))) else if os_arg_at(2) == "--memory" then (if os_arg_count() < 4 then ctfail("usage: lume_driver run [--memory] <source.src> [args]\n") else let rc = ld_run_with_args(root, os_arg_at(3), ld_args_from(4)) in let zm = ld_report_memory("run") in os_exit(rc)) else os_exit(ld_run(root, os_arg_at(2)))
 
@@ -1407,7 +1409,7 @@ fn ld_cmd_table_text() = "" +
 "describe|--describe;describe;--json;;;lcli;;\n" +
 "targets|--targets;targets;--json;;;ltarget;;\n" +
 "build;build;-o= --target= --incremental --memory --protect --profile= --lsym= --link= -l= -l* --emit-c-header= --build-timeout-ms= --dwarf -g --keep-proven-checks --critical --entry=;;none|standard|hardened|max|debug|release|ship;;;<source.src>\n" +
-"debug;debug;--commands= -x=;;;;L;<source.src> [program-arguments]\n" +
+"debug;debug;--commands= -x= --dap;;;;L;<source.src> [program-arguments]\n" +
 "run;run;--memory --profile;;;;L;<source.src> [program-arguments]\n" +
 "test;test;;;;ltest;;<source.src>...\n" +
 "check;check;--json --lex;;;lcaas;;<source.src>\n" +

@@ -785,6 +785,11 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                                     no stderr; a saida do programa nao muda. Quando os comandos acabam, o
                                     programa roda ate o fim. Os passos vao de chamada em chamada (inicio ou
                                     retorno de funcao), nao de expressao em expressao; nada e expandido inline.
+  lume debug --dap                  O mesmo depurador como servidor Debug Adapter Protocol no stdin / stdout
+                                    (Content-Length ou um JSON por linha) para editores e agentes de IA:
+                                    launch (program, args, stopOnEntry), setBreakpoints, setFunctionBreakpoints,
+                                    configurationDone, stackTrace, scopes, variables, evaluate, continue, next,
+                                    stepIn, stepOut, disconnect; eventos stopped, output, exited, terminated.
   lume test <src.src>...                 Executa todos os testes `fn test_*()`
   lume check <src.src> [--json]          Verifica tipos, ownership e efeitos
   lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL
@@ -1173,7 +1178,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume describe|--describe [--json]
   lume targets|--targets [--json]
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
-  lume debug [--commands <value>] [-x <value>] <source.src> [program-arguments]
+  lume debug [--commands <value>] [-x <value>] [--dap] <source.src> [program-arguments]
   lume run [--memory] [--profile] <source.src> [program-arguments]
   lume test <source.src>...
   lume check [--json] [--lex] <source.src>

@@ -502,6 +502,26 @@ DEPMAIN
     if [ "$stk_rc" = 3 ] && grep -q "^  at inner (.*stk.src:1)$" "$ntmp/stk.err" && grep -q "^  at middle (.*stk.src:2)$" "$ntmp/stk.err" && grep -q "^  at outer (.*stk.src:3)$" "$ntmp/stk.err"; then ok "run-time error prints the call stack with file:line (inner, middle, outer)"; else bad "run-time error call stack"; cat "$ntmp/stk.err"; fi
     # buf_h264_mb_i4: one Intra4x4 macroblock in one call equals the block builtins (modes, levels, codes, reconstruction)
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_mb_ok.src 2>&1 | grep -q "7 passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_mbp_ok.src 2>&1 | grep -q "6 passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_mbpc_ok.src 2>&1 | grep -q "6 passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_me_ok.src 2>&1 | grep -q "5 passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_mbi16_ok.src 2>&1 | grep -q "5 passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_mbic_ok.src 2>&1 | grep -q "5 passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_cavlcmb_ok.src 2>&1 | grep -q "5 passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/h264_blocks_ok.src 2>&1 | grep -q " passed, 0 failed"; then ok "buf_h264_mb_i4 / mb_i16 / mb_ic / mb_p / mb_pc / me16 / cavlc_luma / cavlc_chroma: whole macroblocks (Intra4x4, Intra16x16, intra chroma, inter luma, inter chroma), their CAVLC and the motion search equal their references; block builtins against the formulas"; else bad "buf_h264_mb_i4 / h264 block builtins"; fi
+    # lume debug --dap: a Debug Adapter Protocol session over the real debugger (breakpoint by line, call stack with
+    # arguments, variables, evaluate, the stop on a run-time error, the exit code)
+    dw=$(mktemp -d)
+    printf 'fn fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)\nfn ratio(a, b) = a / b\nfn scale(k) = let base = 10 in ratio(base, k)\nprint fib(6)\nprint scale(2)\nprint scale(0)\n' > "$dw/dbg.src"
+    {
+      printf '{"seq":1,"type":"request","command":"initialize","arguments":{}}\n'
+      printf '{"seq":2,"type":"request","command":"launch","arguments":{"program":"%s/dbg.src"}}\n' "$dw"
+      printf '{"seq":3,"type":"request","command":"setBreakpoints","arguments":{"source":{"path":"%s/dbg.src"},"breakpoints":[{"line":2}]}}\n' "$dw"
+      printf '{"seq":4,"type":"request","command":"configurationDone"}\n'
+      printf '{"seq":5,"type":"request","command":"stackTrace","arguments":{"threadId":1}}\n'
+      printf '{"seq":6,"type":"request","command":"variables","arguments":{"variablesReference":1}}\n'
+      printf '{"seq":7,"type":"request","command":"evaluate","arguments":{"expression":"a","frameId":1}}\n'
+      printf '{"seq":8,"type":"request","command":"continue","arguments":{"threadId":1}}\n'
+      printf '{"seq":9,"type":"request","command":"continue","arguments":{"threadId":1}}\n'
+      printf '{"seq":10,"type":"request","command":"continue","arguments":{"threadId":1}}\n'
+      printf '{"seq":11,"type":"request","command":"disconnect"}\n'
+    } > "$dw/req.txt"
+    (cd "$dw" && LUME_BIN_DIR="$ntmp" timeout 300 "$OLDPWD/../../lume" debug --dap < req.txt > resp.txt 2> dap.err)
+    if grep -q '"verified":true,"line":2' "$dw/resp.txt" && grep -q '"name":"ratio(a=10, b=2)"' "$dw/resp.txt" && grep -q '{"name":"b","value":"2","variablesReference":0}' "$dw/resp.txt" && grep -q '"result":"10"' "$dw/resp.txt" && grep -q '"reason":"exception"' "$dw/resp.txt" && grep -q '"exitCode":3' "$dw/resp.txt" && grep -q '"output":"8\\n"' "$dw/resp.txt"; then ok "lume debug --dap: breakpoints, call stack, variables, evaluate, the stop on a run-time error and the exit code over DAP"; else bad "lume debug --dap"; tail -c 1500 "$dw/resp.txt"; cat "$dw/dap.err" | tail -3; fi
+    rm -rf "$dw"
     # lume verify: a good file passes every step with each step's time in its line, a refuted contract fails at its
     # step, a file without contracts passes (nothing to certify), and the second run comes from the cache
     vw=$(mktemp -d)

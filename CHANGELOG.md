@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`lume debug --dap`: the real debugger over the Debug Adapter Protocol (item 21).** A DAP server on stdin / stdout
+  (Content-Length framing or one JSON object per line) for editors and AI agents: launch (program, args, stopOnEntry)
+  builds the program with the debugger's hooks and runs it under a monitor process; setBreakpoints (by line: the
+  reply gives the line where it stops), setFunctionBreakpoints, configurationDone, stackTrace (each frame with its
+  arguments, file and line), scopes, variables, evaluate, continue, next, stepIn, stepOut, disconnect / terminate;
+  events stopped (breakpoint, step, entry, exception with the run-time error's message), output (the program's stdout
+  and stderr), exited (its exit code) and terminated. The run-time debugger gained a followed command file (a path
+  starting with `+`: at its end it waits for more lines) and the `mark` command that ends an answer. In the battery
+  (compiler/stage1/ldapdbg.src).
 - **The H.264 block pipeline in SSE2 (item 15, step 2 of 2):** residual, quantization, dequantization, inverse
   transform and reconstruction of every block builtin and macroblock builtin now run through `vec_res4`,
   `vec_quant4`, `vec_dequant4`, `vec_idct4` and `vec_rec4`: residual 136 -> 57 ns, dequantization 272 -> 65 ns, inverse

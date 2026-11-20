@@ -9,19 +9,26 @@
 ##   0 mode (0 run, 1 step, 2 next, 3 finish)   8 frame of next/finish   16 command fd + 2 (0 not open, 1 none)
 ##   24 selected frame   32 selected row   40 breakpoints   48 end of commands seen   56 selected frame number
 ##   64 command line (256 bytes)   320 breakpoint rows (64 words)   832 stopped row   840 stopped frame
-##   848 one byte for writes   856 eight bytes for a short string
+##   848 one byte for writes   856 eight bytes for a short string   992 output fd + 1 (0: standard error)
+##   1000 follow mode   1008 a timespec (16 bytes)
+## A command path that starts with `+` is followed: at its end the debugger waits for more lines (2 ms naps) instead of
+## letting the program run to its end, so another process can append commands while the program waits (lume debug
+## --dap). `mark` writes `debug: mark`, the end of the answer to the commands before it; `output FILE` sends everything
+## the debugger writes to FILE, opened for appending (create, append: each write lands at the end, whatever another
+## process does with the file meanwhile).
 ## Every routine here is rw_keepall (values in frame slots): str and flush are runtime assembly that may change
 ## %rbx and %r12-%r15.
 fn rtd_s() = sym_addr("__dbg_state")
 fn rtd_len(p, n) = if load8(p + n) == 0 then n else rtd_len(p, n + 1)
-fn rtd_puts(p) = sys_call(1, 2, p, rtd_len(p, 0), 0, 0)
-fn rtd_ch(c) = let b = rtd_s() + 848 in let s = store8(b, c) in sys_call(1, 2, b, 1, 0, 0)
+fn rtd_ofd() = let f = load64(rtd_s() + 992) in if f == 0 then 2 else f - 1
+fn rtd_puts(p) = sys_call(1, rtd_ofd(), p, rtd_len(p, 0), 0, 0)
+fn rtd_ch(c) = let b = rtd_s() + 848 in let s = store8(b, c) in sys_call(1, rtd_ofd(), b, 1, 0, 0)
 fn rtd_unum(n) = if n >= 10 then (let z = rtd_unum(n / 10) in rtd_ch(48 + n % 10)) else rtd_ch(48 + n)
 fn rtd_num(n) = if n < 0 then (let m = rtd_ch(45) in rtd_unum(0 - n)) else rtd_unum(n)
 
 ## a value as `str` writes it; a string between quotes; a slot never written as (not set)
 fn rtd_isstr(v) = if bit_and(v, 7) == 2 then 1 else if bit_and(v, 7) != 0 or v == 0 then 0 else if load8(v) == 1 then 1 else 0
-fn rtd_sw(s) = let n = rt_slen(s) in let p = rt_sptr(s, rtd_s() + 856) in sys_call(1, 2, p, n, 0, 0)
+fn rtd_sw(s) = let n = rt_slen(s) in let p = rt_sptr(s, rtd_s() + 856) in sys_call(1, rtd_ofd(), p, n, 0, 0)
 fn rtd_val2(v, q) = let a = (if q == 1 then rtd_ch(34) else 0) in let s = str(v) in let w = rtd_sw(s) in if q == 1 then rtd_ch(34) else 0
 fn rtd_val(v) = if v == 0 then rtd_puts("(not set)") else rtd_val2(v, rtd_isstr(v))
 
@@ -89,22 +96,27 @@ fn rtd_nostop() = rtd_puts("debug: no function is running yet (step or set a bre
 fn rtd_frame(k) = let e = load64(rtd_s() + 832) in if e == 0 then rtd_nostop() else if k < 0 then rtd_puts("debug: no such frame\n") else if rtd_sel(e, load64(rtd_s() + 840), 0, k, 0) == 0 then rtd_puts("debug: no such frame\n") else let a = rtd_puts("debug: frame ") in let b = rtd_num(k) in let c = rtd_ch(32) in let d = rtd_where(load64(rtd_s() + 32)) in rtd_ch(10)
 fn rtd_where_cmd(x) = let e = load64(rtd_s() + 832) in if e == 0 then rtd_nostop() else rtd_bt(e, load64(rtd_s() + 840), 0, 0)
 
-fn rtd_help(x) = rtd_puts("debug commands (one per line, or separated by ';'):\n  break NAME | break FILE:LINE   stop when that function starts (b)\n  delete [NAME]                  remove one or every breakpoint (d)\n  continue                       run to the next breakpoint (c, run)\n  step                           stop at the next function start or return (s)\n  next                           the same, but not inside the functions this one calls (n)\n  finish                         run until this function returns (f)\n  bt                             the call stack with each function's arguments (where)\n  args | locals                  the parameters / every variable of the selected frame (a, l)\n  print NAME                     one variable of the selected frame (p)\n  frame N | up | down            select another frame of the call stack\n  quit                           stop the program (q)\n")
+fn rtd_help(x) = rtd_puts("debug commands (one per line, or separated by ';'):\n  break NAME | break FILE:LINE   stop when that function starts (b)\n  delete [NAME]                  remove one or every breakpoint (d)\n  continue                       run to the next breakpoint (c, run)\n  step                           stop at the next function start or return (s)\n  next                           the same, but not inside the functions this one calls (n)\n  finish                         run until this function returns (f)\n  bt                             the call stack with each function's arguments (where)\n  args | locals                  the parameters / every variable of the selected frame (a, l)\n  print NAME                     one variable of the selected frame (p)\n  frame N | up | down            select another frame of the call stack\n  quit                           stop the program (q)\n  mark                           write `debug: mark` (ends an answer, for a program driving the debugger)\n  output FILE                    write everything from now on to FILE, appending\n")
 
 ## one command; 1 when it resumes the program
 fn rtd_mode(m, fp) = let a = store64(rtd_s(), m) in let b = store64(rtd_s() + 8, fp) in 1
 fn rtd_cmd(b) = if rtd_isw(b, "c") == 1 or rtd_isw(b, "continue") == 1 or rtd_isw(b, "run") == 1 or rtd_isw(b, "r") == 1 then rtd_mode(0, 0) else if rtd_isw(b, "s") == 1 or rtd_isw(b, "step") == 1 then rtd_mode(1, 0) else if rtd_isw(b, "n") == 1 or rtd_isw(b, "next") == 1 then rtd_next(2) else if rtd_isw(b, "f") == 1 or rtd_isw(b, "finish") == 1 then rtd_next(3) else rtd_cmd2(b)
 fn rtd_next(m) = let fp = load64(rtd_s() + 840) in if fp == 0 then rtd_mode((if m == 2 then 1 else 0), 0) else rtd_mode(m, fp)
 fn rtd_cmd2(b) = let a = rtd_skw(b) in if rtd_isw(b, "b") == 1 or rtd_isw(b, "break") == 1 then rtd_z(rtd_break(a)) else if rtd_isw(b, "d") == 1 or rtd_isw(b, "delete") == 1 then rtd_z(rtd_delete(a)) else if rtd_isw(b, "bt") == 1 or rtd_isw(b, "where") == 1 or rtd_isw(b, "backtrace") == 1 then rtd_z(rtd_where_cmd(0)) else if rtd_isw(b, "l") == 1 or rtd_isw(b, "locals") == 1 then rtd_z(rtd_locals(0)) else if rtd_isw(b, "a") == 1 or rtd_isw(b, "args") == 1 then rtd_z(rtd_locals(1)) else rtd_cmd3(b, a)
-fn rtd_cmd3(b, a) = if rtd_isw(b, "p") == 1 or rtd_isw(b, "print") == 1 then rtd_z(rtd_print(a)) else if rtd_isw(b, "frame") == 1 then rtd_z(rtd_frame(rtd_atoi(a, 0))) else if rtd_isw(b, "up") == 1 then rtd_z(rtd_frame(load64(rtd_s() + 56) + 1)) else if rtd_isw(b, "down") == 1 then rtd_z(rtd_frame(load64(rtd_s() + 56) - 1)) else if rtd_isw(b, "h") == 1 or rtd_isw(b, "help") == 1 then rtd_z(rtd_help(0)) else if rtd_isw(b, "q") == 1 or rtd_isw(b, "quit") == 1 then rtd_quit(0) else rtd_z(rtd_unknown(b))
+fn rtd_cmd3(b, a) = if rtd_isw(b, "p") == 1 or rtd_isw(b, "print") == 1 then rtd_z(rtd_print(a)) else if rtd_isw(b, "frame") == 1 then rtd_z(rtd_frame(rtd_atoi(a, 0))) else if rtd_isw(b, "up") == 1 then rtd_z(rtd_frame(load64(rtd_s() + 56) + 1)) else if rtd_isw(b, "down") == 1 then rtd_z(rtd_frame(load64(rtd_s() + 56) - 1)) else if rtd_isw(b, "h") == 1 or rtd_isw(b, "help") == 1 then rtd_z(rtd_help(0)) else if rtd_isw(b, "q") == 1 or rtd_isw(b, "quit") == 1 then rtd_quit(0) else if rtd_isw(b, "output") == 1 then rtd_z(rtd_output(a)) else if rtd_isw(b, "mark") == 1 then rtd_z(rtd_puts("debug: mark\n")) else rtd_z(rtd_unknown(b))
+## output FILE: open it for appending (flags 1089: write, create, append; mode 0644) and write there from now on
+fn rtd_output(a) = if load8(a) == 0 then rtd_puts("debug: output needs a file name\n") else let fd = sys_call(2, a, 1089, 420, 0, 0) in if fd < 0 then (let x = rtd_puts("debug: cannot open ") in let y = rtd_puts(a) in rtd_ch(10)) else let w = store64(rtd_s() + 992, fd + 1) in let x = rtd_puts("debug: output to ") in let y = rtd_puts(a) in rtd_ch(10)
 fn rtd_z(x) = 0
 fn rtd_unknown(b) = let a = rtd_puts("debug: unknown command '") in let c = rtd_puts(b) in rtd_puts("' (help lists the commands)\n")
 fn rtd_quit(x) = let f = flush() in let a = rtd_puts("debug: quit\n") in sys_call(60, 0, 0, 0, 0, 0)
 
 ## reading commands: one byte at a time up to a newline or ';' (a carriage return is dropped, leading blanks too)
-fn rtd_open(p) = let fd = (if load8(p) == 45 and load8(p + 1) == 0 then 0 else sys_call(2, p, 0, 0, 0, 0)) in let s = store64(rtd_s() + 16, (if fd < 0 then 1 else fd + 2)) in (if fd < 0 then 0 - 1 else fd)
+fn rtd_open(p) = if load8(p) == 43 then (let f = store64(rtd_s() + 1000, 1) in rtd_open2(p + 1)) else rtd_open2(p)
+fn rtd_open2(p) = let fd = (if load8(p) == 45 and load8(p + 1) == 0 then 0 else sys_call(2, p, 0, 0, 0, 0)) in let s = store64(rtd_s() + 16, (if fd < 0 then 1 else fd + 2)) in (if fd < 0 then 0 - 1 else fd)
 fn rtd_fd() = let f = load64(rtd_s() + 16) in if f != 0 then f - 2 else rtd_open(sym_addr("__lume_dbgcmd"))
-fn rtd_rl(fd, b, n) = if n >= 250 then n else let r = sys_call(0, fd, b + n, 1, 0, 0) in if r <= 0 then (if n == 0 then 0 - 1 else n) else let c = load8(b + n) in if c == 10 or c == 59 then n else if c == 13 then rtd_rl(fd, b, n) else if (c == 32 or c == 9) and n == 0 then rtd_rl(fd, b, 0) else rtd_rl(fd, b, n + 1)
+fn rtd_rl(fd, b, n) = if n >= 250 then n else let r = sys_call(0, fd, b + n, 1, 0, 0) in if r == 0 and load64(rtd_s() + 1000) == 1 then (let z = rtd_nap(0) in rtd_rl(fd, b, n)) else if r <= 0 then (if n == 0 then 0 - 1 else n) else let c = load8(b + n) in if c == 10 or c == 59 then n else if c == 13 then rtd_rl(fd, b, n) else if (c == 32 or c == 9) and n == 0 then rtd_rl(fd, b, 0) else rtd_rl(fd, b, n + 1)
+## 2 ms (nanosleep), while a followed command file has no new line
+fn rtd_nap(x) = let t = rtd_s() + 1008 in let a = store64(t, 0) in let b = store64(t + 8, 2000000) in sys_call(35, t, 0, 0, 0, 0)
 fn rtd_trim(b, n) = if n > 0 and (load8(b + n - 1) == 32 or load8(b + n - 1) == 9) then rtd_trim(b, n - 1) else n
 fn rtd_readline(x) = let fd = rtd_fd() in if fd < 0 then 0 - 1 else let p = (if fd == 0 then rtd_puts("(lume debug) ") else 0) in rtd_rlend(fd, rtd_rl(fd, rtd_s() + 64, 0))
 fn rtd_rlend(fd, n) = if n < 0 then n else let b = rtd_s() + 64 in let m = rtd_trim(b, n) in let z = store8(b + m, 0) in let e = (if fd != 0 and m > 0 then (let a = rtd_puts("(lume debug) ") in let c = rtd_puts(b) in rtd_ch(10)) else 0) in m
