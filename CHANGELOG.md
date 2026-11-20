@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`buf_h264_mb_p(src, si, ss, ref, rec, cfg)`: a whole inter 16x16 macroblock in one call (item 15).** The
+  quarter-sample luma prediction for one motion vector (as `buf_h264_luma_mc`), then the 16 blocks are subtracted,
+  transformed, quantized with the inter rounding and reconstructed into rec; nonzero counts, zigzag levels and the
+  luma coded_block_pattern come back in cfg, and the answer 0 marks a P_Skip candidate. Exactly the result of
+  `buf_h264_luma_mc` plus the block builtins (compiler/stage1/h264_mbp_ok.src: integer and every quarter position,
+  vectors pointing outside the picture, QP 0 and 51, a static block). About 8 us per macroblock with residual in
+  every block: a 320x200 changed window (260 macroblocks) in ~2.2 ms.
 - **`buf_h264_mb_i4(src, si, ss, rec, ri, cfg)`: a whole Intra4x4 macroblock in one call (item 15).** For each of
   the 16 blocks in decoding order it makes the predictions the neighbours allow, costs each with SATD + lambda x the
   mode bits (1 predicted, 4 otherwise), transforms, quantizes and reconstructs the cheapest into rec, and writes the

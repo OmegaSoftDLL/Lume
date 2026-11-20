@@ -15,6 +15,8 @@
 ##                                               DC, plane) into 256 bytes; avail bits 1 left, 2 top, 8 top-left
 ##   buf_h264_mb_i4(src, si, ss, rec, ri, cfg)   a whole Intra4x4 macroblock: mode decision, transform, quantization
 ##                                               and reconstruction of its 16 blocks in one call (see its section)
+##   buf_h264_mb_p(src, si, ss, ref, rec, cfg)   a whole inter 16x16 macroblock: quarter-sample prediction, residual,
+##                                               transform, quantization and reconstruction (see its section)
 
 ## scratch: one static block (runtime/rt_die's .bss __rtc_scratch, 4096 bytes) instead of an allocation per call; the
 ## runtime is single-threaded and no codec builtin calls another, so the parts never overlap: luma MC window and b1
@@ -240,6 +242,27 @@ fn rtc_blk(x, b) = let c = load64(x + 80) in let mav = load64(x + 104) in let bx
 ## an interior block (a row above, a column on the left, all inside rec) gets its edge line once
 fn rtc_edge1(x) = let f = load64(x) in let fi = load64(x + 8) in let fs = load64(x + 16) in if fi >= fs + 1 and rtc_fits(f, fi - fs - 1, 4 * fs + 9) == 1 then (let e = rtc_edge(sym_addr("__rtc_scratch") + 3912, f + 8 + fi, fs, load64(x + 40)) in store64(x + 136, 1)) else store64(x + 136, 0)
 fn rtc_mbloop(x, b) = if b >= 16 or load64(x + 120) != 0 then 0 else let z = rtc_blk(x, b) in rtc_mbloop(x, b + 1)
+## --- one whole inter (P, 16x16) macroblock -------------------------------------------------------------------------------
+## buf_h264_mb_p(src, si, ss, ref, rec, cfg): the luma macroblock at src + si (rows ss apart) coded against the
+## reference picture ref with one motion vector: the quarter-sample prediction (8.4.2.2.1, as buf_h264_luma_mc) goes to
+## cfg bytes 640..895 (16 x 16), then each 4x4 block (luma4x4BlkIdx order) is subtracted, transformed, quantized with
+## the inter rounding, dequantized, inverse transformed and reconstructed into rec. ref and rec hold their luma plane
+## at offset 0, rows cfg.rs apart. cfg (at least 896 bytes, int32 little endian): in rs (0), qp (4), picture width (8)
+## and height (12), the macroblock's top-left sample x (16) and y (20), the vector mvx (24) and mvy (28) in quarter
+## samples (signed); out the nonzero levels per block (32..47), the zigzag levels as int16 (64 + 32 x block) and the
+## luma coded_block_pattern (int32 at 576, bit k for 8x8 quadrant k). Answers the total of nonzero levels (0: nothing
+## to code, a P_Skip candidate when the vector is the predicted one), or -1 on a wrong argument.
+fn rtc_s32(v) = if v >= 2147483648 then v - 4294967296 else v
+## the 4x4 block (bx, by) of the 16-stride prediction into 16 contiguous bytes at d
+fn rtc_pblk(p, d) = let a = store32(d, load32(p)) in let b = store32(d + 4, load32(p + 16)) in let c = store32(d + 8, load32(p + 32)) in store32(d + 12, load32(p + 48))
+## context words at x (scratch 256): 0 rec, 8 block offset in rec, 16 rs, 24 source block address, 32 ss, 80 cfg data,
+## 88 source macroblock address, 96 macroblock offset in rec, 112 qp, 128 total levels, 136 cbp
+fn rtc_pencb(x, b) = let s = x - 256 in let c = load64(x + 80) in let qp = load64(x + 112) in let bx = rtc_bx(b) in let by = rtc_by(b) in let a0 = store64(x + 8, load64(x + 96) + by * load64(x + 16) + bx) in let a1 = rtc_pblk(c + 640 + by * 16 + bx, s + 16) in let a2 = rtc_sub(load64(x + 88) + by * load64(x + 32) + bx, load64(x + 32), s + 16, s + 32, 0) in let a3 = vec_fdct4(s + 32, s + 64) in let nz = rtc_q4(s + 64, s + 96, qp, 0) in let rf = load64(x) in let a4 = (if nz == 0 then rtc_cpf(s + 16, rf + 8 + load64(x + 8), load64(x + 16)) else rtc_recon_blk(s, rf + 8 + load64(x + 8), load64(x + 16), qp)) in let a5 = store8(c + 32 + b, nz) in let a6 = rtc_zzout(s + 96, c + 64 + b * 32, 0) in let a7 = store64(x + 128, load64(x + 128) + nz) in store64(x + 136, bit_or(load64(x + 136), (if nz == 0 then 0 else bit_shl(1, bit_shr(b, 2)))))
+fn rtc_ploop(x, b) = if b >= 16 then 0 else let z = rtc_pencb(x, b) in rtc_ploop(x, b + 1)
+fn buf_h264_mb_p(src, si, ss, ref, rec, cfg) = rtc_mbp(src, rt_int(si), rt_int(ss), ref, rec, cfg)
+fn rtc_mbp(src, si, ss, ref, rec, cfg) = if rtc_fits(cfg, 0, 896) == 0 then mkint(0 - 1) else let c = cfg + 8 in let rs = load32(c) in let qp = load32(c + 4) in let pw = load32(c + 8) in let ph = load32(c + 12) in let mx = load32(c + 16) in let my = load32(c + 20) in if ss < 16 or rs < 16 or rs > 65535 or qp > 51 or si < 0 or pw < 16 or ph < 16 or pw > rs or pw > 65535 or ph > 65535 or mx + 16 > pw or my + 16 > ph or rtc_fits(src, si, 15 * ss + 16) == 0 or rtc_fits(ref, 0, (ph - 1) * rs + pw) == 0 or rtc_fits(rec, 0, (ph - 1) * rs + pw) == 0 then mkint(0 - 1) else rtc_mbp2(src, si, ss, ref, rec, cfg)
+fn rtc_mbp2(src, si, ss, ref, rec, cfg) = let c = cfg + 8 in let rs = load32(c) in let qx = 4 * load32(c + 16) + rtc_s32(load32(c + 24)) in let qy = 4 * load32(c + 20) + rtc_s32(load32(c + 28)) in if qx <= 0 - 536870912 or qx >= 536870912 or qy <= 0 - 536870912 or qy >= 536870912 then mkint(0 - 1) else let r = rtc_mc(ref, cfg, rs, 640 * 65536 + 16, load32(c + 8) + load32(c + 12) * 65536 + 16 * 4294967296 + 16 * 1099511627776, (qx + 536870912 + (qy + 536870912) * 1073741824) * 4 + 2) in if r == mkint(0 - 1) then r else rtc_mbp3(src, si, ss, rec, cfg)
+fn rtc_mbp3(src, si, ss, rec, cfg) = let c = cfg + 8 in let x = sym_addr("__rtc_scratch") + 256 in let a1 = store64(x, rec) in let a2 = store64(x + 16, load32(c)) in let a3 = store64(x + 32, ss) in let a5 = store64(x + 80, c) in let a6 = store64(x + 88, src + 8 + si) in let a7 = store64(x + 96, load32(c + 20) * load32(c) + load32(c + 16)) in let a9 = store64(x + 112, load32(c + 4)) in let b2 = store64(x + 128, 0) in let b3 = store64(x + 136, 0) in let z = rtc_ploop(x, 0) in let w = store32(c + 576, load64(x + 136)) in mkint(load64(x + 128))
 fn buf_h264_mb_i4(src, si, ss, rec, ri, cfg) = rtc_mbi4(src, rt_int(si), rt_int(ss), rec, rt_int(ri), cfg)
 fn rtc_mbi4(src, si, ss, rec, ri, cfg) = if rtc_fits(cfg, 0, 592) == 0 then mkint(0 - 1) else let c = cfg + 8 in let rs = load32(c) in let qp = load32(c + 4) in if ss < 16 or rs < 16 or qp > 51 or si < 0 or ri < 0 or rtc_fits(src, si, 15 * ss + 16) == 0 or rtc_fits(rec, ri, 15 * rs + 16) == 0 then mkint(0 - 1) else let x = sym_addr("__rtc_scratch") + 256 in let a1 = store64(x, rec) in let a2 = store64(x + 16, rs) in let a3 = store64(x + 32, ss) in let a4 = store64(x + 56, load32(c + 8)) in let a5 = store64(x + 80, c) in let a6 = store64(x + 88, src + 8 + si) in let a7 = store64(x + 96, ri) in let a8 = store64(x + 104, bit_and(load32(c + 12), 15)) in let a9 = store64(x + 112, qp) in let b1 = store64(x + 120, 0) in let b2 = store64(x + 128, 0) in let z = rtc_mbloop(x, 0) in if load64(x + 120) != 0 then mkint(0 - 1) else mkint(load64(x + 128))
 

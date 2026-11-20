@@ -1,0 +1,40 @@
+## h264_mbp_ok.src -- buf_h264_mb_p (one whole inter 16x16 macroblock in one call) against the same macroblock coded
+## with buf_h264_luma_mc and the block builtins (sub4x4, fdct4x4, quant4x4 with the inter rounding, dequant4x4,
+## idct4x4, recon4x4). `lume test compiler/stage1/h264_mbp_ok.src`
+use h264
+
+fn w32(b, o, v) = let u = if v < 0 then v + 4294967296 else v in let a = buf_set(b, o, u % 256) in let c = buf_set(b, o + 1, (u / 256) % 256) in let d = buf_set(b, o + 2, (u / 65536) % 256) in buf_set(b, o + 3, u / 16777216)
+fn get16(b, o) = let v = buf_get(b, o) + 256 * buf_get(b, o + 1) in if v >= 32768 then v - 65536 else v
+fn put16(b, o, v) = let u = if v < 0 then v + 65536 else v in let x = buf_set(b, o, u % 256) in buf_set(b, o + 1, u / 256)
+
+fn pix(x, y, k) = if (x / 3 + y / 5 + k) % 7 == 0 then 235 else if y % 16 < 2 then 30 else 16 + (x * 3 + y * 2 + k * 5) % 200
+fn fillpic(b, w, h, k, i) = if i >= w * h then b else let q = buf_set(b, i, pix(i % w, i / w, k)) in fillpic(b, w, h, k, i + 1)
+fn pic(w, h, k) = fillpic(buf_new(w * h), w, h, k, 0)
+
+fn cfg_new(rs, qp, pw, ph, mx, my, vx, vy) = let c = buf_new(896) in let a = w32(c, 0, rs) in let b = w32(c, 4, qp) in let d = w32(c, 8, pw) in let e = w32(c, 12, ph) in let f = w32(c, 16, mx) in let g = w32(c, 20, my) in let h = w32(c, 24, vx) in let i = w32(c, 28, vy) in c
+
+fn bx(b) = 4 * (b % 2 + 2 * ((b / 4) % 2))
+fn by(b) = 4 * ((b / 2) % 2 + 2 * ((b / 8) % 2))
+fn zz(k) = buf_get(buf_from_str("ABEIFCDGJMNKHLOP"), k) - 65
+
+## the reference: luma MC of the 16x16 block, then each 4x4 block through the separate builtins; {out, total, cbp}
+fn ref_mb(src, si, ss, ref, rec, w, h, mx, my, vx, vy, qp) = let pred = buf_new(256) in let r = buf_h264_luma_mc(ref, 0, w, w, h, mx, my, vx, vy, 16, 16, pred, 0, 16) in let out = buf_new(896) in ref_blk(src, si, ss, rec, w, mx, my, qp, pred, out, 0, 0, 0)
+fn ref_blk(src, si, ss, rec, rs, mx, my, qp, pred, out, b, tot, cbp) = if b >= 16 then {out: out, total: tot, cbp: cbp} else let x = bx(b) in let y = by(b) in let p = blk(pred, y * 16 + x) in let res = buf_new(32) in let r1 = buf_h264_sub4x4(src, si + y * ss + x, ss, p, 0, res) in let wv = buf_new(32) in let r2 = buf_h264_fdct4x4(res, 0, wv, 0) in let lev = buf_new(32) in let nz = buf_h264_quant4x4(wv, 0, qp, 0, lev, 0) in let dq = buf_new(32) in let r3 = buf_h264_dequant4x4(lev, 0, qp, dq, 0) in let rr = buf_new(32) in let r4 = buf_h264_idct4x4(dq, 0, rr, 0) in let rc = buf_new(16) in let r5 = buf_h264_recon4x4(p, 0, rr, 0, rc, 0) in let r6 = copyback(rc, rec, (my + y) * rs + mx + x, rs, 0) in let a = buf_set(out, 32 + b, nz) in let d = zzcopy(lev, out, 64 + b * 32, 0) in ref_blk(src, si, ss, rec, rs, mx, my, qp, pred, out, b + 1, tot + nz, if nz > 0 then bit_or(cbp, bit_shl(1, b / 4)) else cbp)
+fn blk(pred, o) = let p = buf_new(16) in blk_fill(pred, o, p, 0)
+fn blk_fill(pred, o, p, i) = if i >= 16 then p else let w = buf_set(p, i, buf_get(pred, o + (i / 4) * 16 + i % 4)) in blk_fill(pred, o, p, i + 1)
+fn copyback(rc, rec, rb, rs, i) = if i >= 16 then 0 else let w = buf_set(rec, rb + (i / 4) * rs + i % 4, buf_get(rc, i)) in copyback(rc, rec, rb, rs, i + 1)
+fn zzcopy(lev, out, o, k) = if k >= 16 then 0 else let w = put16(out, o + k * 2, get16(lev, zz(k) * 2)) in zzcopy(lev, out, o, k + 1)
+
+fn same_range(a, ao, b, bo, n, i) = if i >= n then true else if buf_get(a, ao + i) != buf_get(b, bo + i) then false else same_range(a, ao, b, bo, n, i + 1)
+fn same_mb(a, b, ri, rs, y) = if y >= 16 then true else if same_range(a, ri + y * rs, b, ri + y * rs, 16, 0) == false then false else same_mb(a, b, ri, rs, y + 1)
+fn rd32(b, o) = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3)
+
+## the current picture is the reference shifted by (dx, dy) samples plus a little change, so vectors find it
+fn check(mx, my, vx, vy, qp) = let w = 64 in let h = 48 in let ref = pic(w, h, 0) in let src = pic(w, h, 1) in let rec1 = buf_new(w * h) in let rec2 = buf_new(w * h) in let cfg = cfg_new(w, qp, w, h, mx, my, vx, vy) in let got = buf_h264_mb_p(src, my * w + mx, w, ref, rec1, cfg) in let want = ref_mb(src, my * w + mx, w, ref, rec2, w, h, mx, my, vx, vy, qp) in got == want.total and rd32(cfg, 576) == want.cbp and same_range(cfg, 32, want.out, 32, 544, 0) and same_mb(rec1, rec2, my * w + mx, w, 0)
+
+fn test_integer_vector_interior() = check(16, 16, 8, 0 - 4, 26)
+fn test_every_quarter_position() = check(16, 16, 1, 0, 26) and check(16, 16, 2, 3, 26) and check(16, 16, 0 - 3, 0 - 1, 26) and check(16, 16, 6, 7, 26) and check(16, 16, 0 - 5, 2, 30)
+fn test_vector_pointing_outside_the_picture() = check(0, 0, 0 - 40, 0 - 37, 26) and check(48, 32, 45, 50, 26)
+fn test_qp_extremes() = check(16, 16, 2, 2, 0) and check(16, 16, 2, 2, 51)
+fn test_a_static_block_codes_nothing() = let w = 64 in let ref = pic(w, 48, 0) in let rec = buf_new(w * 48) in let cfg = cfg_new(w, 26, w, 48, 16, 16, 0, 0) in buf_h264_mb_p(ref, 16 * w + 16, w, ref, rec, cfg) == 0 and rd32(cfg, 576) == 0 and same_range(rec, 16 * w + 16, ref, 16 * w + 16, 16, 0)
+fn test_wrong_arguments_answer_minus_one() = let ref = pic(64, 48, 0) in let rec = buf_new(64 * 48) in buf_h264_mb_p(ref, 0, 64, ref, rec, buf_new(100)) == 0 - 1 and buf_h264_mb_p(ref, 0, 64, ref, rec, cfg_new(64, 52, 64, 48, 0, 0, 0, 0)) == 0 - 1 and buf_h264_mb_p(ref, 0, 64, ref, rec, cfg_new(64, 26, 64, 48, 56, 0, 0, 0)) == 0 - 1 and buf_h264_mb_p(ref, 0, 64, ref, buf_new(10), cfg_new(64, 26, 64, 48, 0, 0, 0, 0)) == 0 - 1
