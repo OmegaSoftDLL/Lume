@@ -213,6 +213,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off (it is part of the driver's cache key).
 
 ### Changed
+- **Runtime in Lume: buf_len, buf_get and buf_set** are Lume source now (compiler/stage1/rt/rt_text.src), cut from
+  the runtime's assembly text. Same messages and exit codes on every error path; buf_len through the runtime routine
+  went from 2.0 to 1.6 ns per call.
+- **`lumec --raw`: `a and b` / `a or b` in a condition compile to jumps only** (no boolean is built and tested
+  again); every runtime routine written in Lume gains from it.
 - **English only, as the language always was:** the Portuguese alias `lume guia` is gone (`lume manual --pt`,
   `manual-pt` and `man-pt` stay); the English manual header says "Lume builds Lume"; every message, page and reply
   `lsentience` writes (the cockpit page, the consult / talk / replicate / self-build texts, the approval words it
@@ -239,6 +244,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **buf_get / buf_set with a boxed (huge) index crashed** with "invalid memory access" (exit 139): the assembly
+  read it as a small int. Now the runtime's own out-of-bounds error (exit 3); battery test.
+- **A build with the debugger could come back from the build cache as a normal build:** `lume build` (the path
+  with options) cached a binary built under LUME_DEBUG, keyed only by the source and the tools, so the next plain
+  build of the same source (after `lume debug --dap` or `LUME_DEBUG=... lume build`) got the debugger and its command
+  file. Builds under LUME_DEBUG are never cached now (the other path already excluded them), and the key moved to build-v7 so
+  entries cached before are not served; battery test.
 - **CI (Native CLI driver job), found by running the CI jobs locally while the GitHub account is locked:** the seed's
   `len()` change (a2e014b) did not update `bootstrap/lume0/SEED_FREEZE.sha256`, so the audit gate's diverse double
   compilation refused to rebuild the frozen seed; the hash of interp.c is updated (seed-maintenance change, same

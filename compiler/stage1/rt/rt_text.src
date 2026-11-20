@@ -28,3 +28,12 @@ fn rt_ric_fill(r, key, ic) = if bit_and(r, 7) != 0 or r == 0 then 0 else rt_ric_
 fn rt_ric_desc(r, key, ic, d) = if bit_and(d, 7) != 0 or d == 0 then 0 else if load8(d + 8) != 4 then 0 else rt_ric_find(key, ic, d, 0, bit_shr(load64(d + 8), 8))
 fn rt_ric_find(key, ic, d, i, n) = if i >= n then 0 else if load64(d + 16 + i * 8) == key then rt_ric_set(ic, d, 8 + i * 8) else rt_ric_find(key, ic, d, i + 1, n)
 fn rt_ric_set(ic, d, off) = let a = store64(ic + 8, 0) in let b = store64(ic, d) in store64(ic + 8, off)
+
+## --- byte buffers: buf_len, buf_get, buf_set (were runtime_core assembly) ----------------------------------------------
+## A buffer is a cell with kind byte 15 and the length in the rest of its first word, the bytes from offset 8. Each
+## builtin checks in the order the assembly did: not a buffer (__rt_nbuf_msg), an index that is not an int
+## (__rt_not_int; a boxed int is always past the end), outside the buffer (__rt_boob_msg), a byte outside 0..255
+## (__rt_bbyte_msg). Everything is inline so each one stays a leaf routine; the only calls are on the error paths.
+fn buf_len(b) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else mkint(bit_shr(load64(b), 8))
+fn buf_get(b, i) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if bit_and(i, 1) == 1 then (let k = bit_shr(i, 1) in if k < 0 or k >= bit_shr(load64(b), 8) then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else mkint(load8(b + 8 + k))) else if bit_and(i, 7) == 0 and i != 0 and load8(i) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else __rt_not_int()
+fn buf_set(b, i, v) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if bit_and(i, 1) == 1 then (let k = bit_shr(i, 1) in if k < 0 or k >= bit_shr(load64(b), 8) then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else if bit_and(v, 1) == 1 then (let x = bit_shr(v, 1) in if x < 0 or x > 255 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_bbyte_msg")) else let w = store8(b + 8 + k, x) in b) else if bit_and(v, 7) == 0 and v != 0 and load8(v) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_bbyte_msg")) else __rt_not_int()) else if bit_and(i, 7) == 0 and i != 0 and load8(i) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else __rt_not_int()

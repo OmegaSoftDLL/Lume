@@ -521,6 +521,13 @@ DEPMAIN
     } > "$dw/req.txt"
     (cd "$dw" && LUME_BIN_DIR="$ntmp" timeout 300 "$OLDPWD/../../lume" debug --dap < req.txt > resp.txt 2> dap.err)
     if grep -q '"verified":true,"line":2' "$dw/resp.txt" && grep -q '"name":"ratio(a=10, b=2)"' "$dw/resp.txt" && grep -q '{"name":"b","value":"2","variablesReference":0}' "$dw/resp.txt" && grep -q '"result":"10"' "$dw/resp.txt" && grep -q '"reason":"exception"' "$dw/resp.txt" && grep -q '"exitCode":3' "$dw/resp.txt" && grep -q '"output":"8\\n"' "$dw/resp.txt"; then ok "lume debug --dap: breakpoints, call stack, variables, evaluate, the stop on a run-time error and the exit code over DAP"; else bad "lume debug --dap"; tail -c 1500 "$dw/resp.txt"; cat "$dw/dap.err" | tail -3; fi
+    # a build with the debugger is never cached: a plain build of the same source afterwards has no debugger in it
+    (cd "$dw" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" build dbg.src -o plain > /dev/null 2>&1 && ./plain > plain.out 2> plain.err)
+    if ! grep -q "debug: ready" "$dw/plain.err" && grep -q "^8$" "$dw/plain.out"; then ok "a debug build is never cached: the next plain lume build of the same source has no debugger"; else bad "debug build reused from the build cache"; head -3 "$dw/plain.err"; fi
+    # buf_get with a boxed (huge) index: the runtime's own out-of-bounds error, never a crash
+    printf 'print buf_get(buf_new(4), 9223372036854775807)\n' > "$dw/bbig.src"
+    (cd "$dw" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" run bbig.src > bbig.out 2>&1); brc=$?
+    if [ $brc = 3 ] && grep -q "byte buffer index or range out of bounds" "$dw/bbig.out"; then ok "buf_get with a huge index stops with the out-of-bounds error (exit 3), no crash"; else bad "buf_get with a huge index (rc $brc)"; cat "$dw/bbig.out" | head -2; fi
     rm -rf "$dw"
     # lume verify: a good file passes every step with each step's time in its line, a refuted contract fails at its
     # step, a file without contracts passes (nothing to certify), and the second run comes from the cache

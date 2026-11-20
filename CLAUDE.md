@@ -82,7 +82,8 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
      cold path (mkint's boxed case, __rt_not_str) must not disqualify a leaf: spill around it. Was: --raw leaf routines: a function whose common path makes no call keeps its parameters in the incoming
      registers (rdi, rsi, rdx, r8, r9; the 4th moves off rcx) and needs no frame; calls only on cold paths
      (__rt_not_str, mkint's boxed case) spill around themselves. Target: ord_at/buf_get within 1.5x of the asm.
-  3. [ ] hot builtins to Lume after (2) and (2b): buf_new/len/get/set/copy/slice/from_str/to_str, ord, ord_at, chr, count,
+  3. [~] (buf_len/get/set done 2026-11-20, faster than the asm; raw `and`/`or` conditions are jumps) hot builtins
+     to Lume after (2) and (2b): buf_new/len/get/set/copy/slice/from_str/to_str, ord, ord_at, chr, count,
      at, slice, slicen, str, strni, toint, utf8_chr, emit/flush/wch/wstr/wint/print_int, printval/showval.
   4. [ ] --raw stack intrinsics (read/set %rsp/%rbp, jump) -> ctfail, __lume_try_begin/end/msg, __rt_die*.
   5. [ ] --raw f64 intrinsics (SSE2 movq/addsd/mulsd/divsd/sqrtsd/cvt...) -> f64_* builtins and rt_f64.

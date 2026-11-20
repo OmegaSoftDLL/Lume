@@ -1694,9 +1694,20 @@ fn rw_inv(op) = if op == "==" then "ne" else if op == "!=" then "e" else if op =
 ## the condition of an if: a comparison sets the flags and jumps to the else label when false; anything else is
 ## evaluated and tested
 fn rw_cond(c, env, st, el) = match c
-    Bin(op, a, b) => if rw_iscmp(op) then rw_cmpjump(op, a, b, env, st, el) else let r = rw_e(c, env, st, 0) in rw_r(r.code + "    testq %rax, %rax\n    jz " + el + "\n", r)
+    Bin(op, a, b) => if rw_iscmp(op) then rw_cmpj(rw_inv(op), a, b, env, st, el) else if op == "and" then rw_cond_and(a, b, env, st, el) else if op == "or" then rw_cond_or(a, b, env, st, el) else let r = rw_e(c, env, st, 0) in rw_r(r.code + "    testq %rax, %rax\n    jz " + el + "\n", r)
     _             => let r = rw_e(c, env, st, 0) in rw_r(r.code + "    testq %rax, %rax\n    jz " + el + "\n", r)
-fn rw_cmpjump(op, a, b, env, st, el) = let src = rw_imm(b, env) in if src != "" then (let ra = rw_e(a, env, st, 0) in rw_r(ra.code + rw_cmpsrc(src) + "    j" + rw_inv(op) + " " + el + "\n", ra)) else let rb = rw_e(b, env, st, 0) in let ra = rw_e(a, env, rb, 0) in rw_r(rb.code + "    pushq %rax\n" + ra.code + "    popq %rcx\n    cmpq %rcx, %rax\n    j" + rw_inv(op) + " " + el + "\n", ra)
+## `a and b` / `a or b` as a condition: jumps only, no boolean is built (`or` jumps over the test of b when a holds)
+fn rw_cond_and(a, b, env, st, el) = let ra = rw_cond(a, env, st, el) in let rb = rw_cond(b, env, ra, el) in rw_r(ra.code + rb.code, rb)
+fn rw_cond_or(a, b, env, st, el) = let k = st.n in let ra = rw_condt(a, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, rw_lab(st, k) + "t") in let rb = rw_cond(b, env, ra, el) in rw_r(ra.code + rb.code + rw_lab(st, k) + "t:\n", rb)
+## the mirror of rw_cond: jumps to tl when the condition holds, falls through when it does not
+fn rw_condt(c, env, st, tl) = match c
+    Bin(op, a, b) => if rw_iscmp(op) then rw_cmpj(rw_cc(op), a, b, env, st, tl) else if op == "or" then rw_condt_or(a, b, env, st, tl) else if op == "and" then rw_condt_and(a, b, env, st, tl) else let r = rw_e(c, env, st, 0) in rw_r(r.code + "    testq %rax, %rax\n    jnz " + tl + "\n", r)
+    _             => let r = rw_e(c, env, st, 0) in rw_r(r.code + "    testq %rax, %rax\n    jnz " + tl + "\n", r)
+fn rw_condt_or(a, b, env, st, tl) = let ra = rw_condt(a, env, st, tl) in let rb = rw_condt(b, env, ra, tl) in rw_r(ra.code + rb.code, rb)
+fn rw_condt_and(a, b, env, st, tl) = let k = st.n in let ra = rw_cond(a, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, rw_lab(st, k) + "f") in let rb = rw_condt(b, env, ra, tl) in rw_r(ra.code + rb.code + rw_lab(st, k) + "f:\n", rb)
+## a comparison that jumps to lab with condition code cc (rw_inv(op) for the else of an if, rw_cc(op) for a jump when true)
+fn rw_cmpj(cc, a, b, env, st, lab) = let src = rw_imm(b, env) in if src != "" then (let ra = rw_e(a, env, st, 0) in rw_r(ra.code + rw_cmpsrc(src) + "    j" + cc + " " + lab + "\n", ra)) else let rb = rw_e(b, env, st, 0) in let ra = rw_e(a, env, rb, 0) in rw_r(rb.code + "    pushq %rax\n" + ra.code + "    popq %rcx\n    cmpq %rcx, %rax\n    j" + cc + " " + lab + "\n", ra)
+fn rw_cmpjump(op, a, b, env, st, el) = rw_cmpj(rw_inv(op), a, b, env, st, el)
 fn rw_e(e, env, st, tail) = match e
     Num(v)          => rw_r("    movq $" + str(v) + ", %rax\n", st)
     Str(v)          => let k = st.n in rw_r("    leaq " + rw_lab(st, k) + "t(%rip), %rax\n    .section .rodata\n" + rw_lab(st, k) + "t:\n    .asciz \"" + rw_esc(v, 0, "") + "\"\n    .section .text\n", {n: st.n + 1, nl: st.nl, f: st.f, np: st.np})
