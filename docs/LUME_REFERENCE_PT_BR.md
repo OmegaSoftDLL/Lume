@@ -21,7 +21,7 @@ roda no depurador: pontos de parada numa funcao ou ARQUIVO:LINHA, `step` / `next
 em chamada, `bt` com os argumentos de cada quadro, `args`, `locals`, `print NOME`, `frame N`, `up`, `down`, e parada
 num erro em tempo de execucao; comandos de texto, saida no stderr (uma IA o conduz com `-x`).
 
-`lume verify [--jobs=N] a.src b.src ...` roda check, test, prove, fmt --check e certify em muitos arquivos com N processos
+`lume verify [--jobs=N] a.src b.src ...` roda check, test, prove, a checagem de formato e certify em muitos arquivos com N processos
 (padrao 2); o resultado de cada arquivo fica em cache pelo SHA-256 do pacote inteiro e das ferramentas, entao depois de
 uma mudanca so o modulo alterado e os arquivos que o importam rodam de novo.
 
@@ -95,6 +95,139 @@ print 9223372036854775807 + 1
 exit 3
 stderr: lume: integer overflow
 ```
+
+## 3a. Codigos de diagnostico
+
+Todo diagnostico traz um codigo entre colchetes (`[T0604]`) ou, em JSON (`lume agent check`), o campo `"code"`.
+"compilador" = `lume build / run / test / check`; "analisador" = `lume check` e `lume agent check`. Um codigo com
+exemplo tem em `examples/diagnostics/` o programa que o produz (`.bad`) e o corrigido (`.fixed.src`), conferidos
+pelo gate dos exemplos a cada versao.
+
+| Codigo | Significado | Quem informa | Exemplo |
+|---|---|---|---|
+| `A0001` | buraco tipado `_` nao preenchido em `pub fn`; a correcao propoe um candidato | analisador | `A0001_typed_hole` |
+| `A0002` | `total fn` cuja recursao nao se prova decrescente | analisador | `A0002_not_terminating` |
+| `A0003` | valor de `llm fn` chega sem verificacao ao resultado de `pub fn` ou a um destino confiavel | analisador | `A0003_unverified_ai_value` |
+| `A0004` | patch semantico de AST com funcao inexistente ou expressao malformada | lume agent patch | - |
+| `C0001` | interno: construcao sem traducao (chamada por valor dentro de contrato) | compilador | - |
+| `C0002` | interno: nome sem valor na geracao de codigo | compilador | - |
+| `C0009` | desvio ou match sobre valor secreto (vazamento por tempo) | analisador | `C0009_secret_branch` |
+| `C0010` | codigo emitido de funcao `@secret` desvia, divide ou le fora do seu quadro | ltv (lume tv) | - |
+| `C0011` | o que um kernel de tempo constante (`@secret` + `@no_alloc`) nao traduz sem desvios | compilador | `C0011_secret_kernel_shift` |
+| `C0012` | deslocamento literal fora de 0..63 | compilador | `C0012_shift_count_literal` |
+| `C0271` | `comptime embed`: caminho invalido, vazio, com `..` ou inexistente | compilador | - |
+| `C0430` | capsula aberta sem a permissao, ou adulterada | lume capsule | - |
+| `C1001` | erro na avaliacao comptime (overflow, `unquote` fora de `quote`...) | compilador | `C1001_comptime_overflow` |
+| `D0002` | duas funcoes com o mesmo nome | compilador | `D0002_duplicate_function` |
+| `D0003` | dois tipos com o mesmo nome | compilador | `D0003_duplicate_type` |
+| `D0004` | literal de registro com um campo repetido | compilador | `D0004_field_given_twice` |
+| `D0273` | `comptime table_schema(T)` de tipo que nao e registro suportado | compilador | `D0273_table_schema_of_int` |
+| `D0405` | simbolo ou endereco ausente do `.lsym` | lume symbolize | - |
+| `E0001` | interno: erro do compilador que o analisador nao classificou | analisador | - |
+| `E0002` | interno: uma analise parou (reporte com o programa) | analisador | - |
+| `E0200` | efeito que a assinatura nao declara (`/ pure`, kernel, ISR, shard, capacidade) | compilador | `E0200_effect_of_pure_fn` |
+| `E0210` | codigo `@no_alloc` que pode alocar (int sem limite, chamada que aloca) | compilador | `E0210_no_alloc_unbounded` |
+| `E0305` | valor usado depois de movido por `chan_send_linear` (imediatos copiados ficam) | compilador | `E0305_linear_used_after_send` |
+| `E0306` | locks fora da ordem, lock retido no retorno, ou ciclo de espera entre atores | compilador | `E0306_lock_never_released` |
+| `I0002` | funcao exportada para WASM fora do fragmento escalar i64 | analisador | - |
+| `I0003` | declaracao C nao suportada ou repetida no cabecalho | lume adapt | - |
+| `I0004` | funcao C FFI com mais de 6 parametros | compilador | - |
+| `I0275` | recusa de interoperabilidade do alvo | ltarget | - |
+| `K0005` | escrita fisica na faixa de texto/rodata do kernel [32768..262143] | analisador | `K0005_write_into_kernel_text` |
+| `K0006` | recursao mutua em kernel freestanding | analisador | `K0006_kernel_mutual_recursion` |
+| `K0010` | certificado de outra fonte (hash diferente) | lcert | - |
+| `K0011` | obrigacao da fonte sem entrada no certificado | lcert | - |
+| `K0012` | entrada do certificado sem obrigacao na fonte | lcert | - |
+| `K0013` | termo do certificado nao e a obrigacao da fonte | lcert | - |
+| `K0014` | declaracao ou expressao fora do fragmento certificavel | lcert | - |
+| `K0015` | fonte ilegivel como um todo | lcert | - |
+| `K0016` | tipo de obrigacao fora do fragmento | lcert | - |
+| `K0017` | declaracao ou entrada de certificado repetida | lcert | - |
+| `K0400` | corpo de kernel GPU fora de aritmetica escalar, let e if | lume agent kernel | `K0400_kernel_outside_fragment` |
+| `L0001` | string nao terminada | compilador | `L0001_unterminated_string` |
+| `L0002` | outro erro lexico (escape desconhecido, caractere invalido) | compilador | `L0002_bad_escape` |
+| `L0003` | numero malformado (digito colado a nome, base invalida, `_` no fim) | compilador | `L0003_digit_glued_to_name` |
+| `L0004` | comentario de bloco `#[` nao fechado | compilador | `L0004_unterminated_block_comment` |
+| `L0010` | simbolo definido duas vezes no assembly | lasm | - |
+| `M1001` | payload nao e ASCII imprimivel | lume mesh | - |
+| `M1002` | campo do payload ausente, repetido ou desconhecido | lume mesh | - |
+| `M1003` | operacao de transacao desconhecida | lume mesh | - |
+| `M1004` | construcao fora do fragmento do protocolo semantico | lume mesh | - |
+| `M2001` | compilador recusou o AST canonico sem diagnostico | lume mesh | - |
+| `M2002` | funcao ou assinatura repetida, orfa ou ambigua | lume mesh | - |
+| `M2003` | alvo semantico nao suportado | lume mesh | - |
+| `M2004` | capacidades fora do conjunto negociado | lume mesh | - |
+| `M2005` | pedido alem dos limites negociados | lume mesh | - |
+| `M3001` | aceitacao `prove` com obrigacao nao provada | lume mesh | - |
+| `M3002` | alvo do contrato ausente ou ambiguo | lume mesh | - |
+| `M3003` | substituicao de contrato inexistente | lume mesh | - |
+| `M3004` | indice de linhagem inexistente | lume mesh | - |
+| `N0400` | `grad` / `jvp` / `vjp` de funcao fora do fragmento diferenciavel | compilador | `N0400_autodiff_division` |
+| `O0001` | uso de valor movido | compilador | `O0001_use_after_move` |
+| `O0002` | mover de um parametro emprestado | compilador | `O0002_move_from_borrowed` |
+| `O0004` | recurso nunca liberado, devolvido ou repassado | compilador | `O0004_resource_dropped` |
+| `O0010` | ligacao imutavel emprestada como `mut` | compilador | `O0010_immutable_to_mut` |
+| `O0011` | valor emprestado `mut` e lido na mesma chamada | compilador | `O0011_conflicting_borrows` |
+| `O0012` | parametro `own` recebeu argumento sem `own` | compilador | `O0012_missing_own` |
+| `O0013` | mover ou mutar com emprestimo ativo | compilador | `O0013_move_while_borrowed` |
+| `O0020` | emprestimo de local escapa da funcao | compilador | `O0020_borrow_escapes` |
+| `O0021` | `pub fn` devolve emprestimo sem `from PARAM` | compilador | `O0021_borrow_without_origin` |
+| `O0030` | alocacao em codigo `@freestanding` sem `with alloc` | compilador | - |
+| `P0001` | delimitador ainda aberto no fim do arquivo | compilador | `P0001_unclosed_at_end` |
+| `P0002` | outro erro de sintaxe | compilador | `P0002_parse_error` |
+| `P0003` | duas instrucoes ou funcoes na mesma linha | compilador | `P0003_two_functions` |
+| `P0004` | atributo desconhecido (erro em `@no_alloc`, `@secret`...) | compilador | `P0004_unknown_attribute` |
+| `PC0002` | entrada do cache de provas recusada (versao, esquema ou digest) | lproof_cache | - |
+| `PC0003` | binario do provador ausente para as obrigacoes nao cacheadas | lproof_cache | - |
+| `PC0005` | falhas de cache onde todas deviam acertar | lproof_cache | - |
+| `R0001` | artefato do componente ausente ou vazio | lume registry | - |
+| `R0002` | o kernel de prova independente recusou o certificado | lume registry | - |
+| `R0003` | toolchain do registro incompleta | lume registry | - |
+| `R0004` | alvo diferente de x86_64-linux-elf | lume registry | - |
+| `R0005` | outro erro do registro (a mensagem diz qual) | lume registry | - |
+| `R0200` | chamada a funcao inexistente | compilador | `R0200_undefined_function` |
+| `R0201` | funcao com nome de builtin do runtime | compilador | `R0201_builtin_clash` |
+| `R0202` | builtin chamado com numero errado de argumentos | compilador | `R0202_builtin_arguments` |
+| `R0203` | chamada a rotina interna do runtime | compilador | `R0203_internal_routine` |
+| `R0204` | `f[...]` sobre uma funcao | compilador | `R0204_index_a_function` |
+| `R0205` | local com nome de builtin e chamado (a chamada vai ao builtin) | compilador | `R0205_local_named_like_builtin` |
+| `S0001` | spawn fora de scope, ou capturando valor nao Send ou `var` | compilador | `S0001_spawn_captures_var` |
+| `T0001` | erro de tipo (argumento, ramo ou retorno de outro tipo) | compilador | `T0001_type_error` |
+| `T0300` | formas de tensor que nao concordam | compilador | `T0300_tensor_shape` |
+| `T0400` | impl sem um metodo do trait | compilador | `T0400_impl_missing_method` |
+| `T0401` | metodo chamado em tipo sem impl | compilador | `T0401_method_without_impl` |
+| `T0402` | metodo do impl que nao esta no trait | compilador | - |
+| `T0403` | metodo do impl com tipos diferentes do trait | compilador | - |
+| `T0500` | funcao generica de let usada em tipo incompativel | compilador | `T0500_polymorphic_let_misuse` |
+| `T0601` | condicao de `if` que nao e bool | compilador | `T0601_int_condition` |
+| `T0602` | bool devolvido onde se declarou int, ou o contrario | compilador | `T0602_bool_returned_as_int` |
+| `T0603` | argumento de tipo diferente do declarado no parametro | compilador | `T0603_argument_type` |
+| `T0604` | `+` (e `and`/`or`) entre tipos diferentes: `+` nunca converte | compilador | `T0604_plus_never_converts` |
+| `T0605` | let anotado com um tipo recebe outro | compilador | `T0605_let_annotation` |
+| `T0606` | ramos de `if` / `match` de tipos diferentes | compilador | `T0606_branch_types` |
+| `T0607` | `requires` / `ensures` / law que nao e bool | compilador | `T0607_clause_not_bool` |
+| `T0900` | construcao fora do fragmento do alvo escolhido | ltarget | - |
+| `T0901` | fonte fora do fragmento de kernel para alvo bare-metal | ltarget | - |
+| `T0902` | o front end lumec recusou a fonte (o diagnostico segue) | ltarget | - |
+| `T0903` | lumec ausente | ltarget | - |
+| `T1001` | construtor que nenhum enum declara | compilador | `T1001_unknown_constructor` |
+| `T1002` | match sem uma variante, ou construtor com aridade errada | compilador | `T1002_match_missing_variant` |
+| `T1003` | tipo de registro nao declarado, ou campo que ele nao tem | analisador | `T1003_unknown_record_field` |
+| `T2001` | tipo do argumento difere do parametro (inclui moedas de money) | analisador | `T2001_money_currency` |
+| `T2002` | funcao devolve tipo diferente do declarado | analisador | `T2002_return_type` |
+| `T2101` | leitura de campo que o registro nao tem | compilador | `T2101_missing_field` |
+| `T3001` | parametro `comptime T: type` recebeu um valor (aviso) | analisador | `T3001_comptime_needs_type` |
+| `V0001` | contrato refutado, com contraexemplo | prove | `V0001_contract_refuted` |
+| `V0002` | acima do orcamento `@bound(cycles: N)` | analisador | `V0002_wcet_budget` |
+| `V0003` | obrigacao mais fraca que na versao base | lume proof-diff | - |
+| `V0004` | contratos entre modulos ou leis relacionais que nao compoem | analisador | - |
+| `V0005` | lei temporal (`always`, `eventually`, `until`, `leads_to`) refutada | prove | `V0005_temporal_law_refuted` |
+| `W0001` | credencial literal na fonte (`sk-`, `ghp_`, `AKIA`, PEM) | compilador | `W0001_hardcoded_secret` |
+| `W0002` | segredo literal achado pela varredura de protecao | lume protect | - |
+| `W0003` | funcao do programa com nome de uma importada | compilador (aviso) | `W0003_duplicate_name` |
+| `W0004` | f64 e int misturados numa expressao | compilador (aviso) | `W0004_f64_int_mix` |
+| `W0005` | chamada a funcao marcada `## Deprecated:` em outro modulo | compilador (aviso) | - |
+| `W0064` | programa sem a partida hospedada (imagem de kernel) para Windows | lumec --win64 | - |
 
 ## 4. Builtins basicos (estavel)
 
@@ -330,9 +463,9 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 ## 11. Mudou nesta versao
 
-Entrou: `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: a tabela de todos os codigos de diagnostico (secao 3a) e exemplos de diagnostico para 68 codigos, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
-Mudou: o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
+Mudou: o [E0305] deixa com o remetente um int ou bool copiado para dentro ou para fora do registro enviado; um delimitador ainda aberto no fim do arquivo e [P0001] (era [P0002]); exemplos de `lume agent kernel` rodam no gate dos exemplos; o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
 Bash o `lume` roda o `lume.exe` nativo; `fs_copy` mantem as permissoes da origem.
 Saiu: nada.

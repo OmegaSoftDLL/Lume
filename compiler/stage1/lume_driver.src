@@ -1346,7 +1346,7 @@ fn ld_w12_proof_cache_entry(root) = let bin = ld_tool(root, "lproof_cache") in i
 ## native tool needs nothing else: use the handler `tool` and name the tool (see `tv`, `mcdc`, `tv-gate`, `qualify` and ld_cb_tool_entry). A new handler key needs
 ## one `hk ==` arm in ld_run_handler; a new option of an existing handler needs its parsing there. The gate names
 ## whatever is missing, in either direction.
-## --- lume verify [--jobs=N] <file.src>... : check, test, prove, fmt --check and certify for many files ---------------------
+## --- lume verify [--jobs=N] <file.src>... : check, test, prove, the format check and certify for many files ---------------------
 ## Each file's result (pass, or the first failing step and its output) is cached under build/cache/verify by the
 ## SHA-256 of its whole bundle (the file and every module it imports) and of the tools: a file whose bundle did not
 ## change is not run again, so after a change only the changed module and the files that import it are verified. Files are split over N processes
@@ -1372,7 +1372,10 @@ fn lv_key(root, f, tools) = let bm = ld_bundle_text_map(root, f, "verify") in lc
 ## run the steps of one file: "" when all pass, else the failing step and the end of its output
 fn lv_run(root, self, f, steps, out) = match steps
     Nil        => ""
-    Cons(s, t) => let rc = os_run_capture_timeout(self, lv_args(s, f), out, out + ".err", 1800000) in if rc != 0 then s + " (exit " + str(if rc % 256 == 0 then rc / 256 else rc) + "): " + lv_tail(fs_read_file(out) + fs_read_file(out + ".err")) else lv_run(root, self, f, t, out)
+    Cons(s, t) => let rc = os_run_capture_timeout(self, lv_args(s, f), out, out + ".err", 1800000) in if rc != 0 and lv_nothing_to_certify(s, out) == 0 then s +" (exit " + str(if rc % 256 == 0 then rc / 256 else rc) + "): " + lv_tail(fs_read_file(out) + fs_read_file(out + ".err")) else lv_run(root, self, f, t, out)
+## a file without requires / ensures / laws has nothing to certify: lcert answers "unverified" with 0 obligations, which
+## is not a failure of the file (its check, test, prove and format steps already passed)
+fn lv_nothing_to_certify(s, out) = if s != "certify" then 0 else if ld_contains_at(fs_read_file(out) + fs_read_file(out + ".err"), "\"total_obligations\":0,", 0) == 1 then 1 else 0
 fn lv_hex(k) = if ld_starts(k, "sha256:") == 1 then slice(k, 7, count(k)) else k
 ## a stored result line, marked as coming from the cache (the bundle and the tools are the same, so is the result)
 fn lv_cachedline(l) = let b = (if count(l) > 0 and at(l, count(l) - 1) == chr(10) then slice(l, 0, count(l) - 1) else l) in b + " (cached)" + chr(10)

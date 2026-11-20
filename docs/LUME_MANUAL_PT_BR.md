@@ -249,8 +249,9 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 
 ## 4.4 Comandos de Prova e Autocura
 - `lume prove <arquivo.src>`           Prova todos os contratos e leis.
-- `lume verify [--jobs=N] <arquivo.src>...`  check, test, prove, fmt --check e certify em muitos arquivos; cache por arquivo.
-- `lume pkg publish|add|install`         versoes de pacotes: store com testes, requisitos `^`/`~`, lume_modules/, lume.lock.
+- `lume verify [--jobs=N] <arquivo.src>...`  check, test, prove, a checagem de formato e certify em muitos arquivos; cache por arquivo.
+- `lume pkg publish|add|install [--store=DIR]` versoes de pacotes: store com testes, requisitos `^`/`~`, lume_modules/, lume.lock;
+  `lume pkg audit [dir]` confere os hashes do lock e o certificado de prova do pacote.
 - `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  biblioteca padrao: hashes, CSV, UTF-8, datas e fusos, regex, gzip, HTTP e HTTPS.
   Contratos dos builtins: `buf_bits_write` e `p + n` ou `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (quando o
   resultado tem nome num `let` ou e devolvido); limite no `requires` os operandos de uma clausula para ela nao estourar.
@@ -1172,6 +1173,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume describe|--describe [--json]
   lume targets|--targets [--json]
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
+  lume debug [--commands <value>] [-x <value>] <source.src> [program-arguments]
   lume run [--memory] [--profile] <source.src> [program-arguments]
   lume test <source.src>...
   lume check [--json] [--lex] <source.src>
@@ -1180,10 +1182,11 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume doc [--json] <source.src>
   lume prove [--json] [--diff] [--share] [--compositional] <source.src> [new.src]
   lume certify [--json] <source.src>
+  lume verify [--jobs <value>] <source.src>...
   lume verify-cert [--json] [--check-source] [source.src] <certificate.json>
   lume proof-cache <self-test|check|store> [--require-all-hits] [source.src] [cache-dir]
-  lume pkg <init|check|manifest|lock|verify|tree|check-rot> [dir]
-  lume pkg <publish|audit> (served by the POSIX shim, scripts/lume_legacy.sh)
+  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add> [--store <value>] [dir]
+  lume pkg <audit> (served by the POSIX shim, scripts/lume_legacy.sh)
   lume registry <publish|resolve|discover> [--json] [--store <value>] [--target <value>] [--adapter <value>] [--source <value>] [--proof <value>] [--tests <value>] [--cid <value>] [--capability <value>] [--contract-signature <value>]
   lume agent <check|compile|fill|prove|ast|expand|symbols|eval|witness|repair|impact|hashes|grammar|project|bind|skeleton|cegis|synthesize|trace|heal|morph|kernel|c-export|replay|lineage|patch|patch-fn|diff-semver|equiv|check-rot> [--json] <source.src> [arguments] (the name of any `sentience` command is accepted in place of the subcommand)
   lume adapt <c|c-raw|rust|python|js|ts|node|go|java|csharp|dotnet|sql|openapi|polyglot|all> [--json] [--preprocess] [-o <value>] [--output <value>] [file]

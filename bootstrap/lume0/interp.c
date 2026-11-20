@@ -296,13 +296,17 @@ static Val *to_iter_list(Interp *ip, Val *v) {
    Lume-written lexer does while scanning source) was O(len) allocation per
    access -> O(len^2) memory with no freeing. These walk the bytes instead. */
 static int utf8_seq_len(unsigned char c) { return c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4; }
+/* strings are immutable, so the count is cached in `cap` (codepoints + 1; 0 = not counted yet) */
 static long long str_ncp(const Val *v) {
+    if (v->cap > 0) return v->cap - 1;
     long long ncp = 0;
     for (int bi = 0; bi < v->slen;) { bi += utf8_seq_len((unsigned char)v->s[bi]); ncp++; }
+    ((Val *)v)->cap = (int)(ncp + 1);
     return ncp;
 }
-/* byte offset of the cpidx-th codepoint (cpidx in [0, ncp]) */
+/* byte offset of the cpidx-th codepoint (cpidx in [0, ncp]); an all-ASCII string maps one to one */
 static int str_cp_byteoff(const Val *v, long long cpidx) {
+    if (str_ncp(v) == v->slen) return (int)cpidx;
     int bi = 0; long long k = 0;
     while (k < cpidx && bi < v->slen) { bi += utf8_seq_len((unsigned char)v->s[bi]); k++; }
     return bi;
@@ -423,7 +427,8 @@ static Entry *field_slot(Val *recv, const char *name, int len) {
 BI(bi_len) { (void)site; if (!n) return v_int(ip, 0); Val *v = a[0];
     if (v->kind == V_LIST || v->kind == V_SET || v->kind == V_TUPLE) return v_int(ip, v->n);
     if (v->kind == V_MAP) return v_int(ip, v->nent);
-    if (v->kind == V_STR) { Val *l = to_iter_list(ip, v); return v_int(ip, l->n); }
+    /* count the codepoints in place: building the char list made len() of a 2 MiB source allocate 128 MiB per call */
+    if (v->kind == V_STR) return v_int(ip, str_ncp(v));
     if (v->kind == V_RANGE) return v_int(ip, (v->inc ? v->hi - v->lo + 1 : v->hi - v->lo));
     return v_int(ip, 0);
 }

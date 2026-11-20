@@ -500,6 +500,8 @@ DEPMAIN
     printf 'fn inner(b, i) = buf_get(b, i) + 1\nfn middle(b, i) = inner(b, i) * 2\nfn outer(n) = let b = buf_new(4) in middle(b, n) + 0\nprint outer(9)\n' >"$ntmp/stk.src"
     stk_rc=0; LUME_FL=off LUME_BIN_DIR="$ntmp" ../../lume run "$ntmp/stk.src" >/dev/null 2>"$ntmp/stk.err" || stk_rc=$?
     if [ "$stk_rc" = 3 ] && grep -q "^  at inner (.*stk.src:1)$" "$ntmp/stk.err" && grep -q "^  at middle (.*stk.src:2)$" "$ntmp/stk.err" && grep -q "^  at outer (.*stk.src:3)$" "$ntmp/stk.err"; then ok "run-time error prints the call stack with file:line (inner, middle, outer)"; else bad "run-time error call stack"; cat "$ntmp/stk.err"; fi
+    # [E0305]: an immediate copied into or out of a sent record stays with the sender (tests/runtime/linear_imm_ok.src)
+    if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/runtime/linear_imm_ok.src 2>&1 | grep -q "2 passed, 0 failed"; then ok "[E0305] linear send: an int or bool copied into or out of the record stays with the sender"; else bad "[E0305] immediates copied around a linear send"; fi
     # a call through a parameter is the local function, not another module's global of the same name
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/namespaces/localcall/localcall_ok.src 2>&1 | grep -q "3 passed, 0 failed"; then ok "a call through a parameter or let name is never checked against a global of the same name"; else bad "local callee vs global function"; fi
     # packages with versions: publish two versions, add ^1.0, install picks 1.2.0, runs its tests, locks it, use finds it

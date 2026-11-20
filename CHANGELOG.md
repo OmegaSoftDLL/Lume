@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Diagnostic codes, all of them, with examples (item 20):** the reference (section 3a, EN and PT, also in
+  `lume manual ref`) lists every code the tools report: what it means, which tool reports it and its example.
+  `examples/diagnostics/` grew from 14 to 68 codes (`.bad` gives the code, `.fixed.src` is the corrected program);
+  `tests/docs/examples_gate.src` runs all of them on every release and accepts `## command: lume agent kernel`.
 - **`lume debug [--commands FILE] [-x CMD]... f.src [args]` (item 21):** the program is built with a call of the
   debugger at the start and at the return of each function (nothing inlined, variables start unset) and run. Text
   commands from the file, from each `-x` or from standard input: `break NAME` / `break FILE:LINE`, `delete [NAME]`,
@@ -160,6 +164,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **`lume verify` no longer fails a file that has no contracts:** with 0 obligations `certify` answers
+  "unverified", and verify took that as the file failing; a file with nothing to certify passes that step.
+- **CI: the seed's `len()` of a string built a list of its characters on every call** (bootstrap/lume0/interp.c):
+  `len()` of a 2 MiB source allocated 128 MiB, so on macOS (where the cross-platform checks run the compiler in the
+  seed interpreter) each such check took about 40 minutes and the job hit the 6-hour limit. The count is now taken in
+  place and cached in the string (strings are immutable), with a one-to-one index for all-ASCII text: 1589 -> 6 ms
+  for 30 calls on a 2 MiB string.
+- **CI: `lume cli-parity` (Native CLI driver job):** both manuals are again exactly what `lume manual --export`
+  writes; they mention `lume pkg ... [--store=DIR]` and `lume pkg audit`; "fmt --check" in the text of `lume verify`
+  (read as an option of verify) became "the format check"; the gate knows that only `lume pkg audit` and
+  `pkg publish --store DIR` go to the legacy script now.
+- **`crc32` of `std/hash` no longer builds its 1 KiB table on every call:** messages under 2048 bytes are computed
+  bit by bit (no table), longer ones keep the table; a test checks both paths agree around the switch.
+- **[E0305] no longer moves an immediate:** an int literal or a bool put into a record sent with
+  `chan_send_linear`, or read out of it before the send, is a copy and stays usable by the sender (it was rejected
+  as a use of the moved value). A heap part, an alias or a computed int (it may be a boxed cell) still moves with the
+  record. tests/runtime/linear_imm_ok.src.
+- **A delimiter still open at the end of the file is [P0001]** (`expected ')' at end of input`), as the code was
+  documented; it was reported as [P0002], so P0001 could never appear.
 - **`lume check` named the bundle's line in a lex error's text:** the message said "(started at line 11, col 7)" for
   what the span correctly gave as `main.src:4:7` (the bundle puts imported modules first). A diagnostic with a span
   no longer repeats the compiler's own place in its text.

@@ -5271,9 +5271,34 @@ fn lc_nbrs(x, al, acc) = match al
 fn lc_close(todo, al, seen) = match todo
     Nil        => seen
     Cons(h, t) => if omem(h, seen) == 1 then lc_close(t, al, seen) else lc_close(app(lc_nbrs(h, al, Nil), t), al, Cons(h, seen))
+## An immediate (an int literal that fits the tagged word, true / false, a comparison) is copied, never shared: a name
+## bound to one, or a record field given one, is marked in `al` with a pair {a: NAME, b: "#imm:NAME[.FIELD]"} and is
+## never linked, so sending a record does not move an int that went into it or was read out of it. The marks go with
+## the name: rebinding it unlinks them. A computed int may be a boxed cell (beyond the tagged range), so it stays linked.
+fn lc_has_pair(x, y, al) = match al
+    Nil        => 0
+    Cons(h, t) => if h.a == x and h.b == y then 1 else lc_has_pair(x, y, t)
+fn lc_imm(e, al) = match e
+    Num(n)        => if n >= 0 - 4611686018427387904 and n < 4611686018427387904 then 1 else 0
+    Var(x)        => if x == "true" or x == "false" then 1 else lc_has_pair(x, "#imm:" + x, al)
+    Field(o, fld) => lc_imm_field(o, fld, al)
+    Bin(op, l, r) => if op == "==" or op == "!=" or op == "<" or op == "<=" or op == ">" or op == ">=" then 1 else 0
+    _             => 0
+fn lc_imm_field(o, fld, al) = match o
+    Var(x) => lc_has_pair(x, "#imm:" + x + "." + fld, al)
+    _      => 0
+fn lc_imm_items(nm, items, al, acc) = match items
+    Nil        => acc
+    Cons(h, t) => lc_imm_items(nm, t, al, if lc_imm(h.val, al) == 1 then Cons({a: nm, b: "#imm:" + nm + "." + h.key}, acc) else acc)
+fn lc_imm_marks(nm, v, al, acc) = match v
+    Rec(items)      => lc_imm_items(nm, items, al, acc)
+    RecT(tn, items) => lc_imm_items(nm, items, al, acc)
+    _               => acc
+## `let nm = v`: an immediate gets its mark and no link; anything else is linked to its roots (immediates skipped)
+fn lc_bind(nm, v, al) = let al0 = lc_unlink(nm, al) in if lc_imm(v, al) == 1 then Cons({a: nm, b: "#imm:" + nm}, al0) else lc_link(nm, lc_roots(v), lc_imm_marks(nm, v, al, al0))
 fn lc_link(nm, roots, al) = match roots
     Nil        => al
-    Cons(h, t) => Cons({a: nm, b: h}, lc_link(nm, t, al))
+    Cons(h, t) => if lc_has_pair(h, "#imm:" + h, al) == 1 then lc_link(nm, t, al) else Cons({a: nm, b: h}, lc_link(nm, t, al))
 fn lc_link_all(names, roots, al) = match names
     Nil        => al
     Cons(h, t) => lc_link_all(t, roots, lc_link(h, roots, al))
@@ -5310,7 +5335,7 @@ fn lc_arms(xs, roots, cx, al, mv0, acc) = match xs
 fn lc_hops(xs, cx, al, mv) = match xs
     Nil        => mv
     Cons(h, t) => lc_hops(t, cx, al, lc_union(lc_e(h.body, cx, al, mv), mv))
-fn lc_let(nm, v, b, cx, al, mv) = let mv1 = lc_e(v, cx, al, mv) in let r = lc_e(b, cx, lc_link(nm, lc_roots(v), lc_unlink(nm, al)), orem(nm, mv1)) in lc_keep(Cons(nm, Nil), mv1, r)
+fn lc_let(nm, v, b, cx, al, mv) = let mv1 = lc_e(v, cx, al, mv) in let r = lc_e(b, cx, lc_bind(nm, v, al), orem(nm, mv1)) in lc_keep(Cons(nm, Nil), mv1, r)
 fn lc_call(cnm, args, cx, al, mv) = if cnm == "chan_send_linear" and len(args) == 2 then lc_close(lc_roots(lc_nth(args, 1)), al, lc_args(args, cx, al, mv)) else lc_move_idx(lc_sum_lookup(cnm, cx.sums), args, cx, al, lc_args(args, cx, al, mv))
 ## returns the names moved after `e`; reading a moved name is [E0305] (cx.strict == 0 only collects, for summaries)
 fn lc_e(e, cx, al, mv) = match e
