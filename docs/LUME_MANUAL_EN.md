@@ -425,7 +425,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             qp, intra, dst, di)` (nonzero levels), `buf_h264_dequant4x4(src, si, qp, dst, di)`, `buf_h264_sub4x4(a, ai,
             sa, pred, pi, dst)`, `buf_h264_recon4x4(pred, pi, res, ri, dst, di)`, `buf_h264_intra4x4` / `intra16x16(frame,
             fi, fs, mode, avail, dst)`; with `use h264`: `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst,
-            di, ds)` (quarter samples, 6-tap), `buf_h264_chroma_mc` (same arguments, eighth samples, bilinear),
+            di, ds)` (quarter samples, 6-tap, SSE2), `buf_h264_chroma_mc` (same arguments, eighth samples, bilinear),
             `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: lists, one
             value per 4 luma / 2 chroma lines), `buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos)` (CAVLC of one block of
             16 / 15 / 4 int16 coefficients into bits; answers {pos, total}); all answer -1 on a wrong argument

@@ -64,3 +64,16 @@ fn enche(b, n, i, s) = if i >= n then s else let q = buf_set(b, i, bit_shr(s, 16
 fn difere(a, b, n, i) = if i >= n then false else buf_get(a, i) != buf_get(b, i) or difere(a, b, n, i + 1)
 fn laco(r, d1, d2, n, s) = if n <= 0 then 0 else let a = {x: (bit_shr(s, 8) % 88) - 20, y: (bit_shr(lcg(s), 8) % 72) - 20, mx: (bit_shr(lcg(lcg(s)), 8) % 129) - 64, my: (bit_shr(lcg(lcg(lcg(s))), 8) % 129) - 64, t: "caso " + str(n)} in let r1 = buf_h264_luma_mc(r, 0, 48, 48, 32, a.x, a.y, a.mx, a.my, 16, 16, d1, 0, 16) in let r2 = buf_h264_luma_mc(r, 0, 48, 48, 32, a.x, a.y, a.mx, a.my, 16, 16, d2, 0, 16) in if difere(d1, d2, 256, 0) then n else laco(r, d1, d2, n - 1, lcg(lcg(lcg(lcg(s)))))
 fn test_luma_stable_across_collections() = let r = buf_new(48 * 32) in let s = enche(r, 48 * 32, 0, 12345) in laco(r, buf_new(256), buf_new(256), 100000, 777) == 0
+
+## every fraction and every block size (w, h in 4 / 8 / 16) inside the picture (block at 9, 7), across the bottom
+## right corner (30, 26) and across the top left corner (-5, -3)
+fn lsz(i) = if i == 0 then 4 else if i == 1 then 8 else 16
+fn lbx(e) = if e == 0 then 9 else if e == 1 then 30 else 0 - 5
+fn lby(e) = if e == 0 then 7 else if e == 1 then 26 else 0 - 3
+fn luma_sizes(p, dst, i) = if i >= 432 then 1 else let fr = i % 16 in let w = lsz((i / 16) % 3) in let h = lsz((i / 48) % 3) in let e = i / 144 in let r = buf_h264_luma_mc(p.b, p.o, p.s, p.w, p.h, lbx(e), lby(e), fr % 4, fr / 4, w, h, dst, 0, 16) in if r != 0 or cmp_block(p, dst, 16, lbx(e), lby(e), fr % 4, fr / 4, w, h, 4, 0) == 0 then 0 else luma_sizes(p, dst, i + 1)
+fn test_luma_every_fraction_and_size() = let p = pic() in luma_sizes(p, buf_new(16 * 16), 0) == 1
+## the prediction writes the w x h block and nothing around it (the vector routines work 8 or 16 bytes at a time)
+fn fillc(b, i, n, v) = if i >= n then 0 else let w = buf_set(b, i, v) in fillc(b, i + 1, n, v)
+fn untouched(b, i, w, h) = if i >= 480 then true else let x = i % 24 in let y = i / 24 in ((x >= 3 and x < 3 + w and y >= 2 and y < 2 + h) or buf_get(b, i) == 77) and untouched(b, i + 1, w, h)
+fn wcase(p, x, y, w, h, fr) = let d = buf_new(480) in let z = fillc(d, 0, 480, 77) in buf_h264_luma_mc(p.b, p.o, p.s, p.w, p.h, x, y, fr % 4, fr / 4, w, h, d, 2 * 24 + 3, 24) == 0 and untouched(d, 0, w, h)
+fn test_luma_writes_only_the_block() = let p = pic() in wcase(p, 9, 7, 4, 4, 7) and wcase(p, 9, 7, 8, 4, 10) and wcase(p, 9, 7, 16, 8, 5) and wcase(p, 9, 7, 4, 16, 0) and wcase(p, 30, 26, 4, 8, 15) and wcase(p, 0 - 5, 0 - 3, 16, 16, 0)

@@ -201,30 +201,34 @@ fn rtc_mc(ref, dst, a, b, g, q) = let sh = bit_and(q, 3) in let qq = bit_shr(q, 
 ## block, and free a window it only reaches through here (LumeDesk report: different blocks for the same call)
 fn rtc_mc2(plane, d, sd, g, qq, sh) = let c = sym_addr("__rtc_scratch") in let qx = bit_and(qq, 1073741823) - 536870912 in let qy = bit_shr(qq, 30) - 536870912 in let m = bit_shl(1, sh) - 1 in let s0 = store64(c, plane) in let s1 = store64(c + 8, bit_and(sd, 65535)) in let s8 = store64(c + 48, bit_shr(sd, 16)) in let s2 = store64(c + 16, bit_and(g, 65535)) in let s3 = store64(c + 24, bit_and(bit_shr(g, 16), 65535)) in let s4 = store64(c + 32, bit_and(qx, m) + bit_and(qy, m) * (m + 1)) in let s5 = store64(c + 40, bit_and(bit_shr(g, 32), 255)) in let s6 = store64(c + 56, bit_and(bit_shr(g, 40), 255)) in let s7 = store64(c + 64, sh - 2) in rtc_mc3(c, d, qx, qy, sh)
 fn rtc_mc3(c, d, qx, qy, sh) = let z = (if sh == 2 then rtc_lmc(c, d, rtc_asr(qx, 2), rtc_asr(qy, 2)) else rtc_mrows(c, d, rtc_asr(qx, sh), rtc_asr(qy, sh), load64(c + 56))) in mkint(0)
-## luma fast path: the (w + 6) x (h + 6) window around the block is copied once (clamping only there, 72 window,
-## 80 its stride), and the horizontal 6-tap intermediates b1 of every window row are kept as words (88 table,
-## 96 its row bytes); a pixel then reads window and table without bounds work. Window coordinates of block pixel
-## (cx, cy) are (cx + 2, cy + 2).
+## luma fast path (SSE2): the (w + 6) x (h + 6) window around the block is copied once into scratch at 128 (clamping
+## only there; rows 32 bytes apart), then the half-sample planes are computed 8 pixels at a time, all with rows 32
+## bytes apart: b (horizontal, by window row) at 864 with its raw int16 sums at 2592, h (vertical) at 1568 and j
+## (centre, from the raw sums) at 2080. Every quarter position of table 8-12 is then one plane or the rounded average
+## of two (pavgb), so the last pass is the same loop for all sixteen. Window coordinates of block pixel (cx, cy) are
+## (cx + 2, cy + 2); the vector routines read and write a little past a row, inside the 32-byte rows.
 fn rtc_wcprow(c, wp, x, y, n) = if n == 0 then 0 else let v = store8(wp, rtc_g(c, x, y)) in rtc_wcprow(c, wp + 1, x + 1, y, n - 1)
-fn rtc_wcp(c, wp, x, y, r) = if r == 0 then 0 else let z = rtc_wcprow(c, wp, x, y, load64(c + 80)) in rtc_wcp(c, wp + load64(c + 80), x, y + 1, r - 1)
-fn rtc_b1row(tp, wp, n) = if n == 0 then 0 else let v = store64(tp, rtc_tap(load8(wp), load8(wp + 1), load8(wp + 2), load8(wp + 3), load8(wp + 4), load8(wp + 5))) in rtc_b1row(tp + 8, wp + 1, n - 1)
-fn rtc_b1fill(c, tp, wp, r) = if r == 0 then 0 else let z = rtc_b1row(tp, wp, load64(c + 40) + 1) in rtc_b1fill(c, tp + load64(c + 96), wp + load64(c + 80), r - 1)
+fn rtc_wcp(c, wp, x, y, r) = if r == 0 then 0 else let z = rtc_wcprow(c, wp, x, y, load64(c + 40) + 6) in rtc_wcp(c, wp + 32, x, y + 1, r - 1)
+## g groups of 8 pixels per row
+fn rtc_vh(sp, bp, rp, g) = if g == 0 then 0 else let z = vec_hp6h(sp, bp, rp) in rtc_vh(sp + 8, bp + 8, rp + 16, g - 1)
+fn rtc_vhr(sp, bp, rp, g, n) = if n == 0 then 0 else let z = rtc_vh(sp, bp, rp, g) in rtc_vhr(sp + 32, bp + 32, rp + 32, g, n - 1)
+fn rtc_vv(sp, dp, g) = if g == 0 then 0 else let z = vec_hp6v(sp, 32, dp) in rtc_vv(sp + 8, dp + 8, g - 1)
+fn rtc_vvr(sp, dp, g, n) = if n == 0 then 0 else let z = rtc_vv(sp, dp, g) in rtc_vvr(sp + 32, dp + 32, g, n - 1)
+fn rtc_vc(sp, dp, g) = if g == 0 then 0 else let z = vec_hp6c(sp, 32, dp) in rtc_vc(sp + 16, dp + 8, g - 1)
+fn rtc_vcr(sp, dp, g, n) = if n == 0 then 0 else let z = rtc_vc(sp, dp, g) in rtc_vcr(sp + 32, dp + 32, g, n - 1)
+## the last pass: d = avg(p, q) row by row (p == q copies)
+fn rtc_vfin(pp, qp, d, ds, w, n) = if n == 0 then 0 else let z = (if w == 4 then vec_avg4(pp, qp, d) else if w == 8 then vec_avg8(pp, qp, d) else (let z1 = vec_avg8(pp, qp, d) in vec_avg8(pp + 8, qp + 8, d + 8))) in rtc_vfin(pp + 32, qp + 32, d + ds, ds, w, n - 1)
+fn rtc_inside(c, xi, yi) = if xi - 2 >= 0 and yi - 2 >= 0 and xi + load64(c + 40) + 3 < load64(c + 16) and yi + load64(c + 56) + 3 < load64(c + 24) then 1 else 0
 ## a block whose window lies inside the picture is copied row by row without clamping
 fn rtc_cprow(d, sp, n) = if n >= 8 then (let v = store64(d, load64(sp)) in rtc_cprow(d + 8, sp + 8, n - 8)) else if n == 0 then 0 else let v = store8(d, load8(sp)) in rtc_cprow(d + 1, sp + 1, n - 1)
 fn rtc_cprows(d, ds, sp, ss, n, r) = if r == 0 then 0 else let z = rtc_cprow(d, sp, n) in rtc_cprows(d + ds, ds, sp + ss, ss, n, r - 1)
-fn rtc_inside(c, xi, yi) = if xi - 2 >= 0 and yi - 2 >= 0 and xi + load64(c + 40) + 3 < load64(c + 16) and yi + load64(c + 56) + 3 < load64(c + 24) then 1 else 0
 fn rtc_lmc(c, d, xi, yi) = if load64(c + 32) == 0 and rtc_inside(c, xi, yi) == 1 then rtc_cprows(d, load64(c + 48), load64(c) + yi * load64(c + 8) + xi, load64(c + 8), load64(c + 40), load64(c + 56)) else rtc_lmc1(c, d, xi, yi)
-fn rtc_lmc1(c, d, xi, yi) = let w = load64(c + 40) in let h = load64(c + 56) in let sw = w + 6 in let s1 = store64(c + 80, sw) in let s2 = store64(c + 72, c + 128) in let z1 = (if rtc_inside(c, xi, yi) == 1 then rtc_cprows(load64(c + 72), sw, load64(c) + (yi - 2) * load64(c + 8) + xi - 2, load64(c + 8), sw, h + 6) else rtc_wcp(c, load64(c + 72), xi - 2, yi - 2, h + 6)) in let s3 = store64(c + 96, (w + 1) * 8) in let s4 = (if bit_and(load64(c + 32), 3) == 0 then 0 else store64(c + 88, c + 616)) in let z2 = (if bit_and(load64(c + 32), 3) == 0 then 0 else rtc_b1fill(c, load64(c + 88), load64(c + 72), h + 6)) in rtc_wrows(c, d, 0, h)
-fn rtc_wg(c, x, y) = load8(load64(c + 72) + y * load64(c + 80) + x)
-fn rtc_wb(c, cx, y) = load64(load64(c + 88) + y * load64(c + 96) + cx * 8)
-fn rtc_wh1(c, x, y) = let p = load64(c + 72) + y * load64(c + 80) + x in let s = load64(c + 80) in rtc_tap(load8(p - 2 * s), load8(p - s), load8(p), load8(p + s), load8(p + 2 * s), load8(p + 3 * s))
-fn rtc_wj1(c, cx, y) = let p = load64(c + 88) + y * load64(c + 96) + cx * 8 in let s = load64(c + 96) in rtc_tap(load64(p - 2 * s), load64(p - s), load64(p), load64(p + s), load64(p + 2 * s), load64(p + 3 * s))
-fn rtc_wpx(c, cx, cy, fr) = if fr == 0 then rtc_wg(c, cx + 2, cy + 2) else if bit_and(fr, 3) == 0 then rtc_wpx0(c, cx + 2, cy + 2, bit_shr(fr, 2)) else if bit_and(fr, 3) == 2 then rtc_wpx2(c, cx, cy + 2, bit_shr(fr, 2)) else rtc_wpx13(c, cx, cy + 2, bit_and(fr, 3), bit_shr(fr, 2))
-fn rtc_wpx0(c, x, y, yf) = let h = rtc_r5(rtc_wh1(c, x, y)) in if yf == 1 then rtc_avg(rtc_wg(c, x, y), h) else if yf == 2 then h else rtc_avg(rtc_wg(c, x, y + 1), h)
-fn rtc_wpx2(c, cx, y, yf) = let b = rtc_r5(rtc_wb(c, cx, y)) in if yf == 0 then b else if yf == 1 then rtc_avg(b, rtc_r10(rtc_wj1(c, cx, y))) else if yf == 2 then rtc_r10(rtc_wj1(c, cx, y)) else rtc_avg(rtc_r10(rtc_wj1(c, cx, y)), rtc_r5(rtc_wb(c, cx, y + 1)))
-fn rtc_wpx13(c, cx, y, xf, yf) = let col = (if xf == 1 then cx + 2 else cx + 3) in let b = rtc_r5(rtc_wb(c, cx, y)) in if yf == 0 then rtc_avg(rtc_wg(c, col, y), b) else if yf == 1 then rtc_avg(b, rtc_r5(rtc_wh1(c, col, y))) else if yf == 2 then rtc_avg(rtc_r5(rtc_wh1(c, col, y)), rtc_r10(rtc_wj1(c, cx, y))) else rtc_avg(rtc_r5(rtc_wh1(c, col, y)), rtc_r5(rtc_wb(c, cx, y + 1)))
-fn rtc_wrow(c, d, cx, cy, n) = if n == 0 then 0 else let v = store8(d, rtc_wpx(c, cx, cy, load64(c + 32))) in rtc_wrow(c, d + 1, cx + 1, cy, n - 1)
-fn rtc_wrows(c, d, cy, r) = if r == 0 then 0 else let z = rtc_wrow(c, d, 0, cy, load64(c + 40)) in rtc_wrows(c, d + load64(c + 48), cy + 1, r - 1)
+fn rtc_lmc1(c, d, xi, yi) = let w = load64(c + 40) in let h = load64(c + 56) in let z1 = (if rtc_inside(c, xi, yi) == 1 then rtc_cprows(c + 128, 32, load64(c) + (yi - 2) * load64(c + 8) + xi - 2, load64(c + 8), w + 6, h + 6) else rtc_wcp(c, c + 128, xi - 2, yi - 2, h + 6)) in rtc_lmc2(c, d, w, h, bit_and(load64(c + 32), 3), bit_shr(load64(c + 32), 2))
+## the planes a position needs: b when xf != 0 (window rows 2 .. h + 2), h when yf != 0 and xf != 2 (one column more
+## for xf 3), j when (xf 2 and yf != 0) or (xf odd and yf 2) (raw sums of window rows 0 .. h + 4)
+fn rtc_lmc2(c, d, w, h, xf, yf) = let nj = (if (xf == 2 and yf != 0) or (bit_and(xf, 1) == 1 and yf == 2) then 1 else 0) in let zb = (if xf == 0 then 0 else if nj == 1 then rtc_vhr(c + 130, c + 864, c + 2592, bit_shr(w + 7, 3), h + 5) else rtc_vhr(c + 194, c + 928, c + 2656, bit_shr(w + 7, 3), h + 1)) in let zh = (if yf == 0 or xf == 2 then 0 else rtc_vvr(c + 194, c + 1568, bit_shr(w + (if xf == 3 then 8 else 7), 3), h)) in let zj = (if nj == 0 then 0 else rtc_vcr(c + 2656, c + 2080, bit_shr(w + 7, 3), h)) in rtc_lmc3(c, d, w, h, xf, yf)
+## (p, q) per position, with G at 194 (window 2, 2), b at 928 (window row 2), h at 1568, j at 2080; k = 1 for xf 3
+fn rtc_lmc3(c, d, w, h, xf, yf) = let ds = load64(c + 48) in let k = (if xf == 3 then 1 else 0) in if xf == 0 then (if yf == 0 then rtc_vfin(c + 194, c + 194, d, ds, w, h) else if yf == 1 then rtc_vfin(c + 194, c + 1568, d, ds, w, h) else if yf == 2 then rtc_vfin(c + 1568, c + 1568, d, ds, w, h) else rtc_vfin(c + 226, c + 1568, d, ds, w, h)) else if xf == 2 then (if yf == 0 then rtc_vfin(c + 928, c + 928, d, ds, w, h) else if yf == 1 then rtc_vfin(c + 928, c + 2080, d, ds, w, h) else if yf == 2 then rtc_vfin(c + 2080, c + 2080, d, ds, w, h) else rtc_vfin(c + 2080, c + 960, d, ds, w, h)) else (if yf == 0 then rtc_vfin(c + 194 + k, c + 928, d, ds, w, h) else if yf == 1 then rtc_vfin(c + 928, c + 1568 + k, d, ds, w, h) else if yf == 2 then rtc_vfin(c + 1568 + k, c + 2080, d, ds, w, h) else rtc_vfin(c + 1568 + k, c + 960, d, ds, w, h))
 fn buf_h264_lmc6(ref, dst, a, b, g, q) = rtc_mc(ref, dst, rt_int(a), rt_int(b), rt_int(g), rt_int(q) * 4 + 2)
 fn buf_h264_cmc6(ref, dst, a, b, g, q) = rtc_mc(ref, dst, rt_int(a), rt_int(b), rt_int(g), rt_int(q) * 4 + 3)
 

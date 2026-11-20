@@ -403,7 +403,7 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   si, qp, intra, dst, di)` (niveis nao nulos), `buf_h264_dequant4x4(src, si, qp, dst, di)`,
                   `buf_h264_sub4x4(a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4(pred, pi, res, ri, dst, di)`,
                   `buf_h264_intra4x4` / `intra16x16(frame, fi, fs, modo, disp, dst)`; com `use h264`:
-                  `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (1/4 de amostra, 6 taps),
+                  `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (1/4 de amostra, 6 taps, SSE2),
                   `buf_h264_chroma_mc` (mesmos argumentos, 1/8, bilinear), `buf_h264_deblock_edge(buf, q0, across,
                   along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: listas, um valor por 4 linhas de luma / 2 de
                   croma), `buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos)` (CAVLC de um bloco de 16 / 15 / 4

@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   core is the runtime routine `buf_h264_cavlc6` (a 16-bit nonzero mask instead of coefficient scans): about 320 ns
   for a typical block and 60 ns for an empty one. Checked against the LumeDesk encoder's 12 vectors, whose streams
   ffmpeg decodes (h264_cavlc_ok.src).
+- **H.264 luma motion compensation in SSE2 (item 15):** `buf_h264_luma_mc` computes the half-sample planes (b, h, j)
+  8 pixels at a time and every quarter position as one plane or the rounded average of two. A 16x16 block now takes
+  about 0.6-0.8 us instead of 3.6-6.6 us (8x8 centre 1.8 -> 0.36 us, 4x4 0.7 -> 0.2 us), with the same results
+  (every fraction and every w, h in 4 / 8 / 16, inside and across the picture edges: h264_mc_ok.src). New `--raw`
+  vector intrinsics `vec_hp6h`, `vec_hp6v`, `vec_hp6c`, `vec_avg8`, `vec_avg4`; lasm encodes `psubd` and `pslld`.
 - **Standard library (item 19), in Lume with tests:** `use std/hash` (CRC-32, Adler-32, MD5, SHA-1, SHA-256 against the
   published vectors), `csv` (RFC 4180), `utf8` (characters over byte strings), `datetime` (civil dates, ISO 8601,
   US / EU / Sydney daylight rules), `regex` (backtracking: groups, alternation, lazy quantifiers, replace with $1),
