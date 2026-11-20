@@ -18,24 +18,57 @@ fn hs_hexn(n, k) = if k == 0 then "" else hs_hexn(bit_shr(n, 4), k - 1) + hs_hex
 fn hs_hexle(n) = hs_hexn(bit_and(n, 255), 2) + hs_hexn(bit_and(bit_shr(n, 8), 255), 2) + hs_hexn(bit_and(bit_shr(n, 16), 255), 2) + hs_hexn(bit_and(bit_shr(n, 24), 255), 2)
 
 ## --- CRC-32 (reflected, polynomial 0xEDB88320) -----------------------------------------------------------------------
-fn hs_crcbit(c, k) = if k == 0 then c else hs_crcbit(if bit_and(c, 1) == 1 then bit_xor(bit_shr(c, 1), 3988292384) else bit_shr(c, 1), k - 1)
-fn hs_crctab(t, i) = if i >= 256 then t else let w = buf_set(t, i * 4, bit_and(hs_crcbit(i, 8), 255)) in let a = buf_set(t, i * 4 + 1, bit_and(bit_shr(hs_crcbit(i, 8), 8), 255)) in let b = buf_set(t, i * 4 + 2, bit_and(bit_shr(hs_crcbit(i, 8), 16), 255)) in let c = buf_set(t, i * 4 + 3, bit_shr(hs_crcbit(i, 8), 24)) in hs_crctab(t, i + 1)
+fn hs_crcbit(c, k) =
+    if k == 0 then
+        c
+    else
+        hs_crcbit(if bit_and(c, 1) == 1 then bit_xor(bit_shr(c, 1), 3988292384) else bit_shr(c, 1), k - 1)
+fn hs_crctab(t, i) =
+    if i >= 256 then
+        t
+    else
+        let w = buf_set(t, i * 4, bit_and(hs_crcbit(i, 8), 255)) in
+        let a = buf_set(t, i * 4 + 1, bit_and(bit_shr(hs_crcbit(i, 8), 8), 255)) in
+        let b = buf_set(t, i * 4 + 2, bit_and(bit_shr(hs_crcbit(i, 8), 16), 255)) in
+        let c = buf_set(t, i * 4 + 3, bit_shr(hs_crcbit(i, 8), 24)) in
+        hs_crctab(t, i + 1)
 fn hs_tab() = hs_crctab(buf_new(1024), 0)
 fn hs_tget(t, i) = buf_get(t, i * 4) + buf_get(t, i * 4 + 1) * 256 + buf_get(t, i * 4 + 2) * 65536 + buf_get(t, i * 4 + 3) * 16777216
-fn hs_crc(t, b, i, e, c) = if i >= e then c else hs_crc(t, b, i + 1, e, bit_xor(hs_tget(t, bit_and(bit_xor(c, buf_get(b, i)), 255)), bit_shr(c, 8)))
+fn hs_crc(t, b, i, e, c) =
+    if i >= e then
+        c
+    else
+        hs_crc(t, b, i + 1, e, bit_xor(hs_tget(t, bit_and(bit_xor(c, buf_get(b, i)), 255)), bit_shr(c, 8)))
 ## bit by bit: 8 steps per byte and no table, faster than building the 1 KiB table for short messages (STUN, headers)
 fn hs_crcb(b, i, e, c) = if i >= e then c else hs_crcb(b, i + 1, e, hs_crcbit(bit_xor(c, buf_get(b, i)), 8))
 fn crc32_buf(b, off, n) = hs_not(if n < 2048 then hs_crcb(b, off, off + n, 4294967295) else hs_crc(hs_tab(), b, off, off + n, 4294967295))
 fn crc32(s) = let b = buf_from_str(s) in crc32_buf(b, 0, buf_len(b))
 
 ## --- Adler-32 -----------------------------------------------------------------------------------------------------------
-fn hs_adl(b, i, e, a, s) = if i >= e then s * 65536 + a else let a2 = (a + buf_get(b, i)) % 65521 in hs_adl(b, i + 1, e, a2, (s + a2) % 65521)
+fn hs_adl(b, i, e, a, s) =
+    if i >= e then
+        s * 65536 + a
+    else
+        let a2 = (a + buf_get(b, i)) % 65521 in
+        hs_adl(b, i + 1, e, a2, (s + a2) % 65521)
 fn adler32_buf(b, off, n) = hs_adl(b, off, off + n, 1, 0)
 fn adler32(s) = let b = buf_from_str(s) in adler32_buf(b, 0, buf_len(b))
 
 ## --- padding shared by MD5, SHA-1 and SHA-256: the message, 0x80, zeros, the bit length (64 bits) -------------------------
-fn hs_pad(s, big) = let b = buf_from_str(s) in let n = buf_len(b) in let total = ((n + 9 + 63) / 64) * 64 in let p = buf_new(total) in let c = buf_copy(p, 0, b, 0, n) in let m = buf_set(p, n, 128) in hs_len(p, total, n * 8, 0, big)
-fn hs_len(p, total, bits, k, big) = if k >= 8 then p else let w = buf_set(p, (if big == 1 then total - 1 - k else total - 8 + k), bit_and(bit_shr(bits, k * 8), 255)) in hs_len(p, total, bits, k + 1, big)
+fn hs_pad(s, big) =
+    let b = buf_from_str(s) in
+    let n = buf_len(b) in
+    let total = (n + 9 + 63) / 64 * 64 in
+    let p = buf_new(total) in
+    let c = buf_copy(p, 0, b, 0, n) in
+    let m = buf_set(p, n, 128) in
+    hs_len(p, total, n * 8, 0, big)
+fn hs_len(p, total, bits, k, big) =
+    if k >= 8 then
+        p
+    else
+        let w = buf_set(p, if big == 1 then total - 1 - k else total - 8 + k, bit_and(bit_shr(bits, k * 8), 255)) in
+        hs_len(p, total, bits, k + 1, big)
 fn hs_wle(p, o) = buf_get(p, o) + buf_get(p, o + 1) * 256 + buf_get(p, o + 2) * 65536 + buf_get(p, o + 3) * 16777216
 fn hs_wbe(p, o) = buf_get(p, o) * 16777216 + buf_get(p, o + 1) * 65536 + buf_get(p, o + 2) * 256 + buf_get(p, o + 3)
 
@@ -43,25 +76,105 @@ fn hs_wbe(p, o) = buf_get(p, o) * 16777216 + buf_get(p, o + 1) * 65536 + buf_get
 fn hs_md5k(i) = bit_and(hs_md5kv(i), 4294967295)
 fn hs_md5kv(i) = hs_nth(hs_md5ks(), i)
 fn hs_md5ks() = [3614090360, 3905402710, 606105819, 3250441966, 4118548399, 1200080426, 2821735955, 4249261313, 1770035416, 2336552879, 4294925233, 2304563134, 1804603682, 4254626195, 2792965006, 1236535329, 4129170786, 3225465664, 643717713, 3921069994, 3593408605, 38016083, 3634488961, 3889429448, 568446438, 3275163606, 4107603335, 1163531501, 2850285829, 4243563512, 1735328473, 2368359562, 4294588738, 2272392833, 1839030562, 4259657740, 2763975236, 1272893353, 4139469664, 3200236656, 681279174, 3936430074, 3572445317, 76029189, 3654602809, 3873151461, 530742520, 3299628645, 4096336452, 1126891415, 2878612391, 4237533241, 1700485571, 2399980690, 4293915773, 2240044497, 1873313359, 4264355552, 2734768916, 1309151649, 4149444226, 3174756917, 718787259, 3951481745]
-fn hs_md5s(i) = let r = i / 16 in let k = i % 4 in if r == 0 then (if k == 0 then 7 else if k == 1 then 12 else if k == 2 then 17 else 22) else if r == 1 then (if k == 0 then 5 else if k == 1 then 9 else if k == 2 then 14 else 20) else if r == 2 then (if k == 0 then 4 else if k == 1 then 11 else if k == 2 then 16 else 23) else (if k == 0 then 6 else if k == 1 then 10 else if k == 2 then 15 else 21)
+fn hs_md5s(i) =
+    let r = i / 16 in
+    let k = i % 4 in
+    if r == 0 then
+        (if k == 0 then 7 else if k == 1 then 12 else if k == 2 then 17 else 22)
+    else if r == 1 then
+        (if k == 0 then 5 else if k == 1 then 9 else if k == 2 then 14 else 20)
+    else if r == 2 then
+        (if k == 0 then 4 else if k == 1 then 11 else if k == 2 then 16 else 23)
+    else if k == 0 then
+        6
+    else if k == 1 then
+        10
+    else if k == 2 then
+        15
+    else
+        21
 fn hs_nth(xs, i) = match xs
     Nil        => 0
     Cons(h, t) => if i == 0 then h else hs_nth(t, i - 1)
-fn hs_md5f(i, b, c, d) = let r = i / 16 in if r == 0 then bit_or(bit_and(b, c), bit_and(hs_not(b), d)) else if r == 1 then bit_or(bit_and(d, b), bit_and(hs_not(d), c)) else if r == 2 then bit_xor(bit_xor(b, c), d) else bit_xor(c, bit_or(b, hs_not(d)))
-fn hs_md5g(i) = let r = i / 16 in if r == 0 then i else if r == 1 then (5 * i + 1) % 16 else if r == 2 then (3 * i + 5) % 16 else (7 * i) % 16
-fn hs_md5r(p, o, i, st) = if i >= 64 then st else let f = hs_md5f(i, st.b, st.c, st.d) in let x = hs_add(hs_add(hs_add(st.a, f), hs_md5k(i)), hs_wle(p, o + hs_md5g(i) * 4)) in hs_md5r(p, o, i + 1, {a: st.d, b: hs_add(st.b, hs_rotl(x, hs_md5s(i))), c: st.b, d: st.c})
-fn hs_md5blk(p, o, n, st) = if o >= n then st else let r = hs_md5r(p, o, 0, st) in hs_md5blk(p, o + 64, n, {a: hs_add(st.a, r.a), b: hs_add(st.b, r.b), c: hs_add(st.c, r.c), d: hs_add(st.d, r.d)})
-fn md5(s) = let p = hs_pad(s, 0) in let st = hs_md5blk(p, 0, buf_len(p), {a: 1732584193, b: 4023233417, c: 2562383102, d: 271733878}) in hs_hexle(st.a) + hs_hexle(st.b) + hs_hexle(st.c) + hs_hexle(st.d)
+fn hs_md5f(i, b, c, d) =
+    let r = i / 16 in
+    if r == 0 then
+        bit_or(bit_and(b, c), bit_and(hs_not(b), d))
+    else if r == 1 then
+        bit_or(bit_and(d, b), bit_and(hs_not(d), c))
+    else if r == 2 then
+        bit_xor(bit_xor(b, c), d)
+    else
+        bit_xor(c, bit_or(b, hs_not(d)))
+fn hs_md5g(i) =
+    let r = i / 16 in
+    if r == 0 then
+        i
+    else if r == 1 then
+        (5 * i + 1) % 16
+    else if r == 2 then
+        (3 * i + 5) % 16
+    else
+        7 * i % 16
+fn hs_md5r(p, o, i, st) =
+    if i >= 64 then
+        st
+    else
+        let f = hs_md5f(i, st.b, st.c, st.d) in
+        let x = hs_add(hs_add(hs_add(st.a, f), hs_md5k(i)), hs_wle(p, o + hs_md5g(i) * 4)) in
+        hs_md5r(p, o, i + 1, {a: st.d, b: hs_add(st.b, hs_rotl(x, hs_md5s(i))), c: st.b, d: st.c})
+fn hs_md5blk(p, o, n, st) =
+    if o >= n then
+        st
+    else
+        let r = hs_md5r(p, o, 0, st) in
+        hs_md5blk(p, o + 64, n, {a: hs_add(st.a, r.a), b: hs_add(st.b, r.b), c: hs_add(st.c, r.c), d: hs_add(st.d, r.d)})
+fn md5(s) =
+    let p = hs_pad(s, 0) in
+    let st = hs_md5blk(p, 0, buf_len(p), {a: 1732584193, b: 4023233417, c: 2562383102, d: 271733878}) in
+    hs_hexle(st.a) + hs_hexle(st.b) + hs_hexle(st.c) + hs_hexle(st.d)
 
 ## --- SHA-1 -------------------------------------------------------------------------------------------------------------
 fn hs_sw(w, i) = buf_get(w, i * 4) * 16777216 + buf_get(w, i * 4 + 1) * 65536 + buf_get(w, i * 4 + 2) * 256 + buf_get(w, i * 4 + 3)
-fn hs_ssw(w, i, v) = let a = buf_set(w, i * 4, bit_shr(v, 24)) in let b = buf_set(w, i * 4 + 1, bit_and(bit_shr(v, 16), 255)) in let c = buf_set(w, i * 4 + 2, bit_and(bit_shr(v, 8), 255)) in buf_set(w, i * 4 + 3, bit_and(v, 255))
-fn hs_s1sched(p, o, w, i) = if i >= 80 then w else let v = (if i < 16 then hs_wbe(p, o + i * 4) else hs_rotl(bit_xor(bit_xor(hs_sw(w, i - 3), hs_sw(w, i - 8)), bit_xor(hs_sw(w, i - 14), hs_sw(w, i - 16))), 1)) in let z = hs_ssw(w, i, v) in hs_s1sched(p, o, w, i + 1)
-fn hs_s1f(i, b, c, d) = if i < 20 then bit_or(bit_and(b, c), bit_and(hs_not(b), d)) else if i < 40 then bit_xor(bit_xor(b, c), d) else if i < 60 then bit_or(bit_or(bit_and(b, c), bit_and(b, d)), bit_and(c, d)) else bit_xor(bit_xor(b, c), d)
+fn hs_ssw(w, i, v) =
+    let a = buf_set(w, i * 4, bit_shr(v, 24)) in
+    let b = buf_set(w, i * 4 + 1, bit_and(bit_shr(v, 16), 255)) in
+    let c = buf_set(w, i * 4 + 2, bit_and(bit_shr(v, 8), 255)) in
+    buf_set(w, i * 4 + 3, bit_and(v, 255))
+fn hs_s1sched(p, o, w, i) =
+    if i >= 80 then
+        w
+    else
+        let v = if i < 16 then hs_wbe(p, o + i * 4) else hs_rotl(bit_xor(bit_xor(hs_sw(w, i - 3), hs_sw(w, i - 8)), bit_xor(hs_sw(w, i - 14), hs_sw(w, i - 16))), 1) in
+        let z = hs_ssw(w, i, v) in
+        hs_s1sched(p, o, w, i + 1)
+fn hs_s1f(i, b, c, d) =
+    if i < 20 then
+        bit_or(bit_and(b, c), bit_and(hs_not(b), d))
+    else if i < 40 then
+        bit_xor(bit_xor(b, c), d)
+    else if i < 60 then
+        bit_or(bit_or(bit_and(b, c), bit_and(b, d)), bit_and(c, d))
+    else
+        bit_xor(bit_xor(b, c), d)
 fn hs_s1k(i) = if i < 20 then 1518500249 else if i < 40 then 1859775393 else if i < 60 then 2400959708 else 3395469782
-fn hs_s1r(w, i, st) = if i >= 80 then st else let t = hs_add(hs_add(hs_add(hs_add(hs_rotl(st.a, 5), hs_s1f(i, st.b, st.c, st.d)), st.e), hs_s1k(i)), hs_sw(w, i)) in hs_s1r(w, i + 1, {a: t, b: st.a, c: hs_rotl(st.b, 30), d: st.c, e: st.d})
-fn hs_s1blk(p, o, n, w, st) = if o >= n then st else let s = hs_s1sched(p, o, w, 0) in let r = hs_s1r(w, 0, st) in hs_s1blk(p, o + 64, n, w, {a: hs_add(st.a, r.a), b: hs_add(st.b, r.b), c: hs_add(st.c, r.c), d: hs_add(st.d, r.d), e: hs_add(st.e, r.e)})
-fn sha1(s) = let p = hs_pad(s, 1) in let st = hs_s1blk(p, 0, buf_len(p), buf_new(320), {a: 1732584193, b: 4023233417, c: 2562383102, d: 271733878, e: 3285377520}) in hex32(st.a) + hex32(st.b) + hex32(st.c) + hex32(st.d) + hex32(st.e)
+fn hs_s1r(w, i, st) =
+    if i >= 80 then
+        st
+    else
+        let t = hs_add(hs_add(hs_add(hs_add(hs_rotl(st.a, 5), hs_s1f(i, st.b, st.c, st.d)), st.e), hs_s1k(i)), hs_sw(w, i)) in
+        hs_s1r(w, i + 1, {a: t, b: st.a, c: hs_rotl(st.b, 30), d: st.c, e: st.d})
+fn hs_s1blk(p, o, n, w, st) =
+    if o >= n then
+        st
+    else
+        let s = hs_s1sched(p, o, w, 0) in
+        let r = hs_s1r(w, 0, st) in
+        hs_s1blk(p, o + 64, n, w, {a: hs_add(st.a, r.a), b: hs_add(st.b, r.b), c: hs_add(st.c, r.c), d: hs_add(st.d, r.d), e: hs_add(st.e, r.e)})
+fn sha1(s) =
+    let p = hs_pad(s, 1) in
+    let st = hs_s1blk(p, 0, buf_len(p), buf_new(320), {a: 1732584193, b: 4023233417, c: 2562383102, d: 271733878, e: 3285377520}) in
+    hex32(st.a) + hex32(st.b) + hex32(st.c) + hex32(st.d) + hex32(st.e)
 
 ## --- SHA-256 -----------------------------------------------------------------------------------------------------------
 fn hs_rotr(x, n) = bit_and(bit_or(bit_shr(x, n), bit_shl(x, 32 - n)), 4294967295)
@@ -69,8 +182,32 @@ fn hs_k256() = [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 15089
 fn hs_ktab(t, xs, i) = match xs
     Nil        => t
     Cons(h, r) => let z = hs_ssw(t, i, h) in hs_ktab(t, r, i + 1)
-fn hs_s2sched(p, o, w, i) = if i >= 64 then w else let v = (if i < 16 then hs_wbe(p, o + i * 4) else (let x = hs_sw(w, i - 15) in let y = hs_sw(w, i - 2) in hs_add(hs_add(hs_add(hs_sw(w, i - 16), bit_xor(bit_xor(hs_rotr(x, 7), hs_rotr(x, 18)), bit_shr(x, 3))), hs_sw(w, i - 7)), bit_xor(bit_xor(hs_rotr(y, 17), hs_rotr(y, 19)), bit_shr(y, 10))))) in let z = hs_ssw(w, i, v) in hs_s2sched(p, o, w, i + 1)
-fn hs_s2r(w, k, i, st) = if i >= 64 then st else let s1 = bit_xor(bit_xor(hs_rotr(st.e, 6), hs_rotr(st.e, 11)), hs_rotr(st.e, 25)) in let ch = bit_xor(bit_and(st.e, st.f), bit_and(hs_not(st.e), st.g)) in let t1 = hs_add(hs_add(hs_add(hs_add(st.h, s1), ch), hs_sw(k, i)), hs_sw(w, i)) in let s0 = bit_xor(bit_xor(hs_rotr(st.a, 2), hs_rotr(st.a, 13)), hs_rotr(st.a, 22)) in let mj = bit_xor(bit_xor(bit_and(st.a, st.b), bit_and(st.a, st.c)), bit_and(st.b, st.c)) in let t2 = hs_add(s0, mj) in hs_s2r(w, k, i + 1, {a: hs_add(t1, t2), b: st.a, c: st.b, d: st.c, e: hs_add(st.d, t1), f: st.e, g: st.f, h: st.g})
+fn hs_s2sched(p, o, w, i) =
+    if i >= 64 then
+        w
+    else
+        let v = if i < 16 then hs_wbe(p, o + i * 4) else let x = hs_sw(w, i - 15) in let y = hs_sw(w, i - 2) in hs_add(hs_add(hs_add(hs_sw(w, i - 16), bit_xor(bit_xor(hs_rotr(x, 7), hs_rotr(x, 18)), bit_shr(x, 3))), hs_sw(w, i - 7)), bit_xor(bit_xor(hs_rotr(y, 17), hs_rotr(y, 19)), bit_shr(y, 10))) in
+        let z = hs_ssw(w, i, v) in
+        hs_s2sched(p, o, w, i + 1)
+fn hs_s2r(w, k, i, st) =
+    if i >= 64 then
+        st
+    else
+        let s1 = bit_xor(bit_xor(hs_rotr(st.e, 6), hs_rotr(st.e, 11)), hs_rotr(st.e, 25)) in
+        let ch = bit_xor(bit_and(st.e, st.f), bit_and(hs_not(st.e), st.g)) in
+        let t1 = hs_add(hs_add(hs_add(hs_add(st.h, s1), ch), hs_sw(k, i)), hs_sw(w, i)) in
+        let s0 = bit_xor(bit_xor(hs_rotr(st.a, 2), hs_rotr(st.a, 13)), hs_rotr(st.a, 22)) in
+        let mj = bit_xor(bit_xor(bit_and(st.a, st.b), bit_and(st.a, st.c)), bit_and(st.b, st.c)) in
+        let t2 = hs_add(s0, mj) in
+        hs_s2r(w, k, i + 1, {a: hs_add(t1, t2), b: st.a, c: st.b, d: st.c, e: hs_add(st.d, t1), f: st.e, g: st.f, h: st.g})
 fn hs_s2add(x, y) = {a: hs_add(x.a, y.a), b: hs_add(x.b, y.b), c: hs_add(x.c, y.c), d: hs_add(x.d, y.d), e: hs_add(x.e, y.e), f: hs_add(x.f, y.f), g: hs_add(x.g, y.g), h: hs_add(x.h, y.h)}
-fn hs_s2blk(p, o, n, w, k, st) = if o >= n then st else let s = hs_s2sched(p, o, w, 0) in hs_s2blk(p, o + 64, n, w, k, hs_s2add(st, hs_s2r(w, k, 0, st)))
-fn sha256(s) = let p = hs_pad(s, 1) in let st = hs_s2blk(p, 0, buf_len(p), buf_new(256), hs_ktab(buf_new(256), hs_k256(), 0), {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in hex32(st.a) + hex32(st.b) + hex32(st.c) + hex32(st.d) + hex32(st.e) + hex32(st.f) + hex32(st.g) + hex32(st.h)
+fn hs_s2blk(p, o, n, w, k, st) =
+    if o >= n then
+        st
+    else
+        let s = hs_s2sched(p, o, w, 0) in
+        hs_s2blk(p, o + 64, n, w, k, hs_s2add(st, hs_s2r(w, k, 0, st)))
+fn sha256(s) =
+    let p = hs_pad(s, 1) in
+    let st = hs_s2blk(p, 0, buf_len(p), buf_new(256), hs_ktab(buf_new(256), hs_k256(), 0), {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in
+    hex32(st.a) + hex32(st.b) + hex32(st.c) + hex32(st.d) + hex32(st.e) + hex32(st.f) + hex32(st.g) + hex32(st.h)

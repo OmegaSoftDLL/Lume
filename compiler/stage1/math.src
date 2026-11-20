@@ -30,15 +30,66 @@ fn math_isinf(v) = if f64_is_nan(v) == 1 then false else v == f64("inf") or v ==
 fn math_p2(k) = f64_pow(f64(2), f64(k))
 ## the binary exponent e with 2^e <= a < 2^(e+1), for a > 0 (log2 estimate, then corrected)
 fn math_ex(a) = math_exfix(a, f64_int(f64_floor(f64_log(a) / f64_log(f64(2)))))
-fn math_exfix(a, e) = if math_p2(e) > a then math_exfix(a, e - 1) else if math_p2(e + 1) <= a then math_exfix(a, e + 1) else e
+fn math_exfix(a, e) =
+    if math_p2(e) > a then
+        math_exfix(a, e - 1)
+    else if math_p2(e + 1) <= a then
+        math_exfix(a, e + 1)
+    else
+        e
 ## round to an integer, ties to even
-fn math_rne(v) = let f = f64_floor(v) in let d = v - f in if d > f64("0.5") then f + f64(1) else if d < f64("0.5") then f else if f64_int(f) % 2 == 0 then f else f + f64(1)
-fn math_f32abs(a) = if a == f64(0) then a else let e = math_ex(a) in let q = (if e < 0 - 126 then 0 - 149 else e - 23) in let r = math_rne(a / math_p2(q)) * math_p2(q) in if r >= math_p2(128) then f64("inf") else r
+fn math_rne(v) =
+    let f = f64_floor(v) in
+    let d = v - f in
+    if d > f64("0.5") then
+        f + f64(1)
+    else if d < f64("0.5") then
+        f
+    else if f64_int(f) % 2 == 0 then
+        f
+    else
+        f + f64(1)
+fn math_f32abs(a) =
+    if a == f64(0) then
+        a
+    else
+        let e = math_ex(a) in
+        let q = if e < 0 - 126 then 0 - 149 else e - 23 in
+        let r = math_rne(a / math_p2(q)) * math_p2(q) in
+        if r >= math_p2(128) then
+            f64("inf")
+        else
+            r
 pub fn f32(x) = let v = f64(x) in if f64_is_nan(v) == 1 or math_isinf(v) then v else if v < f64(0) then f64(0) - math_f32abs(f64(0) - v) else math_f32abs(v)
 
 ## the 32-bit pattern of f32(x)
-fn math_f32bits(x) = let v = f32(x) in if f64_is_nan(v) == 1 then 2143289344 else let s = (if v < f64(0) or (v == f64(0) and f64_bits(v) != 0) then 2147483648 else 0) in let a = f64_abs(v) in if math_isinf(a) then s + 2139095040 else if a == f64(0) then s else s + math_f32mag(a)
-fn math_f32mag(a) = let e = math_ex(a) in if e < 0 - 126 then f64_int(a / math_p2(0 - 149)) else (e + 127) * 8388608 + f64_int(a / math_p2(e - 23)) - 8388608
-fn math_f32val(bits) = let s = bits / 2147483648 in let ef = (bits / 8388608) % 256 in let m = bits % 8388608 in let mag = (if ef == 255 then (if m == 0 then f64("inf") else f64("nan")) else if ef == 0 then f64(m) * math_p2(0 - 149) else (f64(1) + f64(m) / math_p2(23)) * math_p2(ef - 127)) in if s == 1 then f64(0) - mag else mag
+fn math_f32bits(x) =
+    let v = f32(x) in
+    if f64_is_nan(v) == 1 then
+        2143289344
+    else
+        let s = if v < f64(0) or v == f64(0) and f64_bits(v) != 0 then 2147483648 else 0 in
+        let a = f64_abs(v) in
+        if math_isinf(a) then
+            s + 2139095040
+        else if a == f64(0) then
+            s
+        else
+            s + math_f32mag(a)
+fn math_f32mag(a) =
+    let e = math_ex(a) in
+    if e < 0 - 126 then
+        f64_int(a / math_p2(0 - 149))
+    else
+        (e + 127) * 8388608 + f64_int(a / math_p2(e - 23)) - 8388608
+fn math_f32val(bits) =
+    let s = bits / 2147483648 in
+    let ef = bits / 8388608 % 256 in
+    let m = bits % 8388608 in
+    let mag = if ef == 255 then (if m == 0 then f64("inf") else f64("nan")) else if ef == 0 then f64(m) * math_p2(0 - 149) else (f64(1) + f64(m) / math_p2(23)) * math_p2(ef - 127) in
+    if s == 1 then
+        f64(0) - mag
+    else
+        mag
 pub fn buf_f32_get(b, off) / {io} = math_f32val(buf_get(b, off) + buf_get(b, off + 1) * 256 + buf_get(b, off + 2) * 65536 + buf_get(b, off + 3) * 16777216)
 pub fn buf_f32_set(b, off, x) / {io} = let w = math_f32bits(x) in let a = buf_set(b, off, w % 256) in let c = buf_set(b, off + 1, (w / 256) % 256) in let d = buf_set(b, off + 2, (w / 65536) % 256) in buf_set(b, off + 3, w / 16777216)

@@ -164,6 +164,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **The standard library passes `lume verify`:** bignum, csv, datetime, deflate, h264, hash, http, regex, tls,
+  tlspki, utf8 and math were not in canonical `lume fmt` form, so `lume verify` on them failed at the format step;
+  they are formatted now (no change of meaning; every module's tests pass) and all 13 modules pass verify.
 - **`lume verify` no longer fails a file that has no contracts:** with 0 obligations `certify` answers
   "unverified", and verify took that as the file failing; a file with nothing to certify passes that step.
 - **CI: the seed's `len()` of a string built a list of its characters on every call** (bootstrap/lume0/interp.c):

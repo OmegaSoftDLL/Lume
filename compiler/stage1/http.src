@@ -13,16 +13,54 @@ use deflate
 use tls
 
 fn ht_fail(err) = {ok: 0, status: 0, headers: Nil, body: "", err: err}
-fn ht_find(s, w, i) = if i + count(w) > count(s) then 0 - 1 else if slice(s, i, i + count(w)) == w then i else ht_find(s, w, i + 1)
+fn ht_find(s, w, i) =
+    if i + count(w) > count(s) then
+        0 - 1
+    else if slice(s, i, i + count(w)) == w then
+        i
+    else
+        ht_find(s, w, i + 1)
 fn ht_lower(s) = ht_low(s, 0, "")
-fn ht_low(s, i, acc) = if i >= count(s) then acc else let c = at(s, i) in ht_low(s, i + 1, acc + (if c >= "A" and c <= "Z" then chr(ord(c) + 32) else c))
+fn ht_low(s, i, acc) =
+    if i >= count(s) then
+        acc
+    else
+        let c = at(s, i) in
+        ht_low(s, i + 1, acc + (if c >= "A" and c <= "Z" then chr(ord(c) + 32) else c))
 fn ht_trim(s) = ht_trimr(ht_triml(s, 0))
-fn ht_triml(s, i) = if i < count(s) and (at(s, i) == " " or at(s, i) == chr(9)) then ht_triml(s, i + 1) else slice(s, i, count(s))
-fn ht_trimr(s) = if count(s) > 0 and (at(s, count(s) - 1) == " " or at(s, count(s) - 1) == chr(13) or at(s, count(s) - 1) == chr(9)) then ht_trimr(slice(s, 0, count(s) - 1)) else s
-fn ht_num(s, i, acc, any) = if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then ht_num(s, i + 1, acc * 10 + ord(at(s, i)) - 48, 1) else (if any == 1 then acc else 0 - 1)
+fn ht_triml(s, i) =
+    if i < count(s) and (at(s, i) == " " or at(s, i) == chr(9)) then
+        ht_triml(s, i + 1)
+    else
+        slice(s, i, count(s))
+fn ht_trimr(s) =
+    if count(s) > 0 and (at(s, count(s) - 1) == " " or at(s, count(s) - 1) == chr(13) or at(s, count(s) - 1) == chr(9)) then
+        ht_trimr(slice(s, 0, count(s) - 1))
+    else
+        s
+fn ht_num(s, i, acc, any) =
+    if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then
+        ht_num(s, i + 1, acc * 10 + ord(at(s, i)) - 48, 1)
+    else if any == 1 then
+        acc
+    else
+        0 - 1
 
 ## --- URLs ------------------------------------------------------------------------------------------------------------
-fn http_parse_url(url) = let sch = ht_find(url, "://", 0) in if sch < 0 then {ok: 0, scheme: "", host: "", port: 0, path: ""} else let scheme = ht_lower(slice(url, 0, sch)) in let rest = slice(url, sch + 3, count(url)) in let sl = ht_find(rest, "/", 0) in let hp = (if sl < 0 then rest else slice(rest, 0, sl)) in let path = (if sl < 0 then "/" else slice(rest, sl, count(rest))) in let co = ht_find(hp, ":", 0) in let host = (if co < 0 then hp else slice(hp, 0, co)) in let port = (if co < 0 then (if scheme == "https" then 443 else 80) else ht_num(hp, co + 1, 0, 0)) in {ok: (if host != "" and port > 0 and (scheme == "http" or scheme == "https") then 1 else 0), scheme: scheme, host: host, port: port, path: path}
+fn http_parse_url(url) =
+    let sch = ht_find(url, "://", 0) in
+    if sch < 0 then
+        {ok: 0, scheme: "", host: "", port: 0, path: ""}
+    else
+        let scheme = ht_lower(slice(url, 0, sch)) in
+        let rest = slice(url, sch + 3, count(url)) in
+        let sl = ht_find(rest, "/", 0) in
+        let hp = if sl < 0 then rest else slice(rest, 0, sl) in
+        let path = if sl < 0 then "/" else slice(rest, sl, count(rest)) in
+        let co = ht_find(hp, ":", 0) in
+        let host = if co < 0 then hp else slice(hp, 0, co) in
+        let port = if co < 0 then (if scheme == "https" then 443 else 80) else ht_num(hp, co + 1, 0, 0) in
+        {ok: if host != "" and port > 0 and (scheme == "http" or scheme == "https") then 1 else 0, scheme: scheme, host: host, port: port, path: path}
 
 ## --- the request on the wire -----------------------------------------------------------------------------------------
 fn ht_hdrs(hs) = match hs
@@ -30,37 +68,163 @@ fn ht_hdrs(hs) = match hs
     Cons(h, t) => h.k + ": " + h.v + chr(13) + chr(10) + ht_hdrs(t)
 fn ht_crlf() = chr(13) + chr(10)
 fn ht_wire(method, u, hs, body) = method + " " + u.path + " HTTP/1.1" + ht_crlf() + "Host: " + u.host + (if u.port == 80 then "" else ":" + str(u.port)) + ht_crlf() + "User-Agent: lume-http/1.0" + ht_crlf() + "Accept-Encoding: gzip" + ht_crlf() + "Connection: close" + ht_crlf() + (if body != "" or method == "POST" or method == "PUT" then "Content-Length: " + str(count(body)) + ht_crlf() else "") + ht_hdrs(hs) + ht_crlf() + body
-fn ht_sendall(fd, data, ms, tries) = if count(data) == 0 then 1 else if tries > 1000 then 0 else let n = net_send_some(fd, data) in if n < 0 then 0 else ht_sendall(fd, slice(data, n, count(data)), ms, tries + 1)
+fn ht_sendall(fd, data, ms, tries) =
+    if count(data) == 0 then
+        1
+    else if tries > 1000 then
+        0
+    else
+        let n = net_send_some(fd, data) in
+        if n < 0 then
+            0
+        else
+            ht_sendall(fd, slice(data, n, count(data)), ms, tries + 1)
 ## read until the peer closes: "" plus ok 0 on a deadline
-fn ht_readall(fd, ep, ms, acc) = let e = epoll_wait_ev(ep, ms) in if e.tag < 0 then {ok: 0, data: acc} else let r = net_recv_some(fd, 65536) in if r.n > 0 then ht_readall(fd, ep, ms, acc + r.data) else if r.n == 0 then {ok: 1, data: acc} else ht_readall(fd, ep, ms, acc)
+fn ht_readall(fd, ep, ms, acc) =
+    let e = epoll_wait_ev(ep, ms) in
+    if e.tag < 0 then
+        {ok: 0, data: acc}
+    else
+        let r = net_recv_some(fd, 65536) in
+        if r.n > 0 then
+            ht_readall(fd, ep, ms, acc + r.data)
+        else if r.n == 0 then
+            {ok: 1, data: acc}
+        else
+            ht_readall(fd, ep, ms, acc)
 
 ## --- the response ----------------------------------------------------------------------------------------------------
-fn ht_lines(s, i) = if i >= count(s) then Nil else let e = ht_find(s, chr(13) + chr(10), i) in if e < 0 then Cons(slice(s, i, count(s)), Nil) else Cons(slice(s, i, e), ht_lines(s, e + 2))
+fn ht_lines(s, i) =
+    if i >= count(s) then
+        Nil
+    else
+        let e = ht_find(s, chr(13) + chr(10), i) in
+        if e < 0 then
+            Cons(slice(s, i, count(s)), Nil)
+        else
+            Cons(slice(s, i, e), ht_lines(s, e + 2))
 fn ht_hparse(ls) = match ls
     Nil        => Nil
-    Cons(h, t) => let c = ht_find(h, ":", 0) in if c < 0 then ht_hparse(t) else Cons({k: ht_lower(ht_trim(slice(h, 0, c))), v: ht_trim(slice(h, c + 1, count(h)))}, ht_hparse(t))
+    Cons(h, t) => let c = ht_find(h, ":", 0) in
+        if c < 0 then
+            ht_hparse(t)
+        else
+            Cons({k: ht_lower(ht_trim(slice(h, 0, c))), v: ht_trim(slice(h, c + 1, count(h)))}, ht_hparse(t))
 fn ht_hget(hs, name) = match hs
     Nil        => ""
     Cons(h, t) => if h.k == name then h.v else ht_hget(t, name)
 fn http_header(resp, name) = ht_hget(resp.headers, ht_lower(name))
-fn ht_hexv(c) = if c >= "0" and c <= "9" then ord(c) - 48 else if c >= "a" and c <= "f" then ord(c) - 87 else if c >= "A" and c <= "F" then ord(c) - 55 else 0 - 1
-fn ht_hexn(s, i, acc, any) = if i < count(s) and ht_hexv(at(s, i)) >= 0 then ht_hexn(s, i + 1, acc * 16 + ht_hexv(at(s, i)), 1) else (if any == 1 then acc else 0 - 1)
+fn ht_hexv(c) =
+    if c >= "0" and c <= "9" then
+        ord(c) - 48
+    else if c >= "a" and c <= "f" then
+        ord(c) - 87
+    else if c >= "A" and c <= "F" then
+        ord(c) - 55
+    else
+        0 - 1
+fn ht_hexn(s, i, acc, any) =
+    if i < count(s) and ht_hexv(at(s, i)) >= 0 then
+        ht_hexn(s, i + 1, acc * 16 + ht_hexv(at(s, i)), 1)
+    else if any == 1 then
+        acc
+    else
+        0 - 1
 ## chunked transfer coding: size line (hex, optional extensions), data, CRLF, ... until a zero size
-fn ht_unchunk(s, i, acc) = let e = ht_find(s, chr(13) + chr(10), i) in if e < 0 then {ok: 0, body: acc} else let n = ht_hexn(s, i, 0, 0) in if n < 0 then {ok: 0, body: acc} else if n == 0 then {ok: 1, body: acc} else if e + 2 + n > count(s) then {ok: 0, body: acc} else ht_unchunk(s, e + 2 + n + 2, acc + slice(s, e + 2, e + 2 + n))
-fn ht_response(raw) = let sep = ht_find(raw, chr(13) + chr(10) + chr(13) + chr(10), 0) in if sep < 0 then ht_fail("no response header") else let ls = ht_lines(slice(raw, 0, sep), 0) in let status_line = ht_first(ls) in let st = ht_num(status_line, 9, 0, 0) in if count(status_line) < 12 or slice(status_line, 0, 5) != "HTTP/" or st < 100 then ht_fail("bad status line") else ht_body(st, ht_hparse(ls), slice(raw, sep + 4, count(raw)))
+fn ht_unchunk(s, i, acc) =
+    let e = ht_find(s, chr(13) + chr(10), i) in
+    if e < 0 then
+        {ok: 0, body: acc}
+    else
+        let n = ht_hexn(s, i, 0, 0) in
+        if n < 0 then
+            {ok: 0, body: acc}
+        else if n == 0 then
+            {ok: 1, body: acc}
+        else if e + 2 + n > count(s) then
+            {ok: 0, body: acc}
+        else
+            ht_unchunk(s, e + 2 + n + 2, acc + slice(s, e + 2, e + 2 + n))
+fn ht_response(raw) =
+    let sep = ht_find(raw, chr(13) + chr(10) + chr(13) + chr(10), 0) in
+    if sep < 0 then
+        ht_fail("no response header")
+    else
+        let ls = ht_lines(slice(raw, 0, sep), 0) in
+        let status_line = ht_first(ls) in
+        let st = ht_num(status_line, 9, 0, 0) in
+        if count(status_line) < 12 or slice(status_line, 0, 5) != "HTTP/" or st < 100 then
+            ht_fail("bad status line")
+        else
+            ht_body(st, ht_hparse(ls), slice(raw, sep + 4, count(raw)))
 fn ht_first(ls) = match ls
     Nil        => ""
     Cons(h, t) => h
-fn ht_body(st, hs, rest) = let ch = (if ht_lower(ht_hget(hs, "transfer-encoding")) == "chunked" then ht_unchunk(rest, 0, "") else {ok: 1, body: rest}) in if ch.ok == 0 then ht_fail("bad chunked body") else let cl = ht_num(ht_hget(hs, "content-length"), 0, 0, 0) in let b1 = (if cl >= 0 and cl < count(ch.body) then slice(ch.body, 0, cl) else ch.body) in if ht_lower(ht_hget(hs, "content-encoding")) == "gzip" then ht_gz(st, hs, b1) else {ok: 1, status: st, headers: hs, body: b1, err: ""}
-fn ht_gz(st, hs, b1) = let b = buf_from_str(b1) in let r = gunzip(b, buf_len(b)) in if r.ok == 0 then ht_fail("gzip body: " + r.err) else {ok: 1, status: st, headers: hs, body: buf_to_str(r.buf, 0, r.n), err: ""}
+fn ht_body(st, hs, rest) =
+    let ch = if ht_lower(ht_hget(hs, "transfer-encoding")) == "chunked" then ht_unchunk(rest, 0, "") else {ok: 1, body: rest} in
+    if ch.ok == 0 then
+        ht_fail("bad chunked body")
+    else
+        let cl = ht_num(ht_hget(hs, "content-length"), 0, 0, 0) in
+        let b1 = if cl >= 0 and cl < count(ch.body) then slice(ch.body, 0, cl) else ch.body in
+        if ht_lower(ht_hget(hs, "content-encoding")) == "gzip" then
+            ht_gz(st, hs, b1)
+        else
+            {ok: 1, status: st, headers: hs, body: b1, err: ""}
+fn ht_gz(st, hs, b1) =
+    let b = buf_from_str(b1) in
+    let r = gunzip(b, buf_len(b)) in
+    if r.ok == 0 then
+        ht_fail("gzip body: " + r.err)
+    else
+        {ok: 1, status: st, headers: hs, body: buf_to_str(r.buf, 0, r.n), err: ""}
 
 ## --- the exchange ------------------------------------------------------------------------------------------------------
-fn ht_once(method, u, hs, body, ms) = if u.scheme == "https" then ht_tls(method, u, hs, body, ms) else let fd = dns_tcp_connect_timeout(u.host, u.port, ms) in if fd < 0 then ht_fail("cannot connect to " + u.host + ":" + str(u.port)) else let ep = epoll_create_fd() in let a = epoll_add(ep, fd, 1, 1) in let s = ht_sendall(fd, ht_wire(method, u, hs, body), ms, 0) in let r = (if s == 1 then ht_readall(fd, ep, ms, "") else {ok: 0, data: ""}) in let c = net_close(fd) in let c2 = net_close(ep) in if s != 1 then ht_fail("send failed") else if r.ok == 0 and r.data == "" then ht_fail("no answer before the deadline") else ht_response(r.data)
+fn ht_once(method, u, hs, body, ms) =
+    if u.scheme == "https" then
+        ht_tls(method, u, hs, body, ms)
+    else
+        let fd = dns_tcp_connect_timeout(u.host, u.port, ms) in
+        if fd < 0 then
+            ht_fail("cannot connect to " + u.host + ":" + str(u.port))
+        else
+            let ep = epoll_create_fd() in
+            let a = epoll_add(ep, fd, 1, 1) in
+            let s = ht_sendall(fd, ht_wire(method, u, hs, body), ms, 0) in
+            let r = if s == 1 then ht_readall(fd, ep, ms, "") else {ok: 0, data: ""} in
+            let c = net_close(fd) in
+            let c2 = net_close(ep) in
+            if s != 1 then
+                ht_fail("send failed")
+            else if r.ok == 0 and r.data == "" then
+                ht_fail("no answer before the deadline")
+            else
+                ht_response(r.data)
 ## https: the same request through the TLS 1.3 client (std/tls), certificates checked against the system roots
-fn ht_tls(method, u, hs, body, ms) = let r = tls_request(u.host, u.port, ht_wire(method, {scheme: u.scheme, host: u.host, port: (if u.port == 443 then 80 else u.port), path: u.path}, hs, body), ms) in if r.ok == 0 then ht_fail("https: " + r.err) else if r.data == "" then ht_fail("https: no answer") else ht_response(r.data)
+fn ht_tls(method, u, hs, body, ms) =
+    let r = tls_request(u.host, u.port, ht_wire(method, {scheme: u.scheme, host: u.host, port: if u.port == 443 then 80 else u.port, path: u.path}, hs, body), ms) in
+    if r.ok == 0 then
+        ht_fail("https: " + r.err)
+    else if r.data == "" then
+        ht_fail("https: no answer")
+    else
+        ht_response(r.data)
 fn ht_redirect(st) = st == 301 or st == 302 or st == 303 or st == 307 or st == 308
-fn ht_resolve(u, loc) = if ht_find(loc, "://", 0) >= 0 then loc else u.scheme + "://" + u.host + (if (u.scheme == "http" and u.port == 80) or (u.scheme == "https" and u.port == 443) then "" else ":" + str(u.port)) + (if count(loc) > 0 and at(loc, 0) == "/" then loc else "/" + loc)
-fn ht_go(method, url, hs, body, ms, hops) = let u = http_parse_url(url) in if u.ok == 0 then ht_fail("bad URL: " + url) else let r = ht_once(method, u, hs, body, ms) in if r.ok == 1 and ht_redirect(r.status) and hops < 5 and ht_hget(r.headers, "location") != "" then ht_go((if r.status == 303 then "GET" else method), ht_resolve(u, ht_hget(r.headers, "location")), hs, (if r.status == 303 then "" else body), ms, hops + 1) else r
+fn ht_resolve(u, loc) =
+    if ht_find(loc, "://", 0) >= 0 then
+        loc
+    else
+        u.scheme + "://" + u.host + (if u.scheme == "http" and u.port == 80 or u.scheme == "https" and u.port == 443 then "" else ":" + str(u.port)) + (if count(loc) > 0 and at(loc, 0) == "/" then loc else "/" + loc)
+fn ht_go(method, url, hs, body, ms, hops) =
+    let u = http_parse_url(url) in
+    if u.ok == 0 then
+        ht_fail("bad URL: " + url)
+    else
+        let r = ht_once(method, u, hs, body, ms) in
+        if r.ok == 1 and ht_redirect(r.status) and hops < 5 and ht_hget(r.headers, "location") != "" then
+            ht_go(if r.status == 303 then "GET" else method, ht_resolve(u, ht_hget(r.headers, "location")), hs, if r.status == 303 then "" else body, ms, hops + 1)
+        else
+            r
 fn http_request(method, url, hs, body, ms) = ht_go(method, url, hs, body, ms, 0)
 fn http_get(url) = http_request("GET", url, Nil, "", 10000)
 fn http_post(url, content_type, body) = http_request("POST", url, Cons({k: "Content-Type", v: content_type}, Nil), body, 10000)
