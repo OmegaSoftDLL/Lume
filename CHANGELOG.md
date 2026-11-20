@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`lume verify` times every step:** each report line ends with the wall time of check, test, prove, the format check
+  and certify for that file (also in the cached line), so the slow step of a slow file stands out; "1 file" in the
+  summary. In the battery now (a passing file, a refuted contract, the cache).
+- **lasm and `--raw`: the SSE2 the block pipeline needs (item 15, step 1 of 2).** lasm encodes `punpckldq`,
+  `punpckhdq`, `punpckhqdq`, `pcmpgtw`, `pcmpeqw`, `pmulhuw`, `paddsw` and `psraw` / `psrad` / `psllw` / `pslld` with
+  the count in an xmm register (byte-identical to GNU as, in the lasm gate's packed family). `--raw` gains
+  `vec_res4`, `vec_rec4`, `vec_idct4`, `vec_quant4` and `vec_dequant4` (residual, reconstruction with saturation, inverse
+  transform in 32-bit lanes, quantization with exact 32-bit products, dequantization), each equal to the scalar routine
+  including the 16-bit wrap. The runtime starts using them in the next commit (a primitive must reach the installed
+  lumec before the runtime can name it).
 - **`buf_h264_cavlc_luma` / `buf_h264_cavlc_chroma(lev, ctx, out, pos)`: CAVLC of a whole macroblock (item 15).**
   From the levels as the macroblock builtins leave them: nC of each block by 9.2.1 (inside the macroblock from the
   blocks already written, at the edges from the neighbours' TotalCoeff passed in ctx), the coded_block_pattern and the
