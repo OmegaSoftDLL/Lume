@@ -802,6 +802,15 @@ it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are
                                     total ms / calls / allocations, and the GC runs and time (sorted by self
                                     time; LUME_PROFILE_TOP=N rows). Functions the compiler inlined count in
                                     their caller (LUME_FL=off keeps them); a tail loop is one call.
+  lume debug [--commands <file>] [-x <cmd>]... <src> [args]
+                                    Run under the debugger. It stops at the start and at the return of
+                                    functions, and on a run-time error, and takes text commands from the file,
+                                    from each -x (in order) or from standard input: break NAME | break FILE:LINE,
+                                    delete [NAME], continue, step, next, finish, bt (each frame's arguments),
+                                    args, locals, print NAME, frame N, up, down, quit, help. It writes to stderr;
+                                    the program's output is unchanged. When the commands run out, the program
+                                    runs to its end. Steps go from call to call (a function's start or return),
+                                    not expression by expression; nothing is inlined in a debug build.
   lume test <src.src>...                 Run all `fn test_*()` unit tests
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check
   lume check --lex <file>...             Lexical check only (strings, escapes, comments), FILE:LINE:COL

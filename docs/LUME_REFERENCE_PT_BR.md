@@ -16,7 +16,10 @@ Um programa e um arquivo `.src`. As linhas `print` de topo rodam em ordem. `lume
 `fn test_*()` que devolve um valor verdade, `lume check f.src` checa os tipos sem rodar, `lume fmt f.src` formata
 no lugar (`--check`, `--stdout`), `lume manual [capitulo]` mostra o manual (`--pt` em portugues). `lume run --profile f.src` mostra por funcao o
 tempo proprio e total, chamadas e alocacoes, e o tempo do GC, no stderr ao terminar (funcoes expandidas no chamador
-contam nele; `LUME_FL=off` as mantem; um laco de cauda e uma chamada).
+contam nele; `LUME_FL=off` as mantem; um laco de cauda e uma chamada). `lume debug [--commands ARQ] [-x CMD]... f.src`
+roda no depurador: pontos de parada numa funcao ou ARQUIVO:LINHA, `step` / `next` / `finish` / `continue` de chamada
+em chamada, `bt` com os argumentos de cada quadro, `args`, `locals`, `print NOME`, `frame N`, `up`, `down`, e parada
+num erro em tempo de execucao; comandos de texto, saida no stderr (uma IA o conduz com `-x`).
 
 `lume verify [--jobs=N] a.src b.src ...` roda check, test, prove, fmt --check e certify em muitos arquivos com N processos
 (padrao 2); o resultado de cada arquivo fica em cache pelo SHA-256 do pacote inteiro e das ferramentas, entao depois de

@@ -775,6 +775,15 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                                     (ordenado pelo tempo proprio; LUME_PROFILE_TOP=N linhas). Funcoes que o
                                     compilador expandiu contam no chamador (LUME_FL=off as mantem); um laco de
                                     cauda e uma chamada.
+  lume debug [--commands <arquivo>] [-x <cmd>]... <src> [args]
+                                    Executa no depurador. Ele para no inicio e no retorno das funcoes, e num
+                                    erro em tempo de execucao, e le comandos de texto do arquivo, de cada -x
+                                    (em ordem) ou da entrada padrao: break NOME | break ARQUIVO:LINHA,
+                                    delete [NOME], continue, step, next, finish, bt (argumentos de cada
+                                    quadro), args, locals, print NOME, frame N, up, down, quit, help. Escreve
+                                    no stderr; a saida do programa nao muda. Quando os comandos acabam, o
+                                    programa roda ate o fim. Os passos vao de chamada em chamada (inicio ou
+                                    retorno de funcao), nao de expressao em expressao; nada e expandido inline.
   lume test <src.src>...                 Executa todos os testes `fn test_*()`
   lume check <src.src> [--json]          Verifica tipos, ownership e efeitos
   lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL

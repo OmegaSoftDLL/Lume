@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`lume debug [--commands FILE] [-x CMD]... f.src [args]` (item 21):** the program is built with a call of the
+  debugger at the start and at the return of each function (nothing inlined, variables start unset) and run. Text
+  commands from the file, from each `-x` or from standard input: `break NAME` / `break FILE:LINE`, `delete [NAME]`,
+  `continue`, `step`, `next`, `finish`, `bt` (each frame with its arguments), `args`, `locals` (parameters and every
+  `let`, a record kept as fields shown as `r.f`), `print NAME`, `frame N`, `up`, `down`, `quit`, `help`. A run-time
+  error stops in the debugger on the function where it happened, before the call stack is printed. Output on stderr,
+  the program's own output unchanged; when the commands run out the program runs to its end, so an AI drives a whole
+  session with `-x`. The run-time half is Lume (compiler/stage1/rt/rt_debug.src, in the optional runtime part); the
+  code generator writes a table per function (start, name, file, line, each variable's name and frame slot).
+- **Builds under `--profile` or `lume debug` skip the build cache:** its key did not include LUME_PROFILE, so a
+  profiled binary could be reused by a plain `lume run` of the same source (and the other way round).
 - **H.264 CAVLC (item 15):** `buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos)` in `use h264` codes one residual block
   (16, 15 or 4 int16 coefficients in zigzag order, nC 0..1 / 2..3 / 4..7 / 8+ / -1 chroma DC) into bits and answers
   {pos, total}; level escapes with level_prefix 15 and 16+, all coeff_token / total_zeros / run_before tables. The

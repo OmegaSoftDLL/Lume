@@ -16,7 +16,10 @@ A program is a `.src` file. Top-level `print` lines run in order. `lume run f.sr
 `fn test_*()` that returns a truth value, `lume check f.src` type-checks without running, `lume fmt f.src` formats
 in place (`--check`, `--stdout`), `lume manual [chapter]` prints the manual (`--pt` in Portuguese). `lume run --profile f.src` prints per function
 the self and total time, calls and allocations, and the GC time, on stderr at exit (inlined functions count in their
-caller; `LUME_FL=off` keeps them; a tail loop is one call).
+caller; `LUME_FL=off` keeps them; a tail loop is one call). `lume debug [--commands FILE] [-x CMD]... f.src` runs it
+under the debugger: breakpoints on a function or FILE:LINE, `step` / `next` / `finish` / `continue` from call to call,
+`bt` with each frame's arguments, `args`, `locals`, `print NAME`, `frame N`, `up`, `down`, and a stop on a run-time
+error; text commands, output on stderr (an AI drives it with `-x`).
 
 `lume verify [--jobs=N] a.src b.src ...` runs check, test, prove, fmt --check and certify on many files in N processes
 (default 2); each file's result is cached by the SHA-256 of its whole bundle and of the tools, so after a change only
