@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`buf_h264_cavlc_luma` / `buf_h264_cavlc_chroma(lev, ctx, out, pos)`: CAVLC of a whole macroblock (item 15).**
+  From the levels as the macroblock builtins leave them: nC of each block by 9.2.1 (inside the macroblock from the
+  blocks already written, at the edges from the neighbours' TotalCoeff passed in ctx), the coded_block_pattern and the
+  order of 7.3.5.3 (Intra16x16 DC then AC; chroma DC of Cb and Cr with nC -1, then the AC blocks); each block's
+  TotalCoeff comes back as the next macroblocks' context. Equal to the blocks coded one by one with
+  `buf_h264_cavlc6` (compiler/stage1/h264_cavlcmb_ok.src).
+- **Faster chroma motion compensation and DC-only blocks:** a chroma window inside the plane is interpolated from
+  direct reads with the four weights computed once per block (no clamping per tap); a chroma or Intra16x16 block
+  without AC levels is reconstructed as prediction + (d0 + 32) >> 6, its exact inverse transform, without the
+  dequantization and inverse transform passes. Same results (all macroblock tests).
 - **`buf_h264_mb_ic(srcu, srcv, recu, recv, cfg)`: intra chroma of a macroblock (item 15).** One
   intra_chroma_pred_mode for Cb and Cr (DC with the per-4x4 rules of 8.3.4, horizontal, vertical, plane) chosen by
   SATD over both planes, then each plane coded as `buf_h264_mb_pc` does with the intra rounding (the inter chroma and
@@ -204,6 +214,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **CI (Native CLI driver job), found by running the CI jobs locally while the GitHub account is locked:** the seed's
+  `len()` change (a2e014b) did not update `bootstrap/lume0/SEED_FREEZE.sha256`, so the audit gate's diverse double
+  compilation refused to rebuild the frozen seed; the hash of interp.c is updated (seed-maintenance change, same
+  output). The driver gate's LSP fixture `fn broken(` now expects [P0001], the code of a delimiter still open at the
+  end of the file since a2e014b.
 - **The standard library passes `lume verify`:** bignum, csv, datetime, deflate, h264, hash, http, regex, tls,
   tlspki, utf8 and math were not in canonical `lume fmt` form, so `lume verify` on them failed at the format step;
   they are formatted now (no change of meaning; every module's tests pass) and all 13 modules pass verify.

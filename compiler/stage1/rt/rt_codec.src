@@ -21,6 +21,7 @@
 ##   buf_h264_me16(src, si, ss, ref, cfg)        motion search of a 16x16 macroblock (diamond, then half / quarter)
 ##   buf_h264_mb_i16(src, si, ss, rec, ri, cfg)  a whole Intra16x16 macroblock (4x4 luma DC Hadamard; decide-only flag)
 ##   buf_h264_mb_ic(srcu, srcv, recu, recv, cfg) intra chroma of a macroblock: one mode for Cb and Cr, both planes coded
+##   buf_h264_cavlc_luma / buf_h264_cavlc_chroma(lev, ctx, out, pos)  CAVLC of a whole macroblock with the nC context
 
 ## scratch: one static block (runtime/rt_die's .bss __rtc_scratch, 4096 bytes) instead of an allocation per call; the
 ## runtime is single-threaded and no codec builtin calls another, so the parts never overlap: luma MC window and b1
@@ -305,7 +306,11 @@ fn rtc_wnz(s, o, r, n) = if r >= 16 then n else rtc_wnz(s, o, r + 1, n + (if loa
 fn rtc_dcout(s, c, k) = if k >= 16 then 0 else let w = rtc_w16(c + 24 + k * 2, load64(s + 2048 + rtc_zz(k) * 8)) in rtc_dcout(s, c, k + 1)
 fn rtc_acout(s, c, b) = if b >= 16 then 0 else let r = bit_shr(rtc_by(b), 2) * 4 + bit_shr(rtc_bx(b), 2) in let a = store8(c + 64 + b, load64(s + 1792 + r * 8)) in let z = rtc_zzout(s + 1280 + r * 32, c + 96 + b * 32, 0) in rtc_acout(s, c, b + 1)
 ## decoding of raster block r into rec
-fn rtc_i16rec(x, r) = let s = x - 256 in let bx = bit_and(r, 3) * 4 in let by = bit_shr(r, 2) * 4 in let rs = load64(x + 16) in let a1 = rtc_p16blk(load64(x + 80) + 640 + by * 16 + bx, s + 16) in let a2 = rtc_dqf(s + 1280 + r * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 2176 + r * 8)) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 8) + by * rs + bx, rs, 0)
+## a block without AC levels decodes to the constant (d0 + 32) >> 6 (the inverse transform of a DC-only block):
+## prediction + constant, no dequantization or inverse transform; else the full path
+fn rtc_recdc(p, d, fs, k, i) = if i >= 16 then 0 else let w = store8(d + bit_shr(i, 2) * fs + bit_and(i, 3), rtc_clip(load8(p + i) + k)) in rtc_recdc(p, d, fs, k, i + 1)
+fn rtc_i16rec(x, r) = if load64(x - 256 + 1792 + r * 8) != 0 then rtc_i16full(x, r) else let s = x - 256 in let bx = bit_and(r, 3) * 4 in let by = bit_shr(r, 2) * 4 in let rs = load64(x + 16) in let a1 = rtc_p16blk(load64(x + 80) + 640 + by * 16 + bx, s + 16) in rtc_recdc(s + 16, load64(x) + 8 + load64(x + 8) + by * rs + bx, rs, rtc_asr(load64(s + 2176 + r * 8) + 32, 6), 0)
+fn rtc_i16full(x, r) = let s = x - 256 in let bx = bit_and(r, 3) * 4 in let by = bit_shr(r, 2) * 4 in let rs = load64(x + 16) in let a1 = rtc_p16blk(load64(x + 80) + 640 + by * 16 + bx, s + 16) in let a2 = rtc_dqf(s + 1280 + r * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 2176 + r * 8)) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 8) + by * rs + bx, rs, 0)
 fn rtc_i16recs(x, r) = if r >= 16 then 0 else let z = rtc_i16rec(x, r) in rtc_i16recs(x, r + 1)
 fn rtc_cprows16(p, d, rs, y) = if y >= 16 then 0 else let z = rtc_cpn(p + y * 16, d + y * rs, 16) in rtc_cprows16(p, d, rs, y + 1)
 fn buf_h264_mb_i16(src, si, ss, rec, ri, cfg) = rtc_mbi16(src, rt_int(si), rt_int(ss), rec, rt_int(ri), cfg)
@@ -337,7 +342,8 @@ fn rtc_cdq1(g, v, q6) = rtc_asr(g * v * bit_shl(1, q6), 1)
 fn rtc_cidc(x) = let s = x - 256 in let q = load64(x + 112) in let v = rtc_v(q % 6, 0) in let q6 = q / 6 in let z0 = load64(s + 768) in let z1 = load64(s + 776) in let z2 = load64(s + 784) in let z3 = load64(s + 792) in let a = store64(s + 800, rtc_cdq1(z0 + z1 + z2 + z3, v, q6)) in let b = store64(s + 808, rtc_cdq1(z0 - z1 + z2 - z3, v, q6)) in let d = store64(s + 816, rtc_cdq1(z0 + z1 - z2 - z3, v, q6)) in store64(s + 824, rtc_cdq1(z0 - z1 - z2 + z3, v, q6))
 fn rtc_cdcnz(s, k, n) = if k >= 4 then n else rtc_cdcnz(s, k + 1, n + (if load64(s + 768 + k * 8) != 0 then 1 else 0))
 ## decoding of block b: AC dequantized, the DC from the 2x2 path, inverse transform, added to the prediction
-fn rtc_crec(x, b) = let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in let a2 = rtc_dqf(s + 640 + b * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 800 + b * 8)) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs, 0)
+fn rtc_crec(x, b) = if load8(load64(x + 144) + 40 + b) != 0 then rtc_cfull(x, b) else let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in rtc_recdc(s + 16, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs, rtc_asr(load64(s + 800 + b * 8) + 32, 6), 0)
+fn rtc_cfull(x, b) = let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in let a2 = rtc_dqf(s + 640 + b * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 800 + b * 8)) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs, 0)
 fn rtc_ccopy(x, b) = let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in rtc_cpf(s + 16, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs)
 fn rtc_cout(x, b, nz) = let s = x - 256 in let c = load64(x + 144) in let a = store8(c + 40 + b, nz) in rtc_zzout(s + 640 + b * 32, c + 64 + b * 32, 0)
 fn buf_h264_mb_pc(src, si, ss, ref, rec, cfg) = rtc_mbpc(src, rt_int(si), rt_int(ss), ref, rec, cfg)
@@ -459,7 +465,13 @@ fn rtc_mc(ref, dst, a, b, g, q) = let sh = bit_and(q, 3) in let qq = bit_shr(q, 
 ## b1 table (at most 17 x 8 x 22 bytes): a second allocation could run the collector, which does not look inside this
 ## block, and free a window it only reaches through here (LumeDesk report: different blocks for the same call)
 fn rtc_mc2(plane, d, sd, g, qq, sh) = let c = sym_addr("__rtc_scratch") in let qx = bit_and(qq, 1073741823) - 536870912 in let qy = bit_shr(qq, 30) - 536870912 in let m = bit_shl(1, sh) - 1 in let s0 = store64(c, plane) in let s1 = store64(c + 8, bit_and(sd, 65535)) in let s8 = store64(c + 48, bit_shr(sd, 16)) in let s2 = store64(c + 16, bit_and(g, 65535)) in let s3 = store64(c + 24, bit_and(bit_shr(g, 16), 65535)) in let s4 = store64(c + 32, bit_and(qx, m) + bit_and(qy, m) * (m + 1)) in let s5 = store64(c + 40, bit_and(bit_shr(g, 32), 255)) in let s6 = store64(c + 56, bit_and(bit_shr(g, 40), 255)) in let s7 = store64(c + 64, sh - 2) in rtc_mc3(c, d, qx, qy, sh)
-fn rtc_mc3(c, d, qx, qy, sh) = let z = (if sh == 2 then rtc_lmc(c, d, rtc_asr(qx, 2), rtc_asr(qy, 2)) else rtc_mrows(c, d, rtc_asr(qx, sh), rtc_asr(qy, sh), load64(c + 56))) in mkint(0)
+fn rtc_mc3(c, d, qx, qy, sh) = let z = (if sh == 2 then rtc_lmc(c, d, rtc_asr(qx, 2), rtc_asr(qy, 2)) else rtc_cmc(c, d, rtc_asr(qx, sh), rtc_asr(qy, sh))) in mkint(0)
+## chroma whose window (w + 1 by h + 1 samples) lies inside the plane: the four weights once per block (context words
+## 72..96), then each sample from four direct reads (8-266), no clamping; elsewhere the clamped path above
+fn rtc_cmc(c, d, xi, yi) = if xi >= 0 and yi >= 0 and xi + load64(c + 40) + 1 <= load64(c + 16) and yi + load64(c + 56) + 1 <= load64(c + 24) then rtc_cfast(c, d, xi, yi) else rtc_mrows(c, d, xi, yi, load64(c + 56))
+fn rtc_cfast(c, d, xi, yi) = let fr = load64(c + 32) in let xf = bit_and(fr, 7) in let yf = bit_shr(fr, 3) in let a = store64(c + 72, (8 - xf) * (8 - yf)) in let b = store64(c + 80, xf * (8 - yf)) in let e = store64(c + 88, (8 - xf) * yf) in let f = store64(c + 96, xf * yf) in rtc_cfrows(c, load64(c) + yi * load64(c + 8) + xi, d, load64(c + 56))
+fn rtc_cfrows(c, p, d, r) = if r == 0 then 0 else let z = rtc_cfrow(c, p, d, load64(c + 40), load64(c + 8)) in rtc_cfrows(c, p + load64(c + 8), d + load64(c + 48), r - 1)
+fn rtc_cfrow(c, p, d, n, rs) = if n == 0 then 0 else let v = store8(d, bit_shr(load64(c + 72) * load8(p) + load64(c + 80) * load8(p + 1) + load64(c + 88) * load8(p + rs) + load64(c + 96) * load8(p + rs + 1) + 32, 6)) in rtc_cfrow(c, p + 1, d + 1, n - 1, rs)
 ## luma fast path (SSE2): the (w + 6) x (h + 6) window around the block is copied once into scratch at 128 (clamping
 ## only there; rows 32 bytes apart), then the half-sample planes are computed 8 pixels at a time, all with rows 32
 ## bytes apart: b (horizontal, by window row) at 864 with its raw int16 sums at 2592, h (vertical) at 1568 and j
@@ -571,3 +583,37 @@ fn rtc_cvres(pos, tc) = if pos < 0 then mkint(0 - 1) else mkint(pos * 32 + tc)
 fn rtc_cvblk(p, nc, maxc, op, pos, m) = if m == 0 then rtc_cvres(rtc_cvtok(op, pos, nc, 0, 0), 0) else (let tc = rtc_pop16(m) in let t1 = rtc_cvones(p, m, 0) in let p1 = rtc_cvtok(op, pos, nc, tc, t1) in let st = t1 * 64 + t1 * 16 + 8 + (if tc > 10 and t1 < 3 then 1 else 0) in let p2 = rtc_cvlevs(op, p, p1, m, st) in let tz = rtc_hib(m) + 1 - tc in let p3 = rtc_cvtz(op, p2, nc, tc, tz, maxc) in rtc_cvres(rtc_cvrun(op, p3, m, tz, tc), tc))
 fn rtc_cavlc(coef, ci, nc, maxc, out, pos) = if (maxc != 16 and maxc != 15 and maxc != 4) or nc < 0 - 1 or (nc == 0 - 1 and maxc != 4) or pos < 0 or rtc_isbuf(out) == 0 or rtc_fits(coef, ci, 2 * maxc) == 0 then mkint(0 - 1) else (let w = store64(sym_addr("__rtc_scratch") + 3960, rtc_len(out) * 8) in rtc_cvblk(coef + 8 + ci, nc, maxc, out + 8, pos, rtc_cvmask(coef + 8 + ci, maxc)))
 fn buf_h264_cavlc6(coef, ci, nc, maxc, out, pos) = rtc_cavlc(coef, rt_int(ci), rt_int(nc), rt_int(maxc), out, rt_int(pos))
+
+## --- CAVLC of a whole macroblock (9.2.1 nC, 7.3.5.3 order) ---------------------------------------------------------------
+## buf_h264_cavlc_luma(lev, ctx, out, pos): the luma residual of one macroblock, from the levels as the macroblock
+## builtins leave them, written into out from bit pos. ctx (at least 64 bytes, int32 / bytes): in mode (0: 16 blocks
+## of 16 coefficients, as buf_h264_mb_i4 / buf_h264_mb_p; 1: Intra16x16, the DC block then 16 blocks of 15 AC, as
+## buf_h264_mb_i16), the luma coded_block_pattern (4: bit k for 8x8 quadrant k; for mode 1 0 or 15), the offset in
+## lev of block 0's 16 zigzag levels (8; blocks 32 bytes apart, the AC of mode 1 from + 2), the offset of the 16 DC
+## levels (12, mode 1), the TotalCoeff of the left macroblock's right column (bytes 16..19, rows 0..3) and of the top
+## macroblock's bottom row (20..23, columns 0..3), 255 where not available; out the TotalCoeff of each block in
+## luma4x4BlkIdx order (32..47; 0 for a block of an uncoded quadrant), the context the next macroblocks need. nC of a
+## block (9.2.1): the left and top blocks' TotalCoeff, (nA + nB + 1) >> 1 with both, the one there is, else 0.
+## Answers the new bit position, or -1 (wrong argument or full buffer).
+## buf_h264_cavlc_chroma(lev, ctx, out, pos): the chroma residual (Cb and Cr DC with nC -1, then the AC blocks) as
+## buf_h264_mb_pc / buf_h264_mb_ic leave it. ctx (at least 64 bytes): in the chroma coded_block_pattern (0, 1 DC, 2 DC
+## and AC), the Cb output base (4) and the Cr base (8) in lev (DC levels at base + 48, the AC of block k at base + 64 +
+## 32 k + 2), the TotalCoeff of the left neighbours (bytes 16, 17 Cb rows 0..1; 18, 19 Cr) and of the top ones (20, 21
+## Cb columns 0..1; 22, 23 Cr), 255 where not available; out the AC TotalCoeff per block (32..35 Cb, 36..39 Cr).
+fn rtc_ncv(a, b) = if a != 255 and b != 255 then bit_shr(a + b + 1, 1) else if a != 255 then a else if b != 255 then b else 0
+fn rtc_lna(c, bx, by) = if bx > 0 then load8(c + 32 + rtc_bidx(bx - 4, by)) else load8(c + 16 + bit_shr(by, 2))
+fn rtc_lnb(c, bx, by) = if by > 0 then load8(c + 32 + rtc_bidx(bx, by - 4)) else load8(c + 20 + bit_shr(bx, 2))
+fn rtc_lnc(c, b) = rtc_ncv(rtc_lna(c, rtc_bx(b), rtc_by(b)), rtc_lnb(c, rtc_bx(b), rtc_by(b)))
+## one block through buf_h264_cavlc6's routine: the new position, its TotalCoeff stored at c + to; -1 on failure
+fn rtc_cvone(lev, off, nc, maxc, out, pos) = let r = rt_int(rtc_cavlc(lev, off, nc, maxc, out, pos)) in r
+fn rtc_cvl(lev, c, out, b, pos) = if b >= 16 or pos < 0 then pos else if bit_and(bit_shr(load32(c + 4), bit_shr(b, 2)), 1) == 0 then (let z = store8(c + 32 + b, 0) in rtc_cvl(lev, c, out, b + 1, pos)) else let m1 = load32(c) in let r = rtc_cvone(lev, load32(c + 8) + b * 32 + (if m1 == 1 then 2 else 0), rtc_lnc(c, b), (if m1 == 1 then 15 else 16), out, pos) in if r < 0 then 0 - 1 else let z = store8(c + 32 + b, bit_and(r, 31)) in rtc_cvl(lev, c, out, b + 1, bit_shr(r, 5))
+fn buf_h264_cavlc_luma(lev, ctx, out, pos) = if rtc_fits(ctx, 0, 64) == 0 or rtc_isbuf(lev) == 0 or rt_int(pos) < 0 then mkint(0 - 1) else rtc_cvlum(lev, ctx + 8, out, rt_int(pos))
+fn rtc_cvlum(lev, c, out, pos) = let m = load32(c) in if m > 1 or load32(c + 4) > 15 then mkint(0 - 1) else let p1 = (if m == 1 then (let r = rtc_cvone(lev, load32(c + 12), rtc_lnc(c, 0), 16, out, pos) in if r < 0 then 0 - 1 else bit_shr(r, 5)) else pos) in mkint(rtc_cvl(lev, c, out, 0, p1))
+## chroma: block k of the 2x2 (raster), plane offset po (0 Cb, 2 Cr) into the context bytes; the plane base is the
+## int32 at c + 4 + 2 po (Cb at 4, Cr at 8)
+fn rtc_cna(c, k, po) = if bit_and(k, 1) == 1 then load8(c + 32 + po * 2 + k - 1) else load8(c + 16 + po + bit_shr(k, 1))
+fn rtc_cnb(c, k, po) = if k >= 2 then load8(c + 32 + po * 2 + k - 2) else load8(c + 20 + po + bit_and(k, 1))
+fn rtc_cac(lev, c, out, k, po, pos) = if k >= 4 or pos < 0 then pos else let r = rtc_cvone(lev, load32(c + 4 + po * 2) + 64 + k * 32 + 2, rtc_ncv(rtc_cna(c, k, po), rtc_cnb(c, k, po)), 15, out, pos) in if r < 0 then 0 - 1 else let z = store8(c + 32 + po * 2 + k, bit_and(r, 31)) in rtc_cac(lev, c, out, k + 1, po, bit_shr(r, 5))
+fn rtc_czero(c) = store64(c + 32, 0)
+fn buf_h264_cavlc_chroma(lev, ctx, out, pos) = if rtc_fits(ctx, 0, 64) == 0 or rtc_isbuf(lev) == 0 or rt_int(pos) < 0 then mkint(0 - 1) else rtc_cvchr(lev, ctx + 8, out, rt_int(pos))
+fn rtc_cvchr(lev, c, out, pos) = let cbp = load32(c) in if cbp > 2 then mkint(0 - 1) else let z = rtc_czero(c) in if cbp == 0 then mkint(pos) else let d1 = rt_int(rtc_cavlc(lev, load32(c + 4) + 48, 0 - 1, 4, out, pos)) in if d1 < 0 then mkint(0 - 1) else let d2 = rt_int(rtc_cavlc(lev, load32(c + 8) + 48, 0 - 1, 4, out, bit_shr(d1, 5))) in if d2 < 0 then mkint(0 - 1) else if cbp == 1 then mkint(bit_shr(d2, 5)) else let p1 = rtc_cac(lev, c, out, 0, 0, bit_shr(d2, 5)) in mkint(rtc_cac(lev, c, out, 0, 2, p1))

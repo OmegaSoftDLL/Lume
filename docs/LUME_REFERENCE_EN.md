@@ -339,6 +339,14 @@ then both planes as `buf_h264_mb_pc` does but with the intra rounding (unless de
 ss, QPY, chroma offset, si, ri (both planes), neighbours (1 left, 2 top, 8 top-left), flags (1 decide only); out
 the mode (32) and cost (36), Cb outputs at 512 + the offsets of `buf_h264_mb_pc` (prediction 768..831), Cr at 1024 +
 the same (prediction 1280..1343). Answers the cost.
+`buf_h264_cavlc_luma (lev, ctx, out, pos)` / `buf_h264_cavlc_chroma (lev, ctx, out, pos)` write the residual of a
+whole macroblock with CAVLC, from the levels as the macroblock builtins leave them: nC of each block from 9.2.1
+(inside the macroblock from the blocks already written, at the edges from the neighbour macroblocks' TotalCoeff in
+ctx, 255 = not available), the order and the coded_block_pattern of 7.3.5.3. Luma ctx (64 bytes): mode (0: 16 blocks
+of 16, 1: Intra16x16 DC then 15 AC per block), cbp (4), offset of block 0 (8), offset of the DC (12), left (16..19)
+and top (20..23) TotalCoeff; out each block's TotalCoeff (32..47). Chroma ctx: cbp (0..2), Cb and Cr output bases
+(4, 8), left (16..19: Cb 2, Cr 2) and top (20..23) TotalCoeff; out the AC TotalCoeff (32..39). Answer the new bit
+position or -1.
 
 Bit writing (stable; most significant bit first): `buf_bits_write(b, pos, v, n)` writes the low n bits of v (1..32)
 at bit pos and answers pos + n, `buf_bits_read(b, pos, n)` answers them, `buf_bits_ue(b, pos, v)` / `buf_bits_se(b,
@@ -502,7 +510,7 @@ line: `docs/STABILITY.md`). `grad`, `value_and_grad`, `jvp`,
 
 ## 11. Changed in this version
 
-Added: `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc` (whole Intra4x4, inter luma and inter chroma macroblocks in one call), `buf_h264_me16` (motion search), the table of every diagnostic code (section 3a) and diagnostic examples for 68 codes, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS with TLS 1.3), `tlspki`, `bignum`, package versions (`lume pkg publish / add / install`, `[packages]` in lume.lock), `lume verify` (many files, N processes, per-file cache), the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
+Added: `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc`, `buf_h264_cavlc_luma` / `chroma` (whole Intra4x4, inter luma and inter chroma macroblocks in one call), `buf_h264_me16` (motion search), the table of every diagnostic code (section 3a) and diagnostic examples for 68 codes, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS with TLS 1.3), `tlspki`, `bignum`, package versions (`lume pkg publish / add / install`, `[packages]` in lume.lock), `lume verify` (many files, N processes, per-file cache), the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and
 `chameleon_verify_boundary`, `priv fn`, warning [W0003], `LUME_FL`, constant literals in .rodata, per-site field
 cache, collection pacing `max(8 MiB, 3 x live)`.
 Changed: [E0305] lets an int or bool copied into or out of a sent record stay with the sender; a delimiter still open at the end of the file is [P0001] (was [P0002]); `lume agent kernel` examples run in the examples gate; W0004 also sees parameters typed `f64` and results of `f64(...)`; `buf_sad4x4` runs in SSE2; C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0

@@ -341,6 +341,14 @@ depois os dois planos como `buf_h264_mb_pc` faz mas com o arredondamento intra (
 rs, ss, QPY, offset de croma, si, ri (os dois planos), vizinhos (1 esquerda, 2 topo, 8 topo-esquerda), flags (1 so
 decidir); sai o modo (32) e o custo (36), as saidas de Cb em 512 + os offsets de `buf_h264_mb_pc` (predicao
 768..831), as de Cr em 1024 + os mesmos (predicao 1280..1343). Responde o custo.
+`buf_h264_cavlc_luma (lev, ctx, out, pos)` / `buf_h264_cavlc_chroma (lev, ctx, out, pos)` gravam o residuo de um
+macrobloco inteiro com CAVLC, a partir dos niveis como os builtins de macrobloco deixam: o nC de cada bloco por
+9.2.1 (dentro do macrobloco pelos blocos ja gravados, nas bordas pelo TotalCoeff dos macroblocos vizinhos em ctx,
+255 = indisponivel), a ordem e o coded_block_pattern de 7.3.5.3. ctx luma (64 bytes): modo (0: 16 blocos de 16, 1:
+Intra16x16 DC depois 15 AC por bloco), cbp (4), offset do bloco 0 (8), offset do DC (12), TotalCoeff da esquerda
+(16..19) e do topo (20..23); sai o TotalCoeff de cada bloco (32..47). ctx croma: cbp (0..2), bases de saida de Cb e
+Cr (4, 8), TotalCoeff da esquerda (16..19: Cb 2, Cr 2) e do topo (20..23); sai o TotalCoeff AC (32..39). Respondem
+a nova posicao de bit ou -1.
 
 Escrita de bits (estavel; bit mais significativo primeiro): `buf_bits_write(b, pos, v, n)` grava os n bits baixos de
 v (1..32) no bit pos e devolve pos + n, `buf_bits_read(b, pos, n)` os le, `buf_bits_ue(b, pos, v)` / `buf_bits_se(b,
@@ -504,7 +512,7 @@ de suporte longo: `docs/STABILITY.md`). `grad`,
 
 ## 11. Mudou nesta versao
 
-Entrou: `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc` (macroblocos Intra4x4, inter luma e inter croma inteiros numa chamada), `buf_h264_me16` (busca de movimento), a tabela de todos os codigos de diagnostico (secao 3a) e exemplos de diagnostico para 68 codigos, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
+Entrou: `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc`, `buf_h264_cavlc_luma` / `chroma` (macroblocos Intra4x4, inter luma e inter croma inteiros numa chamada), `buf_h264_me16` (busca de movimento), a tabela de todos os codigos de diagnostico (secao 3a) e exemplos de diagnostico para 68 codigos, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e
 `chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por
 ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.
 Mudou: o [E0305] deixa com o remetente um int ou bool copiado para dentro ou para fora do registro enviado; um delimitador ainda aberto no fim do arquivo e [P0001] (era [P0002]); exemplos de `lume agent kernel` rodam no gate dos exemplos; o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git
