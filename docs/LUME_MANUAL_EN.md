@@ -427,7 +427,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             fi, fs, mode, avail, dst)`; with `use h264`: `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst,
             di, ds)` (quarter samples, 6-tap), `buf_h264_chroma_mc` (same arguments, eighth samples, bilinear),
             `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: lists, one
-            value per 4 luma / 2 chroma lines); all answer -1 on a wrong argument
+            value per 4 luma / 2 chroma lines), `buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos)` (CAVLC of one block of
+            16 / 15 / 4 int16 coefficients into bits; answers {pos, total}); all answer -1 on a wrong argument
             bit writing (entropy coders, most significant bit first): `buf_bits_write(b, pos, v, n)` (the low n
             bits of v, 1..32, at bit pos; answers pos + n), `buf_bits_read(b, pos, n)`, `buf_bits_ue(b, pos, v)` /
             `buf_bits_se(b, pos, v)` (Exp-Golomb, answer the new pos); -1 on a wrong argument

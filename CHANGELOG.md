@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **H.264 CAVLC (item 15):** `buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos)` in `use h264` codes one residual block
+  (16, 15 or 4 int16 coefficients in zigzag order, nC 0..1 / 2..3 / 4..7 / 8+ / -1 chroma DC) into bits and answers
+  {pos, total}; level escapes with level_prefix 15 and 16+, all coeff_token / total_zeros / run_before tables. The
+  core is the runtime routine `buf_h264_cavlc6` (a 16-bit nonzero mask instead of coefficient scans): about 320 ns
+  for a typical block and 60 ns for an empty one. Checked against the LumeDesk encoder's 12 vectors, whose streams
+  ffmpeg decodes (h264_cavlc_ok.src).
 - **Standard library (item 19), in Lume with tests:** `use std/hash` (CRC-32, Adler-32, MD5, SHA-1, SHA-256 against the
   published vectors), `csv` (RFC 4180), `utf8` (characters over byte strings), `datetime` (civil dates, ISO 8601,
   US / EU / Sydney daylight rules), `regex` (backtracking: groups, alternation, lazy quantifiers, replace with $1),
@@ -134,6 +140,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **Intra prediction on the picture edge:** `buf_h264_intra4x4` and `buf_h264_intra16x16` answered -1 for every block of
+  the first row, even when the mask did not declare the neighbours above. Only the neighbours the mask declares must
+  lie inside the buffer now (an undeclared one outside reads as 128, a declared one outside is still -1); interior
+  blocks are unchanged (8640 predictions compared byte for byte). LumeDesk report.
 - **A call through a parameter checked against a global function:** `fn name_of(env) = env("A")` was typed against
   another module's `fn env(n: int, body)` ([T0500]); a call through a parameter or a let-bound name is now the local
   value's call (tests/namespaces/localcall/localcall_ok.src).

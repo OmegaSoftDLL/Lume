@@ -1,0 +1,36 @@
+## h264_cavlc_ok.src -- buf_h264_cavlc4x4 against the LumeDesk encoder's vectors (its streams decode byte for byte the
+## same in ffmpeg): coefficients in zigzag order, the bits from bit 0, hex padded with zeros to whole bytes
+use h264
+
+fn block(xs) = let b = buf_new(32) in blk_go(b, xs, 0)
+fn blk_go(b, xs, i) = match xs
+    Nil        => b
+    Cons(h, t) => let v = (if h < 0 then h + 65536 else h) in let w1 = buf_set(b, 2 * i, v % 256) in let w2 = buf_set(b, 2 * i + 1, v / 256) in blk_go(b, t, i + 1)
+fn bits(b, i, n) = if i >= n then "" else (if bit_and(bit_shr(buf_get(b, i / 8), 7 - i % 8), 1) == 1 then "1" else "0") + bits(b, i + 1, n)
+fn hex(b, i, n) = if i >= n then "" else at("0123456789abcdef", buf_get(b, i) / 16) + at("0123456789abcdef", buf_get(b, i) % 16) + hex(b, i + 1, n)
+fn zeros(k) = if k == 0 then Nil else Cons(0, zeros(k - 1))
+fn pad(xs, n) = app_l(xs, zeros(n - len_l(xs)))
+fn len_l(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + len_l(t)
+fn app_l(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, app_l(t, ys))
+## code a block: {pos, total, bits, hex}
+fn code(nc, maxc, xs) = let out = buf_new(64) in let r = buf_h264_cavlc4x4(block(pad(xs, maxc)), 0, nc, maxc, out, 0) in {pos: r.pos, total: r.total, bits: (if r.pos > 0 then bits(out, 0, r.pos) else ""), hex: (if r.pos > 0 then hex(out, 0, (r.pos + 7) / 8) else "")}
+fn same(r, tc, n, s) = r.total == tc and r.pos == n and r.bits == s
+fn samehex(r, tc, n, h) = r.total == tc and r.pos == n and r.hex == h
+
+fn test_all_zero() = same(code(0, 16, Nil), 0, 1, "1")
+fn test_one_plus_one() = same(code(0, 16, [1]), 1, 4, "0101")
+fn test_three_t1_signs() = same(code(0, 16, [0, 3, 0 - 1, 0, 1, 0 - 1]), 4, 22, "0000111010000101011011")
+fn test_nc_2_3() = same(code(2, 16, [5, 0 - 2, 1, 0, 0, 0 - 1, 1]), 5, 25, "0011001000010000100011100")
+fn test_nc_4_7_suffix_grows() = same(code(5, 16, [20, 0 - 9, 4, 3, 0 - 2, 1, 1]), 7, 40, "0010010001001000010000010100001110000001")
+fn test_nc_8_flc() = same(code(9, 16, [7, 0, 0 - 3, 2, 0, 0, 1, 0 - 1]), 5, 30, "010010101001100000010111110110")
+fn test_chroma_dc() = same(code(0 - 1, 4, [3, 0 - 1, 0, 1]), 3, 14, "00000100100100")
+fn test_chroma_dc_zero() = same(code(0 - 1, 4, Nil), 0, 2, "01")
+fn test_ac_15() = same(code(0, 15, [0, 0, 2, 0, 0 - 1, 0, 0, 0, 1]), 3, 18, "000010101110001110")
+fn test_level_prefix_escape() = samehex(code(0, 16, [2000, 0 - 1500, 1]), 3, 69, "060000dcb8000fb128")
+fn test_sixteen_nonzero() = samehex(code(3, 16, [3, 0 - 2, 2, 0 - 1, 1, 4, 0 - 5, 6, 0 - 7, 8, 0 - 9, 10, 0 - 11, 12, 0 - 13, 14]), 16, 105, "001c002029c6944b9aa4f44d5e00")
+fn test_long_run() = same(code(0, 16, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 - 1]), 2, 22, "0011000000000000000001")
+fn test_wrong_arguments() = (code(0, 8, Nil)).pos == 0 - 1 and (code(0 - 1, 16, Nil)).pos == 0 - 1

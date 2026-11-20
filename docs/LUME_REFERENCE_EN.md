@@ -161,7 +161,9 @@ argument): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / 8x8 / 4x4 (a,
 `buf_h264_quant4x4 (src, si, qp, intra, dst, di)` (answers the nonzero levels), `buf_h264_dequant4x4 (src, si, qp,
 dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pred, pi, res, ri, dst, di)`,
 `buf_h264_intra4x4 / intra16x16 (frame, fi, fs, mode, avail, dst)` (avail bits: 1 left, 2 top, 4 top-right,
-8 top-left).
+8 top-left). With `use h264`: `buf_h264_cavlc4x4 (coef, ci, nc, maxc, out, pos)` codes one block of maxc
+(16, 15 or 4) int16 coefficients in zigzag order with CAVLC (nC -1: chroma DC) into out from bit pos and answers
+{pos, total} (the new bit position, -1 on a wrong argument or a full buffer, and TotalCoeff).
 
 Bit writing (stable; most significant bit first): `buf_bits_write(b, pos, v, n)` writes the low n bits of v (1..32)
 at bit pos and answers pos + n, `buf_bits_read(b, pos, n)` answers them, `buf_bits_ue(b, pos, v)` / `buf_bits_se(b,

@@ -406,7 +406,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (1/4 de amostra, 6 taps),
                   `buf_h264_chroma_mc` (mesmos argumentos, 1/8, bilinear), `buf_h264_deblock_edge(buf, q0, across,
                   along, lines, bs, alpha, beta, tc0, chroma)` (bs, tc0: listas, um valor por 4 linhas de luma / 2 de
-                  croma); todos devolvem -1 com argumento errado
+                  croma), `buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos)` (CAVLC de um bloco de 16 / 15 / 4
+                  coeficientes int16 em bits; devolve {pos, total}); todos devolvem -1 com argumento errado
                   escrita de bits (codificadores de entropia, bit mais significativo primeiro): `buf_bits_write(b,
                   pos, v, n)` (os n bits baixos de v, 1..32, no bit pos; devolve pos + n), `buf_bits_read(b, pos, n)`,
                   `buf_bits_ue(b, pos, v)` / `buf_bits_se(b, pos, v)` (Exp-Golomb, devolvem a nova pos); -1 se errado
