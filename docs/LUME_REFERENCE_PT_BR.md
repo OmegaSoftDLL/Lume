@@ -23,7 +23,9 @@ num erro em tempo de execucao; comandos de texto, saida no stderr (uma IA o cond
 
 `lume verify [--jobs=N] a.src b.src ...` roda check, test, prove, a checagem de formato e certify em muitos arquivos com N processos
 (padrao 2); o resultado de cada arquivo fica em cache pelo SHA-256 do pacote inteiro e das ferramentas, entao depois de
-uma mudanca so o modulo alterado e os arquivos que o importam rodam de novo.
+uma mudanca so o modulo alterado e os arquivos que o importam rodam de novo. Cada linha mostra o tempo de cada etapa
+(`ok   a.src  (check 0.030 s, test 0.124 s, prove 0.014 s, fmt 0.017 s, certify 0.027 s)`), entao uma etapa lenta
+aparece; um arquivo sem contratos nao tem o que certificar e passa nessa etapa.
 
 Pacotes: `lume pkg publish [dir] --store=DIR` roda os testes do pacote e guarda NOME/VERSAO imutavel com o SHA-256;
 `lume pkg add NOME@REQ` grava `nome = "REQ"` em `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `*`);

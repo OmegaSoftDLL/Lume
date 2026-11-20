@@ -1369,10 +1369,14 @@ fn lv_steps() = Cons("check", Cons("test", Cons("prove", Cons("fmt", Cons("certi
 fn lv_args(step, f) = if step == "fmt" then Cons("fmt", Cons("--check", Cons(f, Nil))) else Cons(step, Cons(f, Nil))
 fn lv_tools(root) = ld_tool_id(root, "lcaas") + ld_tool_id(root, "lumec") + ld_tool_id(root, "lasm") + ld_tool_id(root, "lcert") + ld_tool_id(root, "lume_driver")
 fn lv_key(root, f, tools) = let bm = ld_bundle_text_map(root, f, "verify") in lc_sha256("lume-verify-v1\n" + tools + f + "\n" + bm.text)
-## run the steps of one file: "" when all pass, else the failing step and the end of its output
-fn lv_run(root, self, f, steps, out) = match steps
-    Nil        => ""
-    Cons(s, t) => let rc = os_run_capture_timeout(self, lv_args(s, f), out, out + ".err", 1800000) in if rc != 0 and lv_nothing_to_certify(s, out) == 0 then s +" (exit " + str(if rc % 256 == 0 then rc / 256 else rc) + "): " + lv_tail(fs_read_file(out) + fs_read_file(out + ".err")) else lv_run(root, self, f, t, out)
+## run the steps of one file: {fail: "" when all pass, else the failing step and the end of its output, times: each
+## step run and its wall time, as "check 0.120 s, test 3.400 s, ..."} (the report line shows them, so a slow step stands out)
+fn lv_run(root, self, f, steps, out) = lv_runt(root, self, f, steps, out, "")
+fn lv_runt(root, self, f, steps, out, acc) = match steps
+    Nil        => {fail: "", times: acc}
+    Cons(s, t) => let t0 = os_monotonic_ns() in let rc = os_run_capture_timeout(self, lv_args(s, f), out, out + ".err", 1800000) in let acc2 = (if acc == "" then "" else acc + ", ") + s + " " + lv_secs(os_monotonic_ns() - t0) in if rc != 0 and lv_nothing_to_certify(s, out) == 0 then {fail: s + " (exit " + str(if rc % 256 == 0 then rc / 256 else rc) + "): " + lv_tail(fs_read_file(out) + fs_read_file(out + ".err")), times: acc2} else lv_runt(root, self, f, t, out, acc2)
+fn lv_secs(ns) = let ms = ns / 1000000 in str(ms / 1000) + "." + lv_pad3(ms % 1000) + " s"
+fn lv_pad3(v) = if v < 10 then "00" + str(v) else if v < 100 then "0" + str(v) else str(v)
 ## a file without requires / ensures / laws has nothing to certify: lcert answers "unverified" with 0 obligations, which
 ## is not a failure of the file (its check, test, prove and format steps already passed)
 fn lv_nothing_to_certify(s, out) = if s != "certify" then 0 else if ld_contains_at(fs_read_file(out) + fs_read_file(out + ".err"), "\"total_obligations\":0,", 0) == 1 then 1 else 0
@@ -1383,7 +1387,7 @@ fn lv_cachedline(l) = let b = (if count(l) > 0 and at(l, count(l) - 1) == chr(10
 fn lv_oneline(s) = lv_ol(s, 0, "")
 fn lv_ol(s, i, acc) = if i >= count(s) then acc else lv_ol(s, i + 1, acc + (if at(s, i) == chr(10) or at(s, i) == chr(13) then " | " else at(s, i)))
 fn lv_tail(s) = if count(s) > 600 then slice(s, count(s) - 600, count(s)) else s
-fn lv_one(root, self, f, tools, cdir, out) = if fs_path_exists(f) == 0 then "FAIL " + f + ": cannot read the file\n" else let key = lv_key(root, f, tools) in let mark = cdir + "/" + lv_hex(key) in if fs_path_exists(mark) == 1 then lv_cachedline(fs_read_file(mark)) else let r = lv_run(root, self, f, lv_steps(), out) in let line = (if r == "" then "ok   " + f + "\n" else "FAIL " + f + ": " + lv_oneline(r) + "\n") in let w = fs_write_sync(mark, line) in line
+fn lv_one(root, self, f, tools, cdir, out) = if fs_path_exists(f) == 0 then "FAIL " + f + ": cannot read the file\n" else let key = lv_key(root, f, tools) in let mark = cdir + "/" + lv_hex(key) in if fs_path_exists(mark) == 1 then lv_cachedline(fs_read_file(mark)) else let r = lv_run(root, self, f, lv_steps(), out) in let line = (if r.fail == "" then "ok   " + f + "  (" + r.times + ")\n" else "FAIL " + f + ": " + lv_oneline(r.fail) + "  (" + r.times + ")\n") in let w = fs_write_sync(mark, line) in line
 fn lv_list(root, self, fs, tools, cdir, out, acc) = match fs
     Nil        => acc
     Cons(h, t) => let line = lv_one(root, self, h, tools, cdir, out) in let w = fs_append_sync("/dev/stderr", line) in lv_list(root, self, t, tools, cdir, out, acc + line)
@@ -1395,7 +1399,7 @@ fn lv_wait(pids) = match pids
 fn lv_reports(base, k, n) = if k >= n then "" else let p = base + "-w" + str(k) + ".txt" in let r = fs_read_file(p) in let z = ld_remove_if_present(p) in r + lv_reports(base, k + 1, n)
 fn lv_count(s, w, i, acc) = if i >= count(s) then acc else let e = ld_line_end(s, i) in lv_count(s, w, e + 1, if ld_starts(slice(s, i, e), w) == 1 then acc + 1 else acc)
 fn lv_cached(s, i, acc) = if i >= count(s) then acc else let e = ld_line_end(s, i) in lv_cached(s, e + 1, if ld_suffix(slice(s, i, e), "(cached)") then acc + 1 else acc)
-fn ld_verify(root) = let args = ld_args_from(2) in let fs = lv_files(args) in if lv_len(fs) == 0 then ctfail("usage: lume verify [--jobs=N] <file.src>...\n") else let cdir = root + "/build/cache/verify" in let m = hio_mkdir_p(cdir) in let tools = lv_tools(root) in let self = os_arg_at(0) in let n0 = lv_jobs(args) in let n = (if n0 > lv_len(fs) then lv_len(fs) else n0) in let base = ld_scratch(root, "verify") in let rep = (if n <= 1 then lv_list(root, self, fs, tools, cdir, base + ".out", "") else (let w = lv_wait(lv_spawn(root, self, fs, 0, n, tools, cdir, base)) in lv_reports(base, 0, n))) in let ok = lv_count(rep, "ok ", 0, 0) in let bad = lv_count(rep, "FAIL ", 0, 0) in let s = str(lv_len(fs)) + " files: " + str(ok) + " passed (" + str(lv_cached(rep, 0, 0)) + " from the cache), " + str(bad) + " failed\n" in let w = fs_append_sync("/dev/stdout", s) in if bad > 0 then 1 else 0
+fn ld_verify(root) = let args = ld_args_from(2) in let fs = lv_files(args) in if lv_len(fs) == 0 then ctfail("usage: lume verify [--jobs=N] <file.src>...\n") else let cdir = root + "/build/cache/verify" in let m = hio_mkdir_p(cdir) in let tools = lv_tools(root) in let self = os_arg_at(0) in let n0 = lv_jobs(args) in let n = (if n0 > lv_len(fs) then lv_len(fs) else n0) in let base = ld_scratch(root, "verify") in let rep = (if n <= 1 then lv_list(root, self, fs, tools, cdir, base + ".out", "") else (let w = lv_wait(lv_spawn(root, self, fs, 0, n, tools, cdir, base)) in lv_reports(base, 0, n))) in let ok = lv_count(rep, "ok ", 0, 0) in let bad = lv_count(rep, "FAIL ", 0, 0) in let s = str(lv_len(fs)) + (if lv_len(fs) == 1 then " file: " else " files: ") + str(ok) + " passed (" + str(lv_cached(rep, 0, 0)) + " from the cache), " + str(bad) + " failed\n" in let w = fs_append_sync("/dev/stdout", s) in if bad > 0 then 1 else 0
 fn ld_cmd_table_text() = "" +
 "--version|version;version;;;;lcli;;\n" +
 "--help|-h|help;help;--json --pt --pt-br --pt-BR --pt_br --pt_BR --en --en-us --en-US --export=;;pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us;lcli;;[chapter]\n" +

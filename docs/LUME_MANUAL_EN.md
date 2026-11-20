@@ -262,7 +262,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 
 ## 4.4 Autonomous Verification & Self-Healing Commands
 - `lume prove <file.src>`              Prove all contracts and laws (`QF_LIA` / `QF_ALIA`).
-- `lume verify [--jobs=N] <file.src>...`  check, test, prove, the format check and certify many files; per-file cache by bundle hash.
+- `lume verify [--jobs=N] <file.src>...`  check, test, prove, the format check and certify many files; per-file cache by bundle hash; each step timed.
 - `lume pkg publish|add|install [--store=DIR]` package versions: store with tests, `^`/`~` requirements, lume_modules/, lume.lock;
   `lume pkg audit [dir]` checks the lock file hashes and the package proof certificate.
 - `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  standard library: digests, CSV, UTF-8, dates and zones, regex, gzip, HTTP and HTTPS.

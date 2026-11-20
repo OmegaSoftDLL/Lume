@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The H.264 block pipeline in SSE2 (item 15, step 2 of 2):** residual, quantization, dequantization, inverse
+  transform and reconstruction of every block builtin and macroblock builtin now run through `vec_res4`,
+  `vec_quant4`, `vec_dequant4`, `vec_idct4` and `vec_rec4`: residual 136 -> 57 ns, dequantization 272 -> 65 ns, inverse
+  transform 217 -> 46 ns, reconstruction 147 -> 59 ns, quantization 175 -> 127 ns per block; a chroma plane of a
+  macroblock 4.2 -> 2.0 us. compiler/stage1/h264_blocks_ok.src now compares them with the formulas over the whole
+  int16 range (-32768, saturation, 16-bit wrap). The scalar routines they replace are gone.
 - **`lume verify` times every step:** each report line ends with the wall time of check, test, prove, the format check
   and certify for that file (also in the cached line), so the slow step of a slow file stands out; "1 file" in the
   summary. In the battery now (a passing file, a refuted contract, the cache).

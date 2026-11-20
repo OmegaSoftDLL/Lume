@@ -25,7 +25,7 @@
 
 ## scratch: one static block (runtime/rt_die's .bss __rtc_scratch, 4096 bytes) instead of an allocation per call; the
 ## runtime is single-threaded and no codec builtin calls another, so the parts never overlap: luma MC window and b1
-## table at 0 (3616 bytes), inverse transform at 3616 (128), intra 4x4 neighbours at 3744 (112), deblocking at 3856 (56),
+## table at 0 (3616 bytes), the quantization / dequantization multiplier vectors at 3616 / 3632 (16 each), intra 4x4 neighbours at 3744 (112), deblocking at 3856 (56),
 ## intra 4x4 edge and filter tables at 3912 (48), the CAVLC stream length at 3960 (8)
 fn rtc_isbuf(b) = if b == 0 or bit_and(b, 7) != 0 then 0 else if load8(b) != 15 then 0 else 1
 fn rtc_len(b) = bit_shr(load64(b), 8)
@@ -36,55 +36,32 @@ fn rtc_w16(p, v) = let a = store8(p, bit_and(v, 255)) in store8(p + 1, bit_and(b
 fn rtc_clip(v) = if v < 0 then 0 else if v > 255 then 255 else v
 fn rtc_abs(v) = if v < 0 then 0 - v else v
 
-## --- transforms: rows then columns through 16 words of scratch (t), int16 in and out ---------------------------------
-fn rtc_load16(src, t, i) = if i >= 16 then 0 else let w = store64(t + i * 8, rtc_r16(src + i * 2)) in rtc_load16(src, t, i + 1)
-fn rtc_store16(t, dst, i) = if i >= 16 then 0 else let w = rtc_w16(dst + i * 2, load64(t + i * 8)) in rtc_store16(t, dst, i + 1)
-## forward butterfly on 4 words at p, q steps apart: y0 = s03 + s12, y1 = 2 d03 + d12, y2 = s03 - s12, y3 = d03 - 2 d12
-fn rtc_fwd4(p, q) = let x0 = load64(p) in let x1 = load64(p + q) in let x2 = load64(p + 2 * q) in let x3 = load64(p + 3 * q) in let s03 = x0 + x3 in let d03 = x0 - x3 in let s12 = x1 + x2 in let d12 = x1 - x2 in let a = store64(p, s03 + s12) in let b = store64(p + q, 2 * d03 + d12) in let c = store64(p + 2 * q, s03 - s12) in store64(p + 3 * q, d03 - 2 * d12)
-## inverse butterfly: e = w0 + w2, f = w0 - w2, g = (w1 >> 1) - w3, h = w1 + (w3 >> 1); x = e + h, f + g, f - g, e - h
-fn rtc_sar1(v) = if v >= 0 then bit_shr(v, 1) else 0 - bit_shr(1 - v, 1)
-fn rtc_inv4(p, q) = let w0 = load64(p) in let w1 = load64(p + q) in let w2 = load64(p + 2 * q) in let w3 = load64(p + 3 * q) in let e = w0 + w2 in let f = w0 - w2 in let g = rtc_sar1(w1) - w3 in let h = w1 + rtc_sar1(w3) in let a = store64(p, e + h) in let b = store64(p + q, f + g) in let c = store64(p + 2 * q, f - g) in store64(p + 3 * q, e - h)
-fn rtc_rows(t, k, inv) = if k >= 4 then 0 else let z = (if inv == 1 then rtc_inv4(t + k * 32, 8) else rtc_fwd4(t + k * 32, 8)) in rtc_rows(t, k + 1, inv)
-fn rtc_cols(t, k, inv) = if k >= 4 then 0 else let z = (if inv == 1 then rtc_inv4(t + k * 8, 32) else rtc_fwd4(t + k * 8, 32)) in rtc_cols(t, k + 1, inv)
-fn rtc_round6(t, i) = if i >= 16 then 0 else let v = load64(t + i * 8) + 32 in let w = store64(t + i * 8, (if v >= 0 then bit_shr(v, 6) else 0 - bit_shr(63 - v, 6))) in rtc_round6(t, i + 1)
-## inverse transform a row at a time: row r read as two 32-bit words (4 int16), its butterfly stored as 4 words of t
-fn rtc_s16(x) = if x >= 32768 then x - 65536 else x
-fn rtc_irow(src, t, r) = let a = load32(src + r * 8) in let b = load32(src + r * 8 + 4) in let w0 = rtc_s16(bit_and(a, 65535)) in let w1 = rtc_s16(bit_shr(a, 16)) in let w2 = rtc_s16(bit_and(b, 65535)) in let w3 = rtc_s16(bit_shr(b, 16)) in rtc_ibfly(t + r * 32, 8, w0 + w2, w0 - w2, rtc_sar1(w1) - w3, w1 + rtc_sar1(w3))
-fn rtc_ibfly(p, q, e, f, g, h) = let a = store64(p, e + h) in let b = store64(p + q, f + g) in let c = store64(p + 2 * q, f - g) in store64(p + 3 * q, e - h)
-## column c of t: the butterfly, (x + 32) >> 6, and the 16-bit results written down the column of dst
-fn rtc_r6(v) = let x = v + 32 in if x >= 0 then bit_shr(x, 6) else 0 - bit_shr(63 - x, 6)
-fn rtc_icol(t, dst, c) = let w0 = load64(t + c * 8) in let w1 = load64(t + 32 + c * 8) in let w2 = load64(t + 64 + c * 8) in let w3 = load64(t + 96 + c * 8) in rtc_icol2(dst + c * 2, w0 + w2, w0 - w2, rtc_sar1(w1) - w3, w1 + rtc_sar1(w3))
-fn rtc_icol2(d, e, f, g, h) = let a = rtc_w16(d, rtc_r6(e + h)) in let b = rtc_w16(d + 8, rtc_r6(f + g)) in let c = rtc_w16(d + 16, rtc_r6(f - g)) in rtc_w16(d + 24, rtc_r6(e - h))
-## the forward transform runs in SSE2 (vec_fdct4, exact mod 2^16); the inverse stays scalar: its intermediates can
-## pass 16 bits before the final >> 6
-fn rtc_tr(src, si, dst, di, inv) = if rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else if inv == 0 then (let z = vec_fdct4(src + 8 + si, dst + 8 + di) in mkint(0)) else let t = (sym_addr("__rtc_scratch") + 3616) in let a = rtc_irow(src + 8 + si, t, 0) in let b = rtc_irow(src + 8 + si, t, 1) in let c = rtc_irow(src + 8 + si, t, 2) in let d = rtc_irow(src + 8 + si, t, 3) in let e = rtc_icol(t, dst + 8 + di, 0) in let f = rtc_icol(t, dst + 8 + di, 1) in let g = rtc_icol(t, dst + 8 + di, 2) in let h = rtc_icol(t, dst + 8 + di, 3) in mkint(0)
+## --- transforms ---------------------------------------------------------------------------------------------------------
+## both in SSE2: vec_fdct4 (exact mod 2^16) and vec_idct4 (32-bit lanes, the final (x + 32) >> 6, the low 16 bits stored)
+fn rtc_tr(src, si, dst, di, inv) = if rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else if inv == 0 then (let z = vec_fdct4(src + 8 + si, dst + 8 + di) in mkint(0)) else let t = vec_idct4(src + 8 + si, dst + 8 + di) in mkint(0)
 fn buf_h264_fdct4x4(src, si, dst, di) = rtc_tr(src, rt_int(si), dst, rt_int(di), 0)
 fn buf_h264_idct4x4(src, si, dst, di) = rtc_tr(src, rt_int(si), dst, rt_int(di), 1)
 
 ## --- quantization ------------------------------------------------------------------------------------------------------
-## position class of coefficient i (row-major): 0 both even, 1 both odd, 2 mixed
-fn rtc_cls(i) = let r = bit_shr(i, 2) in let c = bit_and(i, 3) in if bit_and(r, 1) == 0 and bit_and(c, 1) == 0 then 0 else if bit_and(r, 1) == 1 and bit_and(c, 1) == 1 then 1 else 2
+## MF and V by qp % 6 and position class (0 both even, 1 both odd, 2 mixed)
 fn rtc_mf(q, k) = if q == 0 then (if k == 0 then 13107 else if k == 1 then 5243 else 8066) else if q == 1 then (if k == 0 then 11916 else if k == 1 then 4660 else 7490) else if q == 2 then (if k == 0 then 10082 else if k == 1 then 4194 else 6554) else if q == 3 then (if k == 0 then 9362 else if k == 1 then 3647 else 5825) else if q == 4 then (if k == 0 then 8192 else if k == 1 then 3355 else 5243) else (if k == 0 then 7282 else if k == 1 then 2893 else 4559)
 fn rtc_v(q, k) = if q == 0 then (if k == 0 then 10 else if k == 1 then 16 else 13) else if q == 1 then (if k == 0 then 11 else if k == 1 then 18 else 14) else if q == 2 then (if k == 0 then 13 else if k == 1 then 20 else 16) else if q == 3 then (if k == 0 then 14 else if k == 1 then 23 else 18) else if q == 4 then (if k == 0 then 16 else if k == 1 then 25 else 20) else (if k == 0 then 18 else if k == 1 then 29 else 23)
 fn buf_h264_quant4x4(src, si, qp, intra, dst, di) = rtc_quant(src, rt_int(si), rt_int(qp), rt_int(intra), dst, rt_int(di))
-## a level z of the signed input w (the low 16 bits of x): |w| * mf + f >> qbits with w's sign, as 16 bits
-fn rtc_q1(x, mf, fq) = let w = (if x >= 32768 then x - 65536 else x) in let z = bit_shr((if w < 0 then 0 - w else w) * mf + bit_shr(fq, 5), bit_and(fq, 31)) in if w < 0 then bit_and(0 - z, 65535) else z
-## two neighbouring levels at once: one 32-bit read and one 32-bit write; answers how many of the two are nonzero
-fn rtc_qp(src, dst, k, mm, fq) = let x = load32(src + k * 2) in let a = rtc_q1(bit_and(x, 65535), bit_shr(mm, 16), fq) in let b = rtc_q1(bit_shr(x, 16), bit_and(mm, 65535), fq) in let w = store32(dst + k * 2, a + bit_shl(b, 16)) in (if a != 0 then 1 else 0) + (if b != 0 then 1 else 0)
-## a row of 4 levels; mm = the multipliers of the even and odd columns (row 0 / 2: classes 0 2 0 2, row 1 / 3: 2 1 2 1)
-fn rtc_qrow(src, dst, k, mm, fq) = let a = rtc_qp(src, dst, k, mm, fq) in let b = rtc_qp(src, dst, k + 2, mm, fq) in a + b
-## qbits, f and the three multipliers once per block (they were recomputed, with a division, for every level)
-fn rtc_q4(src, dst, qp, intra) = let qb = 15 + qp / 6 in let fq = (bit_shl(1, qb) / (if intra != 0 then 3 else 6)) * 32 + qb in let r = qp % 6 in let me = rtc_mf(r, 0) * 65536 + rtc_mf(r, 2) in let mo = rtc_mf(r, 2) * 65536 + rtc_mf(r, 1) in let a = rtc_qrow(src, dst, 0, me, fq) in let b = rtc_qrow(src, dst, 4, mo, fq) in let c = rtc_qrow(src, dst, 8, me, fq) in let d = rtc_qrow(src, dst, 12, mo, fq) in a + b + c + d
+## a level is |w| MF + f >> qbits with w's sign (vec_quant4, 8 levels at a time); qbits, f and the multiplier vector
+## once per block; answers the number of nonzero levels
+## the 8-word multiplier vector of rows 0 and 1 (classes 0 2 0 2 / 2 1 2 1) at p: one vector serves both halves
+fn rtc_wvec(p, k0, k1, k2) = let a = store64(p, k0 + k2 * 65536 + k0 * 4294967296 + k2 * 281474976710656) in store64(p + 8, k2 + k1 * 65536 + k2 * 4294967296 + k1 * 281474976710656)
+fn rtc_q4(src, dst, qp, intra) = let qb = 15 + qp / 6 in let fq = (bit_shl(1, qb) / (if intra != 0 then 3 else 6)) * 32 + qb in let r = qp % 6 in let mp = sym_addr("__rtc_scratch") + 3616 in let a = rtc_wvec(mp, rtc_mf(r, 0), rtc_mf(r, 1), rtc_mf(r, 2)) in let z = vec_quant4(src, dst, mp, fq) in rtc_nzc(dst, 0, 0)
 fn rtc_quant(src, si, qp, intra, dst, di) = if qp < 0 or qp > 51 or rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else mkint(rtc_q4(src + 8 + si, dst + 8 + di, qp, intra))
-fn rtc_dq(src, dst, i, qp) = if i >= 16 then 0 else let z = rtc_r16(src + i * 2) in let w = rtc_w16(dst + i * 2, bit_shl(z * rtc_v(qp % 6, rtc_cls(i)), qp / 6)) in rtc_dq(src, dst, i + 1, qp)
+fn rtc_dq(src, dst, i, qp) = rtc_dqf(src, dst, qp)
 fn buf_h264_dequant4x4(src, si, qp, dst, di) = rtc_dequant(src, rt_int(si), rt_int(qp), dst, rt_int(di))
 fn rtc_dequant(src, si, qp, dst, di) = if qp < 0 or qp > 51 or rtc_fits(src, si, 32) == 0 or rtc_fits(dst, di, 32) == 0 then mkint(0 - 1) else let z = rtc_dq(src + 8 + si, dst + 8 + di, 0, qp) in mkint(0)
 
 ## --- residual and reconstruction ---------------------------------------------------------------------------------------
-fn rtc_sub(a, sa, p, d, i) = if i >= 16 then 0 else let v = load8(a + bit_shr(i, 2) * sa + bit_and(i, 3)) - load8(p + i) in let w = rtc_w16(d + i * 2, v) in rtc_sub(a, sa, p, d, i + 1)
+fn rtc_sub(a, sa, p, d, i) = vec_res4(a, sa, p, d)
 fn buf_h264_sub4x4(a, ai, sa, pred, pi, dst) = rtc_sub4(a, rt_int(ai), rt_int(sa), pred, rt_int(pi), dst)
 fn rtc_sub4(a, ai, sa, pred, pi, dst) = if sa < 4 or rtc_fits(a, ai, 3 * sa + 4) == 0 or rtc_fits(pred, pi, 16) == 0 or rtc_fits(dst, 0, 32) == 0 then mkint(0 - 1) else let z = rtc_sub(a + 8 + ai, sa, pred + 8 + pi, dst + 8, 0) in mkint(0)
-fn rtc_rec(p, r, d, i) = if i >= 16 then 0 else let w = store8(d + i, rtc_clip(load8(p + i) + rtc_r16(r + i * 2))) in rtc_rec(p, r, d, i + 1)
+fn rtc_rec(p, r, d, i) = vec_rec4(p, r, d, 4)
 fn buf_h264_recon4x4(pred, pi, res, ri, dst, di) = rtc_recon(pred, rt_int(pi), res, rt_int(ri), dst, rt_int(di))
 fn rtc_recon(pred, pi, res, ri, dst, di) = if rtc_fits(pred, pi, 16) == 0 or rtc_fits(res, ri, 32) == 0 or rtc_fits(dst, di, 16) == 0 then mkint(0 - 1) else let z = rtc_rec(pred + 8 + pi, res + 8 + ri, dst + 8 + di, 0) in mkint(0)
 
@@ -92,12 +69,7 @@ fn rtc_recon(pred, pi, res, ri, dst, di) = if rtc_fits(pred, pi, 16) == 0 or rtc
 ## neighbours in 13 words of n: 0..3 top A..D, 4..7 top-right E..H, 8..11 left I..L, 12 top-left M
 fn rtc_nb(n, k) = load64(n + k * 8)
 fn rtc_put(d, x, y, v) = store8(d + y * 4 + x, v)
-fn rtc_fill(d, i, v) = if i >= 16 then 0 else let w = store8(d + i, v) in rtc_fill(d, i + 1, v)
-fn rtc_gather(f, fs, n, av) = let top = f - fs in let a = rtc_gtop(top, n, 0) in let b = (if bit_and(av, 4) != 0 then rtc_gtr(top + 4, n, 0) else rtc_rep(n, 4, load64(n + 24))) in let c = rtc_gleft(f - 1, fs, n, 0) in store64(n + 96, load8(top - 1))
-fn rtc_gtop(p, n, i) = if i >= 4 then 0 else let w = store64(n + i * 8, load8(p + i)) in rtc_gtop(p, n, i + 1)
-fn rtc_gtr(p, n, i) = if i >= 4 then 0 else let w = store64(n + 32 + i * 8, load8(p + i)) in rtc_gtr(p, n, i + 1)
 fn rtc_rep(n, k, v) = if k >= 8 then 0 else let w = store64(n + k * 8, v) in rtc_rep(n, k + 1, v)
-fn rtc_gleft(p, fs, n, i) = if i >= 4 then 0 else let w = store64(n + 64 + i * 8, load8(p + i * fs)) in rtc_gleft(p, fs, n, i + 1)
 ## DC: the mean of the available top and left samples, 128 without either
 fn rtc_dc4(n, av) = let st = rtc_nb(n, 0) + rtc_nb(n, 1) + rtc_nb(n, 2) + rtc_nb(n, 3) in let sl = rtc_nb(n, 8) + rtc_nb(n, 9) + rtc_nb(n, 10) + rtc_nb(n, 11) in if bit_and(av, 1) != 0 and bit_and(av, 2) != 0 then bit_shr(st + sl + 4, 3) else if bit_and(av, 2) != 0 then bit_shr(st + 2, 2) else if bit_and(av, 1) != 0 then bit_shr(sl + 2, 2) else 128
 ## p(-1,-1) = M, p(x,-1) = top/top-right x, p(-1,y) = left y
@@ -231,18 +203,16 @@ fn rtc_try(x, m) = let s = x - 256 in let r = rtc_pred(x, m, s) in if r == mkint
 fn rtc_floor(x, m) = let lam = load64(x + 56) in let bc = load64(x + 64) in if bc <= lam then 1 else if load64(x + 48) < m and bc <= 4 * lam then 1 else 0
 fn rtc_srch(x, m) = if m > 8 or rtc_floor(x, m) == 1 then 0 else let z = (if rtc_mok(m, load64(x + 40)) == 1 then rtc_try(x, m) else 0) in rtc_srch(x, m + 1)
 ## reconstruct into the frame: clip(prediction + residual), rows fs apart
-fn rtc_recf(p, r, d, fs, i) = if i >= 16 then 0 else let w = store8(d + bit_shr(i, 2) * fs + bit_and(i, 3), rtc_clip(load8(p + i) + rtc_r16(r + i * 2))) in rtc_recf(p, r, d, fs, i + 1)
+fn rtc_recf(p, r, d, fs, i) = vec_rec4(p, r, d, fs)
 ## the zigzag copy: two bytes per level, the scan positions as straight-line code
 fn rtc_mv2(lev, i, o, k) = let a = store8(o + k * 2, load8(lev + i * 2)) in store8(o + k * 2 + 1, load8(lev + i * 2 + 1))
 fn rtc_zzout(lev, o, k) = let a0 = rtc_mv2(lev, 0, o, 0) in let a1 = rtc_mv2(lev, 1, o, 1) in let a2 = rtc_mv2(lev, 4, o, 2) in let a3 = rtc_mv2(lev, 8, o, 3) in let a4 = rtc_mv2(lev, 5, o, 4) in let a5 = rtc_mv2(lev, 2, o, 5) in let a6 = rtc_mv2(lev, 3, o, 6) in let a7 = rtc_mv2(lev, 6, o, 7) in let a8 = rtc_mv2(lev, 9, o, 8) in let a9 = rtc_mv2(lev, 12, o, 9) in let b0 = rtc_mv2(lev, 13, o, 10) in let b1 = rtc_mv2(lev, 10, o, 11) in let b2 = rtc_mv2(lev, 7, o, 12) in let b3 = rtc_mv2(lev, 11, o, 13) in let b4 = rtc_mv2(lev, 14, o, 14) in rtc_mv2(lev, 15, o, 15)
-## dequantization of a block whose levels are mostly zero: V and the shift once per block, a zero level costs a test
-fn rtc_dq1(src, dst, i, v, sh) = let z = rtc_r16(src + i * 2) in rtc_w16(dst + i * 2, if z == 0 then 0 else bit_shl(z * v, sh))
-fn rtc_dqr(src, dst, r, ve, vo, sh) = let a = rtc_dq1(src, dst, r * 4, ve, sh) in let b = rtc_dq1(src, dst, r * 4 + 1, vo, sh) in let c = rtc_dq1(src, dst, r * 4 + 2, ve, sh) in rtc_dq1(src, dst, r * 4 + 3, vo, sh)
-fn rtc_dqf(src, dst, qp) = let q = qp % 6 in let sh = qp / 6 in let v0 = rtc_v(q, 0) in let v1 = rtc_v(q, 1) in let v2 = rtc_v(q, 2) in let a = rtc_dqr(src, dst, 0, v0, v2, sh) in let b = rtc_dqr(src, dst, 1, v2, v1, sh) in let c = rtc_dqr(src, dst, 2, v0, v2, sh) in rtc_dqr(src, dst, 3, v2, v1, sh)
+## dequantization: the low 16 bits of (z V) << qp / 6 (vec_dequant4), V by position class
+fn rtc_dqf(src, dst, qp) = let q = qp % 6 in let vp = sym_addr("__rtc_scratch") + 3632 in let a = rtc_wvec(vp, rtc_v(q, 0), rtc_v(q, 1), rtc_v(q, 2)) in vec_dequant4(src, dst, vp, qp / 6)
 ## without a nonzero level the reconstruction is the prediction (4 rows of 4 bytes); else dequantize, inverse
 ## transform and add
 fn rtc_cpf(p, d, fs) = let a = store32(d, load32(p)) in let b = store32(d + fs, load32(p + 4)) in let c = store32(d + 2 * fs, load32(p + 8)) in store32(d + 3 * fs, load32(p + 12))
-fn rtc_recon_blk(s, d, fs, qp) = let a3 = rtc_dqf(s + 96, s + 128, qp) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, d, fs, 0)
+fn rtc_recon_blk(s, d, fs, qp) = let a3 = rtc_dqf(s + 96, s + 128, qp) in let t = vec_idct4(s + 128, s + 160) in rtc_recf(s + 16, s + 160, d, fs, 0)
 ## residual, transform, quantization, reconstruction and the outputs of block b (its best prediction is at s + 16)
 fn rtc_enc(x, b) = let s = x - 256 in let c = load64(x + 80) in let qp = load64(x + 112) in let m = load64(x + 72) in let a1 = rtc_sub(load64(x + 24), load64(x + 32), s + 16, s + 32, 0) in let a2 = vec_fdct4(s + 32, s + 64) in let nz = rtc_q4(s + 64, s + 96, qp, 1) in let rf = load64(x) in let a4 = (if nz == 0 then rtc_cpf(s + 16, rf + 8 + load64(x + 8), load64(x + 16)) else rtc_recon_blk(s, rf + 8 + load64(x + 8), load64(x + 16), qp)) in let a5 = store8(c + 32 + b, m) in let a6 = store8(c + 48 + b, nz) in let a7 = rtc_zzout(s + 96, c + 64 + b * 32, 0) in let pm = load64(x + 48) in store8(c + 576 + b, (if m == pm then 255 else if m < pm then m else m - 1))
 fn rtc_blk(x, b) = let c = load64(x + 80) in let mav = load64(x + 104) in let bx = rtc_bx(b) in let by = rtc_by(b) in let a1 = store64(x + 8, load64(x + 96) + by * load64(x + 16) + bx) in let a2 = store64(x + 24, load64(x + 88) + by * load64(x + 32) + bx) in let a3 = store64(x + 40, rtc_bav(bx, by, b, mav)) in let a7 = rtc_edge1(x) in let a4 = store64(x + 48, rtc_pmode(rtc_nml(c, bx, by, mav), rtc_nmt(c, bx, by, mav))) in let a5 = store64(x + 64, 1099511627776) in let a6 = store64(x + 72, 0) in let z = rtc_srch(x, 0) in if load64(x + 64) == 1099511627776 then store64(x + 120, 1) else let e = rtc_enc(x, b) in store64(x + 128, load64(x + 128) + load64(x + 64))
@@ -310,7 +280,7 @@ fn rtc_acout(s, c, b) = if b >= 16 then 0 else let r = bit_shr(rtc_by(b), 2) * 4
 ## prediction + constant, no dequantization or inverse transform; else the full path
 fn rtc_recdc(p, d, fs, k, i) = if i >= 16 then 0 else let w = store8(d + bit_shr(i, 2) * fs + bit_and(i, 3), rtc_clip(load8(p + i) + k)) in rtc_recdc(p, d, fs, k, i + 1)
 fn rtc_i16rec(x, r) = if load64(x - 256 + 1792 + r * 8) != 0 then rtc_i16full(x, r) else let s = x - 256 in let bx = bit_and(r, 3) * 4 in let by = bit_shr(r, 2) * 4 in let rs = load64(x + 16) in let a1 = rtc_p16blk(load64(x + 80) + 640 + by * 16 + bx, s + 16) in rtc_recdc(s + 16, load64(x) + 8 + load64(x + 8) + by * rs + bx, rs, rtc_asr(load64(s + 2176 + r * 8) + 32, 6), 0)
-fn rtc_i16full(x, r) = let s = x - 256 in let bx = bit_and(r, 3) * 4 in let by = bit_shr(r, 2) * 4 in let rs = load64(x + 16) in let a1 = rtc_p16blk(load64(x + 80) + 640 + by * 16 + bx, s + 16) in let a2 = rtc_dqf(s + 1280 + r * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 2176 + r * 8)) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 8) + by * rs + bx, rs, 0)
+fn rtc_i16full(x, r) = let s = x - 256 in let bx = bit_and(r, 3) * 4 in let by = bit_shr(r, 2) * 4 in let rs = load64(x + 16) in let a1 = rtc_p16blk(load64(x + 80) + 640 + by * 16 + bx, s + 16) in let a2 = rtc_dqf(s + 1280 + r * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 2176 + r * 8)) in let t = vec_idct4(s + 128, s + 160) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 8) + by * rs + bx, rs, 0)
 fn rtc_i16recs(x, r) = if r >= 16 then 0 else let z = rtc_i16rec(x, r) in rtc_i16recs(x, r + 1)
 fn rtc_cprows16(p, d, rs, y) = if y >= 16 then 0 else let z = rtc_cpn(p + y * 16, d + y * rs, 16) in rtc_cprows16(p, d, rs, y + 1)
 fn buf_h264_mb_i16(src, si, ss, rec, ri, cfg) = rtc_mbi16(src, rt_int(si), rt_int(ss), rec, rt_int(ri), cfg)
@@ -343,7 +313,7 @@ fn rtc_cidc(x) = let s = x - 256 in let q = load64(x + 112) in let v = rtc_v(q %
 fn rtc_cdcnz(s, k, n) = if k >= 4 then n else rtc_cdcnz(s, k + 1, n + (if load64(s + 768 + k * 8) != 0 then 1 else 0))
 ## decoding of block b: AC dequantized, the DC from the 2x2 path, inverse transform, added to the prediction
 fn rtc_crec(x, b) = if load8(load64(x + 144) + 40 + b) != 0 then rtc_cfull(x, b) else let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in rtc_recdc(s + 16, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs, rtc_asr(load64(s + 800 + b * 8) + 32, 6), 0)
-fn rtc_cfull(x, b) = let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in let a2 = rtc_dqf(s + 640 + b * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 800 + b * 8)) in let t = s + 3616 in let i0 = rtc_irow(s + 128, t, 0) in let i1 = rtc_irow(s + 128, t, 1) in let i2 = rtc_irow(s + 128, t, 2) in let i3 = rtc_irow(s + 128, t, 3) in let j0 = rtc_icol(t, s + 160, 0) in let j1 = rtc_icol(t, s + 160, 1) in let j2 = rtc_icol(t, s + 160, 2) in let j3 = rtc_icol(t, s + 160, 3) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs, 0)
+fn rtc_cfull(x, b) = let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in let a2 = rtc_dqf(s + 640 + b * 32, s + 128, load64(x + 112)) in let a3 = rtc_w16(s + 128, load64(s + 800 + b * 8)) in let t = vec_idct4(s + 128, s + 160) in rtc_recf(s + 16, s + 160, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs, 0)
 fn rtc_ccopy(x, b) = let s = x - 256 in let c = load64(x + 144) in let rs = load64(x + 16) in let a1 = rtc_pblk8(c + 256 + bit_and(b, 1) * 4 + bit_shr(b, 1) * 32, s + 16) in rtc_cpf(s + 16, load64(x) + 8 + load64(x + 96) + bit_shr(b, 1) * 4 * rs + bit_and(b, 1) * 4, rs)
 fn rtc_cout(x, b, nz) = let s = x - 256 in let c = load64(x + 144) in let a = store8(c + 40 + b, nz) in rtc_zzout(s + 640 + b * 32, c + 64 + b * 32, 0)
 fn buf_h264_mb_pc(src, si, ss, ref, rec, cfg) = rtc_mbpc(src, rt_int(si), rt_int(ss), ref, rec, cfg)

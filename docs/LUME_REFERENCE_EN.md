@@ -23,7 +23,9 @@ error; text commands, output on stderr (an AI drives it with `-x`).
 
 `lume verify [--jobs=N] a.src b.src ...` runs check, test, prove, the format check and certify on many files in N processes
 (default 2); each file's result is cached by the SHA-256 of its whole bundle and of the tools, so after a change only
-the changed module and the files that import it run again.
+the changed module and the files that import it run again. Each line shows the time of every step
+(`ok   a.src  (check 0.030 s, test 0.124 s, prove 0.014 s, fmt 0.017 s, certify 0.027 s)`), so a slow step stands out;
+a file without contracts has nothing to certify and passes that step.
 
 Packages: `lume pkg publish [dir] --store=DIR` runs the package's tests and stores NAME/VERSION immutably with its
 SHA-256; `lume pkg add NAME@REQ` writes `name = "REQ"` under `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `*`);
