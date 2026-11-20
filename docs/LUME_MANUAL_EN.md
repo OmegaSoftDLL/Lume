@@ -1,6 +1,6 @@
 # ============================================================================
 # LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v1.2.0 / Wave 10)
-# Edition 2026 | Zero-C Self-Hosted Steady State | "Lume gera Lume"
+# Edition 2026 | Zero-C Self-Hosted Steady State | "Lume builds Lume"
 # ============================================================================
 
 Lume is an AI-First AND Human-Friendly systems, verification, data, and neural
@@ -1211,7 +1211,7 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
 
   lume --version|version
   lume --help|-h|help [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
-  lume manual|man|guide|manual-pt|man-pt|guia [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
+  lume manual|man|guide|manual-pt|man-pt [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
   lume describe|--describe [--json]
   lume targets|--targets [--json]
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)

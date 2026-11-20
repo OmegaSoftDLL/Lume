@@ -134,6 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off (it is part of the driver's cache key).
 
 ### Changed
+- **English only, as the language always was:** the Portuguese alias `lume guia` is gone (`lume manual --pt`,
+  `manual-pt` and `man-pt` stay); the English manual header says "Lume builds Lume"; every message, page and reply
+  `lsentience` writes (the cockpit page, the consult / talk / replicate / self-build texts, the approval words it
+  recognizes: approve / disapprove) is English, and `voice_language` is `en-US`. The manual and help stay bilingual.
 - **Faster buffer and arithmetic loops:** `buf_get` / `buf_set` compile to inline machine code on the common path
   (the runtime routine only for a boxed index, a wrong value or an out-of-range index, with the same diagnostics);
   `x % k` and `x / k` by a literal k >= 2 divide in place. A 1080p-sized buffer copy loop: 51 -> 10 ms on Linux,
@@ -156,6 +160,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **`lume check` named the bundle's line in a lex error's text:** the message said "(started at line 11, col 7)" for
+  what the span correctly gave as `main.src:4:7` (the bundle puts imported modules first). A diagnostic with a span
+  no longer repeats the compiler's own place in its text.
 - **Intra prediction on the picture edge:** `buf_h264_intra4x4` and `buf_h264_intra16x16` answered -1 for every block of
   the first row, even when the mask did not declare the neighbours above. Only the neighbours the mask declares must
   lie inside the buffer now (an undeclared one outside reads as 128, a declared one outside is still -1); interior

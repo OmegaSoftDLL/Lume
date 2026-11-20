@@ -1,6 +1,6 @@
 # ============================================================================
 # LUME PROGRAMMING LANGUAGE — BUILT-IN HUMAN & AI MANUAL (v1.1.0 / Wave 10)
-# Edition 2026 | Zero-C Self-Hosted Steady State | "Lume gera Lume"
+# Edition 2026 | Zero-C Self-Hosted Steady State | "Lume builds Lume"
 # ============================================================================
 
 Lume is an AI-First AND Human-Friendly systems, verification, data, and neural

@@ -3175,7 +3175,7 @@ case "$_sub" in
     chameleon|camaleao|polyglot|ffi-bridge)
         run_src "$ROOT/compiler/stage1/lchameleon.src" "$@"
         ;;
-    manual|man|guide|manual-pt|man-pt|guia)
+    manual|man|guide|manual-pt|man-pt)
         if [ -f "$ROOT/docs/LUME_MANUAL_PT_BR.md" ] && { [ "${1:-}" = "--pt" ] || [ "${1:-}" = "pt" ]; }; then
             cat "$ROOT/docs/LUME_MANUAL_PT_BR.md"
         elif [ -f "$ROOT/docs/LUME_MANUAL_EN.md" ]; then

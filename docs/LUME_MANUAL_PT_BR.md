@@ -1168,7 +1168,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
 
   lume --version|version
   lume --help|-h|help [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
-  lume manual|man|guide|manual-pt|man-pt|guia [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
+  lume manual|man|guide|manual-pt|man-pt [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
   lume describe|--describe [--json]
   lume targets|--targets [--json]
   lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
