@@ -1,0 +1,1095 @@
+## zstd.src -- Zstandard (RFC 8878) and XXH64 in Lume (`use std/zstd`)
+##   zstd_decompress(b, n)      -> {ok, buf, n, err}: every frame of b (skippable frames skipped, concatenated frames
+##                              joined): raw, RLE and compressed blocks; literals raw, RLE, Huffman (1 or 4 streams,
+##                              FSE-compressed or direct weights, treeless reuse); sequences with predefined, RLE,
+##                              FSE-compressed and repeated tables, repeat offsets; the frame content size and the
+##                              XXH64 content checksum are checked; dictionaries are refused (dictionary ID != 0)
+##   zstd_compress(b, n)        -> {buf, n}: one frame with the content size and the checksum; blocks of up to 128 KiB
+##   zstd_compress_level(b, n, level)  written raw, RLE or compressed (Huffman literals, FSE sequences), whichever is
+##                              smallest; level 1..9 sets the match search (hash chain depth, lazy matching)
+##   zstd_decompress_str(s) / zstd_compress_str(s)   the same on strings
+##   xxh64_buf(b, off, n) / xxh64(s)    -> {hi, lo}: XXH64 with seed 0 as two 32-bit halves; xxh64_hex(s): 16 hex digits
+## Results that can fail are {ok, buf, n, err}: ok 0 and err the reason on corrupt input.
+use deflate
+
+## --- bytes ------------------------------------------------------------------------------------------------------------
+fn zs_le16(b, i) = buf_get(b, i) + buf_get(b, i + 1) * 256
+fn zs_le24(b, i) = zs_le16(b, i) + buf_get(b, i + 2) * 65536
+fn zs_le32(b, i) = zs_le24(b, i) + buf_get(b, i + 3) * 16777216
+fn zs_r16(t, i) = buf_get(t, i * 2) + buf_get(t, i * 2 + 1) * 256
+fn zs_w16(t, i, v) = let a = buf_set(t, i * 2, v % 256) in buf_set(t, i * 2 + 1, v / 256)
+fn zs_r32(t, i) = buf_get(t, i * 4) + buf_get(t, i * 4 + 1) * 256 + buf_get(t, i * 4 + 2) * 65536 + buf_get(t, i * 4 + 3) * 16777216
+fn zs_w32(t, i, v) =
+    let a = buf_set(t, i * 4, v % 256) in
+    let b = buf_set(t, i * 4 + 1, (v / 256) % 256) in
+    let c = buf_set(t, i * 4 + 2, (v / 65536) % 256) in
+    buf_set(t, i * 4 + 3, (v / 16777216) % 256)
+fn zs_sb(b, k, e) = if k < e then buf_get(b, k) else 0
+fn zs_hb(x) = zs_hb_go(x, 0)
+fn zs_hb_go(x, k) = if x <= 1 then k else zs_hb_go(x / 2, k + 1)
+fn zs_bad(err) = {ok: 0, buf: buf_new(0), n: 0, err: err}
+fn zs_room(o, n, need) =
+    if n + need <= buf_len(o) then
+        o
+    else
+        let nb = buf_new((buf_len(o) + need) * 2) in
+        let c = buf_copy(nb, 0, o, 0, n) in
+        nb
+fn zs_fill(o, i, e, v) = if i >= e then 0 else let w = buf_set(o, i, v) in zs_fill(o, i + 1, e, v)
+fn zs_fill16(t, i, e, v) = if i >= e then 0 else let w = zs_w16(t, i, v) in zs_fill16(t, i + 1, e, v)
+## copy len bytes from dist back; an overlapping copy repeats the period, which doubles with each chunk
+fn zs_copy(o, on, dist, len) =
+    if dist >= len then
+        buf_copy(o, on, o, on - dist, len)
+    else
+        let c = buf_copy(o, on, o, on - dist, dist) in
+        zs_copy(o, on + dist, dist * 2, len - dist)
+
+## --- XXH64 on 64-bit values kept as two 32-bit halves {h, l} ---------------------------------------------------------------
+fn xh(h, l) = {h: h, l: l}
+fn xh_add(a, b) = let l = a.l + b.l in {h: (a.h + b.h + l / 4294967296) % 4294967296, l: l % 4294967296}
+fn xh_mul(a, b) =
+    let a0 = a.l % 65536 in
+    let a1 = a.l / 65536 in
+    let b0 = b.l % 65536 in
+    let b1 = b.l / 65536 in
+    let mid = a1 * b0 + a0 * b1 in
+    let t = a0 * b0 + (mid % 65536) * 65536 in
+    let hi = a1 * b1 + mid / 65536 + t / 4294967296 in
+    let c1 = (a.h % 65536) * b.l + (((a.h / 65536) * b.l) % 65536) * 65536 in
+    let c2 = (b.h % 65536) * a.l + (((b.h / 65536) * a.l) % 65536) * 65536 in
+    {h: (hi + c1 + c2) % 4294967296, l: t % 4294967296}
+fn xh_rotl(a, r) =
+    if r >= 32 then
+        xh_rotl({h: a.l, l: a.h}, r - 32)
+    else if r == 0 then
+        a
+    else
+        let p = bit_shl(1, r) in
+        let q = bit_shl(1, 32 - r) in
+        {h: (a.h % q) * p + a.l / q, l: (a.l % q) * p + a.h / q}
+fn xh_shr(a, r) = if r >= 32 then {h: 0, l: a.h / bit_shl(1, r - 32)} else {h: a.h / bit_shl(1, r), l: (a.h % bit_shl(1, r)) * bit_shl(1, 32 - r) + a.l / bit_shl(1, r)}
+fn xh_xor(a, b) = {h: bit_xor(a.h, b.h), l: bit_xor(a.l, b.l)}
+fn xh_p1() = {h: 2654435761, l: 2246822535}
+fn xh_p2() = {h: 3266489917, l: 668265295}
+fn xh_p3() = {h: 374761393, l: 2654435833}
+fn xh_p4() = {h: 2246822519, l: 3266489955}
+fn xh_p5() = {h: 668265263, l: 374761413}
+fn xh_round(acc, x) = xh_mul(xh_rotl(xh_add(acc, xh_mul(x, xh_p2())), 31), xh_p1())
+fn xh_merge(acc, v) = xh_add(xh_mul(xh_xor(acc, xh_round(xh(0, 0), v)), xh_p1()), xh_p4())
+fn xh_lane(b, i) = {h: zs_le32(b, i + 4), l: zs_le32(b, i)}
+fn xh_st(b, i, stop, v1, v2, v3, v4) =
+    if i >= stop then
+        let h = xh_add(xh_add(xh_rotl(v1, 1), xh_rotl(v2, 7)), xh_add(xh_rotl(v3, 12), xh_rotl(v4, 18))) in
+        xh_merge(xh_merge(xh_merge(xh_merge(h, v1), v2), v3), v4)
+    else
+        xh_st(b, i + 32, stop, xh_round(v1, xh_lane(b, i)), xh_round(v2, xh_lane(b, i + 8)), xh_round(v3, xh_lane(b, i + 16)), xh_round(v4, xh_lane(b, i + 24)))
+fn xh_tail(b, i, e, h) =
+    if i + 8 <= e then
+        xh_tail(b, i + 8, e, xh_add(xh_mul(xh_rotl(xh_xor(h, xh_round(xh(0, 0), xh_lane(b, i))), 27), xh_p1()), xh_p4()))
+    else if i + 4 <= e then
+        xh_tail(b, i + 4, e, xh_add(xh_mul(xh_rotl(xh_xor(h, xh_mul(xh(0, zs_le32(b, i)), xh_p1())), 23), xh_p2()), xh_p3()))
+    else if i < e then
+        xh_tail(b, i + 1, e, xh_mul(xh_rotl(xh_xor(h, xh_mul(xh(0, buf_get(b, i)), xh_p5())), 11), xh_p1()))
+    else
+        h
+fn xxh64_buf(b, off, n) =
+    let stop = off + (n / 32) * 32 in
+    let p1 = xh_p1() in
+    let h1 = if n >= 32 then xh_st(b, off, stop, xh_add(p1, xh_p2()), xh_p2(), xh(0, 0), xh(4294967295 - p1.h, 4294967296 - p1.l)) else xh_p5() in
+    let h2 = xh_tail(b, stop, off + n, xh_add(h1, xh(n / 4294967296, n % 4294967296))) in
+    let h3 = xh_mul(xh_xor(h2, xh_shr(h2, 33)), xh_p2()) in
+    let h4 = xh_mul(xh_xor(h3, xh_shr(h3, 29)), xh_p3()) in
+    let h5 = xh_xor(h4, xh_shr(h4, 32)) in
+    {hi: h5.h, lo: h5.l}
+fn xxh64(s) = let b = buf_from_str(s) in xxh64_buf(b, 0, buf_len(b))
+fn zs_hex8(v, k) = if k == 0 then "" else zs_hex8(v / 16, k - 1) + at("0123456789abcdef", v % 16)
+fn xxh64_hex(s) = let x = xxh64(s) in zs_hex8(x.hi, 8) + zs_hex8(x.lo, 8)
+
+## --- backward bitstreams (RFC 8878 4.1): the bytes after 16 zero bytes, read from the last bit set downwards; pos is the
+## number of unread bits plus 128, so 128 means everything was read ----------------------------------------------------
+fn zs_bstream(b, i, n) = let s = buf_new(n + 24) in let c = buf_copy(s, 16, b, i, n) in s
+fn zs_bstart(s, n) = let last = buf_get(s, 16 + n - 1) in if last == 0 then 0 - 1 else (16 + n - 1) * 8 + zs_hb(last)
+## the k bits below pos (the first of them the most significant)
+fn zs_rd(s, pos, k) = if k == 0 then 0 else if k <= 24 then zs_rd1(s, pos - k, k) else zs_rd1(s, pos - k + 16, k - 16) * 65536 + zs_rd1(s, pos - k, 16)
+fn zs_rd1(s, st, k) =
+    let q = st / 8 in
+    bit_and(bit_shr(buf_get(s, q) + buf_get(s, q + 1) * 256 + buf_get(s, q + 2) * 65536 + buf_get(s, q + 3) * 16777216, st % 8), bit_shl(1, k) - 1)
+
+## --- FSE tables (RFC 8878 4.1.1) --------------------------------------------------------------------------------------
+## the table description at byte i (forward bits, least significant first), no further than byte e:
+## {ok, pr, nsym, al, next, err}; pr holds probability + 1 per symbol as 16-bit words (0 = "less than 1")
+fn zs_nbad(err) = {ok: 0, pr: buf_new(0), nsym: 0, al: 0, next: 0, err: err}
+fn zs_fb(b, e, p, k) =
+    let q = p / 8 in
+    bit_and(bit_shr(zs_sb(b, q, e) + zs_sb(b, q + 1, e) * 256 + zs_sb(b, q + 2, e) * 65536, p % 8), bit_shl(1, k) - 1)
+fn zs_ncount(b, i, e, maxsym, maxal) =
+    if i >= e then
+        zs_nbad("truncated FSE table")
+    else
+        let al = buf_get(b, i) % 16 + 5 in
+        if al > maxal then
+            zs_nbad("FSE accuracy log too large")
+        else
+            let pr = buf_new((maxsym + 1) * 2) in
+            let r = zs_nc(b, e, i * 8 + 4, bit_shl(1, al) + 1, al + 1, 0, 0, pr, maxsym) in
+            if r.rem != 1 then
+                zs_nbad("bad FSE table")
+            else if (r.p + 7) / 8 > e then
+                zs_nbad("truncated FSE table")
+            else
+                {ok: 1, pr: pr, nsym: r.s, al: al, next: (r.p + 7) / 8, err: ""}
+fn zs_nc(b, e, p, rem, nb, s, prev0, pr, maxsym) =
+    if rem <= 1 or s > maxsym then
+        {rem: rem, s: s, p: p}
+    else if prev0 == 1 then
+        let r = zs_fb(b, e, p, 2) in
+        if s + r > maxsym + 1 then
+            {rem: 0, s: s, p: p}
+        else
+            let z = zs_fill16(pr, s, s + r, 1) in
+            zs_nc(b, e, p + 2, rem, nb, s + r, if r == 3 then 1 else 0, pr, maxsym)
+    else
+        let thr = bit_shl(1, nb - 1) in
+        let max = 2 * thr - 1 - rem in
+        let low = zs_fb(b, e, p, nb - 1) in
+        let w = if low < max then low else zs_fb(b, e, p, nb) in
+        let v = if low < max then low else if w >= thr then w - max else w in
+        let c = v - 1 in
+        let rem2 = if c < 0 then rem - 1 else rem - c in
+        let z = zs_w16(pr, s, c + 1) in
+        zs_nc(b, e, p + (if low < max then nb - 1 else nb), rem2, zs_shrink(rem2, nb), s + 1, if c == 0 then 1 else 0, pr, maxsym)
+fn zs_shrink(rem, nb) = if nb > 1 and rem < bit_shl(1, nb - 1) then zs_shrink(rem, nb - 1) else nb
+## the decoding table of 2^al states, 4 bytes each: symbol, number of bits, base of the next state (16 bits): {ok, t, al}
+fn zs_fse(pr, nsym, al) =
+    let size = bit_shl(1, al) in
+    let t = buf_new(size * 4) in
+    let nx = buf_new(nsym * 2 + 2) in
+    let high = zs_fse_low(pr, nsym, t, nx, 0, size - 1) in
+    let pos = zs_spread(pr, nsym, t, 0, 0, 0, size / 2 + size / 8 + 3, size, high) in
+    let z = zs_fse_fin(t, nx, 0, size, al) in
+    {ok: if pos == 0 then 1 else 0, t: t, al: al}
+fn zs_fse_low(pr, nsym, t, nx, s, high) =
+    if s >= nsym then
+        high
+    else
+        let p = zs_r16(pr, s) in
+        if p == 0 then
+            let a = buf_set(t, high * 4, s) in
+            let b = zs_w16(nx, s, 1) in
+            zs_fse_low(pr, nsym, t, nx, s + 1, high - 1)
+        else
+            let b = zs_w16(nx, s, p - 1) in
+            zs_fse_low(pr, nsym, t, nx, s + 1, high)
+fn zs_spread(pr, nsym, t, s, k, pos, step, size, high) =
+    if s >= nsym then
+        pos
+    else if k >= zs_r16(pr, s) - 1 then
+        zs_spread(pr, nsym, t, s + 1, 0, pos, step, size, high)
+    else
+        let a = buf_set(t, pos * 4, s) in
+        zs_spread(pr, nsym, t, s, k + 1, zs_adv(pos, step, size, high), step, size, high)
+fn zs_adv(pos, step, size, high) = let q = (pos + step) % size in if q > high then zs_adv(q, step, size, high) else q
+fn zs_fse_fin(t, nx, u, size, al) =
+    if u >= size then
+        0
+    else
+        let s = buf_get(t, u * 4) in
+        let ns = zs_r16(nx, s) in
+        let w = zs_w16(nx, s, ns + 1) in
+        let nb = al - zs_hb(ns) in
+        let a = buf_set(t, u * 4 + 1, nb) in
+        let base = bit_shl(ns, nb) - size in
+        let c = buf_set(t, u * 4 + 2, base % 256) in
+        let d = buf_set(t, u * 4 + 3, base / 256) in
+        zs_fse_fin(t, nx, u + 1, size, al)
+fn zs_rle_tab(sym) = let t = buf_new(4) in let a = buf_set(t, 0, sym) in {ok: 1, t: t, al: 0}
+fn zs_none() = {ok: 0, t: buf_new(4), al: 0}
+fn zs_listbuf(xs, t, i, width) = match xs
+    Nil        => t
+    Cons(h, r) => let z = if width == 1 then buf_set(t, i, h) else if width == 2 then zs_w16(t, i, h) else zs_w32(t, i, h) in zs_listbuf(r, t, i + 1, width)
+fn zs_predef(xs, n, al) = let pr = zs_listbuf(xs, buf_new(n * 2), 0, 2) in zs_fse(pr, n, al)
+## code tables (RFC 8878 3.1.1.3.2.1): baselines and extra bits of the literal-length and match-length codes, and the
+## predefined distributions (probability + 1)
+fn zs_kt() =
+    {llb: zs_listbuf([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536], buf_new(36 * 4), 0, 4),
+     llx: zs_listbuf([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], buf_new(36), 0, 1),
+     mlb: zs_listbuf([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539], buf_new(53 * 4), 0, 4),
+     mlx: zs_listbuf([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], buf_new(53), 0, 1),
+     pll: zs_predef(zs_ll_def(), 36, 6),
+     pml: zs_predef(zs_ml_def(), 53, 6),
+     pof: zs_predef(zs_of_def(), 29, 5)}
+fn zs_ll_def() = [5, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 3, 2, 2, 2, 2, 2, 0, 0, 0, 0]
+fn zs_ml_def() = [2, 5, 4, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0]
+fn zs_of_def() = [2, 2, 2, 2, 2, 2, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0]
+
+## --- Huffman literals (RFC 8878 4.2) ----------------------------------------------------------------------------------
+## weights compressed with FSE: two interleaved states until the bitstream runs out; answers the count, < 0 when bad
+fn zs_hweights(b, i, e, w) =
+    let nc = zs_ncount(b, i, e, 255, 6) in
+    if nc.ok == 0 or nc.next >= e then
+        0 - 1
+    else
+        let ft = zs_fse(nc.pr, nc.nsym, nc.al) in
+        let n = e - nc.next in
+        let s = zs_bstream(b, nc.next, n) in
+        let p0 = zs_bstart(s, n) in
+        if ft.ok == 0 or p0 < 0 then
+            0 - 1
+        else
+            zs_hw(s, p0 - 2 * nc.al, ft.t, zs_rd(s, p0, nc.al), zs_rd(s, p0 - nc.al, nc.al), w, 0)
+fn zs_fsym(t, st) = buf_get(t, st * 4)
+fn zs_fnext(t, st, s, pos) = buf_get(t, st * 4 + 2) + buf_get(t, st * 4 + 3) * 256 + zs_rd(s, pos, buf_get(t, st * 4 + 1))
+fn zs_hw(s, pos, t, s1, s2, w, k) =
+    if k > 252 then
+        0 - 1
+    else
+        let a = buf_set(w, k, zs_fsym(t, s1)) in
+        let n1 = zs_fnext(t, s1, s, pos) in
+        let p1 = pos - buf_get(t, s1 * 4 + 1) in
+        let c = buf_set(w, k + 1, zs_fsym(t, s2)) in
+        if p1 < 128 then
+            k + 2
+        else
+            let n2 = zs_fnext(t, s2, s, p1) in
+            let p2 = p1 - buf_get(t, s2 * 4 + 1) in
+            if p2 < 128 then
+                let z = buf_set(w, k + 2, zs_fsym(t, n1)) in
+                k + 3
+            else
+                zs_hw(s, p2, t, n1, n2, w, k + 2)
+fn zs_hd(b, i, n, w, k) = if k >= n then n else let v = buf_get(b, i + k / 2) in let z = buf_set(w, k, if k % 2 == 0 then v / 16 else v % 16) in zs_hd(b, i, n, w, k + 1)
+fn zs_hbad(err) = {ok: 0, t: buf_new(2), mb: 0, next: 0, err: err}
+## the tree description at byte i: {ok, t, mb, next, err}; t has 2^mb entries (symbol, number of bits) indexed by the next
+## mb bits
+fn zs_hufdesc(b, i, e) =
+    if i >= e then
+        zs_hbad("truncated Huffman tree")
+    else
+        let hb = buf_get(b, i) in
+        let w = buf_new(260) in
+        let next = if hb < 128 then i + 1 + hb else i + 1 + (hb - 127 + 1) / 2 in
+        let k = if next > e then 0 - 1 else if hb < 128 then zs_hweights(b, i + 1, next, w) else zs_hd(b, i + 1, hb - 127, w, 0) in
+        if k < 0 then zs_hbad("bad Huffman tree") else zs_hbuild(w, k, next)
+fn zs_wsum(w, j, k, acc) = if j >= k then acc else let x = buf_get(w, j) in if x > 11 then 0 - 1 else zs_wsum(w, j + 1, k, if x > 0 then acc + bit_shl(1, x - 1) else acc)
+fn zs_hbuild(w, k, next) =
+    let total = zs_wsum(w, 0, k, 0) in
+    if total <= 0 or k > 255 then
+        zs_hbad("bad Huffman weights")
+    else
+        let mb = zs_hb(total) + 1 in
+        let rest = bit_shl(1, mb) - total in
+        let lw = zs_hb(rest) + 1 in
+        if mb > 11 or bit_shl(1, lw - 1) != rest then
+            zs_hbad("bad Huffman weights")
+        else
+            let z = buf_set(w, k, lw) in
+            let t = buf_new(bit_shl(1, mb) * 2) in
+            let f = zs_hfill(w, k + 1, t, mb, 1, 0, 0) in
+            {ok: 1, t: t, mb: mb, next: next, err: ""}
+## codes in order of weight, then of symbol: a symbol of weight w takes 2^(w-1) entries and mb + 1 - w bits
+fn zs_hfill(w, n, t, mb, wt, s, pos) =
+    if wt > mb then
+        pos
+    else if s >= n then
+        zs_hfill(w, n, t, mb, wt + 1, 0, pos)
+    else if buf_get(w, s) == wt then
+        let len = bit_shl(1, wt - 1) in
+        let z = zs_hset(t, pos, pos + len, s, mb + 1 - wt) in
+        zs_hfill(w, n, t, mb, wt, s + 1, pos + len)
+    else
+        zs_hfill(w, n, t, mb, wt, s + 1, pos)
+fn zs_hset(t, i, e, s, nb) = if i >= e then 0 else let a = buf_set(t, i * 2, s) in let b = buf_set(t, i * 2 + 1, nb) in zs_hset(t, i + 1, e, s, nb)
+## one Huffman stream of n bytes at i into out[oi .. oi + cnt): 1, or 0 when the stream is bad or not used up exactly
+fn zs_hstream(b, i, n, h, out, oi, cnt) =
+    if n <= 0 then
+        0
+    else
+        let s = zs_bstream(b, i, n) in
+        let p0 = zs_bstart(s, n) in
+        if p0 < 0 then 0 else zs_hs(s, p0, h.t, h.mb, bit_shl(1, h.mb) - 1, out, oi, oi + cnt)
+fn zs_hs(s, pos, t, mb, mask, out, oi, oe) =
+    if oi >= oe then
+        (if pos == 128 then 1 else 0)
+    else if pos < 128 then
+        0
+    else
+        let st = pos - mb in
+        let q = st / 8 in
+        let v = bit_and(bit_shr(buf_get(s, q) + buf_get(s, q + 1) * 256 + buf_get(s, q + 2) * 65536, st % 8), mask) in
+        let a = buf_set(out, oi, buf_get(t, v * 2)) in
+        zs_hs(s, pos - buf_get(t, v * 2 + 1), t, mb, mask, out, oi + 1, oe)
+fn zs_lbad(err) = {ok: 0, lit: buf_new(0), n: 0, next: 0, huf: {ok: 0, t: buf_new(2), mb: 0}, err: err}
+## the literals section at byte i of a block ending at e: {ok, lit, n, next, huf, err} (huf: the table for later
+## treeless sections)
+fn zs_lits(b, i, e, huf) =
+    let b0 = buf_get(b, i) in
+    let lt = b0 % 4 in
+    let sf = (b0 / 4) % 4 in
+    if lt < 2 then
+        let hs = if sf % 2 == 0 then 1 else sf / 2 + 2 in
+        let regen = if hs == 1 then b0 / 8 else if hs == 2 then b0 / 16 + zs_sb(b, i + 1, e) * 16 else b0 / 16 + zs_sb(b, i + 1, e) * 16 + zs_sb(b, i + 2, e) * 4096 in
+        let lit = buf_new(regen + 1) in
+        if regen > 131072 then
+            zs_lbad("literals too large")
+        else if lt == 0 then
+            (if i + hs + regen > e then zs_lbad("truncated literals") else let c = buf_copy(lit, 0, b, i + hs, regen) in {ok: 1, lit: lit, n: regen, next: i + hs + regen, huf: huf, err: ""})
+        else
+            (if i + hs + 1 > e then zs_lbad("truncated literals") else let c = zs_fill(lit, 0, regen, buf_get(b, i + hs)) in {ok: 1, lit: lit, n: regen, next: i + hs + 1, huf: huf, err: ""})
+    else
+        let hs = if sf < 2 then 3 else sf + 2 in
+        let v = zs_sb(b, i, e) + zs_sb(b, i + 1, e) * 256 + zs_sb(b, i + 2, e) * 65536 + zs_sb(b, i + 3, e) * 16777216 + zs_sb(b, i + 4, e) * 4294967296 in
+        let regen = if sf < 2 then (v / 16) % 1024 else if sf == 2 then (v / 16) % 16384 else (v / 16) % 262144 in
+        let cs = if sf < 2 then (v / 16384) % 1024 else if sf == 2 then (v / 262144) % 16384 else (v / 4194304) % 262144 in
+        let end = i + hs + cs in
+        if end > e then
+            zs_lbad("truncated literals")
+        else if regen > 131072 then
+            zs_lbad("literals too large")
+        else
+            let hd = if lt == 2 then zs_hufdesc(b, i + hs, end) else if huf.ok == 1 then {ok: 1, t: huf.t, mb: huf.mb, next: i + hs, err: ""} else zs_hbad("treeless literals without a previous table") in
+            if hd.ok == 0 then
+                zs_lbad(hd.err)
+            else
+                let lit = buf_new(regen + 1) in
+                let ok = if sf == 0 then zs_hstream(b, hd.next, end - hd.next, hd, lit, 0, regen) else zs_h4(b, hd.next, end, hd, lit, regen) in
+                if ok == 0 then zs_lbad("bad Huffman literals") else {ok: 1, lit: lit, n: regen, next: end, huf: {ok: 1, t: hd.t, mb: hd.mb}, err: ""}
+## four streams after a jump table of three 16-bit sizes; each regenerates (regen + 3) / 4 bytes, the last the rest
+fn zs_h4(b, j, end, hd, lit, regen) =
+    if j + 6 > end then
+        0
+    else
+        let s1 = zs_le16(b, j) in
+        let s2 = zs_le16(b, j + 2) in
+        let s3 = zs_le16(b, j + 4) in
+        let s4 = end - j - 6 - s1 - s2 - s3 in
+        let seg = (regen + 3) / 4 in
+        let st = j + 6 in
+        if s4 < 1 or regen - 3 * seg < 0 then
+            0
+        else
+            zs_hstream(b, st, s1, hd, lit, 0, seg) * zs_hstream(b, st + s1, s2, hd, lit, seg, seg) * zs_hstream(b, st + s1 + s2, s3, hd, lit, 2 * seg, seg) * zs_hstream(b, st + s1 + s2 + s3, s4, hd, lit, 3 * seg, regen - 3 * seg)
+
+## --- sequences (RFC 8878 3.1.1.3.2) -------------------------------------------------------------------------------------
+fn zs_tbad() = {ok: 0, t: buf_new(4), al: 0, next: 0}
+## one table by its mode (0 predefined, 1 RLE, 2 FSE-compressed, 3 the previous one): {ok, t, al, next}
+fn zs_seqtab(b, i, e, mode, prev, pre, maxsym, maxal) =
+    if mode == 0 then
+        {ok: 1, t: pre.t, al: pre.al, next: i}
+    else if mode == 1 then
+        (if i >= e or buf_get(b, i) > maxsym then zs_tbad() else let r = zs_rle_tab(buf_get(b, i)) in {ok: 1, t: r.t, al: 0, next: i + 1})
+    else if mode == 2 then
+        let nc = zs_ncount(b, i, e, maxsym, maxal) in
+        if nc.ok == 0 then
+            zs_tbad()
+        else
+            let f = zs_fse(nc.pr, nc.nsym, nc.al) in
+            {ok: f.ok, t: f.t, al: f.al, next: nc.next}
+    else if prev.ok == 1 then
+        {ok: 1, t: prev.t, al: prev.al, next: i}
+    else
+        zs_tbad()
+fn zs_sbad(err) = {ok: 0, o: buf_new(0), n: 0, ll: zs_none(), of: zs_none(), ml: zs_none(), r1: 0, r2: 0, r3: 0, err: err}
+## the sequences section at byte i: executes the sequences into o (literals from lit) -> {ok, o, n, ll, of, ml, r1, r2, r3, err}
+fn zs_seqsec(b, i, e, st, lit, litn, o, on, fs, kt) =
+    if i >= e then
+        zs_sbad("truncated sequences")
+    else
+        let b0 = buf_get(b, i) in
+        let nseq = if b0 < 128 then b0 else if b0 < 255 then (b0 - 128) * 256 + zs_sb(b, i + 1, e) else zs_sb(b, i + 1, e) + zs_sb(b, i + 2, e) * 256 + 32512 in
+        let j = if b0 < 128 then i + 1 else if b0 < 255 then i + 2 else i + 3 in
+        if nseq == 0 then
+            (if j != e then zs_sbad("data after the sequences") else let o2 = zs_room(o, on, litn) in let c = buf_copy(o2, on, lit, 0, litn) in {ok: 1, o: o2, n: on + litn, ll: st.ll, of: st.of, ml: st.ml, r1: st.r1, r2: st.r2, r3: st.r3, err: ""})
+        else if j >= e then
+            zs_sbad("truncated sequences")
+        else
+            let m = buf_get(b, j) in
+            if m % 4 != 0 then
+                zs_sbad("reserved bits in the compression modes")
+            else
+                let t1 = zs_seqtab(b, j + 1, e, m / 64, st.ll, kt.pll, 35, 9) in
+                let t2 = if t1.ok == 1 then zs_seqtab(b, t1.next, e, (m / 16) % 4, st.of, kt.pof, 31, 8) else zs_tbad() in
+                let t3 = if t2.ok == 1 then zs_seqtab(b, t2.next, e, (m / 4) % 4, st.ml, kt.pml, 52, 9) else zs_tbad() in
+                if t3.ok == 0 or t3.next >= e then
+                    zs_sbad("bad sequence tables")
+                else
+                    let n = e - t3.next in
+                    let s = zs_bstream(b, t3.next, n) in
+                    let p0 = zs_bstart(s, n) in
+                    if p0 < 0 then
+                        zs_sbad("bad sequence bitstream")
+                    else
+                        let lls = zs_rd(s, p0, t1.al) in
+                        let ofs = zs_rd(s, p0 - t1.al, t2.al) in
+                        let mls = zs_rd(s, p0 - t1.al - t2.al, t3.al) in
+                        let r = zs_seq(s, p0 - t1.al - t2.al - t3.al, 0, nseq, lls, ofs, mls, t1.t, t2.t, t3.t, kt, lit, 0, litn, o, on, fs, st.r1, st.r2, st.r3) in
+                        if r.ok == 0 then
+                            zs_sbad(r.err)
+                        else
+                            {ok: 1, o: r.o, n: r.n, ll: {ok: 1, t: t1.t, al: t1.al}, of: {ok: 1, t: t2.t, al: t2.al}, ml: {ok: 1, t: t3.t, al: t3.al}, r1: r.r1, r2: r.r2, r3: r.r3, err: ""}
+fn zs_qbad(err) = {ok: 0, o: buf_new(0), n: 0, r1: 0, r2: 0, r3: 0, err: err}
+## repeat offsets: an offset value of 1..3 names a recent offset (shifted by one when the literal length is 0)
+fn zs_rep(ofv, ll, r1, r2, r3) =
+    if ofv > 3 then
+        {off: ofv - 3, a: ofv - 3, b: r1, c: r2}
+    else
+        let idx = if ll == 0 then ofv + 1 else ofv in
+        if idx == 1 then {off: r1, a: r1, b: r2, c: r3} else if idx == 2 then {off: r2, a: r2, b: r1, c: r3} else if idx == 3 then {off: r3, a: r3, b: r1, c: r2} else {off: r1 - 1, a: r1 - 1, b: r1, c: r2}
+fn zs_seq(s, pos, k, nseq, lls, ofs, mls, llt, oft, mlt, kt, lit, lp, litn, o, on, fs, r1, r2, r3) =
+    if pos < 128 then
+        zs_qbad("sequence bitstream overrun")
+    else if k >= nseq then
+        (if pos != 128 then zs_qbad("sequence bitstream not used up") else let o2 = zs_room(o, on, litn - lp) in let c = buf_copy(o2, on, lit, lp, litn - lp) in {ok: 1, o: o2, n: on + litn - lp, r1: r1, r2: r2, r3: r3, err: ""})
+    else
+        let ofc = buf_get(oft, ofs * 4) in
+        let mlc = buf_get(mlt, mls * 4) in
+        let llc = buf_get(llt, lls * 4) in
+        let ofv = bit_shl(1, ofc) + zs_rd(s, pos, ofc) in
+        let q1 = pos - ofc in
+        let mx = buf_get(kt.mlx, mlc) in
+        let ml = zs_r32(kt.mlb, mlc) + zs_rd(s, q1, mx) in
+        let q2 = q1 - mx in
+        let lx = buf_get(kt.llx, llc) in
+        let ll = zs_r32(kt.llb, llc) + zs_rd(s, q2, lx) in
+        let q3 = q2 - lx in
+        let rp = zs_rep(ofv, ll, r1, r2, r3) in
+        let more = if k + 1 < nseq then 1 else 0 in
+        let nbl = buf_get(llt, lls * 4 + 1) * more in
+        let nls = buf_get(llt, lls * 4 + 2) + buf_get(llt, lls * 4 + 3) * 256 + zs_rd(s, q3, nbl) in
+        let q4 = q3 - nbl in
+        let nbm = buf_get(mlt, mls * 4 + 1) * more in
+        let nms = buf_get(mlt, mls * 4 + 2) + buf_get(mlt, mls * 4 + 3) * 256 + zs_rd(s, q4, nbm) in
+        let q5 = q4 - nbm in
+        let nbo = buf_get(oft, ofs * 4 + 1) * more in
+        let nos = buf_get(oft, ofs * 4 + 2) + buf_get(oft, ofs * 4 + 3) * 256 + zs_rd(s, q5, nbo) in
+        if rp.off <= 0 or lp + ll > litn or rp.off > on + ll - fs then
+            zs_qbad("bad sequence (offset or literal length)")
+        else
+            let o2 = if on + ll + ml > buf_len(o) then zs_room(o, on, ll + ml) else o in
+            let c = buf_copy(o2, on, lit, lp, ll) in
+            let z = zs_copy(o2, on + ll, rp.off, ml) in
+            zs_seq(s, q5 - nbo, k + 1, nseq, nls, nos, nms, llt, oft, mlt, kt, lit, lp + ll, litn, o2, on + ll + ml, fs, rp.a, rp.b, rp.c)
+
+## --- frames and blocks (RFC 8878 3.1) -----------------------------------------------------------------------------------
+fn zs_ferr(err) = {ok: 0, o: buf_new(0), n: 0, next: 0, err: err}
+fn zstd_decompress(b, n) =
+    let r = zs_frames(b, 0, n, buf_new(if n < 4096 then 16384 else n * 4), 0, zs_kt(), 0) in
+    if r.ok == 0 then zs_bad(r.err) else {ok: 1, buf: r.o, n: r.n, err: ""}
+fn zs_frames(b, i, n, o, on, kt, nf) =
+    if i >= n then
+        (if nf == 0 then zs_ferr("no zstd frame") else {ok: 1, o: o, n: on, next: i, err: ""})
+    else if i + 4 > n then
+        zs_ferr("truncated frame header")
+    else
+        let m = zs_le32(b, i) in
+        if m == 4247762216 then
+            let r = zs_frame(b, i + 4, n, o, on, kt) in
+            if r.ok == 0 then r else zs_frames(b, r.next, n, r.o, r.n, kt, nf + 1)
+        else if m >= 407710288 and m <= 407710303 then
+            (if i + 8 > n or i + 8 + zs_le32(b, i + 4) > n then zs_ferr("truncated skippable frame") else zs_frames(b, i + 8 + zs_le32(b, i + 4), n, o, on, kt, nf + 1))
+        else
+            zs_ferr("not zstd data")
+fn zs_lebytes(b, i, k) = if k == 0 then 0 else buf_get(b, i) + 256 * zs_lebytes(b, i + 1, k - 1)
+fn zs_frame(b, i, n, o, on, kt) =
+    if i >= n then
+        zs_ferr("truncated frame header")
+    else
+        let fhd = buf_get(b, i) in
+        let fcsf = fhd / 64 in
+        let single = (fhd / 32) % 2 in
+        let cks = (fhd / 4) % 2 in
+        let didf = fhd % 4 in
+        let dsz = if didf == 3 then 4 else didf in
+        let fsz = if fcsf == 0 then single else if fcsf == 1 then 2 else if fcsf == 2 then 4 else 8 in
+        let j = i + 2 - single in
+        let hend = j + dsz + fsz in
+        if (fhd / 8) % 2 != 0 then
+            zs_ferr("reserved bit set in the frame header")
+        else if hend > n then
+            zs_ferr("truncated frame header")
+        else if zs_lebytes(b, j, dsz) != 0 then
+            zs_ferr("dictionaries are not supported")
+        else if fsz == 8 and buf_get(b, j + dsz + 7) > 63 then
+            zs_ferr("frame content size too large")
+        else
+            let fcs = zs_lebytes(b, j + dsz, fsz) + (if fsz == 2 then 256 else 0) in
+            let wd = buf_get(b, i + 1) in
+            let wb = bit_shl(1, 10 + wd / 8) in
+            let ws = if single == 1 then fcs else wb + (wb / 8) * (wd % 8) in
+            let r = zs_blocks(b, hend, n, o, on, on, if ws < 131072 then ws else 131072, {huf: {ok: 0, t: buf_new(2), mb: 0}, ll: zs_none(), of: zs_none(), ml: zs_none(), r1: 1, r2: 4, r3: 8}, kt) in
+            if r.ok == 0 then
+                r
+            else if fsz > 0 and r.n - on != fcs then
+                zs_ferr("frame content size mismatch")
+            else if cks == 0 then
+                r
+            else if r.next + 4 > n then
+                zs_ferr("truncated checksum")
+            else if zs_le32(b, r.next) != (xxh64_buf(r.o, on, r.n - on)).lo then
+                zs_ferr("content checksum mismatch")
+            else
+                {ok: 1, o: r.o, n: r.n, next: r.next + 4, err: ""}
+fn zs_blocks(b, i, n, o, on, fs, bmax, st, kt) =
+    if i + 3 > n then
+        zs_ferr("truncated block header")
+    else
+        let bh = zs_le24(b, i) in
+        let last = bh % 2 in
+        let typ = (bh / 2) % 4 in
+        let sz = bh / 8 in
+        let j = i + 3 in
+        if typ == 3 then
+            zs_ferr("reserved block type")
+        else if sz > bmax then
+            zs_ferr("block larger than the maximum")
+        else if typ == 0 then
+            (if j + sz > n then zs_ferr("truncated raw block") else let o2 = zs_room(o, on, sz) in let c = buf_copy(o2, on, b, j, sz) in zs_next(b, j + sz, n, o2, on + sz, fs, bmax, st, kt, last))
+        else if typ == 1 then
+            (if j + 1 > n then zs_ferr("truncated RLE block") else let o2 = zs_room(o, on, sz) in let c = zs_fill(o2, on, on + sz, buf_get(b, j)) in zs_next(b, j + 1, n, o2, on + sz, fs, bmax, st, kt, last))
+        else if j + sz > n or sz == 0 then
+            zs_ferr("truncated compressed block")
+        else
+            let lr = zs_lits(b, j, j + sz, st.huf) in
+            if lr.ok == 0 then
+                zs_ferr(lr.err)
+            else
+                let sr = zs_seqsec(b, lr.next, j + sz, st, lr.lit, lr.n, o, on, fs, kt) in
+                if sr.ok == 0 then
+                    zs_ferr(sr.err)
+                else if sr.n - on > 131072 then
+                    zs_ferr("block larger than the maximum")
+                else
+                    zs_next(b, j + sz, n, sr.o, sr.n, fs, bmax, {huf: lr.huf, ll: sr.ll, of: sr.of, ml: sr.ml, r1: sr.r1, r2: sr.r2, r3: sr.r3}, kt, last)
+fn zs_next(b, i, n, o, on, fs, bmax, st, kt, last) = if last == 1 then {ok: 1, o: o, n: on, next: i, err: ""} else zs_blocks(b, i, n, o, on, fs, bmax, st, kt)
+fn zstd_decompress_str(s) =
+    let b = buf_from_str(s) in
+    let r = zstd_decompress(b, buf_len(b)) in
+    if r.ok == 0 then
+        ctfail("zstd: " + r.err + "\n")
+    else
+        buf_to_str(r.buf, 0, r.n)
+
+## ======================================== encoder ===========================================================================
+## --- a forward bit writer {o, n, acc, k} for the streams the decoder reads backwards (closed by a 1 bit) -----------------
+fn ze_w(cap) = {o: buf_new(cap), n: 0, acc: 0, k: 0}
+fn ze_bits(w, v, k) = ze_norm(w.o, w.n, w.acc + bit_shl(v, w.k), w.k + k)
+fn ze_norm(o, n, acc, k) = if k < 8 then {o: o, n: n, acc: acc, k: k} else let z = buf_set(o, n, acc % 256) in ze_norm(o, n + 1, acc / 256, k - 8)
+fn ze_pad(w) = if w.k == 0 then w else let z = buf_set(w.o, w.n, w.acc % 256) in {o: w.o, n: w.n + 1, acc: 0, k: 0}
+fn ze_close(w) = ze_pad(ze_bits(w, 1, 1))
+fn ze_fin(o, n, acc, k) = if k <= 0 then n else let z = buf_set(o, n, acc % 256) in ze_fin(o, n + 1, acc / 256, k - 8)
+fn ze_max(a, b) = if a > b then a else b
+fn ze_min(a, b) = if a < b then a else b
+## 256 * log2(x), rounded down (x >= 1)
+fn ze_lg(x) = let ip = zs_hb(x) in ip * 256 + ze_lgf(x * 65536 / bit_shl(1, ip), 0, 128)
+fn ze_lgf(y, acc, bit) = if bit == 0 then acc else let y2 = y * y / 65536 in if y2 >= 131072 then ze_lgf(y2 / 2, acc + bit, bit / 2) else ze_lgf(y2, acc, bit / 2)
+
+## --- FSE encoding (RFC 8878 4.1.1, the reference encoder's state tables) ---------------------------------------------------
+## counts (32-bit words) -> probabilities + 1 (16-bit words) summing to 2^al; every present symbol gets at least 1
+fn ze_normc(cnt, nsym, total, al) =
+    let size = bit_shl(1, al) in
+    let pr = buf_new(nsym * 2 + 2) in
+    let s1 = ze_nc1(cnt, pr, 0, nsym, total, size, 0) in
+    let z = ze_nfix(cnt, pr, nsym, s1, size) in
+    let y = ze_plus1(pr, 0, nsym) in
+    pr
+fn ze_nc1(cnt, pr, s, nsym, total, size, acc) =
+    if s >= nsym then
+        acc
+    else
+        let c = zs_r32(cnt, s) in
+        let p = if c == 0 then 0 else ze_max(1, (c * size * 2 + total) / (total * 2)) in
+        let z = zs_w16(pr, s, p) in
+        ze_nc1(cnt, pr, s + 1, nsym, total, size, acc + p)
+fn ze_nfix(cnt, pr, nsym, sum, size) =
+    if sum > size then
+        let j = ze_argmax(pr, 0, nsym, 0 - 1, 1, 2) in
+        let z = zs_w16(pr, j, zs_r16(pr, j) - 1) in
+        ze_nfix(cnt, pr, nsym, sum - 1, size)
+    else if sum < size then
+        let j = ze_argmax(cnt, 0, nsym, 0 - 1, 0, 4) in
+        zs_w16(pr, j, zs_r16(pr, j) + size - sum)
+    else
+        0
+## the index of the largest value (16-bit words if width 2, else 32-bit) greater than floor
+fn ze_argmax(t, s, nsym, best, floor, width) =
+    if s >= nsym then
+        best
+    else
+        let v = if width == 2 then zs_r16(t, s) else zs_r32(t, s) in
+        let bv = if best < 0 then floor else if width == 2 then zs_r16(t, best) else zs_r32(t, best) in
+        ze_argmax(t, s + 1, nsym, if v > bv then s else best, floor, width)
+fn ze_plus1(pr, s, nsym) = if s >= nsym then 0 else let z = zs_w16(pr, s, zs_r16(pr, s) + 1) in ze_plus1(pr, s + 1, nsym)
+## the accuracy log for n symbols of an alphabet up to maxsym (the reference's FSE_optimalTableLog)
+fn ze_optlog(maxlog, n, maxsym) =
+    let src = zs_hb(n - 1) - 2 in
+    let minb = ze_min(zs_hb(n) + 1, zs_hb(maxsym) + 2) in
+    let t1 = if src < maxlog then src else maxlog in
+    let t2 = if minb > t1 then minb else t1 in
+    ze_min(ze_max(t2, 5), 12)
+## cost in bits of the counts under a distribution of 2^al (probability + 1 words); a symbol with probability 0 costs 2^40
+fn ze_cost(cnt, pr, al, s, nsym, acc) =
+    if s >= nsym then
+        acc / 256
+    else
+        let c = zs_r32(cnt, s) in
+        let p = zs_r16(pr, s) - 1 in
+        if c == 0 then
+            ze_cost(cnt, pr, al, s + 1, nsym, acc)
+        else if p == 0 then
+            bit_shl(1, 40)
+        else
+            ze_cost(cnt, pr, al, s + 1, nsym, acc + c * (al * 256 - ze_lg(if p < 0 then 1 else p)))
+## the encoding table: next states, and per symbol the deltaNbBits / deltaFindState transforms (+ 1024)
+fn ze_ctab(pr, nsym, al) =
+    let size = bit_shl(1, al) in
+    let t = buf_new(size * 4) in
+    let nx = buf_new(nsym * 2 + 2) in
+    let high = zs_fse_low(pr, nsym, t, nx, 0, size - 1) in
+    let pos = zs_spread(pr, nsym, t, 0, 0, 0, size / 2 + size / 8 + 3, size, high) in
+    let cum = buf_new(nsym * 2 + 2) in
+    let tot = ze_cum(pr, cum, 0, nsym, 0) in
+    let st = buf_new(size * 2) in
+    let z = ze_stfill(t, cum, st, 0, size) in
+    let dnb = buf_new(nsym * 4 + 4) in
+    let dfs = buf_new(nsym * 2 + 2) in
+    let y = ze_tt(pr, dnb, dfs, 0, nsym, al, size, 0) in
+    {st: st, dnb: dnb, dfs: dfs, al: al, rle: 0}
+fn ze_rle_ct() = {st: buf_new(2), dnb: buf_new(4), dfs: buf_new(2), al: 0, rle: 1}
+fn ze_cum(pr, cum, s, nsym, acc) = if s >= nsym then acc else let p = zs_r16(pr, s) - 1 in let z = zs_w16(cum, s, acc) in ze_cum(pr, cum, s + 1, nsym, acc + (if p < 0 then 1 else p))
+fn ze_stfill(t, cum, st, u, size) =
+    if u >= size then
+        0
+    else
+        let s = buf_get(t, u * 4) in
+        let c = zs_r16(cum, s) in
+        let a = zs_w16(st, c, size + u) in
+        let b = zs_w16(cum, s, c + 1) in
+        ze_stfill(t, cum, st, u + 1, size)
+fn ze_tt(pr, dnb, dfs, s, nsym, al, size, total) =
+    if s >= nsym then
+        0
+    else
+        let p = zs_r16(pr, s) - 1 in
+        if p == 0 then
+            let a = zs_w32(dnb, s, (al + 1) * 65536 - size) in
+            let b = zs_w16(dfs, s, 1024) in
+            ze_tt(pr, dnb, dfs, s + 1, nsym, al, size, total)
+        else if p < 0 or p == 1 then
+            let a = zs_w32(dnb, s, al * 65536 - size) in
+            let b = zs_w16(dfs, s, total - 1 + 1024) in
+            ze_tt(pr, dnb, dfs, s + 1, nsym, al, size, total + 1)
+        else
+            let mbo = al - zs_hb(p - 1) in
+            let a = zs_w32(dnb, s, mbo * 65536 - bit_shl(p, mbo)) in
+            let b = zs_w16(dfs, s, total - p + 1024) in
+            ze_tt(pr, dnb, dfs, s + 1, nsym, al, size, total + p)
+## the first state for the last symbol, one symbol (bits out, the next state), the final state (al bits)
+fn ze_init(ct, s) =
+    if ct.rle == 1 then
+        0
+    else
+        let dnb = zs_r32(ct.dnb, s) in
+        let nb = (dnb + 32768) / 65536 in
+        zs_r16(ct.st, (nb * 65536 - dnb) / bit_shl(1, nb) + zs_r16(ct.dfs, s) - 1024)
+fn ze_enc(w, ct, v, s) =
+    if ct.rle == 1 then
+        {w: w, v: 0}
+    else
+        let nb = (v + zs_r32(ct.dnb, s)) / 65536 in
+        let p = bit_shl(1, nb) in
+        {w: ze_bits(w, v % p, nb), v: zs_r16(ct.st, v / p + zs_r16(ct.dfs, s) - 1024)}
+fn ze_fl(w, ct, v) = if ct.rle == 1 then w else ze_bits(w, v % bit_shl(1, ct.al), ct.al)
+## the table description (the reverse of zs_ncount): {o, n}
+fn ze_wnc(pr, nsym, al) = ze_pad(ze_wnc_go(pr, nsym, ze_bits(ze_w(nsym * 4 + 16), al - 5, 4), bit_shl(1, al) + 1, al + 1, 0, 0))
+fn ze_wnc_go(pr, nsym, w, rem, nb, s, prev0) =
+    if s >= nsym or rem <= 1 then
+        w
+    else if prev0 == 1 then
+        let z = ze_zrun(pr, s, nsym) in
+        ze_wnc_go(pr, nsym, ze_bits(ze_threes(w, (z - s) / 3), (z - s) % 3, 2), rem, nb, z, 0)
+    else
+        let thr = bit_shl(1, nb - 1) in
+        let c = zs_r16(pr, s) - 1 in
+        let max = 2 * thr - 1 - rem in
+        let rem2 = rem - (if c < 0 then 0 - c else c) in
+        let cc = c + 1 in
+        let cv = if cc >= thr then cc + max else cc in
+        ze_wnc_go(pr, nsym, ze_bits(w, cv, if cv < max then nb - 1 else nb), rem2, zs_shrink(rem2, nb), s + 1, if cc == 1 then 1 else 0)
+fn ze_zrun(pr, s, nsym) = if s < nsym and zs_r16(pr, s) == 1 then ze_zrun(pr, s + 1, nsym) else s
+fn ze_threes(w, k) = if k == 0 then w else ze_threes(ze_bits(w, 3, 2), k - 1)
+fn ze_used(cnt, s, n, k) = if s >= n then k else ze_used(cnt, s + 1, n, if zs_r32(cnt, s) > 0 then k + 1 else k)
+fn ze_maxsym(cnt, s) = if s <= 0 or zs_r32(cnt, s) > 0 then s else ze_maxsym(cnt, s - 1)
+
+## --- Huffman literals --------------------------------------------------------------------------------------------------
+fn ze_lhdr(o, typ, size) =
+    if size < 32 then
+        let a = buf_set(o, 0, typ + size * 8) in 1
+    else if size < 4096 then
+        let a = buf_set(o, 0, typ + 4 + (size % 16) * 16) in let b = buf_set(o, 1, size / 16) in 2
+    else
+        let a = buf_set(o, 0, typ + 12 + (size % 16) * 16) in let b = buf_set(o, 1, (size / 16) % 256) in let c = buf_set(o, 2, size / 4096) in 3
+fn ze_same(b, i, e, v) = if i >= e then true else if buf_get(b, i) != v then false else ze_same(b, i + 1, e, v)
+## the literals section of a block: {b, n}
+fn ze_lits(lit, ln) =
+    if ln == 0 then
+        {b: buf_new(1), n: 1}
+    else if ln > 1 and ze_same(lit, 1, ln, buf_get(lit, 0)) then
+        let o = buf_new(4) in let h = ze_lhdr(o, 1, ln) in let a = buf_set(o, h, buf_get(lit, 0)) in {b: o, n: h + 1}
+    else
+        let o = buf_new(ln + 4) in
+        let h = ze_lhdr(o, 0, ln) in
+        let c = buf_copy(o, h, lit, 0, ln) in
+        let hu = if ln < 64 then {b: o, n: bit_shl(1, 40)} else ze_huflits(lit, ln) in
+        if hu.n < h + ln then hu else {b: o, n: h + ln}
+fn ze_freq(b, i, e, f) = if i >= e then f else let s = buf_get(b, i) in let z = zs_w32(f, s, zs_r32(f, s) + 1) in ze_freq(b, i + 1, e, f)
+fn ze_maxl(lens, s, mx) = if s >= 256 then mx else ze_maxl(lens, s + 1, ze_max(mx, buf_get(lens, s)))
+fn ze_lastsym(lens, s) = if s <= 0 or buf_get(lens, s) > 0 then s else ze_lastsym(lens, s - 1)
+fn ze_wts(lens, wts, s, mb) = if s >= 256 then wts else let l = buf_get(lens, s) in let z = buf_set(wts, s, if l > 0 then mb + 1 - l else 0) in ze_wts(lens, wts, s + 1, mb)
+## zstd's canonical codes: by weight (longest codes first), then by symbol; a code of len bits is its first table entry
+## shifted down by mb - len
+fn ze_hcodes(lens, mb) = let c = buf_new(512) in let z = ze_hc(lens, c, mb, mb, 0, 0) in c
+fn ze_hc(lens, c, mb, len, s, pos) =
+    if len < 1 then
+        0
+    else if s >= 256 then
+        ze_hc(lens, c, mb, len - 1, 0, pos)
+    else if buf_get(lens, s) == len then
+        let z = zs_w16(c, s, pos / bit_shl(1, mb - len)) in
+        ze_hc(lens, c, mb, len, s + 1, pos + bit_shl(1, mb - len))
+    else
+        ze_hc(lens, c, mb, len, s + 1, pos)
+## one Huffman stream of lit[a .. i] written last symbol first: answers the new output length
+fn ze_hst(lit, i, a, codes, lens, o, n, acc, k) =
+    if k >= 32 then
+        let z1 = buf_set(o, n, acc % 256) in
+        let z2 = buf_set(o, n + 1, (acc / 256) % 256) in
+        let z3 = buf_set(o, n + 2, (acc / 65536) % 256) in
+        let z4 = buf_set(o, n + 3, (acc / 16777216) % 256) in
+        ze_hst(lit, i, a, codes, lens, o, n + 4, acc / 4294967296, k - 32)
+    else if i < a then
+        ze_fin(o, n, acc + bit_shl(1, k), k + 1)
+    else
+        let s = buf_get(lit, i) in
+        ze_hst(lit, i - 1, a, codes, lens, o, n, acc + bit_shl(zs_r16(codes, s), k), k + buf_get(lens, s))
+## the tree description: direct 4-bit weights (up to 128) or FSE-compressed weights, the smaller; n 0 when neither fits
+fn ze_hdesc(wts, nw) =
+    let d = if nw <= 128 then ze_hdirect(wts, nw) else {b: buf_new(1), n: 0} in
+    let f = ze_hfse(wts, nw) in
+    if f.n > 0 and (d.n == 0 or f.n < d.n) then f else d
+fn ze_hdirect(wts, nw) = let o = buf_new(nw / 2 + 2) in let a = buf_set(o, 0, 127 + nw) in let z = ze_hdgo(wts, o, 0, nw) in {b: o, n: 1 + (nw + 1) / 2}
+fn ze_hdgo(wts, o, j, nw) = if j >= nw then 0 else let z = buf_set(o, 1 + j / 2, buf_get(wts, j) * 16 + (if j + 1 < nw then buf_get(wts, j + 1) else 0)) in ze_hdgo(wts, o, j + 2, nw)
+fn ze_hfse(wts, nw) =
+    let cnt = ze_freq(wts, 0, nw, buf_new(16 * 4)) in
+    let ms = ze_maxsym(cnt, 15) in
+    if ze_used(cnt, 0, ms + 1, 0) < 2 or nw < 2 then
+        {b: buf_new(1), n: 0}
+    else
+        let al = ze_optlog(6, nw, ms) in
+        let pr = ze_normc(cnt, ms + 1, nw, al) in
+        let d = ze_wnc(pr, ms + 1, al) in
+        let ct = ze_ctab(pr, ms + 1, al) in
+        let a = ze_init(ct, buf_get(wts, nw - 1)) in
+        let b = ze_init(ct, buf_get(wts, nw - 2)) in
+        let odd = (nw - 1) % 2 in
+        let s = ze_w2go(wts, nw - 3, ct, if odd == 0 then a else b, if odd == 0 then b else a, ze_w(nw + 16)) in
+        let total = d.n + s.n in
+        let o = buf_new(total + 2) in
+        let h = buf_set(o, 0, total) in
+        let c1 = buf_copy(o, 1, d.o, 0, d.n) in
+        let c2 = buf_copy(o, 1 + d.n, s.o, 0, s.n) in
+        if total >= 128 or not ze_wcheck(o, total + 1, wts, nw) then {b: o, n: 0} else {b: o, n: total + 1}
+## two interleaved states: even indices on the first, odd on the second; flushed second state first
+fn ze_w2go(wts, i, ct, s1, s2, w) =
+    if i < 0 then
+        ze_close(ze_fl(ze_fl(w, ct, s2), ct, s1))
+    else if i % 2 == 0 then
+        let r = ze_enc(w, ct, s1, buf_get(wts, i)) in
+        ze_w2go(wts, i - 1, ct, r.v, s2, r.w)
+    else
+        let r = ze_enc(w, ct, s2, buf_get(wts, i)) in
+        ze_w2go(wts, i - 1, ct, s1, r.v, r.w)
+## the weights decode back exactly (the decoder stops when the bitstream runs out)
+fn ze_wcheck(o, n, wts, nw) = let w = buf_new(260) in let k = zs_hweights(o, 1, n, w) in k == nw and ze_beq(w, wts, 0, nw)
+fn ze_beq(a, b, i, n) = if i >= n then true else if buf_get(a, i) != buf_get(b, i) then false else ze_beq(a, b, i + 1, n)
+fn ze_huflits(lit, ln) =
+    let f = ze_freq(lit, 0, ln, buf_new(256 * 4)) in
+    let lens = hf_lengths(f, 256, 11) in
+    let mb = ze_maxl(lens, 0, 0) in
+    let wts = ze_wts(lens, buf_new(256), 0, mb) in
+    let hd = ze_hdesc(wts, ze_lastsym(lens, 255)) in
+    if hd.n == 0 then
+        {b: buf_new(1), n: bit_shl(1, 40)}
+    else
+        let codes = ze_hcodes(lens, mb) in
+        let body = buf_new(ln * 2 + 64) in
+        let one = ln < 256 in
+        let seg = (ln + 3) / 4 in
+        let n1 = if one then ze_hst(lit, ln - 1, 0, codes, lens, body, 0, 0, 0) else ze_hst(lit, seg - 1, 0, codes, lens, body, 6, 0, 0) in
+        let n2 = if one then n1 else ze_hst(lit, 2 * seg - 1, seg, codes, lens, body, n1, 0, 0) in
+        let n3 = if one then n1 else ze_hst(lit, 3 * seg - 1, 2 * seg, codes, lens, body, n2, 0, 0) in
+        let n4 = if one then n1 else ze_hst(lit, ln - 1, 3 * seg, codes, lens, body, n3, 0, 0) in
+        let j1 = if one then 0 else zs_w16(body, 0, n1 - 6) in
+        let j2 = if one then 0 else zs_w16(body, 1, n2 - n1) in
+        let j3 = if one then 0 else zs_w16(body, 2, n3 - n2) in
+        let cs = hd.n + n4 in
+        let sf = if one then 0 else if cs < 1024 and ln < 1024 then 1 else if cs < 16384 and ln < 16384 then 2 else 3 in
+        let bits = if sf < 2 then 10 else if sf == 2 then 14 else 18 in
+        let hsz = if sf < 2 then 3 else sf + 2 in
+        if one and cs > 1023 then
+            {b: buf_new(1), n: bit_shl(1, 40)}
+        else
+            let o = buf_new(hsz + cs + 2) in
+            let z = ze_le(o, 0, 2 + sf * 4 + ln * 16 + cs * bit_shl(1, 4 + bits), hsz) in
+            let c1 = buf_copy(o, hsz, hd.b, 0, hd.n) in
+            let c2 = buf_copy(o, hsz + hd.n, body, 0, n4) in
+            {b: o, n: hsz + cs}
+fn ze_le(o, i, v, k) = if k == 0 then 0 else let z = buf_set(o, i, v % 256) in ze_le(o, i + 1, v / 256, k - 1)
+
+## --- sequences -------------------------------------------------------------------------------------------------------------
+## encoder tables: literal-length / match-length codes of small values, and the predefined tables
+fn ze_kt(kt) =
+    {llt: ze_ctab_small(kt.llb, kt.llx, 36, 0, buf_new(64), 64),
+     mlt: ze_ctab_small(kt.mlb, kt.mlx, 53, 3, buf_new(128), 128),
+     pll: ze_pre(zs_ll_def(), 36, 6), pml: ze_pre(zs_ml_def(), 53, 6), pof: ze_pre(zs_of_def(), 29, 5)}
+fn ze_pre(xs, n, al) = let pr = zs_listbuf(xs, buf_new(n * 2), 0, 2) in {pr: pr, nsym: n, al: al, ct: ze_ctab(pr, n, al)}
+fn ze_ctab_small(base, ext, nc, sub, t, lim) = ze_cts(base, ext, nc, sub, t, lim, 0)
+fn ze_cts(base, ext, nc, sub, t, lim, c) =
+    if c >= nc then
+        t
+    else
+        let z = ze_span(t, zs_r32(base, c) - sub, bit_shl(1, buf_get(ext, c)), lim, c) in
+        ze_cts(base, ext, nc, sub, t, lim, c + 1)
+fn ze_span(t, v, k, lim, c) = if k == 0 or v >= lim then 0 else let z = buf_set(t, v, c) in ze_span(t, v + 1, k - 1, lim, c)
+fn ze_llcode(kte, ll) = if ll < 64 then buf_get(kte.llt, ll) else zs_hb(ll) + 19
+fn ze_mlcode(kte, mb) = if mb < 128 then buf_get(kte.mlt, mb) else zs_hb(mb) + 36
+fn ze_inc(t, i) = zs_w32(t, i, zs_r32(t, i) + 1)
+## codes of the sequences (ll, ml, offset value as 32-bit words), 10 bytes each: the three codes, then the extra-bit values
+## (16, 16 and 24 bits); counts per code
+fn ze_codes(sq, ns, cb, kt, kte, cl, co, cm, k) =
+    if k >= ns then
+        0
+    else
+        let ll = zs_r32(sq, k * 3) in
+        let ml = zs_r32(sq, k * 3 + 1) in
+        let ov = zs_r32(sq, k * 3 + 2) in
+        let llc = ze_llcode(kte, ll) in
+        let mlc = ze_mlcode(kte, ml - 3) in
+        let ofc = zs_hb(ov) in
+        let lv = ll - zs_r32(kt.llb, llc) in
+        let mv = ml - zs_r32(kt.mlb, mlc) in
+        let ox = ov - bit_shl(1, ofc) in
+        let j = k * 10 in
+        let a1 = buf_set(cb, j, llc) in
+        let a2 = buf_set(cb, j + 1, mlc) in
+        let a3 = buf_set(cb, j + 2, ofc) in
+        let a4 = buf_set(cb, j + 3, lv % 256) in
+        let a5 = buf_set(cb, j + 4, lv / 256) in
+        let a6 = buf_set(cb, j + 5, mv % 256) in
+        let a7 = buf_set(cb, j + 6, mv / 256) in
+        let a8 = ze_le(cb, j + 7, ox, 3) in
+        let c1 = ze_inc(cl, llc) in
+        let c2 = ze_inc(cm, mlc) in
+        let c3 = ze_inc(co, ofc) in
+        ze_codes(sq, ns, cb, kt, kte, cl, co, cm, k + 1)
+## the table mode of one stream: RLE for a single symbol, else the predefined table or a table of our own, the cheaper
+fn ze_pick(cnt, nmax, ns, pre, maxlog) =
+    let ms = ze_maxsym(cnt, nmax - 1) in
+    if ze_used(cnt, 0, ms + 1, 0) == 1 then
+        let d = buf_new(1) in let a = buf_set(d, 0, ms) in {mode: 1, ct: ze_rle_ct(), desc: d, dn: 1}
+    else
+        let costp = if ms < pre.nsym then ze_cost(cnt, pre.pr, pre.al, 0, ms + 1, 0) else bit_shl(1, 40) in
+        let al = ze_optlog(maxlog, ns, ms) in
+        let pr = ze_normc(cnt, ms + 1, ns, al) in
+        let d = ze_wnc(pr, ms + 1, al) in
+        let costf = d.n * 8 + ze_cost(cnt, pr, al, 0, ms + 1, 0) in
+        if costp <= costf then {mode: 0, ct: pre.ct, desc: d.o, dn: 0} else {mode: 2, ct: ze_ctab(pr, ms + 1, al), desc: d.o, dn: d.n}
+## the bitstream: the last sequence first (its symbols start the states), each sequence's state bits (offset, match,
+## literal), then its extra bits (literal, match, offset); the final states (match, offset, literal) and the end mark
+fn ze_extras(w, cb, k, kt) =
+    let j = k * 10 in
+    let w1 = ze_bits(w, buf_get(cb, j + 3) + buf_get(cb, j + 4) * 256, buf_get(kt.llx, buf_get(cb, j))) in
+    let w2 = ze_bits(w1, buf_get(cb, j + 5) + buf_get(cb, j + 6) * 256, buf_get(kt.mlx, buf_get(cb, j + 1))) in
+    ze_bits(w2, buf_get(cb, j + 7) + buf_get(cb, j + 8) * 256 + buf_get(cb, j + 9) * 65536, buf_get(cb, j + 2))
+fn ze_seqbits(cb, ns, ctl, cto, ctm, kt) =
+    let k = ns - 1 in
+    let sm = ze_init(ctm, buf_get(cb, k * 10 + 1)) in
+    let so = ze_init(cto, buf_get(cb, k * 10 + 2)) in
+    let sl = ze_init(ctl, buf_get(cb, k * 10)) in
+    ze_sloop(cb, k - 1, ctl, cto, ctm, sl, so, sm, ze_extras(ze_w(ns * 16 + 64), cb, k, kt), kt)
+fn ze_sloop(cb, k, ctl, cto, ctm, sl, so, sm, w, kt) =
+    if k < 0 then
+        ze_close(ze_fl(ze_fl(ze_fl(w, ctm, sm), cto, so), ctl, sl))
+    else
+        let j = k * 10 in
+        let a = ze_enc(w, cto, so, buf_get(cb, j + 2)) in
+        let c = ze_enc(a.w, ctm, sm, buf_get(cb, j + 1)) in
+        let d = ze_enc(c.w, ctl, sl, buf_get(cb, j)) in
+        ze_sloop(cb, k - 1, ctl, cto, ctm, d.v, a.v, c.v, ze_extras(d.w, cb, k, kt), kt)
+## the sequences section: {b, n}
+fn ze_seqs(sq, ns, kt, kte) =
+    if ns == 0 then
+        {b: buf_new(1), n: 1}
+    else
+        let cb = buf_new(ns * 10 + 10) in
+        let cl = buf_new(36 * 4) in
+        let co = buf_new(32 * 4) in
+        let cm = buf_new(53 * 4) in
+        let z = ze_codes(sq, ns, cb, kt, kte, cl, co, cm, 0) in
+        let pl = ze_pick(cl, 36, ns, kte.pll, 9) in
+        let po = ze_pick(co, 32, ns, kte.pof, 8) in
+        let pm = ze_pick(cm, 53, ns, kte.pml, 9) in
+        let bs = ze_seqbits(cb, ns, pl.ct, po.ct, pm.ct, kt) in
+        let hn = if ns < 128 then 1 else if ns < 32512 then 2 else 3 in
+        let total = hn + 1 + pl.dn + po.dn + pm.dn + bs.n in
+        let o = buf_new(total + 8) in
+        let h = if ns < 128 then buf_set(o, 0, ns) else if ns < 32512 then let a = buf_set(o, 0, ns / 256 + 128) in buf_set(o, 1, ns % 256) else let a = buf_set(o, 0, 255) in ze_le(o, 1, ns - 32512, 2) in
+        let m = buf_set(o, hn, pl.mode * 64 + po.mode * 16 + pm.mode * 4) in
+        let c1 = buf_copy(o, hn + 1, pl.desc, 0, pl.dn) in
+        let c2 = buf_copy(o, hn + 1 + pl.dn, po.desc, 0, po.dn) in
+        let c3 = buf_copy(o, hn + 1 + pl.dn + po.dn, pm.desc, 0, pm.dn) in
+        let c4 = buf_copy(o, hn + 1 + pl.dn + po.dn + pm.dn, bs.o, 0, bs.n) in
+        {b: o, n: total}
+
+## --- match finding: hash chains over a window of up to 1 MiB, repeat-offset check, lazy evaluation --------------------------
+fn zm_cfg(level) =
+    if level <= 1 then
+        {chain: 2, lazy: 0, nice: 32}
+    else if level == 2 then
+        {chain: 4, lazy: 0, nice: 48}
+    else if level == 3 then
+        {chain: 8, lazy: 1, nice: 64}
+    else if level == 4 then
+        {chain: 16, lazy: 1, nice: 96}
+    else if level == 5 then
+        {chain: 24, lazy: 1, nice: 128}
+    else if level == 6 then
+        {chain: 32, lazy: 2, nice: 160}
+    else if level == 7 then
+        {chain: 64, lazy: 2, nice: 192}
+    else if level == 8 then
+        {chain: 128, lazy: 2, nice: 256}
+    else
+        {chain: 256, lazy: 2, nice: 512}
+## head[h]: the last position + 1 with the 4-byte hash h; prev[i % ws]: the position + 1 before i with the same hash
+fn zm_ins(ms, i) =
+    let b = ms.b in
+    let h = ((buf_get(b, i) + buf_get(b, i + 1) * 256 + buf_get(b, i + 2) * 65536 + buf_get(b, i + 3) * 16777216) * 40503) % 4294967296 / ms.hdiv in
+    let hd = ms.head in
+    let c = zs_r32(hd, h) in
+    let a = zs_w32(ms.prev, i % ms.ws, c) in
+    let z = zs_w32(hd, h, i + 1) in
+    c - 1
+fn zm_mlen(b, x, y, k, max) = if k >= max or buf_get(b, x + k) != buf_get(b, y + k) then k else zm_mlen(b, x, y, k + 1, max)
+## matches are packed as length * 2^21 + offset
+fn zm_best(ms, i, c, chain, best, boff, max) =
+    if c < 0 or chain == 0 or best >= max or i - c >= ms.ws then
+        best * 2097152 + boff
+    else
+        let b = ms.b in
+        let l = if buf_get(b, c + best) == buf_get(b, i + best) then zm_mlen(b, c, i, 0, max) else 0 in
+        let nc = zs_r32(ms.prev, c % ms.ws) - 1 in
+        if l > best then
+            (if l >= ms.nice then l * 2097152 + (i - c) else zm_best(ms, i, nc, chain - 1, l, i - c, max))
+        else
+            zm_best(ms, i, nc, chain - 1, best, boff, max)
+fn zm_find(ms, i, max, r1) =
+    let c = zm_ins(ms, i) in
+    let rl = if r1 <= i then zm_mlen(ms.b, i - r1, i, 0, max) else 0 in
+    if rl >= ms.nice then rl * 2097152 + r1 else zm_best(ms, i, c, ms.chain, if rl >= 4 then rl else 3, if rl >= 4 then r1 else 0, max)
+## 16 x the order-0 entropy of b[i .. e) in bits per byte (an estimate of what a literal costs)
+fn ze_ent(b, i, e) = if e - i < 16 then 128 else let f = ze_freq(b, i, e, buf_new(256 * 4)) in 16 * ze_lg(e - i) / 256 - ze_entsum(f, 0, 0) / (16 * (e - i))
+fn ze_entsum(f, s, acc) = if s >= 256 then acc else let c = zs_r32(f, s) in ze_entsum(f, s + 1, if c == 0 then acc else acc + c * ze_lg(c))
+## a match is taken when its literals would cost more than it: length x literal cost > offset bits + the codes
+fn zm_ok(ms, m, r1) = let ml = m / 2097152 in let off = m % 2097152 in ml >= 4 and (off == r1 or ml * ms.lb > 16 * (zs_hb(off + 3) + 10))
+fn zm_gain(m, r1) = (m / 2097152) * 4 - zs_hb(if m % 2097152 == r1 then 1 else m % 2097152 + 3)
+## a better match one position later wins (zstd's lazy rule: gain larger by more than 4)
+fn zm_lazy(ms, i, m, be, r1, depth) =
+    if depth == 0 or i + 5 > be or i + 5 > ms.n then
+        {i: i, m: m, ins: i + 1}
+    else
+        let m2 = zm_find(ms, i + 1, be - i - 1, r1) in
+        if zm_ok(ms, m2, r1) and zm_gain(m2, r1) > zm_gain(m, r1) + 4 then zm_lazy(ms, i + 1, m2, be, r1, depth - 1) else {i: i, m: m, ins: i + 2}
+fn zm_insr(ms, i, e) = if i >= e or i + 4 > ms.n then 0 else let z = zm_ins(ms, i) in zm_insr(ms, i + 1, e)
+fn zm_insert(ms, i, e) = if e - i > 512 then let a = zm_insr(ms, i, i + 256) in zm_insr(ms, e - 256, e) else zm_insr(ms, i, e)
+## the offset value of a match (repeat codes 1..3 as the decoder reads them)
+fn ze_ov(off, ll, r1, r2, r3) =
+    if ll > 0 then
+        (if off == r1 then 1 else if off == r2 then 2 else if off == r3 then 3 else off + 3)
+    else
+        (if off == r2 then 1 else if off == r3 then 2 else if off == r1 - 1 then 3 else off + 3)
+## the sequences of one block [anchor, be): {ns, ln, r1, r2, r3}; literals copied into lit
+fn zm_run(ms, i, anchor, be, sq, ns, lit, ln, r1, r2, r3) =
+    if i + 4 > be or i + 4 > ms.n then
+        let c = buf_copy(lit, ln, ms.b, anchor, be - anchor) in
+        {ns: ns, ln: ln + be - anchor, r1: r1, r2: r2, r3: r3}
+    else
+        let m = zm_find(ms, i, be - i, r1) in
+        if not zm_ok(ms, m, r1) then
+            zm_run(ms, i + 1, anchor, be, sq, ns, lit, ln, r1, r2, r3)
+        else
+            let z = zm_lazy(ms, i, m, be, r1, ms.lazy) in
+            let ml = z.m / 2097152 in
+            let off = z.m % 2097152 in
+            let s = z.i in
+            let ll = s - anchor in
+            let ov = ze_ov(off, ll, r1, r2, r3) in
+            let rp = zs_rep(ov, ll, r1, r2, r3) in
+            let c = buf_copy(lit, ln, ms.b, anchor, ll) in
+            let w1 = zs_w32(sq, ns * 3, ll) in
+            let w2 = zs_w32(sq, ns * 3 + 1, ml) in
+            let w3 = zs_w32(sq, ns * 3 + 2, ov) in
+            let y = zm_insert(ms, z.ins, s + ml) in
+            zm_run(ms, s + ml, s + ml, be, sq, ns + 1, lit, ln + ll, rp.a, rp.b, rp.c)
+
+## --- frames ----------------------------------------------------------------------------------------------------------------
+fn ze_body(lit, ln, sq, ns, kt, kte) =
+    let l = ze_lits(lit, ln) in
+    let s = ze_seqs(sq, ns, kt, kte) in
+    let o = buf_new(l.n + s.n + 8) in
+    let a = buf_copy(o, 0, l.b, 0, l.n) in
+    let c = buf_copy(o, l.n, s.b, 0, s.n) in
+    {b: o, n: l.n + s.n}
+## blocks of up to 128 KiB: compressed when smaller than the bytes, else RLE (one repeated byte) or raw; the repeat offsets
+## advance only through compressed blocks, as in the decoder
+fn ze_blocks(ms, kt, kte, p, o, on, r1, r2, r3, sq, lit) =
+    let n = ms.n in
+    let be = ze_min(p + 131072, n) in
+    let last = if be >= n then 1 else 0 in
+    let mr = zm_run({ms with lb: ze_ent(ms.b, p, be)}, p, p, be, sq, 0, lit, 0, r1, r2, r3) in
+    let body = ze_body(lit, mr.ln, sq, mr.ns, kt, kte) in
+    let bsz = be - p in
+    let o2 = zs_room(o, on, bsz + body.n + 16) in
+    if bsz > 1 and body.n < 64 and ze_same(ms.b, p + 1, be, buf_get(ms.b, p)) then
+        let h = ze_le(o2, on, last + 2 + bsz * 8, 3) in
+        let a = buf_set(o2, on + 3, buf_get(ms.b, p)) in
+        ze_bnext(ms, kt, kte, be, o2, on + 4, r1, r2, r3, sq, lit, last)
+    else if body.n < bsz then
+        let h = ze_le(o2, on, last + 4 + body.n * 8, 3) in
+        let c = buf_copy(o2, on + 3, body.b, 0, body.n) in
+        ze_bnext(ms, kt, kte, be, o2, on + 3 + body.n, mr.r1, mr.r2, mr.r3, sq, lit, last)
+    else
+        let h = ze_le(o2, on, last + bsz * 8, 3) in
+        let c = buf_copy(o2, on + 3, ms.b, p, bsz) in
+        ze_bnext(ms, kt, kte, be, o2, on + 3 + bsz, r1, r2, r3, sq, lit, last)
+fn ze_bnext(ms, kt, kte, p, o, on, r1, r2, r3, sq, lit, last) = if last == 1 then {o: o, n: on} else ze_blocks(ms, kt, kte, p, o, on, r1, r2, r3, sq, lit)
+## one frame: the content size, a single segment up to 1 MiB (else a 1 MiB window), the XXH64 checksum
+fn zstd_compress_level(b, n, level) =
+    let c = zm_cfg(level) in
+    let ws = if n < 1048576 then n + 1 else 1048576 in
+    let hl = if n < 65536 then 14 else 17 in
+    let ms = {b: b, n: n, head: buf_new(bit_shl(1, hl) * 4), prev: buf_new(ws * 4), ws: ws, hdiv: bit_shl(1, 32 - hl), chain: c.chain, lazy: c.lazy, nice: c.nice, lb: 0} in
+    let kt = zs_kt() in
+    let single = if n <= 1048576 then 1 else 0 in
+    let fcsf = if single == 1 and n < 256 then 0 else if n < 65792 then 1 else if n < 4294967296 then 2 else 3 in
+    let fsz = if fcsf == 0 then 1 else if fcsf == 1 then 2 else if fcsf == 2 then 4 else 8 in
+    let o = buf_new(n + n / 64 + 64) in
+    let m = ze_le(o, 0, 4247762216, 4) in
+    let f = buf_set(o, 4, fcsf * 64 + single * 32 + 4) in
+    let wdn = if single == 1 then 0 else let z = buf_set(o, 5, 80) in 1 in
+    let v = ze_le(o, 5 + wdn, if fcsf == 1 then n - 256 else n, fsz) in
+    let r = ze_blocks(ms, kt, ze_kt(kt), 0, o, 5 + wdn + fsz, 1, 4, 8, buf_new(32770 * 12), buf_new(131072 + 16)) in
+    let o2 = zs_room(r.o, r.n, 4) in
+    let x = ze_le(o2, r.n, (xxh64_buf(b, 0, n)).lo, 4) in
+    {buf: o2, n: r.n + 4}
+fn zstd_compress(b, n) = zstd_compress_level(b, n, 3)
+fn zstd_compress_str(s) = let b = buf_from_str(s) in let r = zstd_compress(b, buf_len(b)) in buf_to_str(r.buf, 0, r.n)

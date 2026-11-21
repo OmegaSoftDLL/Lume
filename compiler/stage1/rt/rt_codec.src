@@ -26,7 +26,8 @@
 ## scratch: one static block (runtime/rt_die's .bss __rtc_scratch, 4096 bytes) instead of an allocation per call; the
 ## runtime is single-threaded and no codec builtin calls another, so the parts never overlap: luma MC window and b1
 ## table at 0 (3616 bytes), the quantization / dequantization multiplier vectors at 3616 / 3632 (16 each), intra 4x4 neighbours at 3744 (112), deblocking at 3856 (56),
-## intra 4x4 edge and filter tables at 3912 (48), the CAVLC stream length at 3960 (8)
+## intra 4x4 edge and filter tables at 3912 (48), the CAVLC stream length in bits at 3960 (int32) and the profile flag
+## at 3964 (int32: 1 lets level_prefix exceed 15, as the High profiles allow; 0 refuses it, Baseline / Main / Extended)
 fn rtc_isbuf(b) = if b == 0 or bit_and(b, 7) != 0 then 0 else if load8(b) != 15 then 0 else 1
 fn rtc_len(b) = bit_shr(load64(b), 8)
 fn rtc_fits(b, o, n) =
@@ -1999,7 +2000,7 @@ fn rtc_cvput(op, pos, v, n) =
         0 - 1
     else if n == 0 then
         pos
-    else if pos + n > load64(sym_addr("__rtc_scratch") + 3960) then
+    else if pos + n > load32(sym_addr("__rtc_scratch") + 3960) then
         0 - 1
     else
         rtc_bw1(op, pos, v, n)
@@ -2050,7 +2051,9 @@ fn rtc_cvpre(op, pos, p) =
 fn rtc_cvbase(sl, p) = bit_shl(15, sl) + (if sl == 0 then 15 else 0) + (if p >= 16 then bit_shl(1, p - 3) - 4096 else 0)
 fn rtc_cvesc(op, pos, lc, sl, p) =
     let base = rtc_cvbase(sl, p) in
-    if lc - base < bit_shl(1, p - 3) then
+    if p >= 16 and load32(sym_addr("__rtc_scratch") + 3964) == 0 then
+        0 - 1
+    else if lc - base < bit_shl(1, p - 3) then
         rtc_cvput(op, rtc_cvpre(op, pos, p), lc - base, p - 3)
     else
         rtc_cvesc(op, pos, lc, sl, p + 1)
@@ -2129,11 +2132,15 @@ fn rtc_cvblk(p, nc, maxc, op, pos, m) =
         let tz = rtc_hib(m) + 1 - tc in
         let p3 = rtc_cvtz(op, p2, nc, tc, tz, maxc) in
         rtc_cvres(rtc_cvrun(op, p3, m, tz, tc), tc)
-fn rtc_cavlc(coef, ci, nc, maxc, out, pos) =
+## nc >= 4096 (nC + 4096) allows level_prefix above 15 (High profiles); plain nC keeps the stream Baseline-valid and
+## answers -1 for a level that would need it (above 2063 with suffixLength 0 .. the 15-prefix escape range)
+fn rtc_cavlc(coef, ci, ncf, maxc, out, pos) = if ncf >= 4096 then rtc_cavlc2(coef, ci, ncf - 4096, maxc, out, pos, 1) else rtc_cavlc2(coef, ci, ncf, maxc, out, pos, 0)
+fn rtc_cavlc2(coef, ci, nc, maxc, out, pos, hpf) =
     if maxc != 16 and maxc != 15 and maxc != 4 or nc < 0 - 1 or nc == 0 - 1 and maxc != 4 or pos < 0 or rtc_isbuf(out) == 0 or rtc_fits(coef, ci, 2 * maxc) == 0 then
         mkint(0 - 1)
     else
-        let w = store64(sym_addr("__rtc_scratch") + 3960, rtc_len(out) * 8) in
+        let w = store32(sym_addr("__rtc_scratch") + 3960, rtc_len(out) * 8) in
+        let hp = store32(sym_addr("__rtc_scratch") + 3964, hpf) in
         rtc_cvblk(coef + 8 + ci, nc, maxc, out + 8, pos, rtc_cvmask(coef + 8 + ci, maxc))
 fn buf_h264_cavlc6(coef, ci, nc, maxc, out, pos) = rtc_cavlc(coef, rt_int(ci), rt_int(nc), rt_int(maxc), out, rt_int(pos))
 

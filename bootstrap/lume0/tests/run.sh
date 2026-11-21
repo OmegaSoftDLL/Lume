@@ -553,10 +553,10 @@ DEPMAIN
     rm -rf "$pw"
     # the resolver (dependencies of dependencies, conflicts), lume.lock honoured / --locked / --update, refused installs
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/registry/pkg_resolve_ok.src 2>&1 | grep -q " passed, 0 failed"; then ok "packages: transitive resolution, lume.lock honoured, --locked / --update, failing tests or proofs refuse the install"; else bad "packages: tests/registry/pkg_resolve_ok.src"; fi
-    # standard library modules of item 19: hash, csv, utf8, datetime, regex, deflate, http (local server), tlspki (openssl vectors)
+    # standard library modules of item 19: hash, csv, utf8, datetime, regex, deflate, zstd, http (local server), tlspki (openssl vectors)
     stdl_bad=""
-    for m in hash_ok csv_utf8_ok datetime_ok regex_ok deflate_ok http_ok tlspki_ok; do LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/$m.src > "$ntmp/stdl.out" 2>&1; grep -q " passed, 0 failed" "$ntmp/stdl.out" || stdl_bad="$stdl_bad $m"; done
-    if [ -z "$stdl_bad" ]; then ok "standard library: hash, csv, utf8, datetime, regex, deflate, http, tlspki"; else bad "standard library:$stdl_bad"; fi
+    for m in hash_ok csv_utf8_ok datetime_ok regex_ok deflate_ok zstd_ok http_ok tlspki_ok; do LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/$m.src > "$ntmp/stdl.out" 2>&1; grep -q " passed, 0 failed" "$ntmp/stdl.out" || stdl_bad="$stdl_bad $m"; done
+    if [ -z "$stdl_bad" ]; then ok "standard library: hash, csv, utf8, datetime, regex, deflate, zstd, http, tlspki"; else bad "standard library:$stdl_bad"; fi
     # builtin contracts known to the prover: buf_bits_write (p + n or -1), buf_get, buf_len, after a let or as the result
     LUME_BIN_DIR="$ntmp" ../../lume prove ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.json" 2>/dev/null || true
     LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.out" 2>&1 || true

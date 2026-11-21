@@ -1,0 +1,80 @@
+## zstd_ok.src -- `use std/zstd`: frames written by the zstd command-line tool decode to the original bytes (compressed
+## blocks with Huffman literals and FSE sequences, RLE and raw blocks, no checksum, skippable and concatenated frames);
+## what zstd_compress writes decodes back at every level; corrupt frames are refused, never crash; XXH64 digests match
+## xxh64sum
+use zstd
+
+fn hexv(c) = if c >= "0" and c <= "9" then ord(c) - 48 else ord(c) - 87
+fn unhex(s) = let b = buf_new(count(s) / 2) in unhex_go(s, b, 0)
+fn unhex_go(s, b, i) = if i >= count(s) / 2 then b else let w = buf_set(b, i, hexv(at(s, 2 * i)) * 16 + hexv(at(s, 2 * i + 1))) in unhex_go(s, b, i + 1)
+fn rep(s, k) = if k == 0 then "" else s + rep(s, k - 1)
+fn bufeq(a, an, b, bn) = an == bn and bufeq_go(a, b, 0, an)
+fn bufeq_go(a, b, i, n) = if i >= n then true else if buf_get(a, i) != buf_get(b, i) then false else bufeq_go(a, b, i + 1, n)
+fn dstr(h) = let v = unhex(h) in let r = zstd_decompress(v, buf_len(v)) in if r.ok == 1 then buf_to_str(r.buf, 0, r.n) else "<" + r.err + ">"
+## pseudo-random lowercase letters and spaces (the same generator wrote the vectors' inputs)
+fn gen(n, x) = gen_go(buf_new(n), 0, n, x)
+fn gen_go(b, i, n, x) = if i >= n then b else let v = bit_shr(x, 16) % 32 in let w = buf_set(b, i, if v < 26 then 97 + v else 32) in gen_go(b, i + 1, n, (x * 1103515245 + 12345) % 2147483648)
+fn word(i) = wnth(["lume ", "zstd ", "frame ", "block ", "huffman ", "fse ", "sequence ", "literal ", "offset ", "match ", "window ", "checksum ", "decoder ", "encoder ", "stream ", "table "], i)
+fn wnth(xs, i) = match xs
+    Nil        => ""
+    Cons(h, t) => if i == 0 then h else wnth(t, i - 1)
+fn wordsb(x, n) = buf_slice(wb_go(buf_new(n + 16), 0, n, x), 0, n)
+fn wb_go(b, i, n, x) = if i >= n then b else let w = word(bit_shr(x, 16) % 16) in let c = wb_put(b, i, w, 0, count(w)) in wb_go(b, i + count(w), n, (x * 1103515245 + 12345) % 2147483648)
+fn wb_put(b, i, w, j, k) = if j >= k then 0 else let z = buf_set(b, i + j, ord_at(w, j)) in wb_put(b, i, w, j + 1, k)
+fn words(x, acc, n) = buf_to_str(wordsb(x, n), 0, n)
+fn lcg(b, i, n, x) = if i >= n then b else let w = buf_set(b, i, bit_shr(x, 16) % 256) in lcg(b, i + 1, n, (x * 1103515245 + 12345) % 2147483648)
+
+## XXH64 (seed 0) against xxh64sum
+fn gx(b) = let x = xxh64_buf(b, 0, buf_len(b)) in zs_hex8(x.hi, 8) + zs_hex8(x.lo, 8)
+fn test_xxh64_vectors() = xxh64_hex("") == "ef46db3751d8e999" and xxh64_hex("a") == "d24ec4f1a98c6e5b" and xxh64_hex("abc") == "44bc2cf5ad770999" and gx(gen(100, 3)) == "de7a796af3038d11" and gx(gen(1000, 5)) == "1df953a626102a2a"
+
+## frames written by zstd 1.5.7
+fn v_t1() = "28b52ffd64d0015d01004242080ed0e7447ec95c48926b549c80f01604b7f508eb5aa5e882f7ef3b66868bb6140201004c752af50464ec077f"
+fn v_t3() = "28b52ffd64eb02650000287a7a656e640100e32b8005e590346b"
+fn v_t4() = "28b52ffd2003190000616263"
+fn v_t5() = "28b52ffd64d0068d0e00a2461314b0256da04fe436b6b49b6f2c9348310c0b198b08d667156e2e41684181830c0599ab5a6168066e5e347d0b46c9fd9b521648e76cca75309fc817f02c1f481fbe4d822e90f559857e967f6b0180d4a8912b49526bd80d2002428c82ce3a113018cb8147688646a5c63a26512a6b511de8cd9486881c9fcbe2801a214da4f1907c7655cf899ac903dd0d3a4c94ad67aa2abde18418376fc58a4e46e045de58defbbfd70168223c89e9db9d335fc1bfe1b0847d14210da9a9b59a7884bbfec201a0a2a7ef7c9b4cfd839207faac9962c9366140999724a8c74cb123057951a2724a106a3744220ea6d83ff045456577880aad1b2d94596ec79bd5f02e5b433bb6c45c29b7cc81a16e40ef8d423a8378146b28d0084b7836cf78b807e4cdeed563df9668068abfb3d0441aa23bfc8bd6f16814ec8282709d27d0f6b4395d50f548950d4d391e2f81432abbc2fe5d8b3ccfd0165600aafa9ca8379bae3001ea20d4c45485257002ce004e0887d74628a44b40d7f4879289b9421ae8a3340630ecc120742e5a57c7477830a110e153488ea032fbaa0ce6bd8529d4a67a19207a44783b7ef07cdad880325d9370c0f26f17944661612f89d075b608b5556e0201fe8a7629bb7c668a03fb51a162e75205d0cd178d"
+## level 19: a compressed block, checksum
+fn test_cli_level19() = dstr(v_t1()) == rep("Lume decompresses Zstandard frames. ", 20)
+## level 3 on 2000 bytes of words: Huffman literals in four streams, FSE-compressed sequence tables
+fn test_cli_words() = dstr(v_t5()) == words(11, "", 2000)
+## level 1 on a long run: RLE literals and a match at offset 1
+fn test_cli_run() = dstr(v_t3()) == rep("z", 1000) + "end"
+## a raw block, no checksum, single segment
+fn test_cli_raw_no_checksum() = dstr(v_t4()) == "abc"
+## two frames with a skippable frame between them
+fn test_cli_concatenated() = dstr(v_t3() + "502a4d180300000078797a" + v_t4()) == rep("z", 1000) + "endabc"
+
+## round trips at every level over text, words, a run, random bytes
+fn mixed() =
+    let t = buf_from_str(rep("Zstandard frames written by Lume decode with zstd -d. ", 200)) in
+    let w = wordsb(5, 30000) in
+    let r = lcg(buf_new(4000), 0, 4000, 9) in
+    let all = buf_new(buf_len(t) + 30000 + 4000 + 3000) in
+    let a = buf_copy(all, 0, t, 0, buf_len(t)) in
+    let c = buf_copy(all, buf_len(t), w, 0, 30000) in
+    let d = buf_copy(all, buf_len(t) + 30000, r, 0, 4000) in
+    all
+fn rt(b, l) = let z = zstd_compress_level(b, buf_len(b), l) in let r = zstd_decompress(z.buf, z.n) in r.ok == 1 and bufeq(r.buf, r.n, b, buf_len(b))
+fn rts(b, l) = if l > 9 then true else rt(b, l) and rts(b, l + 1)
+fn test_round_trip_levels() = rts(mixed(), 1) and rt(buf_new(0), 3) and rt(buf_from_str("a"), 3) and rt(buf_from_str("abcabcabcabcabcabcabc"), 1)
+## more than one 128 KiB block, a window past the first block, the levels ordered by size
+fn test_multi_block() = let b = wordsb(3, 300000) in let z1 = zstd_compress_level(b, 300000, 1) in let z9 = zstd_compress_level(b, 300000, 9) in rt(b, 3) and z9.n <= z1.n and z1.n < 300000 / 3
+## block kinds: a run is RLE blocks (a few bytes), random bytes are raw blocks (3 bytes of header each), text compresses
+
+fn test_block_kinds() = let zeros = buf_new(200000) in let z = zstd_compress(zeros, 200000) in let r = lcg(buf_new(5000), 0, 5000, 4) in let zr = zstd_compress(r, 5000) in let t = buf_from_str(rep("compressible text ", 100)) in let zt = zstd_compress(t, buf_len(t)) in z.n < 40 and rt(zeros, 3) and zr.n == 5000 + 3 + 4 + 2 + 4 + 1 and rt(r, 3) and zt.n < 100
+fn test_strings() = zstd_decompress_str(zstd_compress_str(rep("string round trip ", 50))) == rep("string round trip ", 50)
+
+## refusals: not zstd, no frame, truncated, a checksum that does not match, a reserved header bit, a dictionary ID,
+## a block type 3, an offset before the start
+fn flip(h, k, x) = let v = unhex(h) in let w = buf_set(v, k, bit_xor(buf_get(v, k), x)) in v
+fn derr(v) = (zstd_decompress(v, buf_len(v))).err
+fn test_refusals() =
+    derr(buf_from_str("not zstd")) == "not zstd data" and derr(buf_new(0)) == "no zstd frame" and derr(flip(v_t1(), 56, 1)) == "content checksum mismatch" and derr(flip(v_t4(), 4, 8)) == "reserved bit set in the frame header" and derr(unhex("28b52ffd210703190000616263")) == "dictionaries are not supported" and derr(flip(v_t4(), 6, 6)) == "reserved block type" and trunc_all(unhex(v_t5()), 0)
+fn trunc_all(v, k) = if k >= buf_len(v) then true else (zstd_decompress(v, k)).ok == 0 and trunc_all(v, k + 1)
+## every single-byte corruption of a compressed frame is refused or decodes to the right bytes (the checksum catches the
+## rest); the decoder never stops the program
+fn fuzz(v, e, k) = if k >= buf_len(v) then true else fuzz1(v, e, k) and fuzz(v, e, k + 1)
+fn fuzz1(v, e, k) = let w = buf_new(buf_len(v)) in let c = buf_copy(w, 0, v, 0, buf_len(v)) in let x = buf_set(w, k, bit_xor(buf_get(w, k), 90)) in let r = zstd_decompress(w, buf_len(w)) in r.ok == 0 or bufeq(r.buf, r.n, e, buf_len(e))
+fn test_corruption_never_crashes() = let e = buf_from_str(words(11, "", 2000)) in fuzz(unhex(v_t5()), e, 0) and fuzz(unhex(v_t1()), buf_from_str(rep("Lume decompresses Zstandard frames. ", 20)), 0)
+## our frames: content size and checksum present; decoded by the same decoder that reads the zstd tool's frames
+fn test_frame_header() = let z = zstd_compress(buf_from_str("hello hello hello hello"), 23) in buf_get(z.buf, 0) == 40 and buf_get(z.buf, 3) == 253 and buf_get(z.buf, 4) == 36 and buf_get(z.buf, 5) == 23

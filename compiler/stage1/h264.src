@@ -18,6 +18,9 @@
 ##       the stride; a horizontal edge: across the stride, along 1). bs and tc0 are lists with one value per segment
 ##       of 4 luma lines (2 chroma lines, 4:2:0): bS 0..4 and the tC0 of table 8-17 for that bS. lines: 1..16
 ##       luma, 1..8 chroma; chroma 1 uses the chroma filters.
+##   buf_h264_deblock_edge_packed(buf, q0, across, along, lines, bstc, alpha, beta, chroma)
+##       the same edge with bS / tC0 packed once by h264_bs_pack(bs0, bs1, bs2, bs3, tc0, tc1, tc2, tc3) (bS k at bits
+##       4k, tC0 k at bits 16 + 8k): the per-edge cost is the filter alone.
 
 fn h264_u16(v) = v >= 0 and v <= 65535
 fn h264_q(v) = v > 0 - 536870912 and v < 536870912
@@ -30,30 +33,29 @@ fn h264_wh(w, h) = w >= 1 and w <= 16 and h >= 1 and h <= 16
 pub fn buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds) / {io} = if h264_mc_ok(ri, rs, rw, rh, di, ds) and h264_wh(w, h) and h264_q(4 * x + mx) and h264_q(4 * y + my) then buf_h264_lmc6(ref, dst, ri * 65536 + rs, di * 65536 + ds, h264_geom(rw, rh, w, h), h264_pos(4 * x + mx, 4 * y + my)) else 0 - 1
 pub fn buf_h264_chroma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds) / {io} = if h264_mc_ok(ri, rs, rw, rh, di, ds) and h264_wh(w, h) and h264_q(8 * x + mx) and h264_q(8 * y + my) then buf_h264_cmc6(ref, dst, ri * 65536 + rs, di * 65536 + ds, h264_geom(rw, rh, w, h), h264_pos(8 * x + mx, 8 * y + my)) else 0 - 1
 
-## bS (4 bits) and tC0 (8 bits) of each segment packed into one word: bS k at bits 4k, tC0 k at bits 16 + 8k
-fn h264_pack(bs, tc, k, acc) = match bs
-    Nil        => acc
-    Cons(b, t) => h264_pack2(b, t, tc, k, acc)
-fn h264_pack2(b, t, tc, k, acc) =
-    let c = h264_head(tc) in
-    if k >= 4 or b < 0 or b > 4 or c < 0 or c > 255 then
-        0 - 1
-    else
-        h264_pack(t, h264_tail(tc), k + 1, acc + b * h264_pow(16, k) + c * 65536 * h264_pow(256, k))
-fn h264_head(xs) = match xs
-    Nil        => 0
-    Cons(h, t) => h
-fn h264_tail(xs) = match xs
-    Nil        => Nil
-    Cons(h, t) => t
-fn h264_pow(b, k) = if k == 0 then 1 else b * h264_pow(b, k - 1)
+## bS (4 bits) and tC0 (8 bits) of each segment packed into one word: bS k at bits 4k, tC0 k at bits 16 + 8k.
+## The lists hold one value per segment (at most 4); a missing tC0 counts 0. Unrolled, no recursion and no powers
+## (the recursive packer cost 1 us of the 1.27 us an edge took: LumeDesk profile, 2026-11-21).
+fn h264_pack(bs, tc) = let n = count(bs) in if n > 4 or count(tc) > 4 then 0 - 1 else h264_pack4(h264_at(bs, 0, n), h264_at(bs, 1, n), h264_at(bs, 2, n), h264_at(bs, 3, n), h264_at(tc, 0, count(tc)), h264_at(tc, 1, count(tc)) + h264_at(tc, 2, count(tc)) * 256 + h264_at(tc, 3, count(tc)) * 65536)
+fn h264_at(xs, i, n) = if i < n then xs[i] else 0
+## h264_pack4(b0, b1, b2, b3, t0, t123): t123 holds tC0 of segments 1, 2, 3 as bytes (t1 + t2 * 256 + t3 * 65536)
+fn h264_pack4(b0, b1, b2, b3, t0, t123) = if h264_bsok(b0) and h264_bsok(b1) and h264_bsok(b2) and h264_bsok(b3) and t0 >= 0 and t0 <= 255 and h264_tcok(t123) then b0 + b1 * 16 + b2 * 256 + b3 * 4096 + t0 * 65536 + t123 * 16777216 else 0 - 1
+fn h264_bsok(b) = b >= 0 and b <= 4
+fn h264_tcok(t) = t >= 0 and t < 16777216
+## h264_bs_pack(bs0, bs1, bs2, bs3, tc0, tc1, tc2, tc3): the word buf_h264_deblock_edge_packed takes, built once (-1 when
+## a bS is outside 0..4 or a tC0 outside 0..255); four equal segments: h264_bs_pack(b, b, b, b, t, t, t, t)
+pub fn h264_bs_pack(bs0, bs1, bs2, bs3, tc0, tc1, tc2, tc3) = if tc1 < 0 or tc1 > 255 or tc2 < 0 or tc2 > 255 or tc3 < 0 or tc3 > 255 then 0 - 1 else h264_pack4(bs0, bs1, bs2, bs3, tc0, tc1 + tc2 * 256 + tc3 * 65536)
 fn h264_span(v) = v > 0 - 16777216 and v < 16777216
-pub fn buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma) / {io} = let cp = h264_pack(bs, tc0, 0, 0) in if cp < 0 or h264_span(across) == false or h264_span(along) == false or lines < 1 or lines > 16 or alpha < 0 or alpha > 255 or beta < 0 or beta > 255 or q0 < 0 then 0 - 1 else buf_h264_dbk5(buf, q0, across + 16777216 + (along + 16777216) * 33554432, lines + (if chroma != 0 then 256 else 0) + alpha * 65536 + beta * 16777216, cp)
+pub fn buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma) / {io} = buf_h264_deblock_edge_packed(buf, q0, across, along, lines, h264_pack(bs, tc0), alpha, beta, chroma)
+## the same with bS / tC0 already packed into one word (h264_bs_pack): no list, nothing to build per edge
+pub fn buf_h264_deblock_edge_packed(buf, q0, across, along, lines, bstc, alpha, beta, chroma) / {io} = if bstc < 0 or h264_span(across) == false or h264_span(along) == false or lines < 1 or lines > 16 or alpha < 0 or alpha > 255 or beta < 0 or beta > 255 or q0 < 0 then 0 - 1 else buf_h264_dbk5(buf, q0, across + 16777216 + (along + 16777216) * 33554432, lines + (if chroma != 0 then 256 else 0) + alpha * 65536 + beta * 16777216, bstc)
 
 ## --- CAVLC residual_block (7.3.5.3.2, 9.2): one block of coefficients into bits ---------------------------------------
 ##   buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos)  -> {pos, total}: the maxc (16, 15 or 4) coefficients at coef + ci
 ##       (int16 little endian, in zigzag order) coded with the coeff_token table nC selects (0..1, 2..3, 4..7, 8 and
 ##       more, -1 for chroma DC), written into out from bit pos (most significant bit first, like buf_bits_write). pos
 ##       is the new bit position (-1 on a wrong argument or a full buffer) and total the TotalCoeff (nC of the
-##       neighbours). The runtime routine buf_h264_cavlc6 answers pos * 32 + total.
+##       neighbours). The runtime routine buf_h264_cavlc6 answers pos * 32 + total. The stream stays valid for the
+##       Baseline, Main and Extended profiles: a level that would need level_prefix above 15 (|level| above about
+##       2063 at suffixLength 0) gives pos -1; nc + 4096 allows those escapes (High profiles).
 pub fn buf_h264_cavlc4x4(coef, ci, nc, maxc, out, pos) / {io} = let r = buf_h264_cavlc6(coef, ci, nc, maxc, out, pos) in if r < 0 then {pos: 0 - 1, total: 0} else {pos: r / 32, total: r % 32}

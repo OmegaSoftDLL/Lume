@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`buf_h264_deblock_edge` without per-edge list work; `buf_h264_deblock_edge_packed`; CAVLC Baseline by default (LumeDesk).**
+  The wrapper packs bS / tC0 unrolled (it recursed over the lists with a recursive power: about 1 us of each edge);
+  `buf_h264_deblock_edge_packed(buf, q0, across, along, lines, bstc, alpha, beta, chroma)` takes the word that
+  `h264_bs_pack(bs0, bs1, bs2, bs3, tc0, tc1, tc2, tc3)` builds once. `buf_h264_cavlc4x4` (and the macroblock CAVLC)
+  keep the stream valid for Baseline / Main / Extended: a level that would need level_prefix above 15 answers pos -1;
+  nc + 4096 allows those escapes (High profiles).
+- **Every public builtin is in the factual reference** (151 more entries, EN and PT, with runnable examples; status
+  per builtin incl. kernel-only); builtins_regress_ok.src calls each documented builtin (54 tests).
+
+### Changed
 - **Integer loops run 30-40 % faster in ordinary code.** A function that loops by calling itself in tail position
   (literals, variables, operators, if, let and calls only; at most 6 parameters) is emitted twice: a specialized body
   entered when its integer parameters are small ints and its buffer parameters are buffers (one test), with no tag
@@ -44,6 +54,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether the tree was current; `--root`, `--verbose`; an interrupted run is recovered by the next one. sync-check
   lists the files of compiler/ and tests/ that differ from another tree (the stale-tree trap). Tests:
   compiler/stage1/ldev_ok.src.
+- **Compression at zlib level, and Zstandard (LumeDesk item 19), in Lume.** `use std/deflate`: `deflate_level(b, off,
+  n, level)`, `zlib_compress_level` and `gzip_level` follow zlib's algorithm for levels 1-9 (level 0: stored blocks):
+  hash chains over the 32 KiB window, zlib's good / lazy / nice / chain table, greedy matching with short-match
+  insertion for levels 1-3 and lazy evaluation from level 4 (a length-3 match farther than 4096 is dropped, as zlib
+  does), a block every 16383 symbols, each written in the smallest of stored / fixed / dynamic Huffman; the zlib header
+  names the level (FLEVEL) and gzip's XFL marks levels 1 and 9. `deflate_buf` / `zlib_compress` / `gzip` are level 6.
+  Measured against Python's zlib on 1 MB of text, 1 MB of Lume source, an ELF binary and skewed bytes: within 0.1 % of
+  zlib at levels 1, 3, 4, 6 and 9 (smaller on 19 of the 20 level / input pairs, 0.01 % larger on the other), and
+  Python's zlib decompresses every output. The
+  Huffman code lengths are now built by the two-queue method over the sorted frequencies with the Kraft sum repaired
+  after clamping (was a quadratic merge and frequency halving). `inflate_buf` decodes through 10-bit first-level tables
+  and refuses what zlib refuses: more than 286 / 30 codes, over-subscribed or incomplete codes (except a single one-bit
+  code), a missing end-of-block code, distances before the output, truncated data. About 1.5 MB/s compressing at level
+  6 (5 MB/s at level 1) and 12-20 MB/s decompressing (were 0.34 and 1.5 MB/s).
+  `use std/zstd` (new): `zstd_decompress` reads every RFC 8878 frame the zstd tool writes (raw, RLE and compressed
+  blocks; raw, RLE, Huffman 1- and 4-stream and treeless literals; predefined, RLE, FSE-compressed and repeated
+  sequence tables; repeat offsets; skippable and concatenated frames; the content size and the XXH64 checksum checked;
+  frames that need a dictionary are refused), checked byte for byte against zstd 1.5.7 output at levels 1-19 and
+  `--ultra -22`, `--long`, streamed input and corrupted frames (refused, never a crash). `zstd_compress_level(b, n,
+  level)` (`zstd_compress`: level 3) writes one frame with the content size and the checksum, blocks of up to 128 KiB
+  each raw, RLE or compressed (Huffman literals with direct or FSE-compressed weights, FSE sequences with the predefined
+  or the block's own tables, repeat offsets), matched through hash chains over a 1 MiB window with lazy evaluation and a
+  cost rule for short far matches; `zstd -d` decompresses every output. Level 3 is smaller than `zstd -3` on text,
+  source, binary and skewed data, and level 9 is within 0.5 % of `zstd -9` on text, source and binary (1 MB/s compressing, about 10 MB/s decompressing).
+  `xxh64_buf` / `xxh64` / `xxh64_hex` (XXH64, checked against xxh64sum). Tests: deflate_ok.src (20), zstd_ok.src (13).
+- **Remote package registries (item 19, part C).** `lume pkg install|resolve --registry=https://host/path` (or
+  `[registry] url = "..."` in lume.toml, or `LUME_PKG_REGISTRY`) reads an index registry: `lume-index.toml` holds one
+  `[[package]]` table per version (name, version, archive, the archive's sha256, the package hash, deps). The index
+  and the archives come through `std/http` (HTTPS with TLS 1.3 and certificate checks; plain http only to a loopback
+  host unless `--allow-http`); a directory path works the same way. Archives are ustar `.tar.gz` files written
+  reproducibly by Lume (`tar` reads them) and holding only lume.toml and NAME.src files; each is checked against the
+  index's SHA-256 before anything is extracted, kept in a content-addressed cache (`--cache=DIR`, `LUME_PKG_CACHE`,
+  default ~/.lume/pkg-cache), then staged, tested, proved and installed like a store package. lume.lock lines gained
+  a source word (`URL#sha256=HEX`, `git+URL#COMMIT`), and a published version whose archive changed since the lock is
+  refused. `--registry=git+URL` reads an index registry kept in a git repository (its commit pinned in lume.lock); a
+  dependency `name = { git = "URL", rev = "REV" }` (`lume pkg add NAME --git=URL [--rev=REV]`) is fetched with the
+  system git through os_run (no shell) and pinned to its commit until `--update`. `--offline` installs from a complete
+  lume.lock and the cache without the network. `lume pkg publish [dir] --registry=DIR` writes
+  DIR/NAME/NAME-VERSION.tar.gz and updates DIR/lume-index.toml (static hosting). The code is
+  `compiler/stage1/lpkgreg.src`; tests `tests/registry/pkg_remote_ok.src` (index parser, archive round trip and
+  refusals, `tar` interoperability, a tampered archive refused before extraction, a changed published version refused,
+  an install over HTTP from a Lume server on 127.0.0.1, offline reinstalls, git pins and a git registry).
 - **Package resolver and a lock that is honoured (item 19, part A).** The versions, the resolver and the lock format
   moved into `compiler/stage1/lpkg.src` (pure, tested by `tests/registry/pkg_resolve_ok.src`). `lume pkg install`
   now resolves the dependencies of dependencies too: each round picks, for every package named by the manifest or by

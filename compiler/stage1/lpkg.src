@@ -8,7 +8,9 @@
 ## [dependencies] as `name = "REQ"`: REQ is an exact version "1.2.3", "^1.2" (same major, at least 1.2), "~1.2.3"
 ## (same major.minor, at least 1.2.3), ">=1.2" (at least 1.2) or "*". A requirement may join several with commas:
 ## ">=1.2, <2" (every part must hold; "<V", "<=V", ">V" are accepted too).
-## The [packages] block of lume.lock holds one `name version hash` line per installed package.
+## A dependency may also be a git repository: `name = { git = "URL", rev = "REV" }` (lpk_git_deps).
+## The [packages] block of lume.lock holds one `name version hash [source]` line per installed package; the source
+## (lpkgreg.src) names the registry archive and its SHA-256, or the git repository and the pinned commit.
 use fs_sha256_file
 
 ## --- text helpers ------------------------------------------------------------------------------------------------
@@ -92,13 +94,42 @@ fn lpk_deps_go(ls, cur) = match ls
     Cons(h, t) => let l = lpk_trim(h) in
         if lpk_starts(l, "[") then
             lpk_deps_go(t, l)
-        else if cur == "[dependencies]" and lpk_kv_key(l) != "" and not lpk_starts(l, "#") then
+        else if cur == "[dependencies]" and lpk_kv_key(l) != "" and not lpk_starts(l, "#") and not lpk_starts(lpk_kv_val(l), "{") then
             Cons({name: lpk_kv_key(l), req: lpk_unq(lpk_kv_val(l))}, lpk_deps_go(t, cur))
         else
             lpk_deps_go(t, cur)
+## the {name, url, rev} of the git dependencies of [dependencies]: `name = { git = "URL", rev = "REV" }` (rev may be
+## left out: the repository's default branch)
+fn lpk_git_deps(text) = lpk_gdeps_go(lpk_lines(text, 0), "")
+fn lpk_gdeps_go(ls, cur) = match ls
+    Nil        => Nil
+    Cons(h, t) => let l = lpk_trim(h) in
+        if lpk_starts(l, "[") then
+            lpk_gdeps_go(t, l)
+        else if cur == "[dependencies]" and lpk_kv_key(l) != "" and not lpk_starts(l, "#") and lpk_starts(lpk_kv_val(l), "{") then
+            Cons({name: lpk_kv_key(l), url: lpk_inline(lpk_kv_val(l), "git"), rev: lpk_inline(lpk_kv_val(l), "rev")}, lpk_gdeps_go(t, cur))
+        else
+            lpk_gdeps_go(t, cur)
+## the quoted value of key in an inline table `{ a = "x", b = "y" }` ("" when absent)
+fn lpk_inline(v, key) = lpk_inl_go(v, key, 0)
+fn lpk_inl_go(v, key, i) =
+    let k = lpk_find(v, key, i) in
+    if k < 0 then
+        ""
+    else
+        let before = (if k == 0 then "{" else at(v, k - 1)) in
+        let rest = lpk_triml(slice(v, k + count(key), count(v)), 0) in
+        if (before == "{" or before == " " or before == ",") and lpk_starts(rest, "=") then
+            lpk_inl_val(lpk_triml(slice(rest, 1, count(rest)), 0))
+        else
+            lpk_inl_go(v, key, k + 1)
+fn lpk_inl_val(s) = if lpk_starts(s, chr(34)) then (let e = lpk_find(s, chr(34), 1) in if e < 0 then "" else slice(s, 1, e)) else ""
+## a git dependency line
+fn lpk_git_line(name, url, rev) = name + " = { git = " + chr(34) + url + chr(34) + (if rev == "" then "" else ", rev = " + chr(34) + rev + chr(34)) + " }"
 ## add `name = "REQ"` under [dependencies] (the section is created when missing; an existing entry is replaced)
-fn lpk_set_dep(text, name, req) =
-    let line = name + " = " + chr(34) + req + chr(34) in
+fn lpk_set_dep(text, name, req) = lpk_set_line(text, name, name + " = " + chr(34) + req + chr(34))
+## put a whole `name = ...` line under [dependencies] (replacing name's line)
+fn lpk_set_line(text, name, line) =
     let ls = lpk_drop_dep(lpk_lines(text, 0), "", name) in
     if lpk_has_sec(ls, "[dependencies]") then
         lpk_join(lpk_insert_after(ls, "[dependencies]", line))
@@ -330,20 +361,25 @@ fn lpk_lock_entry(l) =
     let a = lpk_word_end(l, 0) in
     let rest = lpk_trim(slice(l, a, count(l))) in
     let b = lpk_word_end(rest, 0) in
-    {name: slice(l, 0, a), ver: slice(rest, 0, b), hash: lpk_trim(slice(rest, b, count(rest)))}
+    let rest2 = lpk_trim(slice(rest, b, count(rest))) in
+    let c = lpk_word_end(rest2, 0) in
+    {name: slice(l, 0, a), ver: slice(rest, 0, b), hash: slice(rest2, 0, c), src: lpk_trim(slice(rest2, c, count(rest2)))}
 fn lpk_lock_ver(locks, name) = match locks
     Nil        => ""
     Cons(e, t) => if e.name == name then e.ver else lpk_lock_ver(t, name)
 fn lpk_lock_hash(locks, name) = match locks
     Nil        => ""
     Cons(e, t) => if e.name == name then e.hash else lpk_lock_hash(t, name)
+fn lpk_lock_src(locks, name) = match locks
+    Nil        => ""
+    Cons(e, t) => if e.name == name then e.src else lpk_lock_src(t, name)
 ## the [packages] block for {name, ver, hash} entries (sorted by name, the order lume_driver writes them)
 fn lpk_lock_block(entries) = match entries
     Nil        => ""
     Cons(e, t) => "[packages]" + chr(10) + lpk_lock_lines(entries)
 fn lpk_lock_lines(entries) = match entries
     Nil        => ""
-    Cons(e, t) => e.name + " " + e.ver + " " + e.hash + chr(10) + lpk_lock_lines(t)
+    Cons(e, t) => e.name + " " + e.ver + " " + e.hash + (if e.src == "" then "" else " " + e.src) + chr(10) + lpk_lock_lines(t)
 ## `--locked`: "" when the resolution is exactly what lume.lock holds, else why not
 fn lpk_locked_diff(picks, locks) =
     let a = lpk_locked_picks(picks, locks) in

@@ -1,0 +1,423 @@
+## lpkgreg -- remote package registries for `lume pkg` (item 19).
+##
+## lpkg.src holds the versions, the resolver and lume.lock; this module adds what a registry that is not a local store
+## needs, and lume_driver calls it:
+##   * the index (lume-index.toml at the registry's root): one [[package]] table per published version,
+##       name = "base"  version = "1.0.0"  archive = "base/base-1.0.0.tar.gz"
+##       sha256 = "<SHA-256 of the archive file>"  hash = "<the package hash lpk_hash gives over its files>"
+##       deps = ["util ^1.0", "other >=1.2, <2"]
+##     `archive` is relative to the registry's root (or an absolute https:// URL); lpr_index_parse refuses a malformed
+##     index with the line of the fault, and lpr_index_text writes the same format back (entries in name, version order);
+##   * the package archive: a ustar tar (regular files only, flat names: lume.toml and NAME.src) inside gzip
+##     (std/deflate), written byte-for-byte reproducibly (mtime 0, uid 0, mode 0644), so `tar xzf` reads it and a
+##     publish of the same files gives the same SHA-256; lpr_unpack refuses directories, links, `..`, duplicate names,
+##     checksum faults and truncation;
+##   * the download cache: CACHE/archives/SHA256.tar.gz (content addressed: an archive is used only after its SHA-256
+##     matches the index, BEFORE anything is extracted), CACHE/index/KEY/lume-index.toml (the last index fetched from
+##     a URL registry, what `--offline` resolves against) and CACHE/git/KEY/ (git clones);
+##   * fetches: http:// and https:// through std/http (https: TLS 1.3 with the certificate checked against the system
+##     roots and the host name); plain http only to a loopback host unless the caller allows it; a path or file://
+##     URL is read from the disk; git through the system `git` started by os_run, never a shell.
+use lpkg
+use deflate
+use http
+use hostio
+use fs_sha256_file
+
+## --- small helpers -------------------------------------------------------------------------------------------------
+fn lpr_bad(err) = {ok: false, err: err, files: Nil}
+fn lpr_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lpr_rev(t, Cons(h, acc))
+fn lpr_hexc(c) = (c >= "0" and c <= "9") or (c >= "a" and c <= "f")
+fn lpr_allhex(s, i) = if i >= count(s) then true else if lpr_hexc(at(s, i)) then lpr_allhex(s, i + 1) else false
+fn lpr_is_sha(s) = count(s) == 64 and lpr_allhex(s, 0)
+fn lpr_is_commit(s) = count(s) == 40 and lpr_allhex(s, 0)
+fn lpr_namec(c) = (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_" or c == "-"
+fn lpr_chars(s, i, dot) = if i >= count(s) then true else if lpr_namec(at(s, i)) or (dot and at(s, i) == ".") then lpr_chars(s, i + 1, dot) else false
+## a package name: letters, digits, `_` and `-`, at most 64 bytes, not starting with `-`
+fn lpr_name_ok(n) = count(n) > 0 and count(n) <= 64 and at(n, 0) != "-" and lpr_chars(n, 0, false)
+## a file of a package archive: lume.toml or NAME.src, no directory, no leading dot
+fn lpr_file_ok(n) = count(n) <= 100 and count(n) > 0 and at(n, 0) != "." and lpr_chars(n, 0, true) and (n == "lume.toml" or (count(n) > 4 and lpk_ends(n, ".src")))
+fn lpr_key(s) = slice(lc_sha256(s), 0, 16)
+fn lpr_is_url(s) = lpk_starts(s, "http://") or lpk_starts(s, "https://")
+fn lpr_local(s) = if lpk_starts(s, "file://") then slice(s, 7, count(s)) else s
+fn lpr_trim_slash(s) = if count(s) > 1 and at(s, count(s) - 1) == "/" then lpr_trim_slash(slice(s, 0, count(s) - 1)) else s
+fn lpr_join(base, rel) = lpr_trim_slash(base) + "/" + rel
+## a relative archive path inside a registry: no `..` segment, not absolute, no backslash, no scheme
+fn lpr_rel_ok(a) = count(a) > 0 and at(a, 0) != "/" and not lpk_contains(a, "..") and not lpk_contains(a, chr(92)) and not lpk_contains(a, ":")
+## the archive's location: an absolute https:// URL stays, a relative path is joined to the registry root
+fn lpr_archive_url(reg, archive) = if lpr_is_url(archive) then archive else lpr_join(reg, archive)
+## a path git (a native program) understands: "/c/x" -> "C:/x" on Windows
+fn lpr_native(p) = if os_platform() == "windows" and count(p) >= 3 and at(p, 0) == "/" and at(p, 2) == "/" then lpr_upper(at(p, 1)) + ":" + slice(p, 2, count(p)) else p
+fn lpr_upper(c) = if c >= "a" and c <= "z" then chr(ord(c) - 32) else c
+
+## --- the archive: ustar inside gzip --------------------------------------------------------------------------------
+fn lpr_zeros(n) =
+    if n <= 0 then
+        ""
+    else if n == 1 then
+        chr(0)
+    else
+        let h = lpr_zeros(n / 2) in
+        h + h + (if n % 2 == 1 then chr(0) else "")
+fn lpr_padz(s, n) = s + lpr_zeros(n - count(s))
+fn lpr_oct(v, w) = lpr_octgo(v, w, "")
+fn lpr_octgo(v, w, acc) = if w == 0 then acc else lpr_octgo(v / 8, w - 1, chr(48 + v % 8) + acc)
+fn lpr_bsum(s, i, acc) = if i >= count(s) then acc else lpr_bsum(s, i + 1, acc + ord_at(s, i))
+## one 512-byte ustar header for a regular file
+fn lpr_tar_head(name, size) =
+    let pre = lpr_padz(name, 100) + "0000644" + chr(0) + "0000000" + chr(0) + "0000000" + chr(0) + lpr_oct(size, 11) + chr(0) + "00000000000" + chr(0) in
+    let post = "0" + lpr_zeros(100) + "ustar" + chr(0) + "00" + lpr_padz("lume", 32) + lpr_padz("lume", 32) + "0000000" + chr(0) + "0000000" + chr(0) + lpr_zeros(167) in
+    let sum = lpr_bsum(pre, 0, 0) + 256 + lpr_bsum(post, 0, 0) in
+    pre + lpr_oct(sum, 6) + chr(0) + " " + post
+fn lpr_round(n) = (n + 511) / 512 * 512
+fn lpr_tar_entry(f) = lpr_tar_head(f.name, count(f.data)) + f.data + lpr_zeros(lpr_round(count(f.data)) - count(f.data))
+fn lpr_tar(files) = match files
+    Nil        => lpr_zeros(1024)
+    Cons(f, t) => lpr_tar_entry(f) + lpr_tar(t)
+## the archive of {name, data} files (give them in name order: the archive keeps the order)
+fn lpr_archive(files) = gzip_str(lpr_tar(files))
+## the {name, data} files of a package directory (lume.toml and its .src files, in name order)
+fn lpr_dir_files(dir, names) = match names
+    Nil        => Nil
+    Cons(h, t) => Cons({name: h, data: fs_read_file(dir + "/" + h)}, lpr_dir_files(dir, t))
+
+fn lpr_cstr(s) = slice(s, 0, lpr_nul(s, 0))
+fn lpr_nul(s, i) = if i >= count(s) or ord_at(s, i) == 0 then i else lpr_nul(s, i + 1)
+fn lpr_octval(s) = let t = lpk_trim(lpr_cstr(s)) in if count(t) == 0 then 0 - 1 else lpr_octp(t, 0, 0)
+fn lpr_octp(s, i, acc) = if i >= count(s) then acc else if at(s, i) >= "0" and at(s, i) <= "7" then lpr_octp(s, i + 1, acc * 8 + ord(at(s, i)) - 48) else 0 - 1
+fn lpr_has_file(fs, name) = match fs
+    Nil        => false
+    Cons(f, t) => if f.name == name then true else lpr_has_file(t, name)
+## a tar text -> {ok, err, files}: every entry checked before any file is accepted
+fn lpr_untar(s) = lpr_untar_go(s, 0, Nil, 0)
+fn lpr_untar_go(s, i, acc, n) =
+    if i + 512 > count(s) then
+        lpr_bad("the archive ends inside a header")
+    else if ord_at(s, i) == 0 then
+        (if n == 0 then lpr_bad("the archive holds no file") else {ok: true, err: "", files: lpr_rev(acc, Nil)})
+    else if n >= 4096 then
+        lpr_bad("the archive holds more than 4096 files")
+    else
+        let h = slice(s, i, i + 512) in
+        let name = lpr_cstr(slice(h, 0, 100)) in
+        let size = lpr_octval(slice(h, 124, 136)) in
+        let sum = lpr_octval(slice(h, 148, 156)) in
+        let calc = lpr_bsum(slice(h, 0, 148), 0, 0) + 256 + lpr_bsum(slice(h, 156, 512), 0, 0) in
+        let typ = ord_at(h, 156) in
+        if sum != calc then
+            lpr_bad("entry " + str(n + 1) + ": bad header checksum")
+        else if typ != 48 and typ != 0 then
+            lpr_bad(name + ": only regular files may be in a package archive")
+        else if lpr_cstr(slice(h, 345, 500)) != "" or not lpr_file_ok(name) then
+            lpr_bad(name + ": not a package file name (lume.toml or NAME.src, no directory)")
+        else if size < 0 or i + 512 + size > count(s) then
+            lpr_bad(name + ": truncated")
+        else if lpr_has_file(acc, name) then
+            lpr_bad(name + ": appears twice")
+        else
+            lpr_untar_go(s, i + 512 + lpr_round(size), Cons({name: name, data: slice(s, i + 512, i + 512 + size)}, acc), n + 1)
+## a .tar.gz text -> {ok, err, files}
+fn lpr_unpack(gz) =
+    let b = buf_from_str(gz) in
+    let r = gunzip(b, buf_len(b)) in
+    if r.ok == 0 then
+        lpr_bad("not a gzip archive: " + r.err)
+    else
+        lpr_untar(buf_to_str(r.buf, 0, r.n))
+
+## --- the index -----------------------------------------------------------------------------------------------------
+## an entry: {name, ver, archive, sha256, hash, deps, line}; deps: {name, req}
+fn lpr_ix_new(line) = {name: "", ver: "", archive: "", sha256: "", hash: "", deps: Nil, line: line}
+fn lpr_ix_set(e, k, v) =
+    if k == "name" then
+        {name: v, ver: e.ver, archive: e.archive, sha256: e.sha256, hash: e.hash, deps: e.deps, line: e.line}
+    else if k == "version" then
+        {name: e.name, ver: v, archive: e.archive, sha256: e.sha256, hash: e.hash, deps: e.deps, line: e.line}
+    else if k == "archive" then
+        {name: e.name, ver: e.ver, archive: v, sha256: e.sha256, hash: e.hash, deps: e.deps, line: e.line}
+    else if k == "sha256" then
+        {name: e.name, ver: e.ver, archive: e.archive, sha256: v, hash: e.hash, deps: e.deps, line: e.line}
+    else if k == "hash" then
+        {name: e.name, ver: e.ver, archive: e.archive, sha256: e.sha256, hash: v, deps: e.deps, line: e.line}
+    else
+        e
+fn lpr_ix_deps(e, ds) = {name: e.name, ver: e.ver, archive: e.archive, sha256: e.sha256, hash: e.hash, deps: ds, line: e.line}
+## the quoted strings of a TOML array of strings: {ok, xs}
+fn lpr_qstrs(s) =
+    let t = lpk_trim(s) in
+    if count(t) < 2 or at(t, 0) != "[" or at(t, count(t) - 1) != "]" then
+        {ok: false, xs: Nil}
+    else
+        lpr_qgo(t, 1, count(t) - 1, Nil)
+fn lpr_qgo(s, i, end, acc) =
+    if i >= end then
+        {ok: true, xs: lpr_rev(acc, Nil)}
+    else if at(s, i) == " " or at(s, i) == "," or at(s, i) == chr(9) then
+        lpr_qgo(s, i + 1, end, acc)
+    else if at(s, i) == chr(34) then
+        let e = lpr_quote_end(s, i + 1, end) in
+        if e < 0 then {ok: false, xs: Nil} else lpr_qgo(s, e + 1, end, Cons(slice(s, i + 1, e), acc))
+    else
+        {ok: false, xs: Nil}
+fn lpr_quote_end(s, i, end) = if i >= end then 0 - 1 else if at(s, i) == chr(34) then i else lpr_quote_end(s, i + 1, end)
+## "util ^1.0" -> {name: "util", req: "^1.0"}; a bare name means "*"
+fn lpr_dep_of(s) =
+    let t = lpk_trim(s) in
+    let sp = lpk_find(t, " ", 0) in
+    if sp < 0 then
+        {name: t, req: "*"}
+    else
+        {name: slice(t, 0, sp), req: lpk_trim(slice(t, sp + 1, count(t)))}
+fn lpr_deps_of(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => Cons(lpr_dep_of(h), lpr_deps_of(t))
+fn lpr_deps_bad(ds) = match ds
+    Nil        => ""
+    Cons(d, t) => if not lpr_name_ok(d.name) then "bad dependency name " + chr(34) + d.name + chr(34) else if not lpk_req_ok(d.req) then "malformed requirement " + chr(34) + d.req + chr(34) + " for " + d.name else lpr_deps_bad(t)
+fn lpr_ix_has(es, name, ver) = match es
+    Nil        => false
+    Cons(e, t) => if e.name == name and e.ver == ver then true else lpr_ix_has(t, name, ver)
+## why an entry is not acceptable ("" when it is)
+fn lpr_ix_why(e, acc) =
+    if not lpr_name_ok(e.name) then
+        "a package needs a name of letters, digits, _ and -"
+    else if lpk_ver(e.ver) < 0 then
+        e.name + ": version " + chr(34) + e.ver + chr(34) + " is not like 1.2.3"
+    else if not lpr_is_sha(e.sha256) then
+        e.name + " " + e.ver + ": sha256 must be 64 lowercase hex digits"
+    else if e.hash != "" and not lpr_is_sha(e.hash) then
+        e.name + " " + e.ver + ": hash must be 64 lowercase hex digits"
+    else if not lpr_is_url(e.archive) and not lpr_rel_ok(e.archive) then
+        e.name + " " + e.ver + ": archive must be a relative path inside the registry (no ..) or an http(s) URL"
+    else if lpr_deps_bad(e.deps) != "" then
+        e.name + " " + e.ver + ": " + lpr_deps_bad(e.deps)
+    else if lpr_ix_has(acc, e.name, e.ver) then
+        e.name + " " + e.ver + " is listed twice"
+    else
+        ""
+fn lpr_ix_fail(line, err) = {ok: false, err: "lume-index.toml line " + str(line) + ": " + err, entries: Nil}
+## the index text -> {ok, err, entries}
+fn lpr_index_parse(text) = lpr_ix_go(lpk_lines(text, 0), 1, lpr_ix_new(0), false, Nil, false)
+fn lpr_ix_close(cur, inpkg, acc, k) =
+    if not inpkg then
+        {ok: true, err: "", acc: acc}
+    else
+        let w = lpr_ix_why(cur, acc) in
+        if w != "" then {ok: false, err: w, acc: acc} else {ok: true, err: "", acc: Cons(cur, acc)}
+fn lpr_ix_go(ls, ln, cur, inpkg, acc, fmt) = match ls
+    Nil        => let c = lpr_ix_close(cur, inpkg, acc, 0) in
+        if not c.ok then
+            lpr_ix_fail(cur.line, c.err)
+        else if not fmt then
+            lpr_ix_fail(1, "the index needs `format = 1` before its packages")
+        else
+            {ok: true, err: "", entries: lpr_rev(c.acc, Nil)}
+    Cons(h, t) => let l = lpk_trim(h) in
+        if l == "" or lpk_starts(l, "#") then
+            lpr_ix_go(t, ln + 1, cur, inpkg, acc, fmt)
+        else if l == "[[package]]" then
+            let c = lpr_ix_close(cur, inpkg, acc, 0) in
+            if not c.ok then lpr_ix_fail(cur.line, c.err) else if not fmt then lpr_ix_fail(ln, "the index needs `format = 1` before its packages") else lpr_ix_go(t, ln + 1, lpr_ix_new(ln), true, c.acc, fmt)
+        else if lpk_starts(l, "[") then
+            lpr_ix_fail(ln, "unknown table " + l + " (only [[package]])")
+        else if lpk_kv_key(l) == "" then
+            lpr_ix_fail(ln, "expected key = value")
+        else if not inpkg then
+            (if lpk_kv_key(l) == "format" then (if lpk_kv_val(l) == "1" then lpr_ix_go(t, ln + 1, cur, inpkg, acc, true) else lpr_ix_fail(ln, "unknown index format " + lpk_kv_val(l) + " (this lume reads format 1)")) else lpr_ix_go(t, ln + 1, cur, inpkg, acc, fmt))
+        else if lpk_kv_key(l) == "deps" then
+            let q = lpr_qstrs(lpk_kv_val(l)) in
+            if not q.ok then lpr_ix_fail(ln, "deps must be an array of strings like [" + chr(34) + "util ^1.0" + chr(34) + "]") else lpr_ix_go(t, ln + 1, lpr_ix_deps(cur, lpr_deps_of(q.xs)), inpkg, acc, fmt)
+        else
+            lpr_ix_go(t, ln + 1, lpr_ix_set(cur, lpk_kv_key(l), lpk_unq(lpk_kv_val(l))), inpkg, acc, fmt)
+fn lpr_ix_lt(a, b) = a.name < b.name or (a.name == b.name and lpk_ver(a.ver) < lpk_ver(b.ver))
+fn lpr_ix_ins(es, e) = match es
+    Nil        => Cons(e, Nil)
+    Cons(h, t) => if lpr_ix_lt(e, h) then Cons(e, es) else Cons(h, lpr_ix_ins(t, e))
+fn lpr_ix_sort(es) = match es
+    Nil        => Nil
+    Cons(h, t) => lpr_ix_ins(lpr_ix_sort(t), h)
+fn lpr_q(s) = chr(34) + s + chr(34)
+fn lpr_dep_strs(ds) = match ds
+    Nil        => ""
+    Cons(d, t) => lpr_q(d.name + " " + d.req) + lpr_sep(t) + lpr_dep_strs(t)
+fn lpr_sep(t) = match t
+    Nil        => ""
+    Cons(x, y) => ", "
+fn lpr_ix_block(e) = chr(10) + "[[package]]" + chr(10) + "name = " + lpr_q(e.name) + chr(10) + "version = " + lpr_q(e.ver) + chr(10) + "archive = " + lpr_q(e.archive) + chr(10) + "sha256 = " + lpr_q(e.sha256) + chr(10) + "hash = " + lpr_q(e.hash) + chr(10) + "deps = [" + lpr_dep_strs(e.deps) + "]" + chr(10)
+fn lpr_ix_blocks(es) = match es
+    Nil        => ""
+    Cons(e, t) => lpr_ix_block(e) + lpr_ix_blocks(t)
+## the index text for entries (sorted by name, then version)
+fn lpr_index_text(es) = "# Lume package index: written by `lume pkg publish --registry=DIR`, read by `lume pkg install --registry=...`" + chr(10) + "format = 1" + chr(10) + lpr_ix_blocks(lpr_ix_sort(es))
+## the resolver's catalog ({name, ver, deps}) of an index
+fn lpr_catalog(es) = match es
+    Nil        => Nil
+    Cons(e, t) => Cons({name: e.name, ver: e.ver, deps: e.deps}, lpr_catalog(t))
+fn lpr_ix_find(es, name, ver) = match es
+    Nil        => lpr_ix_new(0)
+    Cons(e, t) => if e.name == name and e.ver == ver then e else lpr_ix_find(t, name, ver)
+
+## --- sources in lume.lock --------------------------------------------------------------------------------------------
+## the fourth word of a [packages] line says where the package came from:
+##   (none)                                  a local store (--store)
+##   URL#sha256=HEX                          an archive of an index registry (URL: https://, http://, file://)
+##   git+URL#COMMIT                          a git dependency (the package at the repository's root)
+fn lpr_src_archive(url, sha) = url + "#sha256=" + sha
+fn lpr_src_git(url, cid) = "git+" + url + "#" + cid
+fn lpr_src_sha(src) = let i = lpk_find(src, "#sha256=", 0) in if i < 0 then "" else slice(src, i + 8, count(src))
+fn lpr_src_commit(src) = if not lpk_starts(src, "git+") then "" else let i = lpk_find(src, "#", 0) in if i < 0 or i + 41 > count(src) then "" else let c = slice(src, i + 1, i + 41) in if lpr_is_commit(c) and (i + 41 == count(src) or at(src, i + 41) == ":") then c else ""
+fn lpr_src_git_url(src) = if not lpk_starts(src, "git+") then "" else let i = lpk_find(src, "#", 0) in if i < 0 then slice(src, 4, count(src)) else slice(src, 4, i)
+
+## --- fetching --------------------------------------------------------------------------------------------------------
+fn lpr_loopback(url) = let u = http_parse_url(url) in u.host == "127.0.0.1" or u.host == "localhost" or u.host == "[::1]"
+## https always; plain http only to a loopback host, unless `allow` (the caller's --allow-http)
+fn lpr_http_allowed(url, allow) = lpk_starts(url, "https://") or allow or lpr_loopback(url)
+## copy url (http(s)://, file:// or a path) into the file dest: "" or why not
+fn lpr_get(url, dest, allow) =
+    if lpr_is_url(url) then
+        lpr_get_http(url, dest, allow)
+    else
+        let p = lpr_local(url) in
+        if fs_path_exists(p) == 0 then
+            "cannot read " + p
+        else if fs_copy(p, dest) != 1 then
+            "cannot copy " + p + " to " + dest
+        else
+            ""
+fn lpr_get_http(url, dest, allow) =
+    if not lpr_http_allowed(url, allow) then
+        "refusing plain http to a host that is not this machine: " + url + " (use https://, or --allow-http)"
+    else
+        let r = http_request("GET", url, Nil, "", 60000) in
+        if r.ok == 0 then
+            "cannot fetch " + url + ": " + r.err
+        else if r.status != 200 then
+            "cannot fetch " + url + ": HTTP status " + str(r.status)
+        else if fs_write_sync(dest, r.body) != 1 then
+            "cannot write " + dest
+        else
+            ""
+fn lpr_replace(tmp, final) = let r = (if fs_path_exists(final) == 1 then fs_remove(final) else 1) in fs_rename(tmp, final)
+## the index of a registry -> {ok, err, entries}. A URL registry's index is fetched into CACHE/index/KEY/ and read
+## from there; `offline` reads the cached copy only. A directory registry is read in place.
+fn lpr_index_load(reg, cache, offline, allow) =
+    if not lpr_is_url(reg) then
+        let p = lpr_join(lpr_local(reg), "lume-index.toml") in
+        if fs_path_exists(p) == 0 then {ok: false, err: "no lume-index.toml in the registry " + reg, entries: Nil} else lpr_index_parse(fs_read_file(p))
+    else
+        let d = cache + "/index/" + lpr_key(reg) in
+        let p = d + "/lume-index.toml" in
+        if offline then
+            (if fs_path_exists(p) == 0 then {ok: false, err: "--offline: the index of " + reg + " is not in the cache " + cache + " (run one install with the network first)", entries: Nil} else lpr_index_parse(fs_read_file(p)))
+        else
+            let m = hio_mkdir_p(d) in
+            let e = lpr_get(lpr_join(reg, "lume-index.toml"), p + ".part", allow) in
+            if e != "" then
+                {ok: false, err: e, entries: Nil}
+            else
+                let r = lpr_index_parse(fs_read_file(p + ".part")) in
+                let k = (if r.ok then lpr_replace(p + ".part", p) else fs_remove(p + ".part")) in
+                r
+## the archive of an index entry, verified -> {ok, err, path}. A cached archive is used when its SHA-256 still
+## matches; else it is fetched to a .part file, and kept only when its SHA-256 is the one the index states (a
+## mismatch removes it: nothing of it is ever extracted).
+fn lpr_archive_get(reg, e, cache, offline, allow) =
+    let d = cache + "/archives" in
+    let p = d + "/" + e.sha256 + ".tar.gz" in
+    let url = lpr_archive_url(reg, e.archive) in
+    if fs_path_exists(p) == 1 and fs_sha256_file(p) == e.sha256 then
+        {ok: true, err: "", path: p}
+    else if offline and lpr_is_url(url) then
+        {ok: false, err: "--offline: " + e.name + " " + e.ver + " (" + url + ") is not in the cache " + cache, path: ""}
+    else
+        let m = hio_mkdir_p(d) in
+        let g = lpr_get(url, p + ".part", allow) in
+        if g != "" then
+            {ok: false, err: e.name + " " + e.ver + ": " + g, path: ""}
+        else
+            let h = fs_sha256_file(p + ".part") in
+            if h != e.sha256 then
+                (let x = fs_remove(p + ".part") in {ok: false, err: e.name + " " + e.ver + ": the archive " + url + " has SHA-256 " + h + " but the index states " + e.sha256 + "; refused before extraction", path: ""})
+            else
+                let k = lpr_replace(p + ".part", p) in
+                {ok: true, err: "", path: p}
+fn lpr_write_files(dir, fs) = match fs
+    Nil        => ""
+    Cons(f, t) => if fs_write_sync(dir + "/" + f.name, f.data) != 1 then "cannot write " + dir + "/" + f.name else lpr_write_files(dir, t)
+fn lpr_names(fs) = match fs
+    Nil        => Nil
+    Cons(f, t) => Cons(f.name, lpr_names(t))
+fn lpr_file_data(fs, name) = match fs
+    Nil        => ""
+    Cons(f, t) => if f.name == name then f.data else lpr_file_data(t, name)
+## unpack a verified archive into dest (which must be empty or absent) and check it is the package the index names:
+## "" or why not
+fn lpr_extract(path, dest, e) =
+    let r = lpr_unpack(fs_read_file(path)) in
+    if not r.ok then
+        e.name + " " + e.ver + ": " + r.err
+    else
+        let toml = lpr_file_data(r.files, "lume.toml") in
+        if not lpr_has_file(r.files, "lume.toml") then
+            e.name + " " + e.ver + ": the archive has no lume.toml"
+        else if lpk_toml(toml, "package", "name") != e.name or lpk_toml(toml, "package", "version") != e.ver then
+            e.name + " " + e.ver + ": the archive holds " + lpk_toml(toml, "package", "name") + " " + lpk_toml(toml, "package", "version")
+        else
+            let m = hio_mkdir_p(dest) in
+            let w = lpr_write_files(dest, r.files) in
+            if w != "" then
+                w
+            else if e.hash != "" and lpk_hash(dest, lpk_pkg_files(lpr_names(r.files))) != e.hash then
+                e.name + " " + e.ver + ": the unpacked files do not match the package hash the index states"
+            else
+                ""
+
+## --- git ---------------------------------------------------------------------------------------------------------------
+## run git (found through PATH, no shell) -> {rc, out, err}; files are checked out byte for byte (no CRLF conversion,
+## which Git for Windows does by default), so a pinned commit gives the same package hash on every system
+fn lpr_git(cache, args) =
+    let m = hio_mkdir_p(cache + "/git") in
+    let o = cache + "/git/.out-" + str(os_getpid()) in
+    let p = os_setenv("GIT_TERMINAL_PROMPT", "0") in
+    let rc = hio_osrun_ct("git", Cons("-c", Cons("core.autocrlf=false", Cons("-c", Cons("core.eol=lf", args)))), o, o + ".err", 600000) in
+    let r = {rc: rc, out: lpk_trim(lpk_chomp(fs_read_file(o))), err: fs_read_file(o + ".err")} in
+    let x = fs_remove(o) in
+    let y = fs_remove(o + ".err") in
+    r
+fn lpr_git_in(cache, dir, args) = lpr_git(cache, Cons("-C", Cons(lpr_native(dir), args)))
+fn lpr_git_commit_of(cache, dir, rev) =
+    let r = lpr_git_in(cache, dir, Cons("rev-parse", Cons("--verify", Cons("--quiet", Cons(rev + "^{{commit}}", Nil))))) in
+    if r.rc == 0 and lpr_is_commit(r.out) then r.out else ""
+## the commit a requested revision names in a clone: the remote branch first (a fetched branch moves), then the name
+## itself (a tag or a commit); "" names the remote's default branch
+fn lpr_git_pick(cache, dir, rev) =
+    if rev == "" then
+        let a = lpr_git_commit_of(cache, dir, "origin/HEAD") in
+        if a != "" then a else lpr_git_commit_of(cache, dir, "HEAD")
+    else
+        let a = lpr_git_commit_of(cache, dir, "origin/" + rev) in
+        if a != "" then a else lpr_git_commit_of(cache, dir, rev)
+## a working copy of url at a revision -> {ok, err, dir, commit}. The clone lives in CACHE/git/KEY/; `pin` (a commit
+## from lume.lock) wins over `rev`; `offline` uses the clone as it is (no fetch).
+fn lpr_git_checkout(url, rev, pin, cache, offline) =
+    let d = cache + "/git/" + lpr_key(url) in
+    let have = hio_is_dir(d + "/.git") in
+    if not have and offline then
+        {ok: false, err: "--offline: " + url + " is not in the cache " + cache, dir: d, cid: ""}
+    else
+        let f = (if have then (if offline then {rc: 0, out: "", err: ""} else lpr_git_in(cache, d, Cons("fetch", Cons("--quiet", Cons("--tags", Cons("--force", Cons("origin", Nil))))))) else (let r0 = hio_remove_tree(d) in lpr_git(cache, Cons("clone", Cons("--quiet", Cons("--no-checkout", Cons(url, Cons(lpr_native(d), Nil)))))))) in
+        if f.rc != 0 then
+            {ok: false, err: "git cannot fetch " + url + ": " + lpk_chomp(f.err), dir: d, cid: ""}
+        else
+            let c = lpr_git_pick(cache, d, if pin != "" then pin else rev) in
+            if c == "" then
+                {ok: false, err: url + " has no revision " + chr(34) + (if pin != "" then pin else rev) + chr(34) + (if pin != "" then " (the commit lume.lock pins)" else ""), dir: d, cid: ""}
+            else
+                let k = lpr_git_in(cache, d, Cons("checkout", Cons("--quiet", Cons("--force", Cons("--detach", Cons(c, Nil)))))) in
+                let h = lpr_git_commit_of(cache, d, "HEAD") in
+                if k.rc != 0 or h != c then
+                    {ok: false, err: "git cannot check out " + c + " of " + url + ": " + lpk_chomp(k.err), dir: d, cid: ""}
+                else
+                    {ok: true, err: "", dir: d, cid: c}

@@ -263,9 +263,9 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 ## 4.4 Autonomous Verification & Self-Healing Commands
 - `lume prove <file.src>`              Prove all contracts and laws (`QF_LIA` / `QF_ALIA`).
 - `lume verify [--jobs=N] <file.src>...`  check, test, prove, the format check and certify many files; per-file cache by bundle hash; each step timed.
-- `lume pkg publish|add|resolve|install [--store=DIR] [--locked|--update] [--allow-failing]` package versions: store with tests and proofs, `^`/`~`/`>=`/`<` requirements, transitive resolution, lume_modules/, lume.lock honoured on later installs, refused when a package's own tests or proofs fail;
+- `lume pkg publish|add|resolve|install [--store=DIR | --registry=URL|DIR|git+URL] [--cache=DIR] [--offline] [--allow-http] [--locked|--update] [--allow-failing]`, `lume pkg add NAME --git=URL [--rev=REV]` package versions: remote registries (HTTPS index, archives SHA-256-checked before extraction, git dependencies pinned in lume.lock, offline installs from the cache), store with tests and proofs, `^`/`~`/`>=`/`<` requirements, transitive resolution, lume_modules/, lume.lock honoured on later installs, refused when a package's own tests or proofs fail;
   `lume pkg audit [dir]` checks the lock file hashes and the package proof certificate.
-- `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  standard library: digests, CSV, UTF-8, dates and zones, regex, gzip, HTTP and HTTPS.
+- `use std/hash|csv|utf8|datetime|regex|deflate|zstd|http|tls`  standard library: digests, CSV, UTF-8, dates and zones, regex, gzip / zlib, Zstandard, HTTP and HTTPS.
   Builtin contracts: `buf_bits_write` is `p + n` or `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (when the
   result is named with `let` or returned); bound the operands of a clause in `requires` so the clause cannot overflow.
 - Official examples: `examples/topics/*.src` (run each with `lume test`) and `examples/diagnostics/` (per code, the
@@ -417,6 +417,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             (returns b), `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`,
             `buf_to_str(b, off, n)`, `buf_addr(b)` (address of byte 0, for system calls); buf_get / buf_set on a
             small index are inline machine code (no call), an out-of-range index stops with the same message
+            shared memory: `buf_shared(n)` (a buffer the os_fork children share); `use par` runs one job on n
+            worker processes at once: par_pool(n, fn(k, job) => ...), par_run(pool, job), par_slice, par_close
             video: `buf_bgra_to_i420(src, stride, w, h, dst)` and `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
             limited range, 2x2 chroma average, odd sizes; the bytes written or -1 for a wrong argument; a 1080p
             frame in a few milliseconds, runtime routines written in Lume)
@@ -1268,7 +1270,7 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
   lume verify [--jobs <value>] [--json] <source.src>...
   lume verify-cert [--json] [--check-source] [source.src] <certificate.json>
   lume proof-cache <self-test|check|store> [--require-all-hits] [source.src] [cache-dir]
-  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve> [--store <value>] [--locked] [--update] [--allow-failing] [dir]
+  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve> [--store <value>] [--registry <value>] [--cache <value>] [--offline] [--allow-http] [--git <value>] [--rev <value>] [--locked] [--update] [--allow-failing] [dir]
   lume pkg <audit> (served by the POSIX shim, scripts/lume_legacy.sh)
   lume registry <publish|resolve|discover> [--json] [--store <value>] [--target <value>] [--adapter <value>] [--source <value>] [--proof <value>] [--tests <value>] [--cid <value>] [--capability <value>] [--contract-signature <value>]
   lume agent <check|compile|fill|prove|ast|expand|symbols|eval|witness|repair|impact|hashes|grammar|project|bind|skeleton|cegis|synthesize|trace|heal|morph|kernel|c-export|replay|lineage|patch|patch-fn|diff-semver|equiv|check-rot> [--json] <source.src> [arguments] (the name of any `sentience` command is accepted in place of the subcommand)

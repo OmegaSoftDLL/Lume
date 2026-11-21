@@ -1,0 +1,362 @@
+## Remote package registries (item 19, lpkgreg.src): the index format, the package archive, git dependencies and
+## the lume.lock sources as pure functions; then whole scenarios through the `lume pkg` command line: a directory
+## registry (publish, install, a tampered archive refused before extraction, a changed published version refused
+## against lume.lock), an index registry served over HTTP by a Lume server on 127.0.0.1 with an offline reinstall
+## from the cache, and git dependencies pinned in lume.lock (plus a registry kept in a git repository).
+use lpkg
+use lpkgreg
+use hostio
+
+## --- the index -------------------------------------------------------------------------------------------------------
+fn rt_sha(c) = rt_rep(c, 64)
+fn rt_rep(s, n) = if n == 0 then "" else s + rt_rep(s, n - 1)
+fn rt_index() = "# test index\nformat = 1\n\n[[package]]\nname = \"util\"\nversion = \"1.0.0\"\narchive = \"util/util-1.0.0.tar.gz\"\nsha256 = \"" + rt_sha("b") + "\"\nhash = \"\"\ndeps = [\"base ^1.0\", \"other >=1.2, <2\"]\n\n[[package]]\nname = \"base\"\nversion = \"1.0.0\"\narchive = \"https://cdn.example.org/base-1.0.0.tar.gz\"\nsha256 = \"" + rt_sha("a") + "\"\nhash = \"" + rt_sha("c") + "\"\ndeps = []\nfuture = \"ignored\"\n"
+fn test_index_parse() =
+    let r = lpr_index_parse(rt_index()) in
+    let u = lpr_ix_find(r.entries, "util", "1.0.0") in
+    let b = lpr_ix_find(r.entries, "base", "1.0.0") in
+    r.ok and lpk_len(r.entries) == 2 and u.archive == "util/util-1.0.0.tar.gz" and u.sha256 == rt_sha("b") and lpk_len(u.deps) == 2 and rt_req(u.deps, "other") == ">=1.2, <2" and rt_req(u.deps, "base") == "^1.0" and b.hash == rt_sha("c") and lpk_len(b.deps) == 0 and (lpr_ix_find(r.entries, "base", "9.9.9")).name == ""
+fn rt_req(ds, name) = match ds
+    Nil        => ""
+    Cons(d, t) => if d.name == name then d.req else rt_req(t, name)
+## the writer gives the parser's entries back, sorted by name, and the catalog feeds the resolver
+fn test_index_round_trip() =
+    let r = lpr_index_parse(rt_index()) in
+    let t = lpr_index_text(r.entries) in
+    let r2 = lpr_index_parse(t) in
+    r2.ok and lpr_index_text(r2.entries) == t and lpk_find(t, "name = \"base\"", 0) < lpk_find(t, "name = \"util\"", 0) and lpk_contains(t, "deps = [\"base ^1.0\", \"other >=1.2, <2\"]")
+fn test_index_catalog_resolves() =
+    let es = (lpr_index_parse(rt_index())).entries in
+    let cat = lpr_catalog(lpk_append(es, Cons({name: "other", ver: "1.5.0", archive: "o.tar.gz", sha256: rt_sha("d"), hash: "", deps: Nil, line: 0}, Nil))) in
+    let r = lpk_resolve(Cons({name: "util", req: "^1"}, Nil), cat, Nil, false) in
+    r.ok and lpk_plan(r.picks) == "base 1.0.0\nother 1.5.0\nutil 1.0.0\n"
+fn rt_err(text) = let r = lpr_index_parse(text) in if r.ok then "" else r.err
+fn rt_one(k, v) = "format = 1\n[[package]]\nname = \"p\"\nversion = \"1.0.0\"\narchive = \"p/p-1.0.0.tar.gz\"\nsha256 = \"" + rt_sha("e") + "\"\n" + k + " = " + v + "\n"
+fn test_index_refusals() =
+    lpk_contains(rt_err(rt_one("sha256", "\"abc\"")), "line 2: p 1.0.0: sha256 must be 64 lowercase hex digits") and
+    lpk_contains(rt_err(rt_one("archive", "\"../../etc/passwd\"")), "archive must be a relative path") and
+    lpk_contains(rt_err(rt_one("version", "\"1.x\"")), "is not like 1.2.3") and
+    lpk_contains(rt_err(rt_one("deps", "\"base ^1\"")), "line 7: deps must be an array of strings") and
+    lpk_contains(rt_err(rt_one("deps", "[\"base ^x\"]")), "malformed requirement \"^x\" for base") and
+    lpk_contains(rt_err(rt_one("name", "\"../evil\"")), "a package needs a name") and
+    lpk_contains(rt_err(rt_one("hash", "\"zz\"")), "hash must be 64") and
+    lpk_contains(rt_err("format = 1\n[[package]]\nname = \"p\"\nversion = \"1.0.0\"\narchive = \"a\"\nsha256 = \"" + rt_sha("e") + "\"\n[[package]]\nname = \"p\"\nversion = \"1.0.0\"\narchive = \"b\"\nsha256 = \"" + rt_sha("f") + "\"\n"), "line 7: p 1.0.0 is listed twice") and
+    lpk_contains(rt_err("format = 2\n"), "unknown index format 2") and
+    lpk_contains(rt_err("[[package]]\nname = \"p\"\n"), "needs `format = 1`") and
+    lpk_contains(rt_err("format = 1\n[packages]\n"), "line 2: unknown table [packages]") and
+    lpr_index_parse("format = 1\n").ok
+
+## --- the archive -------------------------------------------------------------------------------------------------------
+fn rt_files() = Cons({name: "base.src", data: "fn b_one() -> int = 1\n"}, Cons({name: "lume.toml", data: "[package]\nname = \"base\"\nversion = \"1.0.0\"\n"}, Cons({name: "zero.src", data: ""}, Nil)))
+fn rt_same(a, b) = match a
+    Nil        => lpk_len(b) == 0
+    Cons(f, t) => rt_same2(f, t, b)
+fn rt_same2(f, t, b) = match b
+    Nil        => false
+    Cons(g, u) => f.name == g.name and f.data == g.data and rt_same(t, u)
+## a round trip gives every file back byte for byte (also an empty one and binary bytes), the archive is reproducible
+fn test_archive_round_trip() =
+    let bin = rt_bytes(0, "") in
+    let fs = lpk_append(rt_files(), Cons({name: "zz_bin.src", data: bin}, Nil)) in
+    let a = lpr_archive(fs) in
+    let r = lpr_unpack(a) in
+    r.ok and rt_same(r.files, fs) and lpr_archive(fs) == a and ord_at(a, 0) == 31 and ord_at(a, 1) == 139
+fn rt_bytes(i, acc) = if i >= 256 then acc else rt_bytes(i + 1, acc + chr(i))
+## the system tar reads the archive Lume writes (ustar + gzip), when the host has one
+fn test_archive_reads_with_system_tar() =
+    let tar = hio_which("tar") in
+    if tar == "" then
+        true
+    else
+        let w = rt_work("tar") in
+        let m = hio_mkdir_p(w + "/x") in
+        let a = fs_write_sync(w + "/p.tar.gz", lpr_archive(rt_files())) in
+        let rc = os_run_capture_timeout(tar, Cons("-xzf", Cons(lpr_native(w + "/p.tar.gz"), Cons("-C", Cons(lpr_native(w + "/x"), Nil)))), w + "/o", w + "/e", 60000) in
+        let ok = rc == 0 and fs_read_file(w + "/x/base.src") == "fn b_one() -> int = 1\n" and fs_read_file(w + "/x/lume.toml") == "[package]\nname = \"base\"\nversion = \"1.0.0\"\n" in
+        let c = hio_remove_tree(w) in
+        ok
+fn rt_unpack_err(tar) = let r = lpr_unpack(gzip_str(tar)) in if r.ok then "" else r.err
+## a header whose checksum is right but whose content is not allowed: directories, links, paths, other names
+fn rt_typed(name, typ) = let h = lpr_tar_head(name, 0) in let h2 = slice(h, 0, 148) + "        " + chr(typ) + slice(h, 157, 512) in let s = lpr_bsum(h2, 0, 0) in slice(h2, 0, 148) + lpr_oct(s, 6) + chr(0) + " " + slice(h2, 156, 512) + lpr_zeros(1024)
+fn test_archive_refusals() =
+    lpk_contains(rt_unpack_err(lpr_tar_entry({name: "../evil.src", data: "x"}) + lpr_zeros(1024)), "../evil.src: not a package file name") and
+    lpk_contains(rt_unpack_err(lpr_tar_entry({name: "sub/a.src", data: "x"}) + lpr_zeros(1024)), "sub/a.src: not a package file name") and
+    lpk_contains(rt_unpack_err(lpr_tar_entry({name: "run.sh", data: "x"}) + lpr_zeros(1024)), "run.sh: not a package file name") and
+    lpk_contains(rt_unpack_err(rt_typed("dir.src", 53)), "dir.src: only regular files") and
+    lpk_contains(rt_unpack_err(rt_typed("link.src", 50)), "link.src: only regular files") and
+    lpk_contains(rt_unpack_err(lpr_tar_entry({name: "a.src", data: "x"}) + lpr_tar_entry({name: "a.src", data: "y"}) + lpr_zeros(1024)), "a.src: appears twice") and
+    lpk_contains(rt_unpack_err(rt_flip(lpr_tar_entry({name: "a.src", data: "x"}), 3) + lpr_zeros(1024)), "bad header checksum") and
+    lpk_contains(rt_unpack_err(slice(lpr_tar_entry({name: "a.src", data: rt_rep("y", 600)}), 0, 700)), "a.src: truncated") and
+    lpk_contains(rt_unpack_err(lpr_zeros(1024)), "holds no file") and
+    lpk_contains((lpr_unpack("plain text, not gzip")).err, "not a gzip archive")
+fn rt_flip(s, i) = slice(s, 0, i) + chr(bit_xor(ord_at(s, i), 1)) + slice(s, i + 1, count(s))
+
+## --- git dependencies and lock sources ------------------------------------------------------------------------------
+fn rt_toml() = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[registry]\nurl = \"https://pkgs.example.org/lume\"\n\n[dependencies]\nutil = \"^1\"\ngp = { git = \"https://git.example.org/gp.git\", rev = \"v1.2\" }\nnr = {git=\"/srv/nr\"}\n"
+fn test_manifest_git_deps() =
+    let gs = lpk_git_deps(rt_toml()) in
+    let t2 = lpk_set_line(rt_toml(), "gp", lpk_git_line("gp", "https://other/gp.git", "")) in
+    lpk_len(lpk_deps(rt_toml())) == 1 and lpk_len(gs) == 2 and rt_git(gs, "gp") == "https://git.example.org/gp.git v1.2" and rt_git(gs, "nr") == "/srv/nr " and lpk_toml(rt_toml(), "registry", "url") == "https://pkgs.example.org/lume" and rt_git(lpk_git_deps(t2), "gp") == "https://other/gp.git " and lpk_len(lpk_deps(t2)) == 1
+fn rt_git(gs, name) = match gs
+    Nil        => "-"
+    Cons(g, t) => if g.name == name then g.url + " " + g.rev else rt_git(t, name)
+fn rt_commit() = rt_rep("0123456789", 4)
+fn test_lock_sources() =
+    let e1 = {name: "base", ver: "1.0.0", hash: rt_sha("a"), src: lpr_src_archive("https://h/r/base/base-1.0.0.tar.gz", rt_sha("b"))} in
+    let e2 = {name: "gp", ver: "1.2.0", hash: rt_sha("c"), src: lpr_src_git("https://h/gp.git?rev=v1.2", rt_commit())} in
+    let e3 = {name: "st", ver: "2.0.0", hash: rt_sha("d"), src: ""} in
+    let back = lpk_lock_parse(lpk_lock_block(Cons(e1, Cons(e2, Cons(e3, Nil))))) in
+    lpk_lock_block(back) == lpk_lock_block(Cons(e1, Cons(e2, Cons(e3, Nil)))) and lpr_src_sha(lpk_lock_src(back, "base")) == rt_sha("b") and lpr_src_commit(lpk_lock_src(back, "gp")) == rt_commit() and lpr_src_git_url(lpk_lock_src(back, "gp")) == "https://h/gp.git?rev=v1.2" and lpk_lock_src(back, "st") == "" and lpk_lock_hash(back, "st") == rt_sha("d") and lpr_src_commit("git+https://h/reg.git#" + rt_commit() + ":base/base-1.0.0.tar.gz#sha256=" + rt_sha("b")) == rt_commit()
+fn test_plain_http_only_to_loopback() = lpr_http_allowed("https://pkgs.example.org/x", false) and lpr_http_allowed("http://127.0.0.1:8080/x", false) and lpr_http_allowed("http://localhost/x", false) and not lpr_http_allowed("http://pkgs.example.org/x", false) and lpr_http_allowed("http://pkgs.example.org/x", true) and lpk_contains(lpr_get("http://pkgs.example.org/lume-index.toml", "/nonexistent/x", false), "refusing plain http")
+
+## --- the command line ------------------------------------------------------------------------------------------------
+## the driver that runs this test (it exports LUME_DRIVER), else the one beside LUME_BIN_DIR's tools, else the install
+fn rt_lume() =
+    let a = os_getenv("LUME_DRIVER") in
+    if a != "" and fs_path_exists(a) == 1 then
+        a
+    else
+        let d = os_getenv("LUME_BIN_DIR") in
+        let p = hio_exe_path(hio_posix(d) + "/lume_driver") in
+        if d != "" and fs_path_exists(p) == 1 then p else hio_exe_path(hio_lume_bin())
+## a work directory: under /tmp on Linux, under the (sandboxed) home on Windows, where native programs such as git
+## read the same path
+fn rt_work(tag) = (if os_platform() == "windows" then hio_home() else hio_tmp()) + "/lume-pkg-remote-" + tag + "-" + str(os_getpid())
+fn rt_run(w, args) = os_run_capture_timeout(rt_lume(), Cons("pkg", args), w + "/out.txt", w + "/err.txt", 1800000)
+fn rt_out(w) = fs_read_file(w + "/out.txt") + fs_read_file(w + "/err.txt")
+fn rt_fail(step, w) = "step " + step + ": " + rt_out(w)
+fn rt_pkg(dir, name, ver, deps, src) =
+    let m = hio_mkdir_p(dir) in
+    let a = fs_write_sync(dir + "/lume.toml", "[package]\nname = \"" + name + "\"\nversion = \"" + ver + "\"\nedition = \"2026\"\n\n[dependencies]\n" + deps) in
+    fs_write_sync(dir + "/" + name + ".src", src)
+fn rt_lock(w, app) = fs_read_file(w + "/" + app + "/lume.lock")
+fn rt_lsrc(w, app, name) = lpk_lock_src(lpk_lock_parse(rt_lock(w, app)), name)
+fn rt_lver(w, app, name) = lpk_lock_ver(lpk_lock_parse(rt_lock(w, app)), name)
+fn rt_report(name, r, w) = if r == "" then (let c = hio_remove_tree(w) in true) else (let e = fs_append_sync("/dev/stderr", "pkg_remote_ok " + name + ": " + r + "\n") in false)
+
+## a directory registry: publish (checks run first), install, a tampered archive, a changed published version
+fn rd_setup(w) =
+    let r = hio_remove_tree(w) in
+    let m = hio_mkdir_p(w + "/reg") in
+    let b1 = rt_pkg(w + "/src/base1", "base", "1.0.0", "", "fn b_one() -> int = 1\nfn test_one() = b_one() == 1\n") in
+    let u = rt_pkg(w + "/src/util", "util", "1.0.0", "base = \"^1.0\"\n", "use base\nfn u_three() -> int = b_one() + 2\nfn test_three() = u_three() == 3\n") in
+    let bad = rt_pkg(w + "/src/bad", "bad", "1.0.0", "", "fn bad_v() -> int = 1\nfn test_bad() = bad_v() == 2\n") in
+    rt_pkg(w + "/app", "app", "0.1.0", "util = \"^1\"\n", "fn a() -> int = 0\n")
+fn rd_scenario(w) =
+    let s = rd_setup(w) in
+    let rg = "--registry=" + w + "/reg" in
+    let ca = "--cache=" + w + "/cache" in
+    if rt_run(w, Cons("publish", Cons(w + "/src/bad", Cons(rg, Cons(ca, Nil))))) == 0 or fs_path_exists(w + "/reg/bad") == 1 then
+        rt_fail("publish must refuse a package whose tests fail", w)
+    else if rt_run(w, Cons("publish", Cons(w + "/src/base1", Cons(rg, Cons(ca, Nil))))) != 0 then
+        rt_fail("publish base 1.0.0", w)
+    else if rt_run(w, Cons("publish", Cons(w + "/src/base1", Cons(rg, Cons(ca, Nil))))) == 0 or not lpk_contains(rt_out(w), "already in") then
+        rt_fail("a second publish of base 1.0.0 must be refused", w)
+    else if rt_run(w, Cons("publish", Cons(w + "/src/util", Cons(rg, Cons(ca, Nil))))) != 0 then
+        rt_fail("publish util 1.0.0 (its tests use base, resolved from the registry)", w)
+    else if not (lpr_index_parse(fs_read_file(w + "/reg/lume-index.toml"))).ok or fs_sha256_file(w + "/reg/base/base-1.0.0.tar.gz") != (lpr_ix_find((lpr_index_parse(fs_read_file(w + "/reg/lume-index.toml"))).entries, "base", "1.0.0")).sha256 then
+        rt_fail("the index must state the SHA-256 of the archive publish wrote", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app", Cons(rg, Cons(ca, Nil))))) != 0 then
+        rt_fail("install from the directory registry", w)
+    else if rt_lver(w, "app", "base") != "1.0.0" or lpr_src_sha(rt_lsrc(w, "app", "base")) != fs_sha256_file(w + "/reg/base/base-1.0.0.tar.gz") or not lpk_contains(rt_lsrc(w, "app", "util"), "util/util-1.0.0.tar.gz#sha256=") or fs_read_file(w + "/app/lume_modules/base/base.src") != "fn b_one() -> int = 1\nfn test_one() = b_one() == 1\n" then
+        rt_fail("lume.lock must record each package's archive and SHA-256", w)
+    else if rt_run(w, Cons("verify", Cons(w + "/app", Nil))) != 0 then
+        rt_fail("pkg verify after a registry install", w)
+    else
+        rd_tamper(w, rg, rt_lock(w, "app"))
+## the registry's base archive replaced by another valid archive: a fresh cache must refuse it before extracting it
+fn rd_tamper(w, rg, lock0) =
+    let evil = lpr_archive(Cons({name: "base.src", data: "fn b_one() -> int = 666\n"}, Cons({name: "lume.toml", data: fs_read_file(w + "/src/base1/lume.toml")}, Nil))) in
+    let a = fs_write_sync(w + "/reg/base/base-1.0.0.tar.gz", evil) in
+    let r0 = hio_remove_tree(w + "/app/lume_modules") in
+    let ca2 = "--cache=" + w + "/cache2" in
+    if rt_run(w, Cons("install", Cons(w + "/app", Cons(rg, Cons(ca2, Nil))))) == 0 or not lpk_contains(rt_out(w), "refused before extraction") then
+        rt_fail("install must refuse an archive whose SHA-256 is not the index's", w)
+    else if fs_path_exists(w + "/app/lume_modules/base") == 1 or rt_lock(w, "app") != lock0 or fs_path_exists(w + "/app/build/lume-pkg-stage/lume_modules/base/base.src") == 1 or lpk_len(lp_dir_names(w + "/cache2/archives")) != 0 then
+        rt_fail("a refused archive must leave nothing extracted, nothing cached and lume.lock unchanged", w)
+    else
+        rd_changed(w, rg, ca2, lock0, evil)
+fn lp_dir_names(d) = if fs_path_exists(d) == 0 then Nil else rt_real(lpk_lines(fs_read_dir(d), 0))
+fn rt_real(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h == "" or h == "." or h == ".." then rt_real(t) else Cons(h, rt_real(t))
+## the index rewritten to state the tampered archive (a registry that changed a published version): lume.lock refuses it
+fn rd_changed(w, rg, ca2, lock0, evil) =
+    let ixp = w + "/reg/lume-index.toml" in
+    let es = (lpr_index_parse(fs_read_file(ixp))).entries in
+    let e = lpr_ix_find(es, "base", "1.0.0") in
+    let e2 = {name: e.name, ver: e.ver, archive: e.archive, sha256: fs_sha256_file(w + "/reg/base/base-1.0.0.tar.gz"), hash: "", deps: e.deps, line: 0} in
+    let wr = fs_write_sync(ixp, lpr_index_text(Cons(e2, rd_without(es, "base")))) in
+    if rt_run(w, Cons("install", Cons(w + "/app", Cons(rg, Cons(ca2, Nil))))) == 0 or not lpk_contains(rt_out(w), "lume.lock pins the archive SHA-256") then
+        rt_fail("install must refuse a published version whose archive changed since lume.lock", w)
+    else if rt_lock(w, "app") != lock0 or fs_path_exists(w + "/app/lume_modules/base") == 1 then
+        rt_fail("the refusal must change nothing", w)
+    else
+        ""
+fn rd_without(es, name) = match es
+    Nil        => Nil
+    Cons(e, t) => if e.name == name then rd_without(t, name) else Cons(e, rd_without(t, name))
+fn test_directory_registry_and_tampering() = let w = rt_work("dir") in rt_report("directory registry", rd_scenario(w), w)
+
+## an index registry over HTTP: a Lume server on 127.0.0.1 serves the registry directory; then --offline from the cache
+fn sv_crlf() = chr(13) + chr(10)
+fn sv_req(fd, acc) = if lpk_find(acc, sv_crlf() + sv_crlf(), 0) >= 0 then acc else let d = net_recv_str(fd, 4096) in if d == "" then acc else sv_req(fd, acc + d)
+fn sv_path(req) = let a = lpk_find(req, " ", 0) in let b = lpk_find(req, " ", a + 1) in if a < 0 or b < 0 then "" else slice(req, a + 1, b)
+fn sv_answer(root, p) =
+    let f = root + p in
+    if lpk_starts(p, "/") and not lpk_contains(p, "..") and fs_path_exists(f) == 1 and not hio_is_dir(f) then
+        let body = fs_read_file(f) in
+        "HTTP/1.1 200 OK" + sv_crlf() + "Content-Type: application/octet-stream" + sv_crlf() + "Content-Length: " + str(count(body)) + sv_crlf() + sv_crlf() + body
+    else
+        "HTTP/1.1 404 Not Found" + sv_crlf() + "Content-Length: 0" + sv_crlf() + sv_crlf()
+## serve until killed; every request path is appended to log (so the test sees what the client asked for)
+fn sv_loop(root, sfd, log) =
+    let c = net_tcp_accept(sfd) in
+    let req = sv_req(c, "") in
+    let p = sv_path(req) in
+    let l = fs_append_sync(log, p + chr(10)) in
+    let s = ht_sendall(c, sv_answer(root, p), 10000, 0) in
+    let z = net_close(c) in
+    sv_loop(root, sfd, log)
+fn hs_setup(w) =
+    let r = hio_remove_tree(w) in
+    let m = hio_mkdir_p(w + "/srv/reg") in
+    let b1 = rt_pkg(w + "/src/base1", "base", "1.0.0", "", "fn b_one() -> int = 1\n") in
+    let b2 = rt_pkg(w + "/src/base2", "base", "1.1.0", "", "fn b_one() -> int = 1\nfn b_two() -> int = 2\n") in
+    let u = rt_pkg(w + "/src/util", "util", "1.0.0", "base = \"~1.0.0\"\n", "use base\nfn u_three() -> int = b_one() + 2\n") in
+    rt_pkg(w + "/app", "app", "0.1.0", "util = \"^1\"\nbase = \"^1\"\n", "fn a() -> int = 0\n")
+fn hs_publish_all(w) =
+    let rg = "--registry=" + w + "/srv/reg" in
+    let ca = "--cache=" + w + "/pubcache" in
+    if rt_run(w, Cons("publish", Cons(w + "/src/base1", Cons(rg, Cons(ca, Nil))))) != 0 then rt_fail("publish base 1.0.0", w) else if rt_run(w, Cons("publish", Cons(w + "/src/base2", Cons(rg, Cons(ca, Nil))))) != 0 then rt_fail("publish base 1.1.0", w) else if rt_run(w, Cons("publish", Cons(w + "/src/util", Cons(rg, Cons(ca, Nil))))) != 0 then rt_fail("publish util 1.0.0", w) else ""
+fn hs_scenario(w) =
+    let s = hs_setup(w) in
+    let p = hs_publish_all(w) in
+    if p != "" then
+        p
+    else
+        let port = 23000 + os_getpid() % 20000 in
+        let sfd = net_tcp_listen(port) in
+        if sfd < 0 then
+            "cannot listen on 127.0.0.1:" + str(port)
+        else
+            let pid = os_fork() in
+            if pid == 0 then
+                (let x = sv_loop(w + "/srv", sfd, w + "/access.log") in os_exit(0))
+            else
+                let z = net_close(sfd) in
+                let r = hs_client(w, "http://127.0.0.1:" + str(port) + "/reg") in
+                let k = os_kill(pid, 9) in
+                let q = os_waitpid(pid) in
+                if r != "" then r else hs_offline(w, "http://127.0.0.1:" + str(port) + "/reg")
+fn hs_client(w, url) =
+    let rg = "--registry=" + url in
+    let ca = "--cache=" + w + "/cache" in
+    if rt_run(w, Cons("install", Cons(w + "/app", Cons(rg, Cons(ca, Nil))))) != 0 then
+        rt_fail("install over HTTP", w)
+    else if rt_lver(w, "app", "base") != "1.0.0" or rt_lver(w, "app", "util") != "1.0.0" then
+        rt_fail("util needs base ~1.0.0: the resolution over HTTP must settle on base 1.0.0", w)
+    else if not lpk_starts(rt_lsrc(w, "app", "base"), url + "/base/base-1.0.0.tar.gz#sha256=") or fs_read_file(w + "/app/lume_modules/util/util.src") != "use base\nfn u_three() -> int = b_one() + 2\n" then
+        rt_fail("lume.lock must name the HTTP archive and its SHA-256", w)
+    else if not lpk_contains(fs_read_file(w + "/access.log"), "/reg/lume-index.toml") or not lpk_contains(fs_read_file(w + "/access.log"), "/reg/util/util-1.0.0.tar.gz") or lpk_contains(fs_read_file(w + "/access.log"), "base-1.1.0") then
+        rt_fail("the client must fetch the index and only the archives it installs: " + fs_read_file(w + "/access.log"), w)
+    else
+        ""
+## the server is gone: with lume.lock and the cache, --offline reinstalls the same packages; without the cache it says so
+fn hs_offline(w, url) =
+    let lock0 = rt_lock(w, "app") in
+    let r0 = hio_remove_tree(w + "/app/lume_modules") in
+    let rg = "--registry=" + url in
+    if rt_run(w, Cons("install", Cons(w + "/app", Cons(rg, Cons("--cache=" + w + "/cache", Cons("--offline", Cons("--locked", Nil))))))) != 0 then
+        rt_fail("install --offline --locked from the cache", w)
+    else if rt_lock(w, "app") != lock0 or fs_read_file(w + "/app/lume_modules/base/base.src") != "fn b_one() -> int = 1\n" then
+        rt_fail("the offline install must give the same lume.lock and files", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app", Cons(rg, Cons("--cache=" + w + "/empty", Cons("--offline", Nil)))))) == 0 or not lpk_contains(rt_out(w), "--offline: the index of") then
+        rt_fail("--offline with an empty cache must refuse and say why", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app", Cons(rg, Cons("--cache=" + w + "/empty", Nil))))) == 0 or not lpk_contains(rt_out(w), "cannot fetch") then
+        rt_fail("a registry that does not answer must be reported", w)
+    else
+        ""
+fn test_http_registry_and_offline() = let w = rt_work("http") in rt_report("HTTP registry", hs_scenario(w), w)
+
+## git: a dependency pinned to its commit in lume.lock, --update moving it, --offline from the cached clone, and an
+## index registry kept in a git repository
+fn gt_git(w, dir, args) = os_run_capture_timeout(hio_which("git"), Cons("-C", Cons(lpr_native(dir), args)), w + "/g.out", w + "/g.err", 120000)
+fn gt_commit(w, dir, msg) =
+    let a = gt_git(w, dir, Cons("add", Cons("-A", Nil))) in
+    gt_git(w, dir, Cons("-c", Cons("user.name=lume", Cons("-c", Cons("user.email=lume@localhost", Cons("commit", Cons("-q", Cons("-m", Cons(msg, Nil)))))))))
+fn gt_head(w, dir) = let r = gt_git(w, dir, Cons("rev-parse", Cons("HEAD", Nil))) in lpk_trim(lpk_chomp(fs_read_file(w + "/g.out")))
+fn gt_setup(w) =
+    let r = hio_remove_tree(w) in
+    let p = rt_pkg(w + "/gp", "gp", "1.0.0", "", "fn gp_v() -> int = 1\n") in
+    let i = gt_git(w, w + "/gp", Cons("init", Cons("-q", Nil))) in
+    let c = gt_commit(w, w + "/gp", "one") in
+    rt_pkg(w + "/app", "app", "0.1.0", "", "fn a() -> int = 0\n")
+fn gt_scenario(w) =
+    let s = gt_setup(w) in
+    let url = lpr_native(w + "/gp") in
+    let ca = "--cache=" + w + "/cache" in
+    let c1 = gt_head(w, w + "/gp") in
+    if not lpr_is_commit(c1) then
+        "git did not make the first commit: " + fs_read_file(w + "/g.err")
+    else if rt_run(w, Cons("add", Cons("gp", Cons("--git=" + url, Cons(w + "/app", Nil))))) != 0 or rt_run(w, Cons("install", Cons(w + "/app", Cons(ca, Nil)))) != 0 then
+        rt_fail("install of a git dependency", w)
+    else if rt_lsrc(w, "app", "gp") != "git+" + url + "#" + c1 or rt_lver(w, "app", "gp") != "1.0.0" or fs_read_file(w + "/app/lume_modules/gp/gp.src") != "fn gp_v() -> int = 1\n" then
+        rt_fail("lume.lock must pin the commit " + c1, w)
+    else
+        gt_moved(w, url, ca, c1)
+fn gt_moved(w, url, ca, c1) =
+    let p = rt_pkg(w + "/gp", "gp", "1.1.0", "", "fn gp_v() -> int = 2\n") in
+    let c = gt_commit(w, w + "/gp", "two") in
+    let c2 = gt_head(w, w + "/gp") in
+    if rt_run(w, Cons("install", Cons(w + "/app", Cons(ca, Nil)))) != 0 or rt_lsrc(w, "app", "gp") != "git+" + url + "#" + c1 or fs_read_file(w + "/app/lume_modules/gp/gp.src") != "fn gp_v() -> int = 1\n" then
+        rt_fail("a new commit upstream must not move the pinned dependency", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app", Cons(ca, Cons("--update", Nil))))) != 0 or rt_lsrc(w, "app", "gp") != "git+" + url + "#" + c2 or rt_lver(w, "app", "gp") != "1.1.0" then
+        rt_fail("install --update must move the pin to " + c2, w)
+    else
+        gt_offline(w, url, ca, c2)
+## the repository moved away: the cached clone serves --offline at the pinned commit
+fn gt_offline(w, url, ca, c2) =
+    let mv = fs_rename(w + "/gp", w + "/gp-gone") in
+    let r0 = hio_remove_tree(w + "/app/lume_modules") in
+    let lock0 = rt_lock(w, "app") in
+    if rt_run(w, Cons("install", Cons(w + "/app", Cons(ca, Cons("--offline", Nil))))) != 0 or rt_lock(w, "app") != lock0 or fs_read_file(w + "/app/lume_modules/gp/gp.src") != "fn gp_v() -> int = 2\n" then
+        rt_fail("install --offline of a git dependency from the cached clone", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app", Cons("--cache=" + w + "/empty", Cons("--offline", Nil))))) == 0 or not lpk_contains(rt_out(w), "is not in the cache") then
+        rt_fail("--offline without the clone must refuse and say why", w)
+    else
+        gt_registry(w)
+## an index registry in a git repository: --registry=git+URL; the registry's commit is pinned in lume.lock
+fn gt_registry(w) =
+    let b = rt_pkg(w + "/src/base1", "base", "1.0.0", "", "fn b_one() -> int = 1\n") in
+    let m = hio_mkdir_p(w + "/greg") in
+    let i = gt_git(w, w + "/greg", Cons("init", Cons("-q", Nil))) in
+    let p = rt_run(w, Cons("publish", Cons(w + "/src/base1", Cons("--registry=" + w + "/greg", Cons("--cache=" + w + "/cache", Nil))))) in
+    let c = gt_commit(w, w + "/greg", "registry") in
+    let rc = gt_head(w, w + "/greg") in
+    let app = rt_pkg(w + "/app2", "app2", "0.1.0", "base = \"^1\"\n", "fn a() -> int = 0\n") in
+    let url = lpr_native(w + "/greg") in
+    if p != 0 or not lpr_is_commit(rc) then
+        rt_fail("publish into the git registry's working tree", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app2", Cons("--registry=git+" + url, Cons("--cache=" + w + "/cache", Nil))))) != 0 then
+        rt_fail("install from a git registry", w)
+    else if not lpk_starts(rt_lsrc(w, "app2", "base"), "git+" + url + "#" + rc + ":base/base-1.0.0.tar.gz#sha256=") or fs_read_file(w + "/app2/lume_modules/base/base.src") != "fn b_one() -> int = 1\n" then
+        rt_fail("lume.lock must pin the git registry's commit " + rc, w)
+    else
+        gt_registry_moved(w, url, rc)
+## the registry repository gains base 1.1.0: the pinned registry commit keeps 1.0.0, --update takes the new commit
+fn gt_registry_moved(w, url, rc) =
+    let b = rt_pkg(w + "/src/base2", "base", "1.1.0", "", "fn b_one() -> int = 11\n") in
+    let p = rt_run(w, Cons("publish", Cons(w + "/src/base2", Cons("--registry=" + w + "/greg", Cons("--cache=" + w + "/cache", Nil))))) in
+    let c = gt_commit(w, w + "/greg", "base 1.1.0") in
+    let rc2 = gt_head(w, w + "/greg") in
+    let ca = "--cache=" + w + "/cache" in
+    if p != 0 or rc2 == rc then
+        rt_fail("publish base 1.1.0 into the git registry", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app2", Cons("--registry=git+" + url, Cons(ca, Nil))))) != 0 or rt_lver(w, "app2", "base") != "1.0.0" or not lpk_starts(rt_lsrc(w, "app2", "base"), "git+" + url + "#" + rc + ":") then
+        rt_fail("a reinstall must keep the registry commit lume.lock pins (" + rc + ")", w)
+    else if rt_run(w, Cons("install", Cons(w + "/app2", Cons("--registry=git+" + url, Cons(ca, Cons("--update", Nil)))))) != 0 or rt_lver(w, "app2", "base") != "1.1.0" or not lpk_starts(rt_lsrc(w, "app2", "base"), "git+" + url + "#" + rc2 + ":base/base-1.1.0.tar.gz#sha256=") or fs_read_file(w + "/app2/lume_modules/base/base.src") != "fn b_one() -> int = 11\n" then
+        rt_fail("install --update must move to the registry commit " + rc2, w)
+    else
+        ""
+fn test_git_dependencies_pinned() = if hio_which("git") == "" then true else let w = rt_work("git") in rt_report("git", gt_scenario(w), w)

@@ -250,9 +250,9 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 ## 4.4 Comandos de Prova e Autocura
 - `lume prove <arquivo.src>`           Prova todos os contratos e leis.
 - `lume verify [--jobs=N] <arquivo.src>...`  check, test, prove, a checagem de formato e certify em muitos arquivos; cache por arquivo; cada etapa cronometrada.
-- `lume pkg publish|add|resolve|install [--store=DIR] [--locked|--update] [--allow-failing]` versoes de pacotes: store com testes e provas, requisitos `^`/`~`/`>=`/`<`, resolucao transitiva, lume_modules/, lume.lock respeitado nas instalacoes seguintes, recusa quando os testes ou provas do pacote falham;
+- `lume pkg publish|add|resolve|install [--store=DIR | --registry=URL|DIR|git+URL] [--cache=DIR] [--offline] [--allow-http] [--locked|--update] [--allow-failing]`, `lume pkg add NOME --git=URL [--rev=REV]` versoes de pacotes: registros remotos (indice HTTPS, arquivos conferidos por SHA-256 antes da extracao, dependencias git fixadas no lume.lock, instalacao offline pelo cache), store com testes e provas, requisitos `^`/`~`/`>=`/`<`, resolucao transitiva, lume_modules/, lume.lock respeitado nas instalacoes seguintes, recusa quando os testes ou provas do pacote falham;
   `lume pkg audit [dir]` confere os hashes do lock e o certificado de prova do pacote.
-- `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  biblioteca padrao: hashes, CSV, UTF-8, datas e fusos, regex, gzip, HTTP e HTTPS.
+- `use std/hash|csv|utf8|datetime|regex|deflate|zstd|http|tls`  biblioteca padrao: hashes, CSV, UTF-8, datas e fusos, regex, gzip / zlib, Zstandard, HTTP e HTTPS.
   Contratos dos builtins: `buf_bits_write` e `p + n` ou `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (quando o
   resultado tem nome num `let` ou e devolvido); limite no `requires` os operandos de uma clausula para ela nao estourar.
 - Exemplos oficiais: `examples/topics/*.src` (rode cada um com `lume test`) e `examples/diagnostics/` (por codigo, o
@@ -396,6 +396,8 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
 - Buffers de bytes (mutaveis): `buf_new(n)`, `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),
                   `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off,
                   n)`, `buf_addr(b)`; buf_get / buf_set com indice pequeno viram codigo de maquina inline (sem chamada)
+                  memoria compartilhada: `buf_shared(n)` (buffer que os filhos de os_fork compartilham); `use par` roda
+                  um job em n processos ao mesmo tempo: par_pool(n, fn(k, job) => ...), par_run, par_slice, par_close
                   video: `buf_bgra_to_i420(src, stride, w, h, dst)` e `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
                   faixa limitada, media 2x2 do croma, tamanhos impares; bytes escritos ou -1; quadro 1080p em poucos ms)
                   distorcao de bloco para codificadores: `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`,
@@ -1226,7 +1228,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume verify [--jobs <value>] [--json] <source.src>...
   lume verify-cert [--json] [--check-source] [source.src] <certificate.json>
   lume proof-cache <self-test|check|store> [--require-all-hits] [source.src] [cache-dir]
-  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve> [--store <value>] [--locked] [--update] [--allow-failing] [dir]
+  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve> [--store <value>] [--registry <value>] [--cache <value>] [--offline] [--allow-http] [--git <value>] [--rev <value>] [--locked] [--update] [--allow-failing] [dir]
   lume pkg <audit> (served by the POSIX shim, scripts/lume_legacy.sh)
   lume registry <publish|resolve|discover> [--json] [--store <value>] [--target <value>] [--adapter <value>] [--source <value>] [--proof <value>] [--tests <value>] [--cid <value>] [--capability <value>] [--contract-signature <value>]
   lume agent <check|compile|fill|prove|ast|expand|symbols|eval|witness|repair|impact|hashes|grammar|project|bind|skeleton|cegis|synthesize|trace|heal|morph|kernel|c-export|replay|lineage|patch|patch-fn|diff-semver|equiv|check-rot> [--json] <source.src> [arguments] (the name of any `sentience` command is accepted in place of the subcommand)

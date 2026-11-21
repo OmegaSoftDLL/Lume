@@ -32,8 +32,8 @@ fn skew(b, i, n, x) = if i >= n then b else let w = buf_set(b, i, if bit_shr(x, 
 fn rtb(b) = let d = deflate_buf(b, 0, buf_len(b)) in let r = inflate_buf(d.buf, 0, d.n) in r.ok == 1 and bufeq(r.buf, r.n, b, buf_len(b))
 ## skewed bytes: the dynamic code wins and beats the fixed code by far (zlib -9 writes 4007 bytes for the same input)
 fn test_dynamic_block() = let b = skew(buf_new(20000), 0, 20000, 3) in let d = deflate_buf(b, 0, 20000) in btype(d) == 2 and d.n < 5000 and rtb(b)
-## random bytes: stored blocks, 5 bytes of overhead per 65535 bytes (two blocks here)
-fn test_stored_blocks() = let b = lcg(buf_new(70000), 0, 70000, 7) in let d = deflate_buf(b, 0, 70000) in btype(d) == 0 and d.n == 70010 and rtb(b) and (zlib_decompress((zlib_compress(b, 70000)).buf, 70016)).ok == 1
+## random bytes: stored blocks, 5 bytes of overhead per block (a block every 16383 symbols, as zlib: five here)
+fn test_stored_blocks() = let b = lcg(buf_new(70000), 0, 70000, 7) in let d = deflate_buf(b, 0, 70000) in btype(d) == 0 and d.n == 70025 and rtb(b) and zrt(b)
 fn test_small_inputs() = btype(deflate_buf(buf_from_str("abcabcabcabcabc fixed huffman"), 0, 29)) == 1 and rtb(buf_new(0)) and rtb(buf_from_str("a")) and rtb(buf_from_str("ab")) and (deflate_buf(buf_new(0), 0, 0)).n <= 5
 ## code lengths stay within the limit for frequencies that would build a deeper tree (Fibonacci weights), and the
 ## code is complete (Kraft sum exactly 1)
@@ -49,3 +49,23 @@ fn setl(l, xs, i) = match xs
 ## a distance past 4 KiB and binary bytes
 fn test_far_match() = let all = allbytes() in let big = buf_new(256 * 40) in let f = fill40(big, all, 0) in let d = deflate_buf(big, 0, buf_len(big)) in let r = inflate_buf(d.buf, 0, d.n) in r.ok == 1 and bufeq(r.buf, r.n, big, buf_len(big))
 fn fill40(big, all, k) = if k >= 40 then 0 else let c = buf_copy(big, k * 256, all, 0, 256) in fill40(big, all, k + 1)
+fn zrt(b) = let z = zlib_compress(b, buf_len(b)) in let r = zlib_decompress(z.buf, z.n) in r.ok == 1 and bufeq(r.buf, r.n, b, buf_len(b))
+## every level round-trips through zlib and gzip; level 0 is stored blocks only; the zlib header names the level
+fn mixed() = let t = buf_from_str(rep("Every level of deflate_level round-trips this text, ", 300)) in let s = skew(buf_new(30000), 0, 30000, 11) in let r = lcg(buf_new(5000), 0, 5000, 3) in let all = buf_new(buf_len(t) + 35000) in let a = buf_copy(all, 0, t, 0, buf_len(t)) in let c = buf_copy(all, buf_len(t), s, 0, 30000) in let d = buf_copy(all, buf_len(t) + 30000, r, 0, 5000) in all
+fn lvl_ok(b, l) = let z = zlib_compress_level(b, buf_len(b), l) in let r = zlib_decompress(z.buf, z.n) in let g = gzip_level(b, buf_len(b), l) in let u = gunzip(g.buf, g.n) in r.ok == 1 and bufeq(r.buf, r.n, b, buf_len(b)) and u.ok == 1 and bufeq(u.buf, u.n, b, buf_len(b))
+fn lvls(b, l) = if l > 9 then true else lvl_ok(b, l) and lvls(b, l + 1)
+fn test_levels() = let b = mixed() in lvls(b, 0) and btype(deflate_level(b, 0, buf_len(b), 0)) == 0 and buf_get((zlib_compress_level(b, 100, 1)).buf, 1) == 1 and buf_get((zlib_compress_level(b, 100, 9)).buf, 1) == 218 and buf_get((zlib_compress(b, 100)).buf, 1) == 156 and buf_get((gzip_level(b, 100, 9)).buf, 8) == 2
+## lazy matching (level 6) beats greedy matching (level 1), and level 9 is no larger than level 6
+fn test_lazy_beats_greedy() = let b = mixed() in let n = buf_len(b) in let d1 = deflate_level(b, 0, n, 1) in let d6 = deflate_level(b, 0, n, 6) in let d9 = deflate_level(b, 0, n, 9) in d6.n < d1.n and d9.n <= d6.n
+## more than 16383 symbols: several blocks, the first one not final, and the data still decodes
+fn hex16(b, i, n) = if i >= n then b else let w = buf_set(b, i, 97 + buf_get(b, i) % 16) in hex16(b, i + 1, n)
+fn test_multi_block() = let b = hex16(lcg(buf_new(120000), 0, 120000, 5), 0, 120000) in let d = deflate_buf(b, 0, 120000) in bit_and(buf_get(d.buf, 0), 1) == 0 and rtb(b) and d.n < 70000
+## an offset into a larger buffer and long runs (overlapping copies at distances 1 and 3)
+fn test_offset_and_runs() = let s = buf_from_str("xxxx" + rep("a", 3000) + rep("abc", 2000) + "yyyy") in let d = deflate_buf(s, 4, buf_len(s) - 8) in let r = inflate_buf(d.buf, 0, d.n) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == rep("a", 3000) + rep("abc", 2000) and d.n < 100
+## refusals (zlib refuses the same streams): 288 literal/length codes declared, a distance before the start of the
+## output, a reserved block type, an over-subscribed code-length code, truncated data
+fn test_refusals() = (inflate_buf(unhex("fd000000"), 0, 4)).err == "too many length or distance codes" and (inflate_buf(unhex("030200"), 0, 3)).err == "distance too far back" and (inflate_buf(unhex("07"), 0, 1)).err == "reserved block type" and (inflate_buf(unhex("05e09324499224499200"), 0, 10)).err == "bad code-length code" and trunc_ok()
+fn trunc_ok() = let b = mixed() in let z = zlib_compress(b, buf_len(b)) in (zlib_decompress(z.buf, z.n / 2)).ok == 0 and (zlib_decompress(z.buf, z.n - 1)).ok == 0 and (inflate_buf(z.buf, 2, z.n / 3)).ok == 0
+## data written by Python's zlib at level 1 decodes
+fn v_z1() = "7801abcac94c52c8492d4bcd51c8cf4b55282fca2c492d5628c9c82c56c8c9cc4bd553a8a25841625e0ac440a0053a0ac4f30017ec36ca"
+fn test_python_level1() = let v = unhex(v_z1()) in let r = zlib_decompress(v, buf_len(v)) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == rep("zlib level one writes this line. ", 3) + rep("and this one, ", 4)
