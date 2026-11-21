@@ -490,6 +490,9 @@ fn rt_envp() =
         else
             av + 8 * (load64(sym_addr(".Lrt_os_argc")) + 1)
 fn rt_up(c) = if c >= 97 and c <= 122 then c - 32 else c
+## 1 on Windows, where a variable name matches without regard to ASCII case (os_getenv, os_env_has, os_setenv and
+## os_unsetenv alike), else 0
+fn rt_env_win() = if load8(sym_addr(".Lrt_platform")) == 119 then 1 else 0
 ## the address of the value of the C-string name nm ("NAME=value" -> value), or 0
 fn rt_env_find(nm) =
     if load8(nm) == 0 then
@@ -499,7 +502,7 @@ fn rt_env_find(nm) =
         if e == 0 then
             0
         else
-            rt_env_scan(e, nm, if load8(sym_addr(".Lrt_platform")) == 119 then 1 else 0)
+            rt_env_scan(e, nm, rt_env_win())
 fn rt_env_scan(e, nm, win) =
     let d = load64(e) in
     if d == 0 then
@@ -538,7 +541,8 @@ fn os_uname_field(i) =
 
 ## set (or, with unset = 1, remove) a variable: a new table in an anonymous mapping holds every other entry, then
 ## "NAME=value" (not when removing), and becomes .Lrt_envp_ovr; children started afterwards get it. A name that is
-## empty or holds '=' is refused (0). Names here compare exactly, as before.
+## empty or holds '=' is refused (0). The old entry is found as os_getenv finds it: exactly, and on Windows also
+## without regard to ASCII case (setting Path replaces PATH there; it used to add a second entry)
 fn os_setenv(name, value) = rt_setenv(name, value, 0)
 fn os_unsetenv(name) = rt_setenv(name, name, 1)
 fn rt_has_eq(n, i) = let c = load8(n + i) in if c == 0 then 0 else if c == 61 then 1 else rt_has_eq(n, i + 1)
@@ -548,7 +552,7 @@ fn rt_env_keep(e, n, t, i, cnt, d) =
         d
     else
         let x = load64(e + 8 * i) in
-        if rt_env_match(n, x, 0) != 0 then
+        if rt_env_match(n, x, rt_env_win()) != 0 then
             rt_env_keep(e, n, t, i + 1, cnt, d)
         else
             let w = store64(t + 8 * d, x) in

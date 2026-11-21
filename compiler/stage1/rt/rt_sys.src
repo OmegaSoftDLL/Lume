@@ -1,0 +1,19 @@
+## rt_sys.src -- the kernel state table and the page hash (were assembly in the code generator's sys tail). Runtime
+## routines written in Lume (the golden rule), compiled by `lumec --raw`; no system call, so they are in every program
+## and in @freestanding kernels (rt_lume_core).
+##   krn_slot_write(idx, val) -> val, kept in slot idx % 1024 (idx & 1023) of a table of its own (.Lrt_krn_slots, 8 KiB
+##       of bss): it shared the runtime's 8 KiB scratch area, where sleep, process, network, epoll, io_uring, maxrss and
+##       the SIMD builtins write raw words, so a slot could read back a word that is not a Lume value
+##   krn_slot_read(idx) -> the value last written to slot idx % 1024, 0 when none was
+##   mem_crc64(addr, len) -> the 64-bit FNV-1a hash of the len bytes at addr (offset basis 14695981039346656037,
+##       prime 1099511628211, every product wrapping modulo 2^64), as a signed 64-bit int (two's complement: a hash of
+##       2^63 or more reads negative; the 63-bit immediate form holds what fits and mkint boxes the rest, so the value
+##       round-trips through ==, str and bit_* exactly); len <= 0 hashes nothing and answers the offset basis
+##       (-3750763034362895579). It used an offset basis one digit short and kept 31 bits.
+
+fn rtk_slot(i) = sym_addr(".Lrt_krn_slots") + 8 * bit_and(rt_int(i), 1023)
+fn krn_slot_write(i, v) = let w = store64(rtk_slot(i), v) in v
+fn krn_slot_read(i) = let v = load64(rtk_slot(i)) in if v == 0 then mkint(0) else v
+
+fn mem_crc64(a, n) = mkint(rtk_fnv(rt_int(a), rt_int(n), 0 - 3750763034362895579))
+fn rtk_fnv(p, n, h) = if n <= 0 then h else rtk_fnv(p + 1, n - 1, bit_xor(h, load8(p)) * 1099511628211)

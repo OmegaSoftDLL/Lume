@@ -1,0 +1,341 @@
+## h264_dbkmb_ok.src -- buf_h264_deblock_mb (the deblocking of a whole macroblock, ITU-T H.264 8.7) against a reference
+## written here in ordinary Lume: bS of every 4-sample segment (8.7.2.1), tables 8-15, 8-16 and 8-17, and the line
+## filters of 8.7.2.3 / 8.7.2.4, edge by edge in the standard's order over whole pictures; then buf_h264_deblock_edge
+## (its vector and scalar paths) against the same line filter. `lume test compiler/stage1/h264_dbkmb_ok.src`
+use h264
+use seq
+
+fn lcg(s) = (s *% 1664525 +% 1013904223) % 4294967296
+fn rnd(s, n) = bit_shr(s, 16) % n
+fn absv(v) = if v < 0 then 0 - v else v
+fn c3(lo, hi, v) = if v < lo then lo else if v > hi then hi else v
+fn clip1(v) = c3(0, 255, v)
+fn fdiv(v, d) = if v >= 0 then v / d else 0 - ((0 - v + d - 1) / d)
+
+## --- tables (8-15, 8-16, 8-17) ---
+fn alpha_of(i) = if i < 16 then 0 else [4, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 17, 20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 71, 80, 90, 101, 113, 127, 144, 162, 182, 203, 226, 255, 255][i - 16]
+fn beta_of(i) = if i < 16 then 0 else [2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18][i - 16]
+fn tc0_of(i, bs) =
+    if i < 17 or bs < 1 or bs > 3 then
+        0
+    else if bs == 1 then
+        [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 6, 6, 7, 8, 9, 10, 11, 13][i - 17]
+    else if bs == 2 then
+        [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 7, 8, 8, 10, 11, 12, 13, 15, 17][i - 17]
+    else
+        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 6, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 20, 23, 25][i - 17]
+fn qpc_of(q) = if q < 30 then q else [29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39][q - 30]
+
+## --- the line filters (8.7.2.3 bS < 4, 8.7.2.4 bS = 4): the line through q0 at q, samples st apart ---
+fn sg(b, q, st, i) = buf_get(b, q + i * st)
+fn fline(b, q, st, bs, alpha, beta, tc0, ch) =
+    let p0 = sg(b, q, st, 0 - 1) in
+    let p1 = sg(b, q, st, 0 - 2) in
+    let q0 = sg(b, q, st, 0) in
+    let q1 = sg(b, q, st, 1) in
+    if bs == 0 or absv(p0 - q0) >= alpha or absv(p1 - p0) >= beta or absv(q1 - q0) >= beta then
+        0
+    else if ch == 1 then
+        fchroma(b, q, st, bs, tc0, p0, p1, q0, q1)
+    else if bs < 4 then
+        fweak(b, q, st, beta, tc0, p0, p1, q0, q1)
+    else
+        fstrong(b, q, st, alpha, beta, p0, p1, q0, q1)
+fn fchroma(b, q, st, bs, tc0, p0, p1, q0, q1) =
+    if bs < 4 then
+        let tc = tc0 + 1 in
+        let d = c3(0 - tc, tc, fdiv((q0 - p0) * 4 + (p1 - q1) + 4, 8)) in
+        let a = buf_set(b, q - st, clip1(p0 + d)) in
+        let c = buf_set(b, q, clip1(q0 - d)) in
+        0
+    else
+        let a = buf_set(b, q - st, (2 * p1 + p0 + q1 + 2) / 4) in
+        let c = buf_set(b, q, (2 * q1 + q0 + p1 + 2) / 4) in
+        0
+fn fweak(b, q, st, beta, tc0, p0, p1, q0, q1) =
+    let p2 = sg(b, q, st, 0 - 3) in
+    let q2 = sg(b, q, st, 2) in
+    let ap = absv(p2 - p0) in
+    let aq = absv(q2 - q0) in
+    let tc = tc0 + (if ap < beta then 1 else 0) + (if aq < beta then 1 else 0) in
+    let d = c3(0 - tc, tc, fdiv((q0 - p0) * 4 + (p1 - q1) + 4, 8)) in
+    let a = buf_set(b, q - st, clip1(p0 + d)) in
+    let c = buf_set(b, q, clip1(q0 - d)) in
+    let e = if ap < beta then buf_set(b, q - 2 * st, p1 + c3(0 - tc0, tc0, fdiv(p2 + (p0 + q0 + 1) / 2 - 2 * p1, 2))) else 0 in
+    let f = if aq < beta then buf_set(b, q + st, q1 + c3(0 - tc0, tc0, fdiv(q2 + (p0 + q0 + 1) / 2 - 2 * q1, 2))) else 0 in
+    0
+fn fstrong(b, q, st, alpha, beta, p0, p1, q0, q1) =
+    let p2 = sg(b, q, st, 0 - 3) in
+    let p3 = sg(b, q, st, 0 - 4) in
+    let q2 = sg(b, q, st, 2) in
+    let q3 = sg(b, q, st, 3) in
+    let sm = absv(p0 - q0) < alpha / 4 + 2 in
+    let a = if sm and absv(p2 - p0) < beta then fsp(b, q, st, p3, p2, p1, p0, q0, q1) else buf_set(b, q - st, (2 * p1 + p0 + q1 + 2) / 4) in
+    let c = if sm and absv(q2 - q0) < beta then fsq(b, q, st, q3, q2, q1, q0, p0, p1) else buf_set(b, q, (2 * q1 + q0 + p1 + 2) / 4) in
+    0
+fn fsp(b, q, st, p3, p2, p1, p0, q0, q1) =
+    let a = buf_set(b, q - st, (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) / 8) in
+    let c = buf_set(b, q - 2 * st, (p2 + p1 + p0 + q0 + 2) / 4) in
+    buf_set(b, q - 3 * st, (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) / 8)
+fn fsq(b, q, st, q3, q2, q1, q0, p0, p1) =
+    let a = buf_set(b, q, (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) / 8) in
+    let c = buf_set(b, q + st, (p0 + q0 + q1 + q2 + 2) / 4) in
+    buf_set(b, q + 2 * st, (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) / 8)
+## one edge: line k at q0 + k along, its segment k / 4 (luma) or k / 2 (chroma)
+fn fedge(b, q0, across, along, lines, bsl, alpha, beta, tcl, ch, k) =
+    if k >= lines then
+        0
+    else
+        let seg = if ch == 1 then k / 2 else k / 4 in
+        let z = fline(b, q0 + k * along, across, bsl[seg], alpha, beta, tcl[seg], ch) in
+        fedge(b, q0, across, along, lines, bsl, alpha, beta, tcl, ch, k + 1)
+
+## --- per-macroblock information: 112 bytes per macroblock in raster order, the layout buf_h264_deblock_mb reads, plus
+## a slice number at byte 104 for the test ---
+fn get32(b, o) = buf_get(b, o) + buf_get(b, o + 1) * 256 + buf_get(b, o + 2) * 65536 + buf_get(b, o + 3) * 16777216
+fn put32(b, o, v) = let w = (v + 4294967296) % 4294967296 in let a = buf_set(b, o, w % 256) in let c = buf_set(b, o + 1, (w / 256) % 256) in let d = buf_set(b, o + 2, (w / 65536) % 256) in buf_set(b, o + 3, w / 16777216)
+fn get16(b, o) = let v = buf_get(b, o) + buf_get(b, o + 1) * 256 in if v >= 32768 then v - 65536 else v
+fn put16(b, o, v) = let w = (v + 65536) % 65536 in let a = buf_set(b, o, w % 256) in buf_set(b, o + 1, w / 256)
+fn blk(bx, by) = (by / 2) * 8 + (bx / 2) * 4 + (by % 2) * 2 + bx % 2
+fn moff(p, mx, my) = (my * p.wm + mx) * 112
+
+## bS between block pb of macroblock pm and block qb of qm (8.7.2.1)
+fn bs_ref(inf, pm, pb, qm, qb, mbe) =
+    if get32(inf, pm) != 0 or get32(inf, qm) != 0 then
+        (if mbe then 4 else 3)
+    else if buf_get(inf, pm + 8 + pb) != 0 or buf_get(inf, qm + 8 + qb) != 0 then
+        2
+    else if buf_get(inf, pm + 24 + pb) != buf_get(inf, qm + 24 + qb) then
+        1
+    else if absv(get16(inf, pm + 40 + 4 * pb) - get16(inf, qm + 40 + 4 * qb)) >= 4 or absv(get16(inf, pm + 42 + 4 * pb) - get16(inf, qm + 42 + 4 * qb)) >= 4 then
+        1
+    else
+        0
+fn bsk(p, inf, mx, my, dir, e, k) =
+    let cm = moff(p, mx, my) in
+    let qb = if dir == 0 then blk(e, k) else blk(k, e) in
+    if e == 0 then
+        bs_ref(inf, (if dir == 0 then moff(p, mx - 1, my) else moff(p, mx, my - 1)), (if dir == 0 then blk(3, k) else blk(k, 3)), cm, qb, true)
+    else
+        bs_ref(inf, cm, (if dir == 0 then blk(e - 1, k) else blk(k, e - 1)), cm, qb, false)
+fn bsl(p, inf, mx, my, dir, e) = [bsk(p, inf, mx, my, dir, e, 0), bsk(p, inf, mx, my, dir, e, 1), bsk(p, inf, mx, my, dir, e, 2), bsk(p, inf, mx, my, dir, e, 3)]
+fn nbm(p, mx, my, dir) = if dir == 0 then moff(p, mx - 1, my) else moff(p, mx, my - 1)
+## an edge is filtered unless it is the picture border or (idc 2) a slice border
+fn edge_on(p, inf, mx, my, dir, e) =
+    if e > 0 then
+        true
+    else if (dir == 0 and mx == 0) or (dir == 1 and my == 0) then
+        false
+    else
+        p.idc != 2 or buf_get(inf, nbm(p, mx, my, dir) + 104) == buf_get(inf, moff(p, mx, my) + 104)
+fn qy(inf, m) = get32(inf, m + 4)
+fn qc(p, inf, m) = qpc_of(c3(0, 51, qy(inf, m) + p.co))
+fn tcs(ia, bs) = [tc0_of(ia, bs[0]), tc0_of(ia, bs[1]), tc0_of(ia, bs[2]), tc0_of(ia, bs[3])]
+fn ledge(p, inf, mx, my, dir, e) =
+    if edge_on(p, inf, mx, my, dir, e) == false then
+        0
+    else
+        let bs = bsl(p, inf, mx, my, dir, e) in
+        let cm = moff(p, mx, my) in
+        let qp = if e == 0 then (qy(inf, nbm(p, mx, my, dir)) + qy(inf, cm) + 1) / 2 else qy(inf, cm) in
+        let ia = c3(0, 51, qp + p.oa) in
+        let ib = c3(0, 51, qp + p.ob) in
+        let org = p.yo + my * 16 * p.ys + mx * 16 in
+        if dir == 0 then
+            fedge(p.y, org + 4 * e, 1, p.ys, 16, bs, alpha_of(ia), beta_of(ib), tcs(ia, bs), 0, 0)
+        else
+            fedge(p.y, org + 4 * e * p.ys, p.ys, 1, 16, bs, alpha_of(ia), beta_of(ib), tcs(ia, bs), 0, 0)
+fn cedge(p, inf, mx, my, dir, ce, b, bo) =
+    if edge_on(p, inf, mx, my, dir, 2 * ce) == false then
+        0
+    else
+        let bs = bsl(p, inf, mx, my, dir, 2 * ce) in
+        let cm = moff(p, mx, my) in
+        let qp = if ce == 0 then (qc(p, inf, nbm(p, mx, my, dir)) + qc(p, inf, cm) + 1) / 2 else qc(p, inf, cm) in
+        let ia = c3(0, 51, qp + p.oa) in
+        let ib = c3(0, 51, qp + p.ob) in
+        let org = bo + my * 8 * p.cs + mx * 8 in
+        if dir == 0 then
+            fedge(b, org + 4 * ce, 1, p.cs, 8, bs, alpha_of(ia), beta_of(ib), tcs(ia, bs), 1, 0)
+        else
+            fedge(b, org + 4 * ce * p.cs, p.cs, 1, 8, bs, alpha_of(ia), beta_of(ib), tcs(ia, bs), 1, 0)
+fn cplane(p, inf, mx, my, b, bo) = let a = cedge(p, inf, mx, my, 0, 0, b, bo) in let c = cedge(p, inf, mx, my, 0, 1, b, bo) in let d = cedge(p, inf, mx, my, 1, 0, b, bo) in cedge(p, inf, mx, my, 1, 1, b, bo)
+## the reference macroblock: luma vertical edges left to right, horizontal top to bottom, then Cb, then Cr
+fn mb_ref(p, inf, mx, my) =
+    if p.idc == 1 then
+        0
+    else
+        let l = seq_loop(0, 8, 0, fn(k, acc) => acc + ledge(p, inf, mx, my, k / 4, k % 4)) in
+        let u = cplane(p, inf, mx, my, p.u, p.uo) in
+        cplane(p, inf, mx, my, p.v, p.vo)
+
+## --- the builtin on the same macroblock ---
+fn mb_cfg(p, inf, cfg, mx, my) =
+    let cm = moff(p, mx, my) in
+    let fl = (if mx > 0 and buf_get(inf, moff(p, mx - 1, my) + 104) != buf_get(inf, cm + 104) then 1 else 0) + (if my > 0 and buf_get(inf, moff(p, mx, my - 1) + 104) != buf_get(inf, cm + 104) then 2 else 0) in
+    let a = put32(cfg, 0, p.yo) in
+    let b = put32(cfg, 4, p.ys) in
+    let c = put32(cfg, 8, p.uo) in
+    let d = put32(cfg, 12, p.vo) in
+    let e = put32(cfg, 16, p.cs) in
+    let f = put32(cfg, 20, mx) in
+    let g = put32(cfg, 24, my) in
+    let h = put32(cfg, 28, p.wm) in
+    let i = put32(cfg, 32, p.hm) in
+    let j = put32(cfg, 36, p.idc) in
+    let k = put32(cfg, 40, p.oa) in
+    let l = put32(cfg, 44, p.ob) in
+    let m = put32(cfg, 48, p.co) in
+    let n = put32(cfg, 52, fl) in
+    let o = buf_copy(cfg, 64, inf, cm, 112) in
+    let q = if mx > 0 then buf_copy(cfg, 176, inf, moff(p, mx - 1, my), 112) else 0 in
+    let r = if my > 0 then buf_copy(cfg, 288, inf, moff(p, mx, my - 1), 112) else 0 in
+    buf_h264_deblock_mb(p.y, p.u, p.v, cfg)
+
+## --- pictures: smooth content with small steps between 4x4 blocks (so the filters engage), offsets and strides ---
+fn fill_plane(b, o, s, w, h, i, sd) =
+    if i >= w * h then
+        sd
+    else
+        let x = i % w in
+        let y = i / w in
+        let v = 96 + ((x / 4) * 5 + (y / 4) * 3) % 23 + ((x + 2 * y) % 9) + rnd(sd, 5) in
+        let z = buf_set(b, o + y * s + x, clip1(v)) in
+        fill_plane(b, o, s, w, h, i + 1, lcg(sd))
+fn mkpic(wm, hm, pad, idc, oa, ob, co, sd) =
+    let ys = wm * 16 + pad in
+    let cs = wm * 8 + pad in
+    let yo = pad * 3 + 1 in
+    let uo = pad + 2 in
+    let vo = pad * 2 + 5 in
+    let y = buf_new(yo + hm * 16 * ys + pad) in
+    let u = buf_new(uo + hm * 8 * cs + pad) in
+    let v = buf_new(vo + hm * 8 * cs + pad) in
+    let s1 = fill_plane(y, yo, ys, wm * 16, hm * 16, 0, sd) in
+    let s2 = fill_plane(u, uo, cs, wm * 8, hm * 8, 0, s1) in
+    let s3 = fill_plane(v, vo, cs, wm * 8, hm * 8, 0, s2) in
+    {y: y, u: u, v: v, yo: yo, ys: ys, uo: uo, vo: vo, cs: cs, wm: wm, hm: hm, idc: idc, oa: oa, ob: ob, co: co}
+fn copyb(b) = let c = buf_new(buf_len(b)) in let z = buf_copy(c, 0, b, 0, buf_len(b)) in c
+fn cpic(p) = {y: copyb(p.y), u: copyb(p.u), v: copyb(p.v), yo: p.yo, ys: p.ys, uo: p.uo, vo: p.vo, cs: p.cs, wm: p.wm, hm: p.hm, idc: p.idc, oa: p.oa, ob: p.ob, co: p.co}
+fn same(a, b, i) = if i >= buf_len(a) then true else if buf_get(a, i) != buf_get(b, i) then false else same(a, b, i + 1)
+fn samepic(a, b) = same(a.y, b.y, 0) and same(a.u, b.u, 0) and same(a.v, b.v, 0)
+
+## per-macroblock information from a seed and the case's knobs: k.pi intra in 100, k.pz coefficients in 100, k.mv the
+## spread of vector components (quarter samples), k.nr reference pictures, QPY in k.qlo .. k.qhi, k.ns slices
+fn mkinfo(n, k, sd) = let inf = buf_new(n * 112) in let z = info_mb(inf, 0, n, k, sd) in inf
+fn info_mb(inf, m, n, k, sd) =
+    if m >= n then
+        sd
+    else
+        let o = m * 112 in
+        let s1 = lcg(sd) in
+        let s2 = lcg(s1) in
+        let s3 = lcg(s2) in
+        let a = put32(inf, o, if rnd(s1, 100) < k.pi then 1 else 0) in
+        let b = put32(inf, o + 4, k.qlo + rnd(s2, k.qhi - k.qlo + 1)) in
+        let c = buf_set(inf, o + 104, if k.ns <= 1 then 0 else (m / 3 + rnd(s3, 2)) % k.ns) in
+        let bx = rnd(lcg(s3), 2 * k.mv + 1) - k.mv in
+        let by = rnd(lcg(lcg(s3)), 2 * k.mv + 1) - k.mv in
+        let s4 = info_blk(inf, o, 0, k, lcg(lcg(lcg(s3))), bx, by) in
+        info_mb(inf, m + 1, n, k, s4)
+## block b: coefficients, a reference picture (mostly the macroblock's first), a vector near the macroblock's
+fn info_blk(inf, o, b, k, sd, bx, by) =
+    if b >= 16 then
+        sd
+    else
+        let s1 = lcg(sd) in
+        let s2 = lcg(s1) in
+        let s3 = lcg(s2) in
+        let s4 = lcg(s3) in
+        let a = buf_set(inf, o + 8 + b, if rnd(s1, 100) < k.pz then 1 + rnd(s2, 5) else 0) in
+        let c = buf_set(inf, o + 24 + b, if k.nr <= 1 then 0 else if k.un == 1 then (bx + 100) % k.nr else if rnd(s2, 4) != 0 then 0 else rnd(s3, k.nr)) in
+        let d = put16(inf, o + 40 + 4 * b, bx + (if k.un == 0 and rnd(s3, 3) == 0 then rnd(s4, 9) - 4 else 0)) in
+        let e = put16(inf, o + 42 + 4 * b, by + (if k.un == 0 and rnd(s4, 3) == 0 then rnd(s1, 9) - 4 else 0)) in
+        info_blk(inf, o, b + 1, k, s4, bx, by)
+
+## both pictures macroblock by macroblock in raster order; true when every builtin call answered 0
+fn run_both(a, r, inf, cfg, m) =
+    if m >= a.wm * a.hm then
+        true
+    else
+        let mx = m % a.wm in
+        let my = m / a.wm in
+        let x = mb_cfg(a, inf, cfg, mx, my) in
+        let z = mb_ref(r, inf, mx, my) in
+        x == 0 and run_both(a, r, inf, cfg, m + 1)
+fn changed(a, p) = same(a.y, p.y, 0) == false
+fn dcase(wm, hm, pad, idc, oa, ob, co, k, sd) =
+    let p = mkpic(wm, hm, pad, idc, oa, ob, co, sd) in
+    let a = cpic(p) in
+    let r = cpic(p) in
+    let inf = mkinfo(wm * hm, k, lcg(sd + 99)) in
+    let ok = run_both(a, r, inf, buf_new(400), 0) in
+    ok and samepic(a, r) and (idc == 1 or changed(a, p))
+
+fn test_inter_uniform_qp() = dcase(4, 3, 0, 0, 0, 0, 0, {pi: 0, pz: 20, mv: 2, nr: 1, qlo: 28, qhi: 30, ns: 1, un: 0}, 11) and dcase(3, 3, 0, 0, 0, 0, 0, {pi: 0, pz: 5, mv: 0, nr: 1, qlo: 36, qhi: 36, ns: 1, un: 0}, 12)
+fn test_intra_inter_mix_qp_differences() = dcase(4, 3, 3, 0, 6, 0 - 4, 0 - 2, {pi: 30, pz: 50, mv: 3, nr: 1, qlo: 15, qhi: 51, ns: 1, un: 0}, 21) and dcase(3, 4, 1, 0, 0 - 6, 4, 5, {pi: 50, pz: 30, mv: 1, nr: 2, qlo: 24, qhi: 44, ns: 1, un: 0}, 22)
+fn test_references_and_vectors() = dcase(4, 3, 0, 0, 2, 2, 0, {pi: 5, pz: 10, mv: 6, nr: 3, qlo: 30, qhi: 40, ns: 1, un: 0}, 31) and dcase(4, 3, 2, 0, 0, 0, 0, {pi: 0, pz: 0, mv: 8, nr: 2, qlo: 32, qhi: 38, ns: 1, un: 0}, 32)
+fn test_all_intra_strong() = dcase(3, 3, 0, 0, 0, 0, 0, {pi: 100, pz: 60, mv: 0, nr: 1, qlo: 30, qhi: 46, ns: 1, un: 0}, 41) and dcase(2, 2, 5, 0, 12, 12, 12, {pi: 100, pz: 0, mv: 0, nr: 1, qlo: 40, qhi: 51, ns: 1, un: 0}, 42)
+fn test_slice_edges_idc2() = dcase(4, 4, 0, 2, 0, 0, 0, {pi: 20, pz: 30, mv: 3, nr: 2, qlo: 26, qhi: 40, ns: 3, un: 0}, 51) and dcase(4, 3, 1, 0, 0, 0, 0, {pi: 20, pz: 30, mv: 3, nr: 2, qlo: 26, qhi: 40, ns: 3, un: 0}, 52)
+## one vector and reference per macroblock (P16x16, as buf_h264_mb_p codes): the builtin's fast bS path
+fn test_single_partition_macroblocks() = dcase(4, 3, 0, 0, 0, 0, 0, {pi: 0, pz: 20, mv: 3, nr: 2, qlo: 28, qhi: 34, ns: 1, un: 1}, 91) and dcase(4, 4, 2, 0, 2, 0 - 2, 1, {pi: 10, pz: 40, mv: 1, nr: 1, qlo: 24, qhi: 44, ns: 1, un: 1}, 92) and dcase(3, 3, 0, 2, 0, 0, 0, {pi: 0, pz: 0, mv: 4, nr: 3, qlo: 36, qhi: 36, ns: 2, un: 1}, 93)
+fn test_idc1_changes_nothing() =
+    let p = mkpic(3, 2, 0, 1, 0, 0, 0, 61) in
+    let a = cpic(p) in
+    let inf = mkinfo(6, {pi: 50, pz: 50, mv: 4, nr: 2, qlo: 40, qhi: 40, ns: 1, un: 0}, 62) in
+    let r = run_both(a, cpic(p), inf, buf_new(400), 0) in
+    r and samepic(a, p)
+fn test_one_macroblock_picture() = dcase(1, 1, 0, 0, 0, 0, 0, {pi: 0, pz: 50, mv: 4, nr: 2, qlo: 30, qhi: 40, ns: 1, un: 0}, 71) and dcase(1, 1, 0, 0, 0, 0, 0, {pi: 100, pz: 0, mv: 0, nr: 1, qlo: 40, qhi: 40, ns: 1, un: 0}, 72)
+fn test_wrong_arguments() =
+    let p = mkpic(2, 2, 0, 0, 0, 0, 0, 81) in
+    let inf = mkinfo(4, {pi: 0, pz: 0, mv: 0, nr: 1, qlo: 30, qhi: 30, ns: 1, un: 0}, 82) in
+    let cfg = buf_new(400) in
+    let ok = mb_cfg(p, inf, cfg, 1, 1) == 0 in
+    let t1 = buf_h264_deblock_mb(p.y, p.u, p.v, buf_new(399)) == 0 - 1 in
+    let t2 = buf_h264_deblock_mb(p.y, buf_new(10), p.v, cfg) == 0 - 1 in
+    let w1 = put32(cfg, 20, 2) in
+    let t3 = buf_h264_deblock_mb(p.y, p.u, p.v, cfg) == 0 - 1 in
+    let w2 = put32(cfg, 20, 1) in
+    let w3 = put32(cfg, 36, 3) in
+    let t4 = buf_h264_deblock_mb(p.y, p.u, p.v, cfg) == 0 - 1 in
+    let w4 = put32(cfg, 36, 0) in
+    let w5 = put32(cfg, 40, 13) in
+    let t5 = buf_h264_deblock_mb(p.y, p.u, p.v, cfg) == 0 - 1 in
+    let w6 = put32(cfg, 40, 0) in
+    let w7 = put32(cfg, 68, 52) in
+    let t6 = buf_h264_deblock_mb(p.y, p.u, p.v, cfg) == 0 - 1 in
+    let w8 = put32(cfg, 68, 30) in
+    let w9 = put32(cfg, 4, 31) in
+    let t7 = buf_h264_deblock_mb(p.y, p.u, p.v, cfg) == 0 - 1 in
+    ok and t1 and t2 and t3 and t4 and t5 and t6 and t7
+
+## --- buf_h264_deblock_edge against the line filter: vertical / horizontal, luma / chroma, every bS mix ---
+fn ecase(i) =
+    let ch = i % 4 == 3 in
+    let lines = if ch then 8 else 16 in
+    let vert = (i / 2) % 2 == 0 in
+    let b = buf_new(40 * 40) in
+    let s = fill_plane(b, 0, 40, 40, 40, 0, i * 7919 + 1) in
+    let r = copyb(b) in
+    let sd = lcg(i * 31 + 5) in
+    let bs = [rnd(sd, 5), rnd(lcg(sd), 5), rnd(lcg(lcg(sd)), 5), (if i % 3 == 0 then 4 else rnd(lcg(lcg(lcg(sd))), 4))] in
+    let ia = 16 + rnd(lcg(sd + 1), 36) in
+    let ib = 16 + rnd(lcg(sd + 2), 36) in
+    let tc = tcs(ia, bs) in
+    let q0 = if vert then 6 * 40 + 12 else 12 * 40 + 6 in
+    let across = if vert then 1 else 40 in
+    let along = if vert then 40 else 1 in
+    let x = buf_h264_deblock_edge(b, q0, across, along, lines, bs, alpha_of(ia), beta_of(ib), tc, if ch then 1 else 0) in
+    let y = fedge(r, q0, across, along, lines, bs, alpha_of(ia), beta_of(ib), tc, if ch then 1 else 0, 0) in
+    x == 0 and same(b, r, 0)
+fn test_edge_vector_and_scalar_paths() = seq_loop(0, 240, true, fn(i, acc) => acc and ecase(i))
+## fewer lines than a whole edge and a chroma edge at the buffer's left border take the scalar routines
+fn test_edge_partial_and_border() =
+    let b = buf_new(40 * 40) in
+    let s = fill_plane(b, 0, 40, 40, 40, 0, 5) in
+    let r = copyb(b) in
+    let x1 = buf_h264_deblock_edge(b, 6 * 40 + 12, 1, 40, 11, [2, 3, 1, 2], 40, 12, [1, 2, 1, 1], 0) in
+    let y1 = fedge(r, 6 * 40 + 12, 1, 40, 11, [2, 3, 1, 2], 40, 12, [1, 2, 1, 1], 0, 0) in
+    let x2 = buf_h264_deblock_edge(b, 20 * 40 + 2, 1, 40, 8, [2, 2, 3, 1], 40, 12, [1, 2, 1, 1], 1) in
+    let y2 = fedge(r, 20 * 40 + 2, 1, 40, 8, [2, 2, 3, 1], 40, 12, [1, 2, 1, 1], 1, 0) in
+    x1 == 0 and x2 == 0 and same(b, r, 0)

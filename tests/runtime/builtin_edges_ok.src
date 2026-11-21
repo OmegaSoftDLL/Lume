@@ -1,0 +1,55 @@
+## builtin_edges_ok.src -- the edges found by probing every builtin, the same on Linux and on Windows: values the
+## runtime answered that were not Lume values, stops that were not stops, state shared between builtins that have
+## nothing in common, errors read as data, and ports, sizes and descriptors outside their range.
+
+fn caught(msg) = __lume_try_msg()
+fn contains_at(s, p, i) = if i + count(p) > count(s) then 0 else if slice(s, i, i + count(p)) == p then 1 else contains_at(s, p, i + 1)
+fn contains(s, p) = contains_at(s, p, 0) == 1
+fn ptr(s) = buf_addr(buf_from_str(s))
+
+## printval answers the value it printed (it answered a raw word: str of it crashed)
+fn test_printval_answers_its_value() = let a = printval(41) in let b = printval("edge") in str(a) == "41" and b == "edge"
+
+## utf8_chr of a bad code point is a runtime stop: message on stderr, catchable (it wrote to stdout and exited)
+fn utf8_stop(n) = if __lume_try_begin() == 0 then let s = utf8_chr(n) in let z = __lume_try_end() in "" else __lume_try_msg()
+fn test_utf8_chr_bad_code_point_is_a_catchable_stop() = contains(utf8_stop(0), "utf8_chr") and contains(utf8_stop(55296), "utf8_chr") and contains(utf8_stop(1114112), "utf8_chr") and utf8_chr(1114111) != ""
+
+## the kernel slots have their own table: sleep, pipes, epoll, maxrss and SIMD no longer write into them
+fn test_kernel_slots_survive_other_builtins() = let w2 = krn_slot_write(2, 77) in let w3 = krn_slot_write(3, "three") in let s = os_sleep_ms(1) in let m = os_self_maxrss_kb() in let v = simd_add4_i64(1, 2) in let e = epoll_create_fd() in let t = epoll_wait_one(e, 0) in let c = net_close(e) in krn_slot_read(2) == 77 and krn_slot_read(3) == "three" and krn_slot_read(1026) == 77 and krn_slot_read(500) == 0
+
+## mem_crc64 is the 64-bit FNV-1a (offset basis 14695981039346656037, prime 1099511628211) as a signed 64-bit int
+fn test_mem_crc64_is_fnv1a_64() = mem_crc64(ptr("a"), 1) == 0 - 5808556873153909620 and mem_crc64(ptr(""), 0) == 0 - 3750763034362895579 and mem_crc64(ptr("foobar"), 6) == 0 - 8821353812377114648 and mem_crc64(ptr("hello world"), 11) == 8618312879776256743 and mem_crc64(ptr("abc"), 0 - 4) == 0 - 3750763034362895579
+fn test_mem_crc64_round_trips() = let h = mem_crc64(ptr("foobar"), 6) in str(h) == "-8821353812377114648" and h < 0 and toint(str(h)) == h
+
+## the number-printing buffer no longer holds the timed-out flag, the pipe descriptors or the pipe integers
+fn test_printing_does_not_change_os_last_timed_out() = let p = os_pipe_new() in let a = os_last_timed_out() in let x = printval(123456789012) in let b = os_last_timed_out() in let c1 = net_close(p / 10000) in let c2 = net_close(p % 10000) in a == 0 and b == 0
+fn test_pipe_ints_survive_printing() = let p = os_pipe_new() in let w = os_pipe_write_int(p % 10000, 987654321) in let x = printval(111111111111) in let r = os_pipe_read_int(p / 10000) in let c1 = net_close(p / 10000) in let c2 = net_close(p % 10000) in w == 1 and r == 987654321
+
+## pipe errors: -1 at the end of the data, on a bad descriptor and when a write fails
+fn test_pipe_read_at_eof_is_minus_one() = let p = os_pipe_new() in let w = os_pipe_write_int(p % 10000, 5) in let c = net_close(p % 10000) in let r1 = os_pipe_read_int(p / 10000) in let r2 = os_pipe_read_int(p / 10000) in let c2 = net_close(p / 10000) in p > 0 and r1 == 5 and r2 == 0 - 1
+fn test_pipe_bad_descriptor_is_minus_one() = os_pipe_read_int(999) == 0 - 1 and os_pipe_write_int(999, 1) == 0 - 1 and os_pipe_write_int(0 - 3, 1) == 0 - 1
+
+## a negative sleep returns at once (it hung on Linux)
+fn test_negative_sleep_returns_at_once() = let t0 = os_monotonic_ns() in let s = os_sleep_ms(0 - 5) in let ms = (os_monotonic_ns() - t0) / 1000000 in s == 1 and ms < 1000
+
+## Windows: a variable name matches without regard to case in os_setenv / os_unsetenv as in os_getenv
+fn test_setenv_case_follows_the_platform() = let a = os_setenv("LUME_EDGE_CASE_VAR", "upper") in let b = os_setenv("lume_edge_case_var", "lower") in let up = os_getenv("LUME_EDGE_CASE_VAR") in let u = os_unsetenv("Lume_Edge_Case_Var") in let gone = os_env_has("LUME_EDGE_CASE_VAR") in let low = os_env_has("lume_edge_case_var") in if os_platform() == "windows" then up == "lower" and gone == 0 and low == 0 else up == "upper" and gone == 1 and low == 1
+
+## network: net_recv_str honours max; ports outside 0..65535 are refused; failed binds close their socket; a second
+## UDP bind of a port in use is refused; a closed descriptor is EBADF (-9); epoll timeout -1, error -2
+fn test_net_recv_str_honours_max() = let u = net_udp_bind(47431) in let s = net_udp_sendto(47431, "abcdefgh") in let r = net_recv_str(u, 3) in let c = net_close(u) in u >= 0 and s == 8 and r == "abc"
+fn test_ports_outside_range_are_refused() = net_udp_bind(70000) == 0 - 1 and net_udp_bind(0 - 1) == 0 - 1 and net_tcp_listen(65536) == 0 - 1 and net_tcp_connect(0 - 7) == 0 - 1 and net_udp_sendto(70000, "x") == 0 - 1
+fn bind_busy(port, k) = if k <= 0 then 1 else if net_udp_bind(port) != 0 - 1 then 0 else bind_busy(port, k - 1)
+fn test_second_udp_bind_refused_and_no_socket_leaks() = let u = net_udp_bind(47432) in let busy = bind_busy(47432, 1100) in let v = net_udp_bind(47433) in let c1 = net_close(u) in let c2 = net_close(v) in u >= 0 and busy == 1 and v >= 0 and v < u + 4
+fn test_closed_descriptor_is_ebadf() = let u = net_udp_bind(47434) in let c = net_close(u) in net_tcp_accept(u) == 0 - 9 and sys_call(3, 0 - 1, 0, 0, 0, 0) == 0 - 9 and net_shutdown_write(u) == 0 - 1
+fn test_epoll_timeout_and_error_are_distinct() = let e = epoll_create_fd() in let t = epoll_wait_one(e, 0) in let c = net_close(e) in t == 0 - 1 and epoll_wait_one(e, 0) == 0 - 2
+
+## crypto_chacha20_xor with a short output buffer names the output buffer
+fn chacha_stop() = if __lume_try_begin() == 0 then let r = crypto_chacha20_xor(buf_new(4), "0123456789abcdef", "0123456789abcdef0123456789abcdef", "0123456789ab", 0) in let z = __lume_try_end() in "" else __lume_try_msg()
+fn test_chacha20_short_output_message() = contains(chacha_stop(), "output buffer")
+
+## simd_add4_i64 / simd_sub4_i64: four equal 64-bit lanes summed (4 * (a op b)), wrapping modulo 2^64, SSE2 only
+fn test_simd_lanes() = simd_add4_i64(3, 4) == 28 and simd_sub4_i64(10, 4) == 24 and simd_xor4_i64(12, 10) == 6 and simd_add4_i64(2305843009213693952, 0) == 0 - 9223372036854775807 - 1 and simd_add4_i64(4611686018427387904, 0) == 0
+
+## mmio_volatile_write16 / read16: one 16-bit access (movw / movzwq), little-endian, on a buffer of this process
+fn test_mmio16_is_one_word() = let b = buf_new(8) in let a = buf_addr(b) in let w = mmio_volatile_write16(a + 2, 4660) in buf_get(b, 2) == 52 and buf_get(b, 3) == 18 and mmio_volatile_read16(a + 2) == 4660 and mmio_volatile_read16(a) == 0 and buf_get(b, 4) == 0

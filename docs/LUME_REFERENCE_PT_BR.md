@@ -169,6 +169,7 @@ pelo gate dos exemplos a cada versao.
 | `I0275` | recusa de interoperabilidade do alvo | ltarget | - |
 | `K0005` | escrita fisica na faixa de texto/rodata do kernel [32768..262143] | analisador | `K0005_write_into_kernel_text` |
 | `K0006` | recursao mutua em kernel freestanding | analisador | `K0006_kernel_mutual_recursion` |
+| `K0007` | builtin so de kernel (I/O de porta, MSRs, cli / sti / hlt, CR3, invlpg, IDT, interrupcoes, boot de AP, troca de tarefa, `vga_*`) num programa hospedado | compilador | `K0007_kernel_builtin_in_hosted` |
 | `K0010` | certificado de outra fonte (hash diferente) | lcert | - |
 | `K0011` | obrigacao da fonte sem entrada no certificado | lcert | - |
 | `K0012` | entrada do certificado sem obrigacao na fonte | lcert | - |
@@ -434,6 +435,25 @@ Intra16x16 DC depois 15 AC por bloco), cbp (4), offset do bloco 0 (8), offset do
 (16..19) e do topo (20..23); sai o TotalCoeff de cada bloco (32..47). ctx croma: cbp (0..2), bases de saida de Cb e
 Cr (4, 8), TotalCoeff da esquerda (16..19: Cb 2, Cr 2) e do topo (20..23); sai o TotalCoeff AC (32..39). Respondem
 a nova posicao de bit ou -1.
+`buf_h264_deblock_mb (y, u, v, cfg)` filtra (deblocking) um macrobloco inteiro no lugar (8.7, macroblocos de quadro
+4:2:0), como um decodificador faz quando ele e tudo antes dele em ordem raster estao reconstruidos: bordas verticais
+de luma da esquerda para a direita, horizontais de cima para baixo, depois Cb e Cr. bS por segmento de 4 amostras
+(8.7.2.1): 4 numa borda de macrobloco com macrobloco intra de um dos lados, 3 dentro de um macrobloco intra, 2 quando
+o bloco 4x4 de p0 ou de q0 tem coeficientes, 1 quando as imagens de referencia diferem ou um componente do vetor
+difere em 4 quartos de amostra ou mais, senao 0; as bordas de croma usam o bS das bordas 0 e 2 de luma. alpha / beta
+/ tC0 das tabelas 8-16 / 8-17 com indexA / indexB = qPav + FilterOffsetA / B (qPav: o QPY dentro, a media
+arredondada dos dois macroblocos na borda esquerda / de cima; croma igual com o QPc da tabela 8-15). Bordas na borda
+da imagem ficam de fora, bordas de fatia tambem com disable_deblocking_filter_idc 2, tudo com idc 1. y, u, v guardam
+os tres planos. cfg (ao menos 400 bytes, int32 little endian): offset de luma da imagem (0), passo de luma (4),
+offset de Cb (8), offset de Cr (12), passo de croma (16), mbx (20), mby (24), largura (28) e altura (32) em
+macroblocos, idc (36), FilterOffsetA (40) e FilterOffsetB (44) (com sinal: slice_alpha_c0 / beta_offset_div2 x 2),
+chroma_qp_index_offset (48, com sinal), flags (52: 1 o macrobloco da esquerda, 2 o de cima esta em outra fatia);
+depois 112 bytes para este macrobloco (64), o da esquerda (176) e o de cima (288): intra (int32, nao zero = intra),
+QPY (int32 em 4), flags de coeficientes (bytes 8..23), identidades das imagens de referencia (bytes 24..39, p. ex.
+ref_idx numa fatia P), vetores (int16 mvx, mvy em 40 + 4 x bloco, quartos de amostra), tudo por bloco 4x4 na ordem
+luma4x4BlkIdx (a ordem das contagens de `buf_h264_mb_p`). Responde 0, ou -1 com argumento errado. Toda borda
+roda em SSE2 (16 linhas de uma vez, o filtro forte tambem); cerca de 1,7 us por macrobloco em conteudo 1080p, inter
+ou intra (h264_dbkmb_ok.src o compara com o procedimento da norma escrito em Lume comum).
 
 Formas empacotadas por tras de `use h264` (estavel; no maximo seis argumentos cada, entao o modulo empacota os
 inteiros; um programa pode chama-las direto; cada uma responde -1 com argumento errado): `buf_h264_lmc6(ref, dst, a,
@@ -819,6 +839,27 @@ print hex(buf_to_str(out, 0, 3), 0)
 16
 17da83
 ```
+Formas de loopback e chamadas de sistema (as mesmas respostas no Linux e no Windows): `net_tcp_listen(porta)`,
+`net_tcp_connect(porta)`, `net_udp_bind(porta)` (127.0.0.1; um socket, ou -1 quando a porta esta fora de 0..65535 ou
+um passo falha, e entao o socket e fechado; uma porta UDP ja ligada e recusada), `net_udp_sendto(porta, dados)`
+(bytes enviados, -1 com porta ou socket ruim), `net_recv_str(fd, max)` (no maximo `max` bytes, limitado a 1..65536;
+`""` num erro ou no fim), `net_send_str(fd, dados)`, `net_tcp_accept(fd)` (um socket, ou menos o errno do Linux: -9
+para descritor nao aberto, -88 para um que nao e socket), `net_shutdown_write(fd)` (1, ou -1). `epoll_create_fd()`,
+`epoll_add_in(ep, fd, dado)` (0 ou menos o errno), `epoll_wait_one(ep, ms)` (o `dado` de um descritor pronto, -1
+quando o timeout expira, -2 num erro; use dados nao negativos). `os_pipe_new()` (`rfd * 10000 + wfd`, ou -1 quando
+pipe falha ou um descritor e 10000 ou mais), `os_pipe_write_int(wfd, n)` (1, ou -1 quando os 8 bytes nao sao
+escritos), `os_pipe_read_int(rfd)` (o inteiro, ou -1 no fim dos dados ou num erro: envie -1 so como marca de parada).
+`os_sleep_ms(ms)` (1; `ms` negativo ou zero volta na hora). `os_setenv(nome, valor)` / `os_unsetenv(nome)` acham a
+entrada antiga como `os_getenv`: exatamente, e no Windows sem distinguir maiusculas ASCII. `printval(v)` imprime `v`
+e uma quebra de linha e responde `v`. `utf8_chr(n)` com n <= 0, um surrogate ou n > 0x10FFFF e uma parada de
+execucao (stderr, saida 3, capturavel). `mem_crc64(endereco, tamanho)` e o hash FNV-1a de 64 bits (base
+14695981039346656037, primo 1099511628211, com wrap) como inteiro de 64 bits com sinal (um hash de 2^63 ou mais fica
+negativo). `krn_slot_write(i, v)` / `krn_slot_read(i)`: tabela propria de 1024 posicoes (`i` modulo 1024; 0 numa
+posicao nunca escrita). `simd_add4_i64(a, b)` / `simd_sub4_i64(a, b)`: quatro lanes iguais de 64 bits de `a + b` /
+`a - b` somadas, isto e `4 * (a op b)` modulo 2^64 com sinal (SSE2, toda CPU x86-64); `simd_xor4_i64(a, b)` e uma
+lane, `a xor b`. Builtins que exigem ring 0 (I/O de porta, MSRs, cli / sti / hlt, CR3,
+invlpg, a IDT, interrupcoes, boot de AP, troca de tarefa, `vga_*`) sao recusados num programa hospedado com
+[K0007].
 
 ## 7. Modulos da biblioteca padrao
 

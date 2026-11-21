@@ -22,10 +22,12 @@
 ##   buf_h264_mb_i16(src, si, ss, rec, ri, cfg)  a whole Intra16x16 macroblock (4x4 luma DC Hadamard; decide-only flag)
 ##   buf_h264_mb_ic(srcu, srcv, recu, recv, cfg) intra chroma of a macroblock: one mode for Cb and Cr, both planes coded
 ##   buf_h264_cavlc_luma / buf_h264_cavlc_chroma(lev, ctx, out, pos)  CAVLC of a whole macroblock with the nC context
+##   buf_h264_deblock_mb(y, u, v, cfg)           the deblocking of a whole macroblock, luma and both chroma planes (8.7)
 
 ## scratch: one static block (runtime/rt_die's .bss __rtc_scratch, 4096 bytes) instead of an allocation per call; the
 ## runtime is single-threaded and no codec builtin calls another, so the parts never overlap: luma MC window and b1
-## table at 0 (3616 bytes), the quantization / dequantization multiplier vectors at 3616 / 3632 (16 each), intra 4x4 neighbours at 3744 (112), deblocking at 3856 (56),
+## table at 0 (3616 bytes), the quantization / dequantization multiplier vectors at 3616 / 3632 (16 each), intra 4x4 neighbours at 3744 (112), the deblocking
+## vector block at 0 (512 bytes: vec_dbk16 / vec_dbkv / vec_dbkh2) and the macroblock deblocking context at 512 (240),
 ## intra 4x4 edge and filter tables at 3912 (48), the CAVLC stream length in bits at 3960 (int32) and the profile flag
 ## at 3964 (int32: 1 lets level_prefix exceed 15, as the High profiles allow; 0 refuses it, Baseline / Main / Extended)
 fn rtc_isbuf(b) = if b == 0 or bit_and(b, 7) != 0 then 0 else if load8(b) != 15 then 0 else 1
@@ -1825,89 +1827,180 @@ fn buf_h264_cmc6(ref, dst, a, b, g, q) = rtc_mc(ref, dst, rt_int(a), rt_int(b), 
 ##   buf_h264_dbk5(buf, q0, across + 2^24 + (along + 2^24) 2^25, lines + chroma 2^8 + alpha 2^16 + beta 2^24,
 ##                 bS of segment k at bits 4k + tC0 of segment k at bits 16 + 8k)
 ## q0 is the byte offset of q0 on the first line; p_i = q0 - (i + 1) across, q_i = q0 + i across; line k starts k along
-## further. A segment is 4 luma lines or 2 chroma lines (4:2:0). Context x: 0 -, 8 across, 16 along, 24 alpha,
-## 32 beta, 40 chroma, 48 bS/tC0 word.
-fn rtc_c3(lo, hi, v) = if v < lo then lo else if v > hi then hi else v
-fn rtc_dweak(x, p, tc0) =
-    let s = load64(x + 8) in
-    let beta = load64(x + 32) in
-    let ch = load64(x + 40) in
-    let p0 = load8(p - s) in
-    let q0 = load8(p) in
-    let p1 = load8(p - 2 * s) in
-    let q1 = load8(p + s) in
-    let p2 = if ch == 1 then 0 else load8(p - 3 * s) in
-    let q2 = if ch == 1 then 0 else load8(p + 2 * s) in
-    let ap = rtc_abs(p2 - p0) in
-    let aq = rtc_abs(q2 - q0) in
-    let tc = if ch == 1 then tc0 + 1 else tc0 + (if ap < beta then 1 else 0) + (if aq < beta then 1 else 0) in
-    let dl = rtc_c3(0 - tc, tc, rtc_asr((q0 - p0) * 4 + (p1 - q1) + 4, 3)) in
-    let w1 = store8(p - s, rtc_clip(p0 + dl)) in
-    let w2 = store8(p, rtc_clip(q0 - dl)) in
-    let w3 = if ch == 0 and ap < beta then store8(p - 2 * s, p1 + rtc_c3(0 - tc0, tc0, rtc_asr(p2 + bit_shr(p0 + q0 + 1, 1) - p1 * 2, 1))) else 0 in
-    let w4 = if ch == 0 and aq < beta then store8(p + s, q1 + rtc_c3(0 - tc0, tc0, rtc_asr(q2 + bit_shr(p0 + q0 + 1, 1) - q1 * 2, 1))) else 0 in
-    0
-fn rtc_dchroma4(p, s) =
-    let p0 = load8(p - s) in
-    let q0 = load8(p) in
-    let p1 = load8(p - 2 * s) in
-    let q1 = load8(p + s) in
-    let w1 = store8(p - s, bit_shr(2 * p1 + p0 + q1 + 2, 2)) in
-    let w2 = store8(p, bit_shr(2 * q1 + q0 + p1 + 2, 2)) in
-    0
-## one side of the strong luma filter: a = the side's samples s0..s3 going away from the edge (step st), o0, o1 the
-## other side's first two
-fn rtc_dside(p, st, o0, o1, strong) =
-    let s0 = load8(p) in
-    let s1 = load8(p + st) in
-    let s2 = load8(p + 2 * st) in
-    let s3 = load8(p + 3 * st) in
-    if strong == 1 then
-        let w0 = store8(p, bit_shr(s2 + 2 * s1 + 2 * s0 + 2 * o0 + o1 + 4, 3)) in
-        let w1 = store8(p + st, bit_shr(s2 + s1 + s0 + o0 + 2, 2)) in
-        store8(p + 2 * st, bit_shr(2 * s3 + 3 * s2 + s1 + s0 + o0 + 4, 3))
-    else
-        store8(p, bit_shr(2 * s1 + s0 + o1 + 2, 2))
-fn rtc_dstrong(x, p) =
-    let s = load64(x + 8) in
-    let alpha = load64(x + 24) in
-    let beta = load64(x + 32) in
-    let p0 = load8(p - s) in
-    let q0 = load8(p) in
-    let p1 = load8(p - 2 * s) in
-    let q1 = load8(p + s) in
-    let p2 = load8(p - 3 * s) in
-    let q2 = load8(p + 2 * s) in
-    let small = if rtc_abs(p0 - q0) < bit_shr(alpha, 2) + 2 then 1 else 0 in
-    let sp = if small == 1 and rtc_abs(p2 - p0) < beta then 1 else 0 in
-    let sq = if small == 1 and rtc_abs(q2 - q0) < beta then 1 else 0 in
-    let a = rtc_dside(p - s, 0 - s, q0, q1, sp) in
-    rtc_dside(p, s, p0, p1, sq)
-fn rtc_dl(x, p, bs, tc0) =
-    let s = load64(x + 8) in
-    let p0 = load8(p - s) in
-    let q0 = load8(p) in
-    let p1 = load8(p - 2 * s) in
-    let q1 = load8(p + s) in
-    if bs == 0 or rtc_abs(p0 - q0) >= load64(x + 24) or rtc_abs(p1 - p0) >= load64(x + 32) or rtc_abs(q1 - q0) >= load64(x + 32) then
-        0
-    else if bs < 4 then
-        rtc_dweak(x, p, tc0)
-    else if load64(x + 40) == 1 then
-        rtc_dchroma4(p, s)
-    else
-        rtc_dstrong(x, p)
-fn rtc_dlines(x, p, k, n) =
-    if k >= n then
+## further. A segment is 4 luma lines or 2 chroma lines (4:2:0). Each filter routine runs the lines of one segment
+## from p up to (not including) e, al apart, as a loop (its self tail call is a jump: one frame per segment), with the
+## arithmetic inline and no call; k = alpha + beta 2^8 + tC0 2^16. A segment of bS 0 is skipped whole. Negative values
+## are shifted with a bias instead of a call: (v + 4) >> 3 arithmetic is ((v + 4 + 16384) >> 3) - 2048 for |v| < 16384.
+## luma, bS < 4 (8.7.2.3)
+fn rtc_dlw(p, e, s, al, k) =
+    if p == e then
         0
     else
-        let seg = if load64(x + 40) == 1 then bit_shr(k, 1) else bit_shr(k, 2) in
-        let cp = load64(x + 48) in
-        let z = rtc_dl(x, p, bit_and(bit_shr(cp, seg * 4), 15), bit_and(bit_shr(cp, 16 + seg * 8), 255)) in
-        rtc_dlines(x, p + load64(x + 16), k + 1, n)
+        let p0 = load8(p - s) in
+        let q0 = load8(p) in
+        let p1 = load8(p - s - s) in
+        let q1 = load8(p + s) in
+        let a = bit_and(k, 255) in
+        let b = bit_and(bit_shr(k, 8), 255) in
+        let d = q0 - p0 in
+        let e1 = p1 - p0 in
+        let f = q1 - q0 in
+        if d >= a or 0 - d >= a or e1 >= b or 0 - e1 >= b or f >= b or 0 - f >= b then
+            rtc_dlw(p + al, e, s, al, k)
+        else
+            let t = bit_shr(k, 16) in
+            let p2 = load8(p - 3 * s) in
+            let q2 = load8(p + s + s) in
+            let g = p2 - p0 in
+            let ap = if g < b and 0 - g < b then 1 else 0 in
+            let h = q2 - q0 in
+            let aq = if h < b and 0 - h < b then 1 else 0 in
+            let tc = t + ap + aq in
+            let v = bit_shr(d * 4 + p1 - q1 + 16388, 3) - 2048 in
+            let dl = if v < 0 - tc then 0 - tc else if v > tc then tc else v in
+            let np = p0 + dl in
+            let nq = q0 - dl in
+            let w1 = store8(p - s, if np < 0 then 0 else if np > 255 then 255 else np) in
+            let w2 = store8(p, if nq < 0 then 0 else if nq > 255 then 255 else nq) in
+            let m = bit_shr(p0 + q0 + 1, 1) in
+            let up = bit_shr(p2 + m - p1 - p1 + 1024, 1) - 512 in
+            let uq = bit_shr(q2 + m - q1 - q1 + 1024, 1) - 512 in
+            let w3 = if ap == 1 then store8(p - s - s, p1 + (if up < 0 - t then 0 - t else if up > t then t else up)) else 0 in
+            let w4 = if aq == 1 then store8(p + s, q1 + (if uq < 0 - t then 0 - t else if uq > t then t else uq)) else 0 in
+            rtc_dlw(p + al, e, s, al, k)
+## luma, bS = 4 (8.7.2.4)
+fn rtc_dls(p, e, s, al, k) =
+    if p == e then
+        0
+    else
+        let p0 = load8(p - s) in
+        let q0 = load8(p) in
+        let p1 = load8(p - s - s) in
+        let q1 = load8(p + s) in
+        let a = bit_and(k, 255) in
+        let b = bit_and(bit_shr(k, 8), 255) in
+        let d = q0 - p0 in
+        let e1 = p1 - p0 in
+        let f = q1 - q0 in
+        if d >= a or 0 - d >= a or e1 >= b or 0 - e1 >= b or f >= b or 0 - f >= b then
+            rtc_dls(p + al, e, s, al, k)
+        else
+            let p2 = load8(p - 3 * s) in
+            let q2 = load8(p + s + s) in
+            let lim = bit_shr(a, 2) + 2 in
+            let sm = if d < lim and 0 - d < lim then 1 else 0 in
+            let g = p2 - p0 in
+            let sp = if sm == 1 and g < b and 0 - g < b then 1 else 0 in
+            let h = q2 - q0 in
+            let sq = if sm == 1 and h < b and 0 - h < b then 1 else 0 in
+            let wp = if sp == 1 then (let p3 = load8(p - 4 * s) in let w0 = store8(p - s, bit_shr(p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4, 3)) in let w1 = store8(p - s - s, bit_shr(p2 + p1 + p0 + q0 + 2, 2)) in store8(p - 3 * s, bit_shr(2 * p3 + 3 * p2 + p1 + p0 + q0 + 4, 3))) else store8(p - s, bit_shr(2 * p1 + p0 + q1 + 2, 2)) in
+            let wq = if sq == 1 then (let q3 = load8(p + 3 * s) in let v0 = store8(p, bit_shr(q2 + 2 * q1 + 2 * q0 + 2 * p0 + p1 + 4, 3)) in let v1 = store8(p + s, bit_shr(q2 + q1 + q0 + p0 + 2, 2)) in store8(p + s + s, bit_shr(2 * q3 + 3 * q2 + q1 + q0 + p0 + 4, 3))) else store8(p, bit_shr(2 * q1 + q0 + p1 + 2, 2)) in
+            rtc_dls(p + al, e, s, al, k)
+## chroma, bS < 4: only p0 and q0 change, tC = tC0 + 1
+fn rtc_dcw(p, e, s, al, k) =
+    if p == e then
+        0
+    else
+        let p0 = load8(p - s) in
+        let q0 = load8(p) in
+        let p1 = load8(p - s - s) in
+        let q1 = load8(p + s) in
+        let a = bit_and(k, 255) in
+        let b = bit_and(bit_shr(k, 8), 255) in
+        let d = q0 - p0 in
+        let e1 = p1 - p0 in
+        let f = q1 - q0 in
+        if d >= a or 0 - d >= a or e1 >= b or 0 - e1 >= b or f >= b or 0 - f >= b then
+            rtc_dcw(p + al, e, s, al, k)
+        else
+            let tc = bit_shr(k, 16) + 1 in
+            let v = bit_shr(d * 4 + p1 - q1 + 16388, 3) - 2048 in
+            let dl = if v < 0 - tc then 0 - tc else if v > tc then tc else v in
+            let np = p0 + dl in
+            let nq = q0 - dl in
+            let w1 = store8(p - s, if np < 0 then 0 else if np > 255 then 255 else np) in
+            let w2 = store8(p, if nq < 0 then 0 else if nq > 255 then 255 else nq) in
+            rtc_dcw(p + al, e, s, al, k)
+## chroma, bS = 4
+fn rtc_dcs(p, e, s, al, k) =
+    if p == e then
+        0
+    else
+        let p0 = load8(p - s) in
+        let q0 = load8(p) in
+        let p1 = load8(p - s - s) in
+        let q1 = load8(p + s) in
+        let a = bit_and(k, 255) in
+        let b = bit_and(bit_shr(k, 8), 255) in
+        let d = q0 - p0 in
+        let e1 = p1 - p0 in
+        let f = q1 - q0 in
+        if d >= a or 0 - d >= a or e1 >= b or 0 - e1 >= b or f >= b or 0 - f >= b then
+            rtc_dcs(p + al, e, s, al, k)
+        else
+            let w1 = store8(p - s, bit_shr(2 * p1 + p0 + q1 + 2, 2)) in
+            let w2 = store8(p, bit_shr(2 * q1 + q0 + p1 + 2, 2)) in
+            rtc_dcs(p + al, e, s, al, k)
+## n lines from p segment by segment; abc = alpha + beta 2^8 + chroma 2^16; cp = the bS / tC0 word of the segment
+## first in line (each step moves the next segment's bS to bits 0..3 and its tC0 to bits 16..23)
+fn rtc_dsegs(p, s, al, n, abc, cp) =
+    if n <= 0 then
+        0
+    else
+        let ch = bit_shr(abc, 16) in
+        let m0 = if ch == 1 then 2 else 4 in
+        let m = if n < m0 then n else m0 in
+        let e = p + m * al in
+        let bs = bit_and(cp, 15) in
+        let k = bit_and(abc, 65535) + bit_shl(bit_and(bit_shr(cp, 16), 255), 16) in
+        let z = if bs == 0 then 0 else if ch == 1 then (if bs < 4 then rtc_dcw(p, e, s, al, k) else rtc_dcs(p, e, s, al, k)) else if bs < 4 then rtc_dlw(p, e, s, al, k) else rtc_dls(p, e, s, al, k) in
+        rtc_dsegs(e, s, al, n - m, abc, bit_and(bit_shr(cp, 4), 4095) + bit_shl(bit_shr(cp, 24), 16))
+## --- the SIMD path: the bS 1..3 segments of a whole edge (16 luma or 8 chroma lines) at once ---------------------------
+## vec_dbk16 (a horizontal luma edge, in place), vec_dbkv (a vertical edge: two 8x8 transposes in, the filter, the four
+## changed columns back) and vec_dbkh2 (a horizontal chroma edge: the rows of two 8-line planes side by side) work on
+## 16 lanes with scratch 0 .. 511 as their block; tcw holds one tC0 byte per pair of lines (255: leave the pair
+## alone). bS 4 segments stay with the scalar routines.
+fn rtc_wk(cp, k) = let v = bit_and(bit_shr(cp, 4 * k), 15) in if v >= 1 and v <= 3 then 1 else 0
+fn rtc_wkany(cp) = rtc_wk(cp, 0) + rtc_wk(cp, 1) + rtc_wk(cp, 2) + rtc_wk(cp, 3)
+fn rtc_is4(cp, k) = if bit_and(bit_shr(cp, 4 * k), 15) == 4 then 1 else 0
+fn rtc_only4(cp) = rtc_is4(cp, 0) * 4 + rtc_is4(cp, 1) * 64 + rtc_is4(cp, 2) * 1024 + rtc_is4(cp, 3) * 16384
+## the tC0 byte of segment k for the vector filter (chroma: tC0 + 1), 255 when the segment is not bS 1..3
+fn rtc_tb(cp, k, c1) = if rtc_wk(cp, k) == 0 then 255 else bit_and(bit_shr(cp, 16 + 8 * k), 255) + c1
+## luma: segment k = lines 4k .. 4k + 3 = pairs 2k, 2k + 1; chroma: segment k = lines 2k, 2k + 1 = pair k, the same for
+## lanes 8 .. 15 (the second plane, or the same lines again)
+fn rtc_tcl(cp) = rtc_tb(cp, 0, 0) * 257 + bit_shl(rtc_tb(cp, 1, 0) * 257, 16) + bit_shl(rtc_tb(cp, 2, 0) * 257, 32) + bit_shl(rtc_tb(cp, 3, 0) * 257, 48)
+fn rtc_tcc(cp) = let w = rtc_tb(cp, 0, 1) + bit_shl(rtc_tb(cp, 1, 1), 8) + bit_shl(rtc_tb(cp, 2, 1), 16) + bit_shl(rtc_tb(cp, 3, 1), 24) in w + bit_shl(w, 32)
+## one edge: lc = lines + chroma 2^8 + (the 8 samples q0 - 4 .. q0 + 3 of each line lie in the buffer) 2^9; the SIMD
+## path when a whole edge can run at once and its lines do not overlap: the bS 1..3 segments with the bS < 4 filter,
+## then the bS 4 segments with the strong one (vec_dbk16s / vec_dbkvs / vec_dbkh2s); otherwise the scalar routines
+fn rtc_dbk3(p, across, along, lc, ab, cp) =
+    let lines = bit_and(lc, 255) in
+    let ch = bit_and(bit_shr(lc, 8), 1) in
+    let full = if ch == 0 then (if lines == 16 then 1 else 0) else if lines == 8 then 1 else 0 in
+    let hz = if along == 1 and (across >= lines or across <= 0 - lines) then 1 else 0 in
+    let vt = if across == 1 and (along >= 8 or along <= 0 - 8) and (ch == 0 or bit_shr(lc, 9) == 1) then 1 else 0 in
+    if full == 0 or hz + vt == 0 then
+        rtc_dsegs(p, across, along, lines, ab + ch * 65536, cp)
+    else
+        let x = sym_addr("__rtc_scratch") in
+        let z = if rtc_wkany(cp) == 0 then 0 else if ch == 0 then (if hz == 1 then vec_dbk16(p, across, ab, rtc_tcl(cp), x) else vec_dbkv(p, p + 8 * along, along, ab, rtc_tcl(cp), x)) else if hz == 1 then vec_dbkh2(p, p, across, ab + 65536, rtc_tcc(cp), x) else vec_dbkv(p, p, along, ab + 65536, rtc_tcc(cp), x) in
+        let c4 = rtc_only4(cp) in
+        if c4 == 0 then 0 else rtc_dstr(p, across, along, ch * 2 + hz, ab + bit_shl(bit_shr(bit_and(ab, 255), 2) + 2, 24), c4)
+## the bS 4 segments of c4 (k = chroma 2 + horizontal); ab carries (alpha >> 2) + 2 in bits 24..31; tcw 0 for the
+## segments to filter, 255 for the others
+fn rtc_dstr(p, across, along, k, ab, c4) =
+    if k == 0 then
+        vec_dbkvs(p, p + 8 * along, along, ab, rtc_t4l(c4), sym_addr("__rtc_scratch"))
+    else if k == 1 then
+        vec_dbk16s(p, across, ab, rtc_t4l(c4), sym_addr("__rtc_scratch"))
+    else if k == 2 then
+        vec_dbkvs(p, p, along, ab + 65536, rtc_t4c(c4), sym_addr("__rtc_scratch"))
+    else
+        vec_dbkh2s(p, p, across, ab + 65536, rtc_t4c(c4), sym_addr("__rtc_scratch"))
+fn rtc_t4l(c4) = (1 - rtc_is4(c4, 0)) * 65535 + bit_shl((1 - rtc_is4(c4, 1)) * 65535, 16) + bit_shl((1 - rtc_is4(c4, 2)) * 65535, 32) + bit_shl((1 - rtc_is4(c4, 3)) * 65535, 48)
+fn rtc_t4c(c4) = let t = (1 - rtc_is4(c4, 0)) * 255 + bit_shl((1 - rtc_is4(c4, 1)) * 255, 8) + bit_shl((1 - rtc_is4(c4, 2)) * 255, 16) + bit_shl((1 - rtc_is4(c4, 3)) * 255, 24) in t + bit_shl(t, 32)
 ## the samples a line touches lie between q0 - r across and q0 + (r - 1) across (r = 4 luma, 2 chroma)
 fn rtc_dfits(buf, q0, across, along, lines, r) =
-    let e1 = q0 + (lines - 1) * along in
     let lo1 = if across > 0 then q0 - r * across else q0 + (r - 1) * across in
     let hi1 = if across > 0 then q0 + (r - 1) * across else q0 - r * across in
     let lo2 = lo1 + (lines - 1) * along in
@@ -1926,18 +2019,248 @@ fn rtc_dbk(buf, q0, a, b, cp) =
     if across == 0 or lines < 1 or lines > (if ch == 1 then 8 else 16) or rtc_dfits(buf, q0, across, along, lines, if ch == 1 then 2 else 4) == 0 then
         mkint(0 - 1)
     else
-        rtc_dbk2(buf + 8 + q0, across, along, b, cp, lines)
-fn rtc_dbk2(p, across, along, b, cp, lines) =
-    let x = sym_addr("__rtc_scratch") + 3856 in
-    let s1 = store64(x + 8, across) in
-    let s2 = store64(x + 16, along) in
-    let s3 = store64(x + 24, bit_and(bit_shr(b, 16), 255)) in
-    let s4 = store64(x + 32, bit_and(bit_shr(b, 24), 255)) in
-    let s5 = store64(x + 40, bit_and(bit_shr(b, 8), 1)) in
-    let s6 = store64(x + 48, cp) in
-    let z = rtc_dlines(x, p, 0, lines) in
-    mkint(0)
+        let z = if bit_and(bit_shr(b, 16), 255) == 0 or bit_and(cp, 65535) == 0 then 0 else rtc_dbk3(buf + 8 + q0, across, along, lines + ch * 256 + (if ch == 1 then rtc_dfits(buf, q0, across, along, lines, 4) * 512 else 0), bit_and(bit_shr(b, 16), 65535), cp) in
+        mkint(0)
 fn buf_h264_dbk5(buf, q0, a, b, cp) = rtc_dbk(buf, rt_int(q0), rt_int(a), rt_int(b), rt_int(cp))
+
+## --- deblocking of a whole macroblock (8.7, 4:2:0, frame macroblocks) -----------------------------------------------
+## buf_h264_deblock_mb(y, u, v, cfg): filters the macroblock (mbx, mby) of the reconstructed picture in place, as a
+## decoder does once the macroblock and everything before it in raster order is reconstructed: the luma vertical edges
+## left to right, then the horizontal edges top to bottom, then the same for Cb and Cr (8.7). bS per 4-sample segment
+## (8.7.2.1): 4 on a macroblock edge with an intra macroblock on either side, 3 inside an intra macroblock, 2 when the
+## 4x4 block of p0 or of q0 has coefficients, 1 when their reference pictures differ or a motion vector component
+## differs by 4 quarter samples or more, else 0; the chroma edges 0 and 2 (of the 8x8 block, 4:2:0) use the bS of the
+## luma edges 0 and 2 (8.7.2.1 for chroma). alpha / beta / tC0 come from tables 8-16 / 8-17 with indexA =
+## Clip3(0, 51, qPav + FilterOffsetA), indexB = Clip3(0, 51, qPav + FilterOffsetB); qPav is the QPY of the macroblock
+## inside it and (QPY(p) + QPY(q) + 1) >> 1 on its left / top edge, for chroma the same with each macroblock's QPc
+## (table 8-15 of QPY + chroma_qp_index_offset). The edge at the picture border is never filtered; neither is a
+## left / top edge with disable_deblocking_filter_idc 2 when that neighbour lies in another slice; idc 1 filters
+## nothing. y, u, v: byte buffers holding the luma and the two chroma planes. cfg (at least 400 bytes, int32 little
+## endian): luma offset of the picture's first sample (0), luma stride (4), Cb offset (8), Cr offset (12), chroma
+## stride (16), mbx (20), mby (24), picture width (28) and height (32) in macroblocks, disable_deblocking_filter_idc
+## (36), FilterOffsetA (40, signed: slice_alpha_c0_offset_div2 x 2), FilterOffsetB (44, signed), chroma_qp_index_offset
+## (48, signed), flags (52: 1 the left macroblock is in another slice, 2 the top one), then the three macroblocks: this
+## one at 64, the left one at 176, the top one at 288 (only those that exist are read), 112 bytes each: intra (int32
+## at 0, nonzero = intra), QPY (int32 at 4), the 16 coefficient flags of the 4x4 luma blocks (bytes 8..23, nonzero =
+## the block has coefficients), the reference picture of each block (bytes 24..39: any identity, e.g. ref_idx in a P
+## slice), the motion vectors (int16 mvx, mvy at 40 + 4 b, quarter samples), all per block in luma4x4BlkIdx order (the
+## order buf_h264_mb_p and buf_h264_mb_i4 answer their block counts in). Answers 0, or -1 on a wrong argument.
+## context x (scratch 512): 0 luma macroblock address, 8 ys, 16 Cb macroblock, 24 Cr macroblock, 32 cs, 40 cfg data,
+## 48 filter the left edge, 56 the top edge, 64 FilterOffsetA, 72 FilterOffsetB, 80 chroma offset, 96 + 8 (4 dir + e)
+## the bS word of luma edge e (dir 0 vertical, 1 horizontal), 192 .. 239 the coefficient masks and partition flags
+fn buf_h264_deblock_mb(y, u, v, cfg) = rtc_dmb(y, u, v, cfg)
+fn rtc_cl51(v) = if v < 0 then 0 else if v > 51 then 51 else v
+## 7 bytes per word: entry j of a table split over w0 .. w4
+fn rtc_pick7(j, w0, w1, w2, w3, w4) =
+    let w = if j < 7 then w0 else if j < 14 then w1 else if j < 21 then w2 else if j < 28 then w3 else w4 in
+    let r = if j < 7 then j else if j < 14 then j - 7 else if j < 21 then j - 14 else if j < 28 then j - 21 else j - 28 in
+    bit_and(bit_shr(w, 8 * r), 255)
+## table 8-16 (alpha, beta: 0 below indexA / indexB 16) and 8-17 (tC0 for bS 1..3, 0 below indexA 17)
+fn rtc_alpha(i) = if i < 16 then 0 else if i >= 51 then 255 else rtc_pick7(i - 16, 2542101049181188, 6214512987147274, 14123399263558681, 31918110936612664, 72025483631562879)
+fn rtc_beta(i) = if i < 16 then 0 else if i >= 51 then 18 else rtc_pick7(i - 16, 847736400380418, 1978047289099268, 3107262961354760, 3956098890206219, 5085314562395919)
+fn rtc_tc0(i, bs) = if i < 17 or bs < 1 or bs > 3 then 0 else if bs == 1 then rtc_pick7(i - 17, 281474976710656, 282578800148737, 846632577007873, 1694364665643779, 3671312426338054) else if bs == 2 then rtc_pick7(i - 17, 282578783305728, 282578800148737, 847736383603202, 2259522249098244, 4801623315122696) else rtc_pick7(i - 17, 282578800148737, 565157600231681, 1411790177239811, 3107258649478662, 7062249387593229)
+## luma4x4BlkIdx of the 4x4 block (bx, by)
+fn rtc_b4i(bx, by) = bit_shr(by, 1) * 8 + bit_shr(bx, 1) * 4 + bit_and(by, 1) * 2 + bit_and(bx, 1)
+fn rtc_qpok(m) = if load32(m + 4) > 51 then 0 else 1
+fn rtc_dmb(y, u, v, cfg) =
+    if rtc_fits(cfg, 0, 400) == 0 or rtc_isbuf(y) == 0 or rtc_isbuf(u) == 0 or rtc_isbuf(v) == 0 then
+        mkint(0 - 1)
+    else
+        let c = cfg + 8 in
+        let ys = load32(c + 4) in
+        let cs = load32(c + 16) in
+        let wm = load32(c + 28) in
+        let hm = load32(c + 32) in
+        if wm < 1 or hm < 1 or wm > 4096 or hm > 4096 or load32(c + 20) >= wm or load32(c + 24) >= hm or ys < 16 * wm or cs < 8 * wm or ys > 1048576 or cs > 1048576 then
+            mkint(0 - 1)
+        else if load32(c) + (16 * hm - 1) * ys + 16 * wm > rtc_len(y) or load32(c + 8) + (8 * hm - 1) * cs + 8 * wm > rtc_len(u) or load32(c + 12) + (8 * hm - 1) * cs + 8 * wm > rtc_len(v) then
+            mkint(0 - 1)
+        else
+            rtc_dmb2(y, u, v, c)
+fn rtc_dmb2(y, u, v, c) =
+    let idc = load32(c + 36) in
+    let oa = rtc_s32(load32(c + 40)) in
+    let ob = rtc_s32(load32(c + 44)) in
+    let co = rtc_s32(load32(c + 48)) in
+    let mx = load32(c + 20) in
+    let my = load32(c + 24) in
+    if idc > 2 or oa < 0 - 12 or oa > 12 or ob < 0 - 12 or ob > 12 or co < 0 - 12 or co > 12 or rtc_qpok(c + 64) == 0 or (mx > 0 and rtc_qpok(c + 176) == 0) or (my > 0 and rtc_qpok(c + 288) == 0) then
+        mkint(0 - 1)
+    else if idc == 1 then
+        mkint(0)
+    else
+        let x = sym_addr("__rtc_scratch") + 512 in
+        let ys = load32(c + 4) in
+        let cs = load32(c + 16) in
+        let fl = load32(c + 52) in
+        let a0 = store64(x, y + 8 + load32(c) + my * 16 * ys + mx * 16) in
+        let a1 = store64(x + 8, ys) in
+        let a2 = store64(x + 16, u + 8 + load32(c + 8) + my * 8 * cs + mx * 8) in
+        let a3 = store64(x + 24, v + 8 + load32(c + 12) + my * 8 * cs + mx * 8) in
+        let a4 = store64(x + 32, cs) in
+        let a5 = store64(x + 40, c) in
+        let a6 = store64(x + 48, if mx == 0 or (idc == 2 and bit_and(fl, 1) != 0) then 0 else 1) in
+        let a7 = store64(x + 56, if my == 0 or (idc == 2 and bit_and(fl, 2) != 0) then 0 else 1) in
+        let a8 = store64(x + 64, oa) in
+        let a9 = store64(x + 72, ob) in
+        let b0 = store64(x + 80, co) in
+        let b1 = rtc_dmbpre(x, c, load64(x + 48), load64(x + 56)) in
+        let z0 = rtc_bsall(x, c) in
+        let z = rtc_dmbl(x, c) in
+        let w = rtc_dmbc(x, c) in
+        mkint(0)
+## per macroblock, once: the coefficient flags as raster bit masks (bit 4 by + bx) and whether all 16 blocks share one
+## vector and reference (the macroblock was predicted as one 16x16 partition): this one at x + 192 / 216, the left at
+## 200 / 224, the top at 208 / 232 (read only when that edge is filtered)
+fn rtc_dmbpre(x, c, fl, ft) =
+    let a = store64(x + 192, rtc_nzm(c + 64)) in
+    let b = store64(x + 216, rtc_uni(c + 64)) in
+    let d = if fl == 0 then 0 else (let d1 = store64(x + 200, rtc_nzm(c + 176)) in store64(x + 224, rtc_uni(c + 176))) in
+    if ft == 0 then 0 else (let e1 = store64(x + 208, rtc_nzm(c + 288)) in store64(x + 232, rtc_uni(c + 288)))
+## bit i set when byte i of the word is nonzero: the high bit of each byte from ((v & 7F..) + 7F..) | v, gathered into
+## the top byte by one multiplication (0x0102040810204080)
+fn rtc_nz8(v) = let t = bit_and(bit_shr(bit_or(bit_and(v, 9187201950435737471) + 9187201950435737471, v), 7), 72340172838076673) in bit_and(bit_shr(t * 72624976668147840, 56), 255)
+## the 16 coefficient flags (luma4x4BlkIdx order) as a raster mask: blkIdx bits (by1 bx1 by0 bx0) become (by1 by0 bx1
+## bx0), a swap of index bits 1 and 2 (bits 2, 3, 10, 11 trade places with 4, 5, 12, 13)
+fn rtc_nzm(m) = let k = rtc_nz8(load64(m + 8)) + bit_shl(rtc_nz8(load64(m + 16)), 8) in let t = bit_and(bit_xor(k, bit_shr(k, 2)), 3084) in bit_xor(k, bit_or(t, bit_shl(t, 2)))
+fn rtc_uni(m) =
+    let w = load32(m + 40) in
+    let r = w + bit_shl(w, 32) in
+    let rr = load8(m + 24) * 72340172838076673 in
+    if load64(m + 40) != r or load64(m + 48) != r or load64(m + 56) != r or load64(m + 64) != r or load64(m + 72) != r or load64(m + 80) != r or load64(m + 88) != r or load64(m + 96) != r then
+        0
+    else if load64(m + 24) != rr or load64(m + 32) != rr then
+        0
+    else
+        1
+## bS 1 between block pb of pm and qb of qm when neither is intra and neither has coefficients
+fn rtc_mvd(pm, pb, qm, qb) =
+    if load8(pm + 24 + pb) != load8(qm + 24 + qb) then
+        1
+    else
+        let dx = rtc_r16(pm + 40 + 4 * pb) - rtc_r16(qm + 40 + 4 * qb) in
+        let dy = rtc_r16(pm + 42 + 4 * pb) - rtc_r16(qm + 42 + 4 * qb) in
+        if dx >= 4 or dx <= 0 - 4 or dy >= 4 or dy <= 0 - 4 then 1 else 0
+## the 4 bits of m to bits 0, 4, 8, 12
+fn rtc_sp4(m) = bit_and(m, 1) + bit_shl(bit_and(m, 2), 3) + bit_shl(bit_and(m, 4), 6) + bit_shl(bit_and(m, 8), 9)
+## the bS word of luma edge e: intra macroblocks at once, then the coefficient part from the bit masks (2 where either
+## block has coefficients); when both macroblocks are single 16x16 partitions the motion part is one comparison
+## (none inside a macroblock), otherwise segment by segment
+fn rtc_bswf(x, c, dir, e) =
+    let qi = c + 64 in
+    let pi = if e == 0 then c + (if dir == 0 then 176 else 288) else qi in
+    if load32(qi) != 0 or load32(pi) != 0 then
+        (if e == 0 then 17476 else 13107)
+    else
+        let nzc = load64(x + 192) in
+        let m = if dir == 0 then bit_and(bit_or(if e == 0 then bit_shr(load64(x + 200), 3) else bit_shr(nzc, e - 1), bit_shr(nzc, e)), 4369) else rtc_sp4(bit_and(bit_or(if e == 0 then bit_shr(load64(x + 208), 12) else bit_shr(nzc, 4 * e - 4), bit_shr(nzc, 4 * e)), 15)) in
+        if load64(x + 216) == 1 and (e != 0 or load64(x + 224 + 8 * dir) == 1) then
+            (if e != 0 or m == 4369 or rtc_mvd(pi, 0, qi, 0) == 0 then m * 2 else m * 2 + 4369 - m)
+        else
+            m * 2 + rtc_bsm(pi, qi, dir, e, m, 0) + rtc_bsm(pi, qi, dir, e, m, 1) * 16 + rtc_bsm(pi, qi, dir, e, m, 2) * 256 + rtc_bsm(pi, qi, dir, e, m, 3) * 4096
+## the motion part (0 or 1) of segment k when its coefficient part is 0
+fn rtc_bsm(pi, qi, dir, e, m, k) =
+    if bit_and(bit_shr(m, 4 * k), 1) == 1 then
+        0
+    else if dir == 0 then
+        rtc_mvd(pi, rtc_b4i(bit_and(e + 3, 3), k), qi, rtc_b4i(e, k))
+    else
+        rtc_mvd(pi, rtc_b4i(k, bit_and(e + 3, 3)), qi, rtc_b4i(k, e))
+## alpha, beta and the tC0 row of an edge, kept per role (0..2 luma inside / left / top, 3..5 chroma) in scratch 3648
+## (48 bytes, one word each: key qP + (oa + 16) 2^6 + (ob + 16) 2^11 + 2^16 in bits 0..16, alpha 17.., beta 25..,
+## tC0 for bS 1, 2, 3 at 33, 41, 49): qP rarely changes, so the tables are read once per change
+fn rtc_abt(role, qp, oa, ob) =
+    let s = sym_addr("__rtc_scratch") + 3648 + 8 * role in
+    let k = qp + (oa + 16) * 64 + (ob + 16) * 2048 + 65536 in
+    let w = load64(s) in
+    if bit_and(w, 131071) == k then w else rtc_abt2(s, k, rtc_cl51(qp + oa), rtc_cl51(qp + ob))
+fn rtc_abt2(s, k, ia, ib) =
+    let w = k + bit_shl(rtc_alpha(ia), 17) + bit_shl(rtc_beta(ib), 25) + bit_shl(rtc_tc0(ia, 1), 33) + bit_shl(rtc_tc0(ia, 2), 41) + bit_shl(rtc_tc0(ia, 3), 49) in
+    let z = store64(s, w) in
+    w
+## alpha + beta 2^8 + ((alpha >> 2) + 2) 2^24 of a cached word, for the strong filter
+fn rtc_ab4(w) = bit_and(bit_shr(w, 17), 65535) + bit_shl(bit_shr(bit_and(bit_shr(w, 17), 255), 2) + 2, 24)
+## the vector filter's byte for each bS (byte b of tv: 255 for bS 0 and 4, tC0 (+ c1) for 1..3), made once per role
+fn rtc_tvw(w, c1) = 1095216660735 + bit_shl(bit_and(bit_shr(w, 33), 255) + c1, 8) + bit_shl(bit_and(bit_shr(w, 41), 255) + c1, 16) + bit_shl(bit_and(bit_shr(w, 49), 255) + c1, 24)
+## tcw of a luma edge (one byte per pair of lines, a segment = 2 pairs) and of a chroma edge (a segment = 1 pair, the
+## same for lanes 8..15)
+fn rtc_tclv(bsw, tv) = bit_and(bit_shr(tv, 8 * bit_and(bsw, 15)), 255) * 257 + bit_shl(bit_and(bit_shr(tv, 8 * bit_and(bit_shr(bsw, 4), 15)), 255) * 257, 16) + bit_shl(bit_and(bit_shr(tv, 8 * bit_and(bit_shr(bsw, 8), 15)), 255) * 257, 32) + bit_shl(bit_and(bit_shr(tv, 8 * bit_shr(bsw, 12)), 255) * 257, 48)
+fn rtc_tccv(bsw, tv) = let t = bit_and(bit_shr(tv, 8 * bit_and(bsw, 15)), 255) + bit_shl(bit_and(bit_shr(tv, 8 * bit_and(bit_shr(bsw, 4), 15)), 255), 8) + bit_shl(bit_and(bit_shr(tv, 8 * bit_and(bit_shr(bsw, 8), 15)), 255), 16) + bit_shl(bit_and(bit_shr(tv, 8 * bit_shr(bsw, 12)), 255), 24) in t + bit_shl(t, 32)
+## the bS words of the 8 luma edges at x + 96 + 8 (4 dir + e): the macroblock edges through rtc_bswf, the inner ones of
+## an intra macroblock 3, of a single-partition inter macroblock from the coefficient mask alone (n | n >> 1 joins the
+## blocks on both sides of each vertical edge, n | n >> 4 of each horizontal one), otherwise rtc_bswf per edge
+fn rtc_bsall(x, c) =
+    let a = store64(x + 96, if load64(x + 48) == 0 then 0 else rtc_bswf(x, c, 0, 0)) in
+    let b = store64(x + 128, if load64(x + 56) == 0 then 0 else rtc_bswf(x, c, 1, 0)) in
+    if load32(c + 64) != 0 then
+        (let d = rtc_bs3(x, 104, 13107, 13107, 13107) in rtc_bs3(x, 136, 13107, 13107, 13107))
+    else if load64(x + 216) == 1 then
+        (let n = load64(x + 192) in let d = rtc_bs3(x, 104, bit_and(bit_or(n, bit_shr(n, 1)), 4369) * 2, bit_and(bit_shr(bit_or(n, bit_shr(n, 1)), 1), 4369) * 2, bit_and(bit_shr(bit_or(n, bit_shr(n, 1)), 2), 4369) * 2) in rtc_bs3(x, 136, rtc_sp4(bit_and(bit_or(n, bit_shr(n, 4)), 15)) * 2, rtc_sp4(bit_and(bit_shr(bit_or(n, bit_shr(n, 4)), 4), 15)) * 2, rtc_sp4(bit_and(bit_shr(bit_or(n, bit_shr(n, 4)), 8), 15)) * 2))
+    else
+        (let d = rtc_bs3(x, 104, rtc_bswf(x, c, 0, 1), rtc_bswf(x, c, 0, 2), rtc_bswf(x, c, 0, 3)) in rtc_bs3(x, 136, rtc_bswf(x, c, 1, 1), rtc_bswf(x, c, 1, 2), rtc_bswf(x, c, 1, 3)))
+fn rtc_bs3(x, o, a, b, d) = let s1 = store64(x + o, a) in let s2 = store64(x + o + 8, b) in store64(x + o + 16, d)
+## the luma edges in the order of 8.7 with alpha / beta / tC0 read once per role (inside, left, top): bS 4 only comes
+## from an intra macroblock edge, where all four segments are 4 (17476): those take the strong vector filter
+## (vec_dbkvs / vec_dbk16s), the rest the bS < 4 one
+fn rtc_dmbl(x, c) =
+    let oa = load64(x + 64) in
+    let ob = load64(x + 72) in
+    let qq = load32(c + 68) in
+    let wi = rtc_abt(0, qq, oa, ob) in
+    let wl = if load64(x + 96) == 0 then 0 else rtc_abt(1, bit_shr(load32(c + 180) + qq + 1, 1), oa, ob) in
+    let wt = if load64(x + 128) == 0 then 0 else rtc_abt(2, bit_shr(load32(c + 292) + qq + 1, 1), oa, ob) in
+    let ti = rtc_tvw(wi, 0) in
+    let v0 = rtc_dmbe(x, 0, 0, wl, rtc_tvw(wl, 0)) in
+    let v1 = rtc_dmbe(x, 0, 1, wi, ti) in
+    let v2 = rtc_dmbe(x, 0, 2, wi, ti) in
+    let v3 = rtc_dmbe(x, 0, 3, wi, ti) in
+    let h0 = rtc_dmbe(x, 1, 0, wt, rtc_tvw(wt, 0)) in
+    let h1 = rtc_dmbe(x, 1, 1, wi, ti) in
+    let h2 = rtc_dmbe(x, 1, 2, wi, ti) in
+    rtc_dmbe(x, 1, 3, wi, ti)
+fn rtc_dmbe(x, dir, e, w, tv) =
+    let bsw = load64(x + 96 + 8 * (dir * 4 + e)) in
+    if bsw == 0 or bit_and(bit_shr(w, 17), 255) == 0 or bit_and(bit_shr(w, 25), 255) == 0 then
+        0
+    else
+        let ys = load64(x + 8) in
+        let p = load64(x) + (if dir == 0 then 4 * e else 4 * e * ys) in
+        if bsw == 17476 then
+            (if dir == 0 then vec_dbkvs(p, p + 8 * ys, ys, rtc_ab4(w), 0, sym_addr("__rtc_scratch")) else vec_dbk16s(p, ys, rtc_ab4(w), 0, sym_addr("__rtc_scratch")))
+        else if dir == 0 then
+            vec_dbkv(p, p + 8 * ys, ys, bit_and(bit_shr(w, 17), 65535), rtc_tclv(bsw, tv), sym_addr("__rtc_scratch"))
+        else
+            vec_dbk16(p, ys, bit_and(bit_shr(w, 17), 65535), rtc_tclv(bsw, tv), sym_addr("__rtc_scratch"))
+## chroma edges (ce 0, 1 at chroma samples 0, 4: the bS of luma edges 0, 2), Cb and Cr together, QPc per macroblock
+fn rtc_qpcl(q, co) = rtc_qpc(rtc_cl51(q + co))
+fn rtc_dmbc(x, c) =
+    let oa = load64(x + 64) in
+    let ob = load64(x + 72) in
+    let co = load64(x + 80) in
+    let qc = rtc_qpcl(load32(c + 68), co) in
+    let wi = if load64(x + 112) == 0 and load64(x + 144) == 0 then 0 else rtc_abt(3, qc, oa, ob) in
+    let wl = if load64(x + 96) == 0 then 0 else rtc_abt(4, bit_shr(rtc_qpcl(load32(c + 180), co) + qc + 1, 1), oa, ob) in
+    let wt = if load64(x + 128) == 0 then 0 else rtc_abt(5, bit_shr(rtc_qpcl(load32(c + 292), co) + qc + 1, 1), oa, ob) in
+    let ti = rtc_tvw(wi, 1) in
+    let v0 = rtc_dmbce(x, 0, 0, wl, rtc_tvw(wl, 1)) in
+    let v1 = rtc_dmbce(x, 0, 1, wi, ti) in
+    let h0 = rtc_dmbce(x, 1, 0, wt, rtc_tvw(wt, 1)) in
+    rtc_dmbce(x, 1, 1, wi, ti)
+fn rtc_dmbce(x, dir, ce, w, tv) =
+    let bsw = load64(x + 96 + 8 * (dir * 4 + 2 * ce)) in
+    if bsw == 0 or bit_and(bit_shr(w, 17), 255) == 0 or bit_and(bit_shr(w, 25), 255) == 0 then
+        0
+    else
+        let cs = load64(x + 32) in
+        let o = if dir == 0 then 4 * ce else 4 * ce * cs in
+        let pu = load64(x + 16) + o in
+        let pv = load64(x + 24) + o in
+        if bsw == 17476 then
+            (if dir == 0 then vec_dbkvs(pu, pv, cs, rtc_ab4(w) + 65536, 0, sym_addr("__rtc_scratch")) else vec_dbkh2s(pu, pv, cs, rtc_ab4(w) + 65536, 0, sym_addr("__rtc_scratch")))
+        else if dir == 0 then
+            vec_dbkv(pu, pv, cs, bit_and(bit_shr(w, 17), 65535) + 65536, rtc_tccv(bsw, tv), sym_addr("__rtc_scratch"))
+        else
+            vec_dbkh2(pu, pv, cs, bit_and(bit_shr(w, 17), 65535) + 65536, rtc_tccv(bsw, tv), sym_addr("__rtc_scratch"))
 
 ## --- bit writing for entropy coders (CAVLC, Exp-Golomb headers): bits go most significant first, bit 0 of the
 ## stream is the top bit of byte 0 -----------------------------------------------------------------------------------

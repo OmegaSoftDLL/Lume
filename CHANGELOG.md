@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Small records and short lists stay out of the heap in loops and helpers.** The record pass (rxq_) also inlines
+  helpers that return a list literal or an `if` of literals, gives a tuple `let t = [a, b]` read only at literal indices
+  one local per element, splits `let r = if c then A else B` over the branches, and inlines inside `match` arms; the new
+  rsr_ pass clones a function whose record / tuple parameters are only read field by field (`__rsr_f`, its fields as
+  parameters), with a guard on the exact shape for calls from elsewhere. Record loops 11 -> 1 ns per iteration, a tuple
+  from a helper 60 -> 3 ns, allocations per iteration gone; stack traces and --profile name the original function;
+  output byte-identical on 102 test files and 198 programs; LUME_RSR=off keeps parameters whole (rsr_ok.src).
+- **The SSE2 runtime intrinsics never need an aligned address:** every memory operand of a packed operation is loaded
+  with movdqu first (the deblocking filters faulted on Windows when the codec scratch was not 16-byte aligned; lasm
+  keeps laying out .bss exactly as the frozen seed assembler does).
 - **`buf_h264_deblock_edge` without per-edge list work; `buf_h264_deblock_edge_packed`; CAVLC Baseline by default (LumeDesk).**
   The wrapper packs bS / tC0 unrolled (it recursed over the lists with a recursive power: about 1 us of each edge);
   `buf_h264_deblock_edge_packed(buf, q0, across, along, lines, bstc, alpha, beta, chroma)` takes the word that
@@ -18,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per builtin incl. kernel-only); builtins_regress_ok.src calls each documented builtin (54 tests).
 
 ### Changed
+- **H.264 deblocking in SSE2 (item 15).** The edge filter (`buf_h264_dbk5`, behind `buf_h264_deblock_edge`) runs a
+  whole edge (16 luma or 8 chroma lines) at once with new `--raw` vector intrinsics: `vec_dbk16` (a horizontal edge in
+  place), `vec_dbkv` (a vertical edge: two 8x8 transposes in, the filter, the changed columns back) and `vec_dbkh2` (a
+  chroma edge of two planes side by side) for the bS 1..3 segments (p0 / q0 in bytes without widening), and
+  `vec_dbk16s` / `vec_dbkvs` / `vec_dbkh2s` for the bS 4 ones (8.7.2.4 sums in words); partial edges and overlapping
+  lines keep the scalar routines, now one loop per segment with the arithmetic inline (no call per sample). lasm
+  encodes the SSE2 byte operations they need (pminub, pmaxub, psubusb, paddusb, pcmpeqb, pcmpgtb, pand, pandn, por,
+  pminsw, pmaxsw, psubb, paddb, punpckhbw; byte-identical to GNU as, added to the lasm gate's packed family). The
+  runtime routine on a 16-line luma edge with bS 2: 634..777 -> about 90 ns (horizontal 75, chroma 90, bS 4 about
+  120 instead of 690); through the list wrapper of `use h264` 1137 -> about 370 ns.
 - **Integer loops run 30-40 % faster in ordinary code.** A function that loops by calling itself in tail position
   (literals, variables, operators, if, let and calls only; at most 6 parameters) is emitted twice: a specialized body
   entered when its integer parameters are small ints and its buffer parameters are buffers (one test), with no tag
@@ -41,8 +61,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   advisory as on Linux. And on every system os_run_capture / os_spawn_capture (and the timeout / input forms) with
   the same path for out and err opened it twice, the two streams overwriting each other; the child now duplicates
   the one descriptor. Test tests/runtime/spawn_capture_concurrent_ok.src.
+- **Builtin edges found by probing every builtin (Linux and Windows alike; test tests/runtime/builtin_edges_ok.src,
+  calls in builtins_regress_ok.src, semantics in the reference):** `printval` answers the value it printed (it answered
+  a raw word: `str` of it crashed); `utf8_chr` of a bad code point is a runtime stop on stderr, catchable by try (it
+  wrote to stdout and exited); `krn_slot_read` / `krn_slot_write` have a table of their own (sleep, process, network,
+  epoll, io_uring, maxrss and SIMD wrote raw words into the shared scratch area) and are Lume now
+  (compiler/stage1/rt/rt_sys.src), with `mem_crc64`, which is the real 64-bit FNV-1a (offset basis
+  14695981039346656037; it had a basis one digit short and kept 31 bits) answered as a signed 64-bit int; the wait
+  status, `os_last_timed_out`, the pipe descriptors and the pipe integers left the number-printing buffer (printing a
+  9-digit number or `os_pipe_new` changed `os_last_timed_out()`); `os_pipe_new` answers -1 when pipe fails or a
+  descriptor reaches 10000, `os_pipe_write_int` -1 when the 8 bytes are not written, `os_pipe_read_int` -1 at the end
+  of the data or on a bad descriptor (it answered a stale word); a negative `os_sleep_ms` returns at once (it hung on
+  Linux); on Windows `os_setenv` / `os_unsetenv` find a name without regard to case, as `os_getenv` does;
+  `net_recv_str(fd, max)` reads at most max bytes (1..65536; it always read up to 4095; on Windows a datagram longer
+  than max gave "" (WSAEMSGSIZE): the layer answers the truncated length as Linux does); the port-only forms refuse a
+  port outside 0..65535 (`net_udp_bind(70000)` bound 4464) and close the socket when bind, listen or connect fails;
+  `net_udp_sendto` checks socket(); `net_shutdown_write` answers -1 on failure; `epoll_wait_one` answers -1 on a
+  timeout and -2 on an error (0 is a legal data value); a UDP socket takes no SO_REUSEADDR, so a second bind of a
+  port in use is refused on Linux as on Windows; the Win64 layer answers EBADF (-9) for a socket call on a closed
+  descriptor (it answered -88) and for close of a negative descriptor (it answered 0); `crypto_chacha20_xor` with a
+  short output buffer names the output buffer; `mmio_volatile_read16` / `write16` make one 16-bit access (lasm gained
+  `movw` and `movzwq` / `movzwl`); `simd_add4_i64` / `simd_sub4_i64` / `simd_xor4_i64` use SSE2 (lasm gained `psubq`)
+  instead of AVX2, so a CPU without AVX2 no longer stops with SIGILL, with the documented wrap modulo 2^64.
+- **Kernel-only builtins in a hosted program:** port I/O, MSRs, cli / sti / hlt, CR3, invlpg, the IDT, interrupts,
+  AP boot, task switch and the `vga_*` builtins are refused at compile time with [K0007] (the process died of
+  SIGSEGV, exit 139); examples/diagnostics/K0007_kernel_builtin_in_hosted. [K0005] is checked at top level too (a
+  top-level `let` with a constant address is followed). Probes in tests/cli/driver_gate.src.
+- **`lume build --target` of a program with a name error answered 0 and printed nothing** (x86_64-windows-pe,
+  wasm32 and the other ltarget back ends resolved the callee by name and wrote an artifact calling nowhere): ltarget
+  refuses a call to an undefined function with [R0200], and a failed build removes the artifact a previous build
+  left at the output path. Probe in tests/cli/driver_gate.src (dg_target_undefined).
 
 ### Added
+- **`buf_h264_deblock_mb(y, u, v, cfg)`: the deblocking of a whole macroblock (item 15).** Luma and both chroma
+  planes in the order of 8.7 (vertical edges left to right, then horizontal top to bottom), bS of every 4-sample
+  segment derived from the per-4x4 intra / coefficient / reference / vector information of the macroblock and its
+  left and top neighbours (8.7.2.1), qPav, indexA / indexB with FilterOffsetA / B and chroma QPc (tables 8-15,
+  8-16, 8-17), picture and (disable_deblocking_filter_idc 2) slice borders skipped. Every edge goes through the vector
+  filters (the strong one for intra macroblock edges), Cb and Cr in one call; the tables are read once per QP change.
+  About 1.7 us per macroblock over a 1080p frame (14 ms), inter or intra content alike.
+  compiler/stage1/h264_dbkmb_ok.src compares it byte for byte with the standard's procedure written in ordinary Lume
+  over whole pictures (inter, intra, QP differences, references, vectors, single-partition macroblocks, slices,
+  borders, offsets and strides) and checks the edge filter's vector and scalar paths on 240 random edges.
 - **`lume dev selfbuild` and `lume dev sync-check`: the toolchain's self-rebuild as a Lume command.** selfbuild
   (compiler/stage1/ldev.src) replaces the shell scripts that rebuilt the compiler by hand: it regenerates
   runtime_lume.lume, amalgamates the compiler and builds lumec generation after generation until two successive

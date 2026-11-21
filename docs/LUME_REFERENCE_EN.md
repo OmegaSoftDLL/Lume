@@ -169,6 +169,7 @@ both checked by the examples gate on every release.
 | `I0275` | target-specific interop refusal | ltarget | - |
 | `K0005` | physical write into the kernel text/rodata range [32768..262143] | analyser | `K0005_write_into_kernel_text` |
 | `K0006` | mutual recursion in a freestanding kernel | analyser | `K0006_kernel_mutual_recursion` |
+| `K0007` | a kernel-only builtin (port I/O, MSRs, cli / sti / hlt, CR3, invlpg, IDT, interrupts, AP boot, task switch, `vga_*`) in a hosted program | compiler | `K0007_kernel_builtin_in_hosted` |
 | `K0010` | certificate for another source (hash mismatch) | lcert | - |
 | `K0011` | source obligation without a certificate entry | lcert | - |
 | `K0012` | certificate entry without a source obligation | lcert | - |
@@ -431,6 +432,24 @@ of 16, 1: Intra16x16 DC then 15 AC per block), cbp (4), offset of block 0 (8), o
 and top (20..23) TotalCoeff; out each block's TotalCoeff (32..47). Chroma ctx: cbp (0..2), Cb and Cr output bases
 (4, 8), left (16..19: Cb 2, Cr 2) and top (20..23) TotalCoeff; out the AC TotalCoeff (32..39). Answer the new bit
 position or -1.
+`buf_h264_deblock_mb (y, u, v, cfg)` deblocks a whole macroblock in place (8.7, 4:2:0 frame macroblocks), as a
+decoder does once it and everything before it in raster order are reconstructed: luma vertical edges left to right,
+horizontal edges top to bottom, then Cb and Cr. bS per 4-sample segment (8.7.2.1): 4 on a macroblock edge with an
+intra macroblock on either side, 3 inside an intra macroblock, 2 when the 4x4 block of p0 or q0 has coefficients, 1
+when their reference pictures differ or a vector component differs by 4 quarter samples or more, else 0; the chroma
+edges use the bS of luma edges 0 and 2. alpha / beta / tC0 from tables 8-16 / 8-17 with indexA / indexB = qPav +
+FilterOffsetA / B (qPav: QPY inside, the rounded mean of both macroblocks on the left / top edge; chroma the same with
+QPc of table 8-15). Edges on the picture border are skipped, slice borders too with disable_deblocking_filter_idc 2,
+everything with idc 1. y, u, v hold the three planes. cfg (at least 400 bytes, int32 little endian): luma offset of
+the picture (0), luma stride (4), Cb offset (8), Cr offset (12), chroma stride (16), mbx (20), mby (24), width (28)
+and height (32) in macroblocks, idc (36), FilterOffsetA (40) and FilterOffsetB (44) (signed: slice_alpha_c0 /
+beta_offset_div2 x 2), chroma_qp_index_offset (48, signed), flags (52: 1 the left, 2 the top macroblock is in another
+slice); then 112 bytes for this macroblock (64), the left one (176) and the top one (288): intra (int32, nonzero =
+intra), QPY (int32 at 4), coefficient flags (bytes 8..23), reference picture identities (bytes 24..39, e.g. ref_idx
+in a P slice), motion vectors (int16 mvx, mvy at 40 + 4 x block, quarter samples), all per 4x4 block in
+luma4x4BlkIdx order (the order of `buf_h264_mb_p`'s block counts). Answers 0, or -1 on a wrong argument. Every edge
+runs in SSE2 (16 lines at once, the strong filter too); about 1.7 us per macroblock on 1080p content, inter or intra
+(h264_dbkmb_ok.src checks it against the standard's procedure written in ordinary Lume).
 
 Packed forms behind `use h264` (stable; at most six arguments each, so the module packs its integers; a program can
 call them directly; each answers -1 on a wrong argument): `buf_h264_lmc6(ref, dst, a, b, g, q)` /
@@ -813,6 +832,26 @@ print hex(buf_to_str(out, 0, 3), 0)
 16
 17da83
 ```
+Loopback forms and system calls (the same answers on Linux and Windows): `net_tcp_listen(port)`,
+`net_tcp_connect(port)`, `net_udp_bind(port)` (127.0.0.1; a socket, or -1 when the port is outside 0..65535 or a
+step fails, and then the socket is closed; a UDP port already bound is refused), `net_udp_sendto(port, data)`
+(bytes sent, -1 on a bad port or socket), `net_recv_str(fd, max)` (at most `max` bytes, clamped to 1..65536; `""` on
+an error or at the end), `net_send_str(fd, data)`, `net_tcp_accept(fd)` (a socket, or minus the Linux errno: -9 for a
+descriptor that is not open, -88 for one that is not a socket), `net_shutdown_write(fd)` (1, or -1). `epoll_create_fd()`,
+`epoll_add_in(ep, fd, data)` (0 or minus the errno), `epoll_wait_one(ep, ms)` (the `data` of a ready descriptor, -1
+when the timeout expires, -2 on an error; give non-negative data). `os_pipe_new()` (`rfd * 10000 + wfd`, or -1 when
+pipe fails or a descriptor is 10000 or more), `os_pipe_write_int(wfd, n)` (1, or -1 when the 8 bytes are not
+written), `os_pipe_read_int(rfd)` (the int, or -1 at the end of the data or on an error: send -1 only as a stop
+mark). `os_sleep_ms(ms)` (1; a negative or zero `ms` returns at once). `os_setenv(name, value)` / `os_unsetenv(name)`
+find the old entry as `os_getenv` does: exactly, and on Windows without regard to ASCII case. `printval(v)` prints
+`v` and a newline and answers `v`. `utf8_chr(n)` with n <= 0, a surrogate or n > 0x10FFFF is a runtime stop (stderr,
+exit 3, catchable). `mem_crc64(addr, len)` is the 64-bit FNV-1a hash (offset basis 14695981039346656037, prime
+1099511628211, wrapping) as a signed 64-bit int (a hash of 2^63 or more reads negative). `krn_slot_write(i, v)` /
+`krn_slot_read(i)`: a 1024-slot table of its own (`i` modulo 1024; 0 for a slot never written).
+`simd_add4_i64(a, b)` / `simd_sub4_i64(a, b)`: four equal 64-bit lanes of `a + b` / `a - b` summed, that is
+`4 * (a op b)` modulo 2^64 as a signed int (SSE2, every x86-64 CPU); `simd_xor4_i64(a, b)` is one lane, `a xor b`.
+Builtins that need ring 0 (port I/O, MSRs, cli / sti / hlt, CR3, invlpg, the IDT, interrupts,
+AP boot, task switch, `vga_*`) are refused in a hosted program with [K0007].
 
 ## 7. Standard library modules
 
