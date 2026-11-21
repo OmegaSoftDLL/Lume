@@ -361,7 +361,9 @@ failed: too big
 programa. `buf_shared(n)` e um buffer em memoria compartilhada com os processos que `os_fork` criar depois (o que
 um escreve, todos leem). Com `use par`: `par_pool(n, fn(k, job) => ...)` cria n processos trabalhadores uma vez,
 `par_run(pool, job)` roda a funcao em todos ao mesmo tempo e devolve a soma das respostas (as escritas deles nos
-buffers compartilhados ficam visiveis), `par_slice(k, n, total)` e o primeiro item do trabalhador k, `par_close(pool)`
+buffers compartilhados ficam visiveis), `par_slice(k, n, total)` e o primeiro item do trabalhador k, `par_queue()` /
+`par_reset(q)` / `par_take(q)` entregam numeros de item um a um a quem pedir (nucleos mais rapidos pegam mais),
+`par_close(pool)`
 os encerra.
 
 ```lume
@@ -392,7 +394,8 @@ bloco e codificado sem conferir cada codigo, ~140 ns num bloco de 5 niveis).
 dos 16 blocos (ordem luma4x4BlkIdx) as 9 predicoes que os vizinhos permitem, custo SATD + lambda x (1 no modo
 previsto, senao 4); a mais barata e transformada, quantizada e reconstruida em rec. cfg (pelo menos 592 bytes,
 int32 little endian) traz rs, qp, lambda, os vizinhos do macrobloco (1 esquerda, 2 topo, 4 topo-direita, 8
-topo-esquerda) e os modos vizinhos (bytes 16..23, 255 = nenhum); devolve os modos (32..47), niveis nao nulos
+topo-esquerda; + 65536: decisao rapida, vertical / horizontal / DC e depois so os modos diagonais vizinhos do
+vencedor, ~20% mais rapida) e os modos vizinhos (bytes 16..23, 255 = nenhum); devolve os modos (32..47), niveis nao nulos
 (48..63), os niveis em zigzag prontos para o CAVLC (64 + 32 x bloco) e os codigos de modo (576..591, 255 =
 previsto). Responde o custo total ou -1. Mesmo resultado dos builtins de bloco; um quadro luma 1080p leva cerca
 de 120 ms (conteudo de tela) a 230 ms (texturizado).
@@ -938,7 +941,7 @@ programa hospedado, igual no Linux e no Windows.
 | `mmio_volatile_write8(a, v)` / `mmio_volatile_write16(a, v)` / `mmio_volatile_write32(a, v)` / `mmio_volatile_write64(a, v)` | v, depois de gravar os 1 / 2 / 4 / 8 bytes baixos em a, e entao `mfence`; um endereco em 32768..262143 (o texto do kernel) nao e escrito: um literal e o erro [K0005] dentro de uma funcao, um calculado e ignorado | estavel |
 | `mem_set(a, byte, n)` | n, depois de escrever os 8 bits baixos de byte em n bytes a partir de a (nada quando n <= 0) | estavel |
 | `mem_copy(dst, src, n)` | n, depois de copiar n bytes para frente, um por vez (nada quando n <= 0) | estavel |
-| `mem_crc64(a, n)` | um hash de 31 bits dos n bytes em a (laco no estilo FNV-1a mascarado para 0..2147483647; nao e um CRC) | estavel |
+| `mem_crc64(a, n)` | o hash FNV-1a de 64 bits dos n bytes em a, como int com sinal (nao e um CRC) | estavel |
 | `atomic_xadd64(a, d)` | o valor antigo da palavra de 64 bits em a, depois de somar d a ela atomicamente (`lock xadd`) | estavel |
 | `spinlock_acquire(a)` / `spinlock_release(a)` | 1, depois de pegar (laco de `xchg` com `pause`) / soltar (grava 0) a palavra de trava em a | estavel |
 | `krn_slot_write(i, v)` / `krn_slot_read(i)` | v / o valor guardado no slot i mod 1024 (0 quando nunca escrito) de uma tabela que nao usa heap | estavel, veja a nota |

@@ -418,7 +418,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             `buf_to_str(b, off, n)`, `buf_addr(b)` (address of byte 0, for system calls); buf_get / buf_set on a
             small index are inline machine code (no call), an out-of-range index stops with the same message
             shared memory: `buf_shared(n)` (a buffer the os_fork children share); `use par` runs one job on n
-            worker processes at once: par_pool(n, fn(k, job) => ...), par_run(pool, job), par_slice, par_close
+            worker processes at once: par_pool(n, fn(k, job) => ...), par_run(pool, job), par_slice, par_queue / par_take, par_close
             video: `buf_bgra_to_i420(src, stride, w, h, dst)` and `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
             limited range, 2x2 chroma average, odd sizes; the bytes written or -1 for a wrong argument; a 1080p
             frame in a few milliseconds, runtime routines written in Lume)

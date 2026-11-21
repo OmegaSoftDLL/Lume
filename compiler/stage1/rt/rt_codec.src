@@ -678,6 +678,21 @@ fn rtc_srch(x, m) =
     else
         let z = if rtc_mok(m, load64(x + 40)) == 1 then rtc_try(x, m) else 0 in
         rtc_srch(x, m + 1)
+## fast mode decision (neighbour word bit 16): vertical, horizontal and DC, then only the diagonal modes next to the
+## winner (vertical: 7 vl, 5 vr, 3 ddl; horizontal: 8 hu, 6 hd, 4 ddr; DC: 4 ddr, 3 ddl), about half the SATDs of the
+## full search; a valid choice, not always the cheapest one
+fn rtc_tryok(x, m) = if rtc_floor(x, m) == 0 and rtc_mok(m, load64(x + 40)) == 1 then rtc_try(x, m) else 0
+fn rtc_srchf(x) =
+    let a = rtc_tryok(x, 0) in
+    let b = rtc_tryok(x, 1) in
+    let c = rtc_tryok(x, 2) in
+    let w = load64(x + 72) in
+    if w == 0 then
+        rtc_tryok(x, 3) + rtc_tryok(x, 5) + rtc_tryok(x, 7)
+    else if w == 1 then
+        rtc_tryok(x, 4) + rtc_tryok(x, 6) + rtc_tryok(x, 8)
+    else
+        rtc_tryok(x, 3) + rtc_tryok(x, 4)
 ## reconstruct into the frame: clip(prediction + residual), rows fs apart
 fn rtc_recf(p, r, d, fs, i) = vec_rec4(p, r, d, fs)
 ## the zigzag copy: two bytes per level, the scan positions as straight-line code
@@ -746,7 +761,7 @@ fn rtc_blk(x, b) =
     let a4 = store64(x + 48, rtc_pmode(rtc_nml(c, bx, by, mav), rtc_nmt(c, bx, by, mav))) in
     let a5 = store64(x + 64, 1099511627776) in
     let a6 = store64(x + 72, 0) in
-    let z = rtc_srch(x, 0) in
+    let z = if load64(x + 168) == 1 then rtc_srchf(x) else rtc_srch(x, 0) in
     if load64(x + 64) == 1099511627776 then
         store64(x + 120, 1)
     else
@@ -1581,6 +1596,7 @@ fn rtc_mbi4(src, si, ss, rec, ri, cfg) =
             let a6 = store64(x + 88, src + 8 + si) in
             let a7 = store64(x + 96, ri) in
             let a8 = store64(x + 104, bit_and(load32(c + 12), 15)) in
+            let a0 = store64(x + 168, bit_and(bit_shr(load32(c + 12), 16), 1)) in
             let a9 = store64(x + 112, qp) in
             let b1 = store64(x + 120, 0) in
             let b2 = store64(x + 128, 0) in

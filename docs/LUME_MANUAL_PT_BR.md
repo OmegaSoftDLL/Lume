@@ -397,7 +397,7 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off,
                   n)`, `buf_addr(b)`; buf_get / buf_set com indice pequeno viram codigo de maquina inline (sem chamada)
                   memoria compartilhada: `buf_shared(n)` (buffer que os filhos de os_fork compartilham); `use par` roda
-                  um job em n processos ao mesmo tempo: par_pool(n, fn(k, job) => ...), par_run, par_slice, par_close
+                  um job em n processos ao mesmo tempo: par_pool(n, fn(k, job) => ...), par_run, par_slice, par_queue / par_take, par_close
                   video: `buf_bgra_to_i420(src, stride, w, h, dst)` e `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601
                   faixa limitada, media 2x2 do croma, tamanhos impares; bytes escritos ou -1; quadro 1080p em poucos ms)
                   distorcao de bloco para codificadores: `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`,

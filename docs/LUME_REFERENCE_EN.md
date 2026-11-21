@@ -360,7 +360,9 @@ failed: too big
 0..255 stops the program. `buf_shared(n)` is a buffer in memory shared with the processes `os_fork` starts
 afterwards (what one writes, all read). With `use par`: `par_pool(n, fn(k, job) => ...)` starts n worker processes
 once, `par_run(pool, job)` runs the function in all of them at the same time and answers the sum of their answers
-(their writes into shared buffers are then visible), `par_slice(k, n, total)` is worker k's first item, `par_close(pool)`
+(their writes into shared buffers are then visible), `par_slice(k, n, total)` is worker k's first item, `par_queue()` /
+`par_reset(q)` / `par_take(q)` hand out item numbers one at a time to whichever worker asks (faster cores take more),
+`par_close(pool)`
 stops them.
 
 ```lume
@@ -390,7 +392,8 @@ without a check per code, ~140 ns for a block of 5 levels).
 `buf_h264_mb_i4 (src, si, ss, rec, ri, cfg)` encodes a whole Intra4x4 macroblock in one call: for each of its 16
 blocks (luma4x4BlkIdx order) the 9 predictions its neighbours allow, cost SATD + lambda x (1 for the predicted mode,
 else 4), the cheapest is transformed, quantized and reconstructed into rec. cfg (at least 592 bytes, int32 little
-endian) gives rs, qp, lambda, the macroblock neighbours (1 left, 2 top, 4 top-right, 8 top-left) and the neighbour
+endian) gives rs, qp, lambda, the macroblock neighbours (1 left, 2 top, 4 top-right, 8 top-left; + 65536: fast mode
+decision, vertical / horizontal / DC and then only the diagonal modes next to the winner, ~20% faster) and the neighbour
 modes (bytes 16..23, 255 = none); it returns the modes (32..47), nonzero levels (48..63), the zigzag levels ready
 for CAVLC (64 + 32 x block) and the mode codes (576..591, 255 = predicted). Answers the total cost or -1. Same
 result as the block builtins; a 1080p luma frame takes about 120 ms (screen content) to 230 ms (textured).
@@ -930,7 +933,7 @@ program, the same on Linux and Windows.
 | `mmio_volatile_write8(a, v)` / `mmio_volatile_write16(a, v)` / `mmio_volatile_write32(a, v)` / `mmio_volatile_write64(a, v)` | v, after storing its low 1 / 2 / 4 / 8 bytes at a, then `mfence`; an address in 32768..262143 (the kernel text) is not written: a literal one is error [K0005] inside a function, a computed one is skipped | stable |
 | `mem_set(a, byte, n)` | n, after writing the low 8 bits of byte into n bytes from a (nothing when n <= 0) | stable |
 | `mem_copy(dst, src, n)` | n, after copying n bytes forward, one at a time (nothing when n <= 0) | stable |
-| `mem_crc64(a, n)` | a 31-bit hash of the n bytes at a (an FNV-1a style loop masked to 0..2147483647; not a CRC) | stable |
+| `mem_crc64(a, n)` | the 64-bit FNV-1a hash of the n bytes at a, as a signed int (not a CRC) | stable |
 | `atomic_xadd64(a, d)` | the old value of the 64-bit word at a, after adding d to it atomically (`lock xadd`) | stable |
 | `spinlock_acquire(a)` / `spinlock_release(a)` | 1, after taking (`xchg` loop with `pause`) / freeing (store 0) the lock word at a | stable |
 | `krn_slot_write(i, v)` / `krn_slot_read(i)` | v / the value stored in slot i mod 1024 (0 when never written) of a table that needs no heap | stable, see the note |

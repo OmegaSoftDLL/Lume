@@ -33,3 +33,14 @@ fn par_wait(b, n, k) = if k >= n then k else (let w = os_waitpid(par_get(b, k * 
 fn par_slice(k, n, total) = (total * k) / n
 fn par_put(b, o, v) = let a = buf_set(b, o, v % 256) in let c = buf_set(b, o + 1, (v / 256) % 256) in let d = buf_set(b, o + 2, (v / 65536) % 256) in buf_set(b, o + 3, v / 16777216)
 fn par_get(b, o) = buf_get(b, o) + buf_get(b, o + 1) * 256 + buf_get(b, o + 2) * 65536 + buf_get(b, o + 3) * 16777216
+## a work queue: when the items are not equally hard, or the cores are not equally fast (performance and efficiency
+## cores), workers that take the next item as soon as they are free finish together; with fixed slices the fastest
+## core waits for the slowest. par_queue() is a shared counter, par_reset(q) sets it to 0 before a par_run, and
+## par_take(q) answers the next item number (0, 1, 2 ...) to exactly one worker (atomic_xadd64 on the shared word):
+##   let q = par_queue()
+##   let pool = par_pool(8, fn(k, job) => run_items(q, total))   ## run_items: i = par_take(q) until i >= total
+##   let r = par_reset(q)
+##   let done = par_run(pool, frame_no)
+fn par_queue() = buf_shared(8)
+fn par_reset(q) = atomic_xadd64(buf_addr(q), 0 - atomic_xadd64(buf_addr(q), 0))
+fn par_take(q) = atomic_xadd64(buf_addr(q), 1)

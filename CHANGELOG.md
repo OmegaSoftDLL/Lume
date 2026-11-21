@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **buf_h264_mb_i4 fast mode decision** (cfg neighbour word + 65536): vertical, horizontal and DC, then only the
+  diagonal modes next to the winner; ~20% faster per macroblock, a valid choice that is not always the cheapest
+  (h264_mb_ok checks it against a reference written in ordinary Lume).
+- **`use par` work queue:** `par_queue()`, `par_reset(q)`, `par_take(q)` hand out item numbers one at a time
+  (atomic_xadd64 on a shared word), so workers on faster cores take more items (par_ok: 4 workers, 1000 items, each
+  taken exactly once).
+
 ### Changed
+- The reference row of `mem_crc64` still described the old 31-bit hash; it is the 64-bit FNV-1a hash since commit 5888416.
+- The driver's copy of `ldp_line_end` is `ldn_line_end` (it was also defined in ldapdbg: warning W0003 on every build).
 - **CAVLC 28% faster** (whole macroblock 6.6 -> 4.75 us on the reference laptop, same bitstream byte for byte): a
   block with room for any code (1344 bits left) goes through a fast coder that writes each code (a level's prefix and
   suffix together) in one sequential store of up to 5 bytes, finds the levels by index and checks the end once per
