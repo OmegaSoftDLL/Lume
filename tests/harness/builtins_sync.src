@@ -1,0 +1,289 @@
+## builtins_sync.src -- one table of the builtins, and the reader that holds the compiler sources to it.
+##
+## A builtin is named in several places that have to agree: the name lists of compiler/stage1/name_flow.src (its
+## arity in nf_ar0..nf_ar3 / nf_builtin_arity, and the runtime group predicates nf_rtbase, lis_sys_call,
+## lis_tier_call, lis_mem_call, lis_bv1_call, lis_bv2_call, lis_ct_call, nf_internal), the effect lists of the
+## compiler (kprim_eff0 / kprim_eff_rt in compiler/stage1/lume/06b_phase3.src) and of the lcaas oracle
+## (cs_kprim_eff in compiler/stage1/lcaas.src), the runtime text that defines its label, the factual reference
+## (docs/LUME_REFERENCE_EN.md and _PT_BR.md) and compiler/stage1/builtins_regress_ok.src.
+##
+## compiler/stage1/builtins_table.src is the single source of truth. `bs_check` reads the table and the real sources
+## and lists every disagreement; `bs_gen_file` rewrites the list functions of the three compiler sources from the
+## table (plain `nm == "x" or ...` chains, the form the frozen seed already compiles); `bs_table_text` rebuilds a
+## table from the current sources (the first audit, and a starting point after a large merge).
+##
+## The list functions are read token by token: a string literal after `==` is a name, and the literal or number after
+## the next `then` is its value (a list with no `then`, a predicate, gives every name the value "1"). The first
+## value of a name wins, as in the `if` chain itself.
+
+## ---- text
+fn bs_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => bs_rev(t, Cons(h, acc))
+fn bs_line_end(s, i, n) = if i >= n then n else if ord_at(s, i) == 10 then i else bs_line_end(s, i + 1, n)
+fn bs_lines_at(s, i, n, acc) = if i >= n then bs_rev(acc, Nil) else let e = bs_line_end(s, i, n) in bs_lines_at(s, e + 1, n, Cons(slice(s, i, e), acc))
+fn bs_lines(s) = bs_lines_at(s, 0, count(s), Nil)
+fn bs_starts(s, p) = if count(s) < count(p) then 0 else if slice(s, 0, count(p)) == p then 1 else 0
+fn bs_isid(c) = if c >= 97 and c <= 122 then 1 else if c >= 65 and c <= 90 then 1 else if c >= 48 and c <= 57 then 1 else if c == 95 then 1 else 0
+fn bs_isnum(s) = if count(s) == 0 then 0 else if ord_at(s, 0) >= 48 and ord_at(s, 0) <= 57 then 1 else 0
+fn bs_next_is(s, i, n, c) = if i >= n then 0 else if ord_at(s, i) == c then 1 else 0
+fn bs_str_end(s, i, n) = if i >= n then n else let c = ord_at(s, i) in if c == 92 then bs_str_end(s, i + 2, n) else if c == 34 then i else bs_str_end(s, i + 1, n)
+fn bs_id_end(s, i, n) = if i >= n then n else if bs_isid(ord_at(s, i)) == 1 then bs_id_end(s, i + 1, n) else i
+fn bs_join(xs, sep) = match xs
+    Nil        => ""
+    Cons(h, t) => bs_join_at(t, sep, h)
+fn bs_join_at(xs, sep, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => bs_join_at(t, sep, acc + sep + h)
+fn bs_len(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => bs_len(t, n + 1)
+fn bs_isnil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn bs_app(a, b) =bs_rev(bs_rev(a, Nil), b)
+
+## the source line that defines `fn NAME(`
+fn bs_fn_line(lines, nm) = match lines
+    Nil        => ""
+    Cons(h, t) => if bs_starts(h, "fn " + nm + "(") == 1 then h else bs_fn_line(t, nm)
+
+## ---- tokens of one line: string literals ("s"), words ("w") and the operator == ("o")
+fn bs_toks(s, i, n, acc) = if i >= n then bs_rev(acc, Nil) else let c = ord_at(s, i) in if c == 34 then bs_tok_str(s, i, n, acc) else if bs_isid(c) == 1 then bs_tok_word(s, i, n, acc) else if c == 61 and bs_next_is(s, i + 1, n, 61) == 1 then bs_toks(s, i + 2, n, Cons({k: "o", v: "=="}, acc)) else bs_toks(s, i + 1, n, acc)
+fn bs_tok_str(s, i, n, acc) = let e = bs_str_end(s, i + 1, n) in bs_toks(s, e + 1, n, Cons({k: "s", v: slice(s, i + 1, e)}, acc))
+fn bs_tok_word(s, i, n, acc) = let e = bs_id_end(s, i, n) in bs_toks(s, e, n, Cons({k: "w", v: slice(s, i, e)}, acc))
+
+## ---- the (name, value) pairs of a list function, in source order
+fn bs_flush(pend, v, acc) = match pend
+    Nil        => acc
+    Cons(h, t) => bs_flush(t, v, Cons({name: h, val: v}, acc))
+fn bs_chain(toks, pend, acc) = match toks
+    Nil        => bs_rev(bs_flush(bs_rev(pend, Nil), "1", acc), Nil)
+    Cons(t, r) => if t.k == "o" then bs_chain_eq(r, pend, acc) else if t.k == "w" and t.v == "then" then bs_chain_then(r, pend, acc) else bs_chain(r, pend, acc)
+fn bs_chain_eq(r, pend, acc) = match r
+    Nil         => bs_chain(r, pend, acc)
+    Cons(u, r2) => if u.k == "s" then bs_chain(r2, Cons(u.v, pend), acc) else bs_chain(r, pend, acc)
+fn bs_chain_then(r, pend, acc) = match r
+    Nil         => bs_chain(r, pend, acc)
+    Cons(u, r2) => if u.k == "s" or bs_isnum(u.v) == 1 then bs_chain(r2, Nil, bs_flush(bs_rev(pend, Nil), u.v, acc)) else bs_chain(r, pend, acc)
+fn bs_pairs(line) = bs_chain(bs_toks(line, 0, count(line), Nil), Nil, Nil)
+fn bs_fn_pairs(lines, nm) = bs_pairs(bs_fn_line(lines, nm))
+fn bs_get(nm, ps) = match ps
+    Nil        => ""
+    Cons(h, t) => if h.name == nm then h.val else bs_get(nm, t)
+fn bs_mem(x, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else bs_mem(x, t)
+fn bs_names(ps) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons(h.name, bs_names(t))
+## names given twice in one list (the second is dead code, or a contradiction)
+fn bs_dups(ps, seen, acc) = match ps
+    Nil        => bs_rev(acc, Nil)
+    Cons(h, t) => if bs_mem(h.name, seen) == 1 then bs_dups(t, seen, if bs_mem(h.name, acc) == 1 then acc else Cons(h.name, acc)) else bs_dups(t, Cons(h.name, seen), acc)
+
+## ---- sorted string sets
+fn bs_split(xs, a, b) = match xs
+    Nil        => {a: a, b: b}
+    Cons(h, t) => bs_split(t, Cons(h, b), a)
+fn bs_merge(xs, ys, acc) = match xs
+    Nil        => bs_rev(acc, ys)
+    Cons(x, xt) => match ys
+        Nil         => bs_rev(acc, xs)
+        Cons(y, yt) => if x <= y then bs_merge(xt, ys, Cons(x, acc)) else bs_merge(xs, yt, Cons(y, acc))
+fn bs_sort(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => match t
+        Nil => xs
+        _   => let p = bs_split(xs, Nil, Nil) in bs_merge(bs_sort(p.a), bs_sort(p.b), Nil)
+fn bs_uniq(xs, acc) = match xs
+    Nil        => bs_rev(acc, Nil)
+    Cons(h, t) => match acc
+        Cons(a, z) => if a == h then bs_uniq(t, acc) else bs_uniq(t, Cons(h, acc))
+        Nil        => bs_uniq(t, Cons(h, acc))
+fn bs_set(xs) = bs_uniq(bs_sort(xs), Nil)
+
+## ---- what a text defines or calls
+## every `NAME:` that starts a line of emitted assembly: "NAME:\n at the start of a string literal, or \nNAME:\n inside one
+fn bs_labels(s) = bs_lab_at(s, 0, count(s), Nil)
+fn bs_lab_at(s, i, n, acc) = if i + 2 >= n then acc else if ord_at(s, i) != 58 then bs_lab_at(s, i + 1, n, acc) else if ord_at(s, i + 1) == 92 and ord_at(s, i + 2) == 110 then bs_lab_at(s, i + 3, n, bs_lab1(s, i, acc)) else bs_lab_at(s, i + 1, n, acc)
+fn bs_id_start(s, i) = if i <= 0 then 0 else if bs_isid(ord_at(s, i - 1)) == 1 then bs_id_start(s, i - 1) else i
+fn bs_lab1(s, i, acc) = let st = bs_id_start(s, i) in if st >= i or st < 1 then acc else if ord_at(s, st - 1) == 34 then Cons(slice(s, st, i), acc) else if ord_at(s, st - 1) == 92 and ord_at(s, st) == 110 and st + 1 < i then Cons(slice(s, st + 1, i), acc) else acc
+## every word written as a call, NAME(
+fn bs_calls(s) = bs_calls_at(s, 0, count(s), Nil)
+fn bs_calls_at(s, i, n, acc) = if i >= n then acc else if bs_isid(ord_at(s, i)) == 1 then bs_calls_word(s, i, n, acc) else bs_calls_at(s, i + 1, n, acc)
+fn bs_calls_word(s, i, n, acc) = let e = bs_id_end(s, i, n) in bs_calls_at(s, e, n, if bs_next_is(s, e, n, 40) == 1 then Cons(slice(s, i, e), acc) else acc)
+## what a document names as a builtin: a call NAME(, or an identifier with an underscore (`buf_sad8x8`, in a list);
+## a plain word such as `at` or `read` counts only as a call, since prose uses it too
+fn bs_doc_names(s) = bs_doc_at(s, 0, count(s), Nil)
+fn bs_doc_at(s, i, n, acc) = if i >= n then acc else if bs_isid(ord_at(s, i)) == 1 then bs_doc_word(s, i, n, acc) else bs_doc_at(s, i + 1, n, acc)
+fn bs_doc_word(s, i, n, acc) = let e = bs_id_end(s, i, n) in let w = slice(s, i, e) in bs_doc_at(s, e, n, if bs_next_is(s, e, n, 40) == 1 or bs_has_us(w, 0, count(w)) == 1 then Cons(w, acc) else acc)
+fn bs_has_us(w, i, n) = if i >= n then 0 else if ord_at(w, i) == 95 then 1 else bs_has_us(w, i + 1, n)
+## every string literal of a source text
+fn bs_strs(s) = bs_strs_at(s, 0, count(s), Nil)
+fn bs_strs_at(s, i, n, acc) = if i >= n then acc else if ord_at(s, i) == 34 then bs_strs_lit(s, i, n, acc) else bs_strs_at(s, i + 1, n, acc)
+fn bs_strs_lit(s, i, n, acc) = let e = bs_str_end(s, i + 1, n) in bs_strs_at(s, e + 1, n, Cons(slice(s, i + 1, e), acc))
+## the functions a Lume source defines (lines `fn NAME(`)
+fn bs_fn_names(lines, acc) = match lines
+    Nil        => acc
+    Cons(h, t) => bs_fn_names(t, if bs_starts(h, "fn ") == 1 then Cons(slice(h, 3, bs_id_end(h, 3, count(h))), acc) else acc)
+fn bs_rt_fns(root) = let dir = root + "/compiler/stage1/rt" in bs_rt_fns_at(dir, bs_lines(fs_read_dir(dir)), Nil)
+fn bs_rt_fns_at(dir, files, acc) = match files
+    Nil        => acc
+    Cons(f, t) => bs_rt_fns_at(dir, t, if count(f) > 4 and slice(f, count(f) - 4, count(f)) == ".src" then bs_fn_names(bs_lines(fs_read_file(dir + "/" + f)), acc) else acc)
+
+## ---- the table: lines `name arity effect lists def doc reg` inside the """ string of builtins_table.src
+fn bs_words_at(s, i, n, acc) = if i >= n then bs_rev(acc, Nil) else if ord_at(s, i) == 32 then bs_words_at(s, i + 1, n, acc) else let e = bs_word_end(s, i, n) in bs_words_at(s, e, n, Cons(slice(s, i, e), acc))
+fn bs_word_end(s, i, n) = if i >= n then n else if ord_at(s, i) == 32 then i else bs_word_end(s, i + 1, n)
+fn bs_words(s) = bs_words_at(s, 0, count(s), Nil)
+fn bs_nth(xs, k) = match xs
+    Nil        => ""
+    Cons(h, t) => if k == 0 then h else bs_nth(t, k - 1)
+fn bs_csv_at(s, i, n, st, acc) = if i >= n then bs_rev(Cons(slice(s, st, n), acc), Nil) else if ord_at(s, i) == 44 then bs_csv_at(s, i + 1, n, i + 1, Cons(slice(s, st, i), acc)) else bs_csv_at(s, i + 1, n, st, acc)
+fn bs_csv(s) = if s == "-" then Nil else bs_csv_at(s, 0, count(s), 0, Nil)
+fn bs_row(ws) = {name: bs_nth(ws, 0), ar: bs_nth(ws, 1), eff: bs_nth(ws, 2), lists: bs_csv(bs_nth(ws, 3)), def: bs_nth(ws, 4), doc: bs_nth(ws, 5), reg: bs_nth(ws, 6), nw: bs_len(ws, 0)}
+fn bs_table_rows(lines, inside, acc) = match lines
+    Nil        => bs_rev(acc, Nil)
+    Cons(h, t) => if bs_starts(h, "\"\"\"") == 1 or bs_ends_q3(h) == 1 then bs_table_rows(t, 1 - inside, acc) else if inside == 0 or count(h) == 0 or bs_starts(h, "#") == 1 then bs_table_rows(t, inside, acc) else bs_table_rows(t, inside, Cons(bs_row(bs_words(h)), acc))
+fn bs_ends_q3(h) = if count(h) < 3 then 0 else if slice(h, count(h) - 3, count(h)) == "\"\"\"" then 1 else 0
+fn bs_table(root) = bs_table_rows(bs_lines(fs_read_file(root + "/compiler/stage1/builtins_table.src")), 0, Nil)
+fn bs_row_names(rows) = match rows
+    Nil        => Nil
+    Cons(h, t) => Cons(h.name, bs_row_names(t))
+
+## ---- the lists of the sources
+fn bs_group_fns() = Cons({tag: "rt", fname: "nf_rtbase"}, Cons({tag: "sys", fname: "lis_sys_call"}, Cons({tag: "tier", fname: "lis_tier_call"}, Cons({tag: "mem", fname: "lis_mem_call"}, Cons({tag: "bv1", fname: "lis_bv1_call"}, Cons({tag: "bv2", fname: "lis_bv2_call"}, Cons({tag: "ct", fname: "lis_ct_call"}, Cons({tag: "int", fname: "nf_internal"}, Nil))))))))
+fn bs_arity_pairs(nf) = bs_app(bs_set_val(bs_fn_pairs(nf, "nf_ar0"), "0"), bs_app(bs_set_val(bs_fn_pairs(nf, "nf_ar1"), "1"), bs_app(bs_set_val(bs_fn_pairs(nf, "nf_ar2"), "2"), bs_app(bs_set_val(bs_fn_pairs(nf, "nf_ar3"), "3"), bs_fn_pairs(nf, "nf_builtin_arity")))))
+fn bs_set_val(ps, v) = match ps
+    Nil        => Nil
+    Cons(h, t) => Cons({name: h.name, val: v}, bs_set_val(t, v))
+fn bs_groups(nf, gs) = match gs
+    Nil        => Nil
+    Cons(g, t) => Cons({tag: g.tag, fname: g.fname, names: bs_names(bs_fn_pairs(nf, g.fname))}, bs_groups(nf, t))
+## everything the checker reads, read once
+fn bs_sources(root) = let nf = bs_lines(fs_read_file(root + "/compiler/stage1/name_flow.src")) in let p3 = bs_lines(fs_read_file(root + "/compiler/stage1/lume/06b_phase3.src")) in let lc = bs_lines(fs_read_file(root + "/compiler/stage1/lcaas.src")) in let cg = fs_read_file(root + "/compiler/stage1/lume/05_codegen.src") in bs_sources2(root, nf, p3, lc, cg)
+fn bs_sources2(root, nf, p3, lc, cg) = {ar: bs_arity_pairs(nf), groups: bs_groups(nf, bs_group_fns()), e0: bs_fn_pairs(p3, "kprim_eff0"), ert: bs_fn_pairs(p3, "kprim_eff_rt"), elc: bs_fn_pairs(lc, "cs_kprim_eff"), core: bs_set(bs_labels(fs_read_file(root + "/compiler/stage1/runtime_core.lume"))), lume: bs_set(bs_labels(fs_read_file(root + "/compiler/stage1/runtime_lume.lume"))), rtfns: bs_set(bs_rt_fns(root)), cglab: bs_set(bs_labels(cg)), cgstr: bs_set(bs_strs(cg)), refen: bs_set(bs_doc_names(fs_read_file(root + "/docs/LUME_REFERENCE_EN.md"))), refpt: bs_set(bs_doc_names(fs_read_file(root + "/docs/LUME_REFERENCE_PT_BR.md"))), reg: bs_set(bs_calls(fs_read_file(root + "/compiler/stage1/builtins_regress_ok.src")))}
+fn bs_in(nm, sortedset) = match sortedset
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else if nm < h then 0 else bs_in(nm, t)
+fn bs_group_names(tag, groups) = match groups
+    Nil        => Nil
+    Cons(g, t) => if g.tag == tag then g.names else bs_group_names(tag, t)
+fn bs_eff06(nm, src) = let a = bs_get(nm, src.e0) in if a != "" then a else let b = bs_get(nm, src.ert) in if b != "" then b else "pure"
+fn bs_efflc(nm, src) = let a = bs_get(nm, src.elc) in if a != "" then a else "pure"
+fn bs_arity(nm, src) = let a = bs_get(nm, src.ar) in if a == "" then "-" else a
+
+## ---- the first table, from the sources as they are
+fn bs_all_names(src) = bs_set(bs_app(bs_names(src.ar), bs_app(bs_group_all(src.groups), bs_app(bs_names(src.e0), bs_app(bs_names(src.ert), bs_names(src.elc))))))
+fn bs_group_all(gs) = match gs
+    Nil        => Nil
+    Cons(g, t) => bs_app(g.names, bs_group_all(t))
+fn bs_tags_of(nm, gs, acc) = match gs
+    Nil        => bs_rev(acc, Nil)
+    Cons(g, t) => bs_tags_of(nm, t, if bs_mem(nm, g.names) == 1 then Cons(g.tag, acc) else acc)
+fn bs_def_of(nm, src) = if bs_in(nm, src.rtfns) == 1 and bs_in(nm, src.lume) == 1 then "lume" else if bs_in(nm, src.core) == 1 then "core" else if bs_in(nm, src.cglab) == 1 then "cg" else if bs_in(nm, src.cgstr) == 1 then "inline" else "none"
+fn bs_def_or_lowered(nm, tags, src) = let d = bs_def_of(nm, src) in if d == "none" and bs_lowered(tags) == 1 then "inline" else d
+fn bs_pad(s, w) = if count(s) >= w then s + " " else bs_pad(s + " ", w)
+fn bs_row_text(nm, src) = let tags = bs_tags_of(nm, src.groups, Nil) in let real = bs_arity(nm, src) != "-" or bs_len(tags, 0) > 0 in let doc = if bs_in(nm, src.refen) == 1 then "ref" else "-" in let reg = if bs_in(nm, src.reg) == 1 then "yes" else "no" in bs_pad(nm, 30) + bs_pad(bs_arity(nm, src), 4) + bs_pad(bs_eff06(nm, src), 7) + bs_pad(if bs_isnil(tags) == 1 then "-" else bs_join(tags, ","), 12) + bs_pad(if real then bs_def_or_lowered(nm, tags, src) else "-", 7) + bs_pad(doc, 4) + reg
+fn bs_table_lines(names, src) = match names
+    Nil        => Nil
+    Cons(h, t) => Cons(bs_row_text(h, src), bs_table_lines(t, src))
+fn bs_table_text(root) = let src = bs_sources(root) in bs_join(bs_table_lines(bs_all_names(src), src), "\n") + "\n"
+
+## ---- the check: every disagreement between the table and the sources, one line each
+fn bs_add(cond, msg, acc) = if cond then Cons(msg, acc) else acc
+fn bs_valid_eff(e) = bs_mem(e, Cons("pure", Cons("io", Cons("fs", Cons("net", Cons("sys", Cons("time", Cons("alloc", Cons("rand", Cons("prob", Cons("llm", Cons("wasm", Cons("ffi", Cons("fail", Cons("panic", Cons("async", Nil))))))))))))))))
+fn bs_valid_def(d) = bs_mem(d, Cons("core", Cons("lume", Cons("cg", Cons("inline", Cons("-", Nil))))))
+fn bs_check_shape(r, acc) = let a1 = bs_add(r.nw != 7, r.name + ": a table row has 7 columns (name arity effect lists def doc reg), this one has " + str(r.nw), acc) in let a2 = bs_add(bs_valid_eff(r.eff) == 0, r.name + ": unknown effect '" + r.eff + "'", a1) in let a3 = bs_add(bs_valid_def(r.def) == 0, r.name + ": unknown def '" + r.def + "' (core, lume, cg, inline or -)", a2) in let a4 = bs_add(r.doc != "ref" and r.doc != "-", r.name + ": doc is ref or -", a3) in bs_add(r.reg != "yes" and r.reg != "no" and r.reg != "skip", r.name + ": reg is yes, no or skip", a4)
+fn bs_check_groups(r, gs, acc) = match gs
+    Nil        => acc
+    Cons(g, t) => let ins = bs_mem(r.name, g.names) in let intab = bs_mem(g.tag, r.lists) in bs_check_groups(r, t, if ins == 1 and intab == 0 then Cons(r.name + ": name_flow " + g.fname + " lists it, the table does not give it '" + g.tag + "'", acc) else if ins == 0 and intab == 1 then Cons(r.name + ": the table gives it '" + g.tag + "', name_flow " + g.fname + " does not list it", acc) else acc)
+fn bs_check_arity(r, src, acc) = let a = bs_arity(r.name, src) in let a1 = bs_add(a != r.ar, r.name + ": arity " + r.ar + " in the table, " + a + " in name_flow (nf_ar0..nf_ar3 / nf_builtin_arity)", acc) in bs_add(r.ar == "-" and r.def != "-" and bs_generated(r.lists) == 0, r.name + ": a program can call it, but it has no arity, so a call with the wrong argument count reads stale registers", a1)
+## codegen lowers the members of these groups in place, by membership
+fn bs_lowered(lists) = if bs_mem("bv1", lists) == 1 or bs_mem("bv2", lists) == 1 or bs_mem("ct", lists) == 1 then 1 else 0
+## names of these groups reach codegen from the compiler itself (sugar, internal routines), never from a program's call
+fn bs_generated(lists) = if bs_mem("int", lists) == 1 or bs_mem("tier", lists) == 1 or bs_mem("mem", lists) == 1 then 1 else 0
+fn bs_check_eff(r, src, acc) = let e1 = bs_eff06(r.name, src) in let e2 = bs_efflc(r.name, src) in let a1 = bs_add(e1 != r.eff, r.name + ": effect " + r.eff + " in the table, " + e1 + " in 06b_phase3 kprim_eff", acc) in bs_add(e2 != r.eff, r.name + ": effect " + r.eff + " in the table, " + e2 + " in lcaas cs_kprim_eff", a1)
+fn bs_check_def(r, src, acc) = if r.def == "lume" then bs_add(bs_in(r.name, src.rtfns) == 0, r.name + ": def lume, but no rt/*.src defines fn " + r.name, bs_add(bs_in(r.name, src.lume) == 0, r.name + ": def lume, but runtime_lume.lume has no label " + r.name + ": (run gen_runtime)", bs_add(bs_in(r.name, src.core) == 1, r.name + ": defined twice, in rt/*.src and in runtime_core.lume", acc))) else if r.def == "core" then bs_add(bs_in(r.name, src.core) == 0, r.name + ": def core, but runtime_core.lume has no label " + r.name + ":", acc) else if r.def == "cg" then bs_add(bs_in(r.name, src.cglab) == 0, r.name + ": def cg, but 05_codegen.src emits no label " + r.name + ":", acc) else if r.def == "inline" then bs_add(bs_in(r.name, src.cgstr) == 0 and bs_lowered(r.lists) == 0, r.name + ": def inline, but 05_codegen.src never names \"" + r.name + "\" and no lowered group (bv1, bv2, ct) holds it", acc) else bs_add(bs_arity(r.name, src) != "-" or bs_isnil(r.lists) == 0, r.name + ": def - is for effect-only names, but name_flow resolves it as a builtin", acc)
+fn bs_check_doc(r, src, acc) = let en = bs_in(r.name, src.refen) in let pt = bs_in(r.name, src.refpt) in if r.doc == "ref" then bs_add(en == 0, r.name + ": doc ref, but docs/LUME_REFERENCE_EN.md does not show " + r.name + "(...)", bs_add(pt == 0, r.name + ": doc ref, but docs/LUME_REFERENCE_PT_BR.md does not show " + r.name + "(...)", acc)) else bs_add(en == 1 or pt == 1, r.name + ": the reference documents " + r.name + "(...), the table says doc -", acc)
+fn bs_check_reg(r, src, acc) = let called = bs_in(r.name, src.reg) in if r.reg == "yes" then bs_add(called == 0, r.name + ": reg yes, but builtins_regress_ok.src never calls it", acc) else bs_add(called == 1, r.name + ": builtins_regress_ok.src calls it, the table says reg " + r.reg, bs_add(r.doc == "ref" and r.reg == "no" and r.def != "-",r.name + ": documented in the reference but not called in builtins_regress_ok.src", acc))
+fn bs_check_tags(nm, tags, acc) = match tags
+    Nil        => acc
+    Cons(h, t) => bs_check_tags(nm, t, bs_add(bs_mem(h, bs_group_tags(bs_group_fns())) == 0, nm + ": unknown list '" + h + "' (rt, sys, tier, mem, bv1, bv2, ct, int)", acc))
+fn bs_group_tags(gs) = match gs
+    Nil        => Nil
+    Cons(g, t) => Cons(g.tag, bs_group_tags(t))
+fn bs_check_row(r, src, acc) = bs_check_reg(r, src, bs_check_doc(r, src, bs_check_def(r, src, bs_check_eff(r, src, bs_check_arity(r, src, bs_check_groups(r, src.groups, bs_check_tags(r.name, r.lists, bs_check_shape(r, acc))))))))
+fn bs_check_rows(rows, src, acc) = match rows
+    Nil        => acc
+    Cons(h, t) => bs_check_rows(t, src, bs_check_row(h, src, acc))
+## names the sources know and the table does not
+fn bs_missing(names, tab, acc) = match names
+    Nil        => acc
+    Cons(h, t) => bs_missing(t, tab, if bs_in(h, tab) == 1 then acc else Cons(h + ": named in name_flow / 06b_phase3 / lcaas, missing from builtins_table.src", acc))
+fn bs_dup_msgs(nms, where, acc) = match nms
+    Nil        => acc
+    Cons(h, t) => bs_dup_msgs(t, where, Cons(h + ": listed twice in " + where, acc))
+fn bs_check_dups(src, rows, acc) = bs_dup_msgs(bs_dups(src.ar, Nil, Nil), "the arity lists of name_flow", bs_dup_msgs(bs_dups(src.e0, Nil, Nil), "06b_phase3 kprim_eff0", bs_dup_msgs(bs_dups(src.ert, Nil, Nil), "06b_phase3 kprim_eff_rt", bs_dup_msgs(bs_dups(src.elc, Nil, Nil), "lcaas cs_kprim_eff", bs_dup_msgs(bs_dups(bs_rows_as_pairs(rows), Nil, Nil), "builtins_table.src", acc)))))
+fn bs_rows_as_pairs(rows) = match rows
+    Nil        => Nil
+    Cons(h, t) => Cons({name: h.name, val: ""}, bs_rows_as_pairs(t))
+fn bs_check_src(src, rows) = let tab = bs_set(bs_row_names(rows)) in bs_rev(bs_check_dups(src, rows, bs_missing(bs_all_names(src), tab, bs_check_rows(rows, src, Nil))), Nil)
+fn bs_check(root) = let rows = bs_table(root) in bs_app(bs_check_src(bs_sources(root), rows), bs_stale(root, rows))
+## a list function that agrees with the table in content but not in its written form was edited by hand: the
+## generator owns those lines, so the next `@mode gen` would rewrite it
+fn bs_stale(root, rows) = bs_stale_file(root, "compiler/stage1/name_flow.src", "nf", rows, bs_stale_file(root, "compiler/stage1/lume/06b_phase3.src", "p3", rows, bs_stale_file(root, "compiler/stage1/lcaas.src", "lc", rows, Nil)))
+fn bs_stale_file(root, rel, which, rows, acc) = bs_stale_lines(bs_lines(fs_read_file(root + "/" + rel)), rel, which, rows, acc)
+fn bs_stale_lines(lines, rel, which, rows, acc) = match lines
+    Nil        => acc
+    Cons(h, t) => let nm = bs_owned_name(h, bs_owned(which)) in bs_stale_lines(t, rel, which, rows, if nm != "" and bs_head(h) + bs_body(rows, which, nm) != h then Cons(rel + ": " + nm + " is not what builtins_table.src generates (edit the table, then run @mode gen)", acc) else acc)
+
+## ---- the generator: the list functions written from the table
+fn bs_pick_tag(rows, tag, acc) = match rows
+    Nil        => bs_rev(acc, Nil)
+    Cons(h, t) => bs_pick_tag(t, tag, if bs_mem(tag, h.lists) == 1 then Cons(h.name, acc) else acc)
+fn bs_pick_ar(rows, ar, acc) = match rows
+    Nil        => bs_rev(acc, Nil)
+    Cons(h, t) => bs_pick_ar(t, ar, if h.ar == ar then Cons(h.name, acc) else acc)
+## rows of one effect; part "rt" keeps the rows with a runtime definition, "e0" the effect-only names, "all" both
+fn bs_pick_eff(rows, eff, part, acc) = match rows
+    Nil        => bs_rev(acc, Nil)
+    Cons(h, t) => bs_pick_eff(t, eff, part, if h.eff == eff and (part == "all" or (part == "rt" and h.def != "-") or (part == "e0" and h.def == "-")) then Cons(h.name, acc) else acc)
+fn bs_or_chain(v, names) = match names
+    Nil        => "0"
+    Cons(h, t) => bs_join(bs_eqs(v, names), " or ")
+fn bs_eqs(v, names) = match names
+    Nil        => Nil
+    Cons(h, t) => Cons(v + " == \"" + h + "\"", bs_eqs(v, t))
+## the order in which an effect chain tests its classes
+fn bs_eff_order() = Cons("io", Cons("sys", Cons("fs", Cons("net", Cons("alloc", Cons("rand", Cons("prob", Cons("llm", Cons("wasm", Cons("ffi", Cons("time", Cons("fail", Cons("panic", Cons("async", Nil))))))))))))))
+fn bs_eff_chain(rows, v, part, effs) = match effs
+    Nil        => "\"\""
+    Cons(e, t) => let ns = bs_pick_eff(rows, e, part, Nil) in if bs_isnil(ns) == 1 then bs_eff_chain(rows, v, part, t) else "if " + bs_or_chain(v, ns) + " then \"" + e + "\" else " + bs_eff_chain(rows, v, part, t)
+fn bs_arity_chain(rows) = "if nf_ar1(nm) then 1 else if nf_ar2(nm) then 2 else if nf_ar0(nm) then 0 else if nf_ar3(nm) then 3" + bs_arity_more(rows, Cons("4", Cons("5", Cons("6", Nil)))) + " else 0 - 1"
+fn bs_arity_more(rows, ars) = match ars
+    Nil        => ""
+    Cons(a, t) => let ns = bs_pick_ar(rows, a, Nil) in (if bs_isnil(ns) == 1 then "" else " else if " + bs_or_chain("nm", ns) + " then " + a) + bs_arity_more(rows, t)
+## the new body of list function `fname` of file `which` ("nf", "p3", "lc"), or "" when the generator does not own it
+fn bs_body(rows, which, fname) = if which == "nf" then bs_body_nf(rows, fname, bs_group_fns()) else if which == "p3" and fname == "kprim_eff0" then bs_eff_chain(rows, "cnm", "e0", bs_eff_order()) else if which == "p3" and fname == "kprim_eff_rt" then bs_eff_chain(rows, "cnm", "rt", bs_eff_order()) else if which == "lc" and fname == "cs_kprim_eff" then bs_eff_chain(rows, "cnm", "all", bs_eff_order()) else ""
+fn bs_body_nf(rows, fname, gs) = if fname == "nf_ar0" then bs_or_chain("nm", bs_pick_ar(rows, "0", Nil)) else if fname == "nf_ar1" then bs_or_chain("nm", bs_pick_ar(rows, "1", Nil)) else if fname == "nf_ar2" then bs_or_chain("nm", bs_pick_ar(rows, "2", Nil)) else if fname == "nf_ar3" then bs_or_chain("nm", bs_pick_ar(rows, "3", Nil)) else if fname == "nf_builtin_arity" then bs_arity_chain(rows) else bs_body_group(rows, fname, gs)
+fn bs_body_group(rows, fname, gs) = match gs
+    Nil        => ""
+    Cons(g, t) => if g.fname == fname then bs_or_chain("nm", bs_pick_tag(rows, g.tag, Nil)) else bs_body_group(rows, fname, t)
+fn bs_owned(which) = if which == "nf" then Cons("nf_ar0", Cons("nf_ar1", Cons("nf_ar2", Cons("nf_ar3", Cons("nf_builtin_arity", bs_group_fnames(bs_group_fns())))))) else if which == "p3" then Cons("kprim_eff0", Cons("kprim_eff_rt", Nil)) else Cons("cs_kprim_eff", Nil)
+fn bs_group_fnames(gs) = match gs
+    Nil        => Nil
+    Cons(g, t) => Cons(g.fname, bs_group_fnames(t))
+## `fn NAME(params) = ` of a line, or "" when the line defines none of the owned functions
+fn bs_owned_name(line, owned) = match owned
+    Nil        => ""
+    Cons(h, t) => if bs_starts(line, "fn " + h + "(") == 1 then h else bs_owned_name(line, t)
+fn bs_head(line) = bs_head_at(line, 0, count(line))
+fn bs_head_at(s, i, n) = if i + 3 > n then s else if slice(s, i, i + 3) == " = " then slice(s, 0, i + 3) else bs_head_at(s, i + 1, n)
+fn bs_gen_lines(lines, rows, which, acc) = match lines
+    Nil        => bs_rev(acc, Nil)
+    Cons(h, t) => let nm = bs_owned_name(h, bs_owned(which)) in bs_gen_lines(t, rows, which, Cons(if nm == "" then h else bs_head(h) + bs_body(rows, which, nm), acc))
+## the text of a source with its owned list functions regenerated (the lines keep their place and their heads)
+fn bs_gen_text(text, rows, which) = let ls = bs_lines(text) in bs_join(bs_gen_lines(ls, rows, which, Nil), "\n") + (if count(text) > 0 and ord_at(text, count(text) - 1) == 10 then "\n" else "")
+fn bs_gen_file(root, rel, which) = let path = root + "/" + rel in let old = fs_read_file(path) in let rows = bs_table(root) in let nw = bs_gen_text(old, rows, which) in if nw == old then rel + ": unchanged" else (let w = fs_write_sync(path, nw) in if w == 1 then rel + ": rewritten from the table" else rel + ": cannot write")
+fn bs_gen(root) = bs_gen_file(root, "compiler/stage1/name_flow.src", "nf") + "\n" + bs_gen_file(root, "compiler/stage1/lume/06b_phase3.src", "p3") + "\n" + bs_gen_file(root, "compiler/stage1/lcaas.src", "lc")

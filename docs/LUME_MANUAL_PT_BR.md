@@ -274,7 +274,8 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 - Efeitos dos builtins do runtime: `buf_*` (buffers de bytes mutaveis, alterados no
   lugar) sao `io`, como todo builtin que le ou muda estado; `net_*` sao `net`; `fs_*`
   sao `fs`. As funcoes de `use dns` sao `{io, net, fs, time, panic}`. `f64` e os
-  builtins `f64_*` sao puros (sem efeito).
+  builtins `f64_*` sao puros (sem efeito). Os builtins de hardware (`port_*`,
+  `mmio_volatile_*`, `cpu_*`, `vga_*`, `mem_copy` / `mem_set` / `mem_crc64`, `sys_call`) sao `sys`; `cpu_rdtsc` e `time`.
 
 ## 5.2 Memoria Automatica, SRA Zero-Heap e Arenas (`std.arena`)
 A Lume recupera memoria sozinha: o runtime nativo tem um coletor mark-sweep nao movel que
@@ -791,11 +792,31 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                                     configurationDone, stackTrace, scopes, variables, evaluate, continue, next,
                                     stepIn, stepOut, disconnect; eventos stopped, output, exited, terminated.
   lume test <src.src>...                 Executa todos os testes `fn test_*()`
+  lume test --filter <texto> <src.src>.. So os testes cujo nome contem <texto> (tambem `--filter=<texto>`);
+                                         um filtro que nao casa nenhum teste e erro
+  lume test --jobs <n> <src.src>...      n processos ao mesmo tempo: os testes de um arquivo (teste i no
+                                         processo i % n) ou varios arquivos (arquivo i no trabalhador i % n);
+                                         o relatorio sai na ordem do fonte, igual ao de uma execucao serial
+  lume test --json <src.src>...          Um objeto JSON: ok, diagnostics, tests (file, name, status ok|fail,
+                                         ms, message, output), passed, failed, files, jobs, filter, ms
   lume check <src.src> [--json]          Verifica tipos, ownership e efeitos
+  --json em check, prove, build, run, test e verify: um formato so para todos os comandos, {"ok":bool,
+    "diagnostics":[{"code","severity","file","line","col","message","fix"}], ...} mais os campos
+    do comando (build: source, output, exit, ms, log; run: exit, ms, stdout, stderr; verify: files com
+    status, cached, detail). Os diagnosticos sao os do proprio compilador (o parser e as checagens reais);
+    `fix` e a correcao concreta da mensagem.
   lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL
   lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo (funcao com mais de 120 colunas
                                          vira um let / ramo de if / argumento por linha)
   lume doc <src.src> [--json]            Gera documentacao e executa doctests
+  lume query defs|callers|calls [--json] <NOME> [CAMINHO]
+                                         Onde NOME e definido (arquivo:linha, assinatura, comentario
+                                         de documentacao), quais definicoes o chamam (~80 caracteres
+                                         em volta de cada chamada), o que o corpo dele chama; CAMINHO:
+                                         um arquivo e os modulos que ele usa, ou um diretorio (padrao:
+                                         o atual). O proprio lexer do compilador le o codigo: textos
+                                         e comentarios nunca casam
+  lume query outline [--json] <ARQUIVO>  Uma linha por definicao: linha, tipo, nome(parametros), doc
   lume repl [--kernel|--json]            REPL interativo com verificacao de contratos (`--kernel`: protocolo de kernel Jupyter)
   lume lsp / lume dap                    Servidores de IDE (LSP e Debug Adapter)
   lume manual [--pt] [capitulo]          Abre este Manual Interno da Linguagem Lume
@@ -1035,6 +1056,20 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
   `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,
   guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 700 obrigacoes formais +
   162 testes unitarios + 99 artefatos verificados + 112 dominios autonomos + 17 modulos LumePuter).
+- `lume dev selfbuild [--root <dir>] [--tools <list>] [--check] [--verbose]`: Reconstroi o toolchain de um checkout
+  a partir das proprias fontes, em Lume (sem script de shell): regenera `compiler/stage1/runtime_lume.lume` com
+  `compiler/stage1/gen_runtime.src`, amalgama o compilador e compila o `lumec` com o `lumec` e o `lasm` atuais,
+  geracao apos geracao, ate duas geracoes seguidas emitirem assembly identico byte a byte a partir do mesmo texto de
+  runtime (o ponto fixo, no maximo 6 geracoes). Cada geracao nova precisa compilar, montar e executar um programa de
+  fumaca antes de poder substituir `build/bin/lumec`. Depois as ferramentas de `--tools` (padrao: lume_driver, lcli,
+  lmanual, lcaas, lcert, lmod, lprotect, ldapdbg, lasm) sao compiladas a parte e so vao para `build/bin` quando todas
+  compilaram; o compilador anterior fica como `lumec.prev`. Uma linha por etapa, um resumo final, saida 1 em caso de
+  falha; em qualquer falha o compilador, o `runtime_lume.lume` e a fonte amalgamada voltam byte a byte e nenhuma
+  ferramenta e movida. `--check` para no ponto fixo, devolve tudo e diz se a arvore ja estava atualizada. `--root`
+  indica o checkout (padrao: o do proprio driver).
+- `lume dev sync-check [--root <dir>] <dir>`: Lista todo arquivo de `compiler/` e `tests/` (rastreado pelo git, mais
+  os arquivos novos nao rastreados e nao ignorados) cujos bytes diferem do mesmo caminho na outra arvore, ou que falta
+  nela; saida 1 quando houver algum (uma segunda arvore de build desatualizada ja reprovou um gate sem motivo).
 
 # CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR
 
@@ -1177,17 +1212,18 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume manual|man|guide|manual-pt|man-pt [--json] [--pt] [--pt-br] [--pt-BR] [--pt_br] [--pt_BR] [--en] [--en-us] [--en-US] [--export <value>] [chapter] (values: pt|pt-BR|pt-br|pt_BR|pt_br|en|en-US|en-us)
   lume describe|--describe [--json]
   lume targets|--targets [--json]
-  lume build [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
+  lume build [--json] [-o <value>] [--target <value>] [--incremental] [--memory] [--protect] [--profile <value>] [--lsym <value>] [--link <value>] [-l <value>] [-l<value>] [--emit-c-header <value>] [--build-timeout-ms <value>] [--dwarf] [-g] [--keep-proven-checks] [--critical] [--entry <value>] <source.src> (values: none|standard|hardened|max|debug|release|ship)
   lume debug [--commands <value>] [-x <value>] [--dap] <source.src> [program-arguments]
-  lume run [--memory] [--profile] <source.src> [program-arguments]
-  lume test <source.src>...
+  lume run [--json] [--memory] [--profile] <source.src> [program-arguments]
+  lume test [--json] [--filter <value>] [--jobs <value>] <source.src>...
   lume check [--json] [--lex] <source.src>
   lume compile [--json] [--run] <source.src>
   lume fmt [--check] [--stdout] <source.src>...
   lume doc [--json] <source.src>
+  lume query <defs|callers|calls|outline> [--json] <NAME|FILE> [PATH]
   lume prove [--json] [--diff] [--share] [--compositional] <source.src> [new.src]
   lume certify [--json] <source.src>
-  lume verify [--jobs <value>] <source.src>...
+  lume verify [--jobs <value>] [--json] <source.src>...
   lume verify-cert [--json] [--check-source] [source.src] <certificate.json>
   lume proof-cache <self-test|check|store> [--require-all-hits] [source.src] [cache-dir]
   lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve> [--store <value>] [--locked] [--update] [--allow-failing] [dir]
@@ -1205,6 +1241,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume evolve <list|goals|budgets|propose|apply|grow|verify|status|check|approve> [--json] [--domain <value>] [--by <value>] [--sig <value>] [--target <value>] [--root <value>] [goal-or-proposal]
   lume self <status|verify|update|prove|prove-all> [--json] [--prefix <value>] [--from <value>]
   lume self-prove|prove-all|verify-all [--json]
+  lume dev <selfbuild|sync-check> [--root <value>] [--tools <value>] [--check] [--verbose] [DIR]
   lume capsule <seal|verify|replay|open> [-o <value>] <file> [arguments]
   lume pack|unpack [-o <value>] <in>
   lume package <apk|ipa|iso|uefi> [-o <value>] <source.src>

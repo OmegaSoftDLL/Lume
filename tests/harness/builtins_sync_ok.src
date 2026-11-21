@@ -1,0 +1,58 @@
+## builtins_sync_ok.src -- the reader, the checker and the generator of builtins_sync.src (`lume test`).
+## Each test feeds a small hand-written source or table and asserts one behaviour; the last ones run the compiler on
+## the defects the first audit of the table found, so a regression in the generated lists fails here too.
+use builtins_sync
+use hostio
+
+## ---- reading list functions
+fn bt_pred_line() = "fn lis_x_call(nm) = nm == \"alpha\" or nm == \"beta\" or nm == \"gamma\""
+fn test_predicate_names_get_value_one() = let ps = bs_pairs(bt_pred_line()) in bs_len(ps, 0) == 3 and bs_get("alpha", ps) == "1" and bs_get("gamma", ps) == "1" and bs_get("delta", ps) == ""
+fn bt_eff_line() = "fn kx(cnm) = if cnm == \"a\" or cnm == \"b\" then \"io\" else if cnm == \"c\" or cnm == \"a\" then \"fs\" else \"\""
+fn test_effect_chain_first_value_wins() = let ps = bs_pairs(bt_eff_line()) in bs_get("a", ps) == "io" and bs_get("b", ps) == "io" and bs_get("c", ps) == "fs"
+fn test_effect_chain_reports_a_repeated_name() = bs_dups(bs_pairs(bt_eff_line()), Nil, Nil) == ["a"]
+fn bt_arity_line() = "fn nf_builtin_arity(nm) = if nf_ar1(nm) then 1 else if nm == \"p\" or nm == \"q\" then 4 else if nm == \"r\" then 6 else 0 - 1"
+fn test_arity_chain_reads_unquoted_numbers() = let ps = bs_pairs(bt_arity_line()) in bs_len(ps, 0) == 3 and bs_get("p", ps) == "4" and bs_get("q", ps) == "4" and bs_get("r", ps) == "6"
+fn test_fn_line_finds_the_definition() = bs_fn_line(Cons("## fn lis_x_call(nm) in a comment", Cons(bt_pred_line(), Nil)), "lis_x_call") == bt_pred_line()
+
+## ---- what a text defines, calls and documents
+fn bt_bs() = chr(92)
+fn bt_asm() = "fn rt_a() = \"alloc:" + bt_bs() + "n    ret" + bt_bs() + "nbuf_get:" + bt_bs() + "n.Lrt_x:" + bt_bs() + "n    movq $1, %rax # note:" + bt_bs() + "n\""
+fn test_labels_take_line_starts_only() = bs_set(bs_labels(bt_asm())) == ["alloc", "buf_get"]
+fn test_doc_names_take_calls_and_underscore_words() = let ns = bs_set(bs_doc_names("Use `count(s)` and `buf_sad8x8`; read the file at once.")) in bs_in("count", ns) == 1 and bs_in("buf_sad8x8", ns) == 1 and bs_in("read", ns) == 0 and bs_in("at", ns) == 0
+fn test_fn_names_of_a_runtime_source() = bs_fn_names(Cons("fn buf_len(b) = 0", Cons("## fn not_this() = 1", Cons("fn rt_copyb(d, s, n) = 0", Nil))), Nil) == ["rt_copyb", "buf_len"]
+
+## ---- the check, on a synthetic tree: one row, one defect at a time
+fn bt_src(e0, elc, reg) = {ar: Cons({name: "zz_get", val: "2"}, Nil), groups: Cons({tag: "rt", fname: "nf_rtbase", names: ["zz_get"]}, Nil), e0: e0, ert: Nil, elc: elc, core: Nil, lume: ["zz_get"], rtfns: ["zz_get"], cglab: Nil, cgstr: Nil, refen: ["zz_get"], refpt: ["zz_get"], reg: reg}
+fn bt_row(ar, eff, def) = {name: "zz_get", ar: ar, eff: eff, lists: ["rt"], def: def, doc: "ref", reg: "yes", nw: 7}
+fn bt_good() = bt_src(Cons({name: "zz_get", val: "io"}, Nil), Cons({name: "zz_get", val: "io"}, Nil), ["zz_get"])
+fn test_agreeing_tree_has_no_finding() = bs_isnil(bs_check_src(bt_good(), Cons(bt_row("2", "io", "lume"), Nil))) == 1
+fn test_effect_missing_from_lcaas_is_found() = bs_check_src(bt_src(Cons({name: "zz_get", val: "io"}, Nil), Nil, ["zz_get"]), Cons(bt_row("2", "io", "lume"), Nil)) == ["zz_get: effect io in the table, pure in lcaas cs_kprim_eff"]
+fn test_effect_missing_from_the_compiler_is_found() = bs_check_src(bt_src(Nil, Cons({name: "zz_get", val: "io"}, Nil), ["zz_get"]), Cons(bt_row("2", "io", "lume"), Nil)) == ["zz_get: effect io in the table, pure in 06b_phase3 kprim_eff"]
+fn test_arity_mismatch_is_found() = bs_check_src(bt_good(), Cons(bt_row("3", "io", "lume"), Nil)) == ["zz_get: arity 3 in the table, 2 in name_flow (nf_ar0..nf_ar3 / nf_builtin_arity)"]
+fn test_missing_definition_is_found() = bs_check_src(bt_good(), Cons(bt_row("2", "io", "core"), Nil)) == ["zz_get: def core, but runtime_core.lume has no label zz_get:"]
+fn test_documented_but_untested_is_found() = bs_check_src(bt_src(Cons({name: "zz_get", val: "io"}, Nil), Cons({name: "zz_get", val: "io"}, Nil), Nil), Cons(bt_row("2", "io", "lume"), Nil)) == ["zz_get: reg yes, but builtins_regress_ok.src never calls it"]
+fn test_name_missing_from_the_table_is_found() = bs_check_src(bt_good(), Nil) == ["zz_get: named in name_flow / 06b_phase3 / lcaas, missing from builtins_table.src"]
+fn bt_two_groups() = let g = bt_good() in {ar: g.ar, groups: Cons({tag: "rt", fname: "nf_rtbase", names: ["zz_get"]}, Cons({tag: "sys", fname: "lis_sys_call", names: Nil}, Nil)), e0: g.e0, ert: g.ert, elc: g.elc, core: g.core, lume: g.lume, rtfns: g.rtfns, cglab: g.cglab, cgstr: g.cgstr, refen: g.refen, refpt: g.refpt, reg: g.reg}
+fn test_group_missing_from_name_flow_is_found() = let r = {name: "zz_get", ar: "2", eff: "io", lists: ["rt", "sys"], def: "lume", doc: "ref", reg: "yes", nw: 7} in bs_check_src(bt_two_groups(), Cons(r, Nil)) == ["zz_get: the table gives it 'sys', name_flow lis_sys_call does not list it"]
+fn test_group_missing_from_the_table_is_found() = let r = {name: "zz_get", ar: "2", eff: "io", lists: Nil, def: "lume", doc: "ref", reg: "yes", nw: 7} in bs_check_src(bt_good(), Cons(r, Nil)) == ["zz_get: name_flow nf_rtbase lists it, the table does not give it 'rt'"]
+fn test_unknown_list_tag_is_found() = let r = {name: "zz_get", ar: "2", eff: "io", lists: ["rt", "rtt"], def: "lume", doc: "ref", reg: "yes", nw: 7} in bs_check_src(bt_good(), Cons(r, Nil)) == ["zz_get: unknown list 'rtt' (rt, sys, tier, mem, bv1, bv2, ct, int)"]
+fn test_callable_builtin_without_arity_is_found() = let src = {ar: Nil, groups: Cons({tag: "rt", fname: "nf_rtbase", names: ["zz_get"]}, Nil), e0: Nil, ert: Nil, elc: Nil, core: ["zz_get"], lume: Nil, rtfns: Nil, cglab: Nil, cgstr: Nil, refen: Nil, refpt: Nil, reg: Nil} in let r = {name: "zz_get", ar: "-", eff: "pure", lists: ["rt"], def: "core", doc: "-", reg: "no", nw: 7} in bs_check_src(src, Cons(r, Nil)) == ["zz_get: a program can call it, but it has no arity, so a call with the wrong argument count reads stale registers"]
+
+## ---- the generator
+fn bt_rows() = Cons({name: "aa", ar: "1", eff: "io", lists: ["rt"], def: "lume", doc: "-", reg: "no", nw: 7}, Cons({name: "bb", ar: "1", eff: "pure", lists: ["rt", "int"], def: "core", doc: "-", reg: "no", nw: 7}, Cons({name: "cc", ar: "5", eff: "fs", lists: Nil, def: "lume", doc: "-", reg: "no", nw: 7}, Cons({name: "dd", ar: "-", eff: "io", lists: Nil, def: "-", doc: "-", reg: "no", nw: 7}, Nil))))
+fn bt_nf_text() = "## head\nfn nf_ar1(nm) = nm == \"old\"\nfn nf_rtbase(nm) = nm == \"old\"\nfn other(nm) = nm == \"keep\"\n"
+fn test_generator_rewrites_owned_lines_only() = bs_gen_text(bt_nf_text(), bt_rows(), "nf") == "## head\nfn nf_ar1(nm) = nm == \"aa\" or nm == \"bb\"\nfn nf_rtbase(nm) = nm == \"aa\" or nm == \"bb\"\nfn other(nm) = nm == \"keep\"\n"
+fn test_generator_arity_chain() = bs_arity_chain(bt_rows()) == "if nf_ar1(nm) then 1 else if nf_ar2(nm) then 2 else if nf_ar0(nm) then 0 else if nf_ar3(nm) then 3 else if nm == \"cc\" then 5 else 0 - 1"
+fn test_generator_splits_effects_by_definition() = bs_eff_chain(bt_rows(), "cnm", "rt", bs_eff_order()) == "if cnm == \"aa\" then \"io\" else if cnm == \"cc\" then \"fs\" else \"\"" and bs_eff_chain(bt_rows(), "cnm", "e0", bs_eff_order()) == "if cnm == \"dd\" then \"io\" else \"\"" and bs_eff_chain(bt_rows(), "cnm", "all", bs_eff_order()) == "if cnm == \"aa\" or cnm == \"dd\" then \"io\" else if cnm == \"cc\" then \"fs\" else \"\""
+fn test_generated_text_reads_back_as_the_table() = let t = bs_gen_text(bt_nf_text(), bt_rows(), "nf") in bs_names(bs_fn_pairs(bs_lines(t), "nf_ar1")) == ["aa", "bb"]
+
+## ---- the compiler on the defects of the first audit (run with the lumec of LUME_BIN_DIR)
+fn bt_lumec(name, text) = let dir = "build/builtins_sync_ok" in let m = fs_mkdir("build") in let d = fs_mkdir(dir) in let src = dir + "/" + name + ".src" in let w = fs_write_sync(src, text) in let out = dir + "/" + name + ".s" in let rc = hio_osrun_ict(hio_bin_dir(".") + "/lumec", hio_cflags(), src, out, out + ".err", 120000) in {rc: rc, err: fs_read_file(out + ".err")}
+fn bt_has(text, part) = bt_has_at(text, part, 0)
+fn bt_has_at(text, part, i) = if i + count(part) > count(text) then 0 else if slice(text, i, i + count(part)) == part then 1 else bt_has_at(text, part, i + 1)
+## ord_at had no arity: a call with one argument compiled and read a stale register as the index
+fn test_ord_at_arity_is_checked() = let r = bt_lumec("ord_at1", "print ord_at(\"a\")\n") in r.rc != 0 and bt_has(r.err, "[R0202]") == 1
+## `std` and 13 other names were reserved for runtime routines that no longer exist
+fn test_dead_runtime_names_are_free() = let r = bt_lumec("std_fn", "fn std(x) = x + 1\nprint std(2)\n") in r.rc == 0
+## vga_puts writes the screen: a pure function may not call it
+fn test_vga_is_a_sys_effect() = let r = bt_lumec("vga_pure", "fn f(x) / pure = vga_puts(0, 0, 7, \"a\")\nprint 1\n") in r.rc != 0 and bt_has(r.err, "{{sys}}") == 1

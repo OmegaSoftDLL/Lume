@@ -1,0 +1,84 @@
+## lquery_ok.src -- tests of `lume query` (compiler/stage1/lquery.src) on small fixtures: definitions with their
+## signature and doc comment, callers with excerpts, the names a body calls, the outline, JSON, and the cases where a
+## text search goes wrong (a call written in a string, in a comment, in a """...""" string or a #[ ]# block, a call
+## in an interpolation hole, and a `{{...}}` that is not one). Every query is also checked with the item-by-item lexing
+## a large file gets (chunks). The fixture writes \{ \} so that its own holes are not holes of this file's strings.
+use lquery
+
+fn lqt_src() = "## adds one\n" +
+"## (doc line two)\n" +
+"fn inc(x: int) -> int requires x >= 0 ensures result > x = x + 1\n" +
+"## --- section banner ---\n" +
+"fn twice(x) = inc(inc(x))\n" +
+"fn noisy(x) = let s = \"inc(x) in a string\" in twice(x) # inc(x) in a comment\n" +
+"type Shape = enum Circle(int) | Square(int)\n" +
+"let limit = 10\n" +
+"fn interp(x) = f\"value \{inc(x)\}\"\n" +
+"fn plain(x) = \"n = \{inc(x)\}\"\n" +
+"fn js(x) = \"\{\{inc(x)\}\}\"\n" +
+"fn multi(x) =\n" +
+"    let a = inc(x) in\n" +
+"    a + twice(a)\n" +
+"let doc = \"\"\"\n" +
+"fn fake(x) = inc(x)\n" +
+"\"\"\"\n" +
+"#[ a block comment\n" +
+"fn ghost(x) = inc(x)\n" +
+"]#\n" +
+"## bounded doc\n" +
+"@bound(16)\n" +
+"fn k(x) = x\n" +
+"fn long_one(a, b) = let first_value = a + b + 1000 in let second_value = first_value * 2 in let third = inc(second_value) in third + first_value + second_value\n" +
+"print twice(3)\n"
+
+fn lqt_raw() = Cons({path: "fx/a.src", src: lqt_src()}, Nil)
+fn lqt_whole() = lq_file("fx/a.src", lqt_src(), lq_sel(0, Nil))
+fn lqt_chunked(w) = lq_file("fx/a.src", lqt_src(), lq_sel(1, Cons(w, Nil)))
+fn lqt_names(ds, acc) = match ds
+    Nil        => lq_rev(acc, Nil)
+    Cons(d, t) => lqt_names(t, Cons(d.it.name, acc))
+fn lqt_cnames(cs, acc) = match cs
+    Nil        => lq_rev(acc, Nil)
+    Cons(c, t) => lqt_cnames(t, Cons(c.name, acc))
+fn lqt_one(ds) = match ds
+    Nil        => {ok: 0, d: {f: lqt_whole(), it: lq_item("none", "", "", lq_none(), lq_none(), Nil)}}
+    Cons(d, t) => {ok: if t == Nil then 1 else 0, d: d}
+
+## defs: line, kind, the whole head (requires / ensures included) and the doc comment above
+fn test_lquery_defs_signature_and_doc() = let r = lqt_one(lq_defs(Cons(lqt_whole(), Nil), "inc")) in r.ok == 1 and r.d.it.head.line == 3 and r.d.it.kind == "fn" and lq_sig(r.d.f, r.d.it) == "fn inc(x: int) -> int requires x >= 0 ensures result > x" and lq_doc(r.d.f, r.d.it) == Cons("adds one", Cons("(doc line two)", Nil))
+## a `## ---` banner is not the doc of the function under it; `@...` lines between doc and fn are passed over
+fn test_lquery_doc_banner_and_attribute() = let t = lqt_one(lq_defs(Cons(lqt_whole(), Nil), "twice")) in let k = lqt_one(lq_defs(Cons(lqt_whole(), Nil), "k")) in t.ok == 1 and lq_doc(t.d.f, t.d.it) == Nil and k.ok == 1 and lq_doc(k.d.f, k.d.it) == Cons("bounded doc", Nil)
+## constructors and top-level lets are definitions too
+fn test_lquery_defs_ctor_and_let() = let c = lqt_one(lq_defs(Cons(lqt_whole(), Nil), "Circle")) in let l = lqt_one(lq_defs(Cons(lqt_whole(), Nil), "limit")) in c.ok == 1 and c.d.it.kind == "ctor" and c.d.it.of == "Shape" and lq_sig(c.d.f, c.d.it) == "Circle(int)  (type Shape)" and l.ok == 1 and l.d.it.kind == "let" and lq_sig(l.d.f, l.d.it) == "let limit = 10"
+## text inside """...""" strings and #[ ]# blocks never defines anything
+fn test_lquery_no_defs_in_strings_or_blocks() = lq_defs(Cons(lqt_whole(), Nil), "fake") == Nil and lq_defs(Cons(lqt_whole(), Nil), "ghost") == Nil and lq_defs(Cons(lqt_chunked("fake"), Nil), "fake") == Nil and lq_defs(Cons(lqt_chunked("ghost"), Nil), "ghost") == Nil
+## callers of inc: twice (two calls), interp and plain (holes; js has a literal {{...}}), multi (a call on its second line), long_one; never
+## noisy (a string and a comment), fake or ghost
+fn test_lquery_callers_real_calls_only() = let cs = lq_callers(Cons(lqt_whole(), Nil), "inc") in lqt_names(cs, Nil) == Cons("twice", Cons("interp", Cons("plain", Cons("multi", Cons("long_one", Nil))))) and lq_sites_total(cs, 0) == 6
+fn test_lquery_callers_chunked_same() = let a = lq_callers(Cons(lqt_whole(), Nil), "inc") in let b = lq_callers(Cons(lqt_chunked("inc"), Nil), "inc") in lqt_names(a, Nil) == lqt_names(b, Nil) and lq_sites_total(a, 0) == lq_sites_total(b, 0)
+## a call site on a continuation line keeps its own line number; the top-level statement is a caller too
+fn test_lquery_call_line_and_top_level() = let cs = lq_callers(Cons(lqt_whole(), Nil), "inc") in let m = lqt_pick(cs, "multi") in let tw = lq_callers(Cons(lqt_whole(), Nil), "twice") in lq_htok(m.sites).line == 13 and lqt_names(tw, Nil) == Cons("noisy", Cons("multi", Cons("(top level)", Nil)))
+fn lqt_pick(cs, name) = match cs
+    Nil        => {f: lqt_whole(), it: lq_item("none", "", "", lq_none(), lq_none(), Nil), sites: Nil}
+    Cons(c, t) => if c.it.name == name then c else lqt_pick(t, name)
+## excerpts: about 80 characters around the call, never the whole long line
+fn test_lquery_excerpt_is_short() = let c = lqt_pick(lq_callers(Cons(lqt_whole(), Nil), "inc"), "long_one") in let e = lq_excerpt(c.f, lq_htok(c.sites)) in count(e) <= 90 and count(e) >= 40 and lq_contains(e, "inc(second_value)") == 1 and lq_starts(e, "...") == 1
+## calls: distinct names in order of first call, with counts
+fn test_lquery_calls_of_a_body() = let d = lqt_one(lq_defs(Cons(lqt_whole(), Nil), "multi")) in let cs = lq_distinct(lq_calls(lq_body_of(d.d.it)), Nil) in lqt_cnames(cs, Nil) == Cons("inc", Cons("twice", Nil)) and lq_htok(lq_calls(lq_body_of(lqt_one(lq_defs(Cons(lqt_whole(), Nil), "twice")).d.it))).text == "inc" and lq_len(lq_calls(lq_body_of(lqt_one(lq_defs(Cons(lqt_whole(), Nil), "twice")).d.it)), 0) == 2
+## the `calls` command resolves where each callee is defined
+fn test_lquery_cmd_calls_text() = let out = lq_cmd_calls(lqt_raw(), "multi", 0) in lq_contains(out, "fn multi(x)") == 1 and lq_contains(out, "inc ") == 1 and lq_contains(out, "fx/a.src:3") == 1 and lq_contains(out, "fx/a.src:5") == 1
+## outline: one line per definition (fn, type, constructor, let), none for the fake ones
+fn test_lquery_outline() = let f = lqt_whole() in let ds = lq_outline_items(f, f.items, Nil) in lqt_names(ds, Nil) == Cons("inc", Cons("twice", Cons("noisy", Cons("Shape", Cons("Circle", Cons("Square", Cons("limit", Cons("interp", Cons("plain", Cons("js", Cons("multi", Cons("doc", Cons("k", Cons("long_one", Nil)))))))))))))) and lq_contains(lq_outline_line(lq_htok(ds)), "inc(x: int) -> int  -- adds one") == 1
+## JSON: one object per definition / call site with file, line, name, kind, signature and excerpt; strings escaped
+fn test_lquery_json() = let j = lq_cmd_callers(lqt_raw(), "inc", 1) in let d = lq_cmd_defs(lqt_raw(), "noisy", 1) in lq_starts(j, "[{") == 1 and lq_contains(j, "\"name\":\"twice\"") == 1 and lq_contains(j, "\"call_line\":13") == 1 and lq_contains(j, "\"kind\":\"fn\"") == 1 and lq_contains(d, "\\\"inc(x) in a string\\\"") == 1 and lq_jstr("a\"b\\c\nd") == "\"a\\\"b\\\\c\\nd\""
+## the state scan used to cut a large file: line starts inside strings and comments are never cut points
+fn test_lquery_safe_lines() = let s = "fn a() = 1\nlet d = \"\"\"\nfn x() = 2\n\"\"\"\n#[\nfn y() = 3\n]#\nfn b() = \"q\\\nfn z() = 4\"\n" in let b = lq_safe(s, 10) in buf_get(b, 1) == 1 and buf_get(b, 2) == 1 and buf_get(b, 3) == 0 and buf_get(b, 4) == 0 and buf_get(b, 5) == 1 and buf_get(b, 6) == 0 and buf_get(b, 7) == 0 and buf_get(b, 8) == 1 and buf_get(b, 9) == 0
+## not found answers say so (text) or give an empty array (JSON)
+fn test_lquery_not_found() = lq_starts(lq_cmd_defs(lqt_raw(), "nope", 0), "no definition of nope") == 1 and lq_cmd_defs(lqt_raw(), "nope", 1) == "[]" and lq_starts(lq_cmd_callers(lqt_raw(), "k", 0), "no caller of k") == 1
+## scope: a file brings the modules it uses (next to it), a directory gives every source below it, sorted
+fn test_lquery_scope_use_and_dir() = let d = "build/lquery_probe" in let m = fs_mkdir(d) in let m2 = fs_mkdir(d + "/sub") in let w1 = fs_write_sync(d + "/main.src", "use helper\nfn main_fn() = helper_fn(1)\n") in let w2 = fs_write_sync(d + "/helper.src", "## helps\nfn helper_fn(x) = x + 1\n") in let w3 = fs_write_sync(d + "/sub/other.src", "fn other() = helper_fn(2)\n") in let a = lq_scope(".", d + "/main.src") in let b = lq_scope(".", d) in lq_len(a, 0) == 2 and lqt_first_path(a) == d + "/main.src" and lq_len(b, 0) == 3 and lq_contains(lq_cmd_callers(b, "helper_fn", 0), "2 callers, 2 call sites") == 1 and lq_contains(lq_cmd_defs(a, "helper_fn", 0), "## helps") == 1
+fn lqt_first_path(rs) = match rs
+    Nil        => ""
+    Cons(r, t) => r.path
+## a hole inside a """...""" string is placed on its own line and column
+fn test_lquery_hole_position_in_triple_string() = let toks = lq_lex("fn t() = \"\"\"a\nb \{inc(1)\}\"\"\"").toks in let c = lq_htok(lq_calls(toks)) in c.text == "inc" and c.line == 2 and c.col == 3

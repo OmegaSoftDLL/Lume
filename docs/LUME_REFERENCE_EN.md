@@ -310,11 +310,11 @@ print buf_get(b, 1)
 ```
 
 Video and codec builtins (stable; arguments are buffers, byte offsets and strides; each answers -1 on a wrong
-argument): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / 8x8 / 4x4 (a, ai, sa, b, bi, sb)` and
-`buf_satd4x4 / 16x16 (same)` (SSE2), `buf_h264_fdct4x4 / idct4x4 (src, si, dst, di)` (int16 blocks),
+argument): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / buf_sad8x8 / buf_sad4x4 (a, ai, sa, b, bi, sb)` and
+`buf_satd4x4 / buf_satd16x16 (same)` (SSE2), `buf_h264_fdct4x4 / buf_h264_idct4x4 (src, si, dst, di)` (int16 blocks),
 `buf_h264_quant4x4 (src, si, qp, intra, dst, di)` (answers the nonzero levels), `buf_h264_dequant4x4 (src, si, qp,
 dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pred, pi, res, ri, dst, di)`,
-`buf_h264_intra4x4 / intra16x16 (frame, fi, fs, mode, avail, dst)` (avail bits: 1 left, 2 top, 4 top-right,
+`buf_h264_intra4x4 / buf_h264_intra16x16 (frame, fi, fs, mode, avail, dst)` (avail bits: 1 left, 2 top, 4 top-right,
 8 top-left). With `use h264`: `buf_h264_cavlc4x4 (coef, ci, nc, maxc, out, pos)` codes one block of maxc
 (16, 15 or 4) int16 coefficients in zigzag order with CAVLC (nC -1: chroma DC) into out from bit pos and answers
 {pos, total} (the new bit position, -1 on a wrong argument or a full buffer, and TotalCoeff).

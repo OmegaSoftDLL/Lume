@@ -538,6 +538,8 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
   lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check
   lume fmt <src.src> [--check|--stdout]  Canonical code formatter
   lume doc <src.src> [--json]            Generate module documentation & run doctests
+  lume query defs|callers|calls [--json] <NAME> [PATH]   Definitions, callers (with excerpts), callees
+  lume query outline [--json] <FILE>     One line per definition: line, kind, name(params), doc
   lume repl [--stdio|--kernel]           Interactive Read-Eval-Prove-Print Loop
   lume lsp / lume dap                    Language Server & Debug Adapter Protocol
   lume pkg init|check|lock|verify|tree   Content-addressed package manager

@@ -1,0 +1,31 @@
+## raw_abi_gate.src -- `lumec --raw`, the compiler of the runtime written in Lume, keeps its calling promises end to end:
+##   - operands are computed left to right, as in ordinary Lume (the 1st step's store happens before the 2nd's);
+##   - a function takes more than 6 parameters and a call passes more than 6 arguments (System V: the 7th on in the
+##     caller's stack words), in a leaf, in a framed routine and in a self tail call (a loop).
+## The gate compiles a raw source, links it with a small entry that prints the answers, runs it and compares.
+## Input: `@root DIR`. Linux x86-64 only (the entry uses Linux system calls); on another system it says so and passes.
+use hostio
+
+fn rag_src() = "fn f8(a, b, c, d, e, f, g, h) = a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h\n" + "fn sub9(a, b, c, d, e, f, g, h, i) = a - b - c - d - e - f - g - h - i\n" + "fn loop8(n, acc, b, c, d, e, f, g) = if n == 0 then acc + g else loop8(n - 1, acc + b + c + d + e + f, b, c, d, e, f, g)\n" + "fn order(p) = let w = store64(p, 0) in let x = step(p, 1) - step(p, 2) in load64(p) * 100 + x\n" + "fn step(p, k) = let v = load64(p) * 10 + k in let w = store64(p, v) in k\n" + "fn cmpo(p) = let w = store64(p, 0) in if step(p, 3) < step(p, 4) then load64(p) else 0 - load64(p)\n" + "fn go() = f8(1, 2, 3, 4, 5, 6, 7, 8) + sub9(100, 1, 2, 3, 4, 5, 6, 7, 8) * 1000 + loop8(10, 0, 1, 1, 1, 1, 1, 5) * 1000000\n"
+
+fn rag_entry() = "    .section .text\n    .globl _start\n_start:\n    call go\n    movq %rax, %rdi\n    call show\n    leaq .Lscratch(%rip), %rdi\n    call order\n    movq %rax, %rdi\n    call show\n    leaq .Lscratch(%rip), %rdi\n    call cmpo\n    movq %rax, %rdi\n    call show\n    movq $60, %rax\n    xorq %rdi, %rdi\n    syscall\n" + "show:\n    leaq .Lbuf(%rip), %rsi\n    addq $31, %rsi\n    movb $10, (%rsi)\n    movq %rdi, %rax\n    movq $1, %rcx\n    movq $10, %r8\n.Lsh1:\n    xorq %rdx, %rdx\n    divq %r8\n    addb $48, %dl\n    decq %rsi\n    movb %dl, (%rsi)\n    incq %rcx\n    testq %rax, %rax\n    jnz .Lsh1\n    movq %rcx, %rdx\n    movq $1, %rdi\n    movq $1, %rax\n    syscall\n    ret\n"
+
+fn rag_bss() = "    .section .bss\n    .lcomm .Lbuf, 32\n    .lcomm .Lscratch, 16\n"
+
+## f8 = 204, sub9 = 64, loop8 = 55; order: step 1 then step 2 (12), 1 - 2; cmpo: step 3 then step 4 (34), 3 < 4
+fn rag_want() = "55064204\n1199\n34\n"
+
+fn rag_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else rag_line(input, 6, 6)
+fn rag_line(s, a, i) = if i >= count(s) or at(s, i) == "\n" then slice(s, a, i) else rag_line(s, a, i + 1)
+
+fn rag_run(root) = let tmp = root + "/build/raw-abi-gate" in let m = hio_osrun_ct("/bin/mkdir", Cons("-p", Cons(tmp, Nil)), tmp + ".mkdir", tmp + ".mkdir.err", 30000) in let src = tmp + "/abi.src" in let w = fs_write_sync(src, rag_src()) in let body = tmp + "/abi.body.s" in let st = hio_osrun_ict(hio_bin_dir(root) + "/lumec", Cons("--raw", Nil), src, body, body + ".err", 120000) in if st != 0 then "lumec --raw rejected the gate's source: " + fs_read_file(body + ".err") else rag_link(root, tmp, fs_read_file(body))
+
+fn rag_link(root, tmp, body) = let s = tmp + "/abi.s" in let w = fs_write_sync(s, rag_entry() + body + rag_bss()) in let elf = tmp + "/abi.elf" in let a = hio_osrun_ct(hio_bin_dir(root) + "/lasm", Cons(s, Nil), elf, elf + ".err", 120000) in let c = hio_osrun_ct("/bin/chmod", Cons("+x", Cons(elf, Nil)), elf + ".chmod", elf + ".chmod.err", 30000) in if a != 0 then "lasm failed: " + fs_read_file(elf + ".err") else rag_exec(elf)
+
+fn rag_exec(elf) = let r = hio_osrun_ct(elf, Nil, elf + ".out", elf + ".out.err", 30000) in let got = fs_read_file(elf + ".out") in if r != 0 then "the linked program exited " + str(r) else if got != rag_want() then "wrong answers: got [" + got + "] want [" + rag_want() + "]" else ""
+
+fn rag_main(root) = if os_platform() != "linux" then "OK: raw ABI gate runs on Linux x86-64 only (skipped here)" else let e = rag_run(root) in if e != "" then ctfail("raw ABI gate failed: " + e + "\n") else "OK: lumec --raw computes operands left to right and passes more than 6 arguments (leaf, framed, self tail call)"
+
+fn rag_dispatch(input) = let root = rag_root(input) in if root == "" then ctfail("raw ABI gate requires @root\n") else rag_main(root)
+
+print rag_dispatch(readall())

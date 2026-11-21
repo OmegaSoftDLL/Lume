@@ -1,0 +1,454 @@
+## lquery.src -- `lume query`: answers "where is NAME defined", "who calls NAME", "what does NAME call" and "what is in
+## this file" over a file, a directory or the files a program `use`s, without reading whole files. Written for AI
+## agents working on large Lume code (the compiler holds one-line functions of thousands of characters, where a grep
+## hit is a whole function): each answer is a file:line, a signature, the doc comment and an excerpt of about 80
+## characters around a call site, as text or as JSON (--json).
+##
+## The tokens come from the compiler's own lexer (`lex` of lumec): text inside strings and comments never produces a
+## hit, and `f"...{call(x)}..."` holes are read as the parser reads them. A file the lexer refuses is skipped with a
+## note on stderr; the other files are still answered.
+##
+##   lquery [--root=DIR] [--json] defs NAME [PATH]      definitions of NAME (fn, law, type, constructor, let, const)
+##   lquery [--root=DIR] [--json] callers NAME [PATH]   every definition whose body calls NAME, with excerpts
+##   lquery [--root=DIR] [--json] calls NAME [PATH]     the names the body of NAME calls, and where they are defined
+##   lquery [--root=DIR] [--json] outline FILE          one line per definition of FILE
+##
+## PATH is a .src / .lume file (the file and, transitively, the modules it `use`s), or a directory (every .src and
+## .lume file below it, without dot-directories, build/, lume_modules/ and the amalgamated lumec.src next to lume/);
+## the default is the current directory. `lume query ...` runs this tool (lume_driver passes --root).
+use lumec
+
+## --- small list and string helpers ------------------------------------------------------------------------------------
+fn lq_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lq_rev(t, Cons(h, acc))
+fn lq_len(xs, k) = match xs
+    Nil        => k
+    Cons(h, t) => lq_len(t, k + 1)
+fn lq_append(a, b) = lq_rev(lq_rev(a, Nil), b)
+fn lq_member(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else lq_member(t, x)
+fn lq_starts(s, p) = if count(s) < count(p) then 0 else if slice(s, 0, count(p)) == p then 1 else 0
+fn lq_ends(s, p) = if count(s) < count(p) then 0 else if slice(s, count(s) - count(p), count(s)) == p then 1 else 0
+## p occurs in s at i (no allocation)
+fn lq_eqat(s, i, p, j, m) = if j >= m then 1 else if ord_at(s, i + j) != ord_at(p, j) then 0 else lq_eqat(s, i, p, j + 1, m)
+## first index >= i where p (m bytes, first byte c0) starts and ends before n, or -1
+fn lq_find(s, n, p, m, i) = if m == 0 then i else lq_find0(s, n, p, m, ord_at(p, 0), i)
+fn lq_find0(s, n, p, m, c0, i) = if i + m > n then 0 - 1 else if ord_at(s, i) != c0 then lq_find0(s, n, p, m, c0, i + 1) else if lq_eqat(s, i, p, 1, m) == 1 then i else lq_find0(s, n, p, m, c0, i + 1)
+fn lq_contains(s, p) = if lq_find(s, count(s), p, count(p), 0) >= 0 then 1 else 0
+## p inside s[a, e)
+fn lq_contains_in(s, a, e, p) = if lq_find(s, e, p, count(p), a) >= 0 then 1 else 0
+fn lq_isws(c) = c == 32 or c == 9 or c == 13 or c == 10
+fn lq_skipws(s, i, n) = if i < n and lq_isws(ord_at(s, i)) then lq_skipws(s, i + 1, n) else i
+fn lq_rtrimend(s, e, a) = if e > a and lq_isws(ord_at(s, e - 1)) then lq_rtrimend(s, e - 1, a) else e
+fn lq_trim(s) = let n = count(s) in let a = lq_skipws(s, 0, n) in let e = lq_rtrimend(s, n, a) in slicen(s, n, a, e)
+## runs of blanks and line breaks become one space (a signature that spans lines reads as one line)
+fn lq_squash_acc(s, n, i, sp, acc) = if i >= n then acc else let c = ord_at(s, i) in if lq_isws(c) then lq_squash_acc(s, n, i + 1, 1, acc) else lq_squash_run(s, n, i, sp, acc)
+fn lq_squash_run(s, n, i, sp, acc) = let e = lq_runend(s, n, i) in lq_squash_acc(s, n, e, 0, acc + (if sp == 1 and acc != "" then " " else "") + slicen(s, n, i, e))
+fn lq_runend(s, n, i) = if i < n and lq_isws(ord_at(s, i)) == 0 then lq_runend(s, n, i + 1) else i
+fn lq_squash(s) = lq_squash_acc(s, count(s), 0, 0, "")
+fn lq_cap(s, k) = if count(s) <= k then s else slice(s, 0, lq_cutpos(s, k)) + " ..."
+## never cut inside a UTF-8 sequence
+fn lq_cutpos(s, k) = if k <= 0 then 0 else if ord_at(s, k) >= 128 and ord_at(s, k) < 192 then lq_cutpos(s, k - 1) else k
+fn lq_pad(s, w) = if count(s) >= w then s + " " else lq_pad(s + " ", w)
+fn lq_split_acc(s, n, i, start, acc) = if i >= n then lq_rev(if i > start then Cons(slicen(s, n, start, i), acc) else acc, Nil) else if ord_at(s, i) == 10 then lq_split_acc(s, n, i + 1, i + 1, if i > start then Cons(slicen(s, n, start, i), acc) else acc) else lq_split_acc(s, n, i + 1, start, acc)
+fn lq_split_lines(s) = lq_split_acc(s, count(s), 0, 0, Nil)
+fn lq_dirname(p) = lq_dir_at(p, count(p) - 1)
+fn lq_dir_at(p, i) = if i < 0 then "." else if at(p, i) == "/" then (if i == 0 then "/" else slice(p, 0, i)) else lq_dir_at(p, i - 1)
+fn lq_is_src(p) = if lq_ends(p, ".src") == 1 or lq_ends(p, ".lume") == 1 then 1 else 0
+
+## merge sort of strings (file lists in a stable order whatever the directory order is)
+fn lq_msplit(xs, a, b, k) = match xs
+    Nil        => {a: a, b: b}
+    Cons(h, t) => if k % 2 == 0 then lq_msplit(t, Cons(h, a), b, k + 1) else lq_msplit(t, a, Cons(h, b), k + 1)
+fn lq_merge(a, b, acc) = match a
+    Nil        => lq_rev(acc, b)
+    Cons(x, xt) => (match b
+        Nil         => lq_rev(acc, a)
+        Cons(y, yt) => if x <= y then lq_merge(xt, b, Cons(x, acc)) else lq_merge(a, yt, Cons(y, acc)))
+fn lq_sort(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => (match t
+        Nil        => xs
+        Cons(h2, t2) => let p = lq_msplit(xs, Nil, Nil, 0) in lq_merge(lq_sort(p.a), lq_sort(p.b), Nil))
+
+## --- JSON -------------------------------------------------------------------------------------------------------------
+fn lq_hex1(d) = if d < 10 then chr(48 + d) else chr(87 + d)
+fn lq_jesc_acc(s, n, i, start, acc) = if i >= n then acc + slicen(s, n, start, n) else let c = ord_at(s, i) in if c == 34 or c == 92 or c < 32 then lq_jesc_acc(s, n, i + 1, i + 1, acc + slicen(s, n, start, i) + lq_jesc1(c)) else lq_jesc_acc(s, n, i + 1, start, acc)
+fn lq_jesc1(c) = if c == 34 then "\\\"" else if c == 92 then "\\\\" else if c == 10 then "\\n" else if c == 9 then "\\t" else if c == 13 then "\\r" else "\\u00" + lq_hex1(c / 16) + lq_hex1(c % 16)
+fn lq_jstr(s) = "\"" + lq_jesc_acc(s, count(s), 0, 0, "") + "\""
+fn lq_jfield(k, v) = lq_jstr(k) + ":" + lq_jstr(v)
+fn lq_jnum(k, v) = lq_jstr(k) + ":" + str(v)
+fn lq_jarray(xs) = "[" + lq_jjoin(xs, "") + "]"
+fn lq_jjoin(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lq_jjoin(t, if acc == "" then h else acc + ",\n" + h)
+
+## --- line table: the byte offset where each line starts, 4 bytes per line in a buffer (O(1) lookup) -------------------
+fn lq_nlines(s, n, i, k) = if i >= n then k else lq_nlines(s, n, i + 1, if ord_at(s, i) == 10 then k + 1 else k)
+fn lq_put4(b, o, v) = let a = buf_set(b, o, v % 256) in let c = buf_set(b, o + 1, (v / 256) % 256) in let d = buf_set(b, o + 2, (v / 65536) % 256) in buf_set(b, o + 3, v / 16777216)
+fn lq_get4(b, o) = buf_get(b, o) + 256 * buf_get(b, o + 1) + 65536 * buf_get(b, o + 2) + 16777216 * buf_get(b, o + 3)
+fn lq_fill(s, n, b, i, k) = if i >= n then b else if ord_at(s, i) == 10 then (let z = lq_put4(b, 4 * k, i + 1) in lq_fill(s, n, b, i + 1, k + 1)) else lq_fill(s, n, b, i + 1, k)
+fn lq_linetab(s) = let n = count(s) in let nl = lq_nlines(s, n, 0, 0) in let b = buf_new(4 * (nl + 2)) in let z = lq_put4(b, 0, 0) in let w = lq_put4(b, 4 * (nl + 1), n + 1) in {buf: lq_fill(s, n, b, 0, 1), lines: nl + 1}
+## start of line k (1-based); the end is the next "\n" or the end of the text
+fn lq_lstart(f, k) = if k < 1 or k > f.tab.lines then 0 else lq_get4(f.tab.buf, 4 * (k - 1))
+fn lq_lend(s, n, i) = if i >= n or ord_at(s, i) == 10 then i else lq_lend(s, n, i + 1)
+fn lq_line(f, k) = if k < 1 or k > f.tab.lines then "" else let a = lq_lstart(f, k) in let n = count(f.src) in if a >= n then "" else slicen(f.src, n, a, lq_lend(f.src, n, a))
+fn lq_off(f, t) = lq_lstart(f, t.line) + t.col
+
+## --- files: the real lexer, under try so one bad file does not stop the answer -----------------------------------------
+fn lq_lex(src) =
+    if __lume_try_begin() == 0 then
+        let t = lex(src, 0) in
+        let z = __lume_try_end() in
+        {ok: 1, toks: t}
+    else
+        {ok: 0, toks: Nil}
+fn lq_note(msg) = let w = fs_append_sync("/dev/stderr", "lume query: " + msg + "\n") in 0
+## a file: path, text, line table and its top-level items. sel says what is lexed: mode 0 the whole file, mode 1 the
+## items whose text holds one of sel.words, mode 2 the items that declare one of sel.words (fn / let / law / const
+## NAME on their first line); a big file is answered in the time of the few items that matter
+fn lq_sel(mode, words) = {mode: mode, words: words}
+fn lq_file(path, src, sel) = let f = {path: path, src: src, tab: lq_linetab(src), ok: 1, items: Nil} in if sel.mode == 0 then lq_file_whole(f) else lq_file_chunks(f, sel)
+fn lq_file_whole(f) = let lx = lq_lex(f.src) in let z = if lx.ok == 0 then lq_note(f.path + ": skipped (the lexer refused it)") else 0 in {path: f.path, src: f.src, tab: f.tab, ok: lx.ok, items: lq_items(lx.toks)}
+## Chunks: the file is cut at the lines that start a declaration (`fn `, `type `, `@`, ... at column 0) and lie
+## outside every string and comment, so each chunk is a run of whole items that the lexer reads on its own; the state
+## of each line start comes from lq_safe, a scan with the lexer's rules for strings ("...", with \ escapes and
+## \-newline), """...""" strings and # / #[ ]# comments. A chunk is lexed only when sel picks it.
+fn lq_file_chunks(f, sel) = let safe = lq_safe(f.src, f.tab.lines) in let bs = lq_rev(lq_bounds(f, safe, 2, f.tab.lines, Cons(1, Nil)), Nil) in let its = lq_chunk_items(f, bs, sel, Nil, 1) in {path: f.path, src: f.src, tab: f.tab, ok: its.ok, items: lq_rev(its.items, Nil)}
+fn lq_bounds(f, safe, k, nl, acc) = if k > nl then acc else lq_bounds(f, safe, k + 1, nl, if buf_get(safe, k) == 1 and lq_decl_at(f.src, count(f.src), lq_lstart(f, k)) == 1 then Cons(k, acc) else acc)
+fn lq_pfx(s, o, p) = if o + count(p) > count(s) then 0 else lq_eqat(s, o, p, 0, count(p))
+fn lq_isword(c) = (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or (c >= 48 and c <= 57) or c == 95
+fn lq_wordend(s, n, i) = if i < n and lq_isword(ord_at(s, i)) then lq_wordend(s, n, i + 1) else i
+## a line that starts (column 0) with `@` or with a declaration keyword and a blank
+fn lq_decl_at(s, n, o) = if o >= n then 0 else let c = ord_at(s, o) in if c == 64 then 1 else if c < 97 or c > 122 then 0 else let e = lq_wordend(s, n, o) in if e >= n or (ord_at(s, e) != 32 and ord_at(s, e) != 9) then 0 else if lq_kw_decl(slicen(s, n, o, e)) then 1 else 0
+## the name an item declares on its first line (after pub / total / ... and fn / let / law / const / var), or ""
+fn lq_head_name(s, n, o) = let e = lq_wordend(s, n, o) in if e == o then "" else let w = slicen(s, n, o, e) in let o2 = lq_skipblank(s, n, e) in if w == "pub" or w == "total" or w == "async" or w == "extern" or w == "comptime" or w == "partial" then lq_head_name(s, n, o2) else if w == "fn" or w == "let" or w == "law" or w == "const" or w == "var" then slicen(s, n, o2, lq_wordend(s, n, o2)) else ""
+fn lq_skipblank(s, n, i) = if i < n and (ord_at(s, i) == 32 or ord_at(s, i) == 9) then lq_skipblank(s, n, i + 1) else i
+fn lq_picks(f, sel, a, e) = if sel.mode == 2 then lq_member(sel.words, lq_head_name(f.src, count(f.src), lq_code_start(f.src, a, e))) else lq_any_word_in(f.src, a, e, sel.words)
+## the first character of a chunk that is not a blank or in a # comment line (the file's first chunk can open with
+## its header comment)
+fn lq_code_start(s, i, e) = if i >= e then e else let c = ord_at(s, i) in if lq_isws(c) then lq_code_start(s, i + 1, e) else if c == 35 then lq_code_start(s, lq_lend(s, e, i), e) else i
+fn lq_chunk_items(f, bs, sel, acc, ok) = match bs
+    Nil        => {items: acc, ok: ok}
+    Cons(a, t) => let s0 = lq_lstart(f, a) in let e0 = (match t
+        Nil        => count(f.src)
+        Cons(b, r) => lq_lstart(f, b)) in if lq_picks(f, sel, s0, e0) == 0 then lq_chunk_items(f, t, sel, acc, ok) else let lx = lq_lex(slice(f.src, s0, e0)) in if lx.ok == 0 then (let z = lq_note(f.path + ":" + str(a) + ": an item the lexer refused is skipped") in lq_chunk_items(f, t, sel, acc, 0)) else lq_chunk_items(f, t, sel, lq_rev(lq_items(lq_shift(lx.toks, a - 1, Nil)), acc), ok)
+fn lq_shift(ts, d, acc) = match ts
+    Nil        => lq_rev(acc, Nil)
+    Cons(h, t) => lq_shift(t, d, Cons({kind: h.kind, text: h.text, col: h.col, line: h.line + d, bol: h.bol}, acc))
+fn lq_any_word(s, words) = lq_any_word_in(s, 0, count(s), words)
+fn lq_any_word_in(s, a, e, words) = match words
+    Nil        => 0
+    Cons(w, t) => if lq_contains_in(s, a, e, w) == 1 then 1 else lq_any_word_in(s, a, e, t)
+## one byte per line: 1 when the line starts outside strings and comments. st: 0 code, 1 "...", 2 """...""", 3 #[ ]#
+## (depth d), 4 a # comment
+fn lq_safe(s, nl) = let b = buf_new(nl + 2) in let z = buf_set(b, 1, 1) in lq_ss(s, count(s), 0, 0, 0, b, 1)
+fn lq_ss(s, n, i, st, d, b, ln) = if i >= n then b else let c = ord_at(s, i) in if c == 10 then (let z = (if (st == 0 or st == 4 or st == 1) and ln + 1 < buf_len(b) then buf_set(b, ln + 1, 1) else b) in lq_ss(s, n, i + 1, if st == 4 or st == 1 then 0 else st, d, b, ln + 1)) else if st == 0 then lq_ss_code(s, n, i, c, b, ln) else if st == 4 then lq_ss(s, n, i + 1, 4, d, b, ln) else if st == 1 then (if c == 92 then lq_ss_esc(s, n, i, 1, d, b, ln) else lq_ss(s, n, i + 1, if c == 34 then 0 else 1, d, b, ln)) else if st == 2 then (if c == 92 then lq_ss_esc(s, n, i, 2, d, b, ln) else if c == 34 and lq_pfx(s, i, "\"\"\"") == 1 and lq_pfx(s, i + 3, "\"") == 0 then lq_ss(s, n, i + 3, 0, d, b, ln) else lq_ss(s, n, i + 1, 2, d, b, ln)) else if c == 35 and i + 1 < n and ord_at(s, i + 1) == 91 then lq_ss(s, n, i + 2, 3, d + 1, b, ln) else if c == 93 and i + 1 < n and ord_at(s, i + 1) == 35 then lq_ss(s, n, i + 2, if d <= 1 then 0 else 3, d - 1, b, ln) else lq_ss(s, n, i + 1, 3, d, b, ln)
+fn lq_ss_code(s, n, i, c, b, ln) = if c == 35 then (if i + 1 < n and ord_at(s, i + 1) == 91 then lq_ss(s, n, i + 2, 3, 1, b, ln) else lq_ss(s, n, i + 1, 4, 0, b, ln)) else if c == 34 then (if lq_pfx(s, i, "\"\"\"") == 1 then lq_ss(s, n, i + 3, 2, 0, b, ln) else lq_ss(s, n, i + 1, 1, 0, b, ln)) else lq_ss(s, n, i + 1, 0, 0, b, ln)
+## a backslash in a string takes the next character with it; a backslash-newline continues the string on the next line
+fn lq_ss_esc(s, n, i, st, d, b, ln) = if i + 1 < n and ord_at(s, i + 1) == 10 then lq_ss(s, n, i + 2, st, d, b, ln + 1) else lq_ss(s, n, i + 2, st, d, b, ln)
+
+## --- top-level items --------------------------------------------------------------------------------------------------
+## a token at column 0 that begins its line starts a new item when it is a declaration keyword or `@`; any other word
+## there starts a top-level statement unless the previous line ends in an operator or a continuation keyword (the
+## lines of a long string sum written at column 0, `... +` / `"..." +`, stay in the item they belong to)
+fn lq_kw_decl(w) = w == "fn" or w == "pub" or w == "type" or w == "let" or w == "var" or w == "const" or w == "law" or w == "use" or w == "effect" or w == "trait" or w == "impl" or w == "extern" or w == "total" or w == "async" or w == "comptime" or w == "print" or w == "rule" or w == "resource" or w == "kernel" or w == "probe" or w == "partial"
+fn lq_kw_cont(w) = w == "in" or w == "then" or w == "else" or w == "and" or w == "or" or w == "not" or w == "if" or w == "match" or w == "requires" or w == "ensures" or w == "with" or w == "where"
+fn lq_prev_closes(p) = if p.kind == "none" or p.kind == "str" or p.kind == "int" then 1 else if p.kind == "id" then (if lq_kw_cont(p.text) then 0 else 1) else if p.text == ")" or p.text == "]" or p.text == "}" then 1 else 0
+fn lq_is_start(t, p) = if t.col != 0 or t.bol != 1 then 0 else if t.kind == "op" then (if t.text == "@" then 1 else 0) else if t.kind != "id" then 0 else if lq_kw_decl(t.text) then 1 else lq_prev_closes(p)
+fn lq_none() = {kind: "none", text: "", col: 0, line: 0, bol: 1}
+fn lq_items(toks) = lq_items_acc(toks, lq_none(), Nil, Nil)
+fn lq_items_acc(toks, prev, cur, acc) = match toks
+    Nil        => lq_rev(lq_close(cur, acc), Nil)
+    Cons(t, r) => if lq_is_start(t, prev) == 1 then lq_items_acc(r, t, Cons(t, Nil), lq_close(cur, acc)) else lq_items_acc(r, t, Cons(t, cur), acc)
+fn lq_close(cur, acc) = match cur
+    Nil        => acc
+    Cons(h, t) => lq_classify(lq_rev(cur, Nil), acc)
+fn lq_is_mod(t) = t.kind == "id" and (t.text == "pub" or t.text == "total" or t.text == "async" or t.text == "extern" or t.text == "comptime" or t.text == "partial")
+fn lq_skipmods(ts) = match ts
+    Nil        => Nil
+    Cons(h, r) => if lq_is_mod(h) then lq_skipmods(r) else ts
+fn lq_htext(ts) = match ts
+    Nil        => ""
+    Cons(h, r) => h.text
+fn lq_hkind(ts) = match ts
+    Nil        => ""
+    Cons(h, r) => h.kind
+fn lq_htok(ts) = match ts
+    Nil        => lq_none()
+    Cons(h, r) => h
+fn lq_tail(ts) = match ts
+    Nil        => Nil
+    Cons(h, r) => r
+## {kind, name, of, first, head, toks}: of is the type of a constructor; first the item's first token (a modifier or
+## the keyword), head the token of the name; toks every token of the item
+fn lq_item(kind, name, of, first, head, toks) = {kind: kind, name: name, of: of, first: first, head: head, toks: toks}
+fn lq_named_kind(w) = if w == "var" then "let" else w
+fn lq_classify(ts, acc) = let first = lq_htok(ts) in let k = lq_skipmods(ts) in let w = lq_htext(k) in let nx = lq_tail(k) in if first.text == "@" then Cons(lq_item("attr", "", "", first, first, ts), acc) else if w == "use" then Cons(lq_item("use", "", "", first, first, ts), acc) else if (w == "fn" or w == "law" or w == "type" or w == "let" or w == "var" or w == "const" or w == "effect" or w == "trait" or w == "rule" or w == "resource" or w == "kernel" or w == "probe") and lq_hkind(nx) == "id" then lq_add_ctors(lq_item(lq_named_kind(w), lq_htext(nx), "", first, lq_htok(nx), ts), Cons(lq_item(lq_named_kind(w), lq_htext(nx), "", first, lq_htok(nx), ts), acc)) else Cons(lq_item("top", "(top level)", "", first, first, ts), acc)
+
+## the tokens after the first `=` at bracket depth 0 (the body); the tokens before it are the head
+fn lq_depth(t, d) = if t.kind != "op" then d else if t.text == "(" or t.text == "[" or t.text == "{" then d + 1 else if t.text == ")" or t.text == "]" or t.text == "}" then d - 1 else d
+fn lq_eq_tok(ts, d) = match ts
+    Nil        => lq_none()
+    Cons(h, r) => if d == 0 and h.kind == "op" and h.text == "=" then h else lq_eq_tok(r, lq_depth(h, d))
+fn lq_body(ts, d) = match ts
+    Nil        => Nil
+    Cons(h, r) => if d == 0 and h.kind == "op" and h.text == "=" then r else lq_body(r, lq_depth(h, d))
+
+## constructors of `type T = enum A | B(int)` or `type T = A(x) | B`: an upper-case word right after `=`, `enum` or a
+## depth-0 `|`
+fn lq_upper(w) = if count(w) == 0 then 0 else if ord_at(w, 0) >= 65 and ord_at(w, 0) <= 90 then 1 else 0
+fn lq_add_ctors(it, acc) = if it.kind != "type" then acc else let b = lq_body(it.toks, 0) in let b2 = if lq_htext(b) == "enum" then lq_tail(b) else b in if lq_htext(b) == "enum" or lq_has_bar(b2, 0) == 1 then lq_ctors(b2, 0, 1, it, acc) else acc
+fn lq_has_bar(ts, d) = match ts
+    Nil        => 0
+    Cons(h, r) => if d == 0 and h.kind == "op" and h.text == "|" then 1 else lq_has_bar(r, lq_depth(h, d))
+fn lq_ctors(ts, d, at_start, it, acc) = match ts
+    Nil        => acc
+    Cons(h, r) => if d == 0 and at_start == 1 and h.kind == "id" and lq_upper(h.text) == 1 then lq_ctors(r, d, 0, it, Cons(lq_item("ctor", h.text, it.name, h, h, Cons(h, lq_group(r, 0, Nil))), acc)) else if d == 0 and h.kind == "op" and h.text == "|" then lq_ctors(r, d, 1, it, acc) else lq_ctors(r, lq_depth(h, d), 0, it, acc)
+## the parenthesised group that follows a constructor name
+fn lq_group(ts, d, acc) = match ts
+    Nil        => lq_rev(acc, Nil)
+    Cons(h, r) => if d == 0 and (h.kind != "op" or h.text != "(") then lq_rev(acc, Nil) else let d2 = lq_depth(h, d) in if d2 == 0 then lq_rev(Cons(h, acc), Nil) else lq_group(r, d2, Cons(h, acc))
+fn lq_last(ts, x) = match ts
+    Nil        => x
+    Cons(h, r) => lq_last(r, h)
+
+## --- calls ------------------------------------------------------------------------------------------------------------
+fn lq_kw_nocall(w) = w == "if" or w == "then" or w == "else" or w == "match" or w == "and" or w == "or" or w == "not" or w == "in" or w == "let" or w == "fn" or w == "requires" or w == "ensures" or w == "invariant" or w == "decreases" or w == "where" or w == "with" or w == "while" or w == "for" or w == "return" or w == "print" or w == "assert" or w == "law" or w == "type" or w == "enum" or w == "record" or w == "var" or w == "mut" or w == "case" or w == "when"
+## every call token `NAME(` of a token list, in order; a string literal adds the calls of its interpolation holes
+fn lq_calls(ts) = lq_calls_acc(ts, lq_none(), Nil)
+fn lq_calls_acc(ts, prev, acc) = match ts
+    Nil        => lq_rev(acc, Nil)
+    Cons(h, r) => if h.kind == "id" and lq_htext(r) == "(" and lq_hkind(r) == "op" and lq_kw_nocall(h.text) == 0 and prev.text != "fn" then lq_calls_acc(r, h, Cons(h, acc)) else if h.kind == "str" and lq_contains(h.text, "{") == 1 then lq_calls_acc(r, h, lq_rev(lq_str_calls(h), acc)) else lq_calls_acc(r, h, acc)
+## Holes, read with the parser's own rules (02_parser strscan / strscanopen): every string literal interpolates a
+## `{expr}` (or `{expr:spec}`) that isvalidhole accepts; `{{` is a literal brace, a backslash takes the next
+## character, and `/ {...}` closing the string is literal text.
+fn lq_str_calls(t) = let b = strbody(t.text) in lq_holes(t, b, count(b), if count(t.text) >= 6 and slice(t.text, 0, 3) == "\"\"\"" then 3 else 1, 0, Nil)
+fn lq_holes(t, s, n, off, i, acc) = if i >= n then lq_rev(acc, Nil) else let c = at(s, i) in if c == "\\" then lq_holes(t, s, n, off, i + 2, acc) else if c != "{" then lq_holes(t, s, n, off, i + 1, acc) else if i + 1 < n and at(s, i + 1) == "{" then lq_holes(t, s, n, off, i + 2, acc) else let j = findclosebn(s, i + 1, n) in if j < 0 or j <= i + 1 or (i >= 2 and at(s, i - 2) == "/" and at(s, i - 1) == " " and j + 1 == n) then lq_holes(t, s, n, off, i + 1, acc) else let h = slicen(s, n, i + 1, j) in if isvalidhole(h) != 1 then lq_holes(t, s, n, off, i + 1, acc) else lq_holes(t, s, n, off, j + 1, lq_rev(lq_hole_calls(t, h, off + i + 1), acc))
+## the calls of one hole (the expression before a `:spec`), placed where the hole stands in the string token
+fn lq_hole_calls(t, h, p) = let k = findcolon(h, 0, count(h)) in let lx = lq_lex(if k < 0 then h else slice(h, 0, k)) in if lx.ok == 0 then Nil else lq_relocate(lq_calls(lx.toks), t, p, Nil)
+fn lq_relocate(cs, t, p, acc) = match cs
+    Nil        => lq_rev(acc, Nil)
+    Cons(c, r) => lq_relocate(r, t, p, Cons(lq_pos_in(t, p + c.col, c.text), acc))
+## the token `text` at byte q of string token t: lines counted inside a """...""" string
+fn lq_pos_in(t, q, text) = let nl = lq_last_nl(t.text, q - 1) in if nl < 0 then {kind: "id", text: text, col: t.col + q, line: t.line, bol: 0} else {kind: "id", text: text, col: q - nl - 1, line: t.line + lq_nlines(slice(t.text, 0, q), q, 0, 0), bol: 0}
+fn lq_last_nl(s, i) = if i < 0 then 0 - 1 else if ord_at(s, i) == 10 then i else lq_last_nl(s, i - 1)
+fn lq_calls_named(ts, name) = lq_filter_text(lq_calls(ts), name, Nil)
+fn lq_filter_text(ts, name, acc) = match ts
+    Nil        => lq_rev(acc, Nil)
+    Cons(h, r) => lq_filter_text(r, name, if h.text == name then Cons(h, acc) else acc)
+## the items whose body can call: functions, laws, lets, constants, rules and top-level statements
+fn lq_has_body(k) = k == "fn" or k == "law" or k == "let" or k == "const" or k == "top" or k == "rule" or k == "kernel" or k == "probe"
+fn lq_body_of(it) = if it.kind == "top" then it.toks else lq_body(it.toks, 0)
+
+## --- text of an item: signature, parameters, doc comment, excerpt ----------------------------------------------------
+## signature: from the first token to the body's `=` (whole item for a type, the group for a constructor)
+fn lq_sig(f, it) = if it.kind == "ctor" then lq_ctor_sig(f, it) else if it.kind == "type" or it.kind == "use" or it.kind == "top" or it.kind == "effect" or it.kind == "trait" then lq_cap(lq_squash(lq_span(f, it.first, lq_last(it.toks, it.first), 1)), 200) else let e = lq_eq_tok(it.toks, 0) in if e.kind == "none" then lq_cap(lq_squash(lq_line(f, it.first.line)), 300) else lq_sig_head(f, it, e)
+fn lq_sig_head(f, it, e) = let h = lq_squash(lq_span(f, it.first, e, 0)) in if it.kind == "let" or it.kind == "const" then lq_cap(h + " = " + lq_squash(lq_span_to_end(f, e)), 160) else lq_cap(h, 400)
+fn lq_ctor_sig(f, it) = let g = lq_last(it.toks, it.head) in it.name + lq_squash(slice(f.src, lq_off(f, it.head) + count(it.name), lq_off(f, g) + (if g.line == it.head.line and g.col == it.head.col then 0 else count(g.text)))) + "  (type " + it.of + ")"
+## source text from token a to token b (b included when incl == 1)
+fn lq_span(f, a, b, incl) = let s = lq_off(f, a) in let e = lq_off(f, b) + (if incl == 1 then count(b.text) else 0) in if e <= s then "" else slice(f.src, s, if e > count(f.src) then count(f.src) else e)
+## the value after `=` up to the end of its line (for a let / const)
+fn lq_span_to_end(f, e) = let s = lq_off(f, e) + 1 in let n = count(f.src) in if s >= n then "" else slicen(f.src, n, s, lq_lend(f.src, n, s))
+## the parameter part of a signature: what follows the name, before requires / ensures / where
+fn lq_params(f, it) = if it.kind == "ctor" then lq_ctor_sig(f, it) else let s = lq_sig(f, it) in let p = lq_after_name(s, it.name) in lq_cut_kw(lq_cut_kw(lq_cut_kw(p, " requires "), " ensures "), " where ")
+fn lq_after_name(s, name) = let i = lq_find(s, count(s), name, count(name), 0) in if i < 0 then s else slice(s, i, count(s))
+fn lq_cut_kw(s, kw) = let i = lq_find(s, count(s), kw, count(kw), 0) in if i < 0 then s else slice(s, 0, i)
+## the `##` lines right above an item (attribute lines `@...` between them are passed over); a `## ---` section banner
+## ends the comment
+fn lq_doc(f, it) = lq_doc_up(f, it.first.line - 1, Nil)
+fn lq_doc_up(f, k, acc) = if k < 1 then acc else let l = lq_trim(lq_line(f, k)) in if lq_starts(l, "@") == 1 and acc == Nil then lq_doc_up(f, k - 1, acc) else if lq_starts(l, "##") == 1 and lq_starts(l, "## ---") == 0 and lq_starts(l, "##---") == 0 then lq_doc_up(f, k - 1, Cons(lq_trim(slice(l, 2, count(l))), acc)) else acc
+fn lq_doc_first(f, it) = match lq_doc(f, it)
+    Nil        => ""
+    Cons(h, t) => h
+fn lq_doc_join(ds, acc) = match ds
+    Nil        => acc
+    Cons(h, t) => lq_doc_join(t, if acc == "" then h else acc + "\n" + h)
+## about 80 characters of the line around token t, blanks squashed, "..." where the line goes on
+fn lq_excerpt(f, t) = let ls = lq_lstart(f, t.line) in let n = count(f.src) in let le = lq_lend(f.src, n, ls) in let o = lq_off(f, t) in let a0 = if o - 30 < ls then ls else o - 30 in let b0 = if a0 + 80 > le then le else a0 + 80 in let a1 = if b0 - 80 < ls then ls else b0 - 80 in let a = lq_fwd_utf8(f.src, if a1 < a0 then a1 else a0, o) in let b = lq_back_utf8(f.src, b0, o) in (if lq_skipws(f.src, ls, le) < a then "..." else "") + lq_squash(slice(f.src, a, b)) + (if b < le then "..." else "")
+fn lq_fwd_utf8(s, i, lim) = if i < lim and ord_at(s, i) >= 128 and ord_at(s, i) < 192 then lq_fwd_utf8(s, i + 1, lim) else i
+fn lq_back_utf8(s, i, lim) = if i > lim and i < count(s) and ord_at(s, i) >= 128 and ord_at(s, i) < 192 then lq_back_utf8(s, i - 1, lim) else i
+
+## --- scope: a file with the modules it uses, or a directory --------------------------------------------------------------
+fn lq_use_name(line) = let r = lq_trim(slice(line, 4, count(line))) in let a = lq_cut_kw(lq_cut_kw(r, " as "), "#") in lq_trim(a)
+fn lq_uses(src) = lq_uses_acc(lq_split_lines(src), Nil)
+fn lq_uses_acc(ls, acc) = match ls
+    Nil        => lq_rev(acc, Nil)
+    Cons(h, t) => lq_uses_acc(t, if lq_starts(h, "use ") == 1 then Cons(lq_use_name(h), acc) else acc)
+fn lq_exists(p) = fs_path_exists(p) == 1
+## where `use NAME` written in a file of directory dir resolves: next to the file (also lume_modules/, src/, deps/), the
+## current directory, the parent directory, then the toolchain's compiler/stage1 (std/NAME goes there directly)
+fn lq_resolve(root, dir, name) = if lq_starts(name, "std/") == 1 then lq_first_existing(Cons(root + "/compiler/stage1/" + slice(name, 4, count(name)) + ".src", Nil)) else lq_first_existing(Cons(dir + "/" + name + ".src", Cons(dir + "/lume_modules/" + name + "/" + name + ".src", Cons(dir + "/src/" + name + ".src", Cons(dir + "/deps/" + name + ".src", Cons(name + ".src", Cons(lq_dirname(dir) + "/" + name + ".src", Cons(root + "/compiler/stage1/" + name + ".src", Nil))))))))
+fn lq_first_existing(ps) = match ps
+    Nil        => ""
+    Cons(h, t) => if lq_exists(h) then lq_norm(h) else lq_first_existing(t)
+## "./a/../b" -> "b": one spelling per file, so a module reached twice is read once
+fn lq_norm(p) = let segs = lq_np(p, 0, 0, count(p), Nil) in let body = lq_np_join(segs, "") in if count(p) > 0 and at(p, 0) == "/" then "/" + body else if body == "" then "." else body
+fn lq_np_push(st, seg) = if seg == "." or seg == "" then st else if seg == ".." then (match st
+    Nil        => Cons("..", Nil)
+    Cons(h, t) => if h == ".." then Cons("..", st) else t) else Cons(seg, st)
+fn lq_np(s, i, start, n, st) = if i >= n then lq_np_push(st, slice(s, start, n)) else if at(s, i) == "/" then lq_np(s, i + 1, i + 1, n, lq_np_push(st, slice(s, start, i))) else lq_np(s, i + 1, start, n, st)
+fn lq_np_join(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lq_np_join(t, if acc == "" then h else h + "/" + acc)
+## the closure of a file over `use`: {path, src} records, the entry file first
+fn lq_closure(root, work, seen, acc) = match work
+    Nil        => lq_rev(acc, Nil)
+    Cons(p, t) => if lq_member(seen, p) == 1 then lq_closure(root, t, seen, acc) else let src = fs_read_file(p) in let deps = lq_resolve_all(root, lq_dirname(p), lq_uses(src), Nil) in lq_closure(root, lq_append(t, deps), Cons(p, seen), Cons({path: p, src: src}, acc))
+fn lq_resolve_all(root, dir, names, acc) = match names
+    Nil        => lq_rev(acc, Nil)
+    Cons(h, t) => let r = lq_resolve(root, dir, h) in let z = if r == "" then lq_note("cannot resolve `use " + h + "` (from " + dir + "): not followed") else 0 in lq_resolve_all(root, dir, t, if r == "" then acc else Cons(r, acc))
+## every .src / .lume file below a directory, sorted
+fn lq_skipdir(name) = lq_starts(name, ".") == 1 or name == "build" or name == "lume_modules" or name == "node_modules"
+fn lq_dir_files(dir) = lq_sort(lq_walk(dir, Nil))
+fn lq_walk(dir, acc) = lq_walk_names(dir, lq_split_lines(fs_read_dir(dir)), acc)
+fn lq_walk_names(dir, names, acc) = match names
+    Nil        => acc
+    Cons(h, t) => let full = (if dir == "." then h else dir + "/" + h) in if lq_is_src(h) == 1 then lq_walk_names(dir, t, if lq_skip_file(dir, h) == 1 then acc else Cons(full, acc)) else if lq_skipdir(h) or lq_ext_file(h) == 1 then lq_walk_names(dir, t, acc) else lq_walk_names(dir, t, lq_walk(full, acc))
+## the amalgamated compiler (lumec.src, generated from lume/NN_*.src) and bundles would only repeat other files
+fn lq_skip_file(dir, name) = if lq_ends(name, ".bundled.src") == 1 then 1 else if name == "lumec.src" and fs_read_dir(dir + "/lume") != "" then 1 else 0
+## names that are surely files (no need to try them as directories)
+fn lq_ext_file(h) = if lq_ends(h, ".s") == 1 or lq_ends(h, ".md") == 1 or lq_ends(h, ".o") == 1 or lq_ends(h, ".txt") == 1 or lq_ends(h, ".json") == 1 or lq_ends(h, ".err") == 1 or lq_ends(h, ".map") == 1 or lq_ends(h, ".exe") == 1 then 1 else 0
+fn lq_load(paths, acc) = match paths
+    Nil        => lq_rev(acc, Nil)
+    Cons(p, t) => lq_load(t, Cons({path: p, src: fs_read_file(p)}, acc))
+fn lq_scope(root, path) = if lq_is_src(path) == 1 then (if lq_exists(path) then lq_closure(root, Cons(lq_norm(path), Nil), Nil, Nil) else ctfail("lume query: no such file: " + path + "\n")) else let fs = lq_dir_files(path) in if fs == Nil and fs_read_dir(path) == "" then ctfail("lume query: not a .src / .lume file or a directory with sources: " + path + "\n") else lq_load(fs, Nil)
+## the files of a scope whose text holds the word at all, lexed and cut into items (the others cannot answer)
+## (mode 1 first drops the files that hold none of the words; mode 2 looks at every file's item heads)
+fn lq_analyze(raw, sel, acc) = match raw
+    Nil        => lq_rev(acc, Nil)
+    Cons(r, t) => lq_analyze(t, sel, if sel.mode != 1 or lq_any_word(r.src, sel.words) == 1 then Cons(lq_file(r.path, r.src, sel), acc) else acc)
+
+## --- defs -------------------------------------------------------------------------------------------------------------
+fn lq_is_def(k) = k != "top" and k != "use" and k != "attr"
+## {file, item} pairs of the definitions of name over analysed files
+fn lq_defs(files, name) = lq_defs_files(files, name, Nil)
+fn lq_defs_files(files, name, acc) = match files
+    Nil        => lq_rev(acc, Nil)
+    Cons(f, t) => lq_defs_files(t, name, lq_defs_items(f, f.items, name, acc))
+fn lq_defs_items(f, items, name, acc) = match items
+    Nil        => acc
+    Cons(it, t) => lq_defs_items(f, t, name, if it.name == name and lq_is_def(it.kind) then Cons({f: f, it: it}, acc) else acc)
+fn lq_def_text(d) = let f = d.f in let it = d.it in f.path + ":" + str(it.head.line) + "  " + lq_sig(f, it) + lq_doc_lines(lq_doc(f, it), "")
+fn lq_doc_lines(ds, acc) = match ds
+    Nil        => acc
+    Cons(h, t) => lq_doc_lines(t, acc + "\n    ## " + h)
+fn lq_def_json(d) = let f = d.f in let it = d.it in "{" + lq_jfield("file", f.path) + "," + lq_jnum("line", it.head.line) + "," + lq_jfield("name", it.name) + "," + lq_jfield("kind", it.kind) + "," + lq_jfield("signature", lq_sig(f, it)) + "," + lq_jfield("doc", lq_doc_join(lq_doc(f, it), "")) + "," + lq_jfield("excerpt", lq_excerpt(f, it.head)) + (if it.kind == "ctor" then "," + lq_jfield("type", it.of) else "") + "}"
+fn lq_map_text(ds, fnk, acc) = match ds
+    Nil        => acc
+    Cons(d, t) => lq_map_text(t, fnk, acc + (if acc == "" then "" else "\n") + lq_render(fnk, d))
+fn lq_map_json(ds, fnk, acc) = match ds
+    Nil        => lq_rev(acc, Nil)
+    Cons(d, t) => lq_map_json(t, fnk, Cons(lq_render(fnk, d), acc))
+fn lq_render(k, d) = if k == "def" then lq_def_text(d) else if k == "defj" then lq_def_json(d) else if k == "outline" then lq_outline_line(d) else lq_outline_json(d)
+fn lq_cmd_defs(raw, name, json) = let files = lq_analyze(raw, lq_sel(1, Cons(name, Nil)), Nil) in let ds = lq_defs(files, name) in if json == 1 then lq_jarray(lq_map_json(ds, "defj", Nil)) else if ds == Nil then "no definition of " + name + " (" + str(lq_len(raw, 0)) + " files searched)" else lq_map_text(ds, "def", "")
+
+## --- callers ----------------------------------------------------------------------------------------------------------
+## {f, it, sites} for every item whose body calls name
+fn lq_callers(files, name) = lq_callers_files(files, name, Nil)
+fn lq_callers_files(files, name, acc) = match files
+    Nil        => lq_rev(acc, Nil)
+    Cons(f, t) => lq_callers_files(t, name, lq_callers_items(f, f.items, name, acc))
+fn lq_callers_items(f, items, name, acc) = match items
+    Nil        => acc
+    Cons(it, t) => if lq_has_body(it.kind) == 0 then lq_callers_items(f, t, name, acc) else let cs = lq_calls_named(lq_body_of(it), name) in lq_callers_items(f, t, name, if cs == Nil then acc else Cons({f: f, it: it, sites: cs}, acc))
+fn lq_caller_label(f, it) = if it.kind == "top" then "(top level)" else it.kind + " " + it.name
+fn lq_caller_text(c) = let n = lq_len(c.sites, 0) in c.f.path + ":" + str(c.it.head.line) + "  " + lq_caller_label(c.f, c.it) + (if n > 1 then "  [" + str(n) + " calls]" else "") + lq_sites_text(c.f, c.sites, "")
+fn lq_sites_text(f, ss, acc) = match ss
+    Nil        => acc
+    Cons(s, t) => lq_sites_text(f, t, acc + "\n    " + str(s.line) + ":" + str(s.col + 1) + "  " + lq_excerpt(f, s))
+fn lq_caller_json(c, acc) = lq_sites_json(c, c.sites, acc)
+fn lq_sites_json(c, ss, acc) = match ss
+    Nil        => acc
+    Cons(s, t) => lq_sites_json(c, t, Cons("{" + lq_jfield("file", c.f.path) + "," + lq_jnum("line", c.it.head.line) + "," + lq_jfield("name", c.it.name) + "," + lq_jfield("kind", c.it.kind) + "," + lq_jfield("signature", lq_sig(c.f, c.it)) + "," + lq_jnum("call_line", s.line) + "," + lq_jnum("call_col", s.col + 1) + "," + lq_jfield("excerpt", lq_excerpt(c.f, s)) + "}", acc))
+fn lq_callers_texts(cs, acc) = match cs
+    Nil        => acc
+    Cons(c, t) => lq_callers_texts(t, acc + (if acc == "" then "" else "\n") + lq_caller_text(c))
+fn lq_callers_jsons(cs, acc) = match cs
+    Nil        => lq_rev(acc, Nil)
+    Cons(c, t) => lq_callers_jsons(t, lq_caller_json(c, acc))
+fn lq_sites_total(cs, k) = match cs
+    Nil        => k
+    Cons(c, t) => lq_sites_total(t, k + lq_len(c.sites, 0))
+fn lq_cmd_callers(raw, name, json) = let files = lq_analyze(raw, lq_sel(1, Cons(name, Nil)), Nil) in let cs = lq_callers(files, name) in if json == 1 then lq_jarray(lq_callers_jsons(cs, Nil)) else if cs == Nil then "no caller of " + name + " (" + str(lq_len(raw, 0)) + " files searched)" else lq_callers_texts(cs, "") + "\n" + str(lq_len(cs, 0)) + " callers, " + str(lq_sites_total(cs, 0)) + " call sites"
+
+## --- calls ------------------------------------------------------------------------------------------------------------
+## distinct names called by a token list, in order of first call, each {name, first (token), n}
+fn lq_distinct(cs, acc) = match cs
+    Nil        => acc
+    Cons(c, t) => lq_distinct(t, lq_bump(acc, c, Nil))
+fn lq_bump(acc, c, seen) = match acc
+    Nil        => lq_rev(seen, Cons({name: c.text, first: c, n: 1}, Nil))
+    Cons(h, t) => if h.name == c.text then lq_rev(seen, Cons({name: h.name, first: h.first, n: h.n + 1}, t)) else lq_bump(t, c, Cons(h, seen))
+## the words that can only stand in an item defining a callee: "fn NAME", "let NAME", "law NAME", "const NAME" (a
+## constructor is named by its type and is not looked up)
+fn lq_def_words(cs, acc) = match cs
+    Nil        => acc
+    Cons(c, t) => lq_def_words(t, if lq_upper(c.name) == 1 or lq_member(acc, c.name) == 1 then acc else Cons(c.name, acc))
+## the definitions of name, the ones in the caller's file (path) first
+fn lq_defs_pref(files, name, path) = let ds = lq_defs(files, name) in lq_append(lq_defs_in(ds, path, 1, Nil), lq_defs_in(ds, path, 0, Nil))
+fn lq_defs_in(ds, path, same, acc) = match ds
+    Nil        => lq_rev(acc, Nil)
+    Cons(d, t) => lq_defs_in(t, path, same, if (if d.f.path == path then 1 else 0) == same then Cons(d, acc) else acc)
+fn lq_where(files, name, path) = match lq_defs_pref(files, name, path)
+    Nil        => ""
+    Cons(d, t) => d.f.path + ":" + str(d.it.head.line) + (if t == Nil then "" else " (+" + str(lq_len(t, 0)) + " more)")
+fn lq_callee_kind(files, c) = match lq_defs(files, c.name)
+    Nil        => if lq_upper(c.name) == 1 then "ctor" else "builtin"
+    Cons(d, t) => d.it.kind
+fn lq_callee_text(files, c, w, p) = "    " + lq_pad(c.name + (if c.n > 1 then " x" + str(c.n) else ""), w) + (let wh = lq_where(files, c.name, p) in if wh != "" then wh else if lq_upper(c.name) == 1 then "(constructor)" else "(builtin, or not defined in this scope)")
+fn lq_callees_text(files, cs, w, p, acc) = match cs
+    Nil        => acc
+    Cons(c, t) => lq_callees_text(files, t, w, p, acc + "\n" + lq_callee_text(files, c, w, p))
+fn lq_callee_json(files, d, c) = let wh = lq_defs_pref(files, c.name, d.f.path) in "{" + lq_jfield("file", d.f.path) + "," + lq_jnum("line", c.first.line) + "," + lq_jfield("name", c.name) + "," + lq_jfield("kind", lq_callee_kind(files, c)) + "," + lq_jnum("count", c.n) + "," + lq_jfield("caller", d.it.name) + "," + lq_jfield("signature", (match wh
+    Nil        => ""
+    Cons(x, r) => lq_sig(x.f, x.it))) + "," + lq_jfield("defined_at", lq_where(files, c.name, d.f.path)) + "," + lq_jfield("excerpt", lq_excerpt(d.f, c.first)) + "}"
+fn lq_callees_json(files, d, cs, acc) = match cs
+    Nil        => acc
+    Cons(c, t) => lq_callees_json(files, d, t, Cons(lq_callee_json(files, d, c), acc))
+fn lq_maxw(cs, w) = match cs
+    Nil        => w
+    Cons(c, t) => lq_maxw(t, let k = count(c.name) + (if c.n > 1 then 2 + count(str(c.n)) else 0) in if k > w then k else w)
+fn lq_calls_block(files, d) = let cs = lq_distinct(lq_calls(lq_body_of(d.it)), Nil) in d.f.path + ":" + str(d.it.head.line) + "  " + lq_sig(d.f, d.it) + "\n  calls " + str(lq_len(cs, 0)) + " names:" + lq_callees_text(files, cs, lq_maxw(cs, 8) + 2, d.f.path, "")
+fn lq_calls_blocks(files, ds, acc) = match ds
+    Nil        => acc
+    Cons(d, t) => lq_calls_blocks(files, t, acc + (if acc == "" then "" else "\n") + lq_calls_block(files, d))
+fn lq_calls_jsons(files, ds, acc) = match ds
+    Nil        => lq_rev(acc, Nil)
+    Cons(d, t) => lq_calls_jsons(files, t, lq_callees_json(files, d, lq_distinct(lq_calls(lq_body_of(d.it)), Nil), acc))
+fn lq_body_defs(ds, acc) = match ds
+    Nil        => lq_rev(acc, Nil)
+    Cons(d, t) => lq_body_defs(t, if lq_has_body(d.it.kind) == 1 then Cons(d, acc) else acc)
+fn lq_all_callees(ds, acc) = match ds
+    Nil        => acc
+    Cons(d, t) => lq_all_callees(t, lq_append(lq_distinct(lq_calls(lq_body_of(d.it)), Nil), acc))
+## the definitions of name, then the items of the scope that may define its callees (only those are lexed)
+fn lq_cmd_calls(raw, name, json) = let files0 = lq_analyze(raw, lq_sel(1, Cons(name, Nil)), Nil) in let ds = lq_body_defs(lq_defs(files0, name), Nil) in let dw = lq_def_words(lq_all_callees(ds, Nil), Nil) in let files = (if dw == Nil then Nil else lq_analyze(raw, lq_sel(2, dw), Nil)) in if json == 1 then lq_jarray(lq_calls_jsons(files, ds, Nil)) else if ds == Nil then "no function named " + name + " (" + str(lq_len(raw, 0)) + " files searched)" else lq_calls_blocks(files, ds, "")
+
+## --- outline ----------------------------------------------------------------------------------------------------------
+fn lq_outline_items(f, items, acc) = match items
+    Nil        => lq_rev(acc, Nil)
+    Cons(it, t) => lq_outline_items(f, t, if lq_is_def(it.kind) then Cons({f: f, it: it}, acc) else acc)
+fn lq_outline_line(d) = let f = d.f in let it = d.it in let doc = lq_doc_first(f, it) in lq_pad(str(it.head.line), 6) + lq_pad(it.kind, 6) + lq_cap(lq_params(f, it), 140) + (if doc == "" then "" else "  -- " + lq_cap(doc, 100))
+fn lq_outline_json(d) = let f = d.f in let it = d.it in "{" + lq_jfield("file", f.path) + "," + lq_jnum("line", it.head.line) + "," + lq_jfield("name", it.name) + "," + lq_jfield("kind", it.kind) + "," + lq_jfield("signature", lq_sig(f, it)) + "," + lq_jfield("doc", lq_doc_first(f, it)) + "," + lq_jfield("excerpt", lq_excerpt(f, it.head)) + "}"
+fn lq_cmd_outline(path, json) = if lq_is_src(path) == 0 or lq_exists(path) == 0 then ctfail("lume query outline: not a .src / .lume file: " + path + "\n") else let f = lq_file(path, fs_read_file(path), lq_sel(0, Nil)) in let ds = lq_outline_items(f, f.items, Nil) in if json == 1 then lq_jarray(lq_map_json(ds, "outlinej", Nil)) else if ds == Nil then "no definitions in " + path else lq_map_text(ds, "outline", "")
+
+## --- command line -----------------------------------------------------------------------------------------------------
+fn lq_usage() = "usage: lume query defs NAME [PATH] [--json]      where NAME is defined: file:line, signature, doc comment\n" +
+"       lume query callers NAME [PATH] [--json]   every definition whose body calls NAME, with ~80-character excerpts\n" +
+"       lume query calls NAME [PATH] [--json]     the names NAME's body calls and where each is defined\n" +
+"       lume query outline FILE [--json]          one line per definition: line, kind, name(params), first doc line\n" +
+"PATH: a .src / .lume file (with the modules it uses) or a directory (recursive); default: the current directory"
+fn lq_args(i, n, root, json, pos) = if i >= n then {root: root, json: json, pos: lq_rev(pos, Nil)} else let a = os_arg_at(i) in if a == "--json" then lq_args(i + 1, n, root, 1, pos) else if lq_starts(a, "--root=") == 1 then lq_args(i + 1, n, slice(a, 7, count(a)), json, pos) else if a == "--help" or a == "-h" then lq_args(i + 1, n, root, json, Cons("help", Nil)) else if lq_starts(a, "--") == 1 then ctfail("lume query: unknown option " + a + "\n" + lq_usage_nl()) else lq_args(i + 1, n, root, json, Cons(a, pos))
+fn lq_nth(xs, k) = match xs
+    Nil        => ""
+    Cons(h, t) => if k == 0 then h else lq_nth(t, k - 1)
+fn lq_run(root, json, pos) = let sub = lq_nth(pos, 0) in let np = lq_len(pos, 0) in if sub == "help" or np == 0 then lq_usage() else if sub == "outline" then (if np == 2 then lq_cmd_outline(lq_nth(pos, 1), json) else ctfail(lq_usage_nl())) else if sub == "defs" or sub == "callers" or sub == "calls" then (if np == 2 or np == 3 then lq_named(root, json, sub, lq_nth(pos, 1), if np == 3 then lq_nth(pos, 2) else ".") else ctfail(lq_usage_nl())) else ctfail("lume query: unknown query '" + sub + "'\n" + lq_usage_nl())
+fn lq_usage_nl() = lq_usage() + "\n"
+fn lq_named(root, json, sub, name, path) = let raw = lq_scope(root, path) in if sub == "defs" then lq_cmd_defs(raw, name, json) else if sub == "callers" then lq_cmd_callers(raw, name, json) else lq_cmd_calls(raw, name, json)
+fn lq_default_root() = if os_env_has("LUME_ROOT") == 1 then os_getenv("LUME_ROOT") else "."
+fn lq_main() = let a = lq_args(1, os_arg_count(), "", 0, Nil) in lq_run(if a.root == "" then lq_default_root() else a.root, a.json, a.pos)
+
+print lq_main()

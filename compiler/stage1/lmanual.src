@@ -279,7 +279,8 @@ fn man_en_effects() = "# CHAPTER 5: ALGEBRAIC EFFECTS, DETERMINISTIC MEMORY, ARE
 "- Effects of the runtime builtins: `buf_*` (mutable byte buffers, changed in place) are\n" +
 "  `io`, like every builtin that reads or changes state; `net_*` are `net`; `fs_*` are\n" +
 "  `fs`. `use dns` functions are `" + man_br("io, net, fs, time, panic") + "`. `f64` and the\n" +
-"  `f64_*` builtins are pure (no effect).\n" +
+"  `f64_*` builtins are pure (no effect). The hardware builtins (`port_*`,\n" +
+"  `mmio_volatile_*`, `cpu_*`, `vga_*`, `mem_copy` / `mem_set` / `mem_crc64`, `sys_call`) are `sys`; `cpu_rdtsc` is `time`.\n" +
 "- Custom effects are declared with `effect Name " + man_br(" fn op(...) -> T ") + "` and handled via\n" +
 "  `handle expr with " + man_br(" ... ") + "`.\n\n" +
 "## 5.2 Automatic Memory, Zero-Heap SRA & Scoped Arenas (`std.arena`)\n" +
@@ -799,11 +800,30 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "                                    configurationDone, stackTrace, scopes, variables, evaluate, continue, next,\n" +
 "                                    stepIn, stepOut, disconnect; events stopped, output, exited, terminated.\n" +
 "  lume test <src.src>...                 Run all `fn test_*()` unit tests\n" +
+"  lume test --filter <text> <src.src>... Only the tests whose name contains <text> (`--filter=<text>` too);\n" +
+"                                         a filter that matches no test is an error\n" +
+"  lume test --jobs <n> <src.src>...      n processes at once: the tests of one file (test i in process\n" +
+"                                         i % n), or several files (file i in worker i % n); the report is\n" +
+"                                         printed in source order, identical to a serial run\n" +
+"  lume test --json <src.src>...          One JSON object: ok, diagnostics, tests (file, name, status ok|fail,\n" +
+"                                         ms, message, output), passed, failed, files, jobs, filter, ms\n" +
 "  lume check <src.src> [--json]          Typecheck, borrow-check, and effect-check\n" +
+"  --json on check, prove, build, run, test and verify: one shape for every command, {\"ok\":bool,\n" +
+"    \"diagnostics\":[{\"code\",\"severity\",\"file\",\"line\",\"col\",\"message\",\"fix\"}], ...} plus the\n" +
+"    command's own fields (build: source, output, exit, ms, log; run: exit, ms, stdout, stderr; verify:\n" +
+"    files with status, cached, detail). The diagnostics are the compiler's own (the real parser and\n" +
+"    checks); `fix` is the concrete fix-it of the message.\n" +
 "  lume check --lex <file>...             Lexical check only (strings, escapes, comments), FILE:LINE:COL\n" +
 "  lume fmt <src.src> [--check|--stdout]  Canonical code formatter (a function wider than 120 columns\n" +
 "                                         is written one let / if branch / argument per line)\n" +
 "  lume doc <src.src> [--json]            Generate module documentation & run doctests\n" +
+"  lume query defs|callers|calls [--json] <NAME> [PATH]\n" +
+"                                         Where NAME is defined (file:line, signature, doc comment),\n" +
+"                                         which definitions call it (~80 characters around each call),\n" +
+"                                         what its body calls; PATH: a file and the modules it uses,\n" +
+"                                         or a directory (default: the current one). The compiler's\n" +
+"                                         own lexer reads the code: strings and comments never match\n" +
+"  lume query outline [--json] <FILE>     One line per definition: line, kind, name(params), doc\n" +
 "  lume repl [--kernel|--json]            Interactive Read-Eval-Prove-Print Loop (`--kernel`: Jupyter kernel protocol)\n" +
 "  lume lsp / lume dap                    Language Server & Debug Adapter Protocol\n" +
 "  lume pkg init|check|lock|verify|tree   Content-addressed package manager\n" +
@@ -1055,7 +1075,21 @@ fn man_en_commands() = "# CHAPTER 8: COMPLETE CLI COMMAND REFERENCE (PHASES 1-5 
 "  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,\n" +
 "  `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,\n" +
 "  `[K0005]`/`[K0006]`/`[C0009]`/SRA guards, and `MANIFEST.sha256`: 700 formal obligations +\n" +
-"  162 unit tests + 99 verified toolchain artifacts + 112 autonomous domains + 17 LumePuter modules).\n"
+"  162 unit tests + 99 verified toolchain artifacts + 112 autonomous domains + 17 LumePuter modules).\n" +
+"- `lume dev selfbuild [--root <dir>] [--tools <list>] [--check] [--verbose]`: Rebuilds the toolchain of a source\n" +
+"  checkout from its own sources, in Lume (no shell script): regenerates `compiler/stage1/runtime_lume.lume` with\n" +
+"  `compiler/stage1/gen_runtime.src`, amalgamates the compiler and builds `lumec` with the current `lumec` and `lasm`,\n" +
+"  generation after generation, until two successive generations emit byte-identical assembly from the same runtime\n" +
+"  text (the fixpoint, at most 6 generations). Each new generation must compile, assemble and run a smoke program\n" +
+"  before it may replace `build/bin/lumec`. Then the tools of `--tools` (default: lume_driver, lcli, lmanual, lcaas,\n" +
+"  lcert, lmod, lprotect, ldapdbg, lasm) are built aside and moved into `build/bin` only when every one was built; the\n" +
+"  previous compiler is kept as `lumec.prev`. One line per step, a final summary, exit 1 on failure; on any failure the\n" +
+"  compiler, `runtime_lume.lume` and the amalgamated source are put back byte for byte and no tool is moved.\n" +
+"  `--check` stops at the fixpoint, puts everything back and says whether the tree was already current. `--root`\n" +
+"  names the checkout (default: the driver's own).\n" +
+"- `lume dev sync-check [--root <dir>] <dir>`: Lists every file of `compiler/` and `tests/` (tracked by git, plus new\n" +
+"  untracked files that are not ignored) whose bytes differ from the same path under the other tree, or that the other\n" +
+"  tree lacks; exit 1 when there is any (a stale second build tree once failed a gate for nothing).\n"
 
 fn man_en_examples() = "# CHAPTER 9: 6 COPY-PASTE WORKING EXAMPLES FOR HUMANS & AI\n\n" +
 "## Example 1: Recursion, ADTs & Pattern Matching (`list_demo.src`)\n" +
@@ -1422,7 +1456,8 @@ fn man_pt_effects() = "# CAPITULO 5: EFEITOS ALGEBRICOS, MEMORIA DETERMINISTICA 
 "- Efeitos dos builtins do runtime: `buf_*` (buffers de bytes mutaveis, alterados no\n" +
 "  lugar) sao `io`, como todo builtin que le ou muda estado; `net_*` sao `net`; `fs_*`\n" +
 "  sao `fs`. As funcoes de `use dns` sao `" + man_br("io, net, fs, time, panic") + "`. `f64` e os\n" +
-"  builtins `f64_*` sao puros (sem efeito).\n\n" +
+"  builtins `f64_*` sao puros (sem efeito). Os builtins de hardware (`port_*`,\n" +
+"  `mmio_volatile_*`, `cpu_*`, `vga_*`, `mem_copy` / `mem_set` / `mem_crc64`, `sys_call`) sao `sys`; `cpu_rdtsc` e `time`.\n\n" +
 "## 5.2 Memoria Automatica, SRA Zero-Heap e Arenas (`std.arena`)\n" +
 "A Lume recupera memoria sozinha: o runtime nativo tem um coletor mark-sweep nao movel que\n" +
 "devolve memoria ao sistema. A pausa e proporcional ao heap vivo, nao ao lixo; um programa\n" +
@@ -1929,11 +1964,31 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "                                    configurationDone, stackTrace, scopes, variables, evaluate, continue, next,\n" +
 "                                    stepIn, stepOut, disconnect; eventos stopped, output, exited, terminated.\n" +
 "  lume test <src.src>...                 Executa todos os testes `fn test_*()`\n" +
+"  lume test --filter <texto> <src.src>.. So os testes cujo nome contem <texto> (tambem `--filter=<texto>`);\n" +
+"                                         um filtro que nao casa nenhum teste e erro\n" +
+"  lume test --jobs <n> <src.src>...      n processos ao mesmo tempo: os testes de um arquivo (teste i no\n" +
+"                                         processo i % n) ou varios arquivos (arquivo i no trabalhador i % n);\n" +
+"                                         o relatorio sai na ordem do fonte, igual ao de uma execucao serial\n" +
+"  lume test --json <src.src>...          Um objeto JSON: ok, diagnostics, tests (file, name, status ok|fail,\n" +
+"                                         ms, message, output), passed, failed, files, jobs, filter, ms\n" +
 "  lume check <src.src> [--json]          Verifica tipos, ownership e efeitos\n" +
+"  --json em check, prove, build, run, test e verify: um formato so para todos os comandos, {\"ok\":bool,\n" +
+"    \"diagnostics\":[{\"code\",\"severity\",\"file\",\"line\",\"col\",\"message\",\"fix\"}], ...} mais os campos\n" +
+"    do comando (build: source, output, exit, ms, log; run: exit, ms, stdout, stderr; verify: files com\n" +
+"    status, cached, detail). Os diagnosticos sao os do proprio compilador (o parser e as checagens reais);\n" +
+"    `fix` e a correcao concreta da mensagem.\n" +
 "  lume check --lex <arquivo>...          Checagem lexica apenas (textos, escapes, comentarios), ARQ:LINHA:COL\n" +
 "  lume fmt <src.src> [--check|--stdout]  Formatador canonico de codigo (funcao com mais de 120 colunas\n" +
 "                                         vira um let / ramo de if / argumento por linha)\n" +
 "  lume doc <src.src> [--json]            Gera documentacao e executa doctests\n" +
+"  lume query defs|callers|calls [--json] <NOME> [CAMINHO]\n" +
+"                                         Onde NOME e definido (arquivo:linha, assinatura, comentario\n" +
+"                                         de documentacao), quais definicoes o chamam (~80 caracteres\n" +
+"                                         em volta de cada chamada), o que o corpo dele chama; CAMINHO:\n" +
+"                                         um arquivo e os modulos que ele usa, ou um diretorio (padrao:\n" +
+"                                         o atual). O proprio lexer do compilador le o codigo: textos\n" +
+"                                         e comentarios nunca casam\n" +
+"  lume query outline [--json] <ARQUIVO>  Uma linha por definicao: linha, tipo, nome(parametros), doc\n" +
 "  lume repl [--kernel|--json]            REPL interativo com verificacao de contratos (`--kernel`: protocolo de kernel Jupyter)\n" +
 "  lume lsp / lume dap                    Servidores de IDE (LSP e Debug Adapter)\n" +
 "  lume manual [--pt] [capitulo]          Abre este Manual Interno da Linguagem Lume\n\n" +
@@ -2169,7 +2224,21 @@ fn man_pt_commands() = "# CAPITULO 8: REFERENCIA COMPLETA DE COMANDOS CLI (FASES
 "  `lume_egm_engine`, `lume_ncm_engine`, `lume_opentpu_engine`, `lume_continuum_nexus_engine`,\n" +
 "  `lume_quantum_nexus_engine`, `lchameleon`, `lsentience`, `lmanual`, `KerneLume` Bare-Metal OS,\n" +
 "  guardas `[K0005]`/`[K0006]`/`[C0009]`/SRA e `MANIFEST.sha256`: 700 obrigacoes formais +\n" +
-"  162 testes unitarios + 99 artefatos verificados + 112 dominios autonomos + 17 modulos LumePuter).\n"
+"  162 testes unitarios + 99 artefatos verificados + 112 dominios autonomos + 17 modulos LumePuter).\n" +
+"- `lume dev selfbuild [--root <dir>] [--tools <list>] [--check] [--verbose]`: Reconstroi o toolchain de um checkout\n" +
+"  a partir das proprias fontes, em Lume (sem script de shell): regenera `compiler/stage1/runtime_lume.lume` com\n" +
+"  `compiler/stage1/gen_runtime.src`, amalgama o compilador e compila o `lumec` com o `lumec` e o `lasm` atuais,\n" +
+"  geracao apos geracao, ate duas geracoes seguidas emitirem assembly identico byte a byte a partir do mesmo texto de\n" +
+"  runtime (o ponto fixo, no maximo 6 geracoes). Cada geracao nova precisa compilar, montar e executar um programa de\n" +
+"  fumaca antes de poder substituir `build/bin/lumec`. Depois as ferramentas de `--tools` (padrao: lume_driver, lcli,\n" +
+"  lmanual, lcaas, lcert, lmod, lprotect, ldapdbg, lasm) sao compiladas a parte e so vao para `build/bin` quando todas\n" +
+"  compilaram; o compilador anterior fica como `lumec.prev`. Uma linha por etapa, um resumo final, saida 1 em caso de\n" +
+"  falha; em qualquer falha o compilador, o `runtime_lume.lume` e a fonte amalgamada voltam byte a byte e nenhuma\n" +
+"  ferramenta e movida. `--check` para no ponto fixo, devolve tudo e diz se a arvore ja estava atualizada. `--root`\n" +
+"  indica o checkout (padrao: o do proprio driver).\n" +
+"- `lume dev sync-check [--root <dir>] <dir>`: Lista todo arquivo de `compiler/` e `tests/` (rastreado pelo git, mais\n" +
+"  os arquivos novos nao rastreados e nao ignorados) cujos bytes diferem do mesmo caminho na outra arvore, ou que falta\n" +
+"  nela; saida 1 quando houver algum (uma segunda arvore de build desatualizada ja reprovou um gate sem motivo).\n"
 
 fn man_pt_examples() = "# CAPITULO 9: 6 EXEMPLOS PRATICOS PRONTOS PARA COPIAR E RODAR\n\n" +
 "## Exemplo 1: Listas, Recursao e Pattern Matching (`lista.src`)\n" +

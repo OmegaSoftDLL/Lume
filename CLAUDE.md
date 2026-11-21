@@ -57,8 +57,9 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 ## Runtime in Lume: state on 2026-11-16
 
 - Lume sources of the runtime: `compiler/stage1/rt/*.src`, compiled by `lumec --raw` (freestanding words; intrinsics
-  load8/32/64, store8/32/64, bit_*, sys_call, sym_addr("label"); at most 6 parameters/arguments; the right operand of
-  a binary operator is evaluated FIRST, so side effects go in sequential `let`s). `gen_runtime.src` writes
+  load8/32/64, store8/32/64, bit_*, sys_call, sym_addr("label"); any number of parameters/arguments (the 7th on go on
+  the stack, never in leaf mode); operands are computed left to right as in ordinary Lume (since 2026-11-21); functions
+  may span lines (`lume fmt` lays them out one `let` per line); gen_runtime refuses a name the runtime does not define). `gen_runtime.src` writes
   `runtime_lume.lume`: `rt_lume()` (rt_text, rt_fs: in every program) and `rt_lume_crypto()` (rt_x25519, rt_ed25519:
   only when a program names a crypto_ builtin, through rt_crypto/has_crypto).
 - Migrated so far (asm removed from runtime_core): strlen, streq, __rt_nofield_text and 28 fs_*/os_*/io_* builtins;
@@ -70,8 +71,9 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
   compiler/stage1/runtime_core.lume`: it rebuilds from the commit's file and cuts, inside each fn line, every routine
   rt/*.src defines (refresh rc_head.lume from `git show HEAD:...` after each commit).
 - A routine whose Lume needs a primitive the installed lumec lacks: two bootstraps (strip it from rt/*.src, rebuild_core,
-  gen_runtime, bootstrap; restore, rebuild_core, gen_runtime, bootstrap). A new builtin name: name_flow nf_arN, then
-  rebuild lcaas and lcert too.
+  gen_runtime, bootstrap; restore, rebuild_core, gen_runtime, bootstrap). A new builtin: add its row to
+  compiler/stage1/builtins_table.src, run tests/harness/builtins_gate.src with `@mode gen` (rewrites the name_flow,
+  06b_phase3 and lcaas lists), define, document and call it in builtins_regress_ok; rebuild lcaas and lcert too.
 - RUNTIME QUEUE, executed in this order without skipping (owner: "nada fica pra depois"; tick each when committed):
   1. [x] rt_io.src (read, readall) cut from runtime_core (commit fc5b13d; Linux battery clean).
   2. [x] (fc5b13d + next commit) first five values in rbx/r12-r15; immediates/registers as direct operands; if on

@@ -15,49 +15,172 @@ fn __rt_lz_enc(d, s, n) = let z = rtz_clear(sym_addr("__rt_lz_tab"), 0) in rtz_l
 fn rtz_clear(t, k) = if k >= 512 then 0 else let w = store64(t + k * 8, 0) in rtz_clear(t, k + 1)
 ## o: where the next output byte goes, i: the input position, a: the first literal not written yet. A miss steps
 ## further the longer the run of literals is; a hit writes one sequence and goes on after the match.
-fn rtz_loop(o, s, n, i, a) = if i >= n - 12 then rtz_end(o, s, n, a) else let q = load32(s + i) in let t = sym_addr("__rt_lz_tab") + bit_and(bit_shr(q * (0 - 1640531535), 22), 1023) * 4 in let c = load32(t) in let w = store32(t, i + 1) in if c == 0 or i - c + 1 > 65535 or load32(s + c - 1) != q then rtz_loop(o, s, n, i + bit_shr(i - a, 6) + 1, a) else let j = rtz_ext(s, i + 4, c + 3, n - 5) in rtz_loop(rtz_put(o, s, i, a, j, i - c + 1), s, n, j, j)
+fn rtz_loop(o, s, n, i, a) =
+    if i >= n - 12 then
+        rtz_end(o, s, n, a)
+    else
+        let q = load32(s + i) in
+        let t = sym_addr("__rt_lz_tab") + bit_and(bit_shr(q * (0 - 1640531535), 22), 1023) * 4 in
+        let c = load32(t) in
+        let w = store32(t, i + 1) in
+        if c == 0 or i - c + 1 > 65535 or load32(s + c - 1) != q then
+            rtz_loop(o, s, n, i + bit_shr(i - a, 6) + 1, a)
+        else
+            let j = rtz_ext(s, i + 4, c + 3, n - 5) in
+            rtz_loop(rtz_put(o, s, i, a, j, i - c + 1), s, n, j, j)
 ## the end of a match: the first position where the bytes differ, at most lim (eight bytes at a time while a whole
 ## word fits before lim, then byte by byte: the same position the byte loop finds)
-fn rtz_ext(s, j, k, lim) = if j + 8 <= lim and load64(s + j) == load64(s + k) then rtz_ext(s, j + 8, k + 8, lim) else rtz_extb(s, j, k, lim)
+fn rtz_ext(s, j, k, lim) =
+    if j + 8 <= lim and load64(s + j) == load64(s + k) then
+        rtz_ext(s, j + 8, k + 8, lim)
+    else
+        rtz_extb(s, j, k, lim)
 fn rtz_extb(s, j, k, lim) = if j < lim and load8(s + j) == load8(s + k) then rtz_extb(s, j + 1, k + 1, lim) else j
 ## one sequence (the literals a .. i-1, then a match i .. j-1 at offset f); the next output position
-fn rtz_put(o, s, i, a, j, f) = let w = store8(o, bit_shl(rt_mini(i - a, 15), 4) + rt_mini(j - i - 4, 15)) in let o1 = rtz_lits(o + 1, s, a, i - a) in let w1 = store8(o1, bit_and(f, 255)) in let w2 = store8(o1 + 1, bit_shr(f, 8)) in if j - i - 4 >= 15 then rtz_xl(o1 + 2, j - i - 19) else o1 + 2
+fn rtz_put(o, s, i, a, j, f) =
+    let w = store8(o, bit_shl(rt_mini(i - a, 15), 4) + rt_mini(j - i - 4, 15)) in
+    let o1 = rtz_lits(o + 1, s, a, i - a) in
+    let w1 = store8(o1, bit_and(f, 255)) in
+    let w2 = store8(o1 + 1, bit_shr(f, 8)) in
+    if j - i - 4 >= 15 then
+        rtz_xl(o1 + 2, j - i - 19)
+    else
+        o1 + 2
 ## the literals a .. a+l-1 after their extra count bytes; the next output position
-fn rtz_lits(o, s, a, l) = let o1 = (if l >= 15 then rtz_xl(o, l - 15) else o) in let m = __rt_memcpy(o1, s + a, l) in o1 + l
-fn rtz_xl(o, v) = if v >= 255 then (let w = store8(o, 255) in rtz_xl(o + 1, v - 255)) else let w = store8(o, v) in o + 1
+fn rtz_lits(o, s, a, l) =
+    let o1 = if l >= 15 then rtz_xl(o, l - 15) else o in
+    let m = __rt_memcpy(o1, s + a, l) in
+    o1 + l
+fn rtz_xl(o, v) = if v >= 255 then let w = store8(o, 255) in rtz_xl(o + 1, v - 255) else let w = store8(o, v) in o + 1
 fn rtz_end(o, s, n, a) = let w = store8(o, bit_shl(rt_mini(n - a, 15), 4)) in rtz_lits(o + 1, s, a, n - a)
 
 ## __rt_lz_dec(d, s, n, cap): decompress n bytes at s into d (room for cap); the output size, -1 for damaged input.
 ## o: output position, p: input position, e: input end, b: output start, z: output end; one sequence per turn.
 fn __rt_lz_dec(d, s, n, cap) = rlz_seq(d, s, s + n, d, d + cap)
-fn rlz_seq(o, p, e, b, z) = if p >= e then 0 - 1 else let t = load8(p) in let ll = rlz_vlen(p + 1, e, bit_shr(t, 4)) in if ll < 0 then 0 - 1 else let p1 = p + 1 + rlz_vbytes(bit_shr(t, 4), ll) in if p1 + ll > e or o + ll > z then 0 - 1 else let w = rlz_lmove(o, p1, e, z, ll) in let p2 = p1 + ll in let o2 = o + ll in if p2 == e then o2 - b else if p2 + 2 > e then 0 - 1 else let f = load8(p2) + load8(p2 + 1) * 256 in if f == 0 or o2 - f < b then 0 - 1 else let ml = rlz_vlen(p2 + 2, e, bit_and(t, 15)) in if ml < 0 then 0 - 1 else let p3 = p2 + 2 + rlz_vbytes(bit_and(t, 15), ml) in if o2 + ml + 4 > z then 0 - 1 else let w2 = rlz_copy(o2, o2 - f, ml + 4, z) in rlz_seq(o2 + ml + 4, p3, e, b, z)
+fn rlz_seq(o, p, e, b, z) =
+    if p >= e then
+        0 - 1
+    else
+        let t = load8(p) in
+        let ll = rlz_vlen(p + 1, e, bit_shr(t, 4)) in
+        if ll < 0 then
+            0 - 1
+        else
+            let p1 = p + 1 + rlz_vbytes(bit_shr(t, 4), ll) in
+            if p1 + ll > e or o + ll > z then
+                0 - 1
+            else
+                let w = rlz_lmove(o, p1, e, z, ll) in
+                let p2 = p1 + ll in
+                let o2 = o + ll in
+                if p2 == e then
+                    o2 - b
+                else if p2 + 2 > e then
+                    0 - 1
+                else
+                    let f = load8(p2) + load8(p2 + 1) * 256 in
+                    if f == 0 or o2 - f < b then
+                        0 - 1
+                    else
+                        let ml = rlz_vlen(p2 + 2, e, bit_and(t, 15)) in
+                        if ml < 0 then
+                            0 - 1
+                        else
+                            let p3 = p2 + 2 + rlz_vbytes(bit_and(t, 15), ml) in
+                            if o2 + ml + 4 > z then
+                                0 - 1
+                            else
+                                let w2 = rlz_copy(o2, o2 - f, ml + 4, z) in
+                                rlz_seq(o2 + ml + 4, p3, e, b, z)
 ## a length nibble and, when it is 15, the bytes after it (each adds its value; 255 means another follows); -1 when
 ## the input ends inside them. The bytes it took follow from the sum: every one but the last is 255.
 fn rlz_vlen(p, e, nib) = if nib < 15 then nib else rlz_vsum(p, e, 15)
-fn rlz_vsum(p, e, acc) = if p >= e then 0 - 1 else if load8(p) == 255 then rlz_vsum(p + 1, e, acc + 255) else acc + load8(p)
+fn rlz_vsum(p, e, acc) =
+    if p >= e then
+        0 - 1
+    else if load8(p) == 255 then
+        rlz_vsum(p + 1, e, acc + 255)
+    else
+        acc + load8(p)
 fn rlz_vbytes(nib, total) = if nib < 15 then 0 else (total - 15) / 255 + 1
 ## up to 8 literals move as one word when both sides have the room (as the assembly did), else byte by byte
-fn rlz_lmove(o, p, e, z, l) = if l <= 8 and p + 8 <= e and o + 8 <= z then store64(o, load64(p)) else __rt_memcpy(o, p, l)
+fn rlz_lmove(o, p, e, z, l) =
+    if l <= 8 and p + 8 <= e and o + 8 <= z then
+        store64(o, load64(p))
+    else
+        __rt_memcpy(o, p, l)
 ## a match: an offset under 8 overlaps the bytes being written, so byte by byte; else a word at a time while a whole
 ## word fits before z (the last word may run past the match, never past z), then byte by byte
 fn rlz_copy(o, m, l, z) = if o - m < 8 then rlz_bytes(o, m, l) else rlz_words(o, m, l, z)
 ## (two words per turn: the same stores, in the same order, as one word per turn)
-fn rlz_words(o, m, l, z) = if o + 8 > z then rlz_bytes(o, m, l) else let w = store64(o, load64(m)) in if l <= 8 then 0 else if o + 16 > z then rlz_bytes(o + 8, m + 8, l - 8) else let w2 = store64(o + 8, load64(m + 8)) in if l <= 16 then 0 else rlz_words(o + 16, m + 16, l - 16, z)
+fn rlz_words(o, m, l, z) =
+    if o + 8 > z then
+        rlz_bytes(o, m, l)
+    else
+        let w = store64(o, load64(m)) in
+        if l <= 8 then
+            0
+        else if o + 16 > z then
+            rlz_bytes(o + 8, m + 8, l - 8)
+        else
+            let w2 = store64(o + 8, load64(m + 8)) in
+            if l <= 16 then
+                0
+            else
+                rlz_words(o + 16, m + 16, l - 16, z)
 fn rlz_bytes(o, m, l) = if l == 0 then 0 else let w = store8(o, load8(m)) in rlz_bytes(o + 1, m + 1, l - 1)
 
 ## __rt_zsum(p, n): the 64-bit checksum of n bytes (8 at a time, then one by one), mixed with n
 fn __rt_zsum(p, n) = rzs_bytes(p, n, rzs_words(p, n, 0, 0 - 3750763034362895579), bit_and(n, 0 - 8))
 ## a logical shift right by 29 (bit_shr is arithmetic): the 35 bits that remain
-fn rzs_words(p, n, i, h) = if i + 8 > n then h else rzs_words(p, n, i + 8, rzs_mix(bit_xor(h, load64(p + i)) * (0 - 1640531535)))
+fn rzs_words(p, n, i, h) =
+    if i + 8 > n then
+        h
+    else
+        rzs_words(p, n, i + 8, rzs_mix(bit_xor(h, load64(p + i)) * (0 - 1640531535)))
 fn rzs_mix(h) = bit_xor(h, bit_and(bit_shr(h, 29), 34359738367))
-fn rzs_bytes(p, n, h, i) = if i >= n then bit_xor(h, n) else rzs_bytes(p, n, bit_xor(h, load8(p + i)) * (0 - 1640531535), i + 1)
+fn rzs_bytes(p, n, h, i) =
+    if i >= n then
+        bit_xor(h, n)
+    else
+        rzs_bytes(p, n, bit_xor(h, load8(p + i)) * (0 - 1640531535), i + 1)
 
 ## __lume_mem_pack(s): magic 0x1A31F14C ("LZ1\x1a"), the length (8 bytes), the checksum (8 bytes), the compressed
 ## bytes; __lume_mem_unpack checks all of it (a damaged pack stops with __rt_pack_msg) and gives the string back
-fn __lume_mem_pack(s) = if rt_isstrv(s) == 0 then __rt_not_str() else rtp_pack(rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s))
+fn __lume_mem_pack(s) =
+    if rt_isstrv(s) == 0 then
+        __rt_not_str()
+    else
+        rtp_pack(rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s))
 fn rtp_pack(p, n) = rtp_pack2(p, n, __lume_alloc_a(n + n / 255 + 40))
-fn rtp_pack2(p, n, c) = let w1 = store32(c, 439441996) in let w2 = store64(c + 4, n) in let w3 = store64(c + 12, __rt_zsum(p, n)) in __rt_mkstrn(c, __rt_lz_enc(c + 20, p, n) + 20)
-fn __lume_mem_unpack(s) = if rt_isstrv(s) == 0 then __rt_not_str() else rtp_unpack(rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s))
-fn rtp_unpack(p, n) = if n < 20 then rtp_bad() else if load32(p) != 439441996 then rtp_bad() else if load64(p + 4) < 0 then rtp_bad() else if load64(p + 4) > (n - 20) * 255 + 32 then rtp_bad() else rtp_unpack2(p, n, load64(p + 4), __rt_stralloc(load64(p + 4)))
-fn rtp_unpack2(p, n, m, r) = if __rt_lz_dec(r + 8, p + 20, n - 20, m) != m then rtp_bad() else if __rt_zsum(r + 8, m) != load64(p + 12) then rtp_bad() else if m <= 7 then __rt_mkstrn(r + 8, m) else r
+fn rtp_pack2(p, n, c) =
+    let w1 = store32(c, 439441996) in
+    let w2 = store64(c + 4, n) in
+    let w3 = store64(c + 12, __rt_zsum(p, n)) in
+    __rt_mkstrn(c, __rt_lz_enc(c + 20, p, n) + 20)
+fn __lume_mem_unpack(s) =
+    if rt_isstrv(s) == 0 then
+        __rt_not_str()
+    else
+        rtp_unpack(rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s))
+fn rtp_unpack(p, n) =
+    if n < 20 then
+        rtp_bad()
+    else if load32(p) != 439441996 then
+        rtp_bad()
+    else if load64(p + 4) < 0 then
+        rtp_bad()
+    else if load64(p + 4) > (n - 20) * 255 + 32 then
+        rtp_bad()
+    else
+        rtp_unpack2(p, n, load64(p + 4), __rt_stralloc(load64(p + 4)))
+fn rtp_unpack2(p, n, m, r) =
+    if __rt_lz_dec(r + 8, p + 20, n - 20, m) != m then
+        rtp_bad()
+    else if __rt_zsum(r + 8, m) != load64(p + 12) then
+        rtp_bad()
+    else if m <= 7 then
+        __rt_mkstrn(r + 8, m)
+    else
+        r
 fn rtp_bad() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_pack_msg"))

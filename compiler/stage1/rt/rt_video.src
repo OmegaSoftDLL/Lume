@@ -15,22 +15,109 @@ fn rtv_len(b) = bit_shr(load64(b), 8)
 ## --- BGRA -> I420 -------------------------------------------------------------------------------------------------
 ## Y = ((66 R + 129 G + 25 B + 128) >> 8) + 16 (= (... + 4224) >> 8), one row: sp the first pixel, yp the first Y
 ## byte, se the end of the row; few live values, so they stay in registers
-fn rtv_yrow(sp, yp, se) = if sp >= se then 0 else let a = load8(sp) * 25 in let b = load8(sp + 1) * 129 in let a2 = a + b in let b2 = load8(sp + 2) * 66 in let a3 = a2 + b2 in let z = store8(yp, bit_shr(a3 + 4224, 8)) in rtv_yrow(sp + 4, yp + 1, se)
-fn rtv_y(src, s, y, ww, r, hh) = if r >= hh then 0 else let sp = src + 8 + r * s in let z = rtv_yrow(sp, y + r * ww, sp + 4 * ww) in rtv_y(src, s, y, ww, r + 1, hh)
+fn rtv_yrow(sp, yp, se) =
+    if sp >= se then
+        0
+    else
+        let a = load8(sp) * 25 in
+        let b = load8(sp + 1) * 129 in
+        let a2 = a + b in
+        let b2 = load8(sp + 2) * 66 in
+        let a3 = a2 + b2 in
+        let z = store8(yp, bit_shr(a3 + 4224, 8)) in
+        rtv_yrow(sp + 4, yp + 1, se)
+fn rtv_y(src, s, y, ww, r, hh) =
+    if r >= hh then
+        0
+    else
+        let sp = src + 8 + r * s in
+        let z = rtv_yrow(sp, y + r * ww, sp + 4 * ww) in
+        rtv_y(src, s, y, ww, r + 1, hh)
 ## U = ((-38 R - 74 G + 112 B + 128) >> 8) + 128, V = ((112 R - 94 G - 18 B + 128) >> 8) + 128 on the 2x2 average;
 ## p0 the block's top-left pixel, ds the offset of the row below (0 on an odd last row), up the U byte, k = V - U
-fn rtv_crow(p0, ds, up, k, i, ww) = if 2 * i >= ww then 0 else let dx = (if 2 * i + 1 < ww then 4 else 0) in let p1 = p0 + ds in let b = bit_shr(load8(p0) + load8(p0 + dx) + load8(p1) + load8(p1 + dx) + 2, 2) in let g = bit_shr(load8(p0 + 1) + load8(p0 + dx + 1) + load8(p1 + 1) + load8(p1 + dx + 1) + 2, 2) in let r = bit_shr(load8(p0 + 2) + load8(p0 + dx + 2) + load8(p1 + 2) + load8(p1 + dx + 2) + 2, 2) in let zu = store8(up, bit_shr(112 * b - 74 * g - 38 * r + 32896, 8)) in let zv = store8(up + k, bit_shr(112 * r - 94 * g - 18 * b + 32896, 8)) in rtv_crow(p0 + 8, ds, up + 1, k, i + 1, ww)
+fn rtv_crow(p0, ds, up, k, i, ww) =
+    if 2 * i >= ww then
+        0
+    else
+        let dx = if 2 * i + 1 < ww then 4 else 0 in
+        let p1 = p0 + ds in
+        let b = bit_shr(load8(p0) + load8(p0 + dx) + load8(p1) + load8(p1 + dx) + 2, 2) in
+        let g = bit_shr(load8(p0 + 1) + load8(p0 + dx + 1) + load8(p1 + 1) + load8(p1 + dx + 1) + 2, 2) in
+        let r = bit_shr(load8(p0 + 2) + load8(p0 + dx + 2) + load8(p1 + 2) + load8(p1 + dx + 2) + 2, 2) in
+        let zu = store8(up, bit_shr(112 * b - 74 * g - 38 * r + 32896, 8)) in
+        let zv = store8(up + k, bit_shr(112 * r - 94 * g - 18 * b + 32896, 8)) in
+        rtv_crow(p0 + 8, ds, up + 1, k, i + 1, ww)
 ## chroma row j; dims = w * 65536 + h (six parameters at most in --raw)
-fn rtv_c(src, s, u, k, j, dims) = let ww = bit_shr(dims, 16) in let hh = bit_and(dims, 65535) in if 2 * j >= hh then 0 else let ds = (if 2 * j + 1 < hh then s else 0) in let z = rtv_crow(src + 8 + 2 * j * s, ds, u + j * bit_shr(ww + 1, 1), k, 0, ww) in rtv_c(src, s, u, k, j + 1, dims)
-fn buf_bgra_to_i420(src, stride, w, h, dst) = let s = rt_int(stride) in let ww = rt_int(w) in let hh = rt_int(h) in rtv_b2i(src, s, ww, hh, dst)
-fn rtv_b2i(src, s, ww, hh, dst) = let cw = bit_shr(ww + 1, 1) in let ch = bit_shr(hh + 1, 1) in let need = ww * hh + 2 * cw * ch in if rtv_isbuf(src) == 0 or rtv_isbuf(dst) == 0 or ww <= 0 or hh <= 0 or ww > 65535 or hh > 65535 or s < 4 * ww then mkint(0 - 1) else if rtv_len(src) < s * (hh - 1) + 4 * ww or rtv_len(dst) < need then mkint(0 - 1) else let y = dst + 8 in let z1 = rtv_y(src, s, y, ww, 0, hh) in let z2 = rtv_c(src, s, y + ww * hh, cw * ch, 0, ww * 65536 + hh) in mkint(need)
+fn rtv_c(src, s, u, k, j, dims) =
+    let ww = bit_shr(dims, 16) in
+    let hh = bit_and(dims, 65535) in
+    if 2 * j >= hh then
+        0
+    else
+        let ds = if 2 * j + 1 < hh then s else 0 in
+        let z = rtv_crow(src + 8 + 2 * j * s, ds, u + j * bit_shr(ww + 1, 1), k, 0, ww) in
+        rtv_c(src, s, u, k, j + 1, dims)
+fn buf_bgra_to_i420(src, stride, w, h, dst) =
+    let s = rt_int(stride) in
+    let ww = rt_int(w) in
+    let hh = rt_int(h) in
+    rtv_b2i(src, s, ww, hh, dst)
+fn rtv_b2i(src, s, ww, hh, dst) =
+    let cw = bit_shr(ww + 1, 1) in
+    let ch = bit_shr(hh + 1, 1) in
+    let need = ww * hh + 2 * cw * ch in
+    if rtv_isbuf(src) == 0 or rtv_isbuf(dst) == 0 or ww <= 0 or hh <= 0 or ww > 65535 or hh > 65535 or s < 4 * ww then
+        mkint(0 - 1)
+    else if rtv_len(src) < s * (hh - 1) + 4 * ww or rtv_len(dst) < need then
+        mkint(0 - 1)
+    else
+        let y = dst + 8 in
+        let z1 = rtv_y(src, s, y, ww, 0, hh) in
+        let z2 = rtv_c(src, s, y + ww * hh, cw * ch, 0, ww * 65536 + hh) in
+        mkint(need)
 
 ## --- I420 -> BGRA -------------------------------------------------------------------------------------------------
 ## C = Y - 16, D = U - 128, E = V - 128; B = (298 C + 516 D + 128) >> 8, G = (298 C - 100 D - 208 E + 128) >> 8,
 ## R = (298 C + 409 E + 128) >> 8, each clipped to 0..255; one row: up advances after every odd column. cc folds
 ## 298 * -16 + 128 and the +65536 that keeps the shift on a non-negative word (taken back as -256); no calls per pixel
-fn rtv_irow(yp, up, k, dp, c, ww) = if c >= ww then 0 else let cc = 298 * load8(yp) + 60896 in let d = load8(up) - 128 in let e = load8(up + k) - 128 in let xb = bit_shr(cc + 516 * d, 8) - 256 in let zb = store8(dp, if xb < 0 then 0 else if xb > 255 then 255 else xb) in let xg = bit_shr(cc - 100 * d - 208 * e, 8) - 256 in let zg = store8(dp + 1, if xg < 0 then 0 else if xg > 255 then 255 else xg) in let xr = bit_shr(cc + 409 * e, 8) - 256 in let zr = store8(dp + 2, if xr < 0 then 0 else if xr > 255 then 255 else xr) in let za = store8(dp + 3, 255) in rtv_irow(yp + 1, up + bit_and(c, 1), k, dp + 4, c + 1, ww)
+fn rtv_irow(yp, up, k, dp, c, ww) =
+    if c >= ww then
+        0
+    else
+        let cc = 298 * load8(yp) + 60896 in
+        let d = load8(up) - 128 in
+        let e = load8(up + k) - 128 in
+        let xb = bit_shr(cc + 516 * d, 8) - 256 in
+        let zb = store8(dp, if xb < 0 then 0 else if xb > 255 then 255 else xb) in
+        let xg = bit_shr(cc - 100 * d - 208 * e, 8) - 256 in
+        let zg = store8(dp + 1, if xg < 0 then 0 else if xg > 255 then 255 else xg) in
+        let xr = bit_shr(cc + 409 * e, 8) - 256 in
+        let zr = store8(dp + 2, if xr < 0 then 0 else if xr > 255 then 255 else xr) in
+        let za = store8(dp + 3, 255) in
+        rtv_irow(yp + 1, up + bit_and(c, 1), k, dp + 4, c + 1, ww)
 ## row r; rd = r * 2^32 + w * 65536 + h
-fn rtv_i(yp, up, k, dp, s, rd) = let r = bit_shr(rd, 32) in let ww = bit_and(bit_shr(rd, 16), 65535) in let hh = bit_and(rd, 65535) in if r >= hh then 0 else let z = rtv_irow(yp, up, k, dp, 0, ww) in rtv_i(yp + ww, up + (if bit_and(r, 1) == 1 then bit_shr(ww + 1, 1) else 0), k, dp + s, s, rd + 4294967296)
-fn buf_i420_to_bgra(src, w, h, dst, stride) = let ww = rt_int(w) in let hh = rt_int(h) in let s = rt_int(stride) in rtv_i2b(src, ww, hh, dst, s)
-fn rtv_i2b(src, ww, hh, dst, s) = let cw = bit_shr(ww + 1, 1) in let ch = bit_shr(hh + 1, 1) in if rtv_isbuf(src) == 0 or rtv_isbuf(dst) == 0 or ww <= 0 or hh <= 0 or ww > 65535 or hh > 65535 or s < 4 * ww then mkint(0 - 1) else if rtv_len(src) < ww * hh + 2 * cw * ch or rtv_len(dst) < s * (hh - 1) + 4 * ww then mkint(0 - 1) else let y = src + 8 in let z = rtv_i(y, y + ww * hh, cw * ch, dst + 8, s, ww * 65536 + hh) in mkint(s * (hh - 1) + 4 * ww)
+fn rtv_i(yp, up, k, dp, s, rd) =
+    let r = bit_shr(rd, 32) in
+    let ww = bit_and(bit_shr(rd, 16), 65535) in
+    let hh = bit_and(rd, 65535) in
+    if r >= hh then
+        0
+    else
+        let z = rtv_irow(yp, up, k, dp, 0, ww) in
+        rtv_i(yp + ww, up + (if bit_and(r, 1) == 1 then bit_shr(ww + 1, 1) else 0), k, dp + s, s, rd + 4294967296)
+fn buf_i420_to_bgra(src, w, h, dst, stride) =
+    let ww = rt_int(w) in
+    let hh = rt_int(h) in
+    let s = rt_int(stride) in
+    rtv_i2b(src, ww, hh, dst, s)
+fn rtv_i2b(src, ww, hh, dst, s) =
+    let cw = bit_shr(ww + 1, 1) in
+    let ch = bit_shr(hh + 1, 1) in
+    if rtv_isbuf(src) == 0 or rtv_isbuf(dst) == 0 or ww <= 0 or hh <= 0 or ww > 65535 or hh > 65535 or s < 4 * ww then
+        mkint(0 - 1)
+    else if rtv_len(src) < ww * hh + 2 * cw * ch or rtv_len(dst) < s * (hh - 1) + 4 * ww then
+        mkint(0 - 1)
+    else
+        let y = src + 8 in
+        let z = rtv_i(y, y + ww * hh, cw * ch, dst + 8, s, ww * 65536 + hh) in
+        mkint(s * (hh - 1) + 4 * ww)

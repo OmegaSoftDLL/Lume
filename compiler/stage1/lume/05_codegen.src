@@ -276,7 +276,7 @@ fn lregs2(args, ctx, a) = let b = lregs_leaf(args, 0, ctx, a) in lres(a.code + l
 fn lbuf_inline(nm, n) = if nm == "buf_get" and n == 2 then 1 else if nm == "buf_set" and n == 3 then 1 else 0
 fn lbuf_chk(lab) = "    movq %rsi, %rax\n    testb $1, %al\n    jz .Lb" + lab + "\n    sarq $1, %rax\n    js .Lb" + lab + "\n    testq %rdi, %rdi\n    jz .Lb" + lab + "\n    testq $7, %rdi\n    jnz .Lb" + lab + "\n    cmpb $15, (%rdi)\n    jne .Lb" + lab + "\n    movq (%rdi), %rcx\n    shrq $8, %rcx\n    cmpq %rcx, %rax\n    jge .Lb" + lab + "\n"
 fn lbuf_fast(nm, lab) = if nm == "buf_get" then lbuf_chk(lab) + "    movzbq 8(%rdi,%rax), %rax\n    leaq 1(%rax,%rax), %rax\n    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    call buf_get\n.Lc" + lab + ":\n" else lbuf_chk(lab) + "    movq %rdx, %r11\n    sarq $1, %r11\n    jnc .Lb" + lab + "\n    testq %r11, %r11\n    js .Lb" + lab + "\n    cmpq $255, %r11\n    jg .Lb" + lab + "\n    movq %rax, %rcx\n    movq %r11, %rax\n    movb %al, 8(%rdi,%rcx)\n    movq %rdi, %rax\n    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    call buf_set\n.Lc" + lab + ":\n"
-fn lcall(nm, args, ctx, s) = let n = len(args) in if n <= 6 then (let rg = lregs(args, ctx, s) in if lbuf_inline(nm, n) == 1 then lres(rg.code + lbuf_fast(nm, rg.pfx + str(rg.nl)), lnext(rg)) else lres(rg.code + "    call " + nm + "\n", rg)) else (let nst = n - 6 in let spad = if nst % 2 == 1 then (nst + 1) * 8 else nst * 8 in let rg = lregargs(args, 0, 6, ctx, s) in let st = lstackltr(drop(args, 6), 0, ctx, rg) in lres("    subq $" + str(spad) + ", %rsp\n" + rg.code + st.code + lpops(5) + "    call " + nm + "\n    addq $" + str(spad) + ", %rsp\n", st))
+fn lcall(nm, args, ctx, s) = let n = len(args) in if n <= 6 then (let rg = lregs(args, ctx, s) in if lbuf_inline(nm, n) == 1 then lres(rg.code + (if ctx.gp != "" then ifp_bufsel(nm, args, ctx, rg.pfx + str(rg.nl)) else lbuf_fast(nm, rg.pfx + str(rg.nl))), lnext(rg)) else lres(rg.code + "    call " + nm + "\n", rg)) else (let nst = n - 6 in let spad = if nst % 2 == 1 then (nst + 1) * 8 else nst * 8 in let rg = lregargs(args, 0, 6, ctx, s) in let st = lstackltr(drop(args, 6), 0, ctx, rg) in lres("    subq $" + str(spad) + ", %rsp\n" + rg.code + st.code + lpops(5) + "    call " + nm + "\n    addq $" + str(spad) + ", %rsp\n", st))
 
 ## --- constructors and records: args evaluated in order, then popped into a fresh k*8-byte block ---
 fn lcell(lab, vals, n, ctx, s) = let a = lregs_eval(vals, ctx, s) in let b = lfields_leaf(vals, 8, ctx, a) in lres(a.code + "    movq $" + str((n + 1) * 8) + ", %rdi\n    call alloc\n    leaq " + lab + "(%rip), %rcx\n    movq %rcx, (%rax)\n" + lfields_pop(vals, 8) + b.code, b)
@@ -337,11 +337,11 @@ fn labind(p, acc, locals) = match p
 fn labinds(subs, k, acc, locals) = match subs
     Nil        => ""
     Cons(h, t) => labind(h, lacck(acc, k), locals) + labinds(t, k + 1, acc, locals)
-fn lmatch(lab, ctx, sc, arms, s1) = let c2 = {locals: ctx.locals, bound: ctx.bound, dvars: ctx.dvars, depth: ctx.depth + 1, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl} in lmatch1(lab, lslot(lidxof(ctx.locals, "_sd" + str(ctx.depth))), arms, c2, lax(sc, c2, s1))
+fn lmatch(lab, ctx, sc, arms, s1) = let c2 = {locals: ctx.locals, bound: ctx.bound, dvars: ctx.dvars, depth: ctx.depth + 1, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl, sm: ctx.sm, gp: ctx.gp} in lmatch1(lab, lslot(lidxof(ctx.locals, "_sd" + str(ctx.depth))), arms, c2, lax(sc, c2, s1))
 fn lmatch1(lab, soff, arms, c2, scr) = let ar = lmarms(lab, 0, "    movq " + soff + "(%rbp), %rax\n", arms, c2, scr) in lres(scr.code + "    movq %rax, " + soff + "(%rbp)\n" + ar.code + ".Lm" + lab + "_" + str(len(arms)) + ":\n    jmp __rt_no_match\n.Lm" + lab + "_end:\n", ar)
 fn lmarms(lab, i, acc, arms, c2, s) = match arms
     Nil        => lres("", s)
-    Cons(h, t) => lmarm(lab, i, acc, h, t, c2, lax(h.body, {locals: c2.locals, bound: app(c2.bound, lpatbinds(h.pat)), dvars: c2.dvars, depth: c2.depth, fnm: c2.fnm, nparams: c2.nparams, tlbl: c2.tlbl}, s))
+    Cons(h, t) => lmarm(lab, i, acc, h, t, c2, lax(h.body, {locals: c2.locals, bound: app(c2.bound, lpatbinds(h.pat)), dvars: c2.dvars, depth: c2.depth, fnm: c2.fnm, nparams: c2.nparams, tlbl: c2.tlbl, sm: c2.sm, gp: c2.gp}, s))
 fn lmarm(lab, i, acc, h, t, c2, bd) = lmarm2(lab, i, acc, h, t, c2, bd, latest(h.pat, acc, ".Lm" + lab + "_" + str(i + 1), bd))
 fn lmarm2(lab, i, acc, h, t, c2, bd, ts) = let rest = lmarms(lab, i + 1, acc, t, c2, ts) in lres(".Lm" + lab + "_" + str(i) + ":\n" + ts.code + labind(h.pat, acc, c2.locals) + bd.code + "    jmp .Lm" + lab + "_end\n" + rest.code, rest)
 
@@ -370,11 +370,14 @@ fn limmword(e) = match e
     _      => 0
 
 ## --- flags of a comparison: integers compare as words (2a+1 < 2b+1 exactly when a < b), anything else goes to cmpv ---
-fn lcmpflags(l, r, ctx, s) = if lsmallnum(r) == 1 then lcmpflags_imm(l, lnumval(r), s.pfx + str(s.nl), ctx, lnext(s)) else lcmpflags_gen(s.pfx + str(s.nl), lbinargs(l, r, ctx, lnext(s)))
+fn lcmpflags(l, r, ctx, s) = if ctx.gp != "" then ifp_cmpflags(l, r, ctx, s) else if lsmallnum(r) == 1 then lcmpflags_imm(l, lnumval(r), s.pfx + str(s.nl), ctx, lnext(s)) else lcmpflags_gen(s.pfx + str(s.nl), lbinargs(l, r, ctx, lnext(s)))
 fn lcmpflags_gen(lab, a) = lres(a.code + "    movq %rdi, %rax\n    andq %rsi, %rax\n    testb $1, %al\n    jz .Lb" + lab + "\n    cmpq %rsi, %rdi\n    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    call cmpv\n    cmpq $0, %rax\n.Lc" + lab + ":\n", a)
 fn lcmpflags_imm(l, k, lab, ctx, s) = let a = lax(l, ctx, s) in let w = str(lintword(k)) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    cmpq $" + w + ", %rax\n    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + w + ", %rsi\n    call cmpv\n    cmpq $0, %rax\n.Lc" + lab + ":\n", a)
 ## equality: a value has one form, so an immediate literal is equal to `x` exactly when the two words are equal
-fn leqflags(l, r, ctx, s) = if limm(r) == 1 then leqimm(lax(l, ctx, s), limmword(r)) else if limm(l) == 1 then leqimm(lax(r, ctx, s), limmword(l)) else leqgen(lbinargs(l, r, ctx, s))
+fn leqflags(l, r, ctx, s) = if limm(r) == 1 then leqimm(lax(l, ctx, s), limmword(r)) else if limm(l) == 1 then leqimm(lax(r, ctx, s), limmword(l)) else if ifp_small(l, ctx) == 1 and ifp_small(r, ctx) == 1 then ifp_eq(lbinargs(l, r, ctx, s)) else leqgen(lbinargs(l, r, ctx, s))
+## two known-small ints are equal exactly when their words are (ZF, as `call eqv; cmpq $1, %rax` leaves it)
+fn ifp_eq(a) = lres(a.code + "    cmpq %rsi, %rdi\n", a)
+fn ifp_cmpflags(l, r, ctx, s) = if lsmallnum(r) == 1 then ifp_cmpimm(l, lnumval(r), s.pfx + str(s.nl), ctx, lnext(s)) else ifp_cmpgen(s.pfx + str(s.nl), l, r, ctx, lbinargs(l, r, ctx, lnext(s)))
 fn leqimm(a, w) = lres(a.code + lcmpword(w), a)
 fn leqgen(a) = lres(a.code + "    call eqv\n    cmpq $1, %rax\n", a)
 fn lsete(a, cc) = lres(a.code + "    " + cc + " %al\n    movzbq %al, %rax\n    leaq 1(%rax,%rax), %rax\n", a)
@@ -390,12 +393,12 @@ fn lbin_sub(lab) = lboth(lab) + "    leaq -1(%rsi), %rcx\n    movq %rdi, %rax\n 
 fn lbin_mul(lab) = lboth(lab) + "    movq %rdi, %rax\n    sarq $1, %rax\n    leaq -1(%rsi), %rcx\n    imulq %rcx, %rax\n    jo .Lb" + lab + "\n    incq %rax\n    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    call __rt_mul\n.Lc" + lab + ":\n"
 fn lbin_code(lab, op) = if op == "+" then lbin_add(lab) else if op == "-" then lbin_sub(lab) else if op == "*" then lbin_mul(lab) else "    call " + lbin_rt(op) + "\n"
 fn lbin_gen(lab, op, a) = lres(a.code + lbin_code(lab, op), a)
-fn ladd_imm(lab, l, k, ctx, s) = let a = lax(l, ctx, s) in let d = str(k + k) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    addq $" + d + ", %rax\n    jno .Lc" + lab + "\n    subq $" + d + ", %rax\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call addv\n.Lc" + lab + ":\n", a)
-fn lsub_imm(lab, l, k, ctx, s) = let a = lax(l, ctx, s) in let d = str(k + k) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    subq $" + d + ", %rax\n    jno .Lc" + lab + "\n    addq $" + d + ", %rax\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call __rt_sub\n.Lc" + lab + ":\n", a)
+fn ladd_imm(lab, l, k, ctx, s) = if ctx.gp != "" then ifp_addsub_imm(lab, 1, l, k, ctx, s) else let a = lax(l, ctx, s) in let d = str(k + k) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    addq $" + d + ", %rax\n    jno .Lc" + lab + "\n    subq $" + d + ", %rax\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call addv\n.Lc" + lab + ":\n", a)
+fn lsub_imm(lab, l, k, ctx, s) = if ctx.gp != "" then ifp_addsub_imm(lab, 0, l, k, ctx, s) else let a = lax(l, ctx, s) in let d = str(k + k) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    subq $" + d + ", %rax\n    jno .Lc" + lab + "\n    addq $" + d + ", %rax\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call __rt_sub\n.Lc" + lab + ":\n", a)
 ## x % k and x / k for a literal k >= 2: a small x is divided in place (truncating, as __rt_imod / __rt_idiv; no zero
 ## divisor, no overflow); a boxed or non-integer x goes to the runtime
-fn ldivmod_imm(lab, op, l, k, ctx, s) = let a = lax(l, ctx, s) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    sarq $1, %rax\n    cqto\n    movq $" + str(k) + ", %rcx\n    idivq %rcx\n" + (if op == "%" then "    leaq 1(%rdx,%rdx), %rax\n" else "    leaq 1(%rax,%rax), %rax\n") + "    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call " + lbin_rt(op) + "\n.Lc" + lab + ":\n", a)
-fn lbin_arith(op, l, r, ctx, s) = let lab = s.pfx + str(s.nl) in if (op == "%" or op == "/") and lsmallnum(r) == 1 and lnumval(r) >= 2 then ldivmod_imm(lab, op, l, lnumval(r), ctx, lnext(s)) else if op == "+" and lsmallnum(r) == 1 then ladd_imm(lab, l, lnumval(r), ctx, lnext(s)) else if op == "-" and lsmallnum(r) == 1 then lsub_imm(lab, l, lnumval(r), ctx, lnext(s)) else lbin_gen(lab, op, lbinargs(l, r, ctx, lnext(s)))
+fn ldivmod_imm(lab, op, l, k, ctx, s) = if ctx.gp != "" then ifp_divmod(lab, op, l, k, ctx, s) else let a = lax(l, ctx, s) in lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    sarq $1, %rax\n    cqto\n    movq $" + str(k) + ", %rcx\n    idivq %rcx\n" + (if op == "%" then "    leaq 1(%rdx,%rdx), %rax\n" else "    leaq 1(%rax,%rax), %rax\n") + "    jmp .Lc" + lab + "\n.Lb" + lab + ":\n    movq %rax, %rdi\n    movq $" + str(lintword(k)) + ", %rsi\n    call " + lbin_rt(op) + "\n.Lc" + lab + ":\n", a)
+fn lbin_arith(op, l, r, ctx, s) = let lab = s.pfx + str(s.nl) in if (op == "%" or op == "/") and lsmallnum(r) == 1 and lnumval(r) >= 2 then ldivmod_imm(lab, op, l, lnumval(r), ctx, lnext(s)) else if op == "+" and lsmallnum(r) == 1 then ladd_imm(lab, l, lnumval(r), ctx, lnext(s)) else if op == "-" and lsmallnum(r) == 1 then lsub_imm(lab, l, lnumval(r), ctx, lnext(s)) else if ctx.gp != "" then ifp_bin(lab, op, l, r, ctx, lbinargs(l, r, ctx, lnext(s))) else lbin_gen(lab, op, lbinargs(l, r, ctx, lnext(s)))
 fn lbin_tag(op, l, r, ctx, s) = if op == "==" then lsete(leqflags(l, r, ctx, s), "sete") else if op == "!=" then lsete(leqflags(l, r, ctx, s), "setne") else if op == "<" or op == ">" or op == "<=" or op == ">=" then lsete(lcmpflags(l, r, ctx, s), lsetcc(op)) else lbin_arith(op, l, r, ctx, s)
 fn lbin_dec(op, a) = lres(a.code + ldec_tail(op), a)
 fn lisdec2(l, r, ctx) = ldec_expr(l, ctx.dvars) and ldec_expr(r, ctx.dvars)
@@ -414,7 +417,7 @@ fn lcond_and(l, r, j, ctx, s) = if j.sense == 0 then lcond_same(l, r, j, ctx, s)
 fn lcond_or(l, r, j, ctx, s) = if j.sense == 1 then lcond_same(l, r, j, ctx, s) else lcond_skip(l, r, j, 1, ctx, s)
 fn lbin(op, l, r, ctx, s) = if lisdec2(l, r, ctx) then lbin_dec(op, lbinargs(l, r, ctx, s)) else lbin_tag(op, l, r, ctx, s)
 fn lif(c, t, e2, ctx, s) = let lab = s.pfx + str(s.nl) in let cr = lcond(c, ".Le" + lab, 0, ctx, lnext(s)) in let tr = lax(t, ctx, cr) in let er = lax(e2, ctx, tr) in lres(cr.code + tr.code + "    jmp .Lx" + lab + "\n.Le" + lab + ":\n" + er.code + ".Lx" + lab + ":\n", er)
-fn llet(nm, v, vr, b, ctx) = let inner = {locals: ctx.locals, bound: app(ctx.bound, Cons(nm, Nil)), dvars: if ldec_expr(v, ctx.dvars) then Cons(nm, ldec_remove(ctx.dvars, nm)) else ldec_remove(ctx.dvars, nm), depth: ctx.depth, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl} in let br = lax(b, inner, vr) in lres(vr.code + "    movq %rax, " + lslot(lidxof(ctx.locals, nm)) + "(%rbp)\n" + br.code, br)
+fn llet(nm, v, vr, b, ctx) = let inner = {locals: ctx.locals, bound: app(ctx.bound, Cons(nm, Nil)), dvars: if ldec_expr(v, ctx.dvars) then Cons(nm, ldec_remove(ctx.dvars, nm)) else ldec_remove(ctx.dvars, nm), depth: ctx.depth, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl, sm: ifp_letsm(nm, v, ctx), gp: ctx.gp} in let br = lax(b, inner, vr) in lres(vr.code + "    movq %rax, " + lslot(lidxof(ctx.locals, nm)) + "(%rbp)\n" + br.code, br)
 fn lreuse1(args, ctx, s) = let ar = lstackargs(args, ctx, s) in lres(ar.code + "    popq %rsi\n    popq %rax\n    movq %rsi, 8(%rax)\n", ar)
 fn lreuse2(args, ctx, s) = let ar = lstackargs(args, ctx, s) in lres(ar.code + "    popq %rdx\n    popq %rsi\n    popq %rax\n    movq %rsi, 8(%rax)\n    movq %rdx, 16(%rax)\n", ar)
 fn lbv2_op(nm) = if nm == "bv_xor" or nm == "bit_xor" then "    xorq %rcx, %rax\n" else if nm == "bv_and" or nm == "bit_and" then "    andq %rcx, %rax\n" else if nm == "bv_or" or nm == "bit_or" then "    orq %rcx, %rax\n" else if nm == "bv_shl" or nm == "bit_shl" then "    salq %cl, %rax\n" else if nm == "bv_shr" or nm == "bit_shr" then "    sarq %cl, %rax\n" else if nm == "bv_add_u8" then "    addq %rcx, %rax\n    andq $255, %rax\n" else if nm == "bv_sub_u8" then "    subq %rcx, %rax\n    andq $255, %rax\n" else "    imulq %rcx, %rax\n    andq $255, %rax\n"
@@ -494,15 +497,15 @@ fn lax(e, ctx, s) = match e
 ## the value of `e` pushed on the stack (arguments past the sixth, reuse, bit operations)
 fn laexpr(e, ctx, s) = lpush(lax(e, ctx, s))
 fn lpush(r) = lres(r.code + "    pushq %rax\n", r)
-fn lcall_tail(args, ctx, s) = let m = len(args) in if m <= 6 then (let rg = lregs(args, ctx, s) in lres(rg.code + "    jmp " + ctx.tlbl + "\n", rg)) else (let st = lstackargs(args, ctx, s) in lres(st.code + lpopslots(m - 1) + "    jmp " + ctx.tlbl + "\n", st))
+fn lcall_tail(args, ctx, s) = let m = len(args) in if m <= 6 then (let rg = lregs(args, ctx, s) in lres(rg.code + "    jmp " + ifp_tgt(args, ctx) + "\n", rg)) else (let st = lstackargs(args, ctx, s) in lres(st.code + lpopslots(m - 1) + "    jmp " + ctx.tlbl + "\n", st))
 fn lcallx_tail(nm, args, ctx, s) = if ctx.fnm != "" and nm == ctx.fnm and isctor(nm) == 0 and len(args) == ctx.nparams then lcall_tail(args, ctx, s) else lcallx(nm, args, ctx, s)
-fn lif_tail(c, t, e2, ctx, s) = let lab = s.pfx + str(s.nl) in let cr = lcond(c, ".Le" + lab, 0, ctx, lnext(s)) in let tr = laexpr_tail(t, ctx, cr) in let er = laexpr_tail(e2, ctx, tr) in lres(cr.code + tr.code + "    jmp .Lx" + lab + "\n.Le" + lab + ":\n" + er.code + ".Lx" + lab + ":\n", er)
-fn llet_tail(nm, v, vr, b, ctx) = let inner = {locals: ctx.locals, bound: app(ctx.bound, Cons(nm, Nil)), dvars: if ldec_expr(v, ctx.dvars) then Cons(nm, ldec_remove(ctx.dvars, nm)) else ldec_remove(ctx.dvars, nm), depth: ctx.depth, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl} in let br = laexpr_tail(b, inner, vr) in lres(vr.code + "    movq %rax, " + lslot(lidxof(ctx.locals, nm)) + "(%rbp)\n" + br.code, br)
-fn lmatch_tail(lab, ctx, sc, arms, s1) = let c2 = {locals: ctx.locals, bound: ctx.bound, dvars: ctx.dvars, depth: ctx.depth + 1, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl} in lmatch1_tail(lab, lslot(lidxof(ctx.locals, "_sd" + str(ctx.depth))), arms, c2, lax(sc, c2, s1))
+fn lif_tail(c, t, e2, ctx, s) = if ctx.gp != "" and ifp_flip(c, t, e2, ctx) == 1 then ifp_iftail(c, t, e2, ctx, s) else let lab = s.pfx + str(s.nl) in let cr = lcond(c, ".Le" + lab, 0, ctx, lnext(s)) in let tr = laexpr_tail(t, ctx, cr) in let er = laexpr_tail(e2, ctx, tr) in lres(cr.code + tr.code + "    jmp .Lx" + lab + "\n.Le" + lab + ":\n" + er.code + ".Lx" + lab + ":\n", er)
+fn llet_tail(nm, v, vr, b, ctx) = let inner = {locals: ctx.locals, bound: app(ctx.bound, Cons(nm, Nil)), dvars: if ldec_expr(v, ctx.dvars) then Cons(nm, ldec_remove(ctx.dvars, nm)) else ldec_remove(ctx.dvars, nm), depth: ctx.depth, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl, sm: ifp_letsm(nm, v, ctx), gp: ctx.gp} in let br = laexpr_tail(b, inner, vr) in lres(vr.code + "    movq %rax, " + lslot(lidxof(ctx.locals, nm)) + "(%rbp)\n" + br.code, br)
+fn lmatch_tail(lab, ctx, sc, arms, s1) = let c2 = {locals: ctx.locals, bound: ctx.bound, dvars: ctx.dvars, depth: ctx.depth + 1, fnm: ctx.fnm, nparams: ctx.nparams, tlbl: ctx.tlbl, sm: ctx.sm, gp: ctx.gp} in lmatch1_tail(lab, lslot(lidxof(ctx.locals, "_sd" + str(ctx.depth))), arms, c2, lax(sc, c2, s1))
 fn lmatch1_tail(lab, soff, arms, c2, scr) = let ar = lmarms_tail(lab, 0, "    movq " + soff + "(%rbp), %rax\n", arms, c2, scr) in lres(scr.code + "    movq %rax, " + soff + "(%rbp)\n" + ar.code + ".Lm" + lab + "_" + str(len(arms)) + ":\n    jmp __rt_no_match\n.Lm" + lab + "_end:\n", ar)
 fn lmarms_tail(lab, i, acc, arms, c2, s) = match arms
     Nil        => lres("", s)
-    Cons(h, t) => lmarm_tail(lab, i, acc, h, t, c2, laexpr_tail(h.body, {locals: c2.locals, bound: app(c2.bound, lpatbinds(h.pat)), dvars: c2.dvars, depth: c2.depth, fnm: c2.fnm, nparams: c2.nparams, tlbl: c2.tlbl}, s))
+    Cons(h, t) => lmarm_tail(lab, i, acc, h, t, c2, laexpr_tail(h.body, {locals: c2.locals, bound: app(c2.bound, lpatbinds(h.pat)), dvars: c2.dvars, depth: c2.depth, fnm: c2.fnm, nparams: c2.nparams, tlbl: c2.tlbl, sm: c2.sm, gp: c2.gp}, s))
 fn lmarm_tail(lab, i, acc, h, t, c2, bd) = lmarm2_tail(lab, i, acc, h, t, c2, bd, latest(h.pat, acc, ".Lm" + lab + "_" + str(i + 1), bd))
 fn lmarm2_tail(lab, i, acc, h, t, c2, bd, ts) = let rest = lmarms_tail(lab, i + 1, acc, t, c2, ts) in lres(".Lm" + lab + "_" + str(i) + ":\n" + ts.code + labind(h.pat, acc, c2.locals) + bd.code + "    jmp .Lm" + lab + "_end\n" + rest.code, rest)
 fn laexpr_tail(e, ctx, s) = match e
@@ -820,7 +823,188 @@ fn lafn_typed(nm, params, body0, dvars, s) = if lct_has(s.cts, nm) == 1 then lct
 ## table: plain `lumec < file` stays byte-identical to the seed's oracle); a small loop otherwise ran at half or
 ## full speed depending on where the code before it ended
 fn lcode_al() = if os_getenv("LUME_SRC_MAP") != "" then "    .p2align 5\n" else ""
-fn lafn_ord(nm, params, body0, dvars, s) = let body = lsra_expr(lalpha(lcf(body0), params)) in let locals = app(params, app(lcollect(body), lsds(0, lmdepth(body)))) in let frame = lframe(len(locals)) in let tlbl = s.pfx + ".Ltail_" + nm in let br = laexpr_tail(body, {locals: locals, bound: params, dvars: dvars, depth: 0, fnm: nm, nparams: len(params), tlbl: tlbl}, s) in let sub = if frame > 0 then "    subq $" + str(frame) + ", %rsp\n" else "" in let pentry = if len(params) <= 6 then lcode_al() + tlbl + ":\n" + lparams(params, 0) else lparams(params, 0) + tlbl + ":\n" in let dbg = ldbg_on() in lres(lcode_al() + nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n" + sub + pentry + (if dbg then ldbg_enter(nm, len(params), len(locals)) else "") + br.code + (if dbg then ldbg_leave(nm) else "") + "    movq %rbp, %rsp\n    popq %rbp\n    ret\n" + (if dbg then ldbg_block(nm, locals, len(params)) else ""), br)
+fn lafn_ord(nm, params, body0, dvars, s) = let body = lsra_expr(lalpha(lcf(body0), params)) in let locals = app(params, app(lcollect(body), lsds(0, lmdepth(body)))) in lafn_ord2(nm, params, body, dvars, s, {locals: locals, frame: lframe(len(locals)), tlbl: s.pfx + ".Ltail_" + nm})
+fn lafn_ord2(nm, params, body, dvars, s, fr) = if ifp_ok(nm, params, body, dvars, fr.locals) == 1 then ifp_fn(nm, params, body, dvars, s, fr) else lafn_gen(nm, params, body, dvars, s, fr)
+fn lafn_gen(nm, params, body, dvars, s, fr) = let locals = fr.locals in let frame = fr.frame in let tlbl = fr.tlbl in let br = laexpr_tail(body, {locals: locals, bound: params, dvars: dvars, depth: 0, fnm: nm, nparams: len(params), tlbl: tlbl, sm: Nil, gp: ""}, s) in let sub = if frame > 0 then "    subq $" + str(frame) + ", %rsp\n" else "" in let pentry = if len(params) <= 6 then lcode_al() + tlbl + ":\n" + lparams(params, 0) else lparams(params, 0) + tlbl + ":\n" in let dbg = ldbg_on() in lres(lcode_al() + nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n" + sub + pentry + (if dbg then ldbg_enter(nm, len(params), len(locals)) else "") + br.code + (if dbg then ldbg_leave(nm) else "") + "    movq %rbp, %rsp\n    popq %rbp\n    ret\n" + (if dbg then ldbg_block(nm, locals, len(params)) else ""), br)
+
+## --- loop specialization: integer fast paths without tag tests (2026-11-21) -----------------------------------------
+## An int is a tagged word 2n+1 when n fits 63 bits and a boxed cell otherwise, so knowing that a value is an `int` does
+## not remove its tag test; knowing that it is a SMALL int does. A self-tail-recursive function (a loop) whose body is
+## plain integer code (literals, variables, operators, if, let, calls) is emitted twice:
+##   nm:  prologue; .Lguard_nm: the K parameters (those used as integers: operand of + - * < <= > >=, index of buf_get /
+##        buf_set) all odd in their argument registers, else jz .Lgen_nm
+##   .Ltail_nm: parameters to their slots, then the SPECIALIZED body; epilogue; its cold stubs
+##   .Lgen_nm:  parameters to their slots, then the ordinary body (its self tail calls jump to .Lgen_nm); epilogue
+## Both bodies are generated from the same tree with the same label numbers (the specialized one with the prefix + "Zq"),
+## so every operation of the specialized body has its twin in the ordinary one. In the specialized body a value is
+## KNOWN SMALL (ctx.sm) when it is a K parameter, a literal, a buf_get result, a let of a known-small value, or the
+## result of + - * (and / % by a literal >= 2): those operations take their fast path or leave the specialized body
+## (deopt): the slow path computes exactly what the ordinary code computes (same runtime routine, same arguments, same
+## stack depth) and jumps to the twin's join label .Lc, so execution goes on in the ordinary body with the same value,
+## the same slots and the same pushed words; overflow beyond 63 bits still boxes and beyond 64 bits still stops with
+## the same message. A known-small operand skips its tag test; two known-small operands compare with one cmpq; a
+## known-small index skips buf_get's tag test; slow paths are laid out after the epilogue so the fast path falls through.
+## A self tail call of the specialized body goes back to .Ltail_nm when every K argument is known small, else to the
+## guard. ctx.gp is "" outside a specialized body, else "@" + the ordinary label prefix; ctx.sm lists the known-small
+## names and, as "#k:" + name, the K parameters.
+fn ifp_ok(nm, params, body, dvars, locals) = if ldbg_on() then 0 else if len(params) < 1 or len(params) > 6 or isnil(dvars) == 0 then 0 else if ifp_elig(body, locals) == 0 or ifp_size(body) > 400 then 0 else if ifp_tself(body, nm, len(params)) == 0 then 0 else if isnil(ifp_kparams(params, body)) == 1 then 0 else 1
+fn ifp_mem(xs, x) = match xs
+    Nil        => 0
+    Cons(h, t) => if h == x then 1 else ifp_mem(t, x)
+fn ifp_drop(xs, x) = match xs
+    Nil        => Nil
+    Cons(h, t) => if h == x then ifp_drop(t, x) else Cons(h, ifp_drop(t, x))
+fn ifp_hd(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn ifp_tl(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn ifp_nth1(xs) = match xs
+    Nil        => Num(0)
+    Cons(h, t) => ifp_nth1b(t)
+fn ifp_nth1b(xs) = match xs
+    Nil        => Num(0)
+    Cons(h, t) => h
+fn ifp_elig(e, ls) = match e
+    Num(n)          => 1
+    Var(nm)         => if isctor(nm) then 0 else 1
+    Bin(op, l, r)   => if ifp_elig(l, ls) == 1 then ifp_elig(r, ls) else 0
+    If(c, t, e2)    => if ifp_elig(c, ls) == 1 and ifp_elig(t, ls) == 1 then ifp_elig(e2, ls) else 0
+    LetIn(nm, v, b) => if ifp_elig(v, ls) == 1 then ifp_elig(b, ls) else 0
+    Call(nm, args)  => if isctor(nm) or nm == "_constlist_" or ifp_mem(ls, nm) == 1 then 0 else ifp_eligs(args, ls)
+    _               => 0
+fn ifp_eligs(xs, ls) = match xs
+    Nil        => 1
+    Cons(h, t) => if ifp_elig(h, ls) == 1 then ifp_eligs(t, ls) else 0
+fn ifp_size(e) = match e
+    Bin(op, l, r)   => 1 + ifp_size(l) + ifp_size(r)
+    If(c, t, e2)    => 1 + ifp_size(c) + ifp_size(t) + ifp_size(e2)
+    LetIn(nm, v, b) => 1 + ifp_size(v) + ifp_size(b)
+    Call(nm, args)  => 1 + ifp_sizes(args)
+    _               => 1
+fn ifp_sizes(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => ifp_size(h) + ifp_sizes(t)
+fn ifp_tself(e, nm, n) = match e
+    If(c, t, e2)    => if ifp_tself(t, nm, n) == 1 then 1 else ifp_tself(e2, nm, n)
+    LetIn(x, v, b)  => ifp_tself(b, nm, n)
+    Call(f, args)   => if f == nm and len(args) == n then 1 else 0
+    _               => 0
+fn ifp_isv(e, p) = match e
+    Var(x) => if x == p then 1 else 0
+    _      => 0
+fn ifp_iop(op, l) = if op == "+" then (if lstr_chain_head(l) == 1 then 0 else 1) else if op == "-" or op == "*" or op == "<" or op == "<=" or op == ">" or op == ">=" then 1 else 0
+fn ifp_iuse(p, e) = match e
+    Bin(op, l, r)   => if ifp_iop(op, l) == 1 and (ifp_isv(l, p) == 1 or ifp_isv(r, p) == 1) then 1 else if ifp_iuse(p, l) == 1 then 1 else ifp_iuse(p, r)
+    If(c, t, e2)    => if ifp_iuse(p, c) == 1 or ifp_iuse(p, t) == 1 then 1 else ifp_iuse(p, e2)
+    LetIn(x, v, b)  => if ifp_iuse(p, v) == 1 then 1 else ifp_iuse(p, b)
+    Call(f, args)   => if (f == "buf_get" or f == "buf_set") and ifp_isv(ifp_nth1(args), p) == 1 then 1 else ifp_iuses(p, args)
+    _               => 0
+fn ifp_iuses(p, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if ifp_iuse(p, h) == 1 then 1 else ifp_iuses(p, t)
+fn ifp_kparams(ps, body) = match ps
+    Nil        => Nil
+    Cons(h, t) => if ifp_iuse(h, body) == 1 then Cons(h, ifp_kparams(t, body)) else ifp_kparams(t, body)
+fn ifp_kmarks(ks) = match ks
+    Nil        => Nil
+    Cons(h, t) => Cons("#k:" + h, ifp_kmarks(t))
+## B parameters: the buffer of a buf_get / buf_set that every self tail call passes back unchanged (the parameter itself,
+## or buf_set(it, ...), which returns its buffer) and no let rebinds; the guard checks once that each is a buffer
+fn ifp_bparams(ps, i, body, k) = match ps
+    Nil        => Nil
+    Cons(h, t) => if ifp_mem(k.ks, h) == 0 and ifp_buse(h, body) == 1 and ifp_binds(h, body) == 0 and ifp_tpass(body, k, i, h) == 1 then Cons(h, ifp_bparams(t, i + 1, body, k)) else ifp_bparams(t, i + 1, body, k)
+fn ifp_bmarks(bs) = match bs
+    Nil        => Nil
+    Cons(h, t) => Cons("#b:" + h, ifp_bmarks(t))
+fn ifp_buse(p, e) = match e
+    Bin(op, l, r)   => if ifp_buse(p, l) == 1 then 1 else ifp_buse(p, r)
+    If(c, t, e2)    => if ifp_buse(p, c) == 1 or ifp_buse(p, t) == 1 then 1 else ifp_buse(p, e2)
+    LetIn(x, v, b)  => if ifp_buse(p, v) == 1 then 1 else ifp_buse(p, b)
+    Call(f, args)   => if (f == "buf_get" or f == "buf_set") and ifp_isv(ifp_nth0(args), p) == 1 then 1 else ifp_buses(p, args)
+    _               => 0
+fn ifp_buses(p, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if ifp_buse(p, h) == 1 then 1 else ifp_buses(p, t)
+fn ifp_binds(p, e) = match e
+    Bin(op, l, r)   => if ifp_binds(p, l) == 1 then 1 else ifp_binds(p, r)
+    If(c, t, e2)    => if ifp_binds(p, c) == 1 or ifp_binds(p, t) == 1 then 1 else ifp_binds(p, e2)
+    LetIn(x, v, b)  => if x == p then 1 else if ifp_binds(p, v) == 1 then 1 else ifp_binds(p, b)
+    Call(f, args)   => ifp_bindss(p, args)
+    _               => 0
+fn ifp_bindss(p, xs) = match xs
+    Nil        => 0
+    Cons(h, t) => if ifp_binds(p, h) == 1 then 1 else ifp_bindss(p, t)
+fn ifp_tpass(e, k, i, p) = match e
+    If(c, t, e2)    => if ifp_tpass(t, k, i, p) == 1 then ifp_tpass(e2, k, i, p) else 0
+    LetIn(x, v, b)  => ifp_tpass(b, k, i, p)
+    Call(f, args)   => if f == k.nm and len(args) == k.n then ifp_keepb(ifp_nth(args, i), p) else 1
+    _               => 1
+fn ifp_nth(xs, i) = match xs
+    Nil        => Num(0)
+    Cons(h, t) => if i == 0 then h else ifp_nth(t, i - 1)
+fn ifp_keepb(e, p) = match e
+    Var(x)        => if x == p then 1 else 0
+    Call(f, args) => if f == "buf_set" and len(args) == 3 then ifp_isv(ifp_nth0(args), p) else 0
+    _             => 0
+fn ifp_bguard(ps, bs, i, gl) = match ps
+    Nil        => ""
+    Cons(h, t) => (if ifp_mem(bs, h) == 1 then "    movq " + areg(i) + ", %rax\n    testq %rax, %rax\n    jz " + gl + "\n    testb $7, %al\n    jnz " + gl + "\n    cmpb $15, (%rax)\n    jne " + gl + "\n" else "") + ifp_bguard(t, bs, i + 1, gl)
+## is the value of e known small here (only inside a specialized body)
+fn ifp_small(e, ctx) = if ctx.gp == "" then 0 else ifp_sm2(e, ctx)
+fn ifp_sm2(e, ctx) = match e
+    Num(n)         => if lfits32(n) then 1 else 0
+    Var(nm)        => ifp_mem(ctx.sm, nm)
+    Bin(op, l, r)  => ifp_smbin(op, l, r, ctx)
+    Call(nm, args) => if nm == "buf_get" and len(args) == 2 then 1 else 0
+    If(c, t, e2)   => if ifp_sm2(t, ctx) == 1 then ifp_sm2(e2, ctx) else 0
+    _              => 0
+fn ifp_smbin(op, l, r, ctx) = if lisdec2(l, r, ctx) then 0 else if op == "+" then (if lstr_chain_head(l) == 1 then 0 else 1) else if op == "-" or op == "*" then 1 else if (op == "%" or op == "/") and lsmallnum(r) == 1 and lnumval(r) >= 2 then 1 else 0
+fn ifp_letsm(nm, v, ctx) = if ctx.gp == "" then ctx.sm else if ifp_sm2(v, ctx) == 1 then Cons(nm, ifp_drop(ctx.sm, nm)) else ifp_drop(ctx.sm, nm)
+## the ordinary twin of a specialized label (prefix + "Zq" + number -> prefix + number)
+fn ifp_gpfx(ctx) = slice(ctx.gp, 1, count(ctx.gp))
+fn ifp_glab(lab, ctx) = ifp_gpfx(ctx) + slice(lab, count(ctx.gp) + 1, count(lab))
+fn ifp_guard(ps, ks, i, acc) = match ps
+    Nil        => acc + "    testb $1, %al\n"
+    Cons(h, t) => if ifp_mem(ks, h) == 1 then ifp_guard(t, ks, i + 1, acc + "    " + (if acc == "" then "movq " else "andq ") + areg(i) + ", %rax\n") else ifp_guard(t, ks, i + 1, acc)
+fn ifp_part(ls, hot, cold) = match ls
+    Nil        => {hot: lp_join(rev(hot)), cold: lp_join(rev(cold))}
+    Cons(h, t) => if lp_starts(h, "~") then ifp_part(t, hot, Cons(slice(h, 1, count(h)), cold)) else ifp_part(t, Cons(h, hot), cold)
+fn ifp_fn(nm, params, body, dvars, s, fr) = let ks = ifp_kparams(params, body) in let bs = ifp_bparams(params, 0, body, {ks: ks, nm: nm, n: len(params)}) in let q = laexpr_tail(body, {locals: fr.locals, bound: params, dvars: dvars, depth: 0, fnm: nm, nparams: len(params), tlbl: fr.tlbl, sm: app(ks, app(ifp_kmarks(ks), ifp_bmarks(bs))), gp: "@" + s.pfx}, {nl: s.nl, ns: s.ns, dt: s.dt, pfx: s.pfx + "Zq", cts: s.cts}) in let g = laexpr_tail(body, {locals: fr.locals, bound: params, dvars: dvars, depth: 0, fnm: nm, nparams: len(params), tlbl: s.pfx + ".Lgen_" + nm, sm: Nil, gp: ""}, {nl: s.nl, ns: q.ns, dt: q.dt, pfx: s.pfx, cts: q.cts}) in if q.nl != g.nl then lafn_gen(nm, params, body, dvars, s, fr) else ifp_fn2(nm, params, {ks: ks, bs: bs, pfx: s.pfx}, fr, ifp_part(lp_lines(q.code, 0, count(q.code), Nil), Nil, Nil), g)
+fn ifp_fn2(nm, params, k, fr, parts, g) = let sub = if fr.frame > 0 then "    subq $" + str(fr.frame) + ", %rsp\n" else "" in let epi = "    movq %rbp, %rsp\n    popq %rbp\n    ret\n" in let gl = k.pfx + ".Lgen_" + nm in lres(lcode_al() + nm + ":\n    pushq %rbp\n    movq %rsp, %rbp\n" + sub + k.pfx + ".Lguard_" + nm + ":\n" + ifp_guard(params, k.ks, 0, "") + "    jz " + gl + "\n" + ifp_bguard(params, k.bs, 0, gl) + lcode_al() + fr.tlbl + ":\n" + lparams(params, 0) + parts.hot + epi + parts.cold + lcode_al() + gl + ":\n" + lparams(params, 0) + g.code + epi, g)
+## the target of a self tail call: the specialized loop head when every K argument is known small, else the guard
+fn ifp_tgt(args, ctx) = if ctx.gp == "" then ctx.tlbl else if ifp_argsok(args, ctx.locals, ctx) == 1 then ctx.tlbl else ifp_gpfx(ctx) + ".Lguard_" + ctx.fnm
+fn ifp_argsok(args, ps, ctx) = match args
+    Nil        => 1
+    Cons(h, t) => if ifp_mem(ctx.sm, "#k:" + ifp_hd(ps)) == 1 and ifp_small(h, ctx) == 0 then 0 else ifp_argsok(t, ifp_tl(ps), ctx)
+## an `if` in tail position whose else branch loops (self tail call) and whose then branch leaves: the condition jumps
+## to the then branch when it holds, so the loop path falls through. Only when the condition is not an and / or (the
+## jumps of a comparison or a value test take the same label numbers whichever way they go)
+fn ifp_flip(c, t, e2, ctx) = if ifp_isandor(c) == 1 then 0 else if ifp_tself(t, ctx.fnm, ctx.nparams) == 1 then 0 else ifp_tself(e2, ctx.fnm, ctx.nparams)
+fn ifp_isandor(e) = match e
+    Bin(op, l, r) => if op == "and" or op == "or" then 1 else 0
+    _             => 0
+fn ifp_iftail(c, t, e2, ctx, s) = let lab = s.pfx + str(s.nl) in let cr = lcond(c, ".Lt" + lab, 1, ctx, lnext(s)) in let tr = laexpr_tail(t, ctx, cr) in let er = laexpr_tail(e2, ctx, tr) in lres(cr.code + er.code + "    jmp .Lx" + lab + "\n.Lt" + lab + ":\n" + tr.code + ".Lx" + lab + ":\n", er)
+## specialized operations; the cold lines start with "~" and move after the epilogue
+fn ifp_addsub_imm(lab, isadd, l, k, ctx, s) = let a = lax(l, ctx, s) in let d = str(k + k) in lres(a.code + (if ifp_small(l, ctx) == 1 then "" else "    testb $1, %al\n    jz .Lb" + lab + "\n") + "    " + (if isadd == 1 then "addq" else "subq") + " $" + d + ", %rax\n    jo .Lo" + lab + "\n~.Lo" + lab + ":\n~    " + (if isadd == 1 then "subq" else "addq") + " $" + d + ", %rax\n~.Lb" + lab + ":\n~    movq %rax, %rdi\n~    movq $" + str(lintword(k)) + ", %rsi\n~    call " + (if isadd == 1 then "addv" else "__rt_sub") + "\n~    jmp .Lc" + ifp_glab(lab, ctx) + "\n", a)
+fn ifp_tags(l, r, ctx, lab) = let a = ifp_small(l, ctx) in let b = ifp_small(r, ctx) in if a == 1 and b == 1 then "" else if a == 1 then "    movq %rsi, %rax\n    testb $1, %al\n    jz .Lb" + lab + "\n" else if b == 1 then "    movq %rdi, %rax\n    testb $1, %al\n    jz .Lb" + lab + "\n" else lboth(lab)
+fn ifp_arith(lab, op) = if op == "+" then "    leaq -1(%rdi), %rax\n    addq %rsi, %rax\n    jo .Lb" + lab + "\n" else if op == "-" then "    leaq -1(%rsi), %rcx\n    movq %rdi, %rax\n    subq %rcx, %rax\n    jo .Lb" + lab + "\n" else "    movq %rdi, %rax\n    sarq $1, %rax\n    leaq -1(%rsi), %rcx\n    imulq %rcx, %rax\n    jo .Lb" + lab + "\n    incq %rax\n"
+fn ifp_bin(lab, op, l, r, ctx, a) = if op == "+" or op == "-" or op == "*" then lres(a.code + ifp_tags(l, r, ctx, lab) + ifp_arith(lab, op) + "~.Lb" + lab + ":\n~    call " + (if op == "+" then "addv" else if op == "-" then "__rt_sub" else "__rt_mul") + "\n~    jmp .Lc" + ifp_glab(lab, ctx) + "\n", a) else lbin_gen(lab, op, a)
+fn ifp_divmod(lab, op, l, k, ctx, s) = let a = lax(l, ctx, s) in let sm = ifp_small(l, ctx) in lres(a.code + (if sm == 1 then "" else "    testb $1, %al\n    jz .Lb" + lab + "\n") + "    sarq $1, %rax\n    cqto\n    movq $" + str(k) + ", %rcx\n    idivq %rcx\n" + (if op == "%" then "    leaq 1(%rdx,%rdx), %rax\n" else "    leaq 1(%rax,%rax), %rax\n") + (if sm == 1 then "" else "~.Lb" + lab + ":\n~    movq %rax, %rdi\n~    movq $" + str(lintword(k)) + ", %rsi\n~    call " + lbin_rt(op) + "\n~    jmp .Lc" + ifp_glab(lab, ctx) + "\n"), a)
+fn ifp_cmpimm(l, k, lab, ctx, s) = let a = lax(l, ctx, s) in let w = str(lintword(k)) in if ifp_small(l, ctx) == 1 then lres(a.code + "    cmpq $" + w + ", %rax\n", a) else lres(a.code + "    testb $1, %al\n    jz .Lb" + lab + "\n    cmpq $" + w + ", %rax\n~.Lb" + lab + ":\n~    movq %rax, %rdi\n~    movq $" + w + ", %rsi\n~    call cmpv\n~    cmpq $0, %rax\n~    jmp .Lc" + ifp_glab(lab, ctx) + "\n", a)
+fn ifp_cmpgen(lab, l, r, ctx, a) = let t = ifp_tags(l, r, ctx, lab) in lres(a.code + t + "    cmpq %rsi, %rdi\n" + (if t == "" then "" else "~.Lb" + lab + ":\n~    call cmpv\n~    cmpq $0, %rax\n~    jmp .Lc" + ifp_glab(lab, ctx) + "\n"), a)
+## ism: the index is known small (no tag test); isb: the buffer is a B parameter, checked by the guard (non-zero,
+## aligned, header byte 15), so only the index range is tested here
+fn ifp_bufchk(lab, ism, isb) = "    movq %rsi, %rax\n" + (if ism == 1 then "" else "    testb $1, %al\n    jz .Lb" + lab + "\n") + "    sarq $1, %rax\n    js .Lb" + lab + "\n" + (if isb == 1 then "" else "    testq %rdi, %rdi\n    jz .Lb" + lab + "\n    testq $7, %rdi\n    jnz .Lb" + lab + "\n    cmpb $15, (%rdi)\n    jne .Lb" + lab + "\n") + "    movq (%rdi), %rcx\n    shrq $8, %rcx\n    cmpq %rcx, %rax\n    jge .Lb" + lab + "\n"
+fn ifp_bufsel(nm, args, ctx, lab) = ifp_buf(nm, lab, ifp_small(ifp_nth1(args), ctx), ifp_bvar(ifp_nth0(args), ctx))
+fn ifp_nth0(xs) = match xs
+    Nil        => Num(0)
+    Cons(h, t) => h
+fn ifp_bvar(e, ctx) = match e
+    Var(x) => ifp_mem(ctx.sm, "#b:" + x)
+    _      => 0
+fn ifp_buf(nm, lab, ism, isb) = if nm == "buf_get" then ifp_bufchk(lab, ism, isb) + "    movzbq 8(%rdi,%rax), %rax\n    leaq 1(%rax,%rax), %rax\n.Lc" + lab + ":\n~.Lb" + lab + ":\n~    call buf_get\n~    jmp .Lc" + lab + "\n" else ifp_bufchk(lab, ism, isb) + "    movq %rdx, %r11\n    sarq $1, %r11\n    jnc .Lb" + lab + "\n    testq %r11, %r11\n    js .Lb" + lab + "\n    cmpq $255, %r11\n    jg .Lb" + lab + "\n    movq %rax, %rcx\n    movq %r11, %rax\n    movb %al, 8(%rdi,%rcx)\n    movq %rdi, %rax\n.Lc" + lab + ":\n~.Lb" + lab + ":\n~    call buf_set\n~    jmp .Lc" + lab + "\n"
 
 ## --- statements: one pass in source order threading the state ---
 fn lmlocals(prog) = match prog
@@ -843,8 +1027,8 @@ fn lstmts(prog, mlocals, s) = match prog
 fn lstmt(s0, t, mlocals, s) = match s0
     Fn(nm, ps, body) => lstmtfn(lafn(nm, ps, body, s), t, mlocals)
     Sig(nm, ps, tys, rt) => lstmt_sig(nm, ps, tys, t, mlocals, s)
-    Print(v)         => lstmtprint(lax(lalpha(v, Nil), {locals: mlocals, bound: Nil, dvars: Nil, depth: 0, fnm: "", nparams: 0, tlbl: ""}, s), t, mlocals)
-    ExprS(v)         => lstmtexpr(lax(lalpha(v, Nil), {locals: mlocals, bound: Nil, dvars: Nil, depth: 0, fnm: "", nparams: 0, tlbl: ""}, s), t, mlocals)
+    Print(v)         => lstmtprint(lax(lalpha(v, Nil), {locals: mlocals, bound: Nil, dvars: Nil, depth: 0, fnm: "", nparams: 0, tlbl: "", sm: Nil, gp: ""}, s), t, mlocals)
+    ExprS(v)         => lstmtexpr(lax(lalpha(v, Nil), {locals: mlocals, bound: Nil, dvars: Nil, depth: 0, fnm: "", nparams: 0, tlbl: "", sm: Nil, gp: ""}, s), t, mlocals)
     _                => lstmts(t, mlocals, s)
 fn lstmt_sig(nm, pnames, ptypes, rest, mlocals, s) = match rest
     Nil => lstmts(rest, mlocals, s)
@@ -1660,7 +1844,7 @@ fn rw_len(xs) = match xs
     Cons(h, t) => 1 + rw_len(t)
 ## where a value of a raw function lives: 1 .. 5 are the callee-saved registers %rbx, %r12 .. %r15 (the first five
 ## values: parameters, then lets, in a routine that is not rw_keepall), a negative number is a frame slot
-fn rw_loc(o) = if o > 0 then rw_nth(Cons("%rbx", Cons("%r12", Cons("%r13", Cons("%r14", Cons("%r15", Cons("%rdi", Cons("%rsi", Cons("%rdx", Cons("%r8", Cons("%r9", Cons("%r10", Cons("%r11", Nil)))))))))))), o - 1) else str(o) + "(%rbp)"
+fn rw_loc(o) = if o >= 1000 then str(o - 1000 + 16) + "(%rbp)" else if o > 0 then rw_nth(Cons("%rbx", Cons("%r12", Cons("%r13", Cons("%r14", Cons("%r15", Cons("%rdi", Cons("%rsi", Cons("%rdx", Cons("%r8", Cons("%r9", Cons("%r10", Cons("%r11", Nil)))))))))))), o - 1) else str(o) + "(%rbp)"
 fn rw_vreg(f, idx) = if rw_isleaf(f) then rw_leafreg(f, idx) else if rw_keepall(f) then 0 else if idx < 5 then idx + 1 else 0
 ## a leaf routine (its code makes no call, syscall or division) is generated a second time under the name NAME__lf:
 ## no frame, its parameters stay in rdi, rsi, rdx, r8, r9 (the 4th moves from rcx, the scratch register, to r10),
@@ -1677,7 +1861,10 @@ fn rw_slot(env, nm) = match env
 ## parameter i lives where the prologue pushed its register: -8(%rbp) for %rdi .. -48(%rbp) for %r9
 fn rw_params(ps, i, acc, f) = match ps
     Nil        => acc
-    Cons(p, t) => if i >= 6 then ctfail("lume --raw: a raw function takes at most 6 parameters\n") else rw_params(t, i + 1, Cons({k: p, off: if rw_vreg(f, i) > 0 then rw_vreg(f, i) else 0 - 8 * (i + 1)}, acc), f)
+    Cons(p, t) => rw_params(t, i + 1, Cons({k: p, off: rw_phome(f, i)}, acc), f)
+## where parameter i lives: its register, else its frame slot (-8(%rbp) for the 1st .. -48(%rbp) for the 6th), and from
+## the 7th on the word the caller pushed (System V: the 7th at 16(%rbp), the 8th at 24(%rbp) ...), encoded 1000 + 8 * (i - 6)
+fn rw_phome(f, i) = if i < 6 and rw_vreg(f, i) > 0 then rw_vreg(f, i) else if i >= 6 then 1000 + 8 * (i - 6) else 0 - 8 * (i + 1)
 fn rw_r(code, st) = {code: code, n: st.n, nl: st.nl, f: st.f, np: st.np}
 fn rw_lab(st, k) = ".Lrw_" + st.f + "_" + str(k)
 fn rw_cc(op) = if op == "==" then "e" else if op == "!=" then "ne" else if op == "<" then "l" else if op == "<=" then "le" else if op == ">" then "g" else "ge"
@@ -1733,11 +1920,18 @@ fn rw_andx(a) = match a
 fn rw_regof(e, env) = match e
     Var(x) => rw_regslot(rw_slot(env, x))
     _      => ""
-fn rw_regslot(o) = if o > 0 then rw_loc(o) else ""
-## the right operand (in %rax) waits in %rcx while the left one is computed, when the left one's code never touches
-## %rcx (no call, no shift by %cl, no rcx at all); else it waits on the stack
-fn rw_keepb(acode) = if lp_has(acode, "cx") == 0 and lp_has(acode, "%cl") == 0 and lp_has(acode, "call") == 0 then "    movq %rax, %rcx\n" + acode else "    pushq %rax\n" + acode + "    popq %rcx\n"
-fn rw_cmpj(cc, a, b, env, st, lab) = if rw_iszero(b) == 1 and rw_andm(a) >= 0 then rw_testj(cc, rw_andx(a), rw_andm(a), env, st, lab) else if rw_imm(b, env) != "" and rw_regof(a, env) != "" then rw_r("    cmpq " + rw_imm(b, env) + ", " + rw_regof(a, env) + "\n    j" + cc + " " + lab + "\n", st) else let src = rw_imm(b, env) in if src != "" then (let ra = rw_e(a, env, st, 0) in rw_r(ra.code + rw_cmpsrc(src) + "    j" + cc + " " + lab + "\n", ra)) else let rb = rw_e(b, env, st, 0) in let ra = rw_e(a, env, rb, 0) in rw_r(rb.code + rw_keepb(ra.code) + "    cmpq %rcx, %rax\n    j" + cc + " " + lab + "\n", ra)
+fn rw_regslot(o) = if o > 0 and o < 1000 then rw_loc(o) else ""
+## operands are computed left to right, as in ordinary Lume (2026-11-21; before, the right one went first). The left
+## value (in %rax) waits in %rcx while the right one is computed when the right one's code never touches %rcx (no call,
+## no shift by %cl); the operation then works on a in %rcx and b in %rax. Else the left value waits on the stack and the
+## operation gets a in %rax, b in %rcx. rw_keepa (comparisons) leaves the flags of a - b either way.
+fn rw_rcxfree(bcode) = lp_has(bcode, "cx") == 0 and lp_has(bcode, "%cl") == 0 and lp_has(bcode, "call") == 0
+fn rw_keepa(bcode) = if rw_rcxfree(bcode) then "    movq %rax, %rcx\n" + bcode + "    cmpq %rax, %rcx\n" else "    pushq %rax\n" + bcode + "    movq %rax, %rcx\n    popq %rax\n    cmpq %rcx, %rax\n"
+fn rw_binab(op, bcode, st, k) = if rw_iscmp(op) then rw_keepa(bcode) + "    movq $1, %rax\n    j" + rw_cc(op) + " " + rw_lab(st, k) + "c\n    xorq %rax, %rax\n" + rw_lab(st, k) + "c:\n" else if rw_rcxfree(bcode) and rw_swapok(op) then "    movq %rax, %rcx\n" + bcode + rw_opswap(op) else "    pushq %rax\n" + bcode + "    movq %rax, %rcx\n    popq %rax\n" + rw_op(op)
+## the operations that take a in %rcx and b in %rax without moving them first
+fn rw_swapok(op) = op == "+" or op == "+%" or op == "*" or op == "*%" or op == "-" or op == "-%"
+fn rw_opswap(op) = if op == "-" or op == "-%" then "    subq %rax, %rcx\n    movq %rcx, %rax\n" else rw_op(op)
+fn rw_cmpj(cc, a, b, env, st, lab) = if rw_iszero(b) == 1 and rw_andm(a) >= 0 then rw_testj(cc, rw_andx(a), rw_andm(a), env, st, lab) else if rw_imm(b, env) != "" and rw_regof(a, env) != "" then rw_r("    cmpq " + rw_imm(b, env) + ", " + rw_regof(a, env) + "\n    j" + cc + " " + lab + "\n", st) else let src = rw_imm(b, env) in if src != "" then (let ra = rw_e(a, env, st, 0) in rw_r(ra.code + rw_cmpsrc(src) + "    j" + cc + " " + lab + "\n", ra)) else let ra = rw_e(a, env, st, 0) in let rb = rw_e(b, env, ra, 0) in rw_r(ra.code + rw_keepa(rb.code) + "    j" + cc + " " + lab + "\n", rb)
 fn rw_cmpjump(op, a, b, env, st, el) = rw_cmpj(rw_inv(op), a, b, env, st, el)
 ## an if in tail position of a leaf routine: each branch ends in its own ret (no jump to a shared end), and a branch
 ## that only calls a runtime stop (__rt_not_str, __rt_die3, __rt_need_int ...) is placed after the other one, so the
@@ -1756,7 +1950,7 @@ fn rw_e(e, env, st, tail) = match e
     Num(v)          => rw_r("    movq $" + str(v) + ", %rax\n", st)
     Str(v)          => let k = st.n in rw_r("    leaq " + rw_lab(st, k) + "t(%rip), %rax\n    .section .rodata\n" + rw_lab(st, k) + "t:\n    .asciz \"" + rw_esc(v, 0, "") + "\"\n    .section .text\n", {n: st.n + 1, nl: st.nl, f: st.f, np: st.np})
     Var(x)          => let o = rw_slot(env, x) in if o == 0 then ctfail("lume --raw: unknown name '" + x + "' in '" + st.f + "'\n") else rw_r("    movq " + rw_loc(o) + ", %rax\n", st)
-    Bin(op, a, b)   => if op == "and" or op == "or" then rw_logic(op, a, b, env, st) else if rw_imm(b, env) != "" then rw_binimm(op, a, rw_imm(b, env), env, st) else let k = st.n in let rb = rw_e(b, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let ra = rw_e(a, env, rb, 0) in rw_r(rb.code + rw_keepb(ra.code) + (if rw_iscmp(op) then "    cmpq %rcx, %rax\n    movq $1, %rax\n    j" + rw_cc(op) + " " + rw_lab(st, k) + "c\n    xorq %rax, %rax\n" + rw_lab(st, k) + "c:\n" else rw_op(op)), ra)
+    Bin(op, a, b)   => if op == "and" or op == "or" then rw_logic(op, a, b, env, st) else if rw_imm(b, env) != "" then rw_binimm(op, a, rw_imm(b, env), env, st) else let k = st.n in let ra = rw_e(a, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0) in let rb = rw_e(b, env, ra, 0) in rw_r(ra.code + rw_binab(op, rb.code, st, k), rb)
     If(c, t, f)     => if tail == 1 and rw_isleaf(st.f) then rw_ifleaf(c, t, f, env, st) else let k = st.n in let rc = rw_cond(c, env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, rw_lab(st, k) + "e") in let rt = rw_e(t, env, rc, tail) in let rf = rw_e(f, env, rt, tail) in rw_r(rc.code + rt.code + "    jmp " + rw_lab(st, k) + "d\n" + rw_lab(st, k) + "e:\n" + rf.code + rw_lab(st, k) + "d:\n", rf)
     LetIn(nm, v, b) => let rv = rw_e(v, env, st, 0) in let vr = (if rw_isleaf(st.f) then (if rv.nl == 0 then 12 else 11) else rw_vreg(st.f, st.np + rv.nl)) in let off = if vr > 0 then vr else 0 - 72 - 8 * rv.nl in let rb = rw_e(b, Cons({k: nm, off: off}, env), {n: rv.n, nl: rv.nl + 1, f: st.f, np: st.np}, tail) in rw_r(rv.code + "    movq %rax, " + rw_loc(off) + "\n" + rb.code, rb)
     Call(g, args)   => rw_call(g, args, env, st, tail)
@@ -1777,11 +1971,11 @@ fn rw_pushsel2(r1, t, i, env) = let r2 = rw_pushsel(t, i + 1, env, r1) in rw_r(r
 fn rw_popsel(args, i, env, f) = match args
     Nil        => ""
     Cons(h, t) => rw_popsel(t, i + 1, env, f) + (if rw_same(h, i, env, f) == 1 then "" else rw_pop1(i, f))
-fn rw_pop1(i, f) = if rw_vreg(f, i) > 0 then "    popq " + rw_loc(rw_vreg(f, i)) + "\n" else "    popq %rax\n    movq %rax, " + str(0 - 8 * (i + 1)) + "(%rbp)\n"
+fn rw_pop1(i, f) = if rw_phome(f, i) > 0 and rw_phome(f, i) < 1000 then "    popq " + rw_loc(rw_phome(f, i)) + "\n" else "    popq %rax\n    movq %rax, " + rw_loc(rw_phome(f, i)) + "\n"
 fn rw_same(h, i, env, f) = match h
     Var(x) => if rw_slot(env, x) == rw_poff(f, i) then 1 else 0
     _      => 0
-fn rw_poff(f, i) = if rw_vreg(f, i) > 0 then rw_vreg(f, i) else 0 - 8 * (i + 1)
+fn rw_poff(f, i) = rw_phome(f, i)
 fn rw_popparams(k, f) = if k <= 0 then "" else (if rw_vreg(f, k - 1) > 0 then "    popq " + rw_loc(rw_vreg(f, k - 1)) + "\n" else "    popq %rax\n    movq %rax, " + str(0 - 8 * k) + "(%rbp)\n") + rw_popparams(k - 1, f)
 fn rw_popslots(k) = if k <= 0 then "" else "    popq %rax\n    movq %rax, " + str(0 - 8 * k) + "(%rbp)\n" + rw_popslots(k - 1)
 ## vector intrinsics of --raw (SSE2, xmm0 / xmm1 only: volatile in the SysV and Win64 ABIs): vec_sad16(p, q) and
@@ -1894,6 +2088,12 @@ fn rw_bitsrc(g, src) = if g == "bit_shl" or g == "bit_shr" then (if slice(src, 0
 ## the arguments a leaf call pushed, popped into their registers (last first): every argument is pushed, because a
 ## leaf keeps its own parameters in those registers and a register-to-register move could overwrite one still needed
 fn rw_popn(n) = if n <= 0 then "" else "    popq " + rw_nth(rw_regs(), n - 1) + "\n" + rw_popn(n - 1)
+## a call of n > 6 arguments: all are computed left to right and pushed; the words of the 7th .. nth are put in the
+## order System V wants (the 7th lowest), the first six are loaded into their registers, and after the call the n
+## words go. The comment #rwbig keeps the routine out of leaf mode (a leaf has no frame to read such arguments).
+fn rw_bigcall(g, args, env, st) = let n = rw_len(args) in let r = rw_push(args, env, st) in rw_r("    #rwbig\n" + r.code + rw_bigrev(0, n - 7) + rw_bigregs(0, n - 6) + "    call " + g + "\n    addq $" + str(8 * n) + ", %rsp\n", r)
+fn rw_bigrev(i, j) = if i >= j then "" else "    movq " + str(8 * i) + "(%rsp), %rax\n    movq " + str(8 * j) + "(%rsp), %rcx\n    movq %rcx, " + str(8 * i) + "(%rsp)\n    movq %rax, " + str(8 * j) + "(%rsp)\n" + rw_bigrev(i + 1, j - 1)
+fn rw_bigregs(idx, k) = if idx >= 6 then "" else "    movq " + str(8 * (k + 5 - idx)) + "(%rsp), " + rw_nth(rw_regs(), idx) + "\n" + rw_bigregs(idx + 1, k)
 fn rw_leafcall(g, args, env, st, tail) = let r = rw_push(args, env, st) in if tail == 1 then rw_r(r.code + rw_popn(rw_len(args)) + "    jmp " + g + "\n", r) else rw_r("    pushq %rdi\n    pushq %rsi\n    pushq %rdx\n    pushq %r8\n    pushq %r9\n    pushq %r10\n    pushq %r11\n" + r.code + rw_popn(rw_len(args)) + "    call " + g + "\n    popq %r11\n    popq %r10\n    popq %r9\n    popq %r8\n    popq %rdx\n    popq %rsi\n    popq %rdi\n", r)
 ## frame_ptr() is the routine's own %rbp (its caller's %rbp is load64(frame_ptr()), its return address
 ## load64(frame_ptr() + 8), the caller's %rsp after the return frame_ptr() + 16); a routine that uses it keeps its
@@ -1924,7 +2124,7 @@ fn rw_xf1(op) = "    fldt (%rcx)\n    " + op + "\n    fstpt (%rax)\n    xorq %ra
 ## ucomisd: below -> -1, equal -> 0, above -> 1, unordered (ZF and CF set) -> 2
 fn rw_fpcmp() = "    movq %rax, %xmm0\n    movq %rcx, %xmm1\n    ucomisd %xmm1, %xmm0\n    movq $1, %rax\n    jnc 1f\n    movq $-1, %rax\n    jnz 2f\n    movq $2, %rax\n    jmp 2f\n1:\n    jnz 2f\n    xorq %rax, %rax\n2:\n"
 fn rw_xfconst(d, k, env, st) = let r = rw_e(d, env, st, 0) in rw_r(r.code + (if k == 0 then "    fldz\n" else if k == 1 then "    fld1\n" else if k == 2 then "    fldl2e\n" else if k == 3 then "    fldlg2\n" else if k == 4 then "    fldln2\n" else ctfail("lume --raw: x87_const takes 0 .. 4\n")) + "    fstpt (%rax)\n    xorq %rax, %rax\n", r)
-fn rw_call(g, args, env, st, tail) = let n = rw_len(args) in if g == "mkint" and n == 1 then rw_mkint(rw_e(rw_nth(args, 0), env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0), st) else if rw_isfp(g) == 1 then rw_fpcall(g, args, env, st) else if g == "frame_ptr" and n == 0 then rw_r("    leaq 0(%rbp), %rax\n", st) else if g == "long_jump" and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rax\n    popq %rcx\n    popq %rdx\n    popq %rsi\n    movq %rsi, %rsp\n    movq %rdx, %rbp\n    pushq %rcx\n    ret\n", r)) else if g == "sym_addr" and n == 1 then rw_r("    leaq " + rw_symname(rw_nth(args, 0), st) + "(%rip), %rax\n", st) else if g == "vec_satd4" and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %r8\n    popq %rdx\n    popq %rcx\n    popq %rax\n" + rw_satd4_asm(), r)) else if g == "vec_sad4" and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %r8\n    popq %rdx\n    popq %rcx\n    popq %rax\n" + rw_sad4_asm(), r)) else if g == "vec_fdct4" and n == 2 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_fdct4_asm(), r)) else if g == "vec_idct4" and n == 2 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_idct4_asm(), r)) else if rw_vec4w(g) and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + rw_vec4wop(g), r)) else if rw_vec3(g) and n == 3 then (let r = rw_push(args, env, st) in rw_r(r.code + rw_vec3op(g), r)) else if rw_vec(g) and n == 2 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_vecop(g), r)) else if rw_mem(g) then (if (g == "load8" or g == "load32" or g == "load64") and n == 1 and rw_regof(rw_nth(args, 0), env) != "" then rw_r(rw_loadr(g, rw_regof(rw_nth(args, 0), env)), st) else if (g == "load8" or g == "load64") and n == 1 and rw_idxbase(rw_nth(args, 0), env) != "" then (let r = rw_e(rw_idxrest(rw_nth(args, 0)), env, st, 0) in rw_r(r.code + rw_loadx(g, rw_idxdisp(rw_nth(args, 0)), rw_idxbase(rw_nth(args, 0), env)), r)) else if (g == "load8" or g == "load32" or g == "load64") and n == 1 then let r = rw_e(rw_nth(args, 0), env, st, 0) in rw_r(r.code + rw_memop(g), r) else if n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_memop(g), r) else ctfail("lume --raw: " + g + " takes " + (if ld_s_starts(g, "load") then "1 argument" else "2 arguments") + "\n")) else if rw_isbit(g) and n == 2 and rw_imm(rw_nth(args, 1), env) != "" then rw_bitimm(g, rw_nth(args, 0), rw_imm(rw_nth(args, 1), env), env, st) else if rw_isbit(g) and n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_bitop(g), r) else if g == "sys_call" and n == 6 then let r = rw_pushc(args, env, st) in rw_r(r.code + rw_popc(args, Cons("%rax", Cons("%rdi", Cons("%rsi", Cons("%rdx", Cons("%r10", Cons("%r8", Nil)))))), env) + "    xorq %r9, %r9\n    syscall\n", r) else if n > 6 then ctfail("lume --raw: a call takes at most 6 arguments\n") else if tail == 1 and g == rw_base(st.f) and n == st.np then let r = rw_pushsel(args, 0, env, st) in rw_r(r.code + rw_popsel(args, 0, env, st.f) + "    jmp .Lrw_" + st.f + "_top\n", r) else if rw_isleaf(st.f) then rw_leafcall(g, args, env, st, tail) else let r = rw_pushc(args, env, st) in rw_r(r.code + rw_popc(args, rw_regs(), env) + "    call " + g + "\n", r)
+fn rw_call(g, args, env, st, tail) = let n = rw_len(args) in if g == "mkint" and n == 1 then rw_mkint(rw_e(rw_nth(args, 0), env, {n: st.n + 1, nl: st.nl, f: st.f, np: st.np}, 0), st) else if rw_isfp(g) == 1 then rw_fpcall(g, args, env, st) else if g == "frame_ptr" and n == 0 then rw_r("    leaq 0(%rbp), %rax\n", st) else if g == "long_jump" and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rax\n    popq %rcx\n    popq %rdx\n    popq %rsi\n    movq %rsi, %rsp\n    movq %rdx, %rbp\n    pushq %rcx\n    ret\n", r)) else if g == "sym_addr" and n == 1 then rw_r("    leaq " + rw_symname(rw_nth(args, 0), st) + "(%rip), %rax\n", st) else if g == "vec_satd4" and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %r8\n    popq %rdx\n    popq %rcx\n    popq %rax\n" + rw_satd4_asm(), r)) else if g == "vec_sad4" and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %r8\n    popq %rdx\n    popq %rcx\n    popq %rax\n" + rw_sad4_asm(), r)) else if g == "vec_fdct4" and n == 2 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_fdct4_asm(), r)) else if g == "vec_idct4" and n == 2 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_idct4_asm(), r)) else if rw_vec4w(g) and n == 4 then (let r = rw_push(args, env, st) in rw_r(r.code + rw_vec4wop(g), r)) else if rw_vec3(g) and n == 3 then (let r = rw_push(args, env, st) in rw_r(r.code + rw_vec3op(g), r)) else if rw_vec(g) and n == 2 then (let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_vecop(g), r)) else if rw_mem(g) then (if (g == "load8" or g == "load32" or g == "load64") and n == 1 and rw_regof(rw_nth(args, 0), env) != "" then rw_r(rw_loadr(g, rw_regof(rw_nth(args, 0), env)), st) else if (g == "load8" or g == "load64") and n == 1 and rw_idxbase(rw_nth(args, 0), env) != "" then (let r = rw_e(rw_idxrest(rw_nth(args, 0)), env, st, 0) in rw_r(r.code + rw_loadx(g, rw_idxdisp(rw_nth(args, 0)), rw_idxbase(rw_nth(args, 0), env)), r)) else if (g == "load8" or g == "load32" or g == "load64") and n == 1 then let r = rw_e(rw_nth(args, 0), env, st, 0) in rw_r(r.code + rw_memop(g), r) else if n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_memop(g), r) else ctfail("lume --raw: " + g + " takes " + (if ld_s_starts(g, "load") then "1 argument" else "2 arguments") + "\n")) else if rw_isbit(g) and n == 2 and rw_imm(rw_nth(args, 1), env) != "" then rw_bitimm(g, rw_nth(args, 0), rw_imm(rw_nth(args, 1), env), env, st) else if rw_isbit(g) and n == 2 then let r = rw_push(args, env, st) in rw_r(r.code + "    popq %rcx\n    popq %rax\n" + rw_bitop(g), r) else if g == "sys_call" and n == 6 then let r = rw_pushc(args, env, st) in rw_r(r.code + rw_popc(args, Cons("%rax", Cons("%rdi", Cons("%rsi", Cons("%rdx", Cons("%r10", Cons("%r8", Nil)))))), env) + "    xorq %r9, %r9\n    syscall\n", r) else if tail == 1 and g == rw_base(st.f) and n == st.np then let r = rw_pushsel(args, 0, env, st) in rw_r(r.code + rw_popsel(args, 0, env, st.f) + "    jmp .Lrw_" + st.f + "_top\n", r) else if n > 6 then rw_bigcall(g, args, env, st) else if rw_isleaf(st.f) then rw_leafcall(g, args, env, st, tail) else let r = rw_pushc(args, env, st) in rw_r(r.code + rw_popc(args, rw_regs(), env) + "    call " + g + "\n", r)
 fn ld_s_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
 ## the prologue keeps %rdi..%r11 (also the parameters' homes), the frame holds the lets; the epilogue gives them back
 ## a routine the hand-written assembly calls keeps every register but %rax (those callers rely on it); every other one
@@ -1934,12 +2134,12 @@ fn ld_s_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
 ## would have had); its parameters move from the argument registers to their registers or slots
 fn rw_saveregs(i, nu) = if i > nu then "" else "    movq " + rw_loc(i) + ", " + str(0 - 8 * i) + "(%rbp)\n" + rw_saveregs(i + 1, nu)
 fn rw_restregs(i, nu) = if i > nu then "" else "    movq " + str(0 - 8 * i) + "(%rbp), " + rw_loc(i) + "\n" + rw_restregs(i + 1, nu)
-fn rw_movparams(f, i, np) = if i >= np then "" else "    movq " + rw_nth(rw_regs(), i) + ", " + (if rw_vreg(f, i) > 0 then rw_loc(rw_vreg(f, i)) else str(0 - 8 * (i + 1)) + "(%rbp)") + "\n" + rw_movparams(f, i + 1, np)
+fn rw_movparams(f, i, np) = if i >= np or i >= 6 then "" else "    movq " + rw_nth(rw_regs(), i) + ", " + (if rw_vreg(f, i) > 0 then rw_loc(rw_vreg(f, i)) else str(0 - 8 * (i + 1)) + "(%rbp)") + "\n" + rw_movparams(f, i + 1, np)
 ## the number of times w occurs in code
 fn rw_count(code, w, i, n) = let p = lp_find(code, w, i) in if p < 0 then n else rw_count(code, w, p + count(w), n + 1)
 fn lp_find(s, w, i) = if i + count(w) > count(s) then 0 - 1 else if slice(s, i, i + count(w)) == w then i else lp_find(s, w, i + 1)
 fn rw_has(code, w) = lp_has(code, w)
-fn rw_leafok(nm, np, r) = rw_keepall(nm) == 0 and rw_count(r.code, "    call ", 0, 0) <= 3 + rw_count(r.code, "    call mkint\n", 0, 0) + rw_count(r.code, "    call __rt_not_str\n", 0, 0) + rw_count(r.code, "    call __rt_not_int\n", 0, 0) + rw_count(r.code, "    call __rt_not_bool\n", 0, 0) + rw_count(r.code, "    call __rt_die3\n", 0, 0) and rw_has(r.code, "syscall") == 0 and rw_has(r.code, "idivq") == 0 and rw_has(r.code, "leaq 0(%rbp), %rax") == 0 and r.nl <= (if np <= 3 then 2 else 1)
+fn rw_leafok(nm, np, r) = rw_keepall(nm) == 0 and np <= 6 and rw_has(r.code, "#rwbig") == 0 and rw_count(r.code, "    call ", 0, 0) <= 3 + rw_count(r.code, "    call mkint\n", 0, 0) + rw_count(r.code, "    call __rt_not_str\n", 0, 0) + rw_count(r.code, "    call __rt_not_int\n", 0, 0) + rw_count(r.code, "    call __rt_not_bool\n", 0, 0) + rw_count(r.code, "    call __rt_die3\n", 0, 0) and rw_has(r.code, "syscall") == 0 and rw_has(r.code, "idivq") == 0 and rw_has(r.code, "leaq 0(%rbp), %rax") == 0 and r.nl <= (if np <= 3 then 2 else 1)
 fn rw_leaf(nm, ps, body, np) = let f2 = nm + "__lf" in let r = rw_e(body, rw_params(ps, 0, Nil, f2), {n: 0, nl: 0, f: f2, np: np}, 1) in nm + ":\n" + (if np >= 4 then "    movq %rcx, %r10\n" else "") + ".Lrw_" + f2 + "_top:\n" + r.code + "    ret\n"
 fn rw_keepall(nm) = nm == "strlen" or nm == "streq" or nm == "__rt_nofield_text" or ld_s_starts(nm, "rtd_") or ld_s_starts(nm, "__rt_dbg_")
 fn rw_pushparams(np, i) = if i >= np then "" else "    pushq " + rw_nth(rw_regs(), i) + "\n" + rw_pushparams(np, i + 1)

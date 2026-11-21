@@ -8,44 +8,224 @@
 fn xf_w(i) = if i % 2 == 0 then 26 else 25
 fn xf_get(f, i) = load64(f + 8 * i)
 fn xf_set(f, i, v) = store64(f + 8 * i, v)
-fn xf_add(h, f, g, i) = if i >= 10 then 0 else let a = xf_set(h, i, xf_get(f, i) + xf_get(g, i)) in xf_add(h, f, g, i + 1)
-fn xf_sub(h, f, g, i) = if i >= 10 then 0 else let a = xf_set(h, i, xf_get(f, i) - xf_get(g, i)) in xf_sub(h, f, g, i + 1)
+fn xf_add(h, f, g, i) =
+    if i >= 10 then
+        0
+    else
+        let a = xf_set(h, i, xf_get(f, i) + xf_get(g, i)) in
+        xf_add(h, f, g, i + 1)
+fn xf_sub(h, f, g, i) =
+    if i >= 10 then
+        0
+    else
+        let a = xf_set(h, i, xf_get(f, i) - xf_get(g, i)) in
+        xf_sub(h, f, g, i + 1)
 fn xf_copy(h, f, i) = if i >= 10 then 0 else let a = xf_set(h, i, xf_get(f, i)) in xf_copy(h, f, i + 1)
 fn xf_small(h, v, i) = if i >= 10 then 0 else let a = xf_set(h, i, if i == 0 then v else 0) in xf_small(h, v, i + 1)
 ## swap f and g when b = 1, keep them when b = 0, without a branch on b
-fn xf_cswap(f, g, b, i) = if i >= 10 then 0 else let m = 0 - b in let x = bit_and(bit_xor(xf_get(f, i), xf_get(g, i)), m) in let a = xf_set(f, i, bit_xor(xf_get(f, i), x)) in let c = xf_set(g, i, bit_xor(xf_get(g, i), x)) in xf_cswap(f, g, b, i + 1)
+fn xf_cswap(f, g, b, i) =
+    if i >= 10 then
+        0
+    else
+        let m = 0 - b in
+        let x = bit_and(bit_xor(xf_get(f, i), xf_get(g, i)), m) in
+        let a = xf_set(f, i, bit_xor(xf_get(f, i), x)) in
+        let c = xf_set(g, i, bit_xor(xf_get(g, i), x)) in
+        xf_cswap(f, g, b, i + 1)
 ## one rounding carry from limb i (bits wide) into limb j (times 19 when it wraps from limb 9 to limb 0)
-fn xf_c(h, i, bits, j) = let v = xf_get(h, i) in let c = bit_shr(v + bit_shl(1, bits - 1), bits) in let a = xf_set(h, i, v - bit_shl(c, bits)) in xf_set(h, j, xf_get(h, j) + (if i == 9 then c * 19 else c))
+fn xf_c(h, i, bits, j) =
+    let v = xf_get(h, i) in
+    let c = bit_shr(v + bit_shl(1, bits - 1), bits) in
+    let a = xf_set(h, i, v - bit_shl(c, bits)) in
+    xf_set(h, j, xf_get(h, j) + (if i == 9 then c * 19 else c))
 ## the carry order of ref10's fe_mul: every limb ends within its width (plus a small margin). Sequential `let`s, not
-## a sum of calls: `lumec --raw` evaluates the right operand of a binary operator first, and the order matters here
-fn xf_carry(h) = let c0 = xf_c(h, 0, 26, 1) in let c1 = xf_c(h, 4, 26, 5) in let c2 = xf_c(h, 1, 25, 2) in let c3 = xf_c(h, 5, 25, 6) in let c4 = xf_c(h, 2, 26, 3) in let c5 = xf_c(h, 6, 26, 7) in let c6 = xf_c(h, 3, 25, 4) in let c7 = xf_c(h, 7, 25, 8) in let c8 = xf_c(h, 4, 26, 5) in let c9 = xf_c(h, 8, 26, 9) in let c10 = xf_c(h, 9, 25, 0) in xf_c(h, 0, 26, 1)
+## a sum of calls: the order of the carries matters here, and a `let` chain states it (raw operands go left to right)
+fn xf_carry(h) =
+    let c0 = xf_c(h, 0, 26, 1) in
+    let c1 = xf_c(h, 4, 26, 5) in
+    let c2 = xf_c(h, 1, 25, 2) in
+    let c3 = xf_c(h, 5, 25, 6) in
+    let c4 = xf_c(h, 2, 26, 3) in
+    let c5 = xf_c(h, 6, 26, 7) in
+    let c6 = xf_c(h, 3, 25, 4) in
+    let c7 = xf_c(h, 7, 25, 8) in
+    let c8 = xf_c(h, 4, 26, 5) in
+    let c9 = xf_c(h, 8, 26, 9) in
+    let c10 = xf_c(h, 9, 25, 0) in
+    xf_c(h, 0, 26, 1)
 
 ## h = f * g (h may be f or g: every limb is read before the first store); h_k sums f_i * g_j over i + j = k mod 10,
 ## with g_j * 19 when i + j wraps past limb 9 and f_i * 2 when i and j are both odd (two 25-bit limbs)
-fn xf_mul(h, f, g) = let f0 = xf_get(f, 0) in let f1 = xf_get(f, 1) in let f2 = xf_get(f, 2) in let f3 = xf_get(f, 3) in let f4 = xf_get(f, 4) in let f5 = xf_get(f, 5) in let f6 = xf_get(f, 6) in let f7 = xf_get(f, 7) in let f8 = xf_get(f, 8) in let f9 = xf_get(f, 9) in let g0 = xf_get(g, 0) in let g1 = xf_get(g, 1) in let g2 = xf_get(g, 2) in let g3 = xf_get(g, 3) in let g4 = xf_get(g, 4) in let g5 = xf_get(g, 5) in let g6 = xf_get(g, 6) in let g7 = xf_get(g, 7) in let g8 = xf_get(g, 8) in let g9 = xf_get(g, 9) in let g1_19 = 19 * g1 in let g2_19 = 19 * g2 in let g3_19 = 19 * g3 in let g4_19 = 19 * g4 in let g5_19 = 19 * g5 in let g6_19 = 19 * g6 in let g7_19 = 19 * g7 in let g8_19 = 19 * g8 in let g9_19 = 19 * g9 in let f1_2 = 2 * f1 in let f3_2 = 2 * f3 in let f5_2 = 2 * f5 in let f7_2 = 2 * f7 in let f9_2 = 2 * f9 in let h0 = f0 * g0 + f1_2 * g9_19 + f2 * g8_19 + f3_2 * g7_19 + f4 * g6_19 + f5_2 * g5_19 + f6 * g4_19 + f7_2 * g3_19 + f8 * g2_19 + f9_2 * g1_19 in let h1 = f0 * g1 + f1 * g0 + f2 * g9_19 + f3 * g8_19 + f4 * g7_19 + f5 * g6_19 + f6 * g5_19 + f7 * g4_19 + f8 * g3_19 + f9 * g2_19 in let h2 = f0 * g2 + f1_2 * g1 + f2 * g0 + f3_2 * g9_19 + f4 * g8_19 + f5_2 * g7_19 + f6 * g6_19 + f7_2 * g5_19 + f8 * g4_19 + f9_2 * g3_19 in let h3 = f0 * g3 + f1 * g2 + f2 * g1 + f3 * g0 + f4 * g9_19 + f5 * g8_19 + f6 * g7_19 + f7 * g6_19 + f8 * g5_19 + f9 * g4_19 in let h4 = f0 * g4 + f1_2 * g3 + f2 * g2 + f3_2 * g1 + f4 * g0 + f5_2 * g9_19 + f6 * g8_19 + f7_2 * g7_19 + f8 * g6_19 + f9_2 * g5_19 in let h5 = f0 * g5 + f1 * g4 + f2 * g3 + f3 * g2 + f4 * g1 + f5 * g0 + f6 * g9_19 + f7 * g8_19 + f8 * g7_19 + f9 * g6_19 in let h6 = f0 * g6 + f1_2 * g5 + f2 * g4 + f3_2 * g3 + f4 * g2 + f5_2 * g1 + f6 * g0 + f7_2 * g9_19 + f8 * g8_19 + f9_2 * g7_19 in let h7 = f0 * g7 + f1 * g6 + f2 * g5 + f3 * g4 + f4 * g3 + f5 * g2 + f6 * g1 + f7 * g0 + f8 * g9_19 + f9 * g8_19 in let h8 = f0 * g8 + f1_2 * g7 + f2 * g6 + f3_2 * g5 + f4 * g4 + f5_2 * g3 + f6 * g2 + f7_2 * g1 + f8 * g0 + f9_2 * g9_19 in let h9 = f0 * g9 + f1 * g8 + f2 * g7 + f3 * g6 + f4 * g5 + f5 * g4 + f6 * g3 + f7 * g2 + f8 * g1 + f9 * g0 in let s0 = xf_set(h, 0, h0) in let s1 = xf_set(h, 1, h1) in let s2 = xf_set(h, 2, h2) in let s3 = xf_set(h, 3, h3) in let s4 = xf_set(h, 4, h4) in let s5 = xf_set(h, 5, h5) in let s6 = xf_set(h, 6, h6) in let s7 = xf_set(h, 7, h7) in let s8 = xf_set(h, 8, h8) in let s9 = xf_set(h, 9, h9) in xf_carry(h)
+fn xf_mul(h, f, g) =
+    let f0 = xf_get(f, 0) in
+    let f1 = xf_get(f, 1) in
+    let f2 = xf_get(f, 2) in
+    let f3 = xf_get(f, 3) in
+    let f4 = xf_get(f, 4) in
+    let f5 = xf_get(f, 5) in
+    let f6 = xf_get(f, 6) in
+    let f7 = xf_get(f, 7) in
+    let f8 = xf_get(f, 8) in
+    let f9 = xf_get(f, 9) in
+    let g0 = xf_get(g, 0) in
+    let g1 = xf_get(g, 1) in
+    let g2 = xf_get(g, 2) in
+    let g3 = xf_get(g, 3) in
+    let g4 = xf_get(g, 4) in
+    let g5 = xf_get(g, 5) in
+    let g6 = xf_get(g, 6) in
+    let g7 = xf_get(g, 7) in
+    let g8 = xf_get(g, 8) in
+    let g9 = xf_get(g, 9) in
+    let g1_19 = 19 * g1 in
+    let g2_19 = 19 * g2 in
+    let g3_19 = 19 * g3 in
+    let g4_19 = 19 * g4 in
+    let g5_19 = 19 * g5 in
+    let g6_19 = 19 * g6 in
+    let g7_19 = 19 * g7 in
+    let g8_19 = 19 * g8 in
+    let g9_19 = 19 * g9 in
+    let f1_2 = 2 * f1 in
+    let f3_2 = 2 * f3 in
+    let f5_2 = 2 * f5 in
+    let f7_2 = 2 * f7 in
+    let f9_2 = 2 * f9 in
+    let h0 = f0 * g0 + f1_2 * g9_19 + f2 * g8_19 + f3_2 * g7_19 + f4 * g6_19 + f5_2 * g5_19 + f6 * g4_19 + f7_2 * g3_19 + f8 * g2_19 + f9_2 * g1_19 in
+    let h1 = f0 * g1 + f1 * g0 + f2 * g9_19 + f3 * g8_19 + f4 * g7_19 + f5 * g6_19 + f6 * g5_19 + f7 * g4_19 + f8 * g3_19 + f9 * g2_19 in
+    let h2 = f0 * g2 + f1_2 * g1 + f2 * g0 + f3_2 * g9_19 + f4 * g8_19 + f5_2 * g7_19 + f6 * g6_19 + f7_2 * g5_19 + f8 * g4_19 + f9_2 * g3_19 in
+    let h3 = f0 * g3 + f1 * g2 + f2 * g1 + f3 * g0 + f4 * g9_19 + f5 * g8_19 + f6 * g7_19 + f7 * g6_19 + f8 * g5_19 + f9 * g4_19 in
+    let h4 = f0 * g4 + f1_2 * g3 + f2 * g2 + f3_2 * g1 + f4 * g0 + f5_2 * g9_19 + f6 * g8_19 + f7_2 * g7_19 + f8 * g6_19 + f9_2 * g5_19 in
+    let h5 = f0 * g5 + f1 * g4 + f2 * g3 + f3 * g2 + f4 * g1 + f5 * g0 + f6 * g9_19 + f7 * g8_19 + f8 * g7_19 + f9 * g6_19 in
+    let h6 = f0 * g6 + f1_2 * g5 + f2 * g4 + f3_2 * g3 + f4 * g2 + f5_2 * g1 + f6 * g0 + f7_2 * g9_19 + f8 * g8_19 + f9_2 * g7_19 in
+    let h7 = f0 * g7 + f1 * g6 + f2 * g5 + f3 * g4 + f4 * g3 + f5 * g2 + f6 * g1 + f7 * g0 + f8 * g9_19 + f9 * g8_19 in
+    let h8 = f0 * g8 + f1_2 * g7 + f2 * g6 + f3_2 * g5 + f4 * g4 + f5_2 * g3 + f6 * g2 + f7_2 * g1 + f8 * g0 + f9_2 * g9_19 in
+    let h9 = f0 * g9 + f1 * g8 + f2 * g7 + f3 * g6 + f4 * g5 + f5 * g4 + f6 * g3 + f7 * g2 + f8 * g1 + f9 * g0 in
+    let s0 = xf_set(h, 0, h0) in
+    let s1 = xf_set(h, 1, h1) in
+    let s2 = xf_set(h, 2, h2) in
+    let s3 = xf_set(h, 3, h3) in
+    let s4 = xf_set(h, 4, h4) in
+    let s5 = xf_set(h, 5, h5) in
+    let s6 = xf_set(h, 6, h6) in
+    let s7 = xf_set(h, 7, h7) in
+    let s8 = xf_set(h, 8, h8) in
+    let s9 = xf_set(h, 9, h9) in
+    xf_carry(h)
 ## h = f * 121665 (a24 of RFC 7748 section 5); products below 2^45
 fn xf_m24(h, f, i) = if i >= 10 then xf_carry(h) else let a = xf_set(h, i, xf_get(f, i) * 121665) in xf_m24(h, f, i + 1)
 
 ## bytes -> limbs: limb i takes the next xf_w(i) bits of the 32 little-endian bytes at s; bit 255 is dropped
 ## (s must have 8 readable bytes after the 32: the callers copy into a zero-padded scratch)
-fn xf_from(h, s, i, pos) = if i >= 10 then 0 else let w = xf_w(i) in let v = bit_and(bit_shr(load64(s + pos / 8), pos % 8), bit_shl(1, w) - 1) in let a = xf_set(h, i, v) in xf_from(h, s, i + 1, pos + w)
+fn xf_from(h, s, i, pos) =
+    if i >= 10 then
+        0
+    else
+        let w = xf_w(i) in
+        let v = bit_and(bit_shr(load64(s + pos / 8), pos % 8), bit_shl(1, w) - 1) in
+        let a = xf_set(h, i, v) in
+        xf_from(h, s, i + 1, pos + w)
 ## limbs -> bytes, fully reduced mod p (ref10 fe_tobytes): q = the multiple of p to drop, then plain carries
 fn xf_q(h, i, q) = if i >= 10 then q else xf_q(h, i + 1, bit_shr(xf_get(h, i) + q, xf_w(i)))
-fn xf_pc(h, i) = if i >= 9 then 0 else let v = xf_get(h, i) in let c = bit_shr(v, xf_w(i)) in let a = xf_set(h, i, v - bit_shl(c, xf_w(i))) in let b = xf_set(h, i + 1, xf_get(h, i + 1) + c) in xf_pc(h, i + 1)
-fn xf_pack(s, h, i, acc, nb, o) = if o >= 32 then 0 else if nb >= 8 or i >= 10 then let a = store8(s + o, bit_and(acc, 255)) in xf_pack(s, h, i, bit_shr(acc, 8), nb - 8, o + 1) else xf_pack(s, h, i + 1, bit_or(acc, bit_shl(xf_get(h, i), nb)), nb + xf_w(i), o)
-fn xf_to(s, h) = let q = xf_q(h, 0, bit_shr(19 * xf_get(h, 9) + bit_shl(1, 24), 25)) in let a = xf_set(h, 0, xf_get(h, 0) + 19 * q) in let b = xf_pc(h, 0) in let v9 = xf_get(h, 9) in let c = xf_set(h, 9, v9 - bit_shl(bit_shr(v9, 25), 25)) in xf_pack(s, h, 0, 0, 0, 0)
+fn xf_pc(h, i) =
+    if i >= 9 then
+        0
+    else
+        let v = xf_get(h, i) in
+        let c = bit_shr(v, xf_w(i)) in
+        let a = xf_set(h, i, v - bit_shl(c, xf_w(i))) in
+        let b = xf_set(h, i + 1, xf_get(h, i + 1) + c) in
+        xf_pc(h, i + 1)
+fn xf_pack(s, h, i, acc, nb, o) =
+    if o >= 32 then
+        0
+    else if nb >= 8 or i >= 10 then
+        let a = store8(s + o, bit_and(acc, 255)) in
+        xf_pack(s, h, i, bit_shr(acc, 8), nb - 8, o + 1)
+    else
+        xf_pack(s, h, i + 1, bit_or(acc, bit_shl(xf_get(h, i), nb)), nb + xf_w(i), o)
+fn xf_to(s, h) =
+    let q = xf_q(h, 0, bit_shr(19 * xf_get(h, 9) + bit_shl(1, 24), 25)) in
+    let a = xf_set(h, 0, xf_get(h, 0) + 19 * q) in
+    let b = xf_pc(h, 0) in
+    let v9 = xf_get(h, 9) in
+    let c = xf_set(h, 9, v9 - bit_shl(bit_shr(v9, 25), 25)) in
+    xf_pack(s, h, 0, 0, 0, 0)
 
 ## z^(p - 2) = z^(2^255 - 21): square and multiply over the bits 254 .. 0 (all ones but bits 4 and 2)
-fn xf_inv_go(o, z, i) = if i < 0 then 0 else let a = xf_mul(o, o, o) in let b = if i == 4 or i == 2 then 0 else xf_mul(o, o, z) in xf_inv_go(o, z, i - 1)
+fn xf_inv_go(o, z, i) =
+    if i < 0 then
+        0
+    else
+        let a = xf_mul(o, o, o) in
+        let b = if i == 4 or i == 2 then 0 else xf_mul(o, o, z) in
+        xf_inv_go(o, z, i - 1)
 fn xf_inv(o, z) = let a = xf_small(o, 1, 0) in xf_inv_go(o, z, 254)
 
 ## the workspace w: field elements at 80-byte steps, then the clamped scalar, the padded u and the output bytes
 fn xw(w, k) = w + 80 * k
 ## one ladder step per bit t = 254 .. 0 (RFC 7748 section 5): x2 = 1, x3 = 2, z2 = 3, z3 = 4, x1 = 0, scratch 5 .. 14
-fn xl_go(w, t, swap) = if t < 0 then swap else let e = w + 1200 in let kt = bit_and(bit_shr(load8(e + t / 8), t % 8), 1) in let s = bit_xor(swap, kt) in let c1 = xf_cswap(xw(w, 1), xw(w, 2), s, 0) in let c2 = xf_cswap(xw(w, 3), xw(w, 4), s, 0) in let a1 = xf_add(xw(w, 5), xw(w, 1), xw(w, 3), 0) in let a2 = xf_mul(xw(w, 6), xw(w, 5), xw(w, 5)) in let a3 = xf_sub(xw(w, 7), xw(w, 1), xw(w, 3), 0) in let a4 = xf_mul(xw(w, 8), xw(w, 7), xw(w, 7)) in let a5 = xf_sub(xw(w, 9), xw(w, 6), xw(w, 8), 0) in let a6 = xf_add(xw(w, 10), xw(w, 2), xw(w, 4), 0) in let a7 = xf_sub(xw(w, 11), xw(w, 2), xw(w, 4), 0) in let a8 = xf_mul(xw(w, 12), xw(w, 11), xw(w, 5)) in let a9 = xf_mul(xw(w, 13), xw(w, 10), xw(w, 7)) in let b1 = xf_add(xw(w, 14), xw(w, 12), xw(w, 13), 0) in let b2 = xf_mul(xw(w, 2), xw(w, 14), xw(w, 14)) in let b3 = xf_sub(xw(w, 14), xw(w, 12), xw(w, 13), 0) in let b4 = xf_mul(xw(w, 14), xw(w, 14), xw(w, 14)) in let b5 = xf_mul(xw(w, 4), xw(w, 0), xw(w, 14)) in let b6 = xf_mul(xw(w, 1), xw(w, 6), xw(w, 8)) in let b7 = xf_m24(xw(w, 14), xw(w, 9), 0) in let b8 = xf_add(xw(w, 14), xw(w, 6), xw(w, 14), 0) in let b9 = xf_mul(xw(w, 3), xw(w, 9), xw(w, 14)) in xl_go(w, t - 1, kt)
+fn xl_go(w, t, swap) =
+    if t < 0 then
+        swap
+    else
+        let e = w + 1200 in
+        let kt = bit_and(bit_shr(load8(e + t / 8), t % 8), 1) in
+        let s = bit_xor(swap, kt) in
+        let c1 = xf_cswap(xw(w, 1), xw(w, 2), s, 0) in
+        let c2 = xf_cswap(xw(w, 3), xw(w, 4), s, 0) in
+        let a1 = xf_add(xw(w, 5), xw(w, 1), xw(w, 3), 0) in
+        let a2 = xf_mul(xw(w, 6), xw(w, 5), xw(w, 5)) in
+        let a3 = xf_sub(xw(w, 7), xw(w, 1), xw(w, 3), 0) in
+        let a4 = xf_mul(xw(w, 8), xw(w, 7), xw(w, 7)) in
+        let a5 = xf_sub(xw(w, 9), xw(w, 6), xw(w, 8), 0) in
+        let a6 = xf_add(xw(w, 10), xw(w, 2), xw(w, 4), 0) in
+        let a7 = xf_sub(xw(w, 11), xw(w, 2), xw(w, 4), 0) in
+        let a8 = xf_mul(xw(w, 12), xw(w, 11), xw(w, 5)) in
+        let a9 = xf_mul(xw(w, 13), xw(w, 10), xw(w, 7)) in
+        let b1 = xf_add(xw(w, 14), xw(w, 12), xw(w, 13), 0) in
+        let b2 = xf_mul(xw(w, 2), xw(w, 14), xw(w, 14)) in
+        let b3 = xf_sub(xw(w, 14), xw(w, 12), xw(w, 13), 0) in
+        let b4 = xf_mul(xw(w, 14), xw(w, 14), xw(w, 14)) in
+        let b5 = xf_mul(xw(w, 4), xw(w, 0), xw(w, 14)) in
+        let b6 = xf_mul(xw(w, 1), xw(w, 6), xw(w, 8)) in
+        let b7 = xf_m24(xw(w, 14), xw(w, 9), 0) in
+        let b8 = xf_add(xw(w, 14), xw(w, 6), xw(w, 14), 0) in
+        let b9 = xf_mul(xw(w, 3), xw(w, 9), xw(w, 14)) in
+        xl_go(w, t - 1, kt)
 fn xb_copy(d, s, i, n) = if i >= n then 0 else let a = store8(d + i, load8(s + i)) in xb_copy(d, s, i + 1, n)
 fn xb_zero(d, i, n) = if i >= n then 0 else let a = store8(d + i, 0) in xb_zero(d, i + 1, n)
 ## 1 when the Lume value v is a string of exactly 32 bytes held in a heap cell (its bytes at v + 8)
-fn xs_ok32(v) = if bit_and(v, 7) != 0 then 0 else if load8(v) != 1 then 0 else if bit_shr(load64(v), 8) != 32 then 0 else 1
+fn xs_ok32(v) =
+    if bit_and(v, 7) != 0 then
+        0
+    else if load8(v) != 1 then
+        0
+    else if bit_shr(load64(v), 8) != 32 then
+        0
+    else
+        1
 ## X25519(k, u) -> 32 bytes; a wrong size gives 32 zero bytes (fail closed, as lct_x25519)
-fn crypto_x25519(k, u) = let w = __lume_alloc_a(1320) in let z = xb_zero(w, 0, 1320) in if xs_ok32(k) == 0 or xs_ok32(u) == 0 then __rt_mkstrn(w, 32) else let e = w + 1200 in let c1 = xb_copy(e, k + 8, 0, 32) in let c2 = store8(e, bit_and(load8(e), 248)) in let c3 = store8(e + 31, bit_or(bit_and(load8(e + 31), 127), 64)) in let c4 = xb_copy(w + 1240, u + 8, 0, 32) in let f = xf_from(xw(w, 0), w + 1240, 0, 0) in let i1 = xf_small(xw(w, 1), 1, 0) in let i2 = xf_copy(xw(w, 2), xw(w, 0), 0) in let i3 = xf_small(xw(w, 3), 0, 0) in let i4 = xf_small(xw(w, 4), 1, 0) in let sw = xl_go(w, 254, 0) in let d1 = xf_cswap(xw(w, 1), xw(w, 2), sw, 0) in let d2 = xf_cswap(xw(w, 3), xw(w, 4), sw, 0) in let v = xf_inv(xw(w, 5), xw(w, 3)) in let m = xf_mul(xw(w, 1), xw(w, 1), xw(w, 5)) in let o = xf_to(w + 1280, xw(w, 1)) in __rt_mkstrn(w + 1280, 32)
+fn crypto_x25519(k, u) =
+    let w = __lume_alloc_a(1320) in
+    let z = xb_zero(w, 0, 1320) in
+    if xs_ok32(k) == 0 or xs_ok32(u) == 0 then
+        __rt_mkstrn(w, 32)
+    else
+        let e = w + 1200 in
+        let c1 = xb_copy(e, k + 8, 0, 32) in
+        let c2 = store8(e, bit_and(load8(e), 248)) in
+        let c3 = store8(e + 31, bit_or(bit_and(load8(e + 31), 127), 64)) in
+        let c4 = xb_copy(w + 1240, u + 8, 0, 32) in
+        let f = xf_from(xw(w, 0), w + 1240, 0, 0) in
+        let i1 = xf_small(xw(w, 1), 1, 0) in
+        let i2 = xf_copy(xw(w, 2), xw(w, 0), 0) in
+        let i3 = xf_small(xw(w, 3), 0, 0) in
+        let i4 = xf_small(xw(w, 4), 1, 0) in
+        let sw = xl_go(w, 254, 0) in
+        let d1 = xf_cswap(xw(w, 1), xw(w, 2), sw, 0) in
+        let d2 = xf_cswap(xw(w, 3), xw(w, 4), sw, 0) in
+        let v = xf_inv(xw(w, 5), xw(w, 3)) in
+        let m = xf_mul(xw(w, 1), xw(w, 1), xw(w, 5)) in
+        let o = xf_to(w + 1280, xw(w, 1)) in
+        __rt_mkstrn(w + 1280, 32)

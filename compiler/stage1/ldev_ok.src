@@ -1,0 +1,34 @@
+## ldev_ok.src -- the pure parts of `lume dev` (compiler/stage1/ldev.src): option parsing, step planning, the fixpoint
+## verdict and the report lines. `lume test compiler/stage1/ldev_ok.src`; nothing here starts a process or writes a file.
+use ldev
+
+fn has(xs, x) = match xs
+    Nil        => false
+    Cons(h, t) => if h == x then true else has(t, x)
+fn nth(xs, i) = match xs
+    Nil        => ""
+    Cons(h, t) => if i == 0 then h else nth(t, i - 1)
+fn w2(a, b) = Cons(a, Cons(b, Nil))
+fn w3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+fn w4(a, b, c, d) = Cons(a, Cons(b, Cons(c, Cons(d, Nil))))
+
+fn test_parse_selfbuild_defaults() = let o = ldv_parse(Cons("selfbuild", Nil), "/r") in o.err == "" and o.sub == "selfbuild" and o.root == "/r" and o.check == 0 and o.verbose == 0 and o.tools == ldv_default_tools()
+fn test_parse_root_both_spellings() = let a = ldv_parse(w3("selfbuild", "--root", "/x/y"), "/r") in let b = ldv_parse(w2("selfbuild", "--root=/x/z"), "/r") in a.err == "" and a.root == "/x/y" and b.err == "" and b.root == "/x/z"
+fn test_parse_tools_check_verbose() = let o = ldv_parse(w4("--check", "selfbuild", "--tools=lcli, lmanual", "--verbose"), "/r") in o.err == "" and o.check == 1 and o.verbose == 1 and ldv_len(ldv_split(o.tools, ",")) == 2 and nth(ldv_split(o.tools, ","), 1) == "lmanual"
+fn test_parse_sync_check_needs_dir() = let a = ldv_parse(Cons("sync-check", Nil), "/r") in let b = ldv_parse(w2("sync-check", "/other"), "/r") in a.err != "" and b.err == "" and b.dir == "/other" and b.sub == "sync-check"
+fn test_parse_refusals() = ldv_parse(Nil, "/r").err != "" and ldv_parse(Cons("rebuild", Nil), "/r").err != "" and ldv_parse(w2("selfbuild", "--fast"), "/r").err != "" and ldv_parse(w2("selfbuild", "--root"), "/r").err != "" and ldv_parse(w2("selfbuild", "extra"), "/r").err != "" and ldv_parse(w3("sync-check", "a", "b"), "/r").err != ""
+fn test_parse_tool_names() = ldv_parse(w2("selfbuild", "--tools=../evil"), "/r").err != "" and ldv_parse(w2("selfbuild", "--tools=lcli.src"), "/r").err != "" and ldv_parse(w2("selfbuild", "--tools=,"), "/r").err != "" and ldv_parse(w2("selfbuild", "--tools=lume_driver"), "/r").err == ""
+fn test_split_drops_empty_and_blanks() = let xs = ldv_split(" a ,,b,\tc ", ",") in ldv_len(xs) == 3 and nth(xs, 0) == "a" and nth(xs, 1) == "b" and nth(xs, 2) == "c" and ldv_len(ldv_split("", ",")) == 0
+
+fn test_plan_full_build() = let p = ldv_plan(ldv_parse(w2("selfbuild", "--tools=lcli,lasm"), "/r")) in nth(p, 0) == "preflight" and nth(p, 1) == "backup" and has(p, "tool lcli") and has(p, "tool lasm") and nth(p, ldv_len(p) - 1) == "install" and ldv_len(p) == 6
+fn test_plan_check_builds_no_tool() = let p = ldv_plan(ldv_parse(w2("selfbuild", "--check"), "/r")) in ldv_len(p) == 4 and not has(p, "install") and not has(p, "tool lcli") and nth(p, 3) == "restore (check only)"
+fn test_plan_default_tools_in_order() = let p = ldv_plan(ldv_parse(Cons("selfbuild", Nil), "/r")) in nth(p, 3) == "tool lume_driver" and nth(p, 11) == "tool lasm" and ldv_len(p) == 13
+
+fn test_verdict_needs_two_generations() = ldv_verdict(1, 1, 1, 6) == "next" and ldv_verdict(2, 1, 1, 6) == "fixpoint" and ldv_verdict(3, 1, 1, 6) == "fixpoint"
+fn test_verdict_runtime_and_assembly_both_count() = ldv_verdict(2, 0, 1, 6) == "next" and ldv_verdict(2, 1, 0, 6) == "next" and ldv_verdict(5, 0, 0, 6) == "next"
+fn test_verdict_limit() = ldv_verdict(6, 0, 1, 6) == "limit" and ldv_verdict(6, 1, 1, 6) == "fixpoint" and ldv_verdict(7, 1, 0, 6) == "limit"
+
+fn test_exit_codes_from_wait_status() = ldv_code(0) == 0 and ldv_code(256) == 1 and ldv_code(3 * 256) == 3 and ldv_code(127) == 1 and ldv_code(0 - 1) == 1 and ldv_code(9) == 137
+fn test_report_lines() = ldv_sync_line("differs", "compiler/stage1/x.src") == "differs  compiler/stage1/x.src\n" and ldv_sync_summary(10, 0, 0, "/d") == "sync-check: 10 files of compiler/ and tests/ compared with /d: all identical" and ldv_sync_summary(10, 2, 1, "/d") == "sync-check: 10 files of compiler/ and tests/ compared with /d: 2 differ, 1 missing there"
+fn test_step_line_shape() = let l = ldv_line("gen 1 compile", 1, os_monotonic_ns(), "detail") in ldv_starts(l, "  gen 1 compile           ok    ") and ldv_starts(ldv_line("x", 0, os_monotonic_ns(), ""), "  x                       FAIL  ") and ldv_secs(1234) == "1.2 s" and ldv_secs(50) == "0.0 s"
+fn test_log_tail() = ldv_tail_text("a\nb\nc\nd\n", 2) == "      | c\n      | d\n" and ldv_tail_text("one", 5) == "      | one\n"

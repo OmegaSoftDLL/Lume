@@ -70,14 +70,39 @@ fn keepdef(lines) = match lines
 fn keepdef1(raw, t) = if is_top_print(raw) then Cons("", keepdef(t)) else Cons(raw, keepdef(t))
 
 ## --- synthesize runner statements for discovered tests ---
-fn printcalls(ts) = match ts
+## Test number i (0-based, in source order) runs when it is selected at run time by the environment the driver sets:
+##   LUME_TEST_FILTER=s       only tests whose name contains s (`lume test --filter s`)
+##   LUME_TEST_SHARDS=n, LUME_TEST_SHARD=k   only tests with i % n == k (`lume test --jobs n`: one process per k)
+##   LUME_TEST_REPORT=1       machine lines instead of the human ones: `@lume-test-plan i name` for every selected test
+##                            first, then `@lume-test i ns <human line>` per test and `@lume-test-sum passed selected`
+## With none of them set the output is the historical one: `  ok   name` / `  FAIL name` per test, `P passed, F failed`.
+fn q(s) = "\"" + s + "\""
+fn plancalls(ts, i) = match ts
     Nil        => Nil
-    Cons(h, t) => Cons("print (if __lume_try_begin() == 0 then (let _t_r = " + h + "() in let _t_z = __lume_try_end() in _t_msg(_t_r, \"" + h + "\")) else _t_abort(\"" + h + "\", __lume_try_msg()))", printcalls(t))
-fn sumcalls(ts) = match ts
-    Nil        => "0"
-    Cons(h, t) => if isnil(t) == 1 then "_t_ok(" + h + "())" else "_t_ok(" + h + "()) + " + sumcalls(t)
+    Cons(h, t) => Cons("_t_plan(" + str(i) + ", " + q(h) + ")", plancalls(t, i + 1))
+fn runcalls(ts, i) = match ts
+    Nil        => Nil
+    Cons(h, t) => Cons("_t_start(" + str(i) + ", " + q(h) + ")", Cons("_t_line(" + str(i) + ", if _t_sel(" + str(i) + ", " + q(h) + ") == 0 then \"\" else (if __lume_try_begin() == 0 then (let _t_r = " + h + "() in let _t_z = __lume_try_end() in _t_msg(_t_r, " + q(h) + ")) else _t_abort(" + q(h) + ", __lume_try_msg())))", runcalls(t, i + 1)))
 
-fn synth(src, lines, ts) = if isnil(ts) == 1 then src else let n = str(len(ts)) in let defs = if has_top_print(lines) == 1 then joinsep(keepdef(lines), "\n") else rtrim(src) in let pcs = joinsep(printcalls(ts), "\n") in defs + "\nfn _t_msg(ok, nm) = if ok != 0 then (let z = mmio_volatile_write64(hw_scratch_addr() + 4096, mmio_volatile_read64(hw_scratch_addr() + 4096) + 1) in \"  ok   \" + nm) else \"  FAIL \" + nm\nfn _t_chomp(s) = if count(s) > 0 and at(s, count(s) - 1) == \"\\n\" then _t_chomp(slice(s, 0, count(s) - 1)) else s\nfn _t_abort(nm, msg) = \"  FAIL \" + nm + \" (aborted: \" + _t_chomp(msg) + \")\"\nfn _t_sum(p, tot) = str(p) + \" passed, \" + str(tot - p) + \" failed\"\nfn _t_chk(p, tot) = if p == tot then 0 else ctfail(\"lume test: failed\\n\")\n" + pcs + "\nprint _t_sum(mmio_volatile_read64(hw_scratch_addr() + 4096), " + n + ")\n_t_chk(mmio_volatile_read64(hw_scratch_addr() + 4096), " + n + ")"
+## the runner's functions, one generated line each (slot 0 of the scratch page counts passes, 1 the selected tests,
+## 2 holds the start time of the running test)
+fn rd01() = "fn _t_slot(k) = hw_scratch_addr() + 4096 + k * 8"
+fn rd02() = "fn _t_msg(ok, nm) = if ok != 0 then (let z = mmio_volatile_write64(_t_slot(0), mmio_volatile_read64(_t_slot(0)) + 1) in \"  ok   \" + nm) else \"  FAIL \" + nm"
+fn rd03() = "fn _t_chomp(s) = if count(s) > 0 and at(s, count(s) - 1) == \"\\n\" then _t_chomp(slice(s, 0, count(s) - 1)) else s"
+fn rd04() = "fn _t_abort(nm, msg) = \"  FAIL \" + nm + \" (aborted: \" + _t_chomp(msg) + \")\""
+fn rd05() = "fn _t_sum(p, tot) = str(p) + \" passed, \" + str(tot - p) + \" failed\""
+fn rd06() = "fn _t_has(s, p, i) = if i + count(p) > count(s) then 0 else if slice(s, i, i + count(p)) == p then 1 else _t_has(s, p, i + 1)"
+fn rd07() = "fn _t_num(s, i, acc) = if i >= count(s) then acc else if at(s, i) < \"0\" or at(s, i) > \"9\" then acc else _t_num(s, i + 1, acc * 10 + ord(at(s, i)) - 48)"
+fn rd08() = "fn _t_shards() = _t_num(os_getenv(\"LUME_TEST_SHARDS\"), 0, 0)"
+fn rd09() = "fn _t_rep() = if os_getenv(\"LUME_TEST_REPORT\") == \"\" then 0 else 1"
+fn rd10() = "fn _t_sel(i, nm) = let f = os_getenv(\"LUME_TEST_FILTER\") in let n = _t_shards() in if f != \"\" and _t_has(nm, f, 0) == 0 then 0 else if n > 1 and i % n != _t_num(os_getenv(\"LUME_TEST_SHARD\"), 0, 0) then 0 else 1"
+fn rd11() = "fn _t_plan(i, nm) = if _t_rep() == 1 and _t_sel(i, nm) == 1 then (let z = emit(\"@lume-test-plan \" + str(i) + \" \" + nm + \"\\n\") in 0) else 0"
+fn rd12() = "fn _t_start(i, nm) = if _t_sel(i, nm) == 1 then (let z = mmio_volatile_write64(_t_slot(2), os_monotonic_ns()) in 0) else 0"
+fn rd13() = "fn _t_line(i, s) = if s == \"\" then 0 else let ns = os_monotonic_ns() - mmio_volatile_read64(_t_slot(2)) in let c = mmio_volatile_write64(_t_slot(1), mmio_volatile_read64(_t_slot(1)) + 1) in let z = emit(if _t_rep() == 1 then \"@lume-test \" + str(i) + \" \" + str(ns) + \" \" + s + \"\\n\" else s + \"\\n\") in 0"
+fn rd14() = "fn _t_fin(tot) = let p = mmio_volatile_read64(_t_slot(0)) in let sel = mmio_volatile_read64(_t_slot(1)) in let f = os_getenv(\"LUME_TEST_FILTER\") in if sel == 0 and f != \"\" and _t_shards() <= 1 and _t_rep() == 0 then ctfail(\"lume test: no test function name contains '\" + f + \"' (\" + str(tot) + \" test functions in the file)\\n\") else let z = emit(if _t_rep() == 1 then \"@lume-test-sum \" + str(p) + \" \" + str(sel) + \"\\n\" else _t_sum(p, sel) + \"\\n\") in let zf = flush() in if p == sel then 0 else ctfail(\"lume test: failed\\n\")"
+fn runner_defs() = rd01() + "\n" + rd02() + "\n" + rd03() + "\n" + rd04() + "\n" + rd05() + "\n" + rd06() + "\n" + rd07() + "\n" + rd08() + "\n" + rd09() + "\n" + rd10() + "\n" + rd11() + "\n" + rd12() + "\n" + rd13() + "\n" + rd14()
+
+fn synth(src, lines, ts) = if isnil(ts) == 1 then src else let n = str(len(ts)) in let defs = if has_top_print(lines) == 1 then joinsep(keepdef(lines), "\n") else rtrim(src) in defs + "\n" + runner_defs() + "\n" + joinsep(plancalls(ts, 0), "\n") + "\n" + joinsep(runcalls(ts, 0), "\n") + "\n_t_fin(" + n + ")"
 
 fn run_ltest(src) = let lines = splitlines(src) in synth(src, lines, findtests(lines))
 

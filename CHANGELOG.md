@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Integer loops run 30-40 % faster in ordinary code.** A function that loops by calling itself in tail position
+  (literals, variables, operators, if, let and calls only; at most 6 parameters) is emitted twice: a specialized body
+  entered when its integer parameters are small ints and its buffer parameters are buffers (one test), with no tag
+  tests on values known small, plain compares instead of cmpv / eqv, buf_get / buf_set without the index tag and
+  header checks, slow paths placed after the epilogue; and the ordinary body. Any operation that leaves the small-int
+  range (a boxed result, a float, a string) calls the same runtime routine and continues in the ordinary body at the
+  same point, so results and stops (overflow past 64 bits, bad index) are unchanged. Sum to 1e8: 1.75 -> 1.23 ns per
+  iteration; a buf_get sum 3.75 -> 2.31 ns per byte; a SAD loop 6.98 -> 4.17 ns per byte.
+- **`lumec --raw` (the compiler of the runtime written in Lume) is easier to write correctly.** Operands are computed left
+  to right, as in ordinary Lume (the right one went first); functions and calls take more than 6 parameters /
+  arguments (the 7th on in the caller's stack words, System V; such routines are never leaf routines); gen_runtime
+  refuses a runtime whose code names a symbol nothing in the runtime defines (a typo, or a builtin the code generator
+  emits only on demand), naming it, instead of a link error in the compiler's next generation. Every runtime source
+  (compiler/stage1/rt/*.src) is laid out by `lume fmt`, one `let` per line; the generated runtime is byte-identical.
+  Gate tests/harness/raw_abi_gate.src (left-to-right order, 8 and 9 parameters in a leaf, a framed routine and a loop).
+
 ### Fixed
 - **Captured output lost on Windows while another process reads it.** The Win64 layer emulated flock with a
   mandatory byte-range lock over the whole file, so a child's writes into its capture file failed while a reader
@@ -16,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one descriptor. Test tests/runtime/spawn_capture_concurrent_ok.src.
 
 ### Added
+- **`lume dev selfbuild` and `lume dev sync-check`: the toolchain's self-rebuild as a Lume command.** selfbuild
+  (compiler/stage1/ldev.src) replaces the shell scripts that rebuilt the compiler by hand: it regenerates
+  runtime_lume.lume, amalgamates the compiler and builds lumec generation after generation until two successive
+  generations emit byte-identical assembly from the same runtime text; every generation must compile, assemble and
+  run a smoke program before it may replace build/bin/lumec (a generation whose embedded runtime is incomplete never
+  does). The tools (`--tools`, default lume_driver lcli lmanual lcaas lcert lmod lprotect ldapdbg lasm) are built
+  aside and moved in only when all of them were built; on any failure the compiler, runtime_lume.lume and the
+  amalgamated source are put back byte for byte and no tool is moved. `--check` stops at the fixpoint and reports
+  whether the tree was current; `--root`, `--verbose`; an interrupted run is recovered by the next one. sync-check
+  lists the files of compiler/ and tests/ that differ from another tree (the stale-tree trap). Tests:
+  compiler/stage1/ldev_ok.src.
 - **Package resolver and a lock that is honoured (item 19, part A).** The versions, the resolver and the lock format
   moved into `compiler/stage1/lpkg.src` (pure, tested by `tests/registry/pkg_resolve_ok.src`). `lume pkg install`
   now resolves the dependencies of dependencies too: each round picks, for every package named by the manifest or by
@@ -55,6 +83,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without a list), `utf8_check`, `utf8_sanitize`, `utf8_offset`, `utf8_encode_cp`, UTF-16 conversion, and case mapping
   for Latin Extended-A, Greek and Cyrillic. `csv` gains the strict `csv_parse_checked` and `csv_index` / `csv_get`;
   quoted fields are sliced instead of copied byte by byte.
+- **Machine-readable diagnostics, one shape for every command.** `--json` on `lume check`, `prove`, `build`, `run`,
+  `test` and `verify` prints `{"ok":bool,"diagnostics":[{"code","severity","file","line","col","message","fix"}],
+  ...}` plus the command's own fields (build: source, output, exit, ms, log; run: exit, ms, stdout, stderr; test:
+  tests with name, status, ms, message, output; verify: files with status, cached, detail). The compiler front end
+  (lcaas) writes the flat fields itself next to its span and fixit; `fix` is the concrete fix-it of the message
+  (`(fix-it: ...)`), and the driver maps bundle lines back to the user's files. A failure only lumec or lasm sees
+  becomes one diagnostic from the located error text (the build runs in a forked child that captures it).
+  `lume check --json` now prints the JSON on success too.
+- **`lume test --filter <text>` and `--jobs <n>`.** The harness ltest generates selects its tests at run time
+  (environment set by the driver): `--filter` runs only the tests whose name contains the text (one that matches
+  nothing is an error); `--jobs n` runs one file's tests in n processes (test i in process i % n) or several files
+  in n forked workers, and prints the report in source order, byte-identical to a serial run. Measured on Linux,
+  warm cache: 8 test files 4.7 s -> 1.85 s with `--jobs 4`; tests/cli/json_and_test_ok.src 5.2 s -> 2.0 s (Windows
+  145 s -> 48 s). `lume verify` also accepts `--jobs N` besides `--jobs=N`.
+- **`lume query`: definitions, callers, callees and outlines for AI agents (compiler/stage1/lquery.src).** On large
+  Lume code (the compiler's one-line functions run to thousands of characters) a grep hit is a whole function; `lume
+  query defs NAME [PATH]` answers file:line, the signature (parameters, annotated types, requires / ensures) and the
+  `##` doc comment; `lume query callers NAME [PATH]` every definition whose body calls NAME, with the line and column
+  of each call and about 80 characters around it; `lume query calls NAME [PATH]` the names its body calls, each with
+  where it is defined (the caller's file first); `lume query outline FILE` one line per definition (line, kind,
+  name(params), first doc line). `--json` gives an array of objects (file, line, name, kind, signature, excerpt; doc,
+  call_line / call_col, count, defined_at where they apply). PATH is a .src / .lume file with the modules it `use`s,
+  or a directory (recursive; the amalgamated lumec.src next to lume/ is skipped); the default is the current one. The
+  tokens come from the compiler's own lexer, so a name in a string, a comment, a """...""" string or a #[ ]# block
+  never matches, and the calls inside string interpolation holes count. Only the items whose text holds the name are
+  lexed (a file is cut at the declarations that lie outside strings and comments): `callers rt_int` over the 345
+  files of compiler/stage1 in about 0.2 s, `outline` of 05_codegen.src (705 definitions) in 45 ms. Tests:
+  compiler/stage1/lquery_ok.src.
+- **One table of the builtins, and a gate that holds the compiler to it.** `compiler/stage1/builtins_table.src` lists
+  every builtin once (name, arity, effect, name_flow lists, where its code is defined, reference and regression
+  status). `tests/harness/builtins_gate.src` (run by the battery) reports every disagreement between the table and
+  name_flow.src (arity lists and runtime groups), the effect lists of 06b_phase3.src and lcaas.src, the runtime text
+  (runtime_core.lume, rt/*.src and runtime_lume.lume, 05_codegen.src), the factual reference in both languages and
+  builtins_regress_ok.src; `@mode gen` rewrites those name_flow, 06b_phase3 and lcaas list functions from the table
+  (plain `==`/`or` chains, the form the frozen seed compiles), so a new builtin is one table row plus its code, docs
+  and test. Tests: tests/harness/builtins_sync_ok.src (reader, checker and generator on hand-made inputs, and the
+  compiler on the defects below).
 - **`lume debug --dap`: the real debugger over the Debug Adapter Protocol (item 21).** A DAP server on stdin / stdout
   (Content-Length framing or one JSON object per line) for editors and AI agents: launch (program, args, stopOnEntry)
   builds the program with the debugger's hooks and runs it under a monitor process; setBreakpoints (by line: the
@@ -394,6 +459,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live)`: a small service stays near 9 MB of RSS (68 MB before) at the same allocation speed.
 
 ### Fixed
+- **Builtin lists that disagreed (found by the first run of the builtins table gate):** `ord_at`, `mem_crc64`,
+  `vga_puts`, `vga_fill_row`, `vga_scroll_up`, `vga_set_cursor` and `bv_add_u8` / `bv_sub_u8` / `bv_mul_u8` had no
+  arity, so a call with the wrong argument count compiled and read stale registers (now [R0202]); 14 names of runtime
+  routines that no longer exist (`std`, `stl`, `stp`, `stro`, `strcmpv`, `cnts`, `mkctor`, `mkrec`, `alloc_grow`,
+  `cmpvgt`, `cmpvlt`, `eqvc`, `eqvi`, `eqvs`) were still reserved, so a program's own `fn std(...)` was refused with
+  [R0201]; `vga_*` and `mem_crc64` drive or read hardware memory but had no effect, so a `/ pure` function could call
+  them (now `sys`, like the MMIO and port builtins); the lcaas oracle had no effect for 62 builtins the compiler gives
+  one (ports, MMIO, CPU, `sys_call`, io_uring, pipes, `printval`, `fs_write_hex_file`, `gc_collect`, ...) and a
+  different one for `epoll_*`, `os_exit`, `os_sleep_ms` and `fs_sha256_file`, so it reported those effect errors only
+  through the compiler's fallback message, without a span; its stale `os_wall_sec` entry is gone. The reference names
+  `buf_sad8x8`, `buf_sad4x4`, `buf_satd16x16`, `buf_h264_idct4x4` and `buf_h264_intra16x16` in full, and
+  builtins_regress_ok.src now calls every documented builtin but `os_exit` (`buf_slice`, `buf_bits_se`, `emit`,
+  `flush`, `fs_mkdir`, `net_last_peer_ip` and `os_arg_at` were missing).
 - **buf_get / buf_set with a boxed (huge) index crashed** with "invalid memory access" (exit 139): the assembly
   read it as a small int. Now the runtime's own out-of-bounds error (exit 3); battery test.
 - **A build with the debugger could come back from the build cache as a normal build:** `lume build` (the path

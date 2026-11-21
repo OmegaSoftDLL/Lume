@@ -1,0 +1,210 @@
+## ldev.src -- `lume dev`: the toolchain's own maintenance, written in Lume (it replaces the shell scripts that
+## rebuilt the compiler by hand). Import with `use ldev`; the driver dispatches `lume dev ...` to ldv_entry.
+##
+##   lume dev selfbuild [--root DIR] [--tools LIST] [--check] [--verbose]
+##     Regenerates the runtime (compiler/stage1/gen_runtime.src -> runtime_lume.lume), amalgamates the compiler
+##     (build/bin/amalgamate -> compiler/stage1/lumec.src) and builds lumec with the current lumec and lasm, one
+##     generation after another, until two successive generations emit byte-identical assembly from the same runtime
+##     text (the fixpoint). Every generation must first compile, assemble and run a smoke program, so a generation
+##     whose embedded runtime is broken never becomes build/bin/lumec. Then the tools of LIST are built into
+##     build/selfbuild/tools and only when every one of them was built are they moved into build/bin (the previous
+##     lumec is kept as build/bin/lumec.prev). On any failure build/bin/lumec, runtime_lume.lume and lumec.src are
+##     put back byte for byte and no tool is moved: build/bin is left as it was. --check stops at the fixpoint, puts
+##     everything back and reports whether the tree's runtime_lume.lume and build/bin/lumec were already current.
+##   lume dev sync-check DIR [--root DIR]
+##     Reports every file of compiler/ and tests/ (tracked by git, plus new untracked files that are not ignored) whose
+##     bytes differ from the same path under DIR, or that DIR lacks: the stale-tree trap of a second build tree.
+##
+## The work directory is build/selfbuild (logs, every generation's assembly and binary, the backups). A run that was
+## interrupted leaves build/selfbuild/IN_PROGRESS: the next run first puts the backups back.
+use hostio
+
+## ---- options ---------------------------------------------------------------------------------------------------
+fn ldv_default_tools() = "lume_driver,lcli,lmanual,lcaas,lcert,lmod,lprotect,ldapdbg,lasm"
+fn ldv_max_gens() = 6
+fn ldv_opts0(root) = {sub: "", root: root, tools: ldv_default_tools(), check: 0, verbose: 0, dir: "", err: ""}
+fn ldv_set_sub(o, v) = {sub: v, root: o.root, tools: o.tools, check: o.check, verbose: o.verbose, dir: o.dir, err: o.err}
+fn ldv_set_root(o, v) = {sub: o.sub, root: v, tools: o.tools, check: o.check, verbose: o.verbose, dir: o.dir, err: o.err}
+fn ldv_set_tools(o, v) = {sub: o.sub, root: o.root, tools: v, check: o.check, verbose: o.verbose, dir: o.dir, err: o.err}
+fn ldv_set_check(o) = {sub: o.sub, root: o.root, tools: o.tools, check: 1, verbose: o.verbose, dir: o.dir, err: o.err}
+fn ldv_set_verbose(o) = {sub: o.sub, root: o.root, tools: o.tools, check: o.check, verbose: 1, dir: o.dir, err: o.err}
+fn ldv_set_dir(o, v) = {sub: o.sub, root: o.root, tools: o.tools, check: o.check, verbose: o.verbose, dir: v, err: o.err}
+fn ldv_set_err(o, v) = {sub: o.sub, root: o.root, tools: o.tools, check: o.check, verbose: o.verbose, dir: o.dir, err: if o.err == "" then v else o.err}
+
+fn ldv_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
+fn ldv_after(s, p) = slice(s, count(p), count(s))
+fn ldv_head(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => h
+fn ldv_tail(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => t
+fn ldv_isnil(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+fn ldv_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + ldv_len(t)
+
+## an option that takes a value, written `--name VALUE` or `--name=VALUE`: {v: the value, rest: the arguments after it}
+fn ldv_value(args, name) = let a = ldv_head(args) in if ldv_starts(a, name + "=") then {v: ldv_after(a, name + "="), rest: ldv_tail(args), ok: 1} else let t = ldv_tail(args) in if ldv_isnil(t) == 1 then {v: "", rest: Nil, ok: 0} else {v: ldv_head(t), rest: ldv_tail(t), ok: 1}
+
+## the arguments after `lume dev` -> {sub, root, tools, check, verbose, dir, err} (err "" when they are valid)
+fn ldv_parse(args, root) = ldv_validate(ldv_parse_go(args, ldv_opts0(root)))
+fn ldv_parse_go(args, o) = match args
+    Nil        => o
+    Cons(a, t) => if a == "--check" then ldv_parse_go(t, ldv_set_check(o)) else if a == "--verbose" then ldv_parse_go(t, ldv_set_verbose(o)) else if a == "--root" or ldv_starts(a, "--root=") then ldv_parse_val(args, o, "--root") else if a == "--tools" or ldv_starts(a, "--tools=") then ldv_parse_val(args, o, "--tools") else if ldv_starts(a, "-") then ldv_set_err(o, "unknown option " + a) else if o.sub == "" then ldv_parse_go(t, ldv_set_sub(o, a)) else if o.dir == "" then ldv_parse_go(t, ldv_set_dir(o, a)) else ldv_set_err(o, "unexpected argument " + a)
+fn ldv_parse_val(args, o, name) = let r = ldv_value(args, name) in if r.ok == 0 or r.v == "" then ldv_set_err(o, name + " needs a value") else if name == "--root" then ldv_parse_go(r.rest, ldv_set_root(o, r.v)) else ldv_parse_go(r.rest, ldv_set_tools(o, r.v))
+fn ldv_validate(o) = if o.err != "" then o else if o.sub == "" then ldv_set_err(o, "a subcommand is needed (selfbuild or sync-check)") else if o.sub != "selfbuild" and o.sub != "sync-check" then ldv_set_err(o, "unknown subcommand " + o.sub) else if o.sub == "sync-check" and o.dir == "" then ldv_set_err(o, "sync-check needs the directory of the other tree") else if o.sub == "selfbuild" and o.dir != "" then ldv_set_err(o, "unexpected argument " + o.dir) else if o.sub == "selfbuild" and ldv_bad_tools(ldv_split(o.tools, ",")) != "" then ldv_set_err(o, "not a tool name: '" + ldv_bad_tools(ldv_split(o.tools, ",")) + "'") else if o.sub == "selfbuild" and ldv_len(ldv_split(o.tools, ",")) == 0 then ldv_set_err(o, "--tools names no tool") else o
+
+## "a,b,,c" -> a, b, c (empty pieces dropped, blanks around a name too)
+fn ldv_split(s, sep) = ldv_split_go(s, sep, 0, 0)
+fn ldv_split_go(s, sep, i, start) = if i >= count(s) then ldv_piece(ldv_trim(slice(s, start, i)), Nil) else if at(s, i) == sep then ldv_piece(ldv_trim(slice(s, start, i)), ldv_split_go(s, sep, i + 1, i + 1)) else ldv_split_go(s, sep, i + 1, start)
+fn ldv_piece(p, rest) = if p == "" then rest else Cons(p, rest)
+fn ldv_trim(s) = ldv_trim_r(ldv_trim_l(s))
+fn ldv_trim_l(s) = if count(s) > 0 and (at(s, 0) == " " or at(s, 0) == "\t") then ldv_trim_l(slice(s, 1, count(s))) else s
+fn ldv_trim_r(s) = if count(s) > 0 and (at(s, count(s) - 1) == " " or at(s, count(s) - 1) == "\t" or at(s, count(s) - 1) == "\r") then ldv_trim_r(slice(s, 0, count(s) - 1)) else s
+## a tool is a source of compiler/stage1: letters, digits and _ only (no path, no extension)
+fn ldv_name_ok(s, i) = if i >= count(s) then count(s) > 0 else let c = at(s, i) in if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_" then ldv_name_ok(s, i + 1) else false
+fn ldv_bad_tools(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => if ldv_name_ok(h, 0) then ldv_bad_tools(t) else h
+
+fn ldv_usage() = "usage: lume dev selfbuild [--root DIR] [--tools LIST] [--check] [--verbose]\n       lume dev sync-check DIR [--root DIR]\n"
+
+## ---- planning and the fixpoint -----------------------------------------------------------------------------------
+## the steps a selfbuild runs, in order (printed by --verbose before the run)
+fn ldv_plan(o) = Cons("preflight", Cons("backup", Cons("generations: runtime, amalgamate, compile, smoke, compare (at most " + str(ldv_max_gens()) + ")", if o.check == 1 then Cons("restore (check only)", Nil) else ldv_concat(ldv_tool_steps(ldv_split(o.tools, ",")), Cons("install", Nil)))))
+fn ldv_tool_steps(ts) = match ts
+    Nil        => Nil
+    Cons(h, t) => Cons("tool " + h, ldv_tool_steps(t))
+fn ldv_concat(a, b) = match a
+    Nil        => b
+    Cons(h, t) => Cons(h, ldv_concat(t, b))
+
+## after generation `gen`: "fixpoint" when its runtime text and its assembly equal those of the generation before,
+## "limit" when the generation budget is spent, else "next". Generation 1 has nothing to compare with.
+fn ldv_verdict(gen, rt_same, asm_same, max) = if gen >= 2 and rt_same == 1 and asm_same == 1 then "fixpoint" else if gen >= max then "limit" else "next"
+
+## ---- printing ----------------------------------------------------------------------------------------------------
+fn ldv_out(s) = fs_append_sync("/dev/stdout", s)
+fn ldv_pad(s, n) = if count(s) >= n then s else ldv_pad(s + " ", n)
+fn ldv_pad3(v) = if v < 10 then "00" + str(v) else if v < 100 then "0" + str(v) else str(v)
+fn ldv_secs(ms) = str(ms / 1000) + "." + slice(ldv_pad3(ms % 1000), 0, 1) + " s"
+fn ldv_ms(t0) = (os_monotonic_ns() - t0) / 1000000
+## one line per step: "  <step>  ok|FAIL  <time>  <detail>"
+fn ldv_line(step, ok, t0, detail) = "  " + ldv_pad(step, 24) + (if ok == 1 then "ok    " else "FAIL  ") + ldv_pad(ldv_secs(ldv_ms(t0)), 9) + detail + "\n"
+fn ldv_say(step, ok, t0, detail) = ldv_out(ldv_line(step, ok, t0, detail))
+## the last n lines of a log, indented (shown under a failed step)
+fn ldv_lines(s) = ldv_lines_go(s, 0, 0)
+fn ldv_lines_go(s, i, start) = if i >= count(s) then (if start < count(s) then Cons(slice(s, start, count(s)), Nil) else Nil) else if at(s, i) == "\n" then Cons(slice(s, start, i), ldv_lines_go(s, i + 1, i + 1)) else ldv_lines_go(s, i + 1, start)
+fn ldv_drop(xs, n) = if n <= 0 then xs else ldv_drop(ldv_tail(xs), n - 1)
+fn ldv_indent(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => "      | " + h + "\n" + ldv_indent(t)
+fn ldv_tail_text(s, n) = let ls = ldv_lines(if count(s) > 20000 then slice(s, count(s) - 20000, count(s)) else s) in let k = ldv_len(ls) in ldv_indent(ldv_drop(ls, k - n))
+fn ldv_show_log(path, n) = if fs_path_exists(path) == 1 then ldv_out(ldv_tail_text(fs_read_file(path), n)) else 1
+
+## ---- processes ---------------------------------------------------------------------------------------------------
+## a raw wait status -> the exit code (0 = success)
+fn ldv_code(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
+fn ldv_bin(o, name) = hio_exe_path(o.root + "/build/bin/" + name)
+fn ldv_has_bin(o, name) = fs_path_exists(ldv_bin(o, name)) == 1
+## the driver of the tree: its build/bin/lume_driver, else its `lume` command
+fn ldv_driver(o) = if ldv_has_bin(o, "lume_driver") then ldv_bin(o, "lume_driver") else hio_lume_cmd(o.root)
+fn ldv_exe(p) = if os_platform() == "windows" then p + ".exe" else p
+fn ldv_l2(a, b) = Cons(a, Cons(b, Nil))
+fn ldv_l3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+fn ldv_l4(a, b, c, d) = Cons(a, Cons(b, Cons(c, Cons(d, Nil))))
+fn ldv_same_file(a, b) = fs_path_exists(a) == 1 and fs_path_exists(b) == 1 and fs_files_equal(a, b) == 1
+fn ldv_size(p) = if fs_path_exists(p) == 1 then count(fs_read_file(p)) else 0
+
+## ---- selfbuild ---------------------------------------------------------------------------------------------------
+fn ldv_work(o) = o.root + "/build/selfbuild"
+fn ldv_rt(o) = o.root + "/compiler/stage1/runtime_lume.lume"
+fn ldv_src(o) = o.root + "/compiler/stage1/lumec.src"
+fn ldv_lumec(o) = ldv_exe(o.root + "/build/bin/lumec")
+fn ldv_mark(o) = ldv_work(o) + "/IN_PROGRESS"
+
+## the backups: build/bin/lumec, runtime_lume.lume and lumec.src (the last one only when it existed)
+fn ldv_backup(o) = let w = ldv_work(o) in let a = fs_copy(ldv_lumec(o), w + "/lumec.orig") in let b = fs_copy(ldv_rt(o), w + "/runtime_lume.orig") in let c = if fs_path_exists(ldv_src(o)) == 1 then fs_copy(ldv_src(o), w + "/lumec.src.orig") else 1 in let m = if a == 1 and b == 1 and c == 1 then fs_write_sync(ldv_mark(o), "lume dev selfbuild: backups of build/bin/lumec, runtime_lume.lume and lumec.src are in this directory\n") else 0 in if a == 1 and b == 1 and c == 1 and m == 1 then 1 else 0
+## put the backups back; 1 when the three files are again what they were
+fn ldv_restore(o) = let w = ldv_work(o) in let a = if fs_path_exists(w + "/lumec.orig") == 1 then (if fs_copy(w + "/lumec.orig", ldv_lumec(o)) == 1 then fs_make_executable(ldv_lumec(o)) else 0) else 1 in let b = if fs_path_exists(w + "/runtime_lume.orig") == 1 then fs_copy(w + "/runtime_lume.orig", ldv_rt(o)) else 1 in let c = if fs_path_exists(w + "/lumec.src.orig") == 1 then fs_copy(w + "/lumec.src.orig", ldv_src(o)) else (if fs_path_exists(w + "/lumec.orig") == 1 and fs_path_exists(ldv_src(o)) == 1 then fs_remove(ldv_src(o)) else 1) in let z = if fs_path_exists(ldv_mark(o)) == 1 then fs_remove(ldv_mark(o)) else 1 in if a == 1 and b == 1 and c == 1 then 1 else 0
+
+## a failure: put everything back, say so, exit 1
+fn ldv_fail(o, t0, why) = let r = ldv_restore(o) in let w = ldv_out(if r == 1 then "  rollback                ok    build/bin/lumec, runtime_lume.lume and lumec.src are back as they were; no tool was moved\n" else "  rollback                FAIL  could not put every backup back: they are in " + ldv_work(o) + "\n") in let s = ldv_out("selfbuild FAILED: " + why + " (" + ldv_secs(ldv_ms(t0)) + ", logs in " + ldv_work(o) + ")\n") in os_exit(1)
+
+## an interrupted run left its backups: put them back before anything else
+fn ldv_recover(o) = if fs_path_exists(ldv_mark(o)) == 1 then (let r = ldv_restore(o) in ldv_out(if r == 1 then "  recover                 ok    an interrupted selfbuild left backups: build/bin/lumec, runtime_lume.lume and lumec.src restored\n" else "  recover                 FAIL  the backups of an interrupted selfbuild could not all be restored\n")) else 1
+
+fn ldv_missing(o, names) = match names
+    Nil        => ""
+    Cons(h, t) => (if ldv_has_bin(o, h) then "" else " build/bin/" + h) + ldv_missing(o, t)
+fn ldv_preflight(o) = let m = ldv_missing(o, Cons("lumec", Cons("lasm", Cons("amalgamate", Nil)))) in let d = if ldv_has_bin(o, "lume_driver") or fs_path_exists(o.root + "/lume") == 1 then "" else " the driver (build/bin/lume_driver or ./lume)" in let s = if fs_path_exists(o.root + "/compiler/stage1/gen_runtime.src") == 1 and fs_path_exists(o.root + "/compiler/stage1/lume/01_lexer.src") == 1 then "" else " compiler/stage1 sources" in m + d + s
+
+fn ldv_smoke_src() = "fn ldv_sq(x) = x * x\nfn ldv_join(xs) = match xs\n    Nil        => \"\"\n    Cons(h, t) => h + ldv_join(t)\nprint str(ldv_sq(6) + 6) + \" \" + slice(\"selfbuild\", 0, 4) + \" \" + ldv_join(Cons(\"a\", Cons(\"b\", Nil))) + \" \" + str(count(\"lume\"))\n"
+fn ldv_smoke_want() = "42 self ab 4\n"
+
+## the entry of selfbuild
+fn ldv_selfbuild(o) = let t0 = os_monotonic_ns() in let hd = ldv_out("lume dev selfbuild: " + o.root + (if o.check == 1 then " (check only)" else "") + "\n") in let pl = if o.verbose == 1 then ldv_out("  plan: " + ldv_join(ldv_plan(o), "; ") + "\n") else 1 in let rc = ldv_recover(o) in let miss = ldv_preflight(o) in if miss != "" then (let w = ldv_say("preflight", 0, t0, "missing:" + miss) in os_exit(1)) else let p = ldv_say("preflight", 1, t0, "lumec, lasm, amalgamate, driver, sources") in let w = ldv_work(o) in let cl = hio_remove_tree(w) in let mk = hio_mkdir_p(w + "/tools") in let t1 = os_monotonic_ns() in if mk != 1 or ldv_backup(o) != 1 then (let z = ldv_say("backup", 0, t1, "cannot write " + w) in ldv_fail(o, t0, "no backup")) else let b = ldv_say("backup", 1, t1, "build/selfbuild: lumec.orig, runtime_lume.orig, lumec.src.orig") in let sm = fs_write_sync(w + "/smoke.src", ldv_smoke_src()) in let g = ldv_gens(o, 1) in if g.ok == 0 then ldv_fail(o, t0, g.why) else if o.check == 1 then ldv_check_end(o, t0, g.gen) else ldv_tools_end(o, t0, g.gen)
+
+fn ldv_join(xs, sep) = match xs
+    Nil        => ""
+    Cons(h, t) => if ldv_isnil(t) == 1 then h else h + sep + ldv_join(t, sep)
+
+## one generation after another until the fixpoint: {ok, gen, why}
+fn ldv_gens(o, k) = let r = ldv_gen(o, k) in if r != "" then {ok: 0, gen: k, why: r} else let w = ldv_work(o) in let rs = if k >= 2 and ldv_same_file(w + "/runtime" + str(k) + ".lume", w + "/runtime" + str(k - 1) + ".lume") then 1 else 0 in let asame = if k >= 2 and ldv_same_file(w + "/gen" + str(k) + ".s", w + "/gen" + str(k - 1) + ".s") then 1 else 0 in let v = ldv_verdict(k, rs, asame, ldv_max_gens()) in let t0 = os_monotonic_ns() in let detail = if k == 1 then "generation 1 (built by the previous lumec)" else "runtime " + (if rs == 1 then "same" else "changed") + ", assembly " + (if asame == 1 then "same" else "changed") + " vs generation " + str(k - 1) in let s = ldv_say("gen " + str(k) + " compare", 1, t0, detail) in if v == "fixpoint" then {ok: 1, gen: k, why: ""} else if v == "limit" then {ok: 0, gen: k, why: "no fixpoint after " + str(k) + " generations"} else ldv_gens(o, k + 1)
+
+## one generation: runtime, amalgamate, compile + assemble, smoke, then it becomes build/bin/lumec; "" or the failure
+fn ldv_gen(o, k) = let e1 = ldv_step_runtime(o, k) in if e1 != "" then e1 else let e2 = ldv_step_amalg(o, k) in if e2 != "" then e2 else let e3 = ldv_step_compile(o, k) in if e3 != "" then e3 else let e4 = ldv_step_smoke(o, k) in if e4 != "" then e4 else ldv_step_install_gen(o, k)
+
+fn ldv_gname(k, step) = "gen " + str(k) + " " + step
+fn ldv_failed(o, name, t0, log, why) = let s = ldv_say(name, 0, t0, why) in let l = ldv_show_log(log, 15) in name + ": " + why
+
+fn ldv_step_runtime(o, k) = let w = ldv_work(o) in let t0 = os_monotonic_ns() in let log = w + "/runtime" + str(k) + ".log" in let st = hio_osrun_ct(ldv_driver(o), ldv_l3("run", o.root + "/compiler/stage1/gen_runtime.src", o.root), log, log + ".err", 1800000) in let c = ldv_code(st) in if c != 0 then (let z = fs_append_sync(log, fs_read_file(log + ".err")) in ldv_failed(o, ldv_gname(k, "runtime"), t0, log, "gen_runtime exit " + str(c))) else if fs_copy(ldv_rt(o), w + "/runtime" + str(k) + ".lume") != 1 then ldv_failed(o, ldv_gname(k, "runtime"), t0, log, "cannot keep a copy of runtime_lume.lume") else let s = ldv_say(ldv_gname(k, "runtime"), 1, t0, "runtime_lume.lume " + str(ldv_size(ldv_rt(o))) + " bytes" + (if ldv_same_file(ldv_rt(o), w + "/runtime_lume.orig") then " (as in the tree)" else " (regenerated, differs from the tree)")) in ""
+
+fn ldv_step_amalg(o, k) = let w = ldv_work(o) in let t0 = os_monotonic_ns() in let log = w + "/amalgamate" + str(k) + ".log" in let st = hio_osrun_ct(ldv_bin(o, "amalgamate"), Cons(o.root, Nil), log, log + ".err", 600000) in let c = ldv_code(st) in if c != 0 or fs_path_exists(ldv_src(o)) == 0 then (let z = fs_append_sync(log, fs_read_file(log + ".err")) in ldv_failed(o, ldv_gname(k, "amalgamate"), t0, log, "amalgamate exit " + str(c))) else let s = ldv_say(ldv_gname(k, "amalgamate"), 1, t0, "compiler/stage1/lumec.src " + str(ldv_size(ldv_src(o))) + " bytes") in ""
+
+fn ldv_step_compile(o, k) = let w = ldv_work(o) in let t0 = os_monotonic_ns() in let asm = w + "/gen" + str(k) + ".s" in let err = w + "/gen" + str(k) + ".err" in let bin = ldv_exe(w + "/lumec" + str(k)) in let st = hio_osrun_ict(ldv_lumec(o), hio_cflags(), ldv_src(o), asm, err, 3600000) in let c = ldv_code(st) in if c != 0 or ldv_size(asm) == 0 then ldv_failed(o, ldv_gname(k, "compile"), t0, err, "lumec exit " + str(c)) else let aerr = w + "/gen" + str(k) + ".lasm.err" in let st2 = hio_osrun_ct(ldv_bin(o, "lasm"), hio_aflags_plain(asm), bin, aerr, 1800000) in let c2 = ldv_code(st2) in if c2 != 0 or ldv_size(bin) == 0 then ldv_failed(o, ldv_gname(k, "compile"), t0, aerr, "lasm exit " + str(c2) + " (the assembly does not link)") else let x = fs_make_executable(bin) in let s = ldv_say(ldv_gname(k, "compile"), 1, t0, "lumec.s " + str(ldv_size(asm)) + " bytes, lumec " + str(ldv_size(bin)) + " bytes") in ""
+
+## the new lumec compiles, assembles and runs a small program before it may replace build/bin/lumec
+fn ldv_step_smoke(o, k) = let w = ldv_work(o) in let t0 = os_monotonic_ns() in let lc = ldv_exe(w + "/lumec" + str(k)) in let asm = w + "/smoke" + str(k) + ".s" in let bin = ldv_exe(w + "/smoke" + str(k)) in let out = w + "/smoke" + str(k) + ".out" in let err = w + "/smoke" + str(k) + ".err" in let c1 = ldv_code(hio_osrun_ict(lc, hio_cflags(), w + "/smoke.src", asm, err, 600000)) in if c1 != 0 then ldv_failed(o, ldv_gname(k, "smoke"), t0, err, "the new lumec cannot compile the smoke program (exit " + str(c1) + ")") else let c2 = ldv_code(hio_osrun_ct(ldv_bin(o, "lasm"), hio_aflags_plain(asm), bin, err, 600000)) in if c2 != 0 then ldv_failed(o, ldv_gname(k, "smoke"), t0, err, "the smoke program does not assemble (exit " + str(c2) + "): the embedded runtime is incomplete") else let x = fs_make_executable(bin) in let c3 = ldv_code(hio_osrun_ct(bin, Nil, out, err, 600000)) in let got = fs_read_file(out) in if c3 != 0 or got != ldv_smoke_want() then ldv_failed(o, ldv_gname(k, "smoke"), t0, err, "the smoke program printed '" + ldv_trim_r(slice(got, 0, if count(got) > 60 then 60 else count(got))) + "', exit " + str(c3) + " (wanted '42 self ab 4')") else let s = ldv_say(ldv_gname(k, "smoke"), 1, t0, "smoke program compiled, assembled and ran: 42 self ab 4") in ""
+
+fn ldv_step_install_gen(o, k) = let w = ldv_work(o) in let bin = ldv_exe(w + "/lumec" + str(k)) in if fs_copy(bin, ldv_lumec(o)) == 1 and fs_make_executable(ldv_lumec(o)) == 1 then "" else "gen " + str(k) + ": cannot copy the new lumec to build/bin"
+
+## --check: everything back; report whether the tree was already at the fixpoint
+fn ldv_check_end(o, t0, gen) = let w = ldv_work(o) in let rt_cur = ldv_same_file(w + "/runtime" + str(gen) + ".lume", w + "/runtime_lume.orig") in let lc_cur = ldv_same_file(ldv_exe(w + "/lumec" + str(gen)), w + "/lumec.orig") in let t1 = os_monotonic_ns() in let r = ldv_restore(o) in if r != 1 then ldv_fail(o, t0, "the backups could not be put back") else let s = ldv_say("restore (check only)", 1, t1, "build/bin/lumec, runtime_lume.lume and lumec.src as they were") in let s2 = ldv_out("  runtime_lume.lume       " + (if rt_cur then "current" else "STALE: the tree's file is not what gen_runtime writes now") + "\n  build/bin/lumec         " + (if lc_cur then "current (byte-identical to the fixpoint)" else "differs from the fixpoint compiler") + "\n") in "selfbuild --check: fixpoint reached at generation " + str(gen) + " in " + ldv_secs(ldv_ms(t0)) + (if rt_cur and lc_cur then "; the tree is current" else "; run `lume dev selfbuild` to bring it up to date")
+
+## the tools: built into build/selfbuild/tools; moved into build/bin only when every one was built
+fn ldv_tools_end(o, t0, gen) = let ts = ldv_split(o.tools, ",") in let bad = ldv_build_tools(o, ts) in if bad != "" then ldv_fail(o, t0, "tool " + bad + " failed to build") else let t1 = os_monotonic_ns() in let p = fs_copy(ldv_work(o) + "/lumec.orig", ldv_exe(o.root + "/build/bin/lumec.prev")) in let mv = ldv_move_tools(o, ts) in let z = if fs_path_exists(ldv_mark(o)) == 1 then fs_remove(ldv_mark(o)) else 1 in if mv != "" then (let s = ldv_say("install", 0, t1, "could not move" + mv + " into build/bin") in let e = ldv_out("selfbuild FAILED: build/bin holds the new lumec but not every new tool; the built tools are in " + ldv_work(o) + "/tools\n") in os_exit(1)) else let s = ldv_say("install", 1, t1, "build/bin/lumec (generation " + str(gen) + "), lumec.prev, " + ldv_join(ts, ", ")) in "selfbuild: fixpoint at generation " + str(gen) + ", " + str(ldv_len(ts)) + " tools built and installed in " + ldv_secs(ldv_ms(t0))
+
+fn ldv_build_tools(o, ts) = match ts
+    Nil        => ""
+    Cons(h, t) => if ldv_build_tool(o, h) == 1 then ldv_build_tools(o, t) else h
+fn ldv_build_tool(o, name) = let w = ldv_work(o) in let t0 = os_monotonic_ns() in let src = o.root + "/compiler/stage1/" + name + ".src" in let out = ldv_exe(w + "/tools/" + name) in let log = w + "/tool_" + name + ".log" in if fs_path_exists(src) == 0 then (let s = ldv_say("tool " + name, 0, t0, "no source compiler/stage1/" + name + ".src") in 0) else let c = ldv_code(hio_osrun_ct(ldv_driver(o), ldv_l4("build", src, "-o", out), log, log + ".err", 3600000)) in if c != 0 or fs_path_exists(out) == 0 then (let z = fs_append_sync(log, fs_read_file(log + ".err")) in let s = ldv_say("tool " + name, 0, t0, "lume build exit " + str(c)) in let l = ldv_show_log(log, 15) in 0) else let s = ldv_say("tool " + name, 1, t0, str(ldv_size(out)) + " bytes") in 1
+## a rename does not disturb a running program (the driver that runs this command is one of the tools)
+fn ldv_move_tools(o, ts) = match ts
+    Nil        => ""
+    Cons(h, t) => let src = ldv_exe(ldv_work(o) + "/tools/" + h) in let dst = ldv_exe(o.root + "/build/bin/" + h) in let ok = if fs_rename(src, dst) == 1 then 1 else if fs_copy(src, dst) == 1 then fs_make_executable(dst) else 0 in (if ok == 1 then "" else " " + h) + ldv_move_tools(o, t)
+
+## ---- sync-check --------------------------------------------------------------------------------------------------
+## the files of compiler/ and tests/ that git tracks, then the new ones it does not ignore; without git, every file
+fn ldv_git(o, args, out) = ldv_code(hio_osrun_c("git", Cons("-c", Cons("safe.directory=*", Cons("-c", Cons("core.quotepath=off", Cons("-C", Cons(o.root, args)))))), out, out + ".err"))
+fn ldv_tracked(o) = let out = o.root + "/build/dev-sync-check.list" in let m = hio_mkdir_p(o.root + "/build") in let a = ldv_git(o, ldv_l3("ls-files", "compiler", "tests"), out) in let ta = fs_read_file(out) in let b = ldv_git(o, Cons("ls-files", Cons("--others", Cons("--exclude-standard", ldv_l2("compiler", "tests")))), out) in let tb = fs_read_file(out) in let z = fs_remove(out) in let z2 = fs_remove(out + ".err") in if a != 0 then {git: 0, files: ldv_concat(ldv_walk(o.root, "compiler"), ldv_walk(o.root, "tests"))} else {git: 1, files: ldv_concat(ldv_lines(ta), if b == 0 then ldv_lines(tb) else Nil)}
+fn ldv_walk(root, rel) = if hio_is_dir(root + "/" + rel) then ldv_walk_each(root, rel, hio_entries(root + "/" + rel)) else if fs_path_exists(root + "/" + rel) == 1 then Cons(rel, Nil) else Nil
+fn ldv_walk_each(root, rel, names) = match names
+    Nil        => Nil
+    Cons(h, t) => if h == "." or h == ".." then ldv_walk_each(root, rel, t) else ldv_concat(ldv_walk(root, rel + "/" + h), ldv_walk_each(root, rel, t))
+## the state of one path: "same", "differs" or "missing" (DIR has no such file)
+fn ldv_state(o, p) = let b = o.dir + "/" + p in if fs_path_exists(b) == 0 then "missing" else if fs_files_equal(o.root + "/" + p, b) == 1 then "same" else "differs"
+fn ldv_sync_line(state, p) = ldv_pad(state, 9) + p + "\n"
+fn ldv_sync_summary(n, d, m, dir) = "sync-check: " + str(n) + " files of compiler/ and tests/ compared with " + dir + ": " + (if d + m == 0 then "all identical" else str(d) + " differ, " + str(m) + " missing there")
+fn ldv_sync_go(o, ps, n, d, m) = match ps
+    Nil        => {n: n, d: d, m: m}
+    Cons(h, t) => if fs_path_exists(o.root + "/" + h) == 0 then ldv_sync_go(o, t, n, d, m) else let s = ldv_state(o, h) in let w = if s == "same" then 1 else ldv_out(ldv_sync_line(s, h)) in ldv_sync_go(o, t, n + 1, if s == "differs" then d + 1 else d, if s == "missing" then m + 1 else m)
+fn ldv_sync_check(o) = if not hio_is_dir(o.dir) then ctfail("lume dev sync-check: " + o.dir + " is not a directory\n") else let tr = ldv_tracked(o) in let w = if tr.git == 0 then ldv_out("(git is not available: every file of compiler/ and tests/ is compared)\n") else 1 in let r = ldv_sync_go(o, tr.files, 0, 0, 0) in let sm = ldv_sync_summary(r.n, r.d, r.m, o.dir) in if r.d + r.m == 0 then sm else (let e = ldv_out(sm + "\n") in os_exit(1))
+
+## ---- entry -------------------------------------------------------------------------------------------------------
+fn ldv_abs(p) = let q = hio_posix(p) in if count(q) > 0 and at(q, 0) == "/" then hio_trim_end(q) else if q == "." then fs_current_dir() else hio_trim_end(fs_current_dir() + "/" + q)
+## args: the words after `lume dev`; root: the driver's tree (the default of --root)
+fn ldv_entry(root, args) = let o0 = ldv_parse(args, root) in if o0.err != "" then ctfail("lume dev: " + o0.err + "\n" + ldv_usage()) else let o1 = ldv_set_root(o0, ldv_abs(o0.root)) in let o = if o1.dir == "" then o1 else ldv_set_dir(o1, ldv_abs(o1.dir)) in let e = os_setenv("LUME_BIN_DIR", o.root + "/build/bin") in if o.sub == "sync-check" then ldv_sync_check(o) else ldv_selfbuild(o)

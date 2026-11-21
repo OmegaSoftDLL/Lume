@@ -6,18 +6,68 @@
 fn rtt_len(p, n) = if load8(p + n) == 0 then n else rtt_len(p, n + 1)
 fn rtt_puts(p) = sys_call(1, 2, p, rtt_len(p, 0), 0, 0)
 fn rtt_digit(d, b) = let s = store8(b, 48 + d) in sys_call(1, 2, b, 1, 0, 0)
-fn rtt_num(n, b) = if n >= 10 then (let z = rtt_num(n / 10, b) in rtt_digit(n % 10, b)) else rtt_digit(n, b)
+fn rtt_num(n, b) = if n >= 10 then let z = rtt_num(n / 10, b) in rtt_digit(n % 10, b) else rtt_digit(n, b)
 fn rtt_ch(c, b) = let s = store8(b, c) in sys_call(1, 2, b, 1, 0, 0)
 ## the entry whose range holds ra, 0 when ra is not in the program's own functions
-fn rtt_find(tab, ra, i, n, best) = if i >= n then best else let e = tab + 16 + i * 32 in if load64(e) <= ra then rtt_find(tab, ra, i + 1, n, e) else best
-fn rtt_lookup(tab, ra) = let n = load64(tab) in if n <= 0 or ra >= load64(tab + 8) then 0 else rtt_find(tab, ra, 0, n, 0)
+fn rtt_find(tab, ra, i, n, best) =
+    if i >= n then
+        best
+    else
+        let e = tab + 16 + i * 32 in
+        if load64(e) <= ra then
+            rtt_find(tab, ra, i + 1, n, e)
+        else
+            best
+fn rtt_lookup(tab, ra) =
+    let n = load64(tab) in
+    if n <= 0 or ra >= load64(tab + 8) then
+        0
+    else
+        rtt_find(tab, ra, 0, n, 0)
 ## "  at NAME (FILE:LINE)"; a compiler helper (a name starting with __) is skipped
-fn rtt_entry(e, b) = let nm = load64(e + 8) in if load8(nm) == 95 and load8(nm + 1) == 95 then 0 else let a = rtt_puts(sym_addr("__rtt_at")) in let w = rtt_puts(nm) in let f = load64(e + 16) in let ln = load64(e + 24) in let x = (if ln <= 0 then 0 else if f != 0 then (let o = rtt_puts(sym_addr("__rtt_open")) in let p = rtt_puts(f) in let c = rtt_ch(58, b) in let d = rtt_num(ln, b) in rtt_ch(41, b)) else (let o = rtt_puts(sym_addr("__rtt_line")) in let d = rtt_num(ln, b) in rtt_ch(41, b))) in rtt_ch(10, b)
+fn rtt_entry(e, b) =
+    let nm = load64(e + 8) in
+    if load8(nm) == 95 and load8(nm + 1) == 95 then
+        0
+    else
+        let a = rtt_puts(sym_addr("__rtt_at")) in
+        let w = rtt_puts(nm) in
+        let f = load64(e + 16) in
+        let ln = load64(e + 24) in
+        let x = if ln <= 0 then 0 else if f != 0 then let o = rtt_puts(sym_addr("__rtt_open")) in let p = rtt_puts(f) in let c = rtt_ch(58, b) in let d = rtt_num(ln, b) in rtt_ch(41, b) else let o = rtt_puts(sym_addr("__rtt_line")) in let d = rtt_num(ln, b) in rtt_ch(41, b) in
+        rtt_ch(10, b)
 fn rtt_ok(fp, prev, top) = if fp == 0 or bit_and(fp, 7) != 0 or fp <= prev or fp >= top then 0 else 1
-fn rtt_walk(fp, tab, depth, top, b) = if depth >= 64 or rtt_ok(fp, 0, top) == 0 then 0 else let e = rtt_lookup(tab, load64(fp + 8)) in let w = (if e != 0 then rtt_entry(e, b) else 0) in let nf = load64(fp) in if rtt_ok(nf, fp, top) == 0 then 0 else rtt_walk(nf, tab, depth + 1, top, b)
+fn rtt_walk(fp, tab, depth, top, b) =
+    if depth >= 64 or rtt_ok(fp, 0, top) == 0 then
+        0
+    else
+        let e = rtt_lookup(tab, load64(fp + 8)) in
+        let w = if e != 0 then rtt_entry(e, b) else 0 in
+        let nf = load64(fp) in
+        if rtt_ok(nf, fp, top) == 0 then
+            0
+        else
+            rtt_walk(nf, tab, depth + 1, top, b)
 ## the innermost function: a builtin that keeps no frame was called from it, so its return address lies between the
 ## stack pointer and the first frame; the first word there that points into the program's own code names it
-fn rtt_inner(sp, fp, tab, b, k) = if k >= 512 or sp + k * 8 >= fp then 0 else let e = rtt_lookup(tab, load64(sp + k * 8)) in if e != 0 then rtt_entry(e, b) else rtt_inner(sp, fp, tab, b, k + 1)
-fn rt_trace2(fp, sp, tab, top, b) = let i = (if sp > 0 and bit_and(sp, 7) == 0 and sp < fp then rtt_inner(sp, fp, tab, b, 0) else 0) in rtt_walk(fp, tab, 0, top, b)
+fn rtt_inner(sp, fp, tab, b, k) =
+    if k >= 512 or sp + k * 8 >= fp then
+        0
+    else
+        let e = rtt_lookup(tab, load64(sp + k * 8)) in
+        if e != 0 then
+            rtt_entry(e, b)
+        else
+            rtt_inner(sp, fp, tab, b, k + 1)
+fn rt_trace2(fp, sp, tab, top, b) =
+    let i = if sp > 0 and bit_and(sp, 7) == 0 and sp < fp then rtt_inner(sp, fp, tab, b, 0) else 0 in
+    rtt_walk(fp, tab, 0, top, b)
 ## __rt_dbg_trap: under `lume debug` the debugger stops here first (rt_debug.src); elsewhere a stub answering 0
-fn rt_trace(fp, sp) = let dbg = __rt_dbg_trap(fp, sp) in let tab = load64(sym_addr("__rt_fntab")) in let top = load64(sym_addr("__gc_stack_top")) in if tab == 0 or top == 0 or fp >= top or top - fp > 8589934592 then 0 else rt_trace2(fp, sp, tab, top, __lume_alloc_a(16))
+fn rt_trace(fp, sp) =
+    let dbg = __rt_dbg_trap(fp, sp) in
+    let tab = load64(sym_addr("__rt_fntab")) in
+    let top = load64(sym_addr("__gc_stack_top")) in
+    if tab == 0 or top == 0 or fp >= top or top - fp > 8589934592 then
+        0
+    else
+        rt_trace2(fp, sp, tab, top, __lume_alloc_a(16))

@@ -9,16 +9,40 @@ fn rtf_isf(v) = if bit_and(v, 7) != 0 or v == 0 then 0 else if load8(v) == 17 th
 fn __rt_anyf(a, b) = if rtf_isf(a) == 1 then 1 else rtf_isf(b)
 fn rtf_box(bits) = let c = __lume_alloc_a(16) in let h = store64(c, 2065) in let w = store64(c + 8, bits) in c
 ## a value as double bits: an f64 cell, a decimal (rtf_dec2d), else an int (a value that is no int stops)
-fn rtf_tod(v) = if rtf_isf(v) == 1 then load64(v + 8) else if __lume_isdec(v) == 3 then rtf_dec2d(rt_int(load64(v + 8)), rt_int(load64(v + 16))) else fp_of_int(rt_int(v))
+fn rtf_tod(v) =
+    if rtf_isf(v) == 1 then
+        load64(v + 8)
+    else if __lume_isdec(v) == 3 then
+        rtf_dec2d(rt_int(load64(v + 8)), rt_int(load64(v + 16)))
+    else
+        fp_of_int(rt_int(v))
 ## coefficient / 10^scale in extended precision (control word 895: round to nearest, 64-bit mantissa), then rounded
 ## once to a double, as the assembly did
 fn rtf_dec2d(c, k) = rtf_dec2d2(c, k, __lume_alloc_a(64), x87_getcw())
-fn rtf_dec2d2(c, k, m, cw) = let s = x87_setcw(895) in let a = x87_ldi(m, c) in let b = rtf_scale(m, m + 16, 0 - k) in let r = x87_std(m) in let z = x87_setcw(cw) in r
+fn rtf_dec2d2(c, k, m, cw) =
+    let s = x87_setcw(895) in
+    let a = x87_ldi(m, c) in
+    let b = rtf_scale(m, m + 16, 0 - k) in
+    let r = x87_std(m) in
+    let z = x87_setcw(cw) in
+    r
 ## x (slot at m) times 10^n (n >= 0) or divided by 10^-n; t: a slot for the power
-fn rtf_scale(m, t, n) = if n >= 0 then (let p = rtf_p10(t, n) in x87_mul(m, m, t)) else (let p = rtf_p10(t, 0 - n) in x87_div(m, m, t))
+fn rtf_scale(m, t, n) =
+    if n >= 0 then
+        let p = rtf_p10(t, n) in
+        x87_mul(m, m, t)
+    else
+        let p = rtf_p10(t, 0 - n) in
+        x87_div(m, m, t)
 ## 10^n by squaring (result in slot r, the base in slot r + 32): the same products in the same order as the assembly
 fn rtf_p10(r, n) = let a = x87_const(r, 1) in let b = x87_ldi(r + 32, 10) in rtf_p10b(r, n)
-fn rtf_p10b(r, n) = if n == 0 then 0 else let a = (if bit_and(n, 1) == 1 then x87_mul(r, r, r + 32) else 0) in let b = x87_mul(r + 32, r + 32, r + 32) in rtf_p10b(r, bit_shr(n, 1))
+fn rtf_p10b(r, n) =
+    if n == 0 then
+        0
+    else
+        let a = if bit_and(n, 1) == 1 then x87_mul(r, r, r + 32) else 0 in
+        let b = x87_mul(r + 32, r + 32, r + 32) in
+        rtf_p10b(r, bit_shr(n, 1))
 ## + - * / with an f64 on either side: both as doubles, one SSE2 operation, a new f64 cell
 fn __rt_fadd(a, b) = rtf_box(fp_add(rtf_tod(a), rtf_tod(b)))
 fn __rt_fsub(a, b) = rtf_box(fp_sub(rtf_tod(a), rtf_tod(b)))
@@ -40,38 +64,110 @@ fn __rt_eqvf(a, b) = if fp_cmp(load64(a + 8), load64(b + 8)) == 0 then 1 else 0
 fn __rt_fstr(v) = rtf_fs(load64(v + 8), __lume_alloc_a(256))
 fn rtf_put(b, n, c) = let w = store8(b + n, c) in n + 1
 fn rtf_done(b, n) = __rt_mkstrn(b, n)
-fn rtf_fs(bits, b) = if bits < 0 then rtf_fs1(bit_and(bits, 9223372036854775807), b, rtf_put(b, 0, 45)) else rtf_fs1(bits, b, 0)
-fn rtf_fs1(bits, b, n) = if bit_and(bit_shr(bits, 52), 2047) == 2047 then rtf_special(bits, b, n) else if bits == 0 then rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, n, 48), 46), 48)) else rtf_fs1b(bits, b, n)
+fn rtf_fs(bits, b) =
+    if bits < 0 then
+        rtf_fs1(bit_and(bits, 9223372036854775807), b, rtf_put(b, 0, 45))
+    else
+        rtf_fs1(bits, b, 0)
+fn rtf_fs1(bits, b, n) =
+    if bit_and(bit_shr(bits, 52), 2047) == 2047 then
+        rtf_special(bits, b, n)
+    else if bits == 0 then
+        rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, n, 48), 46), 48))
+    else
+        rtf_fs1b(bits, b, n)
 ## the caller's control word is read before rtf_lg changes it; the tries left are kept at b+216
-fn rtf_fs1b(bits, b, n) = let i = store64(b + 216, 4) in let cw = x87_getcw() in let e = rtf_lg(bits, b + 128) in rtf_fsn(bits, b, n, cw, e)
-fn rtf_special(bits, b, n) = if bit_shl(bits, 12) == 0 then rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, n, 105), 110), 102)) else rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, 0, 110), 97), 110))
+fn rtf_fs1b(bits, b, n) =
+    let i = store64(b + 216, 4) in
+    let cw = x87_getcw() in
+    let e = rtf_lg(bits, b + 128) in
+    rtf_fsn(bits, b, n, cw, e)
+fn rtf_special(bits, b, n) =
+    if bit_shl(bits, 12) == 0 then
+        rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, n, 105), 110), 102))
+    else
+        rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, 0, 110), 97), 110))
 ## floor(log10 d): log10(2) * log2(d), rounded down (control word 1919); the work after it is round to nearest (895)
-fn rtf_lg(bits, m) = let s = x87_setcw(1919) in let a = x87_const(m, 3) in let c = x87_ldd(m + 16, bits) in let d = x87_yl2x(m + 32, m, m + 16) in let r = x87_rnd(m + 32, m + 32) in let e = x87_sti(m + 32) in let z = x87_setcw(895) in e
+fn rtf_lg(bits, m) =
+    let s = x87_setcw(1919) in
+    let a = x87_const(m, 3) in
+    let c = x87_ldd(m + 16, bits) in
+    let d = x87_yl2x(m + 32, m, m + 16) in
+    let r = x87_rnd(m + 32, m + 32) in
+    let e = x87_sti(m + 32) in
+    let z = x87_setcw(895) in
+    e
 ## the 17-digit mantissa for exponent e, corrected up to three times (the tries left at b+216, as the assembly's %r9)
 fn rtf_fsn(bits, b, n, cw, e) = rtf_fsn2(bits, b, n, cw, e, rtf_m17(bits, b + 128, e))
-fn rtf_fsn2(bits, b, n, cw, e, q) = let k = store64(b + 216, load64(b + 216) - 1) in if load64(b + 216) == 0 then rtf_fsk(bits, b, n, cw, e, q) else if q >= 100000000000000000 then rtf_fsn(bits, b, n, cw, e + 1) else if q < 10000000000000000 then rtf_fsn(bits, b, n, cw, e - 1) else rtf_fsk(bits, b, n, cw, e, q)
+fn rtf_fsn2(bits, b, n, cw, e, q) =
+    let k = store64(b + 216, load64(b + 216) - 1) in
+    if load64(b + 216) == 0 then
+        rtf_fsk(bits, b, n, cw, e, q)
+    else if q >= 100000000000000000 then
+        rtf_fsn(bits, b, n, cw, e + 1)
+    else if q < 10000000000000000 then
+        rtf_fsn(bits, b, n, cw, e - 1)
+    else
+        rtf_fsk(bits, b, n, cw, e, q)
 fn rtf_m17(bits, m, e) = let a = x87_ldd(m, bits) in let s = rtf_scale(m, m + 16, 16 - e) in x87_sti(m)
-fn rtf_fsk(bits, b, n, cw, e, q) = let s1 = store64(b + 224, e) in let s2 = store64(b + 232, q) in let s3 = store64(b + 240, cw) in let s4 = store64(b + 248, n) in rtf_fsp(bits, b, 1)
+fn rtf_fsk(bits, b, n, cw, e, q) =
+    let s1 = store64(b + 224, e) in
+    let s2 = store64(b + 232, q) in
+    let s3 = store64(b + 240, cw) in
+    let s4 = store64(b + 248, n) in
+    rtf_fsp(bits, b, 1)
 ## precision p: the mantissa rounded (half up) to p digits; a carry to 10^p moves the exponent up
 fn rtf_fsp(bits, b, p) = rtf_fsp2(bits, b, p, rtf_rnd(load64(b + 232), rtf_ipow(17 - p)))
-fn rtf_rnd(q, pw) = if (q % pw) * 2 >= pw then q / pw + 1 else q / pw
-fn rtf_fsp2(bits, b, p, a) = if a == rtf_ipow(p) then rtf_fsp3(bits, b, p, rtf_ipow(p) / 10, load64(b + 224) + 1) else rtf_fsp3(bits, b, p, a, load64(b + 224))
-fn rtf_fsp3(bits, b, p, a, r) = if rtf_cand(b + 128, a, r - p + 1) == bits then rtf_found(b, a, p, r) else if p < 17 then rtf_fsp(bits, b, p + 1) else rtf_found(b, load64(b + 232), 17, load64(b + 224))
+fn rtf_rnd(q, pw) = if q % pw * 2 >= pw then q / pw + 1 else q / pw
+fn rtf_fsp2(bits, b, p, a) =
+    if a == rtf_ipow(p) then
+        rtf_fsp3(bits, b, p, rtf_ipow(p) / 10, load64(b + 224) + 1)
+    else
+        rtf_fsp3(bits, b, p, a, load64(b + 224))
+fn rtf_fsp3(bits, b, p, a, r) =
+    if rtf_cand(b + 128, a, r - p + 1) == bits then
+        rtf_found(b, a, p, r)
+    else if p < 17 then
+        rtf_fsp(bits, b, p + 1)
+    else
+        rtf_found(b, load64(b + 232), 17, load64(b + 224))
 fn rtf_cand(m, a, k) = let x = x87_ldi(m, a) in let s = rtf_scale(m, m + 16, k) in x87_std(m)
 fn rtf_ipow(k) = if k <= 0 then 1 else 10 * rtf_ipow(k - 1)
 ## the caller's control word back, the p digits (most significant first), trailing zeros off, then the layout
-fn rtf_found(b, a, p, r) = let c = x87_setcw(load64(b + 240)) in let d = rtf_digs(b + 64, a, p - 1) in rtf_fmt(b, rtf_trim(b + 64, p), r, load64(b + 248))
+fn rtf_found(b, a, p, r) =
+    let c = x87_setcw(load64(b + 240)) in
+    let d = rtf_digs(b + 64, a, p - 1) in
+    rtf_fmt(b, rtf_trim(b + 64, p), r, load64(b + 248))
 fn rtf_digs(d, a, c) = let w = store8(d + c, 48 + a % 10) in if c == 0 then 0 else rtf_digs(d, a / 10, c - 1)
 fn rtf_trim(d, p) = if p > 1 and load8(d + p - 1) == 48 then rtf_trim(d, p - 1) else p
-fn rtf_fmt(b, p, r, n) = if r > 15 or r < 0 - 5 then rtf_sci(b, p, r, n) else if r >= 0 then rtf_ip(b, p, r, n, 0) else rtf_fp(b, p, rtf_zeros(b, rtf_put(b, rtf_put(b, n, 48), 46), 0 - r - 1), 0)
-fn rtf_ip(b, p, r, n, c) = if c > r then rtf_ipd(b, p, r, rtf_put(b, n, 46)) else rtf_ip(b, p, r, rtf_put(b, n, (if c < p then load8(b + 64 + c) else 48)), c + 1)
+fn rtf_fmt(b, p, r, n) =
+    if r > 15 or r < 0 - 5 then
+        rtf_sci(b, p, r, n)
+    else if r >= 0 then
+        rtf_ip(b, p, r, n, 0)
+    else
+        rtf_fp(b, p, rtf_zeros(b, rtf_put(b, rtf_put(b, n, 48), 46), 0 - r - 1), 0)
+fn rtf_ip(b, p, r, n, c) =
+    if c > r then
+        rtf_ipd(b, p, r, rtf_put(b, n, 46))
+    else
+        rtf_ip(b, p, r, rtf_put(b, n, if c < p then load8(b + 64 + c) else 48), c + 1)
 fn rtf_ipd(b, p, r, n) = if r + 1 < p then rtf_fp(b, p, n, r + 1) else rtf_done(b, rtf_put(b, n, 48))
 fn rtf_fp(b, p, n, c) = if c >= p then rtf_done(b, n) else rtf_fp(b, p, rtf_put(b, n, load8(b + 64 + c)), c + 1)
 fn rtf_zeros(b, n, k) = if k <= 0 then n else rtf_zeros(b, rtf_put(b, n, 48), k - 1)
-fn rtf_sci(b, p, r, n) = let n1 = rtf_put(b, rtf_put(b, n, load8(b + 64)), 46) in let n2 = (if p > 1 then rtf_scim(b, p, n1, 1) else rtf_put(b, n1, 48)) in rtf_exp(b, rtf_put(b, n2, 101), r)
+fn rtf_sci(b, p, r, n) =
+    let n1 = rtf_put(b, rtf_put(b, n, load8(b + 64)), 46) in
+    let n2 = if p > 1 then rtf_scim(b, p, n1, 1) else rtf_put(b, n1, 48) in
+    rtf_exp(b, rtf_put(b, n2, 101), r)
 fn rtf_scim(b, p, n, c) = if c >= p then n else rtf_scim(b, p, rtf_put(b, n, load8(b + 64 + c)), c + 1)
 fn rtf_exp(b, n, r) = if r < 0 then rtf_exp2(b, rtf_put(b, n, 45), 0 - r) else rtf_exp2(b, n, r)
-fn rtf_exp2(b, n, x) = if x >= 100 then rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, n, 48 + x / 100), 48 + x % 100 / 10), 48 + x % 10)) else if x >= 10 then rtf_done(b, rtf_put(b, rtf_put(b, n, 48 + x / 10), 48 + x % 10)) else rtf_done(b, rtf_put(b, n, 48 + x))
+fn rtf_exp2(b, n, x) =
+    if x >= 100 then
+        rtf_done(b, rtf_put(b, rtf_put(b, rtf_put(b, n, 48 + x / 100), 48 + x % 100 / 10), 48 + x % 10))
+    else if x >= 10 then
+        rtf_done(b, rtf_put(b, rtf_put(b, n, 48 + x / 10), 48 + x % 10))
+    else
+        rtf_done(b, rtf_put(b, n, 48 + x))
 
 ## --- the f64 builtins (were rt_f64 assembly) ---------------------------------------------------------------------------
 ## x87 work happens with the control word 895 (round to nearest, 64-bit mantissa) and the caller's word put back after;
@@ -79,8 +175,30 @@ fn rtf_exp2(b, n, x) = if x >= 100 then rtf_done(b, rtf_put(b, rtf_put(b, rtf_pu
 fn rtf_area() = __lume_alloc_a(160)
 ## one x87 operation on d (k: 0 sin, 1 cos, 2 tan, 3 ln, 4 log10), the result rounded once to a double
 fn rtf_un(bits, k) = rtf_un2(bits, k, rtf_area(), x87_getcw())
-fn rtf_un2(bits, k, m, cw) = let s = x87_setcw(895) in let a = x87_ldd(m, bits) in let r = rtf_unop(m, k) in let z = x87_setcw(cw) in rtf_box(r)
-fn rtf_unop(m, k) = if k == 0 then (let a = x87_sin(m + 16, m) in x87_std(m + 16)) else if k == 1 then (let a = x87_cos(m + 16, m) in x87_std(m + 16)) else if k == 2 then (let a = x87_tan(m + 16, m) in x87_std(m + 16)) else if k == 3 then (let c = x87_const(m + 32, 4) in let a = x87_yl2x(m + 16, m + 32, m) in x87_std(m + 16)) else (let c = x87_const(m + 32, 3) in let a = x87_yl2x(m + 16, m + 32, m) in x87_std(m + 16))
+fn rtf_un2(bits, k, m, cw) =
+    let s = x87_setcw(895) in
+    let a = x87_ldd(m, bits) in
+    let r = rtf_unop(m, k) in
+    let z = x87_setcw(cw) in
+    rtf_box(r)
+fn rtf_unop(m, k) =
+    if k == 0 then
+        let a = x87_sin(m + 16, m) in
+        x87_std(m + 16)
+    else if k == 1 then
+        let a = x87_cos(m + 16, m) in
+        x87_std(m + 16)
+    else if k == 2 then
+        let a = x87_tan(m + 16, m) in
+        x87_std(m + 16)
+    else if k == 3 then
+        let c = x87_const(m + 32, 4) in
+        let a = x87_yl2x(m + 16, m + 32, m) in
+        x87_std(m + 16)
+    else
+        let c = x87_const(m + 32, 3) in
+        let a = x87_yl2x(m + 16, m + 32, m) in
+        x87_std(m + 16)
 fn f64_sin(v) = rtf_un(rtf_tod(v), 0)
 fn f64_cos(v) = rtf_un(rtf_tod(v), 1)
 fn f64_tan(v) = rtf_un(rtf_tod(v), 2)
@@ -90,25 +208,79 @@ fn f64_log10(v) = rtf_un(rtf_tod(v), 4)
 ## (rounded to nearest), 2^(t - r) by f2xm1 + 1, scaled by 2^r: the result in slot t + 16, rounded to a double
 fn rtf_pow2(t) = rtf_pow2b(t, x87_std(t))
 fn rtf_pow2b(t, tb) = if tb == 9218868437227405312 then tb else if tb == 0 - 4503599627370496 then 0 else rtf_pow2c(t)
-fn rtf_pow2c(t) = let r = x87_rnd(t + 32, t) in let f = x87_sub(t + 16, t, t + 32) in let g = x87_f2xm1(t + 16, t + 16) in let o = x87_const(t + 48, 1) in let h = x87_add(t + 16, t + 16, t + 48) in let s = x87_scale(t + 16, t + 16, t + 32) in x87_std(t + 16)
+fn rtf_pow2c(t) =
+    let r = x87_rnd(t + 32, t) in
+    let f = x87_sub(t + 16, t, t + 32) in
+    let g = x87_f2xm1(t + 16, t + 16) in
+    let o = x87_const(t + 48, 1) in
+    let h = x87_add(t + 16, t + 16, t + 48) in
+    let s = x87_scale(t + 16, t + 16, t + 32) in
+    x87_std(t + 16)
 ## e^d = 2^(d * log2 e)
 fn f64_exp(v) = rtf_expd(rtf_tod(v), rtf_area(), x87_getcw())
-fn rtf_expd(bits, m, cw) = let s = x87_setcw(895) in let a = x87_ldd(m, bits) in let c = x87_const(m + 16, 2) in let p = x87_mul(m + 80, m + 16, m) in let r = rtf_pow2(m + 80) in let z = x87_setcw(cw) in rtf_box(r)
+fn rtf_expd(bits, m, cw) =
+    let s = x87_setcw(895) in
+    let a = x87_ldd(m, bits) in
+    let c = x87_const(m + 16, 2) in
+    let p = x87_mul(m + 80, m + 16, m) in
+    let r = rtf_pow2(m + 80) in
+    let z = x87_setcw(cw) in
+    rtf_box(r)
 ## atan(a / b), the quadrant from both signs
 fn f64_atan2(a, b) = rtf_atan2(rtf_tod(a), rtf_tod(b), rtf_area(), x87_getcw())
-fn rtf_atan2(x, y, m, cw) = let s = x87_setcw(895) in let a = x87_ldd(m, x) in let b = x87_ldd(m + 16, y) in let r = x87_atan2(m + 32, m, m + 16) in let q = x87_std(m + 32) in let z = x87_setcw(cw) in rtf_box(q)
+fn rtf_atan2(x, y, m, cw) =
+    let s = x87_setcw(895) in
+    let a = x87_ldd(m, x) in
+    let b = x87_ldd(m + 16, y) in
+    let r = x87_atan2(m + 32, m, m + 16) in
+    let q = x87_std(m + 32) in
+    let z = x87_setcw(cw) in
+    rtf_box(q)
 ## x^y: y = 0 or x = 1 give 1.0; x = 0 gives 0 (inf for a negative y); a negative x needs an integer y (else nan) and
 ## an odd y gives the sign; then 2^(y * log2 |x|) as f64_exp does
 fn f64_pow(a, b) = rtf_pow(rtf_tod(a), rtf_tod(b))
-fn rtf_pow(x, y) = if bit_shl(y, 1) == 0 then rtf_box(4607182418800017408) else if x == 4607182418800017408 then rtf_box(4607182418800017408) else if bit_shl(x, 1) == 0 then rtf_box(if y < 0 then 9218868437227405312 else 0) else if x < 0 then rtf_pown(x, y) else rtf_box(rtf_powg(x, y))
-fn rtf_pown(x, y) = if fp_cmp(rtf_round(y, 3967), y) != 0 then rtf_box(9221120237041090560) else rtf_box(bit_or(rtf_powg(bit_and(x, 9223372036854775807), y), rtf_podd(y)))
+fn rtf_pow(x, y) =
+    if bit_shl(y, 1) == 0 then
+        rtf_box(4607182418800017408)
+    else if x == 4607182418800017408 then
+        rtf_box(4607182418800017408)
+    else if bit_shl(x, 1) == 0 then
+        rtf_box(if y < 0 then 9218868437227405312 else 0)
+    else if x < 0 then
+        rtf_pown(x, y)
+    else
+        rtf_box(rtf_powg(x, y))
+fn rtf_pown(x, y) =
+    if fp_cmp(rtf_round(y, 3967), y) != 0 then
+        rtf_box(9221120237041090560)
+    else
+        rtf_box(bit_or(rtf_powg(bit_and(x, 9223372036854775807), y), rtf_podd(y)))
 ## the sign bit when y is an odd integer below 2^53 (larger doubles are all even)
-fn rtf_podd(y) = if bit_and(y, 9223372036854775807) >= 4845873199050653696 then 0 else if bit_and(fp_trunc(y), 1) == 1 then 0 - 9223372036854775807 - 1 else 0
+fn rtf_podd(y) =
+    if bit_and(y, 9223372036854775807) >= 4845873199050653696 then
+        0
+    else if bit_and(fp_trunc(y), 1) == 1 then
+        0 - 9223372036854775807 - 1
+    else
+        0
 fn rtf_powg(x, y) = rtf_powg2(x, y, rtf_area(), x87_getcw())
-fn rtf_powg2(x, y, m, cw) = let s = x87_setcw(895) in let a = x87_ldd(m, y) in let b = x87_ldd(m + 16, x) in let p = x87_yl2x(m + 80, m, m + 16) in let r = rtf_pow2(m + 80) in let z = x87_setcw(cw) in r
+fn rtf_powg2(x, y, m, cw) =
+    let s = x87_setcw(895) in
+    let a = x87_ldd(m, y) in
+    let b = x87_ldd(m + 16, x) in
+    let p = x87_yl2x(m + 80, m, m + 16) in
+    let r = rtf_pow2(m + 80) in
+    let z = x87_setcw(cw) in
+    r
 ## d rounded to an integer with the rounding of control word cw (1919 down, 2943 up, 3967 toward zero)
 fn rtf_round(bits, cw) = rtf_round2(bits, cw, rtf_area(), x87_getcw())
-fn rtf_round2(bits, cw, m, old) = let s = x87_setcw(cw) in let a = x87_ldd(m, bits) in let r = x87_rnd(m, m) in let q = x87_std(m) in let z = x87_setcw(old) in q
+fn rtf_round2(bits, cw, m, old) =
+    let s = x87_setcw(cw) in
+    let a = x87_ldd(m, bits) in
+    let r = x87_rnd(m, m) in
+    let q = x87_std(m) in
+    let z = x87_setcw(old) in
+    q
 fn f64_sqrt(v) = rtf_box(fp_sqrt(rtf_tod(v)))
 fn f64_abs(v) = rtf_box(bit_and(rtf_tod(v), 9223372036854775807))
 fn f64_floor(v) = rtf_box(rtf_round(rtf_tod(v), 1919))
@@ -116,7 +288,11 @@ fn f64_ceil(v) = rtf_box(rtf_round(rtf_tod(v), 2943))
 ## half away from zero: truncate, and step one away from zero when the part cut off is at least 0.5
 fn f64_round(v) = rtf_fround(rtf_tod(v))
 fn rtf_fround(x) = rtf_fround2(x, rtf_round(x, 3967))
-fn rtf_fround2(x, r) = if bit_and(fp_sub(x, r), 9223372036854775807) < 4602678819172646912 then rtf_box(r) else rtf_box(fp_add(r, (if x < 0 then 0 - 4616189618054758400 else 4607182418800017408)))
+fn rtf_fround2(x, r) =
+    if bit_and(fp_sub(x, r), 9223372036854775807) < 4602678819172646912 then
+        rtf_box(r)
+    else
+        rtf_box(fp_add(r, if x < 0 then 0 - 4616189618054758400 else 4607182418800017408))
 fn f64_int(v) = rtf_int2(fp_trunc(rtf_tod(v)))
 fn rtf_int2(t) = if t == 0 - 9223372036854775807 - 1 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_fint_msg")) else mkint(t)
 fn f64_is_nan(v) = if bit_and(rtf_tod(v), 9223372036854775807) > 9218868437227405312 then 3 else 1
@@ -125,15 +301,56 @@ fn f64_from_bits(v) = rtf_box(rt_int(v))
 ## f64_str(v, k): v with k digits after the point (0 .. 17), rounded to nearest; nan, inf and values whose scaled form
 ## does not fit an int fall back to the shortest text
 fn f64_str(v, k) = rtf_fixs(rtf_tod(v), rt_int(k))
-fn rtf_fixs(x, d) = if d < 0 or d > 17 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_fdig_msg")) else if bit_and(bit_shr(x, 52), 2047) == 2047 then __rt_fstr(rtf_box(x)) else rtf_fixs2(x, d, rtf_fixm(x, d, rtf_area(), x87_getcw()))
-fn rtf_fixm(x, d, m, cw) = let s = x87_setcw(895) in let a = x87_ldd(m, x) in let c = rtf_scale(m, m + 16, d) in let q = x87_sti(m) in let z = x87_setcw(cw) in q
-fn rtf_fixs2(x, d, q) = if q == 0 - 9223372036854775807 - 1 then __rt_fstr(rtf_box(x)) else rtf_fixs3(d, (if q < 0 then 0 - q else q), (if q < 0 then 1 else 0), __lume_alloc_a(80))
+fn rtf_fixs(x, d) =
+    if d < 0 or d > 17 then
+        __rt_die3(0, 0, 0, 0, sym_addr("__rt_fdig_msg"))
+    else if bit_and(bit_shr(x, 52), 2047) == 2047 then
+        __rt_fstr(rtf_box(x))
+    else
+        rtf_fixs2(x, d, rtf_fixm(x, d, rtf_area(), x87_getcw()))
+fn rtf_fixm(x, d, m, cw) =
+    let s = x87_setcw(895) in
+    let a = x87_ldd(m, x) in
+    let c = rtf_scale(m, m + 16, d) in
+    let q = x87_sti(m) in
+    let z = x87_setcw(cw) in
+    q
+fn rtf_fixs2(x, d, q) =
+    if q == 0 - 9223372036854775807 - 1 then
+        __rt_fstr(rtf_box(x))
+    else
+        rtf_fixs3(d, if q < 0 then 0 - q else q, if q < 0 then 1 else 0, __lume_alloc_a(80))
 fn rtf_fixs3(d, q, neg, b) = rtf_fixd(b + 72, b + 72, q, d, 0, neg)
 ## digits from the end; the point after the d-th; on while digits remain or until the point has a digit before it
-fn rtf_fixd(e, p, q, d, c, neg) = let w = store8(p - 1, 48 + q % 10) in if c + 1 == d then (let t = store8(p - 2, 46) in rtf_fixn(e, p - 2, q / 10, d, c + 1, neg)) else rtf_fixn(e, p - 1, q / 10, d, c + 1, neg)
-fn rtf_fixn(e, p, q, d, c, neg) = if q != 0 or c <= d then rtf_fixd(e, p, q, d, c, neg) else if neg == 1 then (let s = store8(p - 1, 45) in __rt_mkstrn(p - 1, e - p + 1)) else __rt_mkstrn(p, e - p)
+fn rtf_fixd(e, p, q, d, c, neg) =
+    let w = store8(p - 1, 48 + q % 10) in
+    if c + 1 == d then
+        let t = store8(p - 2, 46) in
+        rtf_fixn(e, p - 2, q / 10, d, c + 1, neg)
+    else
+        rtf_fixn(e, p - 1, q / 10, d, c + 1, neg)
+fn rtf_fixn(e, p, q, d, c, neg) =
+    if q != 0 or c <= d then
+        rtf_fixd(e, p, q, d, c, neg)
+    else if neg == 1 then
+        let s = store8(p - 1, 45) in
+        __rt_mkstrn(p - 1, e - p + 1)
+    else
+        __rt_mkstrn(p, e - p)
 ## f64(x): an int, a boxed int, a decimal or a string (rtf_parse) as an f64; an f64 stays; anything else stops
-fn f64(v) = if bit_and(v, 1) == 1 then rtf_box(fp_of_int(bit_shr(v, 1))) else if rt_isstrv(v) == 1 then rtf_parse(rt_sptr(v, sym_addr("__rt_sb0")), rt_slen(v)) else if rtf_isf(v) == 1 then v else if __lume_isdec(v) == 3 then rtf_box(rtf_dec2d(rt_int(load64(v + 8)), rt_int(load64(v + 16)))) else if bit_and(v, 7) == 0 and v != 0 and load8(v) == 3 then rtf_box(fp_of_int(load64(v + 8))) else rtf_bad()
+fn f64(v) =
+    if bit_and(v, 1) == 1 then
+        rtf_box(fp_of_int(bit_shr(v, 1)))
+    else if rt_isstrv(v) == 1 then
+        rtf_parse(rt_sptr(v, sym_addr("__rt_sb0")), rt_slen(v))
+    else if rtf_isf(v) == 1 then
+        v
+    else if __lume_isdec(v) == 3 then
+        rtf_box(rtf_dec2d(rt_int(load64(v + 8)), rt_int(load64(v + 16))))
+    else if bit_and(v, 7) == 0 and v != 0 and load8(v) == 3 then
+        rtf_box(fp_of_int(load64(v + 8)))
+    else
+        rtf_bad()
 fn rtf_bad() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_fbad_msg"))
 ## text -> double, as the assembly reads it: an optional sign, "nan" or "inf", digits with an optional point (at most
 ## 18 significant digits kept, the rest only move the exponent), an optional e / E exponent with a sign (its digits
@@ -144,22 +361,98 @@ fn rtf_bad() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_fbad_msg"))
 fn rtf_parse(p, n) = rtf_ps(p, n, __lume_alloc_a(64))
 fn rtf_ps(p, n, s) = let z = rtf_pclr(s, 0) in if n <= 0 then rtf_bad() else rtf_ps2(p, n, s, load8(p))
 fn rtf_pclr(s, k) = if k >= 64 then 0 else let w = store64(s + k, 0) in rtf_pclr(s, k + 8)
-fn rtf_ps2(p, n, s, c) = let a = (if c == 45 then rtf_pset2(s, 0, 1, 8, 1) else if c == 43 then store64(s, 1) else 0) in rtf_pword(p, n, s, load64(s))
+fn rtf_ps2(p, n, s, c) =
+    let a = if c == 45 then rtf_pset2(s, 0, 1, 8, 1) else if c == 43 then store64(s, 1) else 0 in
+    rtf_pword(p, n, s, load64(s))
 fn rtf_pset2(s, o1, v1, o2, v2) = let a = store64(s + o1, v1) in store64(s + o2, v2)
 ## exactly three characters left: nan or inf
-fn rtf_pword(p, n, s, i) = if n - i != 3 then rtf_pint(p, n, s) else if load8(p + i) == 110 and load8(p + i + 1) == 97 and load8(p + i + 2) == 110 then rtf_pfin(s, 9221120237041090560) else if load8(p + i) == 105 and load8(p + i + 1) == 110 and load8(p + i + 2) == 102 then rtf_pfin(s, 9218868437227405312) else rtf_pint(p, n, s)
+fn rtf_pword(p, n, s, i) =
+    if n - i != 3 then
+        rtf_pint(p, n, s)
+    else if load8(p + i) == 110 and load8(p + i + 1) == 97 and load8(p + i + 2) == 110 then
+        rtf_pfin(s, 9221120237041090560)
+    else if load8(p + i) == 105 and load8(p + i + 1) == 110 and load8(p + i + 2) == 102 then
+        rtf_pfin(s, 9218868437227405312)
+    else
+        rtf_pint(p, n, s)
 fn rtf_pint(p, n, s) = if load64(s) >= n then rtf_pend(s) else rtf_pint2(p, n, s, load8(p + load64(s)))
-fn rtf_pint2(p, n, s, c) = if c == 46 then (let a = store64(s, load64(s) + 1) in rtf_pfrac(p, n, s)) else if c < 48 or c > 57 then rtf_pexp(p, n, s, c) else (let d = rtf_pdig(s, c - 48, 0) in let a = store64(s, load64(s) + 1) in rtf_pint(p, n, s))
+fn rtf_pint2(p, n, s, c) =
+    if c == 46 then
+        let a = store64(s, load64(s) + 1) in
+        rtf_pfrac(p, n, s)
+    else if c < 48 or c > 57 then
+        rtf_pexp(p, n, s, c)
+    else
+        let d = rtf_pdig(s, c - 48, 0) in
+        let a = store64(s, load64(s) + 1) in
+        rtf_pint(p, n, s)
 fn rtf_pfrac(p, n, s) = if load64(s) >= n then rtf_pend(s) else rtf_pfrac2(p, n, s, load8(p + load64(s)))
-fn rtf_pfrac2(p, n, s, c) = if c < 48 or c > 57 then rtf_pexp(p, n, s, c) else (let d = rtf_pdig(s, c - 48, 1) in let a = store64(s, load64(s) + 1) in rtf_pfrac(p, n, s))
+fn rtf_pfrac2(p, n, s, c) =
+    if c < 48 or c > 57 then
+        rtf_pexp(p, n, s, c)
+    else
+        let d = rtf_pdig(s, c - 48, 1) in
+        let a = store64(s, load64(s) + 1) in
+        rtf_pfrac(p, n, s)
 ## one digit: kept while fewer than 18 significant ones (leading zeros do not count); in the integer part a digit past
 ## them raises the exponent, in the fraction a kept digit lowers it
-fn rtf_pdig(s, d, frac) = let a = store64(s + 40, 1) in if load64(s + 24) < 18 then rtf_pkeep(s, d, frac) else if frac == 0 then store64(s + 32, load64(s + 32) + 1) else 0
-fn rtf_pkeep(s, d, frac) = let m = store64(s + 16, load64(s + 16) * 10 + d) in let e = (if frac == 1 then store64(s + 32, load64(s + 32) - 1) else 0) in if load64(s + 16) != 0 then store64(s + 24, load64(s + 24) + 1) else 0
-fn rtf_pexp(p, n, s, c) = if c != 101 and c != 69 then rtf_bad() else if load64(s + 40) == 0 then rtf_bad() else rtf_pexp2(p, n, s, load64(s) + 1)
-fn rtf_pexp2(p, n, s, i) = if i >= n then rtf_bad() else if load8(p + i) == 45 then (let a = store64(s + 48, 1) in rtf_ped(p, n, s, i + 1, 0, 0)) else if load8(p + i) == 43 then rtf_ped(p, n, s, i + 1, 0, 0) else rtf_ped(p, n, s, i, 0, 0)
-fn rtf_ped(p, n, s, i, ev, any) = if i >= n then rtf_pede(s, ev, any) else if load8(p + i) < 48 or load8(p + i) > 57 then rtf_bad() else rtf_ped(p, n, s, i + 1, (if ev > 100000 then ev else ev * 10 + load8(p + i) - 48), 1)
-fn rtf_pede(s, ev, any) = if any == 0 then rtf_bad() else let a = store64(s + 32, load64(s + 32) + (if load64(s + 48) == 1 then 0 - ev else ev)) in rtf_pend(s)
-fn rtf_pend(s) = if load64(s + 40) == 0 then rtf_bad() else if load64(s + 16) == 0 then rtf_pfin(s, 0) else rtf_pfin(s, rtf_pscale(load64(s + 16), rt_maxi(0 - 800, rt_mini(800, load64(s + 32))), rtf_area(), x87_getcw()))
-fn rtf_pscale(mant, e, m, cw) = let s = x87_setcw(895) in let a = x87_ldi(m, mant) in let c = rtf_scale(m, m + 16, e) in let q = x87_std(m) in let z = x87_setcw(cw) in q
+fn rtf_pdig(s, d, frac) =
+    let a = store64(s + 40, 1) in
+    if load64(s + 24) < 18 then
+        rtf_pkeep(s, d, frac)
+    else if frac == 0 then
+        store64(s + 32, load64(s + 32) + 1)
+    else
+        0
+fn rtf_pkeep(s, d, frac) =
+    let m = store64(s + 16, load64(s + 16) * 10 + d) in
+    let e = if frac == 1 then store64(s + 32, load64(s + 32) - 1) else 0 in
+    if load64(s + 16) != 0 then
+        store64(s + 24, load64(s + 24) + 1)
+    else
+        0
+fn rtf_pexp(p, n, s, c) =
+    if c != 101 and c != 69 then
+        rtf_bad()
+    else if load64(s + 40) == 0 then
+        rtf_bad()
+    else
+        rtf_pexp2(p, n, s, load64(s) + 1)
+fn rtf_pexp2(p, n, s, i) =
+    if i >= n then
+        rtf_bad()
+    else if load8(p + i) == 45 then
+        let a = store64(s + 48, 1) in
+        rtf_ped(p, n, s, i + 1, 0, 0)
+    else if load8(p + i) == 43 then
+        rtf_ped(p, n, s, i + 1, 0, 0)
+    else
+        rtf_ped(p, n, s, i, 0, 0)
+fn rtf_ped(p, n, s, i, ev, any) =
+    if i >= n then
+        rtf_pede(s, ev, any)
+    else if load8(p + i) < 48 or load8(p + i) > 57 then
+        rtf_bad()
+    else
+        rtf_ped(p, n, s, i + 1, if ev > 100000 then ev else ev * 10 + load8(p + i) - 48, 1)
+fn rtf_pede(s, ev, any) =
+    if any == 0 then
+        rtf_bad()
+    else
+        let a = store64(s + 32, load64(s + 32) + (if load64(s + 48) == 1 then 0 - ev else ev)) in
+        rtf_pend(s)
+fn rtf_pend(s) =
+    if load64(s + 40) == 0 then
+        rtf_bad()
+    else if load64(s + 16) == 0 then
+        rtf_pfin(s, 0)
+    else
+        rtf_pfin(s, rtf_pscale(load64(s + 16), rt_maxi(0 - 800, rt_mini(800, load64(s + 32))), rtf_area(), x87_getcw()))
+fn rtf_pscale(mant, e, m, cw) =
+    let s = x87_setcw(895) in
+    let a = x87_ldi(m, mant) in
+    let c = rtf_scale(m, m + 16, e) in
+    let q = x87_std(m) in
+    let z = x87_setcw(cw) in
+    q
 fn rtf_pfin(s, bits) = rtf_box(if load64(s + 8) == 1 then bit_or(bits, 0 - 9223372036854775807 - 1) else bits)

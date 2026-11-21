@@ -17,14 +17,28 @@ fn __rt_not_str() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_str_msg"))
 fn __rt_no_match() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nmatch_msg"))
 fn __rt_goob() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_goob_msg"))
 fn __rt_try_deep() = __rt_die_now(0, 0, 0, 0, sym_addr("__rt_deep_msg"))
-fn __rt_die3(a, b, c, d, m) = if load64(sym_addr("__rt_try_n")) == 0 then __rt_die_now(0, 0, 0, 0, m) else __rt_try_fail(mkstr(m))
+fn __rt_die3(a, b, c, d, m) =
+    if load64(sym_addr("__rt_try_n")) == 0 then
+        __rt_die_now(0, 0, 0, 0, m)
+    else
+        __rt_try_fail(mkstr(m))
 ## the message, then the stack from the user function the error came from
-fn __rt_die_now(a, b, c, d, m) = let w = sys_call(1, 2, m, strlen(m), 0, 0) in let f = rtf_ufr(frame_ptr(), frame_ptr(), 0) in let t = rt_trace(load64(f), f + 8) in sys_call(60, 3, 0, 0, 0, 0)
+fn __rt_die_now(a, b, c, d, m) =
+    let w = sys_call(1, 2, m, strlen(m), 0, 0) in
+    let f = rtf_ufr(frame_ptr(), frame_ptr(), 0) in
+    let t = rt_trace(load64(f), f + 8) in
+    sys_call(60, 3, 0, 0, 0, 0)
 ## the frame whose return address is in the program's own code (the code generator's table __rt_fntab: n, the end of
 ## the user code, then the entries, the first one's start at +16): runtime routines written in Lume keep frames of their
 ## own on the way to a stop (__rt_div, rt_divi, __rt_div0), and the trace and the debugger's stop on the error must start
 ## at the user function that called them. With no table, or no such frame within 64, the routine's own frame.
-fn rtf_ufr(f, orig, k) = if k >= 64 or f == 0 or bit_and(f, 7) != 0 or f >= load64(sym_addr("__gc_stack_top")) then orig else if rtf_user(load64(f + 8)) == 1 then f else rtf_ufr(load64(f), orig, k + 1)
+fn rtf_ufr(f, orig, k) =
+    if k >= 64 or f == 0 or bit_and(f, 7) != 0 or f >= load64(sym_addr("__gc_stack_top")) then
+        orig
+    else if rtf_user(load64(f + 8)) == 1 then
+        f
+    else
+        rtf_ufr(load64(f), orig, k + 1)
 fn rtf_user(ra) = if load64(sym_addr("__rt_fntab")) == 0 then 0 else rtf_user2(load64(sym_addr("__rt_fntab")), ra)
 fn rtf_user2(tab, ra) = if load64(tab) <= 0 then 0 else if ra >= load64(tab + 16) and ra < load64(tab + 8) then 1 else 0
 
@@ -33,31 +47,84 @@ fn rtf_user2(tab, ra) = if load64(tab) <= 0 then 0 else if ra >= load64(tab + 16
 ## to, the caller's %rsp after that return, the caller's %rbp. __lume_try_begin answers 0 when it opens the try; a
 ## failure inside comes back to the same place answering 1, with the message in __rt_try_msg.
 fn rt_tslot() = sym_addr("__rt_try_stk") + load64(sym_addr("__rt_try_n")) * 24
-fn __lume_try_begin() = if load64(sym_addr("__rt_try_n")) >= 16 then __rt_try_deep() else rt_try_save(rt_tslot(), frame_ptr())
-fn rt_try_save(slot, fp) = let a = store64(slot, load64(fp + 8)) in let b = store64(slot + 8, fp + 16) in let c = store64(slot + 16, load64(fp)) in let d = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) + 1) in 1
-fn __rt_try_fail(msg) = let a = store64(sym_addr("__rt_try_msg"), msg) in let b = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) - 1) in rt_try_jump(rt_tslot())
+fn __lume_try_begin() =
+    if load64(sym_addr("__rt_try_n")) >= 16 then
+        __rt_try_deep()
+    else
+        rt_try_save(rt_tslot(), frame_ptr())
+fn rt_try_save(slot, fp) =
+    let a = store64(slot, load64(fp + 8)) in
+    let b = store64(slot + 8, fp + 16) in
+    let c = store64(slot + 16, load64(fp)) in
+    let d = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) + 1) in
+    1
+fn __rt_try_fail(msg) =
+    let a = store64(sym_addr("__rt_try_msg"), msg) in
+    let b = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) - 1) in
+    rt_try_jump(rt_tslot())
 fn rt_try_jump(slot) = long_jump(load64(slot + 8), load64(slot + 16), load64(slot), 3)
 fn __lume_try_end() = if load64(sym_addr("__rt_try_n")) > 0 then rt_try_pop() else 1
 fn rt_try_pop() = let a = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) - 1) in 1
 ## the message of the last failure, "" when none
 fn __lume_try_msg() = if load64(sym_addr("__rt_try_msg")) == 0 then 2 else load64(sym_addr("__rt_try_msg"))
 ## ctfail(s): fail with a string of the program's own; outside a try the string goes to fd 2 and the program exits 3
-fn ctfail(s) = if rt_isstrv(s) == 0 then __rt_not_str() else if load64(sym_addr("__rt_try_n")) != 0 then __rt_try_fail(s) else rt_ctdie(s)
-fn rt_ctdie(s) = let w = sys_call(1, 2, rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s), 0, 0) in sys_call(60, 3, 0, 0, 0, 0)
+fn ctfail(s) =
+    if rt_isstrv(s) == 0 then
+        __rt_not_str()
+    else if load64(sym_addr("__rt_try_n")) != 0 then
+        __rt_try_fail(s)
+    else
+        rt_ctdie(s)
+fn rt_ctdie(s) =
+    let w = sys_call(1, 2, rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s), 0, 0) in
+    sys_call(60, 3, 0, 0, 0, 0)
 
 ## --- the heap cap ---------------------------------------------------------------------------------------------------------
 ## __rt_env_cap, called once before the collector starts: LUME_HEAP_CAP=<digits>[K|M|G] in the environment sets the cap
 ## (.Lrt_heap_cap, bytes); anything else after the digits stops the program with exit 12.
-fn __rt_env_cap() = if load64(sym_addr(".Lrt_os_argv")) == 0 then 0 else rtm_scan(load64(sym_addr(".Lrt_os_argv")) + (load64(sym_addr(".Lrt_os_argc")) + 1) * 8)
+fn __rt_env_cap() =
+    if load64(sym_addr(".Lrt_os_argv")) == 0 then
+        0
+    else
+        rtm_scan(load64(sym_addr(".Lrt_os_argv")) + (load64(sym_addr(".Lrt_os_argc")) + 1) * 8)
 fn rtm_scan(e) = if load64(e) == 0 then 0 else rtm_cmp(e, load64(e), sym_addr(".Lrt_lec_prefix"))
-fn rtm_cmp(e, s, p) = if load8(p) == 0 then rtm_dig(s, 0) else if load8(s) != load8(p) then rtm_scan(e + 8) else rtm_cmp(e, s + 1, p + 1)
-fn rtm_dig(s, v) = if load8(s) >= 48 and load8(s) <= 57 then rtm_dig(s + 1, v * 10 + load8(s) - 48) else rtm_suf(s, v, load8(s))
-fn rtm_suf(s, v, c) = if c == 0 then rtm_set(v) else if c == 75 or c == 107 then rtm_end(s + 1, v * 1024) else if c == 77 or c == 109 then rtm_end(s + 1, v * 1048576) else if c == 71 or c == 103 then rtm_end(s + 1, v * 1073741824) else rtm_bad()
+fn rtm_cmp(e, s, p) =
+    if load8(p) == 0 then
+        rtm_dig(s, 0)
+    else if load8(s) != load8(p) then
+        rtm_scan(e + 8)
+    else
+        rtm_cmp(e, s + 1, p + 1)
+fn rtm_dig(s, v) =
+    if load8(s) >= 48 and load8(s) <= 57 then
+        rtm_dig(s + 1, v * 10 + load8(s) - 48)
+    else
+        rtm_suf(s, v, load8(s))
+fn rtm_suf(s, v, c) =
+    if c == 0 then
+        rtm_set(v)
+    else if c == 75 or c == 107 then
+        rtm_end(s + 1, v * 1024)
+    else if c == 77 or c == 109 then
+        rtm_end(s + 1, v * 1048576)
+    else if c == 71 or c == 103 then
+        rtm_end(s + 1, v * 1073741824)
+    else
+        rtm_bad()
 fn rtm_end(s, v) = if load8(s) != 0 then rtm_bad() else rtm_set(v)
 fn rtm_set(v) = store64(sym_addr(".Lrt_heap_cap"), v)
 fn rtm_bad() = let w = rtm_puts(sym_addr(".Lrt_lec_bad_msg")) in sys_call(60, 12, 0, 0, 0, 0)
 fn rtm_puts(p) = sys_call(1, 2, p, strlen(p), 0, 0)
 ## out of memory: the cap reached (the message, the cap in bytes, the tail) or no address space left; both exit 12
-fn __rt_cap_oom() = let a = rtm_puts(sym_addr(".Lrt_cap_msg")) in let b = rtm_num(sym_addr(".Lrt_pbuf") + 31, load64(sym_addr(".Lrt_heap_cap")), 1) in let c = rtm_puts(sym_addr(".Lrt_cap_tail")) in sys_call(60, 12, 0, 0, 0, 0)
-fn rtm_num(p, v, n) = let s = store8(p - 1, 48 + v % 10) in if v / 10 == 0 then sys_call(1, 2, p - 1, n, 0, 0) else rtm_num(p - 1, v / 10, n + 1)
+fn __rt_cap_oom() =
+    let a = rtm_puts(sym_addr(".Lrt_cap_msg")) in
+    let b = rtm_num(sym_addr(".Lrt_pbuf") + 31, load64(sym_addr(".Lrt_heap_cap")), 1) in
+    let c = rtm_puts(sym_addr(".Lrt_cap_tail")) in
+    sys_call(60, 12, 0, 0, 0, 0)
+fn rtm_num(p, v, n) =
+    let s = store8(p - 1, 48 + v % 10) in
+    if v / 10 == 0 then
+        sys_call(1, 2, p - 1, n, 0, 0)
+    else
+        rtm_num(p - 1, v / 10, n + 1)
 fn __rt_alloc_oom() = let w = sys_call(1, 2, sym_addr(".Lrt_oom_msg"), 36, 0, 0) in sys_call(60, 12, 0, 0, 0, 0)

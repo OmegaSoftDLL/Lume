@@ -4,7 +4,13 @@
 ## the hand-written assembly made; on Windows `syscall` becomes `call __win_syscall` like everywhere else.
 
 ## 1 when the path can be opened for reading (open + close), else 0
-fn fs_path_exists(path) = let fd = sys_call(2, __rt_cstr(path), 0, 0, 0, 0) in if fd < 0 then mkint(0) else let c = sys_call(3, fd, 0, 0, 0, 0) in mkint(1)
+fn fs_path_exists(path) =
+    let fd = sys_call(2, __rt_cstr(path), 0, 0, 0, 0) in
+    if fd < 0 then
+        mkint(0)
+    else
+        let c = sys_call(3, fd, 0, 0, 0, 0) in
+        mkint(1)
 
 ## unlink, rmdir, chdir: 1 on success, else 0
 fn fs_remove(path) = rt_fs_ok(sys_call(87, __rt_cstr(path), 0, 0, 0, 0))
@@ -21,116 +27,514 @@ fn fs_rename(from, to) = let a = __rt_cstr(from) in let b = __rt_cstr(to) in rt_
 fn fs_make_executable(path) = rt_fs_ok(sys_call(90, __rt_cstr(path), 493, 0, 0, 0))
 
 ## seconds since 1970 (clock_gettime CLOCK_REALTIME), 0 when the clock cannot be read
-fn os_unix_time() = let ts = __lume_alloc_a(16) in let r = sys_call(228, 0, ts, 0, 0, 0) in if r < 0 then mkint(0) else mkint(load64(ts))
+fn os_unix_time() =
+    let ts = __lume_alloc_a(16) in
+    let r = sys_call(228, 0, ts, 0, 0, 0) in
+    if r < 0 then
+        mkint(0)
+    else
+        mkint(load64(ts))
 
 ## a system call result as a Lume truth value: 1 when it did not fail (not negative), else 0
 fn rt_fs_ok(r) = if r < 0 then mkint(0) else mkint(1)
 
 ## chmod(path, mode) with 0 <= mode <= 4095: 1 on success, else 0 (on Windows the layer maps it to the file's DACL)
-fn fs_chmod(path, mode) = let p = __rt_cstr(path) in let m = rt_int(mode) in if m < 0 or m > 4095 then mkint(0) else rt_fs_ok(sys_call(90, p, m, 0, 0, 0))
+fn fs_chmod(path, mode) =
+    let p = __rt_cstr(path) in
+    let m = rt_int(mode) in
+    if m < 0 or m > 4095 then
+        mkint(0)
+    else
+        rt_fs_ok(sys_call(90, p, m, 0, 0, 0))
 
 ## the byte at offset off of the file (open, lseek, read 1, close), or -1
-fn fs_read_byte(path, off) = let o = rt_int(off) in let p = __rt_cstr(path) in let fd = sys_call(2, p, 0, 0, 0, 0) in if fd < 0 then mkint(0 - 1) else if sys_call(8, fd, o, 0, 0, 0) < 0 then rt_close_fail(fd) else let b = __lume_alloc_a(8) in let n = sys_call(0, fd, b, 1, 0, 0) in let c = sys_call(3, fd, 0, 0, 0, 0) in if n != 1 then mkint(0 - 1) else mkint(load8(b))
+fn fs_read_byte(path, off) =
+    let o = rt_int(off) in
+    let p = __rt_cstr(path) in
+    let fd = sys_call(2, p, 0, 0, 0, 0) in
+    if fd < 0 then
+        mkint(0 - 1)
+    else if sys_call(8, fd, o, 0, 0, 0) < 0 then
+        rt_close_fail(fd)
+    else
+        let b = __lume_alloc_a(8) in
+        let n = sys_call(0, fd, b, 1, 0, 0) in
+        let c = sys_call(3, fd, 0, 0, 0, 0) in
+        if n != 1 then
+            mkint(0 - 1)
+        else
+            mkint(load8(b))
 fn rt_close_fail(fd) = let c = sys_call(3, fd, 0, 0, 0, 0) in mkint(0 - 1)
 
 ## 1 when the two files hold the same bytes, 0 when they differ, -1 when one cannot be opened or read (4 KiB at a time)
-fn fs_files_equal(a, b) = let pa = __rt_cstr(a) in let pb = __rt_cstr(b) in let fa = sys_call(2, pa, 0, 0, 0, 0) in if fa < 0 then mkint(0 - 1) else let fb = sys_call(2, pb, 0, 0, 0, 0) in if fb < 0 then rt_close_fail(fa) else let ba = __lume_alloc_a(4096) in let bb = __lume_alloc_a(4096) in let r = rt_fe_loop(fa, fb, ba, bb) in let c1 = sys_call(3, fa, 0, 0, 0, 0) in let c2 = sys_call(3, fb, 0, 0, 0, 0) in mkint(r)
-fn rt_fe_loop(fa, fb, ba, bb) = let na = sys_call(0, fa, ba, 4096, 0, 0) in if na < 0 then 0 - 1 else let nb = sys_call(0, fb, bb, 4096, 0, 0) in if nb < 0 then 0 - 1 else if na != nb then 0 else if na == 0 then 1 else if rt_same_bytes(ba, bb, 0, na) == 0 then 0 else rt_fe_loop(fa, fb, ba, bb)
-fn rt_same_bytes(a, b, i, n) = if i >= n then 1 else if load8(a + i) != load8(b + i) then 0 else rt_same_bytes(a, b, i + 1, n)
-
+fn fs_files_equal(a, b) =
+    let pa = __rt_cstr(a) in
+    let pb = __rt_cstr(b) in
+    let fa = sys_call(2, pa, 0, 0, 0, 0) in
+    if fa < 0 then
+        mkint(0 - 1)
+    else
+        let fb = sys_call(2, pb, 0, 0, 0, 0) in
+        if fb < 0 then
+            rt_close_fail(fa)
+        else
+            let ba = __lume_alloc_a(4096) in
+            let bb = __lume_alloc_a(4096) in
+            let r = rt_fe_loop(fa, fb, ba, bb) in
+            let c1 = sys_call(3, fa, 0, 0, 0, 0) in
+            let c2 = sys_call(3, fb, 0, 0, 0, 0) in
+            mkint(r)
+fn rt_fe_loop(fa, fb, ba, bb) =
+    let na = sys_call(0, fa, ba, 4096, 0, 0) in
+    if na < 0 then
+        0 - 1
+    else
+        let nb = sys_call(0, fb, bb, 4096, 0, 0) in
+        if nb < 0 then
+            0 - 1
+        else if na != nb then
+            0
+        else if na == 0 then
+            1
+        else if rt_same_bytes(ba, bb, 0, na) == 0 then
+            0
+        else
+            rt_fe_loop(fa, fb, ba, bb)
+fn rt_same_bytes(a, b, i, n) =
+    if i >= n then
+        1
+    else if load8(a + i) != load8(b + i) then
+        0
+    else
+        rt_same_bytes(a, b, i + 1, n)
 
 ## write (flags 577: create, truncate) or append (1089: create, append) the string data to the file: locked (flock),
 ## written in chunks (EINTR retried), fsync-ed, unlocked and closed; 1 on success, else 0
 fn fs_write_sync(path, data) = rt_fs_put(path, data, 577)
 fn fs_append_sync(path, data) = rt_fs_put(path, data, 1089)
-fn rt_fs_put(path, data, flags) = let p = __rt_cstr(path) in let n = rt_slen(data) in let tmp = __lume_alloc_a(8) in let d = rt_sptr(data, tmp) in let fd = sys_call(2, p, flags, 420, 0, 0) in if fd < 0 then mkint(0) else let l = sys_call(73, fd, 2, 0, 0, 0) in if rt_wloop(fd, d, n) == 0 then let u = sys_call(73, fd, 8, 0, 0, 0) in rt_close_zero(fd) else let s = sys_call(74, fd, 0, 0, 0, 0) in let u = sys_call(73, fd, 8, 0, 0, 0) in rt_fs_ok(sys_call(3, fd, 0, 0, 0, 0))
+fn rt_fs_put(path, data, flags) =
+    let p = __rt_cstr(path) in
+    let n = rt_slen(data) in
+    let tmp = __lume_alloc_a(8) in
+    let d = rt_sptr(data, tmp) in
+    let fd = sys_call(2, p, flags, 420, 0, 0) in
+    if fd < 0 then
+        mkint(0)
+    else
+        let l = sys_call(73, fd, 2, 0, 0, 0) in
+        if rt_wloop(fd, d, n) == 0 then
+            let u = sys_call(73, fd, 8, 0, 0, 0) in
+            rt_close_zero(fd)
+        else
+            let s = sys_call(74, fd, 0, 0, 0, 0) in
+            let u = sys_call(73, fd, 8, 0, 0, 0) in
+            rt_fs_ok(sys_call(3, fd, 0, 0, 0, 0))
 fn rt_close_zero(fd) = let c = sys_call(3, fd, 0, 0, 0, 0) in mkint(0)
-fn rt_wloop(fd, d, n) = if n <= 0 then 1 else let k = if n > 2147479552 then 2147479552 else n in let r = sys_call(1, fd, d, k, 0, 0) in if r == 0 - 4 then rt_wloop(fd, d, n) else if r <= 0 then 0 else rt_wloop(fd, d + r, n - r)
+fn rt_wloop(fd, d, n) =
+    if n <= 0 then
+        1
+    else
+        let k = if n > 2147479552 then 2147479552 else n in
+        let r = sys_call(1, fd, d, k, 0, 0) in
+        if r == 0 - 4 then
+            rt_wloop(fd, d, n)
+        else if r <= 0 then
+            0
+        else
+            rt_wloop(fd, d + r, n - r)
 
 ## the whole file as a string, "" (the value 2: an empty short string) when it cannot be opened or read. A regular
 ## file is read into a string cell of its size (lseek to the end); a file of no known size (a pipe, /proc) is read in
 ## a buffer that doubles from 64 KiB. Shared lock (flock 1) while reading.
-fn fs_read_file(path) = let p = __rt_cstr(path) in let fd = sys_call(2, p, 0, 0, 0, 0) in if fd < 0 then 2 else let l = sys_call(73, fd, 1, 0, 0, 0) in let sz = sys_call(8, fd, 0, 2, 0, 0) in if sz <= 0 then rt_fsr_stream(fd, __lume_alloc_a(65536), 0, 65536) else let c = __rt_stralloc(sz) in if sys_call(8, fd, 0, 0, 0, 0) < 0 then rt_fsr_err(fd) else rt_fsr_done(fd, c, sz, rt_rcount(fd, c + 8, 0, sz))
+fn fs_read_file(path) =
+    let p = __rt_cstr(path) in
+    let fd = sys_call(2, p, 0, 0, 0, 0) in
+    if fd < 0 then
+        2
+    else
+        let l = sys_call(73, fd, 1, 0, 0, 0) in
+        let sz = sys_call(8, fd, 0, 2, 0, 0) in
+        if sz <= 0 then
+            rt_fsr_stream(fd, __lume_alloc_a(65536), 0, 65536)
+        else
+            let c = __rt_stralloc(sz) in
+            if sys_call(8, fd, 0, 0, 0, 0) < 0 then
+                rt_fsr_err(fd)
+            else
+                rt_fsr_done(fd, c, sz, rt_rcount(fd, c + 8, 0, sz))
 ## fs_read_range(path, offset, n): up to n bytes from offset (open + lseek + read, never the whole file); shorter at
 ## the end of the file, "" past it, for n <= 0, a negative offset or a file that cannot be read
-fn fs_read_range(path, off, n) = let o = rt_int(off) in let m = rt_int(n) in if o < 0 or m <= 0 then 2 else rt_rrange(__rt_cstr(path), o, m)
-fn rt_rrange(p, o, m) = let fd = sys_call(2, p, 0, 0, 0, 0) in if fd < 0 then 2 else if sys_call(8, fd, o, 0, 0, 0) < 0 then rt_fsr_err(fd) else rt_rrange2(fd, __rt_stralloc(m), m)
+fn fs_read_range(path, off, n) =
+    let o = rt_int(off) in
+    let m = rt_int(n) in
+    if o < 0 or m <= 0 then
+        2
+    else
+        rt_rrange(__rt_cstr(path), o, m)
+fn rt_rrange(p, o, m) =
+    let fd = sys_call(2, p, 0, 0, 0, 0) in
+    if fd < 0 then
+        2
+    else if sys_call(8, fd, o, 0, 0, 0) < 0 then
+        rt_fsr_err(fd)
+    else
+        rt_rrange2(fd, __rt_stralloc(m), m)
 ## rt_slen, rt_sptr and rt_copyn live in rt_text.src (the core part: buf_from_str needs them too)
-fn rt_rrange2(fd, c, m) = let got = rt_rcount(fd, c + 8, 0, m) in let cl = sys_call(3, fd, 0, 0, 0, 0) in if got <= 0 then 2 else if got == m and m > 7 then c else __rt_mkstrn(c + 8, got)
-fn rt_rcount(fd, b, got, sz) = if got >= sz then got else let r = sys_call(0, fd, b + got, sz - got, 0, 0) in if r == 0 - 4 then rt_rcount(fd, b, got, sz) else if r <= 0 then got else rt_rcount(fd, b, got + r, sz)
+fn rt_rrange2(fd, c, m) =
+    let got = rt_rcount(fd, c + 8, 0, m) in
+    let cl = sys_call(3, fd, 0, 0, 0, 0) in
+    if got <= 0 then
+        2
+    else if got == m and m > 7 then
+        c
+    else
+        __rt_mkstrn(c + 8, got)
+fn rt_rcount(fd, b, got, sz) =
+    if got >= sz then
+        got
+    else
+        let r = sys_call(0, fd, b + got, sz - got, 0, 0) in
+        if r == 0 - 4 then
+            rt_rcount(fd, b, got, sz)
+        else if r <= 0 then
+            got
+        else
+            rt_rcount(fd, b, got + r, sz)
 ## fs_truncate(path, size): cut (or extend with zeros) the file to size bytes: 1, or 0 when it cannot
 fn fs_truncate(path, size) = let s = rt_int(size) in if s < 0 then mkint(0) else rt_trunc(__rt_cstr(path), s)
-fn rt_trunc(p, s) = let fd = sys_call(2, p, 1, 0, 0, 0) in if fd < 0 then mkint(0) else let r = sys_call(77, fd, s, 0, 0, 0) in let c = sys_call(3, fd, 0, 0, 0, 0) in rt_fs_ok(r)
+fn rt_trunc(p, s) =
+    let fd = sys_call(2, p, 1, 0, 0, 0) in
+    if fd < 0 then
+        mkint(0)
+    else
+        let r = sys_call(77, fd, s, 0, 0, 0) in
+        let c = sys_call(3, fd, 0, 0, 0, 0) in
+        rt_fs_ok(r)
 ## fs_rename_noreplace(from, to): rename that fails (0) when `to` exists: renameat2(RENAME_NOREPLACE) (MoveFileExW
 ## without REPLACE_EXISTING on Windows). A file system without renameat2 flags (EINVAL) gets link + unlink, which
 ## refuses an existing target the same way
-fn fs_rename_noreplace(from, to) = let a = __rt_cstr(from) in let b = __rt_cstr(to) in let r = sys_call(316, 0 - 100, a, 0 - 100, b, 1) in if r == 0 - 22 then rt_rnx_link(a, b) else rt_fs_ok(r)
-fn rt_rnx_link(a, b) = let l = sys_call(86, a, b, 0, 0, 0) in if l < 0 then mkint(0) else rt_fs_ok(sys_call(87, a, 0, 0, 0, 0))
+fn fs_rename_noreplace(from, to) =
+    let a = __rt_cstr(from) in
+    let b = __rt_cstr(to) in
+    let r = sys_call(316, 0 - 100, a, 0 - 100, b, 1) in
+    if r == 0 - 22 then
+        rt_rnx_link(a, b)
+    else
+        rt_fs_ok(r)
+fn rt_rnx_link(a, b) =
+    let l = sys_call(86, a, b, 0, 0, 0) in
+    if l < 0 then
+        mkint(0)
+    else
+        rt_fs_ok(sys_call(87, a, 0, 0, 0, 0))
 ## the end of a whole-file read: a file shorter than its stat size (sysfs reports 4096 for an 18-byte attribute) gives
 ## the bytes it really has; a read error gives ""
-fn rt_fsr_done(fd, c, sz, got) = let u = sys_call(73, fd, 8, 0, 0, 0) in let cl = sys_call(3, fd, 0, 0, 0, 0) in if got <= 0 then 2 else if got == sz and sz > 7 then c else __rt_mkstrn(c + 8, got)
+fn rt_fsr_done(fd, c, sz, got) =
+    let u = sys_call(73, fd, 8, 0, 0, 0) in
+    let cl = sys_call(3, fd, 0, 0, 0, 0) in
+    if got <= 0 then
+        2
+    else if got == sz and sz > 7 then
+        c
+    else
+        __rt_mkstrn(c + 8, got)
 fn rt_fsr_err(fd) = let c = sys_call(3, fd, 0, 0, 0, 0) in 2
-fn rt_rloop(fd, b, got, sz) = if got >= sz then 1 else let r = sys_call(0, fd, b + got, sz - got, 0, 0) in if r <= 0 then 0 else rt_rloop(fd, b, got + r, sz)
-fn rt_fsr_stream(fd, buf, used, cap) = if used >= cap then (let nb = __lume_alloc_a(cap * 2) in let c = rt_copyn(nb, buf, 0, used) in rt_fsr_stream(fd, nb, used, cap * 2)) else let r = sys_call(0, fd, buf + used, cap - used, 0, 0) in if r == 0 - 4 then rt_fsr_stream(fd, buf, used, cap) else if r < 0 then rt_fsr_err(fd) else if r == 0 then (let u = sys_call(73, fd, 8, 0, 0, 0) in let cl = sys_call(3, fd, 0, 0, 0, 0) in __rt_mkstrn(buf, used)) else rt_fsr_stream(fd, buf, used + r, cap)
+fn rt_rloop(fd, b, got, sz) =
+    if got >= sz then
+        1
+    else
+        let r = sys_call(0, fd, b + got, sz - got, 0, 0) in
+        if r <= 0 then
+            0
+        else
+            rt_rloop(fd, b, got + r, sz)
+fn rt_fsr_stream(fd, buf, used, cap) =
+    if used >= cap then
+        let nb = __lume_alloc_a(cap * 2) in
+        let c = rt_copyn(nb, buf, 0, used) in
+        rt_fsr_stream(fd, nb, used, cap * 2)
+    else
+        let r = sys_call(0, fd, buf + used, cap - used, 0, 0) in
+        if r == 0 - 4 then
+            rt_fsr_stream(fd, buf, used, cap)
+        else if r < 0 then
+            rt_fsr_err(fd)
+        else if r == 0 then
+            let u = sys_call(73, fd, 8, 0, 0, 0) in
+            let cl = sys_call(3, fd, 0, 0, 0, 0) in
+            __rt_mkstrn(buf, used)
+        else
+            rt_fsr_stream(fd, buf, used + r, cap)
 ## copies n bytes from s to d, eight at a time while it can
 
 ## copy the file src to dst (created or truncated) through a 64 KiB anonymous mapping: 1 on success, else 0. A new
 ## dst gets the permission bits of src (fstat st_mode at +24), as cp does: a copied program stays executable
-fn fs_copy(src, dst) = let ps = __rt_cstr(src) in let pd = __rt_cstr(dst) in let buf = sys_call(9, 0, 65536, 3, 34, 0 - 1) in if buf < 0 then mkint(0) else let fi = sys_call(2, ps, 0, 0, 0, 0) in if fi < 0 then rt_cp_end(buf, 0) else let fo = sys_call(2, pd, 577, rt_cp_mode(fi, buf), 0, 0) in if fo < 0 then (let c = sys_call(3, fi, 0, 0, 0, 0) in rt_cp_end(buf, 0)) else let ok = rt_cp_loop(fi, fo, buf) in let c1 = sys_call(3, fo, 0, 0, 0, 0) in let ok2 = if c1 < 0 then 0 else ok in let c2 = sys_call(3, fi, 0, 0, 0, 0) in rt_cp_end(buf, ok2)
+fn fs_copy(src, dst) =
+    let ps = __rt_cstr(src) in
+    let pd = __rt_cstr(dst) in
+    let buf = sys_call(9, 0, 65536, 3, 34, 0 - 1) in
+    if buf < 0 then
+        mkint(0)
+    else
+        let fi = sys_call(2, ps, 0, 0, 0, 0) in
+        if fi < 0 then
+            rt_cp_end(buf, 0)
+        else
+            let fo = sys_call(2, pd, 577, rt_cp_mode(fi, buf), 0, 0) in
+            if fo < 0 then
+                let c = sys_call(3, fi, 0, 0, 0, 0) in
+                rt_cp_end(buf, 0)
+            else
+                let ok = rt_cp_loop(fi, fo, buf) in
+                let c1 = sys_call(3, fo, 0, 0, 0, 0) in
+                let ok2 = if c1 < 0 then 0 else ok in
+                let c2 = sys_call(3, fi, 0, 0, 0, 0) in
+                rt_cp_end(buf, ok2)
 fn rt_cp_mode(fi, buf) = if sys_call(5, fi, buf, 0, 0, 0) < 0 then 420 else bit_and(load32(buf + 24), 4095)
 fn rt_cp_end(buf, ok) = let u = sys_call(11, buf, 65536, 0, 0, 0) in mkint(ok)
-fn rt_cp_loop(fi, fo, buf) = let r = sys_call(0, fi, buf, 65536, 0, 0) in if r < 0 then 0 else if r == 0 then 1 else if rt_wall(fo, buf, 0, r) == 0 then 0 else rt_cp_loop(fi, fo, buf)
+fn rt_cp_loop(fi, fo, buf) =
+    let r = sys_call(0, fi, buf, 65536, 0, 0) in
+    if r < 0 then
+        0
+    else if r == 0 then
+        1
+    else if rt_wall(fo, buf, 0, r) == 0 then
+        0
+    else
+        rt_cp_loop(fi, fo, buf)
 ## write all n bytes at b from offset i: 1, or 0 when a write fails
-fn rt_wall(fd, b, i, n) = if i >= n then 1 else let w = sys_call(1, fd, b + i, n - i, 0, 0) in if w <= 0 then 0 else rt_wall(fd, b, i + w, n)
+fn rt_wall(fd, b, i, n) =
+    if i >= n then
+        1
+    else
+        let w = sys_call(1, fd, b + i, n - i, 0, 0) in
+        if w <= 0 then
+            0
+        else
+            rt_wall(fd, b, i + w, n)
 
 ## the current directory (getcwd), "" when it cannot be read
-fn fs_current_dir() = let b = __lume_alloc_a(4096) in let r = sys_call(79, b, 4096, 0, 0, 0) in let z = if r < 0 then store8(b, 0) else 0 in mkstr(b)
+fn fs_current_dir() =
+    let b = __lume_alloc_a(4096) in
+    let r = sys_call(79, b, 4096, 0, 0, 0) in
+    let z = if r < 0 then store8(b, 0) else 0 in
+    mkstr(b)
 
 ## write the bytes a hex string spells (0-9, a-f, A-F, an even count) to the file: 1, or 0 for bad hex (the file is
 ## then not created) or a failed write
-fn fs_write_hex_file(path, hex) = let p = __rt_cstr(path) in let h = __rt_cstr(hex) in let n = strlen(h) in if n % 2 != 0 then mkint(0) else let b = __lume_alloc_a(n / 2 + 1) in if rt_hexdec(b, h, 0, n) == 0 then mkint(0) else let fd = sys_call(2, p, 577, 420, 0, 0) in if fd < 0 then mkint(0) else if rt_wall(fd, b, 0, n / 2) == 0 then rt_close_zero(fd) else let s = sys_call(74, fd, 0, 0, 0, 0) in let c = sys_call(3, fd, 0, 0, 0, 0) in mkint(1)
-fn rt_nib(c) = if c >= 48 and c <= 57 then c - 48 else if c >= 65 and c <= 70 then c - 55 else if c >= 97 and c <= 102 then c - 87 else 0 - 1
-fn rt_hexdec(b, h, i, n) = if i >= n then 1 else let hi = rt_nib(load8(h + i)) in let lo = rt_nib(load8(h + i + 1)) in if hi < 0 or lo < 0 then 0 else let w = store8(b + i / 2, hi * 16 + lo) in rt_hexdec(b, h, i + 2, n)
+fn fs_write_hex_file(path, hex) =
+    let p = __rt_cstr(path) in
+    let h = __rt_cstr(hex) in
+    let n = strlen(h) in
+    if n % 2 != 0 then
+        mkint(0)
+    else
+        let b = __lume_alloc_a(n / 2 + 1) in
+        if rt_hexdec(b, h, 0, n) == 0 then
+            mkint(0)
+        else
+            let fd = sys_call(2, p, 577, 420, 0, 0) in
+            if fd < 0 then
+                mkint(0)
+            else if rt_wall(fd, b, 0, n / 2) == 0 then
+                rt_close_zero(fd)
+            else
+                let s = sys_call(74, fd, 0, 0, 0, 0) in
+                let c = sys_call(3, fd, 0, 0, 0, 0) in
+                mkint(1)
+fn rt_nib(c) =
+    if c >= 48 and c <= 57 then
+        c - 48
+    else if c >= 65 and c <= 70 then
+        c - 55
+    else if c >= 97 and c <= 102 then
+        c - 87
+    else
+        0 - 1
+fn rt_hexdec(b, h, i, n) =
+    if i >= n then
+        1
+    else
+        let hi = rt_nib(load8(h + i)) in
+        let lo = rt_nib(load8(h + i + 1)) in
+        if hi < 0 or lo < 0 then
+            0
+        else
+            let w = store8(b + i / 2, hi * 16 + lo) in
+            rt_hexdec(b, h, i + 2, n)
 
 ## the names in a directory, one per line ("\n" after each), without "." and ".."; "" when it cannot be read. Two
 ## passes over getdents64: the total size, then the copy into one buffer (a name that no longer fits ends the copy)
 ## O_DIRECTORY only (no O_NOFOLLOW): a folder reached through a symbolic link is listed, as opendir does
-fn fs_read_dir(path) = let p = __rt_cstr(path) in let fd = sys_call(2, p, 65536, 0, 0, 0) in if fd < 0 then 2 else let b = __lume_alloc_a(4096) in let total = rt_rd_count(fd, b, 0) in if total < 0 then rt_fsr_err(fd) else let c = sys_call(3, fd, 0, 0, 0, 0) in let out = __lume_alloc_a(total + 1) in let fd2 = sys_call(2, p, 65536, 0, 0, 0) in if fd2 < 0 then 2 else let e = rt_rd_copy(fd2, b, out, out + total) in if e == 0 then rt_fsr_err(fd2) else let z = store8(e, 0) in let c2 = sys_call(3, fd2, 0, 0, 0, 0) in mkstr(out)
-fn rt_dotname(nm) = if load8(nm) != 46 then 0 else if load8(nm + 1) == 0 then 1 else if load8(nm + 1) == 46 and load8(nm + 2) == 0 then 1 else 0
+fn fs_read_dir(path) =
+    let p = __rt_cstr(path) in
+    let fd = sys_call(2, p, 65536, 0, 0, 0) in
+    if fd < 0 then
+        2
+    else
+        let b = __lume_alloc_a(4096) in
+        let total = rt_rd_count(fd, b, 0) in
+        if total < 0 then
+            rt_fsr_err(fd)
+        else
+            let c = sys_call(3, fd, 0, 0, 0, 0) in
+            let out = __lume_alloc_a(total + 1) in
+            let fd2 = sys_call(2, p, 65536, 0, 0, 0) in
+            if fd2 < 0 then
+                2
+            else
+                let e = rt_rd_copy(fd2, b, out, out + total) in
+                if e == 0 then
+                    rt_fsr_err(fd2)
+                else
+                    let z = store8(e, 0) in
+                    let c2 = sys_call(3, fd2, 0, 0, 0, 0) in
+                    mkstr(out)
+fn rt_dotname(nm) =
+    if load8(nm) != 46 then
+        0
+    else if load8(nm + 1) == 0 then
+        1
+    else if load8(nm + 1) == 46 and load8(nm + 2) == 0 then
+        1
+    else
+        0
 fn rt_reclen(b, i) = load8(b + i + 16) + 256 * load8(b + i + 17)
-fn rt_rd_count(fd, b, acc) = let r = sys_call(217, fd, b, 4096, 0, 0) in if r < 0 then 0 - 1 else if r == 0 then acc else rt_rd_count(fd, b, rt_rd_cnt(b, 0, r, acc))
-fn rt_rd_cnt(b, i, r, acc) = if i >= r then acc else rt_rd_cnt(b, i + rt_reclen(b, i), r, if rt_dotname(b + i + 19) == 1 then acc else acc + strlen(b + i + 19) + 1)
+fn rt_rd_count(fd, b, acc) =
+    let r = sys_call(217, fd, b, 4096, 0, 0) in
+    if r < 0 then
+        0 - 1
+    else if r == 0 then
+        acc
+    else
+        rt_rd_count(fd, b, rt_rd_cnt(b, 0, r, acc))
+fn rt_rd_cnt(b, i, r, acc) =
+    if i >= r then
+        acc
+    else
+        rt_rd_cnt(b, i + rt_reclen(b, i), r, if rt_dotname(b + i + 19) == 1 then acc else acc + strlen(b + i + 19) + 1)
 ## the copy pass: the end of what was written, or 0 when getdents64 fails
-fn rt_rd_copy(fd, b, cur, end) = let r = sys_call(217, fd, b, 4096, 0, 0) in if r < 0 then 0 else if r == 0 then cur else let c = rt_rd_cp(b, 0, r, cur, end) in if c < 0 then 0 - c else rt_rd_copy(fd, b, c, end)
+fn rt_rd_copy(fd, b, cur, end) =
+    let r = sys_call(217, fd, b, 4096, 0, 0) in
+    if r < 0 then
+        0
+    else if r == 0 then
+        cur
+    else
+        let c = rt_rd_cp(b, 0, r, cur, end) in
+        if c < 0 then
+            0 - c
+        else
+            rt_rd_copy(fd, b, c, end)
 ## copies the names of one getdents64 block; a negative result (-cur) means a name did not fit: stop there
-fn rt_rd_cp(b, i, r, cur, end) = if i >= r then cur else let nm = b + i + 19 in if rt_dotname(nm) == 1 then rt_rd_cp(b, i + rt_reclen(b, i), r, cur, end) else let l = strlen(nm) in if cur + l + 1 > end then 0 - cur else let c = rt_copyn(cur, nm, 0, l) in let w = store8(cur + l, 10) in rt_rd_cp(b, i + rt_reclen(b, i), r, cur + l + 1, end)
+fn rt_rd_cp(b, i, r, cur, end) =
+    if i >= r then
+        cur
+    else
+        let nm = b + i + 19 in
+        if rt_dotname(nm) == 1 then
+            rt_rd_cp(b, i + rt_reclen(b, i), r, cur, end)
+        else
+            let l = strlen(nm) in
+            if cur + l + 1 > end then
+                0 - cur
+            else
+                let c = rt_copyn(cur, nm, 0, l) in
+                let w = store8(cur + l, 10) in
+                rt_rd_cp(b, i + rt_reclen(b, i), r, cur + l + 1, end)
 
 ## one byte of standard input, or -1 at the end (the runtime's one-byte buffer .Lrt_pbuf)
-fn io_read_byte() = let pb = sym_addr(".Lrt_pbuf") in let r = sys_call(0, 0, pb, 1, 0, 0) in if r != 1 then mkint(0 - 1) else mkint(load8(pb))
+fn io_read_byte() =
+    let pb = sym_addr(".Lrt_pbuf") in
+    let r = sys_call(0, 0, pb, 1, 0, 0) in
+    if r != 1 then
+        mkint(0 - 1)
+    else
+        mkint(load8(pb))
 ## the number of command-line arguments the runtime saved at start (.Lrt_os_argc)
 fn os_arg_count() = mkint(load64(sym_addr(".Lrt_os_argc")))
 ## argument i of the command line, "" when i is out of range (the argv the runtime saved at start)
-fn os_arg_at(i) = let k = rt_int(i) in if k < 0 or k >= load64(sym_addr(".Lrt_os_argc")) then 2 else mkstr(load64(load64(sym_addr(".Lrt_os_argv")) + 8 * k))
+fn os_arg_at(i) =
+    let k = rt_int(i) in
+    if k < 0 or k >= load64(sym_addr(".Lrt_os_argc")) then
+        2
+    else
+        mkstr(load64(load64(sym_addr(".Lrt_os_argv")) + 8 * k))
 ## "linux", "windows" or "macos": the runtime's .Lrt_platform text (the Windows build rewrites it)
 fn os_platform() = mkstr(sym_addr(".Lrt_platform"))
 
 ## the permission bits of a file (st_mode & 4095), -1 when it cannot be read; on Windows the layer answers the
 ## pseudo call 1006 (Linux: ENOSYS, -38, then stat)
-fn fs_mode(path) = let p = __rt_cstr(path) in let r = sys_call(1006, p, 0, 0, 0, 0) in if r != 0 - 38 then mkint(if r < 0 then 0 - 1 else r) else let st = __lume_alloc_a(160) in if sys_call(4, p, st, 0, 0, 0) < 0 then mkint(0 - 1) else mkint(bit_and(load64(st + 24), 4095))
+fn fs_mode(path) =
+    let p = __rt_cstr(path) in
+    let r = sys_call(1006, p, 0, 0, 0, 0) in
+    if r != 0 - 38 then
+        mkint(if r < 0 then 0 - 1 else r)
+    else
+        let st = __lume_alloc_a(160) in
+        if sys_call(4, p, st, 0, 0, 0) < 0 then
+            mkint(0 - 1)
+        else
+            mkint(bit_and(load64(st + 24), 4095))
 
 ## --- environment: the table the program changed (os_setenv: .Lrt_envp_ovr) or the one it started with (after argv);
 ## names compare exactly, and on Windows also without regard to ASCII case (Path and PATH are one variable there)
-fn rt_envp() = let ovr = load64(sym_addr(".Lrt_envp_ovr")) in if ovr != 0 then ovr else let av = load64(sym_addr(".Lrt_os_argv")) in if av == 0 then 0 else av + 8 * (load64(sym_addr(".Lrt_os_argc")) + 1)
+fn rt_envp() =
+    let ovr = load64(sym_addr(".Lrt_envp_ovr")) in
+    if ovr != 0 then
+        ovr
+    else
+        let av = load64(sym_addr(".Lrt_os_argv")) in
+        if av == 0 then
+            0
+        else
+            av + 8 * (load64(sym_addr(".Lrt_os_argc")) + 1)
 fn rt_up(c) = if c >= 97 and c <= 122 then c - 32 else c
 ## the address of the value of the C-string name nm ("NAME=value" -> value), or 0
-fn rt_env_find(nm) = if load8(nm) == 0 then 0 else let e = rt_envp() in if e == 0 then 0 else rt_env_scan(e, nm, if load8(sym_addr(".Lrt_platform")) == 119 then 1 else 0)
-fn rt_env_scan(e, nm, win) = let d = load64(e) in if d == 0 then 0 else let v = rt_env_match(nm, d, win) in if v != 0 then v else rt_env_scan(e + 8, nm, win)
-fn rt_env_match(a, d, win) = let c = load8(a) in if c == 0 then (if load8(d) == 61 then d + 1 else 0) else let x = load8(d) in if x == c or (win == 1 and rt_up(x) == rt_up(c)) then rt_env_match(a + 1, d + 1, win) else 0
+fn rt_env_find(nm) =
+    if load8(nm) == 0 then
+        0
+    else
+        let e = rt_envp() in
+        if e == 0 then
+            0
+        else
+            rt_env_scan(e, nm, if load8(sym_addr(".Lrt_platform")) == 119 then 1 else 0)
+fn rt_env_scan(e, nm, win) =
+    let d = load64(e) in
+    if d == 0 then
+        0
+    else
+        let v = rt_env_match(nm, d, win) in
+        if v != 0 then
+            v
+        else
+            rt_env_scan(e + 8, nm, win)
+fn rt_env_match(a, d, win) =
+    let c = load8(a) in
+    if c == 0 then
+        (if load8(d) == 61 then d + 1 else 0)
+    else
+        let x = load8(d) in
+        if x == c or win == 1 and rt_up(x) == rt_up(c) then
+            rt_env_match(a + 1, d + 1, win)
+        else
+            0
 fn os_getenv(name) = let v = rt_env_find(__rt_cstr(name)) in if v == 0 then 2 else mkstr(v)
 fn os_env_has(name) = mkint(if rt_env_find(__rt_cstr(name)) == 0 then 0 else 1)
 
 ## field i of uname (0 sysname, 1 nodename, 2 release, 3 version, 4 machine), "" when i is out of range
-fn os_uname_field(i) = let k = rt_int(i) in let b = __lume_alloc_a(400) in if k < 0 or k > 4 then 2 else if sys_call(63, b, 0, 0, 0, 0) < 0 then 2 else let p = b + 65 * k in let z = store8(p + 64, 0) in mkstr(p)
+fn os_uname_field(i) =
+    let k = rt_int(i) in
+    let b = __lume_alloc_a(400) in
+    if k < 0 or k > 4 then
+        2
+    else if sys_call(63, b, 0, 0, 0, 0) < 0 then
+        2
+    else
+        let p = b + 65 * k in
+        let z = store8(p + 64, 0) in
+        mkstr(p)
 
 ## set (or, with unset = 1, remove) a variable: a new table in an anonymous mapping holds every other entry, then
 ## "NAME=value" (not when removing), and becomes .Lrt_envp_ovr; children started afterwards get it. A name that is
@@ -139,40 +543,156 @@ fn os_setenv(name, value) = rt_setenv(name, value, 0)
 fn os_unsetenv(name) = rt_setenv(name, name, 1)
 fn rt_has_eq(n, i) = let c = load8(n + i) in if c == 0 then 0 else if c == 61 then 1 else rt_has_eq(n, i + 1)
 fn rt_env_count(e, i) = if load64(e + 8 * i) == 0 then i else rt_env_count(e, i + 1)
-fn rt_env_keep(e, n, t, i, cnt, d) = if i >= cnt then d else let x = load64(e + 8 * i) in if rt_env_match(n, x, 0) != 0 then rt_env_keep(e, n, t, i + 1, cnt, d) else let w = store64(t + 8 * d, x) in rt_env_keep(e, n, t, i + 1, cnt, d + 1)
-fn rt_setenv(name, value, unset) = let n = __rt_cstr(name) in let v = __rt_cstr(value) in if load8(n) == 0 or rt_has_eq(n, 0) == 1 then mkint(0) else let e = rt_envp() in let cnt = if e == 0 then 0 else rt_env_count(e, 0) in let ln = strlen(n) in let lv = strlen(v) in let t = sys_call(9, 0, 8 * (cnt + 2) + ln + lv + 2, 3, 34, 0 - 1) in if t < 0 then mkint(0) else let ent = t + 8 * (cnt + 2) in let c1 = rt_copyn(ent, n, 0, ln) in let q = store8(ent + ln, 61) in let c2 = rt_copyn(ent + ln + 1, v, 0, lv + 1) in rt_setenv_fill(e, n, t, ent, cnt, unset)
+fn rt_env_keep(e, n, t, i, cnt, d) =
+    if i >= cnt then
+        d
+    else
+        let x = load64(e + 8 * i) in
+        if rt_env_match(n, x, 0) != 0 then
+            rt_env_keep(e, n, t, i + 1, cnt, d)
+        else
+            let w = store64(t + 8 * d, x) in
+            rt_env_keep(e, n, t, i + 1, cnt, d + 1)
+fn rt_setenv(name, value, unset) =
+    let n = __rt_cstr(name) in
+    let v = __rt_cstr(value) in
+    if load8(n) == 0 or rt_has_eq(n, 0) == 1 then
+        mkint(0)
+    else
+        let e = rt_envp() in
+        let cnt = if e == 0 then 0 else rt_env_count(e, 0) in
+        let ln = strlen(n) in
+        let lv = strlen(v) in
+        let t = sys_call(9, 0, 8 * (cnt + 2) + ln + lv + 2, 3, 34, 0 - 1) in
+        if t < 0 then
+            mkint(0)
+        else
+            let ent = t + 8 * (cnt + 2) in
+            let c1 = rt_copyn(ent, n, 0, ln) in
+            let q = store8(ent + ln, 61) in
+            let c2 = rt_copyn(ent + ln + 1, v, 0, lv + 1) in
+            rt_setenv_fill(e, n, t, ent, cnt, unset)
 ## the new table at t: the kept entries, the new one at ent unless removing, the closing 0; then it is the environment
-fn rt_setenv_fill(e, n, t, ent, cnt, unset) = let k = rt_env_keep(e, n, t, 0, cnt, 0) in let k2 = if unset == 1 then k else (let w = store64(t + 8 * k, ent) in k + 1) in let z = store64(t + 8 * k2, 0) in let s = store64(sym_addr(".Lrt_envp_ovr"), t) in mkint(1)
+fn rt_setenv_fill(e, n, t, ent, cnt, unset) =
+    let k = rt_env_keep(e, n, t, 0, cnt, 0) in
+    let k2 = if unset == 1 then k else let w = store64(t + 8 * k, ent) in k + 1 in
+    let z = store64(t + 8 * k2, 0) in
+    let s = store64(sym_addr(".Lrt_envp_ovr"), t) in
+    mkint(1)
 
 ## --- owner-only files and the OS keychain (on Windows the layer answers the pseudo calls 1001 .. 1005: a protected
 ## DACL and the Credential Manager; on Linux they are ENOSYS, -38, and the POSIX path runs)
 ## 1 when the file belongs to this user and grants nothing to group or others (st_mode & 63 == 0), 0 when not, -1
 ## when it cannot be read; st_mode and st_uid are the two 32-bit words at offset 24 of struct stat
-fn fs_is_private(path) = let p = __rt_cstr(path) in let r = sys_call(1005, p, 0, 0, 0, 0) in if r != 0 - 38 then mkint(if r < 0 then 0 - 1 else r) else let st = __lume_alloc_a(160) in if sys_call(4, p, st, 0, 0, 0) < 0 then mkint(0 - 1) else let w = load64(st + 24) in let uid = bit_and(bit_shr(w, 32), 4294967295) in mkint(if uid == sys_call(102, 0, 0, 0, 0, 0) and bit_and(w, 63) == 0 then 1 else 0)
+fn fs_is_private(path) =
+    let p = __rt_cstr(path) in
+    let r = sys_call(1005, p, 0, 0, 0, 0) in
+    if r != 0 - 38 then
+        mkint(if r < 0 then 0 - 1 else r)
+    else
+        let st = __lume_alloc_a(160) in
+        if sys_call(4, p, st, 0, 0, 0) < 0 then
+            mkint(0 - 1)
+        else
+            let w = load64(st + 24) in
+            let uid = bit_and(bit_shr(w, 32), 4294967295) in
+            mkint(if uid == sys_call(102, 0, 0, 0, 0, 0) and bit_and(w, 63) == 0 then 1 else 0)
 ## create the file 0600 with O_EXCL, write n bytes at d, fsync, close: 1, -17 when it already exists, 0 on failure
 ## (a half-written file is unlinked)
-fn rt_fpv_put(p, d, n) = let fd = sys_call(2, p, 655553, 384, 0, 0) in if fd < 0 then (if fd == 0 - 17 then 0 - 17 else 0) else if rt_wloop(fd, d, n) == 0 then rt_fpv_fail(fd, p) else if sys_call(74, fd, 0, 0, 0, 0) < 0 then rt_fpv_fail(fd, p) else if sys_call(3, fd, 0, 0, 0, 0) < 0 then rt_fpv_unl(p) else 1
+fn rt_fpv_put(p, d, n) =
+    let fd = sys_call(2, p, 655553, 384, 0, 0) in
+    if fd < 0 then
+        (if fd == 0 - 17 then 0 - 17 else 0)
+    else if rt_wloop(fd, d, n) == 0 then
+        rt_fpv_fail(fd, p)
+    else if sys_call(74, fd, 0, 0, 0, 0) < 0 then
+        rt_fpv_fail(fd, p)
+    else if sys_call(3, fd, 0, 0, 0, 0) < 0 then
+        rt_fpv_unl(p)
+    else
+        1
 fn rt_fpv_fail(fd, p) = let c = sys_call(3, fd, 0, 0, 0, 0) in rt_fpv_unl(p)
 fn rt_fpv_unl(p) = let u = sys_call(87, p, 0, 0, 0, 0) in 0
 ## a new owner-only file with the string data: 1, or 0 (also when it already exists)
-fn fs_create_private(path, data) = let p = __rt_cstr(path) in let n = rt_slen(data) in let d = rt_sptr(data, __lume_alloc_a(8)) in let r = rt_fpv_put(p, d, n) in mkint(if r < 0 then 0 else r)
+fn fs_create_private(path, data) =
+    let p = __rt_cstr(path) in
+    let n = rt_slen(data) in
+    let d = rt_sptr(data, __lume_alloc_a(8)) in
+    let r = rt_fpv_put(p, d, n) in
+    mkint(if r < 0 then 0 else r)
 ## replace the file atomically with an owner-only one: written to path.~<16 hex digits of the pid>, then renamed
-fn fs_write_private(path, data) = let p = __rt_cstr(path) in let ln = strlen(p) in let t = __lume_alloc_a(ln + 32) in let c = rt_copyn(t, p, 0, ln) in let a = store8(t + ln, 46) in let b = store8(t + ln + 1, 126) in let h = rt_hex16(t + ln + 2, sys_call(39, 0, 0, 0, 0, 0), 15) in let z = store8(t + ln + 18, 0) in let n = rt_slen(data) in let d = rt_sptr(data, __lume_alloc_a(8)) in rt_fwp_go(p, t, d, n)
-fn rt_fwp_go(p, t, d, n) = let r0 = rt_fpv_put(t, d, n) in let r = if r0 == 0 - 17 then (let u = sys_call(87, t, 0, 0, 0, 0) in rt_fpv_put(t, d, n)) else r0 in if r != 1 then mkint(0) else if sys_call(82, t, p, 0, 0, 0) < 0 then mkint(rt_fpv_unl(t)) else mkint(1)
+fn fs_write_private(path, data) =
+    let p = __rt_cstr(path) in
+    let ln = strlen(p) in
+    let t = __lume_alloc_a(ln + 32) in
+    let c = rt_copyn(t, p, 0, ln) in
+    let a = store8(t + ln, 46) in
+    let b = store8(t + ln + 1, 126) in
+    let h = rt_hex16(t + ln + 2, sys_call(39, 0, 0, 0, 0, 0), 15) in
+    let z = store8(t + ln + 18, 0) in
+    let n = rt_slen(data) in
+    let d = rt_sptr(data, __lume_alloc_a(8)) in
+    rt_fwp_go(p, t, d, n)
+fn rt_fwp_go(p, t, d, n) =
+    let r0 = rt_fpv_put(t, d, n) in
+    let r = if r0 == 0 - 17 then let u = sys_call(87, t, 0, 0, 0, 0) in rt_fpv_put(t, d, n) else r0 in
+    if r != 1 then
+        mkint(0)
+    else if sys_call(82, t, p, 0, 0, 0) < 0 then
+        mkint(rt_fpv_unl(t))
+    else
+        mkint(1)
 ## the 16 lowercase hex digits of v, most significant first, at b
-fn rt_hex16(b, v, i) = if i < 0 then 0 else let dg = bit_and(v, 15) in let w = store8(b + i, if dg < 10 then 48 + dg else 87 + dg) in rt_hex16(b, bit_shr(v, 4), i - 1)
+fn rt_hex16(b, v, i) =
+    if i < 0 then
+        0
+    else
+        let dg = bit_and(v, 15) in
+        let w = store8(b + i, if dg < 10 then 48 + dg else 87 + dg) in
+        rt_hex16(b, bit_shr(v, 4), i - 1)
 ## a directory 0700; one that already exists is opened as a directory and set to 0700: 1, else 0
-fn fs_mkdir_private(path) = let p = __rt_cstr(path) in let r = sys_call(83, p, 448, 0, 0, 0) in if r >= 0 then mkint(1) else if r != 0 - 17 then mkint(0) else let fd = sys_call(2, p, 65536, 0, 0, 0) in if fd < 0 then mkint(0) else let c = sys_call(3, fd, 0, 0, 0, 0) in rt_fs_ok(sys_call(90, p, 448, 0, 0, 0))
+fn fs_mkdir_private(path) =
+    let p = __rt_cstr(path) in
+    let r = sys_call(83, p, 448, 0, 0, 0) in
+    if r >= 0 then
+        mkint(1)
+    else if r != 0 - 17 then
+        mkint(0)
+    else
+        let fd = sys_call(2, p, 65536, 0, 0, 0) in
+        if fd < 0 then
+            mkint(0)
+        else
+            let c = sys_call(3, fd, 0, 0, 0, 0) in
+            rt_fs_ok(sys_call(90, p, 448, 0, 0, 0))
 fn os_keychain_available() = mkint(if sys_call(1004, 0, 0, 0, 0, 0) == 0 then 1 else 0)
 ## 1 when stored, else the negative error of the store (-38: no OS keychain here; Windows: -(100000 + Win32 error))
-fn os_keychain_put(name, secret) = let p = __rt_cstr(name) in let n = rt_slen(secret) in let d = rt_sptr(secret, __lume_alloc_a(8)) in let r = sys_call(1001, p, d, n, 0, 0) in mkint(if r == 0 then 1 else r)
+fn os_keychain_put(name, secret) =
+    let p = __rt_cstr(name) in
+    let n = rt_slen(secret) in
+    let d = rt_sptr(secret, __lume_alloc_a(8)) in
+    let r = sys_call(1001, p, d, n, 0, 0) in
+    mkint(if r == 0 then 1 else r)
 ## "+" followed by the secret (the leading byte tells an empty secret apart); "" only when there is no such entry
 ## (ENOENT; Windows ERROR_NOT_FOUND); "-" followed by the decimal error number for any other failure, so a denied,
 ## locked or unavailable store is never mistaken for an absent secret
-fn os_keychain_get(name) = let p = __rt_cstr(name) in let b = __lume_alloc_a(2568) in let r = sys_call(1002, p, b + 1, 2560, 0, 0) in if r == 0 - 2 then __rt_mkstrn(b, 0) else if r < 0 then (let a = store8(b, 45) in __rt_mkstrn(b, 1 + rt_utoa(b + 1, 0 - r))) else let a = store8(b, 43) in __rt_mkstrn(b, r + 1)
+fn os_keychain_get(name) =
+    let p = __rt_cstr(name) in
+    let b = __lume_alloc_a(2568) in
+    let r = sys_call(1002, p, b + 1, 2560, 0, 0) in
+    if r == 0 - 2 then
+        __rt_mkstrn(b, 0)
+    else if r < 0 then
+        let a = store8(b, 45) in
+        __rt_mkstrn(b, 1 + rt_utoa(b + 1, 0 - r))
+    else
+        let a = store8(b, 43) in
+        __rt_mkstrn(b, r + 1)
 ## the decimal digits of v >= 0 at b: their count
 fn rt_utoa(b, v) = let n = rt_ndig(v, 1) in let w = rt_utoa_go(b, v, n - 1) in n
 fn rt_ndig(v, n) = if v < 10 then n else rt_ndig(v / 10, n + 1)
 fn rt_utoa_go(b, v, i) = let w = store8(b + i, 48 + v % 10) in if i <= 0 then 0 else rt_utoa_go(b, v / 10, i - 1)
 ## 1 when removed, 0 when there was no such entry, else the negative error of the store
-fn os_keychain_delete(name) = let r = sys_call(1003, __rt_cstr(name), 0, 0, 0, 0) in mkint(if r == 0 then 1 else if r == 0 - 2 then 0 else r)
+fn os_keychain_delete(name) =
+    let r = sys_call(1003, __rt_cstr(name), 0, 0, 0, 0) in
+    mkint(if r == 0 then 1 else if r == 0 - 2 then 0 else r)

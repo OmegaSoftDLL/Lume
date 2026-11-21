@@ -1,0 +1,59 @@
+## json_and_test_ok.src -- the machine-readable diagnostics every `--json` command shares, and `lume test --filter`,
+## `--jobs` and several files at once. Each test writes its fixture under build/ (run from the repository root, as
+## tests/prove/prove_spans_ok.src), runs the driver of this toolchain and checks the real output: the diagnostic is the
+## compiler's own (code, file, line, column, fix-it of the real analysis), never a canned string.
+use hostio
+
+fn jt_drv() = let d = hio_bin_dir(".") in if fs_path_exists(hio_exe_path(d + "/lume_driver")) == 1 then hio_exe_path(d + "/lume_driver") else hio_exe_path(d + "/lume")
+fn jt_exit(raw) = if raw < 0 or raw % 256 == 127 then 1 else if raw % 256 == 0 then raw / 256 else 128 + raw % 128
+fn jt_src(name, text) = let p = "build/jt_" + name + ".src" in let w = fs_write_sync(p, text) in p
+fn jt_rm(p) = if fs_path_exists(p) == 1 then fs_remove(p) else 1
+## what `lume build -o <out>` leaves next to its output (bundle, map, assembly, error logs)
+fn jt_rm_build(out) = let a = jt_rm(out + ".bundled.src") in let b = jt_rm(out + ".bundled.map") in let c = jt_rm(out + ".s") in let d = jt_rm(out + ".compile.err") in let e = jt_rm(out + ".assemble.err") in jt_rm(out + ".lsym")
+## run the driver: {rc, out, err}
+fn jt_run(name, args) = let o = "build/jt_" + name + ".out" in let e = "build/jt_" + name + ".err" in let st = hio_osrun_ct(jt_drv(), args, o, e, 600000) in let r = {rc: jt_exit(st), out: fs_read_file(o), err: fs_read_file(e)} in let z1 = jt_rm(o) in let z2 = jt_rm(e) in r
+fn jt_has_at(s, p, i) = if i + count(p) > count(s) then 0 else if slice(s, i, i + count(p)) == p then 1 else jt_has_at(s, p, i + 1)
+fn jt_has(s, p) = jt_has_at(s, p, 0) == 1
+fn jt_count_at(s, p, i, acc) = if i + count(p) > count(s) then acc else if slice(s, i, i + count(p)) == p then jt_count_at(s, p, i + count(p), acc + 1) else jt_count_at(s, p, i + 1, acc)
+fn jt_count(s, p) = jt_count_at(s, p, 0, 0)
+
+## a structural JSON check: one value, brackets balanced outside strings, legal escapes, nothing after it but blanks
+fn jt_ws(c) = c == " " or c == "\n" or c == "\r" or c == "\t"
+fn jt_scan(s, i, depth, instr) = if i >= count(s) then (if depth == 0 and instr == 0 then 1 else 0) else let c = at(s, i) in if instr == 1 then (if c == "\\" then (if i + 1 < count(s) and jt_has("\"\\/bfnrtu", at(s, i + 1)) then jt_scan(s, i + 2, depth, 1) else 0) else if ord(c) < 32 then 0 else if c == "\"" then jt_scan(s, i + 1, depth, 0) else jt_scan(s, i + 1, depth, 1)) else if depth == 0 and i > 0 then (if jt_ws(c) then jt_scan(s, i + 1, 0, 0) else 0) else if c == "\"" then jt_scan(s, i + 1, depth, 1) else if c == "{" or c == "[" then jt_scan(s, i + 1, depth + 1, 0) else if c == "}" or c == "]" then (if depth <= 0 then 0 else jt_scan(s, i + 1, depth - 1, 0)) else jt_scan(s, i + 1, depth, 0)
+fn jt_json(s) = count(s) > 1 and at(s, 0) == "{" and jt_scan(s, 0, 0, 0) == 1
+
+fn jt_undefined() = "fn f(x) = y + 1\nprint f(1)\n"
+fn jt_tests() = "fn add(a, b) = a + b\nfn test_add_small() = add(1, 2) == 3\nfn test_wrong() = add(2, 2) == 5\nfn test_abort() = ctfail(\"boom\\n\") == 1\nfn test_add_big() = add(1000000, 1) == 1000001\nfn test_other() = 2 * 3 == 6\n"
+
+## --- the shared diagnostics shape ---
+fn test_json_check_reports_the_compiler_diagnostic() = let p = jt_src("chk", jt_undefined()) in let r = jt_run("chk", Cons("check", Cons("--json", Cons(p, Nil)))) in let z = jt_rm(p) in r.rc == 3 and jt_json(r.out) and jt_has(r.out, "{\"ok\":false,\"diagnostics\":[{\"code\":\"R0200\",\"severity\":\"error\"") and jt_has(r.out, "\"file\":\"build/jt_chk.src\",\"line\":1,\"col\":11,\"fix\":\"bind 'y' or correct its spelling\"")
+fn test_json_check_success_prints_ok() = let p = jt_src("chk_ok", "fn f(x) = x + 1\nprint f(1)\n") in let r = jt_run("chk_ok", Cons("check", Cons("--json", Cons(p, Nil)))) in let z = jt_rm(p) in r.rc == 0 and jt_json(r.out) and jt_has(r.out, "{\"ok\":true,\"diagnostics\":[]")
+fn test_json_build_error() = let p = jt_src("bld", jt_undefined()) in let r = jt_run("bld", Cons("build", Cons("--json", Cons(p, Cons("-o", Cons("build/jt_bld.bin", Nil)))))) in let z = jt_rm(p) in let zb = jt_rm_build("build/jt_bld.bin") in r.rc == 3 and jt_json(r.out) and jt_has(r.out, "{\"ok\":false,\"diagnostics\":[{\"code\":\"R0200\"") and jt_has(r.out, "\"file\":\"build/jt_bld.src\",\"line\":1,\"col\":11") and fs_path_exists("build/jt_bld.bin") == 0
+fn test_json_build_success() = let p = jt_src("bok", "print 6 * 7\n") in let r = jt_run("bok", Cons("build", Cons("--json", Cons(p, Cons("-o", Cons("build/jt_bok.bin", Nil)))))) in let made = fs_path_exists(hio_exe_path("build/jt_bok.bin")) in let z = jt_rm(p) in let z2 = jt_rm(hio_exe_path("build/jt_bok.bin")) in let zb = jt_rm_build("build/jt_bok.bin") in r.rc == 0 and made == 1 and jt_json(r.out) and jt_has(r.out, "{\"ok\":true,\"diagnostics\":[],\"source\":\"build/jt_bok.src\",\"output\":\"build/jt_bok.bin\",\"exit\":0")
+## a parse error carries the concrete fix-it of the message, not the generic one
+fn test_json_run_parse_error_fix() = let p = jt_src("runp", "fn f(x) = x +\nprint f(1)\n") in let r = jt_run("runp", Cons("run", Cons("--json", Cons(p, Nil)))) in let z = jt_rm(p) in r.rc == 3 and jt_json(r.out) and jt_has(r.out, "\"code\":\"P0003\"") and jt_has(r.out, "\"file\":\"build/jt_runp.src\",\"line\":2,\"col\":7,\"fix\":\"put an operator between the two expressions, or move 'f' to its own line\"")
+fn test_json_run_captures_the_program() = let p = jt_src("run", "print \"hi\"\nprint os_arg_at(1)\nprint 1 + 2\n") in let r = jt_run("run", Cons("run", Cons("--json", Cons(p, Cons("arg-one", Nil))))) in let z = jt_rm(p) in r.rc == 0 and jt_json(r.out) and jt_has(r.out, "{\"ok\":true,\"diagnostics\":[],\"exit\":0,") and jt_has(r.out, "\"stdout\":\"hi\\narg-one\\n3\\n\"")
+fn test_json_run_exit_status() = let p = jt_src("runx", "print \"before\"\nos_exit(7)\n") in let r = jt_run("runx", Cons("run", Cons("--json", Cons(p, Nil)))) in let z = jt_rm(p) in r.rc == 7 and jt_json(r.out) and jt_has(r.out, "{\"ok\":false,\"diagnostics\":[],\"exit\":7,")
+
+## --- lume test --json ---
+fn test_json_test_results() = let p = jt_src("tj", jt_tests()) in let r = jt_run("tj", Cons("test", Cons("--json", Cons(p, Nil)))) in let z = jt_rm(p) in r.rc == 3 and jt_json(r.out) and jt_has(r.out, "{\"ok\":false,\"diagnostics\":[],\"tests\":[{\"file\":\"build/jt_tj.src\",\"name\":\"test_add_small\",\"status\":\"ok\",\"ms\":") and jt_has(r.out, "\"name\":\"test_wrong\",\"status\":\"fail\",\"ms\":") and jt_has(r.out, "\"message\":\"the test returned false\"") and jt_has(r.out, "\"name\":\"test_abort\",\"status\":\"fail\"") and jt_has(r.out, "\"message\":\"aborted: boom\"") and jt_has(r.out, "\"passed\":3,\"failed\":2,") and jt_count(r.out, "\"status\":") == 5
+fn test_json_test_compile_error() = let p = jt_src("tjc", "fn test_one() = 1 == 1\nfn test_two() = y + 1 == 2\n") in let r = jt_run("tjc", Cons("test", Cons("--json", Cons(p, Nil)))) in let z = jt_rm(p) in r.rc == 3 and jt_json(r.out) and jt_has(r.out, "{\"ok\":false,\"diagnostics\":[{\"code\":\"R0200\"") and jt_has(r.out, "\"file\":\"build/jt_tjc.src\",\"line\":2,\"col\":17") and jt_has(r.out, "\"tests\":[]")
+
+## --- --filter ---
+fn test_filter_runs_only_matching_tests() = let p = jt_src("tf", jt_tests()) in let r = jt_run("tf", Cons("test", Cons("--filter", Cons("add", Cons(p, Nil))))) in let z = jt_rm(p) in r.rc == 0 and r.out == "  ok   test_add_small\n  ok   test_add_big\n2 passed, 0 failed\n"
+fn test_filter_equals_form_and_failures() = let p = jt_src("tf2", jt_tests()) in let r = jt_run("tf2", Cons("test", Cons("--filter=wrong", Cons(p, Nil)))) in let z = jt_rm(p) in r.rc == 3 and r.out == "  FAIL test_wrong\n0 passed, 1 failed\n" and jt_has(r.err, "lume test: failed")
+fn test_filter_matching_nothing_is_an_error() = let p = jt_src("tf3", jt_tests()) in let r = jt_run("tf3", Cons("test", Cons("--filter", Cons("nosuchtest", Cons(p, Nil))))) in let z = jt_rm(p) in r.rc != 0 and jt_has(r.err, "no test function name contains 'nosuchtest'")
+fn test_filter_over_files_skips_files_without_a_match() = let a = jt_src("tfa", jt_tests()) in let b = jt_src("tfb", "fn test_unrelated() = 1 == 1\n") in let r = jt_run("tfm", Cons("test", Cons("--filter", Cons("other", Cons(a, Cons(b, Nil)))))) in let z = jt_rm(a) in let z2 = jt_rm(b) in r.rc == 0 and r.out == "  ok   test_other\n1 passed, 0 failed\n"
+
+## --- --jobs: the same report as a serial run, in source order ---
+fn test_jobs_output_equals_serial() = let p = jt_src("tp", jt_tests()) in let s = jt_run("tp1", Cons("test", Cons(p, Nil))) in let j = jt_run("tp4", Cons("test", Cons("--jobs", Cons("4", Cons(p, Nil))))) in let z = jt_rm(p) in s.rc == 3 and j.rc == 3 and s.out == j.out and s.out == "  ok   test_add_small\n  FAIL test_wrong\n  FAIL test_abort (aborted: boom)\n  ok   test_add_big\n  ok   test_other\n3 passed, 2 failed\n" and jt_has(j.err, "lume test: failed")
+fn test_jobs_json_keeps_source_order() = let p = jt_src("tpj", jt_tests()) in let r = jt_run("tpj", Cons("test", Cons("--json", Cons("--jobs=3", Cons(p, Nil))))) in let z = jt_rm(p) in r.rc == 3 and jt_json(r.out) and jt_has(r.out, "\"jobs\":3,") and jt_has(r.out, "\"name\":\"test_add_small\",\"status\":\"ok\",\"ms\":") and jt_has(r.out, "\"passed\":3,\"failed\":2,") and jt_order(r.out, Cons("test_add_small", Cons("test_wrong", Cons("test_abort", Cons("test_add_big", Cons("test_other", Nil))))), 0)
+fn jt_find(s, p, i) = if i + count(p) > count(s) then 0 - 1 else if slice(s, i, i + count(p)) == p then i else jt_find(s, p, i + 1)
+fn jt_order(s, names, from) = match names
+    Nil        => 1 == 1
+    Cons(h, t) => let k = jt_find(s, "\"name\":\"" + h + "\"", from) in k >= 0 and jt_order(s, t, k + 1)
+fn test_jobs_several_files_equal_serial() = let a = jt_src("tma", jt_tests()) in let b = jt_src("tmb", "fn test_b_one() = 1 + 1 == 2\nfn test_b_two() = 3 > 2\n") in let c = jt_src("tmc", "fn test_c_fail() = 1 == 2\n") in let fs = Cons(a, Cons(b, Cons(c, Nil))) in let s = jt_run("tms", Cons("test", fs)) in let j = jt_run("tmj", Cons("test", Cons("--jobs", Cons("3", fs)))) in let z = jt_rm(a) in let z2 = jt_rm(b) in let z3 = jt_rm(c) in s.rc == 1 and j.rc == 1 and s.out == j.out and jt_has(s.out, "2 passed, 0 failed\n  FAIL test_c_fail\n0 passed, 1 failed\n")
+fn test_jobs_json_several_files() = let a = jt_src("tja", jt_tests()) in let b = jt_src("tjb", "fn test_b_one() = 1 + 1 == 2\n") in let r = jt_run("tjm", Cons("test", Cons("--json", Cons("--jobs", Cons("2", Cons(a, Cons(b, Nil))))))) in let z = jt_rm(a) in let z2 = jt_rm(b) in r.rc == 1 and jt_json(r.out) and jt_has(r.out, "\"passed\":4,\"failed\":2,") and jt_has(r.out, "\"files\":[{\"file\":\"build/jt_tja.src\",\"ok\":false,\"exit\":3,\"tests\":5},{\"file\":\"build/jt_tjb.src\",\"ok\":true,\"exit\":0,\"tests\":1}]")
+
+## --- verify --json ---
+fn test_json_verify_failed_file_diagnostics() = let p = jt_src("vf", jt_undefined()) in let r = jt_run("vf", Cons("verify", Cons("--json", Cons("--jobs", Cons("1", Cons(p, Nil)))))) in let z = jt_rm(p) in r.rc == 1 and jt_json(r.out) and jt_has(r.out, "{\"ok\":false,\"diagnostics\":[{\"code\":\"R0200\"") and jt_has(r.out, "\"files\":[{\"file\":\"build/jt_vf.src\",\"status\":\"fail\"") and jt_has(r.out, "\"passed\":0,\"failed\":1,")

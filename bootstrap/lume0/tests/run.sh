@@ -457,18 +457,22 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     # #404: real memory management -- heap observability, scoped arenas, heap cap.
     # the guarantees that span several front-ends have their own Lume gates
     # the gates start build/bin/lumec themselves: LUME_BIN_DIR (exported above for the probes) must name that directory
-    for gate in ownership_gate runtime_sync_gate gc_gate; do
-        if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/harness/$gate.src -o ../../build/bin/$gate 2>"$ntmp/$gate.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/$gate >"$ntmp/$gate.out" 2>>"$ntmp/$gate.err"; then ok "$(cat "$ntmp/$gate.out")"; else bad "$gate"; tail -3 "$ntmp/$gate.err"; fi
+    for gate in ownership_gate runtime_sync_gate gc_gate raw_abi_gate builtins_gate; do
+        if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/harness/$gate.src -o ../../build/bin/$gate 2>"$ntmp/$gate.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/$gate >"$ntmp/$gate.out" 2>>"$ntmp/$gate.err"; then ok "$(cat "$ntmp/$gate.out")"; else bad "$gate"; tail -n 3 "$ntmp/$gate.err"; fi
     done
     # every documented builtin called once (a builtin missing from a release fails to compile here), on every platform
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/builtins_regress_ok.src >"$ntmp/breg.out" 2>"$ntmp/breg.err"
-    if grep -q " passed, 0 failed" "$ntmp/breg.out"; then ok "builtins regression: every documented builtin family answers as the reference says (builtins_regress_ok.src)"; else bad "builtins regression (builtins_regress_ok.src)"; tail -8 "$ntmp/breg.out" "$ntmp/breg.err"; fi
+    if grep -q " passed, 0 failed" "$ntmp/breg.out"; then ok "builtins regression: every documented builtin family answers as the reference says (builtins_regress_ok.src)"; else bad "builtins regression (builtins_regress_ok.src)"; tail -n 8 "$ntmp/breg.out" "$ntmp/breg.err"; fi
+    # the reader, checker and generator of the builtins table (builtins_gate above runs the check on the tree)
+    # three of its tests run lumec: LUME_BIN_DIR must name the built toolchain, as for the gates above
+    LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../lume test ../../tests/harness/builtins_sync_ok.src >"$ntmp/bsync.out" 2>"$ntmp/bsync.err"
+    if grep -q " passed, 0 failed" "$ntmp/bsync.out"; then ok "builtins table: reader, checker and generator (builtins_sync_ok.src)"; else bad "builtins table (builtins_sync_ok.src)"; tail -n 8 "$ntmp/bsync.out" "$ntmp/bsync.err"; fi
     # bit writing for entropy coders against a bit-by-bit reference
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/bits_ok.src >"$ntmp/bits.out" 2>"$ntmp/bits.err"
-    if grep -q " passed, 0 failed" "$ntmp/bits.out"; then ok "buf_bits_write / read / ue / se (bits_ok.src)"; else bad "bit writing (bits_ok.src)"; tail -8 "$ntmp/bits.out" "$ntmp/bits.err"; fi
+    if grep -q " passed, 0 failed" "$ntmp/bits.out"; then ok "buf_bits_write / read / ue / se (bits_ok.src)"; else bad "bit writing (bits_ok.src)"; tail -n 8 "$ntmp/bits.out" "$ntmp/bits.err"; fi
     # floating point in the language: f64 parameters take 3.0, use math, f32 rounding and buffers
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/math_ok.src >"$ntmp/math.out" 2>"$ntmp/math.err"
-    if grep -q " passed, 0 failed" "$ntmp/math.out"; then ok "f64 parameters, use math, f32 rounding and f32 buffers (math_ok.src)"; else bad "use math (math_ok.src)"; tail -8 "$ntmp/math.out" "$ntmp/math.err"; fi
+    if grep -q " passed, 0 failed" "$ntmp/math.out"; then ok "f64 parameters, use math, f32 rounding and f32 buffers (math_ok.src)"; else bad "use math (math_ok.src)"; tail -n 8 "$ntmp/math.out" "$ntmp/math.err"; fi
     # deprecation: `## Deprecated: msg` above a function warns [W0005] where another module calls it, the program still runs
     mkdir -p "$ntmp/dep"
     cat > "$ntmp/dep/geo.src" <<'DEPGEO'
@@ -481,21 +485,21 @@ use geo
 print old_area(3, 4)
 DEPMAIN
     (cd "$ntmp/dep" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" run main.src >dep.out 2>dep.err)
-    if grep -qx "12" "$ntmp/dep/dep.out" && grep -q "W0005.*old_area.*module geo.*deprecated: use new_area" "$ntmp/dep/dep.err"; then ok "deprecation: [W0005] at a use from another module, the program unchanged"; else bad "deprecation warning [W0005]"; cat "$ntmp/dep/dep.out" "$ntmp/dep/dep.err" | tail -6; fi
+    if grep -qx "12" "$ntmp/dep/dep.out" && grep -q "W0005.*old_area.*module geo.*deprecated: use new_area" "$ntmp/dep/dep.err"; then ok "deprecation: [W0005] at a use from another module, the program unchanged"; else bad "deprecation warning [W0005]"; cat "$ntmp/dep/dep.out" "$ntmp/dep/dep.err" | tail -n 6; fi
     # lume run --profile: per-function counters written at exit (calls of fib(20) = 21891), the program output unchanged
     printf 'fn fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)\nprint fib(20)\n' > "$ntmp/prof_fib.src"
     (cd "$ntmp" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" run --profile prof_fib.src >prof.out 2>prof.err)
-    if grep -qx "6765" "$ntmp/prof.out" && grep -Eq " 21891 +0  fib$" "$ntmp/prof.err" && grep -q "^lume profile: " "$ntmp/prof.err" && [ ! -e "$ntmp/lume-profile.out" ]; then ok "lume run --profile: calls, self/total time and allocations per function"; else bad "lume run --profile"; cat "$ntmp/prof.out" "$ntmp/prof.err" | tail -8; fi
+    if grep -qx "6765" "$ntmp/prof.out" && grep -Eq " 21891 +0  fib$" "$ntmp/prof.err" && grep -q "^lume profile: " "$ntmp/prof.err" && [ ! -e "$ntmp/lume-profile.out" ]; then ok "lume run --profile: calls, self/total time and allocations per function"; else bad "lume run --profile"; cat "$ntmp/prof.out" "$ntmp/prof.err" | tail -n 8; fi
     # lume debug: a breakpoint, the call stack with arguments, a variable of an outer frame, finish with the result, and
     # a stop on a run-time error with that function's variables; the program's own output is unchanged
     printf 'fn fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)\nfn ratio(a, b) = a / b\nfn scale(k) = let base = 10 in ratio(base, k)\nprint fib(6)\nprint scale(2)\nprint scale(0)\n' > "$ntmp/dbg.src"
     (cd "$ntmp" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" debug -x "break fib" -x c -x c -x bt -x up -x "print n" -x delete -x finish -x c -x locals -x up -x locals -x c dbg.src >dbg.out 2>dbg.err); dbg_rc=$?
-    if [ "$dbg_rc" = 3 ] && [ "$(tr '\n' ' ' < "$ntmp/dbg.out")" = "8 5 " ] && grep -q "^debug: stopped at the start of fib (dbg.src:1), depth 2$" "$ntmp/dbg.err" && grep -q "^\* #0 fib(n=5) at dbg.src:1$" "$ntmp/dbg.err" && grep -q "^  #1 fib(n=6) at dbg.src:1$" "$ntmp/dbg.err" && grep -q "^  n = 6$" "$ntmp/dbg.err" && grep -q "^  result = 5$" "$ntmp/dbg.err" && grep -q "^debug: stopped on the error above, in ratio (dbg.src:2), depth 2$" "$ntmp/dbg.err" && grep -q "^  base = 10$" "$ntmp/dbg.err"; then ok "lume debug: breakpoints, bt with arguments, frames, finish, stop on a run-time error"; else bad "lume debug"; cat "$ntmp/dbg.out" "$ntmp/dbg.err" | tail -20; fi
+    if [ "$dbg_rc" = 3 ] && [ "$(tr '\n' ' ' < "$ntmp/dbg.out")" = "8 5 " ] && grep -q "^debug: stopped at the start of fib (dbg.src:1), depth 2$" "$ntmp/dbg.err" && grep -q "^\* #0 fib(n=5) at dbg.src:1$" "$ntmp/dbg.err" && grep -q "^  #1 fib(n=6) at dbg.src:1$" "$ntmp/dbg.err" && grep -q "^  n = 6$" "$ntmp/dbg.err" && grep -q "^  result = 5$" "$ntmp/dbg.err" && grep -q "^debug: stopped on the error above, in ratio (dbg.src:2), depth 2$" "$ntmp/dbg.err" && grep -q "^  base = 10$" "$ntmp/dbg.err"; then ok "lume debug: breakpoints, bt with arguments, frames, finish, stop on a run-time error"; else bad "lume debug"; cat "$ntmp/dbg.out" "$ntmp/dbg.err" | tail -n 20; fi
     # the factual reference: every example in docs/LUME_REFERENCE_{EN,PT_BR}.md gives the output written under it
-    if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/docs/ref_examples_gate.src -o ../../build/bin/ref_examples_gate 2>"$ntmp/refg.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/ref_examples_gate >"$ntmp/refg.out" 2>>"$ntmp/refg.err"; then ok "$(cat "$ntmp/refg.out")"; else bad "factual reference examples (ref_examples_gate)"; tail -12 "$ntmp/refg.err"; fi
+    if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/docs/ref_examples_gate.src -o ../../build/bin/ref_examples_gate 2>"$ntmp/refg.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/ref_examples_gate >"$ntmp/refg.out" 2>>"$ntmp/refg.err"; then ok "$(cat "$ntmp/refg.out")"; else bad "factual reference examples (ref_examples_gate)"; tail -n 12 "$ntmp/refg.err"; fi
     # the official examples: examples/topics pass lume test; every examples/diagnostics/CODE_*.bad reports CODE and its
     # .fixed.src passes (tests/docs/examples_gate.src)
-    if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/docs/examples_gate.src -o ../../build/bin/examples_gate 2>"$ntmp/exg.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/examples_gate >"$ntmp/exg.out" 2>>"$ntmp/exg.err"; then ok "$(cat "$ntmp/exg.out")"; else bad "official examples (examples_gate)"; tail -20 "$ntmp/exg.err"; fi
+    if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/docs/examples_gate.src -o ../../build/bin/examples_gate 2>"$ntmp/exg.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/examples_gate >"$ntmp/exg.out" 2>>"$ntmp/exg.err"; then ok "$(cat "$ntmp/exg.out")"; else bad "official examples (examples_gate)"; tail -n 20 "$ntmp/exg.err"; fi
     # run-time error: the call stack with file:line after the message (rt_trace)
     printf 'fn inner(b, i) = buf_get(b, i) + 1\nfn middle(b, i) = inner(b, i) * 2\nfn outer(n) = let b = buf_new(4) in middle(b, n) + 0\nprint outer(9)\n' >"$ntmp/stk.src"
     stk_rc=0; LUME_FL=off LUME_BIN_DIR="$ntmp" ../../lume run "$ntmp/stk.src" >/dev/null 2>"$ntmp/stk.err" || stk_rc=$?
@@ -520,7 +524,7 @@ DEPMAIN
       printf '{"seq":11,"type":"request","command":"disconnect"}\n'
     } > "$dw/req.txt"
     (cd "$dw" && LUME_BIN_DIR="$ntmp" timeout 300 "$OLDPWD/../../lume" debug --dap < req.txt > resp.txt 2> dap.err)
-    if grep -q '"verified":true,"line":2' "$dw/resp.txt" && grep -q '"name":"ratio(a=10, b=2)"' "$dw/resp.txt" && grep -q '{"name":"b","value":"2","variablesReference":0}' "$dw/resp.txt" && grep -q '"result":"10"' "$dw/resp.txt" && grep -q '"reason":"exception"' "$dw/resp.txt" && grep -q '"exitCode":3' "$dw/resp.txt" && grep -q '"output":"8\\n"' "$dw/resp.txt"; then ok "lume debug --dap: breakpoints, call stack, variables, evaluate, the stop on a run-time error and the exit code over DAP"; else bad "lume debug --dap"; tail -c 1500 "$dw/resp.txt"; cat "$dw/dap.err" | tail -3; fi
+    if grep -q '"verified":true,"line":2' "$dw/resp.txt" && grep -q '"name":"ratio(a=10, b=2)"' "$dw/resp.txt" && grep -q '{"name":"b","value":"2","variablesReference":0}' "$dw/resp.txt" && grep -q '"result":"10"' "$dw/resp.txt" && grep -q '"reason":"exception"' "$dw/resp.txt" && grep -q '"exitCode":3' "$dw/resp.txt" && grep -q '"output":"8\\n"' "$dw/resp.txt"; then ok "lume debug --dap: breakpoints, call stack, variables, evaluate, the stop on a run-time error and the exit code over DAP"; else bad "lume debug --dap"; tail -c 1500 "$dw/resp.txt"; cat "$dw/dap.err" | tail -n 3; fi
     # a build with the debugger is never cached: a plain build of the same source afterwards has no debugger in it
     (cd "$dw" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" build dbg.src -o plain > /dev/null 2>&1 && ./plain > plain.out 2> plain.err)
     if ! grep -q "debug: ready" "$dw/plain.err" && grep -q "^8$" "$dw/plain.out"; then ok "a debug build is never cached: the next plain lume build of the same source has no debugger"; else bad "debug build reused from the build cache"; head -3 "$dw/plain.err"; fi
@@ -535,7 +539,7 @@ DEPMAIN
     printf 'fn sq(x: int) -> int = x * x\nfn test_sq() = sq(3) == 9\n' > "$vw/good.src"
     printf 'fn bad(x: int) -> int ensures result > x = x\nfn test_bad() = bad(1) == 1\n' > "$vw/bad.src"
     (cd "$vw" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" verify good.src bad.src > v1.out 2>&1); (cd "$vw" && LUME_BIN_DIR="$ntmp" "$OLDPWD/../../lume" verify good.src > v2.out 2>&1)
-    if grep -q "^ok   good.src  (check [0-9]*\.[0-9]* s, test [0-9.]* s, prove [0-9.]* s, fmt [0-9.]* s, certify [0-9.]* s)$" "$vw/v1.out" && grep -q "^FAIL bad.src: check (exit" "$vw/v1.out" && grep -q "2 files: 1 passed" "$vw/v1.out" && grep -q "^ok   good.src  (check.*(cached)$" "$vw/v2.out"; then ok "lume verify: per-step times in each line, a failing step reported, a contract-free file passes, the cache answers the second run"; else bad "lume verify report"; cat "$vw/v1.out" "$vw/v2.out" | tail -8; fi
+    if grep -q "^ok   good.src  (check [0-9]*\.[0-9]* s, test [0-9.]* s, prove [0-9.]* s, fmt [0-9.]* s, certify [0-9.]* s)$" "$vw/v1.out" && grep -q "^FAIL bad.src: check (exit" "$vw/v1.out" && grep -q "2 files: 1 passed" "$vw/v1.out" && grep -q "^ok   good.src  (check.*(cached)$" "$vw/v2.out"; then ok "lume verify: per-step times in each line, a failing step reported, a contract-free file passes, the cache answers the second run"; else bad "lume verify report"; cat "$vw/v1.out" "$vw/v2.out" | tail -n 8; fi
     rm -rf "$vw"
     # [E0305]: an immediate copied into or out of a sent record stays with the sender (tests/runtime/linear_imm_ok.src)
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/runtime/linear_imm_ok.src 2>&1 | grep -q "2 passed, 0 failed"; then ok "[E0305] linear send: an int or bool copied into or out of the record stays with the sender"; else bad "[E0305] immediates copied around a linear send"; fi
@@ -545,7 +549,7 @@ DEPMAIN
     pw=$(mktemp -d); cp -r ../../tests/registry/pkgver/* "$pw/"
     LUME_BIN_DIR="$ntmp" ../../lume pkg publish "$pw/mathx_v1" --store="$pw/store" >/dev/null 2>&1; LUME_BIN_DIR="$ntmp" ../../lume pkg publish "$pw/mathx_v2" --store="$pw/store" >/dev/null 2>&1
     LUME_BIN_DIR="$ntmp" ../../lume pkg add mathx@^1.0 "$pw/app" >/dev/null 2>&1; LUME_BIN_DIR="$ntmp" ../../lume pkg install "$pw/app" --store="$pw/store" >/dev/null 2>&1
-    if grep -q "^mathx 1.2.0 " "$pw/app/lume.lock" && LUME_BIN_DIR="$ntmp" ../../lume test "$pw/app/app.src" 2>&1 | grep -q " passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume pkg verify "$pw/app" >/dev/null 2>&1; then ok "packages: publish versions, add ^1.0, install the highest match with its tests, lume.lock, use"; else bad "packages: publish / add / install / lock"; cat "$pw/app/lume.lock" 2>/dev/null | tail -3; fi
+    if grep -q "^mathx 1.2.0 " "$pw/app/lume.lock" && LUME_BIN_DIR="$ntmp" ../../lume test "$pw/app/app.src" 2>&1 | grep -q " passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume pkg verify "$pw/app" >/dev/null 2>&1; then ok "packages: publish versions, add ^1.0, install the highest match with its tests, lume.lock, use"; else bad "packages: publish / add / install / lock"; cat "$pw/app/lume.lock" 2>/dev/null | tail -n 3; fi
     rm -rf "$pw"
     # the resolver (dependencies of dependencies, conflicts), lume.lock honoured / --locked / --update, refused installs
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/registry/pkg_resolve_ok.src 2>&1 | grep -q " passed, 0 failed"; then ok "packages: transitive resolution, lume.lock honoured, --locked / --update, failing tests or proofs refuse the install"; else bad "packages: tests/registry/pkg_resolve_ok.src"; fi
@@ -556,19 +560,19 @@ DEPMAIN
     # builtin contracts known to the prover: buf_bits_write (p + n or -1), buf_get, buf_len, after a let or as the result
     LUME_BIN_DIR="$ntmp" ../../lume prove ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.json" 2>/dev/null || true
     LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/prove/builtin_contracts_ok.src >"$ntmp/bic.out" 2>&1 || true
-    if [ "$(grep -o '"status":"proven"' "$ntmp/bic.json" | wc -l)" -eq 4 ] && grep -q "2 passed, 0 failed" "$ntmp/bic.out"; then ok "prover: builtin contracts (buf_bits_write, buf_get, buf_len) prove 4/4"; else bad "prover: builtin contracts"; head -c 600 "$ntmp/bic.json"; tail -3 "$ntmp/bic.out"; fi
+    if [ "$(grep -o '"status":"proven"' "$ntmp/bic.json" | wc -l)" -eq 4 ] && grep -q "2 passed, 0 failed" "$ntmp/bic.out"; then ok "prover: builtin contracts (buf_bits_write, buf_get, buf_len) prove 4/4"; else bad "prover: builtin contracts"; head -c 600 "$ntmp/bic.json"; tail -n 3 "$ntmp/bic.out"; fi
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/gc_ok.src >"$ntmp/gc_ok.out" 2>"$ntmp/gc_ok.err"
-    if grep -q " passed, 0 failed" "$ntmp/gc_ok.out"; then ok "collector: live data survives forced collections, garbage is freed (gc_ok.src)"; else bad "collector: gc_ok.src"; tail -5 "$ntmp/gc_ok.out"; fi
+    if grep -q " passed, 0 failed" "$ntmp/gc_ok.out"; then ok "collector: live data survives forced collections, garbage is freed (gc_ok.src)"; else bad "collector: gc_ok.src"; tail -n 5 "$ntmp/gc_ok.out"; fi
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/gc_stress_ok.src -o "$ntmp/gc_stress_ok.elf" 2>"$ntmp/gcs_build.err"
     "$ntmp/gc_stress_ok.elf" >"$ntmp/gcs_plain.out" 2>&1; gcs0=$?
     LUME_GC_STRESS=3 "$ntmp/gc_stress_ok.elf" >"$ntmp/gcs_stress.out" 2>&1; gcs1=$?
-    if [ "$gcs0" = 0 ] && [ "$gcs1" = 0 ] && grep -q "^survivors ok$" "$ntmp/gcs_stress.out" && cmp -s "$ntmp/gcs_plain.out" "$ntmp/gcs_stress.out"; then ok "collector: same output when collecting every 3 allocations with freed memory poisoned"; else bad "collector: stress run diverged"; tail -3 "$ntmp/gcs_stress.out"; fi
+    if [ "$gcs0" = 0 ] && [ "$gcs1" = 0 ] && grep -q "^survivors ok$" "$ntmp/gcs_stress.out" && cmp -s "$ntmp/gcs_plain.out" "$ntmp/gcs_stress.out"; then ok "collector: same output when collecting every 3 allocations with freed memory poisoned"; else bad "collector: stress run diverged"; tail -n 3 "$ntmp/gcs_stress.out"; fi
     # the compact value representation and the compactor (docs/38-memory-management.md): zero-allocation hot paths
     # measured through heap_stats, 64-bit integers behind 63-bit immediates, cell sizes, pack/unpack, frozen arenas
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/atomic_compactor_ok.src -o "$ntmp/atomic_compactor_ok.elf" 2>"$ntmp/acmp_build.err"
     "$ntmp/atomic_compactor_ok.elf" >"$ntmp/acmp.out" 2>&1; acmp0=$?
     LUME_GC_STRESS=7 "$ntmp/atomic_compactor_ok.elf" >"$ntmp/acmp_stress.out" 2>&1; acmp1=$?
-    if [ "$acmp0" = 0 ] && diff -u ../../tests/memory/atomic_compactor_ok.expected "$ntmp/acmp.out" && [ "$acmp1" = 0 ] && [ "$(grep -v _bytes "$ntmp/acmp.out")" = "$(grep -v _bytes "$ntmp/acmp_stress.out")" ]; then ok "compactor: step 0 + levels 1, 2 and 3 hold together, also with a collection every 7 allocations"; else bad "compactor: atomic_compactor_ok.src"; tail -5 "$ntmp/acmp_build.err"; fi
+    if [ "$acmp0" = 0 ] && diff -u ../../tests/memory/atomic_compactor_ok.expected "$ntmp/acmp.out" && [ "$acmp1" = 0 ] && [ "$(grep -v _bytes "$ntmp/acmp.out")" = "$(grep -v _bytes "$ntmp/acmp_stress.out")" ]; then ok "compactor: step 0 + levels 1, 2 and 3 hold together, also with a collection every 7 allocations"; else bad "compactor: atomic_compactor_ok.src"; tail -n 5 "$ntmp/acmp_build.err"; fi
     acmpf=0
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/secret_pack_fail.src -o "$ntmp/acmp_sp.elf" >"$ntmp/acmp_sp.out" 2>"$ntmp/acmp_sp.err" && acmpf=1
     grep -q "\[C0009\]" "$ntmp/acmp_sp.err" || acmpf=1
@@ -584,7 +588,7 @@ DEPMAIN
     ../../lume unpack "$ntmp/acmp.lz" -o "$ntmp/acmp.src" >/dev/null 2>>"$ntmp/acmp_lz.err" || acmpf=1
     cmp -s ../../compiler/stage1/lumec.src "$ntmp/acmp.src" || acmpf=1
     [ "$(wc -c <"$ntmp/acmp.lz")" -lt "$(($(wc -c <../../compiler/stage1/lumec.src) / 2))" ] || acmpf=1
-    if [ "$acmpf" = 0 ]; then ok "compactor: a secret never reaches it ([C0009], secret arena), @bound rejects it ([V0002]), corrupt data stops"; else bad "compactor: fail-closed gates"; cat "$ntmp/acmp_sp.err" "$ntmp/acmp_bp.err" "$ntmp/acmp_sa.err" "$ntmp/acmp_pc.err" 2>/dev/null | tail -5; fi
+    if [ "$acmpf" = 0 ]; then ok "compactor: a secret never reaches it ([C0009], secret arena), @bound rejects it ([V0002]), corrupt data stops"; else bad "compactor: fail-closed gates"; cat "$ntmp/acmp_sp.err" "$ntmp/acmp_bp.err" "$ntmp/acmp_sa.err" "$ntmp/acmp_pc.err" 2>/dev/null | tail -n 5; fi
     # the same answers as when every value was a cell: digests of all operations over the boundary values of the word
     LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/memory/value_matrix_ok.src -o "$ntmp/value_matrix_ok.elf" 2>"$ntmp/vm_build.err"
     if "$ntmp/value_matrix_ok.elf" 2>&1 | diff -u ../../tests/memory/value_matrix_ok.expected - >"$ntmp/vm.diff"; then ok "values: every operation over the boundary values of the word gives the digests of the cell representation"; else bad "values: value_matrix_ok.src"; head -8 "$ntmp/vm.diff"; fi
@@ -600,7 +604,7 @@ DEPMAIN
     printf '.section .text\ndup:\n    ret\ndup:\n    ret\n.globl _start\n_start:\n    ret\n' >"$ntmp/dup.s"
     "$ntmp/lasm" --strict "$ntmp/dup.s" >"$ntmp/dup.elf" 2>"$ntmp/dup.err" && edgef=1
     grep -q "\[L0010\]" "$ntmp/dup.err" || edgef=1
-    if [ "$edgef" = 0 ]; then ok "values: chr out of 0..255 and count of a record stop, a label defined twice is a link error ([L0010])"; else bad "values: fail-closed edges"; cat "$ntmp/crf.err" "$ntmp/cr.err" "$ntmp/dup.err" 2>/dev/null | tail -5; fi
+    if [ "$edgef" = 0 ]; then ok "values: chr out of 0..255 and count of a record stop, a label defined twice is a link error ([L0010])"; else bad "values: fail-closed edges"; cat "$ntmp/crf.err" "$ntmp/cr.err" "$ntmp/dup.err" 2>/dev/null | tail -n 5; fi
     # these two measure the heap filling with records that are never read: record flattening would (rightly) remove
     # those allocations, so it is off for them
     LUME_FL=off LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/arena_ok.src >"$ntmp/arena_ok.out" 2>"$ntmp/arena_ok.err"
