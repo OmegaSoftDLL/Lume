@@ -2455,6 +2455,78 @@ fn rtc_cvblk(p, nc, maxc, op, pos, m) =
         let tz = rtc_hib(m) + 1 - tc in
         let p3 = rtc_cvtz(op, p2, nc, tc, tz, maxc) in
         rtc_cvres(rtc_cvrun(op, p3, m, tz, tc), tc)
+## --- the fast block coder: the same bits as rtc_cvblk when the stream has room for any block (rtc_cvroom bits
+## left), so no write checks the end; a code goes out in one sequential write of up to 32 bits (the bits after it in
+## its last byte become 0) and the levels are found by index, not by the highest-bit search ---
+fn rtc_cvroom() = 1344
+## n (0..32) bits of v (no higher bits set) at bit pos: the byte holding pos keeps its first pos & 7 bits, the next
+## (o + n + 7) / 8 - 1 bytes are written whole
+fn rtc_qput(op, pos, v, n) = rtc_qw(op + bit_shr(pos, 3), pos, v, n)
+## (leaf routines: the window w holds the kept bits of the first byte at bits 32..39 and the code below them)
+fn rtc_qw(a, pos, v, n) = rtc_qw2(a, pos + n, bit_and(pos, 7) + n, bit_or(bit_shl(bit_and(load8(a), bit_and(bit_shr(65280, bit_and(pos, 7)), 255)), 32), bit_shl(v, 40 - bit_and(pos, 7) - n)))
+fn rtc_qw2(a, r, e, w) =
+    let z = store8(a, bit_shr(w, 32)) + (if e > 8 then store8(a + 1, bit_shr(w, 24)) + (if e > 16 then store8(a + 2, bit_shr(w, 16)) + (if e > 24 then store8(a + 3, bit_shr(w, 8)) + (if e > 32 then store8(a + 4, w) else 0) else 0) else 0) else 0) in
+    r
+## one level (levelCode lc, suffixLength sl): prefix and suffix as one code, the escapes through rtc_cvesc
+fn rtc_qlev(op, pos, lc, sl) =
+    if sl == 0 then
+        (if lc < 14 then rtc_qput(op, pos, 1, lc + 1) else if lc < 30 then rtc_qput(op, pos, lc + 2, 19) else rtc_cvesc(op, pos, lc, 0, 15))
+    else if lc < bit_shl(15, sl) then
+        rtc_qput(op, pos, bit_shl(1, sl) + bit_and(lc, bit_shl(1, sl) - 1), bit_shr(lc, sl) + 1 + sl)
+    else
+        rtc_cvesc(op, pos, lc, sl, 15)
+## the coefficients from index i down to 0; st as in rtc_cvlevs
+fn rtc_qlevs(op, p, pos, i, st) =
+    if i < 0 or pos < 0 then
+        pos
+    else
+        let u = load8(p + 2 * i) + bit_shl(load8(p + 2 * i + 1), 8) in
+        let v = if u >= 32768 then u - 65536 else u in
+        if v == 0 then
+            rtc_qlevs(op, p, pos, i - 1, st)
+        else if bit_shr(st, 6) > 0 then
+            rtc_qlevs(op, p, rtc_qput(op, pos, if v < 0 then 1 else 0, 1), i - 1, st - 64)
+        else
+            let sl = bit_and(st, 7) in
+            let s1 = if sl == 0 then 1 else sl in
+            rtc_qlevs(op, p, rtc_qlev(op, pos, rtc_cvlc(v, st), sl), i - 1, bit_and(st, 48) + (if s1 < 6 and (if v < 0 then 0 - v else v) > bit_shl(3, s1 - 1) then s1 + 1 else s1))
+fn rtc_qrun(op, pos, m, zl, left) =
+    if zl <= 0 or left <= 1 or pos < 0 then
+        pos
+    else
+        let i = rtc_hib(m) in
+        let m2 = m - bit_shl(1, i) in
+        let run = i - rtc_hib(m2) - 1 in
+        let z = (if zl > 7 then 6 else zl - 1) * 16 + run in
+        rtc_qrun(op, rtc_qput(op, pos, rtc_cvt(1064 + z), rtc_cvt(952 + z)), m2, zl - run, left - 1)
+fn rtc_qtok(op, pos, nc, tc, t1) =
+    let x = tc * 4 + t1 in
+    if nc < 0 then
+        rtc_qput(op, pos, rtc_cvt(428 + x), rtc_cvt(408 + x))
+    else if nc >= 8 then
+        rtc_qput(op, pos, if tc == 0 then 3 else x - 4, 6)
+    else
+        let k = if nc < 2 then 0 else if nc < 4 then 68 else 136 in
+        rtc_qput(op, pos, rtc_cvt(204 + k + x), rtc_cvt(k + x))
+fn rtc_qtz(op, pos, nc, tc, tz, maxc) =
+    if tc >= maxc or tc == 0 then
+        pos
+    else if nc < 0 then
+        rtc_qput(op, pos, rtc_cvt(940 + (tc - 1) * 4 + tz), rtc_cvt(928 + (tc - 1) * 4 + tz))
+    else
+        rtc_qput(op, pos, rtc_cvt(688 + (tc - 1) * 16 + tz), rtc_cvt(448 + (tc - 1) * 16 + tz))
+fn rtc_qblk(p, nc, maxc, op, pos, m) =
+    if m == 0 then
+        rtc_cvres(rtc_qtok(op, pos, nc, 0, 0), 0)
+    else
+        let tc = rtc_pop16(m) in
+        let t1 = rtc_cvones(p, m, 0) in
+        let hi = rtc_hib(m) in
+        let p2 = rtc_qlevs(op, p, rtc_qtok(op, pos, nc, tc, t1), hi, t1 * 64 + t1 * 16 + 8 + (if tc > 10 and t1 < 3 then 1 else 0)) in
+        if p2 < 0 then
+            mkint(0 - 1)
+        else
+            rtc_cvres(rtc_qrun(op, rtc_qtz(op, p2, nc, tc, hi + 1 - tc, maxc), m, hi + 1 - tc, tc), tc)
 ## nc >= 4096 (nC + 4096) allows level_prefix above 15 (High profiles); plain nC keeps the stream Baseline-valid and
 ## answers -1 for a level that would need it (above 2063 with suffixLength 0 .. the 15-prefix escape range)
 fn rtc_cavlc(coef, ci, ncf, maxc, out, pos) = if ncf >= 4096 then rtc_cavlc2(coef, ci, ncf - 4096, maxc, out, pos, 1) else rtc_cavlc2(coef, ci, ncf, maxc, out, pos, 0)
@@ -2464,7 +2536,10 @@ fn rtc_cavlc2(coef, ci, nc, maxc, out, pos, hpf) =
     else
         let w = store32(sym_addr("__rtc_scratch") + 3960, rtc_len(out) * 8) in
         let hp = store32(sym_addr("__rtc_scratch") + 3964, hpf) in
-        rtc_cvblk(coef + 8 + ci, nc, maxc, out + 8, pos, rtc_cvmask(coef + 8 + ci, maxc))
+        if rtc_len(out) * 8 - pos >= rtc_cvroom() then
+            rtc_qblk(coef + 8 + ci, nc, maxc, out + 8, pos, rtc_cvmask(coef + 8 + ci, maxc))
+        else
+            rtc_cvblk(coef + 8 + ci, nc, maxc, out + 8, pos, rtc_cvmask(coef + 8 + ci, maxc))
 fn buf_h264_cavlc6(coef, ci, nc, maxc, out, pos) = rtc_cavlc(coef, rt_int(ci), rt_int(nc), rt_int(maxc), out, rt_int(pos))
 
 ## --- CAVLC of a whole macroblock (9.2.1 nC, 7.3.5.3 order) ---------------------------------------------------------------

@@ -2874,7 +2874,20 @@ fn rw_popn(n) = if n <= 0 then "" else "    popq " + rw_nth(rw_regs(), n - 1) + 
 fn rw_bigcall(g, args, env, st) = let n = rw_len(args) in let r = rw_push(args, env, st) in rw_r("    #rwbig\n" + r.code + rw_bigrev(0, n - 7) + rw_bigregs(0, n - 6) + "    call " + g + "\n    addq $" + str(8 * n) + ", %rsp\n", r)
 fn rw_bigrev(i, j) = if i >= j then "" else "    movq " + str(8 * i) + "(%rsp), %rax\n    movq " + str(8 * j) + "(%rsp), %rcx\n    movq %rcx, " + str(8 * i) + "(%rsp)\n    movq %rax, " + str(8 * j) + "(%rsp)\n" + rw_bigrev(i + 1, j - 1)
 fn rw_bigregs(idx, k) = if idx >= 6 then "" else "    movq " + str(8 * (k + 5 - idx)) + "(%rsp), " + rw_nth(rw_regs(), idx) + "\n" + rw_bigregs(idx + 1, k)
-fn rw_leafcall(g, args, env, st, tail) = let r = rw_push(args, env, st) in if tail == 1 then rw_r(r.code + rw_popn(rw_len(args)) + "    jmp " + g + "\n", r) else rw_r("    pushq %rdi\n    pushq %rsi\n    pushq %rdx\n    pushq %r8\n    pushq %r9\n    pushq %r10\n    pushq %r11\n" + r.code + rw_popn(rw_len(args)) + "    call " + g + "\n    popq %r11\n    popq %r10\n    popq %r9\n    popq %r8\n    popq %rdx\n    popq %rsi\n    popq %rdi\n", r)
+## a call inside a leaf saves only the registers the leaf holds values in: its parameters (rdi, rsi, rdx, r10, r8,
+## r9) and the lets allocated so far (r11, then r10); an even count gets an 8-byte pad, so the stack keeps the
+## alignment the seven saves gave (rsp a multiple of 16 at the call)
+fn rw_lfregs(np, nl) = rw_lfp(0, np, if nl >= 2 then Cons("%r11", Cons("%r10", Nil)) else if nl >= 1 then Cons("%r11", Nil) else Nil)
+fn rw_lfp(i, np, acc) = if i >= np then acc else Cons(rw_nth(Cons("%rdi", Cons("%rsi", Cons("%rdx", Cons("%r10", Cons("%r8", Cons("%r9", Nil)))))), i), rw_lfp(i + 1, np, acc))
+fn rw_lfpush(rs) = match rs
+    Nil        => ""
+    Cons(h, t) => "    pushq " + h + "\n" + rw_lfpush(t)
+fn rw_lfpop(rs) = match rs
+    Nil        => ""
+    Cons(h, t) => rw_lfpop(t) + "    popq " + h + "\n"
+fn rw_lfpad(rs) = if rw_len(rs) % 2 == 0 then "    subq $8, %rsp\n" else ""
+fn rw_lfunpad(rs) = if rw_len(rs) % 2 == 0 then "    addq $8, %rsp\n" else ""
+fn rw_leafcall(g, args, env, st, tail) = let r = rw_push(args, env, st) in if tail == 1 then rw_r(r.code + rw_popn(rw_len(args)) + "    jmp " + g + "\n", r) else (let rs = rw_lfregs(st.np, st.nl) in rw_r(rw_lfpush(rs) + rw_lfpad(rs) + r.code + rw_popn(rw_len(args)) + "    call " + g + "\n" + rw_lfunpad(rs) + rw_lfpop(rs), r))
 ## frame_ptr() is the routine's own %rbp (its caller's %rbp is load64(frame_ptr()), its return address
 ## load64(frame_ptr() + 8), the caller's %rsp after the return frame_ptr() + 16); a routine that uses it keeps its
 ## frame (never a leaf). long_jump(sp, fp, addr, v) sets %rsp and %rbp, puts v in %rax and jumps to addr: the

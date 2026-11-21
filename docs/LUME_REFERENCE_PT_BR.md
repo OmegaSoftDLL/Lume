@@ -385,7 +385,9 @@ dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pre
 `buf_h264_intra4x4 / buf_h264_intra16x16 (frame, fi, fs, modo, disponivel, dst)` (bits de disponivel: 1 esquerda, 2 topo,
 4 topo-direita, 8 topo-esquerda). Com `use h264`: `buf_h264_cavlc4x4 (coef, ci, nc, maxc, out, pos)` codifica
 um bloco de maxc (16, 15 ou 4) coeficientes int16 em ordem zigzag com CAVLC (nC -1: DC de croma) em out a partir do
-bit pos e devolve {pos, total} (a nova posicao de bit, -1 com argumento errado ou buffer cheio, e o TotalCoeff).
+bit pos e devolve {pos, total} (a nova posicao de bit, -1 com argumento errado ou buffer cheio, e o TotalCoeff). O
+fluxo e escrito em ordem: os bits depois da nova posicao no seu ultimo byte ficam 0 (com 1344 bits ou mais livres o
+bloco e codificado sem conferir cada codigo, ~140 ns num bloco de 5 niveis).
 `buf_h264_mb_i4 (src, si, ss, rec, ri, cfg)` codifica um macrobloco Intra4x4 inteiro numa chamada: para cada um
 dos 16 blocos (ordem luma4x4BlkIdx) as 9 predicoes que os vizinhos permitem, custo SATD + lambda x (1 no modo
 previsto, senao 4); a mais barata e transformada, quantizada e reconstruida em rec. cfg (pelo menos 592 bytes,

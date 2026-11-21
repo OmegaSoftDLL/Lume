@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **CAVLC 28% faster** (whole macroblock 6.6 -> 4.75 us on the reference laptop, same bitstream byte for byte): a
+  block with room for any code (1344 bits left) goes through a fast coder that writes each code (a level's prefix and
+  suffix together) in one sequential store of up to 5 bytes, finds the levels by index and checks the end once per
+  block; near the end of the buffer the checked coder runs as before. The bits after the stream's end in its last byte
+  are now 0. h264_cavlc_ok compares both coders on the vectors and 3000 random blocks at odd bit positions.
+- **lumec --raw: a call inside a leaf routine saves only the registers the leaf holds values in** (its parameters and
+  the lets allocated so far), not all seven argument registers; the stack alignment at the call is kept.
+- **gen_runtime refuses a name two runtime sources define** (it used to surface as the assembler's "symbol
+  .Lrw_NAME_top defined twice" at link time).
 - **Small records and short lists stay out of the heap in loops and helpers.** The record pass (rxq_) also inlines
   helpers that return a list literal or an `if` of literals, gives a tuple `let t = [a, b]` read only at literal indices
   one local per element, splits `let r = if c then A else B` over the branches, and inlines inside `match` arms; the new

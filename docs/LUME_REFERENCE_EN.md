@@ -384,7 +384,9 @@ dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pre
 `buf_h264_intra4x4 / buf_h264_intra16x16 (frame, fi, fs, mode, avail, dst)` (avail bits: 1 left, 2 top, 4 top-right,
 8 top-left). With `use h264`: `buf_h264_cavlc4x4 (coef, ci, nc, maxc, out, pos)` codes one block of maxc
 (16, 15 or 4) int16 coefficients in zigzag order with CAVLC (nC -1: chroma DC) into out from bit pos and answers
-{pos, total} (the new bit position, -1 on a wrong argument or a full buffer, and TotalCoeff).
+{pos, total} (the new bit position, -1 on a wrong argument or a full buffer, and TotalCoeff). The stream is written
+in order: the bits after the new position in its last byte are 0 (with 1344 bits or more left the block is coded
+without a check per code, ~140 ns for a block of 5 levels).
 `buf_h264_mb_i4 (src, si, ss, rec, ri, cfg)` encodes a whole Intra4x4 macroblock in one call: for each of its 16
 blocks (luma4x4BlkIdx order) the 9 predictions its neighbours allow, cost SATD + lambda x (1 for the predicted mode,
 else 4), the cheapest is transformed, quantized and reconstructed into rec. cfg (at least 592 bytes, int32 little
