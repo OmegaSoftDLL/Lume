@@ -1,0 +1,45 @@
+## compiler/stage1/rt/rt_fail.src - how an ordinary program stops on an error, and try / fail (never in a
+## @freestanding kernel's runtime: rt_krn_head has its own halting stubs). Compiled by `lumec --raw` into rt_lume_os.
+##
+## A runtime error names a C-string message (the 5th argument, %r8, as the assembly passed it). Inside a try it becomes
+## the try's message and control goes back to the try (__rt_try_fail); outside, the message goes to fd 2, then the
+## call stack (rt_trace), then exit 3. The stops are leaf routines that jump on (no frame of their own), so the stack
+## __rt_die_now walks starts at the routine that failed, as with the assembly.
+
+fn __rt_need_int() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nneed_msg"))
+fn __rt_div0() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_dzero_msg"))
+fn __rt_shc() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_shc_msg"))
+fn __rt_ovf() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_ovf_msg"))
+fn __rt_not_int() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nint_msg"))
+fn __rt_not_bool() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbool_msg"))
+fn __rt_no_field() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nfield_msg"))
+fn __rt_not_str() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_str_msg"))
+fn __rt_goob() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_goob_msg"))
+fn __rt_try_deep() = __rt_die_now(0, 0, 0, 0, sym_addr("__rt_deep_msg"))
+fn __rt_die3(a, b, c, d, m) = if load64(sym_addr("__rt_try_n")) == 0 then __rt_die_now(0, 0, 0, 0, m) else __rt_try_fail(mkstr(m))
+## the message, then the stack from the user function the error came from
+fn __rt_die_now(a, b, c, d, m) = let w = sys_call(1, 2, m, strlen(m), 0, 0) in let f = rtf_ufr(frame_ptr(), frame_ptr(), 0) in let t = rt_trace(load64(f), f + 8) in sys_call(60, 3, 0, 0, 0, 0)
+## the frame whose return address is in the program's own code (the code generator's table __rt_fntab: n, the end of
+## the user code, then the entries, the first one's start at +16): runtime routines written in Lume keep frames of their
+## own on the way to a stop (__rt_div, rt_divi, __rt_div0), and the trace and the debugger's stop on the error must start
+## at the user function that called them. With no table, or no such frame within 64, the routine's own frame.
+fn rtf_ufr(f, orig, k) = if k >= 64 or f == 0 or bit_and(f, 7) != 0 or f >= load64(sym_addr("__gc_stack_top")) then orig else if rtf_user(load64(f + 8)) == 1 then f else rtf_ufr(load64(f), orig, k + 1)
+fn rtf_user(ra) = if load64(sym_addr("__rt_fntab")) == 0 then 0 else rtf_user2(load64(sym_addr("__rt_fntab")), ra)
+fn rtf_user2(tab, ra) = if load64(tab) <= 0 then 0 else if ra >= load64(tab + 16) and ra < load64(tab + 8) then 1 else 0
+
+## --- try / fail ----------------------------------------------------------------------------------------------------------
+## At most 16 nested tries. Each slot of __rt_try_stk holds, for the try that opened it: the address its call returns
+## to, the caller's %rsp after that return, the caller's %rbp. __lume_try_begin answers 0 when it opens the try; a
+## failure inside comes back to the same place answering 1, with the message in __rt_try_msg.
+fn rt_tslot() = sym_addr("__rt_try_stk") + load64(sym_addr("__rt_try_n")) * 24
+fn __lume_try_begin() = if load64(sym_addr("__rt_try_n")) >= 16 then __rt_try_deep() else rt_try_save(rt_tslot(), frame_ptr())
+fn rt_try_save(slot, fp) = let a = store64(slot, load64(fp + 8)) in let b = store64(slot + 8, fp + 16) in let c = store64(slot + 16, load64(fp)) in let d = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) + 1) in 1
+fn __rt_try_fail(msg) = let a = store64(sym_addr("__rt_try_msg"), msg) in let b = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) - 1) in rt_try_jump(rt_tslot())
+fn rt_try_jump(slot) = long_jump(load64(slot + 8), load64(slot + 16), load64(slot), 3)
+fn __lume_try_end() = if load64(sym_addr("__rt_try_n")) > 0 then rt_try_pop() else 1
+fn rt_try_pop() = let a = store64(sym_addr("__rt_try_n"), load64(sym_addr("__rt_try_n")) - 1) in 1
+## the message of the last failure, "" when none
+fn __lume_try_msg() = if load64(sym_addr("__rt_try_msg")) == 0 then 2 else load64(sym_addr("__rt_try_msg"))
+## ctfail(s): fail with a string of the program's own; outside a try the string goes to fd 2 and the program exits 3
+fn ctfail(s) = if rt_isstrv(s) == 0 then __rt_not_str() else if load64(sym_addr("__rt_try_n")) != 0 then __rt_try_fail(s) else rt_ctdie(s)
+fn rt_ctdie(s) = let w = sys_call(1, 2, rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s), 0, 0) in sys_call(60, 3, 0, 0, 0, 0)

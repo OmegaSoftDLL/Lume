@@ -88,3 +88,161 @@ fn strni(v) = if bit_and(v, 1) == 1 then rt_istr(bit_shr(v, 1)) else if bit_and(
 fn rt_istr(n) = let e = sym_addr(".Lrt_pbuf") + 31 in let z = store8(e, 0) in if n < 0 then rt_idig(e, n, 1) else rt_idig(e, 0 - n, 0)
 fn rt_idig(p, v, neg) = let w = store8(p - 1, 48 - v % 10) in if v / 10 != 0 then rt_idig(p - 1, v / 10, neg) else if neg == 1 then rt_ineg(p - 2) else mkstr(p - 1)
 fn rt_ineg(q) = let m = store8(q, 45) in mkstr(q)
+
+## --- showval, printval (were runtime_core assembly) ---------------------------------------------------------------------
+## showval(v) writes a value as print shows it: an int in decimal, a string as its bytes, a list as [a, b], a record as
+## {k: v, ...}, a constructor as Name or Name(a, b), a decimal as decimal_format does, an f64 as str does, a cell of kind 7
+## or 9 through the value it holds (+24), anything else as the runtime's opaque text. Strings go out through __rt_write
+## (bytes in %rsi, count in %rcx: the 2nd and 4th arguments), so capture works as before. printval adds a newline.
+fn showval(v) = if bit_and(v, 1) == 1 then wint(bit_shr(v, 1)) else if bit_and(v, 7) == 2 then rt_sv_s(v) else if bit_and(load64(v), 1) == 0 then rt_sv_d(v) else if bit_and(load64(v), 255) == 1 then rt_sv_s(v) else if bit_and(load64(v), 255) == 3 then wint(load64(v + 8)) else if bit_and(load64(v), 255) == 5 then rt_sv_list(v) else if bit_and(load64(v), 255) <= 9 then showval(load64(v + 24)) else if bit_and(load64(v), 255) == 17 then rt_sv_s(__rt_fstr(v)) else wstr(sym_addr("__rt_opaque"))
+fn printval(v) = let s = showval(v) in wch(10)
+fn rt_sv_s(v) = __rt_write(0, rt_sptr(v, sym_addr("__rt_sb0")), 0, rt_slen(v))
+fn rt_sv_d(v) = if __lume_isdec(v) == 3 then rt_sv_s(__rt_decstr(v)) else if load8(load64(v) + 8) == 4 then rt_sv_rec(v) else rt_sv_ctor(v)
+fn rt_sv_ctor(v) = let w = wstr(load64(v) + 16) in if bit_shr(load64(load64(v) + 8), 8) == 0 then 0 else rt_sv_ctor2(v, bit_shr(load64(load64(v) + 8), 8))
+fn rt_sv_ctor2(v, n) = let a = wch(40) in let b = rt_sv_fields(v, 0, n) in wch(41)
+fn rt_sv_fields(v, i, n) = if i >= n then 0 else let c = (if i > 0 then rt_comma() else 0) in let s = showval(load64(v + 8 + i * 8)) in rt_sv_fields(v, i + 1, n)
+fn rt_sv_rec(v) = let a = wch(123) in let b = rt_sv_recf(v, 0, bit_shr(load64(load64(v) + 8), 8)) in wch(125)
+fn rt_sv_recf(v, i, n) = if i >= n then 0 else let c = (if i > 0 then rt_comma() else 0) in let k = wstr(load64(load64(v) + 16 + i * 8)) in let d = wch(58) in let e = wch(32) in let s = showval(load64(v + 8 + i * 8)) in rt_sv_recf(v, i + 1, n)
+fn rt_sv_list(v) = let a = wch(91) in let b = rt_sv_items(load64(v + 8), 0, bit_shr(load64(v), 8)) in wch(93)
+fn rt_sv_items(p, i, n) = if i >= n then 0 else let c = (if i > 0 then rt_comma() else 0) in let s = showval(load64(p + i * 8)) in rt_sv_items(p, i + 1, n)
+fn rt_comma() = let a = wch(44) in wch(32)
+
+## --- __rt_memcpy, __rt_decstr (were runtime_core assembly) ------------------------------------------------------------
+## __rt_memcpy(d, s, n): n bytes from s to d, front to back, eight at a time; d comes back. A leaf routine: rt_copyn runs
+## inside the leaf's register save, so %r8 - %r11 come back as they were (the arena freeze reads %r8 after it, addvs %r9).
+fn __rt_memcpy(d, s, n) = let x = rt_copyn(d, s, 0, n) in d
+## __rt_decstr(v): a decimal record {coefficient, scale, ...} as text (1.20, -0.125, 0.05); a scale above 70 stops with
+## __rt_dscale_msg. The length is known first (digits of |c|, at least scale + 1 of them, the point, the sign), the
+## string cell comes from __rt_stralloc and is filled from the end; digits come from a negative value (no overflow).
+fn __rt_decstr(v) = rt_dstr(rt_int(load64(v + 8)), rt_int(load64(v + 16)))
+fn rt_dstr(c, k) = if k > 70 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_dscale_msg")) else rt_dstr2((if c < 0 then c else 0 - c), k, (if c < 0 then 1 else 0))
+fn rt_dstr2(v, k, neg) = rt_dfill(v, k, neg, rt_maxi(rt_dndig(v, 0), k + 1) + (if k > 0 then 1 else 0) + neg)
+fn rt_dndig(v, n) = if v / 10 == 0 then n + 1 else rt_dndig(v / 10, n + 1)
+fn rt_dfill(v, k, neg, len) = rt_dfill2(__rt_stralloc(len), v, k, neg, len)
+fn rt_dfill2(r, v, k, neg, len) = let x = rt_dput(r + 8 + len, v, k, 0) in let m = (if neg == 1 then store8(r + 8, 45) else 0) in if len <= 7 then __rt_mkstrn(r + 8, len) else r
+## one digit (written below p); the point follows the scale-th digit; digits go on while any are left or until the
+## point has a digit before it
+fn rt_dput(p, v, k, n) = let w = store8(p - 1, 48 - v % 10) in if n + 1 == k then (let d = store8(p - 2, 46) in rt_dmore(p - 2, v / 10, k, n + 1)) else rt_dmore(p - 1, v / 10, k, n + 1)
+fn rt_dmore(p, v, k, n) = if v != 0 or n <= k then rt_dput(p, v, k, n) else 0
+
+## --- cmpv, cmpvi (were runtime_core assembly) --------------------------------------------------------------------------
+## cmpv(a, b): -1, 0 or 1 (a machine int). Two small ints compare as tagged words; two strings byte by byte, then by
+## length; anything else goes to cmpvi: an f64 or a decimal on either side through their hooks (__rt_fcmp, __rt_dcmp:
+## global names of the f64 / decimal runtime's local ones, stubs when the program has none), else as ints.
+fn cmpv(a, b) = if bit_and(bit_and(a, b), 1) == 1 then rt_cmpi(a, b) else rt_cmpv2(a, b)
+fn rt_cmpi(a, b) = if a < b then 0 - 1 else if a > b then 1 else 0
+fn rt_cmpv2(a, b) = if rt_isstrv(a) == 1 and rt_isstrv(b) == 1 then rt_scmp(rt_sptr(a, sym_addr("__rt_sb0")), rt_slen(a), rt_sptr(b, sym_addr("__rt_sb1")), rt_slen(b)) else cmpvi(a, b)
+fn rt_scmp(pa, la, pb, lb) = rt_scmp2(pa, pb, rt_mini(la, lb), 0, la - lb)
+fn rt_scmp2(pa, pb, n, i, d) = if i >= n then rt_cmpi(d, 0) else if load8(pa + i) < load8(pb + i) then 0 - 1 else if load8(pa + i) > load8(pb + i) then 1 else rt_scmp2(pa, pb, n, i + 1, d)
+fn cmpvi(a, b) = if __rt_anyf(a, b) != 0 then __rt_fcmp(a, b) else if __rt_anyd(a, b) != 0 then __rt_dcmp(a, b) else rt_cmpi(rt_int(a), rt_int(b))
+
+## --- eqv (was runtime_core assembly) -------------------------------------------------------------------------------------
+## eqv(a, b): 1 when equal, else 0 (a machine int). The same word is equal; a tagged word against anything else is not;
+## cells of a kind (header low bit 1) need the same header word: strings compare their bytes, boxed ints their value,
+## lists their items, f64 through __rt_eqvf; constructor and record cells (a descriptor in the header) compare field by
+## field, two records with different descriptors key by key (__rt_recfind), decimals by value (__rt_dcmp) when the
+## program has decimal arithmetic. Nested values recurse, except the last field or item, which goes on as a loop: a
+## Cons list (its tail is the last field) never grows the stack. eqv0 is the answer 0 that other runtime code jumps to.
+fn eqv0() = 0
+fn eqv(a, b) = if a == b then 1 else if bit_and(bit_or(a, b), 7) != 0 then 0 else rt_eqp(a, b, load64(a), load64(b))
+fn rt_eqp(a, b, ha, hb) = if bit_and(ha, 1) == 0 then rt_eqd(a, b, ha, hb) else if ha != hb then 0 else if bit_and(ha, 255) == 1 then rt_eqs(a + 8, b + 8, bit_shr(ha, 8), 0) else if bit_and(ha, 255) == 3 then rt_eqw1(load64(a + 8), load64(b + 8)) else if bit_and(ha, 255) == 5 then rt_eqf(load64(a + 8), load64(b + 8), bit_shr(ha, 8), 0) else if bit_and(ha, 255) == 17 then __rt_eqvf(a, b) else 0
+fn rt_eqw1(x, y) = if x == y then 1 else 0
+## string bytes, eight at a time while a whole word is left, then one by one
+fn rt_eqs(pa, pb, n, i) = if i + 8 <= n then (if load64(pa + i) != load64(pb + i) then 0 else rt_eqs(pa, pb, n, i + 8)) else rt_eqsb(pa, pb, n, i)
+fn rt_eqsb(pa, pb, n, i) = if i >= n then 1 else if load8(pa + i) != load8(pb + i) then 0 else rt_eqsb(pa, pb, n, i + 1)
+## two descriptor cells: the same descriptor, or two records of the same arity; a decimal pair compares by value
+fn rt_eqd(a, b, ha, hb) = if bit_and(hb, 1) == 1 then 0 else if ha != hb and (load8(ha + 8) != 4 or load8(hb + 8) != 4) then 0 else if __rt_anyd(a, b) != 0 and __lume_isdec(a) == 3 and __lume_isdec(b) == 3 then rt_eqw1(__rt_dcmp(a, b), 0) else rt_eqgo(a, b)
+## one pair inside a structure (the loop of the assembly's work list)
+fn rt_eqgo(a, b) = if a == b then 1 else if bit_and(bit_or(a, b), 7) != 0 then 0 else rt_eqgo2(a, b, load64(a), load64(b))
+fn rt_eqgo2(a, b, ha, hb) = if bit_and(ha, 1) == 1 then rt_eqodd(a, b, ha, hb) else rt_eqdesc(a, b, ha, hb)
+## (split so that every routine of the loop is a leaf: their tail calls are jumps, the stack stays flat)
+fn rt_eqodd(a, b, ha, hb) = if ha != hb then 0 else if bit_and(ha, 255) == 5 then rt_eqf(load64(a + 8), load64(b + 8), bit_shr(ha, 8), 0) else eqv(a, b)
+fn rt_eqdesc(a, b, ha, hb) = if bit_and(hb, 1) == 1 then 0 else if ha == hb then rt_eqf(a + 8, b + 8, bit_shr(load64(ha + 8), 8), 0) else if load8(ha + 8) != 4 or load8(hb + 8) != 4 then 0 else if bit_shr(load64(ha + 8), 8) != bit_shr(load64(hb + 8), 8) then 0 else rt_eqr(a, b, bit_shr(load64(ha + 8), 8), 0)
+## n fields side by side; the last one goes on as the loop
+fn rt_eqf(pa, pb, n, i) = if i >= n then 1 else if i + 1 == n then rt_eqgo(load64(pa + i * 8), load64(pb + i * 8)) else if rt_eqgo(load64(pa + i * 8), load64(pb + i * 8)) == 0 then 0 else rt_eqf(pa, pb, n, i + 1)
+## a record against one with another descriptor: each key of a looked up in b (a missing key: not equal)
+fn rt_eqr(a, b, n, i) = if i >= n then 1 else rt_eqr2(a, b, n, i, __rt_recfind(b, load64(load64(a) + 16 + i * 8)))
+fn rt_eqr2(a, b, n, i, vb) = if vb == 0 then 0 else if i + 1 == n then rt_eqgo(load64(a + 8 + i * 8), vb) else if rt_eqgo(load64(a + 8 + i * 8), vb) == 0 then 0 else rt_eqr(a, b, n, i + 1)
+
+## --- addv, addvs, __rt_sub / mul / div / mod, the wrapping ops, __rt_qnext (were runtime_core assembly) -------------
+## The slow paths of + - * / % (the fast path for two small ints is inline in generated code). An f64 or a decimal on
+## either side goes to its hook (global names of the f64 / decimal runtime's local ones; stubs when the program has
+## none); strings concatenate (+ only, both sides strings); anything else must be ints. Overflow is found without the
+## flag: a sum overflowed when both operands differ in sign from it, a product when dividing it back fails. The
+## assembly addvs wrote r12-r14 without saving them; this keeps the calling convention.
+fn addv(a, b) = if bit_and(bit_and(a, b), 1) == 1 then rt_addt(a, b, a - 1 + b) else rt_addv2(a, b)
+fn rt_addt(a, b, s) = if bit_and(bit_xor(a - 1, s), bit_xor(b, s)) < 0 then mkint(bit_shr(a, 1) + bit_shr(b, 1)) else s
+fn rt_addv2(a, b) = if rt_isstrv(a) == 1 then (if rt_isstrv(b) == 1 then addvs(a, b) else rt_pstr()) else if rt_isstrv(b) == 1 then rt_pstr() else if __rt_anyf(a, b) != 0 then __rt_fadd(a, b) else if __rt_anyd(a, b) != 0 then __rt_dadd(a, b) else rt_addi(rt_int(a), rt_int(b))
+fn rt_pstr() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_pstr_msg"))
+fn rt_addi(x, y) = rt_addi2(x, y, x + y)
+fn rt_addi2(x, y, s) = if bit_and(bit_xor(x, s), bit_xor(y, s)) < 0 then __rt_ovf() else mkint(s)
+## two strings: up to 7 bytes in all go through __rt_sb2 into a short string, more into a new string cell
+fn addvs(a, b) = rt_avs(rt_sptr(a, sym_addr("__rt_sb0")), rt_slen(a), rt_sptr(b, sym_addr("__rt_sb1")), rt_slen(b))
+fn rt_avs(pa, la, pb, lb) = if la + lb <= 7 then rt_avs_short(pa, la, pb, lb, sym_addr("__rt_sb2")) else rt_avs_long(pa, la, pb, lb, __rt_stralloc(la + lb))
+fn rt_avs_short(pa, la, pb, lb, t) = let x = rt_copyn(t, pa, 0, la) in let y = rt_copyn(t + la, pb, 0, lb) in __rt_mkstrn(t, la + lb)
+fn rt_avs_long(pa, la, pb, lb, r) = let x = rt_copyn(r + 8, pa, 0, la) in let y = rt_copyn(r + 8 + la, pb, 0, lb) in r
+fn __rt_sub(a, b) = if __rt_anyf(a, b) != 0 then __rt_fsub(a, b) else if __rt_anyd(a, b) != 0 then __rt_dsub(a, b) else rt_subi(rt_int(a), rt_int(b))
+fn rt_subi(x, y) = rt_subi2(x, y, x - y)
+fn rt_subi2(x, y, s) = if bit_and(bit_xor(x, y), bit_xor(x, s)) < 0 then __rt_ovf() else mkint(s)
+## (the assembly read the right operand first: the same message either way)
+fn __rt_mul(a, b) = if __rt_anyf(a, b) != 0 then __rt_fmul(a, b) else if __rt_anyd(a, b) != 0 then __rt_dmul(a, b) else rt_muli(rt_int(a), rt_int(b))
+fn rt_muli(x, y) = if y == 0 - 1 then (if x == 0 - 9223372036854775807 - 1 then __rt_ovf() else mkint(0 - x)) else if y == 0 then 1 else rt_muli2(x, y, x * y)
+fn rt_muli2(x, y, s) = if s / y != x then __rt_ovf() else mkint(s)
+fn __rt_div(a, b) = if __rt_anyf(a, b) != 0 then __rt_fdiv(a, b) else if __rt_anyd(a, b) != 0 then __rt_ddiv(a, b) else rt_divi(rt_int(a), rt_int(b), 0)
+fn __rt_mod(a, b) = rt_divi(rt_int(a), rt_int(b), 1)
+## division by zero stops; the most negative int divided by -1 does not fit (as __rt_idiv / __rt_imod)
+fn rt_divi(x, y, m) = if y == 0 then __rt_div0() else if y == 0 - 1 and x == 0 - 9223372036854775807 - 1 then __rt_ovf() else if m == 1 then mkint(x % y) else mkint(x / y)
+fn __rt_wadd(a, b) = mkint(rt_int(a) + rt_int(b))
+fn __rt_wsub(a, b) = mkint(rt_int(a) - rt_int(b))
+fn __rt_wmul(a, b) = mkint(rt_int(a) * rt_int(b))
+## the next int of a quantifier's range; the machine word 0 when there is none (the largest int)
+fn __rt_qnext(a) = if rt_int(a) == 9223372036854775807 then 0 else mkint(rt_int(a) + 1)
+
+## --- recget, lidx (were runtime_core assembly) -------------------------------------------------------------------------
+## recget(r, key): the field of a record by its key (the key string's address, as descriptors hold it); a missing field
+## stops with the text __rt_nofield_text builds (what .Lrt_rg_miss does for the inline caches of generated code)
+fn recget(r, key) = rt_rg2(__rt_recfind(r, key), key)
+fn rt_rg2(f, key) = if f == 0 then __rt_die3(0, 0, 0, 0, __rt_nofield_text(key, 0)) else f
+## lidx(l, i): xs[i] and s[i]. An index that is not an int stops (__rt_need_int) before anything else; a string gives
+## the one-byte string (past the end: __rt_soob_msg), an array list its item, a Cons list walks its cells (a
+## constructor list whose descriptor kind is 2); outside: __rt_oob_msg; any other value: __rt_nidx_msg.
+fn lidx(l, i) = if bit_and(i, 1) == 0 then rt_lidx1(l, i, rt_uidx(i)) else rt_lidx2(l, i)
+fn rt_lidx1(l, i, v) = rt_lidx2(l, i)
+fn rt_lidx2(l, i) = if bit_and(l, 7) != 0 then (if bit_and(l, 7) == 2 then rt_lixs(at(l, i)) else rt_lixbad()) else if bit_and(load64(l), 1) == 0 then rt_lixd(l, i) else if bit_and(load64(l), 255) == 1 then rt_lixs(at(l, i)) else if bit_and(load64(l), 255) == 5 then rt_lixa(l, rt_int(i)) else rt_lixbad()
+fn rt_lixs(r) = if r == 2 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_soob_msg")) else r
+fn rt_lixa(l, k) = if k < 0 or k >= bit_shr(load64(l), 8) then rt_lixoob() else load64(load64(l + 8) + k * 8)
+fn rt_lixd(l, i) = if load8(load64(l) + 8) != 2 then rt_lixbad() else rt_lixd2(l, rt_int(i))
+fn rt_lixd2(l, k) = if k < 0 then rt_lixoob() else rt_lixc(l, k)
+fn rt_lixc(c, k) = if bit_and(load64(c), 1) == 1 then rt_lixoob() else if load64(load64(c) + 8) != 514 then rt_lixoob() else if k == 0 then load64(c + 8) else rt_lixn(load64(c + 16), k - 1)
+fn rt_lixn(c, k) = if bit_and(c, 7) == 0 then rt_lixc(c, k) else rt_lixoob()
+fn rt_lixoob() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_oob_msg"))
+fn rt_lixbad() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nidx_msg"))
+
+## --- __lume_rec_update (was runtime_core assembly) -----------------------------------------------------------------------
+## {r with k: v, ...}: u is a record of the new fields. Both must be records (__rt_no_field otherwise); the result is a
+## copy of r's cell with each of u's fields put where r has the same key (keys compare by address, as descriptors hold
+## them); a key r lacks stops with the text __rt_nofield_text builds (what .Lrt_rup_miss does for generated code).
+fn __lume_rec_update(r, u) = if bit_and(r, 7) != 0 or bit_and(u, 7) != 0 then __rt_no_field() else if bit_and(load64(r), 1) == 1 or load8(load64(r) + 8) != 4 then __rt_no_field() else if bit_and(load64(u), 1) == 1 or load8(load64(u) + 8) != 4 then __rt_no_field() else rt_rup(r, u, bit_shr(load64(load64(r) + 8), 8))
+fn rt_rup(r, u, n) = rt_rup2(r, u, n, alloc((n + 1) * 8))
+fn rt_rup2(r, u, n, c) = let h = store64(c, load64(r)) in let x = rt_copyn(c + 8, r + 8, 0, n * 8) in rt_rupk(r, u, c, n, 0, bit_shr(load64(load64(u) + 8), 8))
+fn rt_rupk(r, u, c, n, i, m) = if i >= m then c else let j = rt_rupf(load64(r), load64(load64(u) + 16 + i * 8), 0, n) in if j < 0 then __rt_die3(0, 0, 0, 0, __rt_nofield_text(load64(load64(u) + 16 + i * 8), 1)) else let w = store64(c + 8 + j * 8, load64(u + 8 + i * 8)) in rt_rupk(r, u, c, n, i + 1, m)
+fn rt_rupf(d, key, j, n) = if j >= n then 0 - 1 else if load64(d + 16 + j * 8) == key then j else rt_rupf(d, key, j + 1, n)
+
+## --- mkint (was runtime_core assembly) ---------------------------------------------------------------------------------
+## mkint(x): the tagged int 2x+1, or a boxed int cell {3, x} when 2x overflows. A leaf routine without lets: the
+## ordinary path touches only %rax, as the assembly did (2x overflowed exactly when shifting it back does not give x).
+fn mkint(x) = if bit_shr(x + x, 1) != x then __rt_mkbox(x) else x + x + 1
+fn __rt_mkbox(x) = let c = __lume_alloc_a(16) in let a = store64(c, 3) in let b = store64(c + 8, x) in c
+
+## --- mkstr, __rt_mkstrn, __rt_stralloc, mklist (were runtime_core assembly) ------------------------------------------
+## __rt_mkstrn(p, n): the string of n bytes at p; up to 7 bytes it is a short string held in the value (the bytes from
+## bit 8, the length in bits 3..5, tag 2), longer ones get a cell from __rt_stralloc. mkstr(p): the same for a C string.
+fn mkstr(p) = __rt_mkstrn(p, strlen(p))
+fn __rt_mkstrn(p, n) = if n > 7 then rt_mksh(p, n, __rt_stralloc(n)) else rt_mksl(p, n, n, 0)
+fn rt_mksl(p, n, i, acc) = if i == 0 then bit_or(bit_shl(acc, 8), n * 8 + 2) else rt_mksl(p, n, i - 1, bit_or(bit_shl(acc, 8), load8(p + i - 1)))
+fn rt_mksh(p, n, r) = let x = __rt_memcpy(r + 8, p, n) in r
+## a string cell for n bytes: kind 1 with the length above 8 bits, then the bytes and a terminating 0
+fn __rt_stralloc(n) = let c = __lume_alloc_a(n + 9) in let h = store64(c, bit_or(bit_shl(n, 8), 1)) in let z = store8(c + 8 + n, 0) in c
+## mklist(n, items): an array list cell (kind 5, the count above 8 bits, the items' block). The assembly wrote r13
+## without saving it.
+fn mklist(n, a) = let c = alloc(16) in let h = store64(c, bit_or(bit_shl(n, 8), 5)) in let w = store64(c + 8, a) in c

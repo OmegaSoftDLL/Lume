@@ -213,6 +213,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off (it is part of the driver's cache key).
 
 ### Changed
+- **Runtime in Lume: try / fail and the runtime stops** (new compiler/stage1/rt/rt_fail.src, ordinary programs only):
+  __lume_try_begin / end / msg, __rt_try_fail, ctfail, __rt_die3, __rt_die_now and the error stops (__rt_not_str,
+  __rt_not_int, __rt_need_int, __rt_ovf, __rt_div0 ...), over the frame_ptr / long_jump intrinsics. Same messages,
+  stack traces, nesting limit and recovery on 18 more cases (176 in all).
+- **Code alignment is on** under `lume run` / `build` / `test`: every runtime routine, every function and its tail-call
+  loop head start on a 32-byte boundary (lasm learned the directives in the previous step). The runtime text carries
+  a comment as the mark (`#p2align`), turned into `.p2align 5` only then: plain `lumec < file` stays byte-identical to
+  the seed's oracle and assembles to the same ELF with the frozen seed assembler (the gate that caught it).
+- **Fixed: `--protect hardened` / `max` missed conditional jumps** to renamed routines (`js __rt_goob` in the runtime's
+  assembly reaching a stop now written in Lume: "undefined symbol"): lprotect renames the target of every jump
+  (jmp and jcc); unit test.
+- **The stop on a run-time error starts at the user function again:** runtime routines now written in Lume keep frames
+  of their own on the way to a stop (__rt_div, rt_divi, __rt_div0), so __rt_die_now walks up to the first frame whose
+  return address is in the program's code (__rt_fntab) before the trace and `lume debug`'s stop on the error (the
+  battery's debugger tests caught it).
+- **Runtime in Lume: mkstr, __rt_mkstrn, __rt_stralloc, mklist** (short strings packed in the value, longer ones in a
+  string cell). Fixed: the assembly mklist wrote r13 without saving it.
+- **Runtime in Lume: mkint** (the most used routine: a leaf whose ordinary path touches only %rax and takes no jump;
+  the boxed case is __rt_mkbox); crypto, H.264 and all 264 runtime cases unchanged.
+- **Runtime in Lume: __lume_rec_update** ({r with k: v}); 5 more cases, 261 in all.
+- **Runtime in Lume: recget and lidx** (r.k, xs[i], s[i] on arrays, strings and Cons lists, with the same stops);
+  14 more cases, 256 in all.
+- **Runtime in Lume: addv, addvs, __rt_sub / mul / div / mod, +% -% *%, __rt_qnext**: overflow found without the
+  flag (signs of a sum, a product divided back), division by zero and MIN / -1 stop as before, f64 / decimal hooks
+  through global names; 21 more cases, 242 in all. Fixed: the assembly addvs (string +) wrote r12-r14 without saving
+  them.
+- **Runtime in Lume: eqv** (equality of strings, boxed ints, lists, records, constructors, decimals, f64): nested
+  values recurse and the last field goes on as a loop of leaf routines (jumps), so a Cons list of any length keeps the
+  stack flat and no work-list cell is allocated any more; the decimal check moved out of the assembly (.Lrt_deqv is
+  gone); 11 more cases, 221 in all.
+- **Runtime in Lume: cmpv and cmpvi** (comparisons of strings, boxed ints, decimals, f64): the f64 and decimal
+  hooks got global names (__rt_anyf, __rt_fcmp, __rt_anyd, __rt_dcmp) next to their local ones; 10 more cases.
+- **Runtime in Lume: __rt_memcpy, wstr, __rt_write and __rt_decstr** (decimals as text: 1.20, -0.125, 0.05; the
+  string is sized first and filled from the end, no temporary buffer); 12 more cases, 200 in all. The dead
+  __rt_chr_bad went with chr.
+- **Runtime in Lume: the LZ compressor and decompressor, the pack checksum, `mem_pack` / `mem_unpack`** (new
+  compiler/stage1/rt/rt_pack.src). Packed bytes identical to the assembly's (compared byte by byte), damaged packs
+  stop the same way; packing is faster than the assembly (match ends compared eight bytes at a time). Each loop is one
+  routine calling itself in tail position (a jump), so the stack never grows with the data.
+- **`lumec --raw`: a loop's tail self-call leaves alone the arguments that pass a parameter on unchanged** (no push /
+  pop for them).
+- **`lumec --raw` intrinsics `frame_ptr()` and `long_jump(sp, fp, addr, v)`** for the try / fail runtime: the
+  routine's own %rbp (a routine that reads it keeps its frame), and a jump that sets %rsp / %rbp / %rax (written
+  as `pushq; ret`, which the frozen seed assembler also knows).
+- **Runtime in Lume: showval and printval** (rt_text.src): every value print shows (ints, strings, lists, records,
+  constructors, decimals, f64, nested values, opaque ones) comes out the same on 18 more cases.
 - **Runtime in Lume: wch, wint, print_int, emit, flush and __rt_write_fd1** (compiler/stage1/rt/rt_buf.src, the
   part of the runtime that only ordinary programs get, never a `@freestanding` kernel; the buffer builtins and
   utf8_chr moved there too, where their assembly lived). Same output on 11 more cases (emit buffering, direct string
