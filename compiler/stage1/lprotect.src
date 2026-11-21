@@ -177,6 +177,9 @@ fn lp_lookup_ufn(fmap, nm) = match fmap
     Nil        => ""
     Cons(h, t) => if h.nm == nm then h.obf else lp_lookup_ufn(t, nm)
 
+## a jmp to a renamed function (a tail call of a raw runtime routine: `jmp rt_fs_put`) takes the new name like a
+## call does; any other jmp only has its `.Ltail_NAME` loop label renamed
+fn lp_rewrite_jmp(h, tr, fmap) = let obf = lp_lookup_ufn(fmap, lp_trim(slice(tr, 4, count(tr)))) in if obf != "" then "    jmp " + obf else lp_rewrite_tail_lbl(h, fmap)
 fn lp_rewrite_tail_lbl(s, fmap) = match fmap
     Nil        => s
     Cons(h, t) => let pat = ".Ltail_" + h.nm in let pos = lp_find_sub(s, pat, 0) in if pos >= 0 then slice(s, 0, pos) + ".Ltail_" + h.obf + slice(s, pos + count(pat), count(s)) else lp_rewrite_tail_lbl(s, t)
@@ -209,7 +212,7 @@ fn lp_hd(t) = match t
 fn lp_cell_hdr(h, np, pidx) = if np != pidx then "    .quad " + str((count("E#" + str(pidx)) + 1) * 256 + 1) else h
 fn lp_xform_rodata_asciz(h, tr, cur_lab, cfg, pidx) = let raw = lp_asciz_raw(tr) in let is_panic = lp_startswith(raw, "lume: ") == 1 and lp_startswith(raw, "lume: out of memory") == 0 in let stripped = if is_panic == 1 then "    .asciz \"E#" + str(pidx) + "\\n\"" else h in let np = if is_panic == 1 then pidx + 1 else pidx in let enc = (cfg.level == "hardened" or cfg.level == "max") and lp_has(cfg.mlabs, cur_lab) == 1 in {line: if enc == 1 then lp_encrypt_asciz(lp_trim(stripped), cfg.k) else stripped, pidx: np}
 
-fn lp_xform_text_line(h, tr, t, cfg, fidx) = if tr == "_start:" and cfg.level == "max" then lp_seal_start_guard() else if lp_endswith(tr, ":") == 1 then let nm = slice(tr, 0, count(tr) - 1) in let obf = lp_lookup_ufn(cfg.fmap, nm) in if obf != "" then obf + ":" else lp_rewrite_tail_lbl(h, cfg.fmap) else if lp_startswith(tr, "call ") == 1 then let callee = lp_trim(slice(tr, 5, count(tr))) in let obf = lp_lookup_ufn(cfg.fmap, callee) in if obf != "" then "    call " + obf else h else if lp_startswith(tr, "jmp ") == 1 then lp_rewrite_tail_lbl(h, cfg.fmap) else if (cfg.level == "hardened" or cfg.level == "max") and lp_next_is_mkint(t) == 1 then let mba = lp_mba_imm_rdi(tr, cfg.k, fidx) in if mba != "" then mba else h else h
+fn lp_xform_text_line(h, tr, t, cfg, fidx) = if tr == "_start:" and cfg.level == "max" then lp_seal_start_guard() else if lp_endswith(tr, ":") == 1 then let nm = slice(tr, 0, count(tr) - 1) in let obf = lp_lookup_ufn(cfg.fmap, nm) in if obf != "" then obf + ":" else lp_rewrite_tail_lbl(h, cfg.fmap) else if lp_startswith(tr, "call ") == 1 then let callee = lp_trim(slice(tr, 5, count(tr))) in let obf = lp_lookup_ufn(cfg.fmap, callee) in if obf != "" then "    call " + obf else h else if lp_startswith(tr, "jmp ") == 1 then lp_rewrite_jmp(h, tr, cfg.fmap) else if (cfg.level == "hardened" or cfg.level == "max") and lp_next_is_mkint(t) == 1 then let mba = lp_mba_imm_rdi(tr, cfg.k, fidx) in if mba != "" then mba else h else h
 
 fn lp_xform_lines(lines, cfg, sec, cur_lab, pidx, fidx) = match lines
     Nil        => if cfg.level == "max" then Cons("    .section .rodata\n.Lprotect_seal:\n    .asciz \"LUME_SEAL:" + str(cfg.k) + "\"", Nil) else Nil
@@ -226,3 +229,6 @@ fn test_scan_secrets_w0002() = let bad = lp_run(Cons("@scan-secrets", Cons("fn k
 fn test_rea_symbol_and_mba_and_seal_protection() = let asm_in = Cons("@asm max", Cons("    .section .text", Cons("secret_pricing_algo:", Cons("    pushq %rbp", Cons("    movq %rsp, %rbp", Cons(".Ltail_secret_pricing_algo:", Cons("    movq $42, %rdi", Cons("    call mkint", Cons("    ret", Cons("_start:", Cons("    call secret_pricing_algo", Nil))))))))))) in let out = lp_run(asm_in) in if lp_find_sub(out, "secret_pricing_algo", 0) < 0 and lp_find_sub(out, "_L_F1:", 0) >= 0 and lp_find_sub(out, "call _L_F1", 0) >= 0 and lp_find_sub(out, ".Ltail__L_F1:", 0) >= 0 and lp_find_sub(out, "movq $42, %rdi", 0) < 0 and lp_find_sub(out, "addq $", 0) >= 0 and lp_find_sub(out, "xorq $0, %rax", 0) >= 0 and lp_find_sub(out, "subq $", 0) >= 0 and lp_find_sub(out, ".Lseal_ok:", 0) >= 0 and lp_find_sub(out, "LUME_SEAL:", 0) >= 0 then 1 else 0
 
 print lp_run(lp_splitlines(readall()))
+
+## a tail call between two renamed routines (`jmp rt_put` in a raw runtime routine) must follow the rename like a call
+fn test_protect_renames_tail_jump_targets() = let out = lp_run(Cons("@asm hardened", Cons("    .section .text", Cons("rt_get:", Cons("    jmp rt_put", Cons("rt_put:", Cons("    ret", Cons("_start:", Cons("    call rt_get", Nil))))))))) in if lp_find_sub(out, "rt_put", 0) < 0 and lp_find_sub(out, "rt_get", 0) < 0 and lp_find_sub(out, "jmp _L_F2", 0) >= 0 and lp_find_sub(out, "_L_F2:", 0) >= 0 then 1 else 0

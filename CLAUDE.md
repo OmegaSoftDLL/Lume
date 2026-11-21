@@ -78,11 +78,13 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
      a comparison jumps straight to else; bit ops with immediates (ord_at draft 163 -> 108 instructions). Was:
      --raw register allocation: keep lets/params in registers (callee-saved r12-r15/rbx saved once), not
      rbp slots, so hot builtins are not slower than the asm (measure X25519 and a buf_set loop before/after).
-  2b.[~] leaf mode done (no frame, params in their registers; X25519 800 -> 550 us). Left in 2b: a call on a
+  2b.[x] (2026-11-20: up to 3 calls in a leaf, tail calls as jumps, cold `__rt_*` branches laid out last, code
+     aligned to 32 bytes) leaf mode done (no frame, params in their registers; X25519 800 -> 550 us). Left in 2b: a call on a
      cold path (mkint's boxed case, __rt_not_str) must not disqualify a leaf: spill around it. Was: --raw leaf routines: a function whose common path makes no call keeps its parameters in the incoming
      registers (rdi, rsi, rdx, r8, r9; the 4th moves off rcx) and needs no frame; calls only on cold paths
      (__rt_not_str, mkint's boxed case) spill around themselves. Target: ord_at/buf_get within 1.5x of the asm.
-  3. [~] (buf_len/get/set done 2026-11-20, faster than the asm; raw `and`/`or` conditions are jumps) hot builtins
+  3. [~] (done 2026-11-20: buf_*, ord, ord_at, at, chr, count, slice, slicen, toint, str, strni, utf8_chr, wch,
+     wint, print_int, emit, flush, __rt_write_fd1; left: printval/showval and the rest of the list) hot builtins
      to Lume after (2) and (2b): buf_new/len/get/set/copy/slice/from_str/to_str, ord, ord_at, chr, count,
      at, slice, slicen, str, strni, toint, utf8_chr, emit/flush/wch/wstr/wint/print_int, printval/showval.
   4. [ ] --raw stack intrinsics (read/set %rsp/%rbp, jump) -> ctfail, __lume_try_begin/end/msg, __rt_die*.

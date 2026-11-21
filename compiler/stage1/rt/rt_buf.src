@@ -1,0 +1,66 @@
+## compiler/stage1/rt/rt_buf.src - runtime routines of ordinary programs only (never in a @freestanding kernel's
+## runtime): byte buffers, utf8_chr and the fd-1 writers wch / wint / print_int. Compiled by `lumec --raw` into
+## rt_lume_os (gen_runtime.src); rt_slen, rt_sptr, rt_copyn and rt_int come from rt_text.src (the core part).
+
+## --- byte buffers: buf_len, buf_get, buf_set (were runtime_core assembly) ----------------------------------------------
+## A buffer is a cell with kind byte 15 and the length in the rest of its first word, the bytes from offset 8. Each
+## builtin checks in the order the assembly did: not a buffer (__rt_nbuf_msg), an index that is not an int
+## (__rt_not_int; a boxed int is always past the end), outside the buffer (__rt_boob_msg), a byte outside 0..255
+## (__rt_bbyte_msg). Everything is inline so each one stays a leaf routine; the only calls are on the error paths.
+fn buf_len(b) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else mkint(bit_shr(load64(b), 8))
+fn buf_get(b, i) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if bit_and(i, 1) == 1 then (let k = bit_shr(i, 1) in if k < 0 or k >= bit_shr(load64(b), 8) then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else mkint(load8(b + 8 + k))) else if bit_and(i, 7) == 0 and i != 0 and load8(i) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else __rt_not_int()
+fn buf_set(b, i, v) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if bit_and(i, 1) == 1 then (let k = bit_shr(i, 1) in if k < 0 or k >= bit_shr(load64(b), 8) then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else if bit_and(v, 1) == 1 then (let x = bit_shr(v, 1) in if x < 0 or x > 255 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_bbyte_msg")) else let w = store8(b + 8 + k, x) in b) else if bit_and(v, 7) == 0 and v != 0 and load8(v) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_bbyte_msg")) else __rt_not_int()) else if bit_and(i, 7) == 0 and i != 0 and load8(i) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else __rt_not_int()
+## the same from back to front, for a copy into an overlapping later address
+fn rt_copyb(d, s, n) = if n >= 8 then (let a = store64(d + n - 8, load64(s + n - 8)) in rt_copyb(d, s, n - 8)) else if n > 0 then (let b = store8(d + n - 1, load8(s + n - 1)) in rt_copyb(d, s, n - 1)) else 0
+
+## --- byte buffers: buf_new, buf_copy, buf_slice, buf_from_str, buf_to_str (were runtime_core assembly) -----------------
+## The checks run in the assembly's order: every int argument first (right to left, __rt_not_int), then the buffer
+## (__rt_nbuf_msg), then the range (__rt_boob_msg). A boxed int is a huge value, so it always fails the range check.
+fn rtb_ck(b) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else bit_shr(load64(b), 8)
+fn rtb_rng(len, o, n) = if o < 0 or n < 0 or o + n > len then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else 0
+## a new buffer cell of n bytes: kind 15, the length above 8 bits (the bytes come zeroed from the allocator)
+fn rtb_cell(n) = let p = __lume_alloc_a(bit_and(n + 15, 0 - 8)) in let h = store64(p, bit_or(bit_shl(n, 8), 15)) in p
+fn buf_new(v) = let n = rt_int(v) in if n < 0 or n > 1099511627776 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_bsize_msg")) else rtb_cell(n)
+fn buf_copy(d, doff, s, soff, nv) = let n = rt_int(nv) in let so = rt_int(soff) in let dof = rt_int(doff) in let r1 = rtb_rng(rtb_ck(d), dof, n) in let r2 = rtb_rng(rtb_ck(s), so, n) in let dp = d + 8 + dof in let sp = s + 8 + so in let w = (if dp > sp then rt_copyb(dp, sp, n) else rt_copyn(dp, sp, 0, n)) in d
+fn buf_slice(b, ov, nv) = let n = rt_int(nv) in let o = rt_int(ov) in let r = rtb_rng(rtb_ck(b), o, n) in let p = rtb_cell(n) in let w = rt_copyn(p + 8, b + 8 + o, 0, n) in p
+## a short string's bytes are unpacked straight into the new cell (it has room for 8 when n is 1..7); "" needs no copy
+fn buf_from_str(sv) = let n = rt_slen(sv) in let p = rtb_cell(n) in if n == 0 then p else let w = rt_copyn(p + 8, rt_sptr(sv, p + 8), 0, n) in p
+fn buf_to_str(b, ov, nv) = let n = rt_int(nv) in let o = rt_int(ov) in let r = rtb_rng(rtb_ck(b), o, n) in __rt_mkstrn(b + 8 + o, n)
+## utf8_chr(n): the UTF-8 bytes of code point n, built in __rt_sb2; n <= 0, a surrogate (0xD800..0xDFFF) or n past
+## 0x10FFFF writes the runtime's message and exits with 3, as the assembly did
+fn utf8_chr(v) = let n = rt_int(v) in let b = sym_addr("__rt_sb2") in let z = store64(b, 0) in if n <= 0 then rt_utf8_bad() else if n <= 127 then rt_u8s(b, n) else if n <= 2047 then rt_u8_2(b, n) else if n <= 65535 then (if n >= 55296 and n <= 57343 then rt_utf8_bad() else rt_u8_3(b, n)) else if n <= 1114111 then rt_u8_4(b, n) else rt_utf8_bad()
+fn rt_u8s(b, n) = let w = store8(b, n) in mkstr(b)
+fn rt_u8_2(b, n) = let w1 = store8(b, bit_or(bit_shr(n, 6), 192)) in let w2 = store8(b + 1, bit_or(bit_and(n, 63), 128)) in mkstr(b)
+fn rt_u8_3(b, n) = let w1 = store8(b, bit_or(bit_shr(n, 12), 224)) in let w2 = store8(b + 1, bit_or(bit_and(bit_shr(n, 6), 63), 128)) in let w3 = store8(b + 2, bit_or(bit_and(n, 63), 128)) in mkstr(b)
+fn rt_u8_4(b, n) = let w1 = store8(b, bit_or(bit_shr(n, 18), 240)) in let w2 = store8(b + 1, bit_or(bit_and(bit_shr(n, 12), 63), 128)) in let w3 = store8(b + 2, bit_or(bit_and(bit_shr(n, 6), 63), 128)) in let w4 = store8(b + 3, bit_or(bit_and(n, 63), 128)) in mkstr(b)
+fn rt_utf8_bad() = let w = wstr(sym_addr(".Lrt_utf8_msg")) in sys_call(60, 3, 0, 0, 0, 0)
+
+## --- wch, wint, print_int (were runtime_core assembly; the assembly print_int wrote %rbx without saving it) -----------
+## They take a machine int (not a Lume value). wch and wint go to the capture buffer when capture is on
+## (__rt_cap_mem: bytes in %rsi, count in %rcx), else to fd 1 (__rt_write_fd1: bytes in %rsi, count in %rdx);
+## print_int always writes to fd 1, with a newline. Digits are produced from a negative value (the most negative int
+## needs no special case), backwards into .Lrt_pbuf.
+fn rt_wout(p, n) = if load64(sym_addr("__rt_cap_on")) != 0 then __rt_cap_mem(0, p, 0, n) else __rt_write_fd1(0, p, n)
+fn wch(c) = let p = sym_addr(".Lrt_pbuf") in let w = store8(p, c) in rt_wout(p, 1)
+fn wint(n) = if n < 0 then rt_wint(sym_addr(".Lrt_pbuf") + 32, n, 0, 1) else rt_wint(sym_addr(".Lrt_pbuf") + 32, 0 - n, 0, 0)
+fn rt_wint(p, v, c, neg) = let w = store8(p - 1, 48 - v % 10) in if v / 10 != 0 then rt_wint(p - 1, v / 10, c + 1, neg) else if neg == 1 then rt_wneg(p - 2, c + 2) else rt_wout(p - 1, c + 1)
+fn rt_wneg(q, n) = let m = store8(q, 45) in rt_wout(q, n)
+fn print_int(n) = let e = sym_addr(".Lrt_pbuf") + 31 in let z = store8(e, 10) in if n < 0 then rt_pdig(e, n, 1, 1) else rt_pdig(e, 0 - n, 1, 0)
+fn rt_pdig(p, v, c, neg) = let w = store8(p - 1, 48 - v % 10) in if v / 10 != 0 then rt_pdig(p - 1, v / 10, c + 1, neg) else if neg == 1 then rt_pneg(p - 2, c + 2) else __rt_write_fd1(0, p - 1, c + 1)
+fn rt_pneg(q, n) = let m = store8(q, 45) in __rt_write_fd1(0, q, n)
+
+## --- flush and __rt_write_fd1 (were runtime_core assembly) -------------------------------------------------------------
+## __rt_write_fd1(_, p, n): n bytes at p to fd 1, after flushing what emit buffered; a write cut short goes on from where
+## it stopped, EINTR (-4) retries, any other failure exits with 3. At most 2147479552 bytes per write (the Linux limit).
+fn __rt_write_fd1(x, p, n) = let f = (if load64(sym_addr(".Lrt_emit_len")) != 0 then flush() else 0) in rt_wf1(p, n)
+fn rt_wf1(p, n) = if n <= 0 then 0 else rt_wf1b(p, n, sys_call(1, 1, p, rt_mini(n, 2147479552), 0, 0))
+fn rt_wf1b(p, n, r) = if r == 0 - 4 then rt_wf1(p, n) else if r <= 0 then sys_call(60, 3, 0, 0, 0, 0) else rt_wf1(p + r, n - r)
+## flush(): write what emit gathered and empty the buffer; always the int 0
+fn flush() = if load64(sym_addr(".Lrt_emit_len")) <= 0 then 1 else rt_flush2(load64(sym_addr(".Lrt_emit_len")))
+fn rt_flush2(n) = let z = store64(sym_addr(".Lrt_emit_len"), 0) in let w = rt_wf1(load64(sym_addr(".Lrt_emit_buf")), n) in 1
+## emit(v): a string is written to fd 1 at once (after what was buffered); an int puts its low byte in the emit buffer
+## (64 KiB, doubled when full), written by flush or by the next direct write. The value comes back.
+fn emit(v) = if rt_isstrv(v) == 1 then rt_emit_s(v) else rt_emit_b(v, rt_int(v))
+fn rt_emit_s(v) = let w = __rt_write_fd1(0, rt_sptr(v, sym_addr("__rt_sb0")), rt_slen(v)) in v
+fn rt_emit_b(v, x) = let g = (if load64(sym_addr(".Lrt_emit_len")) >= load64(sym_addr(".Lrt_emit_cap")) then rt_emit_grow() else 0) in let n = load64(sym_addr(".Lrt_emit_len")) in let w = store8(load64(sym_addr(".Lrt_emit_buf")) + n, x) in let z = store64(sym_addr(".Lrt_emit_len"), n + 1) in v
+fn rt_emit_grow() = let c = load64(sym_addr(".Lrt_emit_cap")) in let nc = (if c == 0 then 65536 else c + c) in let nb = __lume_alloc_a(nc) in let w = rt_copyn(nb, load64(sym_addr(".Lrt_emit_buf")), 0, load64(sym_addr(".Lrt_emit_len"))) in let a = store64(sym_addr(".Lrt_emit_buf"), nb) in store64(sym_addr(".Lrt_emit_cap"), nc)

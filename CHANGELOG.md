@@ -213,6 +213,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off (it is part of the driver's cache key).
 
 ### Changed
+- **Runtime in Lume: wch, wint, print_int, emit, flush and __rt_write_fd1** (compiler/stage1/rt/rt_buf.src, the
+  part of the runtime that only ordinary programs get, never a `@freestanding` kernel; the buffer builtins and
+  utf8_chr moved there too, where their assembly lived). Same output on 11 more cases (emit buffering, direct string
+  writes, flush, big outputs). Fixed: the assembly print_int wrote %rbx without saving it.
+- **Fixed: `--protect hardened` / `max` broke a tail call between two runtime routines** (`jmp rt_fs_put` kept the
+  old name after the routines were renamed; "undefined symbol"): lprotect renames the target of a `jmp` to a
+  renamed function like a `call`'s; unit test in lprotect.src.
+- **Runtime in Lume: str, strni and utf8_chr** (rt_text.src), same results on 17 more cases (both ends of the int
+  range, boxed ints, f64, values shown by __rt_show_str, every UTF-8 length and the invalid code points).
+- **Runtime in Lume: slice, slicen and toint** (rt_text.src), same results and errors on 31 more cases (ranges out of
+  bounds, boxed indexes, toint at both ends of the int range and past them).
+- **Fixed: the assembly `slice` overwrote r12, r13 and r14** without saving them (registers its caller may keep values
+  in); the Lume version keeps the calling convention.
+- **Runtime in Lume: ord, ord_at, at, chr and count** are Lume source now (rt_text.src); same results and errors on
+  81 cases against the assembly; `at` is faster than the assembly, ord_at/count on par in loops.
+- **`lumec --raw` code quality** (every runtime routine written in Lume): a leaf routine may make up to three calls
+  (a call in tail position is a jump, any other saves the leaf registers around itself); in a leaf's tail position
+  each branch ends in its own `ret` and a branch that only calls a runtime stop (`__rt_*`) is laid out after the
+  ordinary path, so the ordinary path takes no jump; `bit_and(x, m) == 0` is one `testq`; a comparison or a load
+  uses a value where its register holds it; `load8(b + d + x)` uses the `d(b,x)` addressing form; a right operand
+  waits in %rcx instead of the stack when the left one leaves %rcx alone.
+- **Code alignment:** lasm accepts `.balign N` and `.p2align K` in code (filled with the recommended multi-byte NOPs,
+  aligned to the real load address of each output format) and the `nop` instruction. The compiler starts using them
+  in the next step (a toolchain built before this one could not assemble them): every raw runtime routine, and under
+  `lume run` / `build` / `test` every function and its tail-call loop head, on a 32-byte boundary. A small hot loop
+  ran at half or full speed depending on where the code before it ended (the same ord_at loop: 32 or 65 ms per 10
+  million calls).
+- **Runtime in Lume: buf_new, buf_copy, buf_slice, buf_from_str and buf_to_str** are Lume source now (rt_text.src),
+  same results and errors on 44 cases (overlapping copies too); copies go eight bytes at a time, so buf_copy of 4 KiB
+  is 1.7x and buf_slice 1.5x faster than the assembly. rt_slen, rt_sptr and rt_copyn moved from rt_fs to rt_text.
 - **Runtime in Lume: buf_len, buf_get and buf_set** are Lume source now (compiler/stage1/rt/rt_text.src), cut from
   the runtime's assembly text. Same messages and exit codes on every error path; buf_len through the runtime routine
   went from 2.0 to 1.6 ns per call.

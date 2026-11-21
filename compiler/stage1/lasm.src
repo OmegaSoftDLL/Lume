@@ -146,6 +146,16 @@ fn parselabel(nm, t, sec) = if lblok(nm, count(nm), 0) == 0 then lerr("malformed
 fn parsebytes(s, i, n) = let c = findc(s, ",", i) in let tok = trim(slice(s, i, c)) in let v = pint(tok) in if v < 0 - 128 or v > 255 then lerr(".byte value out of range in '" + s + "'") else if c >= n then Cons(lowbyte(v), Nil) else Cons(lowbyte(v), parsebytes(s, c + 1, n))
 fn parselong(s) = let v = pint(trim(slice(s, 5, count(s)))) in if v < 0 - 2147483648 or v > 4294967295 then lerr(".long value out of range in '" + s + "'") else b4(v)
 fn ispow2(n) = if n < 1 then 0 else if n == 1 then 1 else if n % 2 != 0 then 0 else ispow2(n / 2)
+## alignment inside code (.balign N, .p2align K): the gap is filled with the multi-byte NOPs the Intel and AMD manuals
+## recommend, so a padded spot that is executed costs one instruction per 9 bytes. Functions and hot loops are
+## aligned so that their speed does not depend on where the code before them happens to end.
+fn talign(r) = match r
+    RA(n) => TA(n)
+    _     => r
+fn parsep2align(s) = let k = pint(trim(slice(s, 8, count(s)))) in if k >= 0 and k <= 12 then TA(pow2k(k, 1)) else lerr(".p2align needs 0 to 12 in '" + s + "'")
+fn pow2k(k, acc) = if k <= 0 then acc else pow2k(k - 1, acc * 2)
+fn nopn(n) = if n == 1 then Cons(144, Nil) else if n == 2 then Cons(102, Cons(144, Nil)) else if n == 3 then Cons(15, Cons(31, Cons(0, Nil))) else if n == 4 then Cons(15, Cons(31, Cons(64, Cons(0, Nil)))) else if n == 5 then Cons(15, Cons(31, Cons(68, Cons(0, Cons(0, Nil))))) else if n == 6 then Cons(102, Cons(15, Cons(31, Cons(68, Cons(0, Cons(0, Nil)))))) else if n == 7 then Cons(15, Cons(31, Cons(128, Cons(0, Cons(0, Cons(0, Cons(0, Nil))))))) else if n == 8 then Cons(15, Cons(31, Cons(132, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Nil)))))))) else Cons(102, Cons(15, Cons(31, Cons(132, Cons(0, Cons(0, Cons(0, Cons(0, Cons(0, Nil)))))))))
+fn nops(p) = if p <= 0 then Nil else if p <= 9 then nopn(p) else app(nopn(9), nops(p - 9))
 fn parsebalign(s) = let n = pint(trim(slice(s, 7, count(s)))) in if n <= 4096 and ispow2(n) == 1 then RA(n) else lerr(".balign needs a power of two (at most 4096) in '" + s + "'")
 ## `.quad 123` is literal data; `.quad name` is the 8-byte absolute address of a label, patched once the layout is final
 fn parsequad(v) = if v == "" then lerr(".quad needs a value") else if at(v, 0) == "-" or isdigit(at(v, 0)) then RO(b8s(pint(v))) else RQ(v)
@@ -154,7 +164,7 @@ fn parsequad(v) = if v == "" then lerr(".quad needs a value") else if at(v, 0) =
 ## every directive or section lasm does not implement (it used to be skipped, dropping its data).
 fn isdir(s, d) = let m = count(d) in startswith(s, d) and (count(s) == m or at(s, m) == " " or at(s, m) == "\t")
 fn rodir(sec, s) = if sec == 1 then 0 else lerr("data directive outside .section .rodata: '" + s + "'")
-fn parsedir(s, t, sec) = if startswith(s, ".section .rodata") then Cons(Skip, parseitems(t, 1)) else if startswith(s, ".section .text") then Cons(Skip, parseitems(t, 0)) else if startswith(s, ".section .bss") then Cons(Skip, parseitems(t, 2)) else if isdir(s, ".globl") then Cons(GL(trim(slice(s, 6, count(s)))), parseitems(t, sec)) else if isdir(s, ".lcomm") then Cons(parselcomm(s), parseitems(t, sec)) else if isdir(s, ".asciz") then let z = rodir(sec, s) in Cons(RO(parseasciz(s)), parseitems(t, sec)) else if isdir(s, ".byte") then let z = rodir(sec, s) in Cons(RO(parsebytes(s, 5, count(s))), parseitems(t, sec)) else if isdir(s, ".long") then let z = rodir(sec, s) in Cons(RO(parselong(s)), parseitems(t, sec)) else if isdir(s, ".quad") then let z = rodir(sec, s) in Cons(parsequad(trim(slice(s, 5, count(s)))), parseitems(t, sec)) else if isdir(s, ".balign") then let z = rodir(sec, s) in Cons(parsebalign(s), parseitems(t, sec)) else if isdir(s, ".need") then Cons(ND(parsestr(s)), parseitems(t, sec)) else if isdir(s, ".extern") then Cons(EX(trim(slice(s, 7, count(s)))), parseitems(t, sec)) else if isdir(s, ".kernel") then Cons(KRN, parseitems(t, sec)) else if isdir(s, ".file") then Cons(parsefile(s), parseitems(t, sec)) else if isdir(s, ".loc") then Cons(parseloc(s, sec), parseitems(t, sec)) else lerr("unsupported directive or section: '" + s + "'")
+fn parsedir(s, t, sec) = if startswith(s, ".section .rodata") then Cons(Skip, parseitems(t, 1)) else if startswith(s, ".section .text") then Cons(Skip, parseitems(t, 0)) else if startswith(s, ".section .bss") then Cons(Skip, parseitems(t, 2)) else if isdir(s, ".globl") then Cons(GL(trim(slice(s, 6, count(s)))), parseitems(t, sec)) else if isdir(s, ".lcomm") then Cons(parselcomm(s), parseitems(t, sec)) else if isdir(s, ".asciz") then let z = rodir(sec, s) in Cons(RO(parseasciz(s)), parseitems(t, sec)) else if isdir(s, ".byte") then let z = rodir(sec, s) in Cons(RO(parsebytes(s, 5, count(s))), parseitems(t, sec)) else if isdir(s, ".long") then let z = rodir(sec, s) in Cons(RO(parselong(s)), parseitems(t, sec)) else if isdir(s, ".quad") then let z = rodir(sec, s) in Cons(parsequad(trim(slice(s, 5, count(s)))), parseitems(t, sec)) else if isdir(s, ".balign") then (if sec == 0 then Cons(talign(parsebalign(s)), parseitems(t, sec)) else let z = rodir(sec, s) in Cons(parsebalign(s), parseitems(t, sec))) else if isdir(s, ".p2align") then (if sec == 0 then Cons(parsep2align(s), parseitems(t, sec)) else lerr(".p2align is only for code; data uses .balign: '" + s + "'")) else if isdir(s, ".need") then Cons(ND(parsestr(s)), parseitems(t, sec)) else if isdir(s, ".extern") then Cons(EX(trim(slice(s, 7, count(s)))), parseitems(t, sec)) else if isdir(s, ".kernel") then Cons(KRN, parseitems(t, sec)) else if isdir(s, ".file") then Cons(parsefile(s), parseitems(t, sec)) else if isdir(s, ".loc") then Cons(parseloc(s, sec), parseitems(t, sec)) else lerr("unsupported directive or section: '" + s + "'")
 
 ## --- GAS numeric local labels (`N:` defines, `Nf` = nearest N: AHEAD, `Nb` = nearest N: BEHIND) ---
 ## A number may be (re)defined many times. Items are in source order, so a left-to-right fold with a
@@ -256,7 +266,7 @@ fn immfits(os, v) = if os == 8 then fits32(v) else if os == 4 then v >= 0 - 2147
 fn badops(ins) = ctfail("lasm: [L0001] unsupported operand count or operand combination in '" + ins.src + "'\n")
 fn badimm(ins) = ctfail("lasm: [L0001] immediate out of range in '" + ins.src + "'\n")
 fn enc(ins, iend, syms) = encmn(ins.mn, ins, iend, syms)
-fn encsys0(mn) = if mn == "cli" then Cons(250, Nil) else if mn == "sti" then Cons(251, Nil) else if mn == "hlt" then Cons(244, Nil) else if mn == "iretq" then Cons(72, Cons(207, Nil)) else if mn == "rdmsr" then Cons(15, Cons(50, Nil)) else if mn == "wrmsr" then Cons(15, Cons(48, Nil)) else if mn == "rdtsc" then Cons(15, Cons(49, Nil)) else if mn == "pause" then Cons(243, Cons(144, Nil)) else if mn == "mfence" then Cons(15, Cons(174, Cons(240, Nil))) else if mn == "vzeroupper" then Cons(197, Cons(248, Cons(119, Nil))) else if mn == "vzeroall" then Cons(197, Cons(252, Cons(119, Nil))) else if mn == "outb" then Cons(238, Nil) else if mn == "inb" then Cons(236, Nil) else if mn == "outw" then Cons(102, Cons(239, Nil)) else if mn == "inw" then Cons(102, Cons(237, Nil)) else if mn == "outl" then Cons(239, Nil) else if mn == "inl" then Cons(237, Nil) else Nil
+fn encsys0(mn) = if mn == "cli" then Cons(250, Nil) else if mn == "sti" then Cons(251, Nil) else if mn == "hlt" then Cons(244, Nil) else if mn == "nop" then Cons(144, Nil) else if mn == "iretq" then Cons(72, Cons(207, Nil)) else if mn == "rdmsr" then Cons(15, Cons(50, Nil)) else if mn == "wrmsr" then Cons(15, Cons(48, Nil)) else if mn == "rdtsc" then Cons(15, Cons(49, Nil)) else if mn == "pause" then Cons(243, Cons(144, Nil)) else if mn == "mfence" then Cons(15, Cons(174, Cons(240, Nil))) else if mn == "vzeroupper" then Cons(197, Cons(248, Cons(119, Nil))) else if mn == "vzeroall" then Cons(197, Cons(252, Cons(119, Nil))) else if mn == "outb" then Cons(238, Nil) else if mn == "inb" then Cons(236, Nil) else if mn == "outw" then Cons(102, Cons(239, Nil)) else if mn == "inw" then Cons(102, Cons(237, Nil)) else if mn == "outl" then Cons(239, Nil) else if mn == "inl" then Cons(237, Nil) else Nil
 ## zero-operand instructions take NO operands; port I/O must spell its implied operands exactly
 ## (`outb %al, %dx` / `inb %dx, %al`, w: %ax, l: %eax) -- the imm8-port forms are not implemented.
 fn isport(o) = o.k == 1 and o.sz == 2 and o.reg == 2
@@ -390,6 +400,7 @@ fn layout_go(items, co, roff, boff, encs, ro, tls, rls, bls, dyn, dbg) = match i
     RL(nm)     => layout_go(t, co, roff, boff, encs, ro, tls, Cons({nm: nm, o: roff}, rls), bls, dyn, dbg)
     RO(bs)     => layout_go(t, co, roff + len(bs), boff, encs, rev_append(bs, ro), tls, rls, bls, dyn, dbg)
     RQ(nm)     => layout_go(t, co, roff + 8, boff, encs, zeros_on(8, ro), tls, rls, bls, Cons(Cons({o: roff, nm: nm}, lhead(dyn)), ltail(dyn)), dbg)
+    TB(n, b)   => let p = (n - (co + b) % n) % n in layout_go(t, co + p, roff, boff, (if p == 0 then encs else Cons({off: co, ln: p, reloc: 0, bytes: nops(p), ins: 0}, encs)), ro, tls, rls, bls, dyn, dbg)
     RA(n)      => let p = (n - roff % n) % n in layout_go(t, co, roff + p, boff, encs, zeros_on(p, ro), tls, rls, bls, dyn, dbg)
     BS(nm, sz) => layout_go(t, co, roff, boff + sz, encs, ro, tls, rls, Cons({nm: nm, o: boff}, bls), dyn, dbg)
     ND(x)      => layout_go(t, co, roff, boff, encs, ro, tls, rls, bls, Cons(lhead(dyn), Cons(h, ltail(dyn))), dbg)
@@ -798,7 +809,30 @@ fn asmiso(lay, strict) = let cs = lay.co in let rs = len(lay.robytes) in let sym
 ## ([L0001]) instead of a silent jump to address 0 (#428, #19); `--lenient` / `--allow-undefined`
 ## keeps the historical address-0 resolution for inputs that intentionally rely on it. ---
 fn buildsyms(lay, cs, rs) = app(mapsym(lay.tls, 4194424), app(mapsym(lay.rls, 4194424 + cs), mapsym(lay.bls, 4194424 + cs + rs)))
-fn assemble_mode_iso(src, strict, iso) = assemble_back(layout(reslocals(parseitems(splitlines(src, 0), 0), Nil), 0, 0, 0), strict, iso)
+fn assemble_mode_iso(src, strict, iso) = let its = reslocals(parseitems(splitlines(src, 0), 0), Nil) in assemble_back(layout(tabias(its, cbias(its, iso)), 0, 0, 0), strict, iso)
+## where the code starts in the loaded image, modulo any alignment: the ELF headers come first (static 0x400078,
+## dynamic 0x4000e8, shared object 176), a PE .text and a kernel start on a page. `.balign` in code aligns the real
+## address, so each TA item learns this offset before the layout.
+fn cbias(its, iso) = if iso == 2 or iso == 4 then 0 else if iso == 3 then 176 else if scan_krn(its) == 1 then 0 else if scan_dyn(its) == 1 then 232 else 120
+fn scan_krn(its) = match its
+    Nil        => 0
+    Cons(h, t) => if isknr(h) == 1 then 1 else scan_krn(t)
+fn isknr(h) = match h
+    KRN => 1
+    _   => 0
+fn scan_dyn(its) = match its
+    Nil        => 0
+    Cons(h, t) => if isdynit(h) == 1 then 1 else scan_dyn(t)
+fn isdynit(h) = match h
+    ND(x) => 1
+    EX(x) => 1
+    _     => 0
+fn tabias(its, b) = match its
+    Nil        => Nil
+    Cons(h, t) => Cons(tab1(h, b), tabias(t, b))
+fn tab1(h, b) = match h
+    TA(n) => TB(n, b)
+    _     => h
 fn assemble_back(lay, strict, iso) = let zdup = chkdups(lay, strict) in let items = lay.dyn in if iso == 2 then asmpe_mode(lay, strict) else if iso == 3 then asmso(lay, strict) else if iso == 4 then asmpe2(lay, collect_needs(items), collect_exts(items), strict, 1) else if has_krn(items) == 1 then (let zk = dw_static_only(lay.dbg, "a `.kernel` image") in if iso == 1 then asmiso(lay, strict) else asmkernel(lay, strict)) else let needs = collect_needs(items) in let exts = collect_exts(items) in if isnil(needs) == 1 and isnil(exts) == 1 then asm2(lay, strict) else let zd = dw_static_only(lay.dbg, "`.need` / `.extern` (dynamically linked output)") in asmdyn(lay, needs, exts, strict)
 fn assemble_mode(src, strict) = assemble_mode_iso(src, strict, 0)
 fn assemble(src) = assemble_mode(src, 1)

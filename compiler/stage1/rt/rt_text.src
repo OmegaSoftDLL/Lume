@@ -29,11 +29,62 @@ fn rt_ric_desc(r, key, ic, d) = if bit_and(d, 7) != 0 or d == 0 then 0 else if l
 fn rt_ric_find(key, ic, d, i, n) = if i >= n then 0 else if load64(d + 16 + i * 8) == key then rt_ric_set(ic, d, 8 + i * 8) else rt_ric_find(key, ic, d, i + 1, n)
 fn rt_ric_set(ic, d, off) = let a = store64(ic + 8, 0) in let b = store64(ic, d) in store64(ic + 8, off)
 
-## --- byte buffers: buf_len, buf_get, buf_set (were runtime_core assembly) ----------------------------------------------
-## A buffer is a cell with kind byte 15 and the length in the rest of its first word, the bytes from offset 8. Each
-## builtin checks in the order the assembly did: not a buffer (__rt_nbuf_msg), an index that is not an int
-## (__rt_not_int; a boxed int is always past the end), outside the buffer (__rt_boob_msg), a byte outside 0..255
-## (__rt_bbyte_msg). Everything is inline so each one stays a leaf routine; the only calls are on the error paths.
-fn buf_len(b) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else mkint(bit_shr(load64(b), 8))
-fn buf_get(b, i) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if bit_and(i, 1) == 1 then (let k = bit_shr(i, 1) in if k < 0 or k >= bit_shr(load64(b), 8) then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else mkint(load8(b + 8 + k))) else if bit_and(i, 7) == 0 and i != 0 and load8(i) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else __rt_not_int()
-fn buf_set(b, i, v) = if b == 0 or bit_and(b, 7) != 0 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if load8(b) != 15 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbuf_msg")) else if bit_and(i, 1) == 1 then (let k = bit_shr(i, 1) in if k < 0 or k >= bit_shr(load64(b), 8) then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else if bit_and(v, 1) == 1 then (let x = bit_shr(v, 1) in if x < 0 or x > 255 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_bbyte_msg")) else let w = store8(b + 8 + k, x) in b) else if bit_and(v, 7) == 0 and v != 0 and load8(v) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_bbyte_msg")) else __rt_not_int()) else if bit_and(i, 7) == 0 and i != 0 and load8(i) == 3 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_boob_msg")) else __rt_not_int()
+## --- strings and copies shared with rt_fs (moved here: the core part is in every program) -------------------------------
+## the length of a Lume string: a short one lives in the value (tag 2, length in bits 3..5, bytes from bit 8), a long
+## one in a heap cell (kind 1, length in the header above 8 bits, bytes at +8); any other value stops the program
+fn rt_slen(v) = if bit_and(v, 7) == 2 then bit_shr(bit_and(v, 56), 3) else if bit_and(v, 7) != 0 or v == 0 then __rt_not_str() else if load8(v) != 1 then __rt_not_str() else bit_shr(load64(v), 8)
+## the address of its bytes; a short string is first copied into the 8 bytes at tmp
+fn rt_sptr(v, tmp) = if bit_and(v, 7) == 2 then let a = store64(tmp, bit_shr(v, 8)) in tmp else v + 8
+## copy n bytes from s to d, eight at a time, then the rest one by one (front to back)
+fn rt_copyn(d, s, i, n) = if i + 8 <= n then (let a = store64(d + i, load64(s + i)) in rt_copyn(d, s, i + 8, n)) else if i < n then (let b = store8(d + i, load8(s + i)) in rt_copyn(d, s, i + 1, n)) else 0
+
+## --- text: ord, ord_at, at, chr, count (were runtime_core assembly) ---------------------------------------------------
+## A short string lives in the value (tag 2, length in bits 3..5, bytes from bit 8), a long one in a kind-1 cell (length
+## above 8 bits, bytes at +8). An index past the end gives 0 (ord_at) or "" (at); a negative or boxed index too, once
+## the string was checked; an index that is not an int stops with __rt_need_int. The value 1 is the int 0, 2 is "".
+fn rt_isstrv(s) = if bit_and(s, 7) == 2 then 1 else if bit_and(s, 7) != 0 or s == 0 then 0 else if load8(s) == 1 then 1 else 0
+## an index that is not a small int: a boxed int is past every end (the miss value m), anything else is not an int
+fn __rt_bigidx(s, i, m) = if rt_isstrv(s) == 0 then __rt_not_str() else if bit_and(i, 7) == 0 and i != 0 and load8(i) == 3 then m else __rt_need_int()
+fn __rt_negidx(s, m) = if rt_isstrv(s) == 0 then __rt_not_str() else m
+fn ord_at(s, i) = if bit_and(i, 1) == 0 then __rt_bigidx(s, i, 1) else if i < 0 then __rt_negidx(s, 1) else if bit_and(s, 7) == 0 and s != 0 then (if load8(s) != 1 then __rt_not_str() else if bit_shr(i, 1) < bit_shr(load64(s), 8) then bit_or(bit_shl(load8(s + 8 + bit_shr(i, 1)), 1), 1) else 1) else if bit_and(s, 7) == 2 then (if bit_shr(i, 1) < bit_shr(bit_and(s, 56), 3) then bit_or(bit_shl(bit_and(bit_shr(s, bit_shl(bit_shr(i, 1), 3) + 8), 255), 1), 1) else 1) else __rt_not_str()
+## a one-byte string: the byte above the short-string tag 10 (tag 2, length 1)
+fn __rt_at_ch(x) = bit_or(bit_shl(x, 8), 10)
+fn at(s, i) = if bit_and(i, 1) == 0 then __rt_bigidx(s, i, 2) else if i < 0 then __rt_negidx(s, 2) else if bit_and(s, 7) == 0 and s != 0 then (if load8(s) != 1 then __rt_not_str() else if bit_shr(i, 1) < bit_shr(load64(s), 8) then bit_or(bit_shl(load8(s + 8 + bit_shr(i, 1)), 8), 10) else 2) else if bit_and(s, 7) == 2 then (if bit_shr(i, 1) < bit_shr(bit_and(s, 56), 3) then bit_or(bit_shl(bit_and(bit_shr(s, bit_shl(bit_shr(i, 1), 3) + 8), 255), 8), 10) else 2) else __rt_not_str()
+## the first byte (0 for "")
+fn ord(s) = if bit_and(s, 7) == 0 and s != 0 then (if load8(s) != 1 then __rt_not_str() else bit_or(bit_shl(load8(s + 8), 1), 1)) else if bit_and(s, 7) == 2 then bit_or(bit_shl(bit_and(bit_shr(s, 8), 255), 1), 1) else __rt_not_str()
+## an index or count argument: a small int, a boxed int's value, anything else stops with __rt_need_int
+fn rt_uidx(v) = if bit_and(v, 1) == 1 then bit_shr(v, 1) else if bit_and(v, 7) != 0 or v == 0 then __rt_need_int() else if load8(v) != 3 then __rt_need_int() else load64(v + 8)
+fn chr(v) = if bit_and(v, 1) == 1 then (if v < 0 or v > 511 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nchr_msg")) else bit_or(bit_shl(bit_shr(v, 1), 8), 10)) else rt_chr_big(rt_uidx(v))
+## the length of a string (kind 1, or a kind-5 cell: kind & 251 == 1 is both) or of a list: list cells point at their constructor descriptor,
+## Cons is the descriptor whose word at +8 is 514; the count stops at the first cell that is not a Cons
+fn count(v) = if bit_and(v, 7) == 0 and v != 0 then (if bit_and(load64(v), 251) == 1 then bit_or(bit_shr(load64(v), 7), 1) else if bit_and(load64(v), 1) == 0 then rtn_listc(v) else __rt_not_str()) else if bit_and(v, 7) == 2 then bit_shr(bit_and(v, 56), 2) + 1 else __rt_not_str()
+fn rtn_list(v, n) = let h = load64(v) in if bit_and(h, 1) == 1 then n + n + 1 else if load64(h + 8) != 514 then n + n + 1 else (let t = load64(v + 16) in if bit_and(t, 7) == 0 and t != 0 then rtn_list(t, n + 1) else n + n + 3)
+fn rtn_listc(v) = if load8(load64(v) + 8) == 4 then __rt_not_str() else rtn_list(v, 0)
+fn rt_chr_big(x) = if x < 0 or x > 255 then __rt_die3(0, 0, 0, 0, sym_addr("__rt_nchr_msg")) else bit_or(bit_shl(x, 8), 10)
+
+## --- slice, slicen, toint (were runtime_core assembly; the assembly slice wrote r12-r14 without saving them) -----------
+## slice(s, a, b): the bytes a .. b-1, both clamped to 0 .. count(s); the string itself when the range covers all of
+## it, "" when it is empty. A short string's bytes are unpacked into __rt_sb0 first (__rt_mkstrn copies them out).
+fn slice(s, av, bv) = if rt_isstrv(s) == 0 then __rt_not_str() else rt_slice2(s, rt_uidx(av), rt_uidx(bv))
+fn rt_slice2(s, a, b) = if a <= 0 and b >= rt_slen(s) then s else rt_slice3(rt_sptr(s, sym_addr("__rt_sb0")), rt_maxi(a, 0), rt_mini(b, rt_slen(s)))
+fn rt_slice3(p, a, b) = __rt_mkstrn(p + a, rt_maxi(b - a, 0))
+fn rt_maxi(a, b) = if a > b then a else b
+fn rt_mini(a, b) = if a < b then a else b
+## slicen(s, x, a, b) is slice(s, a, b) (the second argument is not used, as in the assembly)
+fn slicen(s, x, a, b) = slice(s, a, b)
+## toint(s): an optional '-' then decimal digits, read up to the first byte that is not a digit (the bytes end with a
+## 0); "12ab" is 12, "" and "-" are 0. Digits are gathered as a negative number so the most negative int fits; a value
+## outside the int range stops with the overflow error (__rt_ovf), as the assembly did.
+fn toint(s) = let p = rt_sptr(s, sym_addr("__rt_sb0")) in if rt_isstrv(s) == 0 then __rt_not_str() else if load8(p) == 45 then mkint(rt_toint(p, 1, 0)) else mkint(rt_negok(rt_toint(p, 0, 0)))
+fn rt_toint(p, i, acc) = if load8(p + i) < 48 or load8(p + i) > 57 then acc else if acc < 0 - 922337203685477580 then __rt_ovf() else if acc * 10 < 0 - 9223372036854775807 - 1 + (load8(p + i) - 48) then __rt_ovf() else rt_toint(p, i + 1, acc * 10 - (load8(p + i) - 48))
+fn rt_negok(v) = if v == 0 - 9223372036854775807 - 1 then __rt_ovf() else 0 - v
+
+## --- str, strni (were runtime_core assembly; utf8_chr went to rt_buf.src) ----------------------------------------------
+## str(v): a string stays itself, anything else goes through strni. strni: an int (small or boxed) in decimal, an f64
+## through __rt_fstr, any other value through __rt_show_str. The digits are written backwards into .Lrt_pbuf from a
+## negative value, so the most negative int needs no special case.
+fn str(v) = if rt_isstrv(v) == 1 then v else strni(v)
+fn strni(v) = if bit_and(v, 1) == 1 then rt_istr(bit_shr(v, 1)) else if bit_and(v, 7) != 0 or v == 0 then __rt_show_str(v) else if load8(v) == 17 then __rt_fstr(v) else if load8(v) == 3 then rt_istr(load64(v + 8)) else __rt_show_str(v)
+fn rt_istr(n) = let e = sym_addr(".Lrt_pbuf") + 31 in let z = store8(e, 0) in if n < 0 then rt_idig(e, n, 1) else rt_idig(e, 0 - n, 0)
+fn rt_idig(p, v, neg) = let w = store8(p - 1, 48 - v % 10) in if v / 10 != 0 then rt_idig(p - 1, v / 10, neg) else if neg == 1 then rt_ineg(p - 2) else mkstr(p - 1)
+fn rt_ineg(q) = let m = store8(q, 45) in mkstr(q)
