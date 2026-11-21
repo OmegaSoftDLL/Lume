@@ -224,6 +224,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: `--protect hardened` / `max` missed conditional jumps** to renamed routines (`js __rt_goob` in the runtime's
   assembly reaching a stop now written in Lume: "undefined symbol"): lprotect renames the target of every jump
   (jmp and jcc); unit test.
+- **The whole f64 runtime is Lume** (rt/rt_f64.src; rt_f64 is now only its generated group, 1061 lines of assembly
+  gone): f64(x) with the text reader (sign, nan / inf, 18 significant digits, e / E exponent), f64_sin / cos / tan /
+  log / log10 / exp / atan2 / pow (x87 extended precision, the same 2^t path and special cases), f64_sqrt / abs /
+  floor / ceil / round / int / is_nan / bits / from_bits and f64_str(v, k); identical results on 13 more cases, math_ok
+  passes.
+- **f64 runtime in Lume: __rt_fstr** (str and print of an f64: the shortest text that reads back to the same double,
+  x87 extended precision through the raw intrinsics, the same search and layout as the assembly); identical digits
+  from subnormals to inf, -0.0, nan and 140 values in scientific notation.
+- **f64 runtime in Lume, first part** (new compiler/stage1/rt/rt_f64.src, the rt_lume_f64 group that only programs
+  using f64 get): + - * / with an f64 on either side (SSE2 on the bits), the comparison (NaN stops as before), equality,
+  and an int or decimal turned into a double (a decimal through x87 extended precision, the same powers of ten);
+  identical on 7 more cases, math_ok passes. rebuild_core cuts what rt_f64.src defines only inside rt_f64 (rt_f64_stub
+  keeps the same labels), and a cut no longer drops a local routine that the part of the segment it keeps still uses.
 - **`lumec --raw` floating-point intrinsics** (for f64 in Lume, the next step): IEEE doubles as their 64 bits in
   general registers (fp_add / sub / mul / div / sqrt, fp_of_int, fp_trunc, fp_cmp with 2 for unordered) and x87 values
   of extended precision in 16-byte memory slots (x87_ldi / ldd / std / sti, x87_add / sub / mul / div, x87_rnd, x87_yl2x,
