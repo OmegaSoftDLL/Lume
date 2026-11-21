@@ -14,6 +14,7 @@ fn __rt_not_int() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nint_msg"))
 fn __rt_not_bool() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nbool_msg"))
 fn __rt_no_field() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nfield_msg"))
 fn __rt_not_str() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_str_msg"))
+fn __rt_no_match() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nmatch_msg"))
 fn __rt_goob() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_goob_msg"))
 fn __rt_try_deep() = __rt_die_now(0, 0, 0, 0, sym_addr("__rt_deep_msg"))
 fn __rt_die3(a, b, c, d, m) = if load64(sym_addr("__rt_try_n")) == 0 then __rt_die_now(0, 0, 0, 0, m) else __rt_try_fail(mkstr(m))
@@ -43,3 +44,20 @@ fn __lume_try_msg() = if load64(sym_addr("__rt_try_msg")) == 0 then 2 else load6
 ## ctfail(s): fail with a string of the program's own; outside a try the string goes to fd 2 and the program exits 3
 fn ctfail(s) = if rt_isstrv(s) == 0 then __rt_not_str() else if load64(sym_addr("__rt_try_n")) != 0 then __rt_try_fail(s) else rt_ctdie(s)
 fn rt_ctdie(s) = let w = sys_call(1, 2, rt_sptr(s, sym_addr("__rt_sb0")), rt_slen(s), 0, 0) in sys_call(60, 3, 0, 0, 0, 0)
+
+## --- the heap cap ---------------------------------------------------------------------------------------------------------
+## __rt_env_cap, called once before the collector starts: LUME_HEAP_CAP=<digits>[K|M|G] in the environment sets the cap
+## (.Lrt_heap_cap, bytes); anything else after the digits stops the program with exit 12.
+fn __rt_env_cap() = if load64(sym_addr(".Lrt_os_argv")) == 0 then 0 else rtm_scan(load64(sym_addr(".Lrt_os_argv")) + (load64(sym_addr(".Lrt_os_argc")) + 1) * 8)
+fn rtm_scan(e) = if load64(e) == 0 then 0 else rtm_cmp(e, load64(e), sym_addr(".Lrt_lec_prefix"))
+fn rtm_cmp(e, s, p) = if load8(p) == 0 then rtm_dig(s, 0) else if load8(s) != load8(p) then rtm_scan(e + 8) else rtm_cmp(e, s + 1, p + 1)
+fn rtm_dig(s, v) = if load8(s) >= 48 and load8(s) <= 57 then rtm_dig(s + 1, v * 10 + load8(s) - 48) else rtm_suf(s, v, load8(s))
+fn rtm_suf(s, v, c) = if c == 0 then rtm_set(v) else if c == 75 or c == 107 then rtm_end(s + 1, v * 1024) else if c == 77 or c == 109 then rtm_end(s + 1, v * 1048576) else if c == 71 or c == 103 then rtm_end(s + 1, v * 1073741824) else rtm_bad()
+fn rtm_end(s, v) = if load8(s) != 0 then rtm_bad() else rtm_set(v)
+fn rtm_set(v) = store64(sym_addr(".Lrt_heap_cap"), v)
+fn rtm_bad() = let w = rtm_puts(sym_addr(".Lrt_lec_bad_msg")) in sys_call(60, 12, 0, 0, 0, 0)
+fn rtm_puts(p) = sys_call(1, 2, p, strlen(p), 0, 0)
+## out of memory: the cap reached (the message, the cap in bytes, the tail) or no address space left; both exit 12
+fn __rt_cap_oom() = let a = rtm_puts(sym_addr(".Lrt_cap_msg")) in let b = rtm_num(sym_addr(".Lrt_pbuf") + 31, load64(sym_addr(".Lrt_heap_cap")), 1) in let c = rtm_puts(sym_addr(".Lrt_cap_tail")) in sys_call(60, 12, 0, 0, 0, 0)
+fn rtm_num(p, v, n) = let s = store8(p - 1, 48 + v % 10) in if v / 10 == 0 then sys_call(1, 2, p - 1, n, 0, 0) else rtm_num(p - 1, v / 10, n + 1)
+fn __rt_alloc_oom() = let w = sys_call(1, 2, sym_addr(".Lrt_oom_msg"), 36, 0, 0) in sys_call(60, 12, 0, 0, 0, 0)

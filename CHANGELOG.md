@@ -224,6 +224,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: `--protect hardened` / `max` missed conditional jumps** to renamed routines (`js __rt_goob` in the runtime's
   assembly reaching a stop now written in Lume: "undefined symbol"): lprotect renames the target of every jump
   (jmp and jcc); unit test.
+- **Record field lookup, the match / heap-cap / out-of-memory stops in Lume** (rt_text.src __rt_recfind; rt_fail.src
+  __rt_no_match, __rt_env_cap reading LUME_HEAP_CAP, __rt_cap_oom, __rt_alloc_oom). The groups rt_fail, rt_records,
+  rt_die, rt_env and rt_cstr hold no assembly any more; three unreachable routines (__rt_mc1, .Lrt_rg_miss,
+  .Lrt_rup_miss) were removed. Same messages and exit codes as before.
 - **The whole f64 runtime is Lume** (rt/rt_f64.src; rt_f64 is now only its generated group, 1061 lines of assembly
   gone): f64(x) with the text reader (sign, nan / inf, 18 significant digits, e / E exponent), f64_sin / cos / tan /
   log / log10 / exp / atan2 / pow (x87 extended precision, the same 2^t path and special cases), f64_sqrt / abs /

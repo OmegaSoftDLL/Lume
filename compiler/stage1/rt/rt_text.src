@@ -200,9 +200,16 @@ fn __rt_qnext(a) = if rt_int(a) == 9223372036854775807 then 0 else mkint(rt_int(
 
 ## --- recget, lidx (were runtime_core assembly) -------------------------------------------------------------------------
 ## recget(r, key): the field of a record by its key (the key string's address, as descriptors hold it); a missing field
-## stops with the text __rt_nofield_text builds (what .Lrt_rg_miss does for the inline caches of generated code)
+## stops with the text __rt_nofield_text builds
 fn recget(r, key) = rt_rg2(__rt_recfind(r, key), key)
 fn rt_rg2(f, key) = if f == 0 then __rt_die3(0, 0, 0, 0, __rt_nofield_text(key, 0)) else f
+## __rt_recfind(r, key): the value of the field `key` of record r, 0 when r is no record or has no such field. A record
+## cell's first word is its descriptor [self][(n<<8)|4][key*]; an rc / arc cell (kind 7 / 9) with a positive count is
+## looked through to the value it holds (its third word).
+fn __rt_recfind(r, key) = if bit_and(r, 7) != 0 then 0 else rt_rf2(r, key, load64(r))
+fn rt_rf2(r, key, h) = if bit_and(h, 1) != 0 then rt_rfodd(r, key, bit_and(h, 255)) else if bit_and(load64(h + 8), 255) != 4 then 0 else rt_rf3(r, key, h, bit_shr(load64(h + 8), 8), 0)
+fn rt_rf3(r, key, h, n, i) = if i >= n then 0 else if load64(h + 16 + i * 8) == key then load64(r + 8 + i * 8) else rt_rf3(r, key, h, n, i + 1)
+fn rt_rfodd(r, key, k) = if k != 7 and k != 9 then 0 else if load64(r + 8) <= 0 then 0 else __rt_recfind(load64(r + 24), key)
 ## lidx(l, i): xs[i] and s[i]. An index that is not an int stops (__rt_need_int) before anything else; a string gives
 ## the one-byte string (past the end: __rt_soob_msg), an array list its item, a Cons list walks its cells (a
 ## constructor list whose descriptor kind is 2); outside: __rt_oob_msg; any other value: __rt_nidx_msg.
@@ -221,7 +228,7 @@ fn rt_lixbad() = __rt_die3(0, 0, 0, 0, sym_addr("__rt_nidx_msg"))
 ## --- __lume_rec_update (was runtime_core assembly) -----------------------------------------------------------------------
 ## {r with k: v, ...}: u is a record of the new fields. Both must be records (__rt_no_field otherwise); the result is a
 ## copy of r's cell with each of u's fields put where r has the same key (keys compare by address, as descriptors hold
-## them); a key r lacks stops with the text __rt_nofield_text builds (what .Lrt_rup_miss does for generated code).
+## them); a key r lacks stops with the text __rt_nofield_text builds.
 fn __lume_rec_update(r, u) = if bit_and(r, 7) != 0 or bit_and(u, 7) != 0 then __rt_no_field() else if bit_and(load64(r), 1) == 1 or load8(load64(r) + 8) != 4 then __rt_no_field() else if bit_and(load64(u), 1) == 1 or load8(load64(u) + 8) != 4 then __rt_no_field() else rt_rup(r, u, bit_shr(load64(load64(r) + 8), 8))
 fn rt_rup(r, u, n) = rt_rup2(r, u, n, alloc((n + 1) * 8))
 fn rt_rup2(r, u, n, c) = let h = store64(c, load64(r)) in let x = rt_copyn(c + 8, r + 8, 0, n * 8) in rt_rupk(r, u, c, n, 0, bit_shr(load64(load64(u) + 8), 8))

@@ -1,7 +1,7 @@
 ## runtime_sync_gate.src -- the code generators and front-ends must not drift apart in silence.
 ##
 ## 1. The hosted runtime has one source: `compiler/stage1/runtime_core.lume`. Neither code generator may define
-##    a copy, and the assembly both of them emit must contain the very same `alloc:` .. `_start` runtime text.
+##    a copy, and the assembly both of them emit must contain the very same runtime text from `alloc:` to the decimal hooks (`.Lrt_isd1:`).
 ## 2. Every program in tests/conformance/stage1/surfaces (the language all three share: the seed checker has no
 ##    `type` declarations) must behave identically through each surface:
 ##    `lumec`, the ML-core oracle on the C seed (`lume0 run data_asm_cc.lume`), and the `lcaas` oracle.
@@ -23,7 +23,7 @@ fn rs_single_source(root) = let cg = fs_read_file(root + "/compiler/stage1/lume/
 
 ## the part of an assembly file from the runtime entry up to, not including, `marker`
 fn rs_cut(text, start, marker) = let a = rs_find(text, start, 0) in if a < 0 then "" else let b = rs_find(text, marker, a) in if b < 0 then "" else slice(text, a, b)
-fn rs_same_runtime(root, tmp) = let probe = tmp + "/probe.src" in let w = fs_write_sync(probe, "print 1\n") in let a = tmp + "/probe_lumec.s" in let b = tmp + "/probe_seed.s" in let st1 = rs_input(hio_bin_dir(root) + "/lumec", probe, a) in let st2 = rs_run(rs_seed(root), Cons("run", Cons(root + "/compiler/stage1/data_asm_cc.lume", Cons(probe, Cons(b, Nil)))), b + ".log") in if st1 != 0 or st2 != 0 then "cannot compile the runtime probe" else let ra = rs_cut(fs_read_file(a), "alloc:\n", "lec_bad:\n") in let rb = rs_cut(fs_read_file(b), "alloc:\n", "lec_bad:\n") in if count(ra) < 10000 then "runtime text not found in lumec output" else if ra != rb then "lumec and the ML-core oracle emit different runtimes" else ""
+fn rs_same_runtime(root, tmp) = let probe = tmp + "/probe.src" in let w = fs_write_sync(probe, "print 1\n") in let a = tmp + "/probe_lumec.s" in let b = tmp + "/probe_seed.s" in let st1 = rs_input(hio_bin_dir(root) + "/lumec", probe, a) in let st2 = rs_run(rs_seed(root), Cons("run", Cons(root + "/compiler/stage1/data_asm_cc.lume", Cons(probe, Cons(b, Nil)))), b + ".log") in if st1 != 0 or st2 != 0 then "cannot compile the runtime probe" else let ra = rs_cut(fs_read_file(a), "alloc:\n", ".Lrt_isd1:\n") in let rb = rs_cut(fs_read_file(b), "alloc:\n", ".Lrt_isd1:\n") in if count(ra) < 10000 then "runtime text not found in lumec output" else if ra != rb then "lumec and the ML-core oracle emit different runtimes" else ""
 
 fn rs_native(root, name, tmp) = let src = rs_dir(root) + "/" + name + ".src" in let s = tmp + "/" + name + ".s" in let st = hio_osrun_ict(hio_bin_dir(root) + "/lumec", hio_cflags(), src, s, s + ".err", 120000) in if st != 0 then "lumec rejected " + name + ": " + fs_read_file(s + ".err") else rs_exec(root, s, tmp + "/" + name + ".native")
 fn rs_exec(root, s, elf) = let a = rs_run(hio_bin_dir(root) + "/lasm", hio_aflags(s), elf) in let m = rs_run("/bin/chmod", Cons("+x", Cons(elf, Nil)), elf + ".chmod") in if a != 0 then "assembly failed for " + s else let r = rs_run(elf, Nil, elf + ".out") in if r != 0 then "execution failed for " + elf else ""
