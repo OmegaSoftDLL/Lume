@@ -356,7 +356,8 @@ failed: too big
 ## 5. Buffers de bytes (estavel)
 
 `buf_new(n)` (n bytes zerados), `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),
-`buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,
+`buf_copy(dst, d_off, src, s_off, n)` (src um buffer ou uma string: um quadro que chega como string vai para um
+buffer que ja existe, sem criar outro), `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,
 `buf_addr(b)` (endereco do byte 0, para chamadas de sistema). Indice fora do buffer ou valor fora de 0..255 para o
 programa. `buf_shared(n)` e um buffer em memoria compartilhada com os processos que `os_fork` criar depois (o que
 um escreve, todos leem). Com `use par`: `par_pool(n, fn(k, job) => ...)` cria n processos trabalhadores uma vez,
@@ -380,7 +381,9 @@ print buf_get(b, 1)
 ```
 
 Video e codec (estavel; os argumentos sao buffers, deslocamentos em bytes e strides; cada um devolve -1 com
-argumento errado): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / buf_sad8x8 / buf_sad4x4 (a, ai, sa, b, bi, sb)` e
+argumento errado): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_bgra_to_i420_rows(src, stride, w, h, dst, r0, r1)` (so as
+linhas r0 .. r1 - 1, r0 par, escritas onde a conversao inteira as poe: cada trabalhador de um pool converte a sua faixa
+num unico buffer I420 compartilhado), `buf_sad16x16 / buf_sad8x8 / buf_sad4x4 (a, ai, sa, b, bi, sb)` e
 `buf_satd4x4 / buf_satd16x16 (iguais)` (SSE2), `buf_h264_fdct4x4 / buf_h264_idct4x4 (src, si, dst, di)` (blocos int16),
 `buf_h264_quant4x4 (src, si, qp, intra, dst, di)` (devolve os niveis nao nulos), `buf_h264_dequant4x4 (src, si, qp,
 dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pred, pi, res, ri, dst, di)`,
@@ -665,6 +668,7 @@ one.txt
 
 | Builtin | Resposta | Plataformas |
 | --- | --- | --- |
+| `os_cpu_count()` | os processadores em que este processo pode rodar (a mascara de afinidade no Linux, NUMBER_OF_PROCESSORS no Windows), no minimo 1 | estavel |
 | `os_env_has(nome)` | 1 quando a variavel existe (tambem com valor `""`), senao 0; 0 para `""` | estavel; no Windows os nomes se comparam sem diferenca de caixa ASCII |
 | `os_setenv(nome, valor)` | 1; 0 quando nome e `""` ou contem `=` (ou a memoria nao pode ser mapeada). A nova tabela passa a ser o ambiente deste processo (`os_getenv`, `os_env_has`) e todo filho iniciado depois a herda | estavel; veja a nota sobre caixa abaixo |
 | `os_unsetenv(nome)` | 1, tambem quando a variavel nao existia; 0 quando nome e `""` ou contem `=` | estavel |

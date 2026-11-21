@@ -76,6 +76,34 @@ fn rtv_b2i(src, s, ww, hh, dst) =
         let z2 = rtv_c(src, s, y + ww * hh, cw * ch, 0, ww * 65536 + hh) in
         mkint(need)
 
+## buf_bgra_to_i420_rows(src, stride, w, h, dst, r0, r1): the same conversion for the rows r0 .. r1 - 1 only (r0
+## even, r1 even or h), written where the whole conversion puts them (Y rows r0.., chroma rows r0 / 2..), so the
+## workers of a pool can each convert their own band of one frame into one shared I420 buffer. Answers the bytes
+## written, or -1 (the checks of buf_bgra_to_i420, and 0 <= r0 < r1 <= h, r0 odd, r1 odd and not h)
+fn buf_bgra_to_i420_rows(src, stride, w, h, dst, r0, r1) = rtv_b2ir(src, rt_int(stride), rt_int(w), rt_int(h), dst, rt_int(r0), rt_int(r1))
+fn rtv_b2ir(src, s, ww, hh, dst, r0, r1) =
+    let cw = bit_shr(ww + 1, 1) in
+    let ch = bit_shr(hh + 1, 1) in
+    if rtv_isbuf(src) == 0 or rtv_isbuf(dst) == 0 or ww <= 0 or hh <= 0 or ww > 65535 or hh > 65535 or s < 4 * ww or r0 < 0 or r1 > hh or r0 >= r1 or bit_and(r0, 1) == 1 or (bit_and(r1, 1) == 1 and r1 != hh) then
+        mkint(0 - 1)
+    else if rtv_len(src) < s * (hh - 1) + 4 * ww or rtv_len(dst) < ww * hh + 2 * cw * ch then
+        mkint(0 - 1)
+    else
+        let y = dst + 8 in
+        let z1 = rtv_y(src, s, y, ww, r0, r1) in
+        let z2 = rtv_c2(src, s, y + ww * hh, cw * ch, bit_shr(r0, 1), ww * 65536 + hh, bit_shr(r1 + 1, 1)) in
+        mkint(ww * (r1 - r0) + 2 * cw * (bit_shr(r1 + 1, 1) - bit_shr(r0, 1)))
+## chroma rows j .. je - 1 (as rtv_c, which runs to the last row)
+fn rtv_c2(src, s, u, k, j, dims, je) =
+    let ww = bit_shr(dims, 16) in
+    let hh = bit_and(dims, 65535) in
+    if j >= je then
+        0
+    else
+        let ds = if 2 * j + 1 < hh then s else 0 in
+        let z = rtv_crow(src + 8 + 2 * j * s, ds, u + j * bit_shr(ww + 1, 1), k, 0, ww) in
+        rtv_c2(src, s, u, k, j + 1, dims, je)
+
 ## --- I420 -> BGRA -------------------------------------------------------------------------------------------------
 ## C = Y - 16, D = U - 128, E = V - 128; B = (298 C + 516 D + 128) >> 8, G = (298 C - 100 D - 208 E + 128) >> 8,
 ## R = (298 C + 409 E + 128) >> 8, each clipped to 0..255; one row: up advances after every odd column. cc folds

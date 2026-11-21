@@ -355,7 +355,8 @@ failed: too big
 ## 5. Byte buffers (stable)
 
 `buf_new(n)` (n bytes, all zero), `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (answers b),
-`buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,
+`buf_copy(dst, d_off, src, s_off, n)` (src a buffer or a string: a frame that arrives as a string goes into an
+existing buffer without a new one), `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,
 `buf_addr(b)` (the address of byte 0, for system calls). An index outside the buffer or a value outside
 0..255 stops the program. `buf_shared(n)` is a buffer in memory shared with the processes `os_fork` starts
 afterwards (what one writes, all read). With `use par`: `par_pool(n, fn(k, job) => ...)` starts n worker processes
@@ -379,7 +380,9 @@ print buf_get(b, 1)
 ```
 
 Video and codec builtins (stable; arguments are buffers, byte offsets and strides; each answers -1 on a wrong
-argument): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_sad16x16 / buf_sad8x8 / buf_sad4x4 (a, ai, sa, b, bi, sb)` and
+argument): `buf_bgra_to_i420`, `buf_i420_to_bgra`, `buf_bgra_to_i420_rows(src, stride, w, h, dst, r0, r1)` (only the
+rows r0 .. r1 - 1, r0 even, written where the whole conversion puts them: each worker of a pool converts its own band
+into one shared I420 buffer), `buf_sad16x16 / buf_sad8x8 / buf_sad4x4 (a, ai, sa, b, bi, sb)` and
 `buf_satd4x4 / buf_satd16x16 (same)` (SSE2), `buf_h264_fdct4x4 / buf_h264_idct4x4 (src, si, dst, di)` (int16 blocks),
 `buf_h264_quant4x4 (src, si, qp, intra, dst, di)` (answers the nonzero levels), `buf_h264_dequant4x4 (src, si, qp,
 dst, di)`, `buf_h264_sub4x4 (a, ai, sa, pred, pi, dst)`, `buf_h264_recon4x4 (pred, pi, res, ri, dst, di)`,
@@ -661,6 +664,7 @@ one.txt
 
 | Builtin | Answer | Platforms |
 | --- | --- | --- |
+| `os_cpu_count()` | the processors this process may run on (the CPU affinity mask on Linux, NUMBER_OF_PROCESSORS on Windows), at least 1 | stable |
 | `os_env_has(name)` | 1 when the variable is set (also to `""`), else 0; 0 for `""` | stable; Windows compares names without regard to ASCII case |
 | `os_setenv(name, value)` | 1; 0 when name is `""` or holds `=` (or memory cannot be mapped). The new table is this process's environment from then on (`os_getenv`, `os_env_has`) and every child started afterwards inherits it | stable; see the note on case below |
 | `os_unsetenv(name)` | 1, also when the variable was not set; 0 when name is `""` or holds `=` | stable |

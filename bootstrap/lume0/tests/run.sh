@@ -462,6 +462,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     done
     # every documented builtin called once (a builtin missing from a release fails to compile here), on every platform
     LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/builtins_regress_ok.src >"$ntmp/breg.out" 2>"$ntmp/breg.err"
+    if LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/lumedesk36_ok.src 2>&1 | grep -q "10 passed, 0 failed"; then ok "buf_copy from a string, buf_bgra_to_i420_rows bands equal the whole conversion, os_cpu_count (lumedesk36_ok.src)"; else bad "buf_copy from a string / buf_bgra_to_i420_rows / os_cpu_count (lumedesk36_ok.src)"; fi
     if grep -q " passed, 0 failed" "$ntmp/breg.out"; then ok "builtins regression: every documented builtin family answers as the reference says (builtins_regress_ok.src)"; else bad "builtins regression (builtins_regress_ok.src)"; tail -n 8 "$ntmp/breg.out" "$ntmp/breg.err"; fi
     # the reader, checker and generator of the builtins table (builtins_gate above runs the check on the tree)
     # three of its tests run lumec: LUME_BIN_DIR must name the built toolchain, as for the gates above

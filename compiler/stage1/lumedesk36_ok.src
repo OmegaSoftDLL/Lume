@@ -1,0 +1,32 @@
+## lumedesk36_ok.src -- the LumeDesk requests of 2026-11-21: buf_copy from a string into an existing buffer,
+## buf_bgra_to_i420_rows (one band of rows into the whole frame's I420 layout, the same bytes as the whole
+## conversion) and os_cpu_count. `lume test compiler/stage1/lumedesk36_ok.src`
+
+fn fill(b, i, n, s) = if i >= n then b else let w = buf_set(b, i, (s *% 1103515245 +% 12345) % 256) in fill(b, i + 1, n, (s *% 1103515245 +% 12345) % 2147483648)
+fn same(a, b, i, n) = if i >= n then true else if buf_get(a, i) != buf_get(b, i) then false else same(a, b, i + 1, n)
+fn isize(w, h) = w * h + 2 * ((w + 1) / 2) * ((h + 1) / 2)
+
+## the bands r0 .. r1 of a list, one call each, into one buffer
+fn bands(src, s, w, h, dst, rs) = match rs
+    Nil        => true
+    Cons(r, t) => buf_bgra_to_i420_rows(src, s, w, h, dst, r.a, r.b) > 0 and bands(src, s, w, h, dst, t)
+fn rows_match(w, h, rs) =
+    let s = 4 * w + 12 in
+    let src = fill(buf_new(s * h), 0, s * h, w * 31 + h) in
+    let whole = buf_new(isize(w, h)) in
+    let part = buf_new(isize(w, h)) in
+    let a = buf_bgra_to_i420(src, s, w, h, whole) in
+    bands(src, s, w, h, part, rs) and same(whole, part, 0, isize(w, h))
+
+fn test_bands_equal_the_whole_conversion() = rows_match(16, 16, [{a: 0, b: 8}, {a: 8, b: 16}]) and rows_match(64, 48, [{a: 0, b: 10}, {a: 10, b: 24}, {a: 24, b: 48}])
+fn test_odd_sizes_and_last_band() = rows_match(37, 23, [{a: 0, b: 8}, {a: 8, b: 16}, {a: 16, b: 23}]) and rows_match(5, 3, [{a: 0, b: 2}, {a: 2, b: 3}])
+fn test_band_order_does_not_matter() = rows_match(40, 30, [{a: 20, b: 30}, {a: 0, b: 4}, {a: 4, b: 20}])
+fn test_band_answer_is_bytes_written() = let src = buf_new(64 * 16) in let d = buf_new(isize(16, 16)) in buf_bgra_to_i420_rows(src, 64, 16, 16, d, 0, 8) == 16 * 8 + 2 * 8 * 4 and buf_bgra_to_i420_rows(src, 64, 16, 16, d, 0, 16) == isize(16, 16)
+fn test_band_wrong_arguments() = let src = buf_new(64 * 16) in let d = buf_new(isize(16, 16)) in buf_bgra_to_i420_rows(src, 64, 16, 16, d, 1, 8) == 0 - 1 and buf_bgra_to_i420_rows(src, 64, 16, 16, d, 0, 7) == 0 - 1 and buf_bgra_to_i420_rows(src, 64, 16, 16, d, 8, 8) == 0 - 1 and buf_bgra_to_i420_rows(src, 64, 16, 16, d, 0, 17) == 0 - 1 and buf_bgra_to_i420_rows(src, 64, 16, 16, buf_new(10), 0, 8) == 0 - 1
+
+fn test_copy_long_string_into_buffer() = let b = buf_new(12) in let r = buf_copy(b, 2, "hello, world", 7, 5) in buf_to_str(b, 2, 5) == "world" and buf_get(b, 0) == 0 and buf_get(b, 7) == 0
+fn test_copy_short_string_into_buffer() = let b = buf_new(8) in let r = buf_copy(b, 3, "abc", 0, 3) in buf_to_str(b, 3, 3) == "abc" and buf_get(b, 6) == 0
+fn test_copy_string_frame_reuses_buffer() = let s = buf_to_str(fill(buf_new(4096), 0, 4096, 7), 0, 4096) in let b = buf_new(4096) in let r1 = buf_copy(b, 0, s, 0, 4096) in let r2 = buf_copy(b, 0, s, 0, 4096) in buf_to_str(b, 0, 4096) == s
+fn test_copy_from_buffer_unchanged() = let a = buf_from_str("xyz") in let b = buf_new(4) in let r = buf_copy(b, 1, a, 0, 3) in buf_to_str(b, 1, 3) == "xyz"
+
+fn test_cpu_count_is_positive() = os_cpu_count() >= 1 and os_cpu_count() <= 65536

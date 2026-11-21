@@ -414,7 +414,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             `win_kbhook_swallow(hwnd, on)` (keep Win, Alt+Tab ... from the local system while hwnd is in front),
             `win_kbhook_events()` (vk, scan, extended, injected, down, alt), `win_kbhook_remove(h)`
 - Byte buffers (mutable, any size): `buf_new(n)`, `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)`
-            (returns b), `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`,
+            (returns b), `buf_copy(dst, d_off, src, s_off, n)` (src: buffer or string), `buf_slice(b, off, n)`, `buf_from_str(s)`,
             `buf_to_str(b, off, n)`, `buf_addr(b)` (address of byte 0, for system calls); buf_get / buf_set on a
             small index are inline machine code (no call), an out-of-range index stops with the same message
             shared memory: `buf_shared(n)` (a buffer the os_fork children share); `use par` runs one job on n

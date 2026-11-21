@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`buf_copy` takes a string as the source** (a 1080p frame that arrives as a string goes into an existing buffer;
+  `buf_from_str` made a new 8 MB buffer per frame, ~2.9 ms). LumeDesk request.
+- **`buf_bgra_to_i420_rows(src, stride, w, h, dst, r0, r1)`**: only rows r0 .. r1 - 1 (r0 even), written where the
+  whole conversion puts them, so each worker of a pool converts its own band into one shared I420 buffer (the bands
+  together give the same bytes as `buf_bgra_to_i420`, lumedesk36_ok.src). LumeDesk request.
+- **`os_cpu_count()`**: the processors the process may run on (sched_getaffinity on Linux, NUMBER_OF_PROCESSORS on
+  Windows). LumeDesk request.
+- **lumec --raw register allocation:** the left operand of an operation waits in a free scratch register (r11, r10,
+  r9, r8, rsi, rdi: one the right operand's code never names and that holds no parameter or let) instead of the
+  stack when the right operand makes no call; a let beyond the five callee-saved registers lives in a free scratch
+  register when its scope makes no call; a let whose name is never read is not stored at all and does not count
+  against leaf mode. In the generated runtime `popq %rax` 1080 -> 358, stores to stack slots 1318 -> 569, leaf
+  routines 611 -> 658. An intrinsic that uses a register a leaf keeps a parameter in (x87 with three arguments,
+  vec_satd4 / vec_sad4, the deblocking filters) now keeps the routine out of leaf mode (`#rwu-REG`): it could change
+  a parameter before.
 - **buf_h264_mb_i4 fast mode decision** (cfg neighbour word + 65536): vertical, horizontal and DC, then only the
   diagonal modes next to the winner; ~20% faster per macroblock, a valid choice that is not always the cheapest
   (h264_mb_ok checks it against a reference written in ordinary Lume).

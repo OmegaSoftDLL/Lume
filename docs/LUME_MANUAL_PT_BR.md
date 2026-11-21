@@ -394,7 +394,7 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   `win_window_draw(hwnd, dados, w, h, stride)`, `win_window_draw_rect`; gancho WH_KEYBOARD_LL:
                   `win_kbhook_install()`, `win_kbhook_swallow(hwnd, liga)`, `win_kbhook_events()`, `win_kbhook_remove`
 - Buffers de bytes (mutaveis): `buf_new(n)`, `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),
-                  `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off,
+                  `buf_copy(dst, d_off, src, s_off, n)` (src: buffer ou string), `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off,
                   n)`, `buf_addr(b)`; buf_get / buf_set com indice pequeno viram codigo de maquina inline (sem chamada)
                   memoria compartilhada: `buf_shared(n)` (buffer que os filhos de os_fork compartilham); `use par` roda
                   um job em n processos ao mesmo tempo: par_pool(n, fn(k, job) => ...), par_run, par_slice, par_queue / par_take, par_close
