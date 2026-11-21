@@ -224,6 +224,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: `--protect hardened` / `max` missed conditional jumps** to renamed routines (`js __rt_goob` in the runtime's
   assembly reaching a stop now written in Lume: "undefined symbol"): lprotect renames the target of every jump
   (jmp and jcc); unit test.
+- **`lumec --raw` floating-point intrinsics** (for f64 in Lume, the next step): IEEE doubles as their 64 bits in
+  general registers (fp_add / sub / mul / div / sqrt, fp_of_int, fp_trunc, fp_cmp with 2 for unordered) and x87 values
+  of extended precision in 16-byte memory slots (x87_ldi / ldd / std / sti, x87_add / sub / mul / div, x87_rnd, x87_yl2x,
+  x87_f2xm1, x87_scale, x87_sin / cos / tan / atan2, x87_const, x87_getcw / setcw): each one loads, works and stores, so
+  no x87 register is held across Lume code. 27 checks in a standalone raw program. lasm encodes fldt / fstpt
+  (identical to GNU as).
 - **The stop on a run-time error starts at the user function again:** runtime routines now written in Lume keep frames
   of their own on the way to a stop (__rt_div, rt_divi, __rt_div0), so __rt_die_now walks up to the first frame whose
   return address is in the program's code (__rt_fntab) before the trace and `lume debug`'s stop on the error (the
