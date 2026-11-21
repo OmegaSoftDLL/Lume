@@ -250,7 +250,7 @@ Garante Worst-Case Execution Time (WCET) em kernels e drivers (`[V0002]`).
 ## 4.4 Comandos de Prova e Autocura
 - `lume prove <arquivo.src>`           Prova todos os contratos e leis.
 - `lume verify [--jobs=N] <arquivo.src>...`  check, test, prove, a checagem de formato e certify em muitos arquivos; cache por arquivo; cada etapa cronometrada.
-- `lume pkg publish|add|install [--store=DIR]` versoes de pacotes: store com testes, requisitos `^`/`~`, lume_modules/, lume.lock;
+- `lume pkg publish|add|resolve|install [--store=DIR] [--locked|--update] [--allow-failing]` versoes de pacotes: store com testes e provas, requisitos `^`/`~`/`>=`/`<`, resolucao transitiva, lume_modules/, lume.lock respeitado nas instalacoes seguintes, recusa quando os testes ou provas do pacote falham;
   `lume pkg audit [dir]` confere os hashes do lock e o certificado de prova do pacote.
 - `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  biblioteca padrao: hashes, CSV, UTF-8, datas e fusos, regex, gzip, HTTP e HTTPS.
   Contratos dos builtins: `buf_bits_write` e `p + n` ou `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (quando o
@@ -781,7 +781,7 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                                     erro em tempo de execucao, e le comandos de texto do arquivo, de cada -x
                                     (em ordem) ou da entrada padrao: break NOME | break ARQUIVO:LINHA,
                                     delete [NOME], continue, step, next, finish, bt (argumentos de cada
-                                    quadro), args, locals, print NOME, frame N, up, down, quit, help. Escreve
+                                    quadro), args, locals, print NOME, frame N, up, down, mark, output ARQ, quit, help. Escreve
                                     no stderr; a saida do programa nao muda. Quando os comandos acabam, o
                                     programa roda ate o fim. Os passos vao de chamada em chamada (inicio ou
                                     retorno de funcao), nao de expressao em expressao; nada e expandido inline.
@@ -1190,7 +1190,7 @@ nao esta nesta lista e recusado (`unknown native driver command`, `unknown subco
   lume verify [--jobs <value>] <source.src>...
   lume verify-cert [--json] [--check-source] [source.src] <certificate.json>
   lume proof-cache <self-test|check|store> [--require-all-hits] [source.src] [cache-dir]
-  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add> [--store <value>] [dir]
+  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve> [--store <value>] [--locked] [--update] [--allow-failing] [dir]
   lume pkg <audit> (served by the POSIX shim, scripts/lume_legacy.sh)
   lume registry <publish|resolve|discover> [--json] [--store <value>] [--target <value>] [--adapter <value>] [--source <value>] [--proof <value>] [--tests <value>] [--cid <value>] [--capability <value>] [--contract-signature <value>]
   lume agent <check|compile|fill|prove|ast|expand|symbols|eval|witness|repair|impact|hashes|grammar|project|bind|skeleton|cegis|synthesize|trace|heal|morph|kernel|c-export|replay|lineage|patch|patch-fn|diff-semver|equiv|check-rot> [--json] <source.src> [arguments] (the name of any `sentience` command is accepted in place of the subcommand)

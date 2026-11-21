@@ -1,0 +1,35 @@
+## par.src - `use par`: a pool of worker processes for data-parallel work on shared buffers.
+##
+## A program that has more work than one core can do in time (a video frame cut into slices, a large buffer cut into
+## strips) keeps its data in buffers made by buf_shared(n), which every process sees, and starts a pool ONCE:
+##
+##   let pool = par_pool(8, fn(k, job) => encode_slice(src, rec, k, job))
+##   let total = par_run(pool, frame_no)      ## each worker k runs the function at the same time; the sum of results
+##   let done = par_close(pool)               ## the workers stop and are waited for
+##
+## The workers are children of os_fork made by par_pool: each has its own copy of everything the program held at that
+## moment (closures, lists, ordinary buffers) and shares only the buf_shared buffers. A job is one int (>= 0) sent to
+## every worker; each answers one int, and par_run returns their sum once all have answered, so after par_run every
+## write the workers made into shared buffers is visible to the caller. Starting a pool costs a fork per worker; a
+## par_run costs two pipe messages per worker (a few microseconds), so keep the pool for the life of the program.
+## On Windows os_fork is a real fork (docs/42-windows-native-toolchain.md section 7): the same code runs unchanged.
+
+## the pool: n workers; fds holds per worker the pipe it reads jobs from (write end), the pipe it answers on (read
+## end) and its process id, 4 bytes each, little endian
+fn par_pool(n, work) = par_fork(buf_new(n * 12 + 12), n, 0, work)
+fn par_fork(b, n, k, work) = if k >= n then {n: n, fds: b} else par_fork2(b, n, k, work, os_pipe_new(), os_pipe_new())
+fn par_fork2(b, n, k, work, jobs, answers) = let pid = os_fork() in if pid == 0 then (let x = par_worker(k, jobs / 10000, answers % 10000, work) in {n: n, fds: b}) else (let s1 = par_put(b, k * 12, jobs % 10000) in let s2 = par_put(b, k * 12 + 4, answers / 10000) in let s3 = par_put(b, k * 12 + 8, pid) in par_fork(b, n, k + 1, work))
+## a worker: read a job, run it, answer; a negative job (or a closed pipe) ends the process
+fn par_worker(k, rfd, wfd, work) = let job = os_pipe_read_int(rfd) in if job < 0 then os_exit(0) else (let r = work(k, job) in let w = os_pipe_write_int(wfd, r) in par_worker(k, rfd, wfd, work))
+## par_run(pool, job): every worker runs work(k, job) at once; the sum of their answers
+fn par_run(p, job) = if job < 0 then 0 else (let s = par_send(p.fds, p.n, 0, job) in par_recv(p.fds, p.n, 0, 0))
+fn par_send(b, n, k, job) = if k >= n then 0 else (let w = os_pipe_write_int(par_get(b, k * 12), job) in par_send(b, n, k + 1, job))
+fn par_recv(b, n, k, acc) = if k >= n then acc else par_recv(b, n, k + 1, acc + os_pipe_read_int(par_get(b, k * 12 + 4)))
+## par_close(pool): stop the workers and wait for each; the number waited for
+fn par_close(p) = let s = par_send(p.fds, p.n, 0, -1) in par_wait(p.fds, p.n, 0)
+fn par_wait(b, n, k) = if k >= n then k else (let w = os_waitpid(par_get(b, k * 12 + 8)) in par_wait(b, n, k + 1))
+## par_slice(k, n, total): the first item of worker k when total items are cut into n nearly equal runs (the end of
+## the run of worker k is par_slice(k + 1, n, total))
+fn par_slice(k, n, total) = (total * k) / n
+fn par_put(b, o, v) = let a = buf_set(b, o, v % 256) in let c = buf_set(b, o + 1, (v / 256) % 256) in let d = buf_set(b, o + 2, (v / 65536) % 256) in buf_set(b, o + 3, v / 16777216)
+fn par_get(b, o) = buf_get(b, o) + buf_get(b, o + 1) * 256 + buf_get(b, o + 2) * 65536 + buf_get(b, o + 3) * 16777216

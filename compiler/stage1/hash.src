@@ -5,7 +5,16 @@
 ##   md5(s)      128-bit MD5 (RFC 1321; for checksums only, it is broken for security)
 ##   sha1(s)     160-bit SHA-1 (RFC 3174; for checksums and old protocols only)
 ##   sha256(s)   256-bit SHA-256 (FIPS 180-4)
+##   sha224(s) / sha384(s) / sha512(s)    the other FIPS 180-4 digests (SHA-512 over 64-bit words)
+##   hash_hex(name, s) / hash_raw(name, s)  a digest by name ("md5", "sha1", "sha224", "sha256", "sha384", "sha512")
+##                                         as hex or as its raw bytes
+##   hmac_md5 / hmac_sha1 / hmac_sha256 / hmac_sha384 / hmac_sha512(key, msg)   HMAC (RFC 2104) in hex;
+##   hmac_hex(name, key, msg) / hmac_raw(name, key, msg) by name
+##   pbkdf2_sha256(pass, salt, iters, dklen) / pbkdf2_hex(name, pass, salt, iters, dklen)   PBKDF2 (RFC 8018), hex
+##   crc32c(s) / crc32c_buf(b, off, n)    CRC-32C (Castagnoli: iSCSI, SCTP, ext4)
+##   fnv1a32(s)  FNV-1a 32-bit, an int;  fnv1a64(s)  FNV-1a 64-bit as 16 hex digits
 ##   hex32(n)    an int as 8 lowercase hex digits
+## For hex and base64 text see std/encoding.
 
 fn hs_m32() = 4294967295
 fn hs_add(a, b) = bit_and(a + b, 4294967295)
@@ -211,3 +220,164 @@ fn sha256(s) =
     let p = hs_pad(s, 1) in
     let st = hs_s2blk(p, 0, buf_len(p), buf_new(256), hs_ktab(buf_new(256), hs_k256(), 0), {a: 1779033703, b: 3144134277, c: 1013904242, d: 2773480762, e: 1359893119, f: 2600822924, g: 528734635, h: 1541459225}) in
     hex32(st.a) + hex32(st.b) + hex32(st.c) + hex32(st.d) + hex32(st.e) + hex32(st.f) + hex32(st.g) + hex32(st.h)
+## SHA-224: SHA-256 with its own initial state, cut to 7 words
+fn sha224(s) =
+    let p = hs_pad(s, 1) in
+    let st = hs_s2blk(p, 0, buf_len(p), buf_new(256), hs_ktab(buf_new(256), hs_k256(), 0), {a: 3238371032, b: 914150663, c: 812702999, d: 4144912697, e: 4290775857, f: 1750603025, g: 1694076839, h: 3204075428}) in
+    hex32(st.a) + hex32(st.b) + hex32(st.c) + hex32(st.d) + hex32(st.e) + hex32(st.f) + hex32(st.g)
+
+## --- SHA-512 and SHA-384: 64-bit words held in a native int (the bits of an unsigned word; + is done in halves) ---------
+fn hs_m32v() = 4294967295
+fn hs_w64(hi, lo) = bit_or(bit_shl(hi, 32), lo)
+fn hs_hi(x) = bit_and(bit_shr(x, 32), 4294967295)
+fn hs_lo(x) = bit_and(x, 4294967295)
+fn hs_add64(a, b) =
+    let lo = hs_lo(a) + hs_lo(b) in
+    bit_or(bit_shl(hs_hi(a) + hs_hi(b) + bit_shr(lo, 32), 32), bit_and(lo, 4294967295))
+## logical shift right (bit_shr keeps the sign) and rotation, 1 <= n <= 63
+fn hs_lshr(x, n) = bit_and(bit_shr(x, n), bit_xor(bit_shl(0 - 1, 64 - n), 0 - 1))
+fn hs_rotr64(x, n) = bit_or(hs_lshr(x, n), bit_shl(x, 64 - n))
+fn hs_not64(x) = bit_xor(x, 0 - 1)
+fn hs_hex64(x) = hex32(hs_hi(x)) + hex32(hs_lo(x))
+fn hs_k512() = [1116352408, 3609767458, 1899447441, 602891725, 3049323471, 3964484399, 3921009573, 2173295548, 961987163, 4081628472, 1508970993, 3053834265, 2453635748, 2937671579, 2870763221, 3664609560, 3624381080, 2734883394, 310598401, 1164996542, 607225278, 1323610764, 1426881987, 3590304994, 1925078388, 4068182383, 2162078206, 991336113, 2614888103, 633803317, 3248222580, 3479774868, 3835390401, 2666613458, 4022224774, 944711139, 264347078, 2341262773, 604807628, 2007800933, 770255983, 1495990901, 1249150122, 1856431235, 1555081692, 3175218132, 1996064986, 2198950837, 2554220882, 3999719339, 2821834349, 766784016, 2952996808, 2566594879, 3210313671, 3203337956, 3336571891, 1034457026, 3584528711, 2466948901, 113926993, 3758326383, 338241895, 168717936, 666307205, 1188179964, 773529912, 1546045734, 1294757372, 1522805485, 1396182291, 2643833823, 1695183700, 2343527390, 1986661051, 1014477480, 2177026350, 1206759142, 2456956037, 344077627, 2730485921, 1290863460, 2820302411, 3158454273, 3259730800, 3505952657, 3345764771, 106217008, 3516065817, 3606008344, 3600352804, 1432725776, 4094571909, 1467031594, 275423344, 851169720, 430227734, 3100823752, 506948616, 1363258195, 659060556, 3750685593, 883997877, 3785050280, 958139571, 3318307427, 1322822218, 3812723403, 1537002063, 2003034995, 1747873779, 3602036899, 1955562222, 1575990012, 2024104815, 1125592928, 2227730452, 2716904306, 2361852424, 442776044, 2428436474, 593698344, 2756734187, 3733110249, 3204031479, 2999351573, 3329325298, 3815920427, 3391569614, 3928383900, 3515267271, 566280711, 3940187606, 3454069534, 4118630271, 4000239992, 116418474, 1914138554, 174292421, 2731055270, 289380356, 3203993006, 460393269, 320620315, 685471733, 587496836, 852142971, 1086792851, 1017036298, 365543100, 1126000580, 2618297676, 1288033470, 3409855158, 1501505948, 4234509866, 1607167915, 987167468, 1816402316, 1246189591]
+## a table of 64-bit words as pairs of 32-bit big-endian words (8 bytes each)
+fn hs_get8(t, i) = hs_w64(hs_sw(t, i * 2), hs_sw(t, i * 2 + 1))
+fn hs_set8(t, i, v) = let a = hs_ssw(t, i * 2, hs_hi(v)) in hs_ssw(t, i * 2 + 1, hs_lo(v))
+## padding for 128-byte blocks: 0x80, zeros, the bit length in 128 bits
+fn hs_pad128(s) =
+    let b = buf_from_str(s) in
+    let n = buf_len(b) in
+    let total = (n + 17 + 127) / 128 * 128 in
+    let p = buf_new(total) in
+    let c = buf_copy(p, 0, b, 0, n) in
+    let m = buf_set(p, n, 128) in
+    hs_len(p, total, n * 8, 0, 1)
+fn hs_s5sched(p, o, w, i) =
+    if i >= 80 then
+        w
+    else
+        let v = if i < 16 then hs_w64(hs_wbe(p, o + i * 8), hs_wbe(p, o + i * 8 + 4)) else let x = hs_get8(w, i - 15) in let y = hs_get8(w, i - 2) in hs_add64(hs_add64(hs_add64(hs_get8(w, i - 16), bit_xor(bit_xor(hs_rotr64(x, 1), hs_rotr64(x, 8)), hs_lshr(x, 7))), hs_get8(w, i - 7)), bit_xor(bit_xor(hs_rotr64(y, 19), hs_rotr64(y, 61)), hs_lshr(y, 6))) in
+        let z = hs_set8(w, i, v) in
+        hs_s5sched(p, o, w, i + 1)
+fn hs_s5r(w, k, i, st) =
+    if i >= 80 then
+        st
+    else
+        let s1 = bit_xor(bit_xor(hs_rotr64(st.e, 14), hs_rotr64(st.e, 18)), hs_rotr64(st.e, 41)) in
+        let ch = bit_xor(bit_and(st.e, st.f), bit_and(hs_not64(st.e), st.g)) in
+        let t1 = hs_add64(hs_add64(hs_add64(hs_add64(st.h, s1), ch), hs_get8(k, i)), hs_get8(w, i)) in
+        let s0 = bit_xor(bit_xor(hs_rotr64(st.a, 28), hs_rotr64(st.a, 34)), hs_rotr64(st.a, 39)) in
+        let mj = bit_xor(bit_xor(bit_and(st.a, st.b), bit_and(st.a, st.c)), bit_and(st.b, st.c)) in
+        hs_s5r(w, k, i + 1, {a: hs_add64(t1, hs_add64(s0, mj)), b: st.a, c: st.b, d: st.c, e: hs_add64(st.d, t1), f: st.e, g: st.f, h: st.g})
+fn hs_s5add(x, y) = {a: hs_add64(x.a, y.a), b: hs_add64(x.b, y.b), c: hs_add64(x.c, y.c), d: hs_add64(x.d, y.d), e: hs_add64(x.e, y.e), f: hs_add64(x.f, y.f), g: hs_add64(x.g, y.g), h: hs_add64(x.h, y.h)}
+fn hs_s5blk(p, o, n, w, k, st) =
+    if o >= n then
+        st
+    else
+        let s = hs_s5sched(p, o, w, 0) in
+        hs_s5blk(p, o + 128, n, w, k, hs_s5add(st, hs_s5r(w, k, 0, st)))
+fn hs_s5run(s, st0) =
+    let p = hs_pad128(s) in
+    hs_s5blk(p, 0, buf_len(p), buf_new(640), hs_ktab(buf_new(640), hs_k512(), 0), st0)
+fn sha512(s) =
+    let st = hs_s5run(s, {a: hs_w64(1779033703, 4089235720), b: hs_w64(3144134277, 2227873595), c: hs_w64(1013904242, 4271175723), d: hs_w64(2773480762, 1595750129), e: hs_w64(1359893119, 2917565137), f: hs_w64(2600822924, 725511199), g: hs_w64(528734635, 4215389547), h: hs_w64(1541459225, 327033209)}) in
+    hs_hex64(st.a) + hs_hex64(st.b) + hs_hex64(st.c) + hs_hex64(st.d) + hs_hex64(st.e) + hs_hex64(st.f) + hs_hex64(st.g) + hs_hex64(st.h)
+fn sha384(s) =
+    let st = hs_s5run(s, {a: hs_w64(3418070365, 3238371032), b: hs_w64(1654270250, 914150663), c: hs_w64(2438529370, 812702999), d: hs_w64(355462360, 4144912697), e: hs_w64(1731405415, 4290775857), f: hs_w64(2394180231, 1750603025), g: hs_w64(3675008525, 1694076839), h: hs_w64(1203062813, 3204075428)}) in
+    hs_hex64(st.a) + hs_hex64(st.b) + hs_hex64(st.c) + hs_hex64(st.d) + hs_hex64(st.e) + hs_hex64(st.f)
+
+## --- raw digests, HMAC (RFC 2104) and PBKDF2 (RFC 8018) -------------------------------------------------------------------
+## the bytes of a lowercase hex text
+fn hs_unhexd(c) = if c <= 57 then c - 48 else c - 87
+fn hs_unhex(h) = let n = count(h) / 2 in let b = buf_new(n) in buf_to_str(hs_unhexgo(h, b, 0, n), 0, n)
+fn hs_unhexgo(h, b, i, n) =
+    if i >= n then
+        b
+    else
+        let w = buf_set(b, i, hs_unhexd(ord_at(h, 2 * i)) * 16 + hs_unhexd(ord_at(h, 2 * i + 1))) in
+        hs_unhexgo(h, b, i + 1, n)
+fn hs_byname(name, s) =
+    if name == "md5" then
+        md5(s)
+    else if name == "sha1" then
+        sha1(s)
+    else if name == "sha224" then
+        sha224(s)
+    else if name == "sha256" then
+        sha256(s)
+    else if name == "sha384" then
+        sha384(s)
+    else if name == "sha512" then
+        sha512(s)
+    else
+        ctfail("hash: unknown digest '" + name + "' (md5, sha1, sha224, sha256, sha384, sha512)\n")
+fn hs_block(name) = if name == "sha384" or name == "sha512" then 128 else 64
+fn hash_raw(name, s) = hs_unhex(hs_byname(name, s))
+fn hash_hex(name, s) = hs_byname(name, s)
+fn hs_xorpad(k, v, n) = let b = buf_new(n) in buf_to_str(hs_xp(k, v, b, 0, n), 0, n)
+fn hs_xp(k, v, b, i, n) =
+    if i >= n then
+        b
+    else
+        let w = buf_set(b, i, bit_xor(if i < count(k) then ord_at(k, i) else 0, v)) in
+        hs_xp(k, v, b, i + 1, n)
+fn hmac_raw(name, key, msg) =
+    let bs = hs_block(name) in
+    let k = if count(key) > bs then hash_raw(name, key) else key in
+    hash_raw(name, hs_xorpad(k, 92, bs) + hash_raw(name, hs_xorpad(k, 54, bs) + msg))
+fn hmac_hex(name, key, msg) = hs_hexs(hmac_raw(name, key, msg), 0, "")
+fn hs_hexs(s, i, acc) =
+    if i >= count(s) then
+        acc
+    else
+        hs_hexs(s, i + 1, acc + hs_hexd(ord_at(s, i) / 16) + hs_hexd(ord_at(s, i) % 16))
+fn hmac_md5(key, msg) = hmac_hex("md5", key, msg)
+fn hmac_sha1(key, msg) = hmac_hex("sha1", key, msg)
+fn hmac_sha256(key, msg) = hmac_hex("sha256", key, msg)
+fn hmac_sha384(key, msg) = hmac_hex("sha384", key, msg)
+fn hmac_sha512(key, msg) = hmac_hex("sha512", key, msg)
+fn hs_be32s(v) = let b = buf_new(4) in let a = hs_ssw(b, 0, v) in buf_to_str(b, 0, 4)
+fn hs_xors(a, b) = let n = count(a) in let o = buf_new(n) in buf_to_str(hs_xs(a, b, o, 0, n), 0, n)
+fn hs_xs(a, b, o, i, n) =
+    if i >= n then
+        o
+    else
+        let w = buf_set(o, i, bit_xor(ord_at(a, i), ord_at(b, i))) in
+        hs_xs(a, b, o, i + 1, n)
+## PBKDF2 with HMAC-name: dklen bytes as lowercase hex
+fn pbkdf2_hex(name, pass, salt, iters, dklen) = hs_hexs(slice(hs_pbk(name, pass, salt, iters, dklen, 1, ""), 0, dklen), 0, "")
+fn hs_pbk(name, pass, salt, iters, dklen, i, acc) =
+    if count(acc) >= dklen then
+        acc
+    else
+        let u1 = hmac_raw(name, pass, salt + hs_be32s(i)) in
+        hs_pbk(name, pass, salt, iters, dklen, i + 1, acc + hs_pbu(name, pass, u1, u1, iters - 1))
+fn hs_pbu(name, pass, u, t, k) =
+    if k <= 0 then
+        t
+    else
+        let u2 = hmac_raw(name, pass, u) in
+        hs_pbu(name, pass, u2, hs_xors(t, u2), k - 1)
+fn pbkdf2_sha256(pass, salt, iters, dklen) = pbkdf2_hex("sha256", pass, salt, iters, dklen)
+
+## --- fast non-cryptographic checksums ---------------------------------------------------------------------------------------
+## CRC-32C (Castagnoli, reflected polynomial 0x82F63B78: iSCSI, SCTP, ext4, Btrfs)
+fn hs_c32cbit(c, k) =
+    if k == 0 then
+        c
+    else
+        hs_c32cbit(if bit_and(c, 1) == 1 then bit_xor(bit_shr(c, 1), 2197175160) else bit_shr(c, 1), k - 1)
+fn hs_c32c(b, i, e, c) = if i >= e then c else hs_c32c(b, i + 1, e, hs_c32cbit(bit_xor(c, buf_get(b, i)), 8))
+fn crc32c_buf(b, off, n) = hs_not(hs_c32c(b, off, off + n, 4294967295))
+fn crc32c(s) = let b = buf_from_str(s) in crc32c_buf(b, 0, buf_len(b))
+## FNV-1a: 32 bits as an int; 64 bits as 16 hex digits (the value does not fit a signed int)
+fn hs_fnv32(s, i, n, h) =
+    if i >= n then
+        h
+    else
+        hs_fnv32(s, i + 1, n, bit_and(bit_xor(h, ord_at(s, i)) * 16777619, 4294967295))
+fn fnv1a32(s) = hs_fnv32(s, 0, count(s), 2166136261)
+## h * (2^40 + 435) mod 2^64, with every partial product below 2^42
+fn hs_fnvmul(h) = hs_add64(bit_shl(h, 40), hs_add64(bit_shl(bit_and(hs_hi(h) * 435, 4294967295), 32), hs_lo(h) * 435))
+fn hs_fnv64(s, i, n, h) = if i >= n then h else hs_fnv64(s, i + 1, n, hs_fnvmul(bit_xor(h, ord_at(s, i))))
+fn fnv1a64(s) = hs_hex64(hs_fnv64(s, 0, count(s), hs_w64(3421674724, 2216829733)))

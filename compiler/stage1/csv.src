@@ -1,11 +1,19 @@
 ## csv.src -- comma-separated values (RFC 4180) in Lume (`use std/csv`)
 ##   csv_parse(text)            -> list of rows, each a list of field strings; a field may be "quoted", hold commas,
 ##                                 line breaks and "" for a quote; CRLF and LF both end a row; a final empty line is
-##                                 not a row
+##                                 not a row. Lenient: an unterminated quote runs to the end, text after a closing
+##                                 quote joins the field ("a"b gives ab).
 ##   csv_parse_sep(text, sep)   the same with another one-character separator (";" or a tab)
+##   csv_parse_checked(text) / csv_parse_checked_sep(text, sep)
+##                              -> {ok, rows, err, line}: the strict RFC 4180 reading; ok is false (err says why, line
+##                                 is the 1-based line where it happened) on an unterminated quoted field or on a
+##                                 character between a closing quote and the next separator / line end. A leading
+##                                 UTF-8 byte order mark is skipped.
 ##   csv_format(rows)           -> text with CRLF line ends; a field is quoted only when it needs it
 ##   csv_format_sep(rows, sep)
 ##   csv_field(row, i)          field i of a row, "" when the row is shorter
+##   csv_index(header, name)    the position of the column called name in a header row, -1 when absent
+##   csv_get(header, row, name) the field of row under the column called name, "" when absent
 
 fn csv_parse(text) = csv_parse_sep(text, ",")
 fn csv_parse_sep(text, sep) = cv_rows(text, 0, count(text), sep, Nil)
@@ -13,20 +21,33 @@ fn cv_rows(s, i, n, sep, acc) =
     if i >= n then
         cv_rev(acc, Nil)
     else
-        let r = cv_row(s, i, n, sep, Nil) in
+        let r = cv_row(s, i, n, sep, Nil, 0, 0) in
         cv_rows(s, r.next, n, sep, Cons(r.fields, acc))
-## one row from i: {fields, next}
-fn cv_row(s, i, n, sep, acc) =
+## one row from i: {fields, next, bad, at}; bad is 0, or 1 for an unterminated quote, 2 for text after a closing quote
+## (at is where the first one happened). Leniently, text after a closing quote joins the field ("a"b -> ab).
+fn cv_row(s, i, n, sep, acc, bad, bat) =
     let f = cv_field(s, i, n, sep) in
-    let acc2 = Cons(f.text, acc) in
-    if f.next >= n then
-        {fields: cv_rev(acc2, Nil), next: n}
+    if f.q == 2 then
+        {fields: cv_rev(Cons(f.text, acc), Nil), next: n, bad: if bad == 0 then 1 else bad, at: if bad == 0 then i else bat}
+    else if f.next < n and at(s, f.next) != sep and at(s, f.next) != chr(10) and at(s, f.next) != chr(13) then
+        let k = cv_skip(s, f.next, n, sep) in
+        cv_row_end(s, k, n, sep, Cons(f.text + slice(s, f.next, k), acc), if bad == 0 then 2 else bad, if bad == 0 then f.next else bat)
     else
-        let c = at(s, f.next) in
-        if c == sep then
-            cv_row(s, f.next + 1, n, sep, acc2)
-        else
-            {fields: cv_rev(acc2, Nil), next: cv_eol(s, f.next, n)}
+        cv_row_end(s, f.next, n, sep, Cons(f.text, acc), bad, bat)
+## after a field, at the separator, the line end or n
+fn cv_row_end(s, k, n, sep, acc, bad, bat) =
+    if k >= n then
+        {fields: cv_rev(acc, Nil), next: n, bad: bad, at: bat}
+    else if at(s, k) == sep then
+        cv_row(s, k + 1, n, sep, acc, bad, bat)
+    else
+        {fields: cv_rev(acc, Nil), next: cv_eol(s, k, n), bad: bad, at: bat}
+## lenient: past stray text up to the separator or the line end
+fn cv_skip(s, i, n, sep) =
+    if i >= n or at(s, i) == sep or at(s, i) == chr(10) or at(s, i) == chr(13) then
+        i
+    else
+        cv_skip(s, i + 1, n, sep)
 fn cv_eol(s, i, n) =
     if i < n and at(s, i) == chr(13) then
         (if i + 1 < n and at(s, i + 1) == chr(10) then i + 2 else i + 1)
@@ -34,38 +55,73 @@ fn cv_eol(s, i, n) =
         i + 1
     else
         i
-## one field from i: {text, next} where next is at the separator, the line end or n
+## one field from i: {text, next, q} where next is at the separator, the line end or n; q: 0 plain, 1 quoted,
+## 2 quoted without its closing quote
 fn cv_field(s, i, n, sep) =
     if i < n and at(s, i) == chr(34) then
-        cv_quoted(s, i + 1, n, "")
+        cv_q(s, i + 1, n, i + 1, Nil)
     else
         cv_plain(s, i, n, sep, i)
 fn cv_plain(s, i, n, sep, st) =
     if i >= n or at(s, i) == sep or at(s, i) == chr(10) or at(s, i) == chr(13) then
-        {text: slice(s, st, i), next: i}
+        {text: slice(s, st, i), next: i, q: 0}
     else
         cv_plain(s, i + 1, n, sep, st)
-fn cv_quoted(s, i, n, acc) =
+## a quoted field: runs between quotes are sliced, never copied byte by byte
+fn cv_q(s, i, n, st, parts) =
     if i >= n then
-        {text: acc, next: n}
-    else if at(s, i) == chr(34) then
-        (if i + 1 < n and at(s, i + 1) == chr(34) then cv_quoted(s, i + 2, n, acc + chr(34)) else {text: acc, next: i + 1})
+        {text: cv_join(cv_rev(Cons(slice(s, st, n), parts), Nil)), next: n, q: 2}
+    else if ord_at(s, i) == 34 then
+        (if i + 1 < n and ord_at(s, i + 1) == 34 then cv_q(s, i + 2, n, i + 2, Cons(slice(s, st, i + 1), parts)) else {text: cv_join(cv_rev(Cons(slice(s, st, i), parts), Nil)), next: i + 1, q: 1})
     else
-        cv_quoted(s, i + 1, n, acc + at(s, i))
+        cv_q(s, i + 1, n, st, parts)
 fn cv_rev(xs, acc) = match xs
     Nil        => acc
     Cons(h, t) => cv_rev(t, Cons(h, acc))
+fn cv_isnil(xs) = match xs
+    Nil        => true
+    Cons(h, t) => false
+fn cv_join(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => if cv_isnil(t) then h else cv_join(cv_pairs(xs, Nil))
+fn cv_pairs(xs, acc) = match xs
+    Nil        => cv_rev(acc, Nil)
+    Cons(a, t) => cv_pair2(a, t, acc)
+fn cv_pair2(a, t, acc) = match t
+    Nil        => cv_rev(Cons(a, acc), Nil)
+    Cons(b, u) => cv_pairs(u, Cons(a + b, acc))
 
+## --- the strict reading -------------------------------------------------------------------------------------------------
+fn csv_parse_checked(text) = csv_parse_checked_sep(text, ",")
+fn csv_parse_checked_sep(text, sep) =
+    let n = count(text) in
+    let st = if n >= 3 and ord_at(text, 0) == 239 and ord_at(text, 1) == 187 and ord_at(text, 2) == 191 then 3 else 0 in
+    cv_checked(text, st, n, sep, Nil)
+fn cv_checked(s, i, n, sep, acc) =
+    if i >= n then
+        {ok: true, rows: cv_rev(acc, Nil), err: "", line: 0}
+    else
+        let r = cv_row(s, i, n, sep, Nil, 0, 0) in
+        if r.bad == 1 then
+            {ok: false, rows: Nil, err: "unterminated quoted field", line: cv_line(s, 0, r.at, 1)}
+        else if r.bad == 2 then
+            {ok: false, rows: Nil, err: "text after a closing quote", line: cv_line(s, 0, r.at, 1)}
+        else
+            cv_checked(s, r.next, n, sep, Cons(r.fields, acc))
+fn cv_line(s, i, e, k) = if i >= e then k else cv_line(s, i + 1, e, if ord_at(s, i) == 10 then k + 1 else k)
+
+## --- writing ------------------------------------------------------------------------------------------------------------
 fn csv_format(rows) = csv_format_sep(rows, ",")
-fn csv_format_sep(rows, sep) = match rows
-    Nil        => ""
-    Cons(r, t) => cv_line(r, sep) + chr(13) + chr(10) + csv_format_sep(t, sep)
-fn cv_line(fs, sep) = match fs
-    Nil        => ""
-    Cons(f, t) => cv_quote(f, sep) + cv_more(t, sep)
-fn cv_more(t, sep) = match t
-    Nil        => ""
-    Cons(g, u) => sep + cv_line(t, sep)
+fn csv_format_sep(rows, sep) = cv_join(cv_rev(cv_fmt(rows, sep, Nil), Nil))
+fn cv_fmt(rows, sep, acc) = match rows
+    Nil        => acc
+    Cons(r, t) => cv_fmt(t, sep, Cons(chr(13) + chr(10), cv_line_out(r, sep, acc)))
+fn cv_line_out(fs, sep, acc) = match fs
+    Nil        => acc
+    Cons(f, t) => if cv_isnil(t) then
+            Cons(cv_quote(f, sep), acc)
+        else
+            cv_line_out(t, sep, Cons(sep, Cons(cv_quote(f, sep), acc)))
 fn cv_needs(f, sep, i) =
     if i >= count(f) then
         false
@@ -75,13 +131,21 @@ fn cv_needs(f, sep, i) =
             true
         else
             cv_needs(f, sep, i + 1)
-fn cv_quote(f, sep) = if cv_needs(f, sep, 0) then chr(34) + cv_dq(f, 0, "") + chr(34) else f
-fn cv_dq(f, i, acc) =
+fn cv_quote(f, sep) = if cv_needs(f, sep, 0) then chr(34) + cv_join(cv_rev(cv_dq(f, 0, 0, Nil), Nil)) + chr(34) else f
+## the field with each quote doubled: runs between quotes are sliced
+fn cv_dq(f, i, st, acc) =
     if i >= count(f) then
-        acc
+        Cons(slice(f, st, i), acc)
+    else if ord_at(f, i) == 34 then
+        cv_dq(f, i + 1, i + 1, Cons(slice(f, st, i + 1) + chr(34), acc))
     else
-        cv_dq(f, i + 1, acc + (if at(f, i) == chr(34) then chr(34) + chr(34) else at(f, i)))
+        cv_dq(f, i + 1, st, acc)
 
 fn csv_field(row, i) = match row
     Nil        => ""
     Cons(h, t) => if i == 0 then h else csv_field(t, i - 1)
+fn csv_index(header, name) = cv_idx(header, name, 0)
+fn cv_idx(h, name, k) = match h
+    Nil        => 0 - 1
+    Cons(x, t) => if x == name then k else cv_idx(t, name, k + 1)
+fn csv_get(header, row, name) = let k = csv_index(header, name) in if k < 0 then "" else csv_field(row, k)

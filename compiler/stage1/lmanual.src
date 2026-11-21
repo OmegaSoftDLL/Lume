@@ -255,7 +255,7 @@ fn man_en_contracts() = "# CHAPTER 4: CONTRACTS, LAWS & FORMAL VERIFICATION\n\n"
 "## 4.4 Autonomous Verification & Self-Healing Commands\n" +
 "- `lume prove <file.src>`              Prove all contracts and laws (`QF_LIA` / `QF_ALIA`).\n" +
 "- `lume verify [--jobs=N] <file.src>...`  check, test, prove, the format check and certify many files; per-file cache by bundle hash; each step timed.\n" +
-"- `lume pkg publish|add|install [--store=DIR]` package versions: store with tests, `^`/`~` requirements, lume_modules/, lume.lock;\n" +
+"- `lume pkg publish|add|resolve|install [--store=DIR] [--locked|--update] [--allow-failing]` package versions: store with tests and proofs, `^`/`~`/`>=`/`<` requirements, transitive resolution, lume_modules/, lume.lock honoured on later installs, refused when a package's own tests or proofs fail;\n" +
 "  `lume pkg audit [dir]` checks the lock file hashes and the package proof certificate.\n" +
 "- `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  standard library: digests, CSV, UTF-8, dates and zones, regex, gzip, HTTP and HTTPS.\n" +
 "  Builtin contracts: `buf_bits_write` is `p + n` or `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (when the\n" +
@@ -404,6 +404,8 @@ fn man_en_stdlib() = "# CHAPTER 6: BUILTINS, STANDARD LIBRARY & SOVEREIGN MODULE
 "            (returns b), `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`,\n" +
 "            `buf_to_str(b, off, n)`, `buf_addr(b)` (address of byte 0, for system calls); buf_get / buf_set on a\n" +
 "            small index are inline machine code (no call), an out-of-range index stops with the same message\n" +
+"            shared memory: `buf_shared(n)` (a buffer the os_fork children share); `use par` runs one job on n\n" +
+"            worker processes at once: par_pool(n, fn(k, job) => ...), par_run(pool, job), par_slice, par_close\n" +
 "            video: `buf_bgra_to_i420(src, stride, w, h, dst)` and `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601\n" +
 "            limited range, 2x2 chroma average, odd sizes; the bytes written or -1 for a wrong argument; a 1080p\n" +
 "            frame in a few milliseconds, runtime routines written in Lume)\n" +
@@ -1397,7 +1399,7 @@ fn man_pt_contracts() = "# CAPITULO 4: CONTRATOS, LEIS MATEMATICAS E VERIFICACAO
 "## 4.4 Comandos de Prova e Autocura\n" +
 "- `lume prove <arquivo.src>`           Prova todos os contratos e leis.\n" +
 "- `lume verify [--jobs=N] <arquivo.src>...`  check, test, prove, a checagem de formato e certify em muitos arquivos; cache por arquivo; cada etapa cronometrada.\n" +
-"- `lume pkg publish|add|install [--store=DIR]` versoes de pacotes: store com testes, requisitos `^`/`~`, lume_modules/, lume.lock;\n" +
+"- `lume pkg publish|add|resolve|install [--store=DIR] [--locked|--update] [--allow-failing]` versoes de pacotes: store com testes e provas, requisitos `^`/`~`/`>=`/`<`, resolucao transitiva, lume_modules/, lume.lock respeitado nas instalacoes seguintes, recusa quando os testes ou provas do pacote falham;\n" +
 "  `lume pkg audit [dir]` confere os hashes do lock e o certificado de prova do pacote.\n" +
 "- `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  biblioteca padrao: hashes, CSV, UTF-8, datas e fusos, regex, gzip, HTTP e HTTPS.\n" +
 "  Contratos dos builtins: `buf_bits_write` e `p + n` ou `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (quando o\n" +
@@ -1538,6 +1540,8 @@ fn man_pt_stdlib() = "# CAPITULO 6: FUNCOES NATIVAS E BIBLIOTECA PADRAO DA LUME\
 "- Buffers de bytes (mutaveis): `buf_new(n)`, `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),\n" +
 "                  `buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off,\n" +
 "                  n)`, `buf_addr(b)`; buf_get / buf_set com indice pequeno viram codigo de maquina inline (sem chamada)\n" +
+"                  memoria compartilhada: `buf_shared(n)` (buffer que os filhos de os_fork compartilham); `use par` roda\n" +
+"                  um job em n processos ao mesmo tempo: par_pool(n, fn(k, job) => ...), par_run, par_slice, par_close\n" +
 "                  video: `buf_bgra_to_i420(src, stride, w, h, dst)` e `buf_i420_to_bgra(src, w, h, dst, stride)` (BT.601\n" +
 "                  faixa limitada, media 2x2 do croma, tamanhos impares; bytes escritos ou -1; quadro 1080p em poucos ms)\n" +
 "                  distorcao de bloco para codificadores: `buf_sad16x16`, `buf_sad8x8`, `buf_sad4x4`, `buf_satd4x4`,\n" +
@@ -2312,10 +2316,18 @@ fn man_en_ref() = "# Lume Reference (factual) — v1.2.0\n" +
 "(`ok   a.src  (check 0.030 s, test 0.124 s, prove 0.014 s, fmt 0.017 s, certify 0.027 s)`), so a slow step stands out;\n" +
 "a file without contracts has nothing to certify and passes that step.\n" +
 "\n" +
-"Packages: `lume pkg publish [dir] --store=DIR` runs the package's tests and stores NAME/VERSION immutably with its\n" +
-"SHA-256; `lume pkg add NAME@REQ` writes `name = \"REQ\"` under `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `*`);\n" +
-"`lume pkg install --store=DIR` takes the highest matching versions into `lume_modules/`, runs their tests and writes\n" +
-"the versions and hashes into `lume.lock`; `use NAME` finds an installed package.\n" +
+"Packages: `lume pkg publish [dir] --store=DIR` runs the package's own checks (`lume test` on every file with a\n" +
+"`fn test_`, `lume prove` on every file with contracts; a package with dependencies is checked beside them, resolved\n" +
+"from the same store) and stores NAME/VERSION immutably with its SHA-256. `lume pkg add NAME@REQ` writes\n" +
+"`name = \"REQ\"` under `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `>=1.2`, `<2`, a comma-joined list such as\n" +
+"`>=1.2, <2`, or `*`). `lume pkg install --store=DIR` resolves the manifest and every package's own dependencies (the\n" +
+"version `lume.lock` names while it still fits, else the highest stored version that meets every requirement; a\n" +
+"conflict names each requirement and who made it), checks each copy against its published hash and the hash in\n" +
+"`lume.lock`, runs each package's own tests and proofs, and only when all pass fills `lume_modules/` and writes the\n" +
+"versions and hashes into `lume.lock`. A refused install changes nothing; `--allow-failing` installs anyway, with a\n" +
+"warning. `--update` ignores the lock and takes the newest versions; `--locked` refuses any change to the lock (CI).\n" +
+"`lume pkg resolve [dir] --store=DIR` prints the versions install would take and changes nothing. `use NAME` finds an\n" +
+"installed package, also from inside another one. The store can also be named by `LUME_PKG_STORE`.\n" +
 "\n" +
 "Official examples: `examples/topics/*.src` (one file per topic, each run by `lume test`) and\n" +
 "`examples/diagnostics/` (for a diagnostic code, `CODE_name.bad` gives it and `CODE_name.fixed.src` is the corrected\n" +
@@ -2563,7 +2575,11 @@ fn man_en_ref() = "# Lume Reference (factual) — v1.2.0\n" +
 "`buf_new(n)` (n bytes, all zero), `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (answers b),\n" +
 "`buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,\n" +
 "`buf_addr(b)` (the address of byte 0, for system calls). An index outside the buffer or a value outside\n" +
-"0..255 stops the program.\n" +
+"0..255 stops the program. `buf_shared(n)` is a buffer in memory shared with the processes `os_fork` starts\n" +
+"afterwards (what one writes, all read). With `use par`: `par_pool(n, fn(k, job) => ...)` starts n worker processes\n" +
+"once, `par_run(pool, job)` runs the function in all of them at the same time and answers the sum of their answers\n" +
+"(their writes into shared buffers are then visible), `par_slice(k, n, total)` is worker k's first item, `par_close(pool)`\n" +
+"stops them.\n" +
 "\n" +
 "```lume\n" +
 "let b = buf_new(4)\n" +
@@ -2715,12 +2731,15 @@ fn man_en_ref() = "# Lume Reference (factual) — v1.2.0\n" +
 "| Module | What it gives | Status |\n" +
 "| --- | --- | --- |\n" +
 "| `h264` | `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (quarter-sample 6-tap luma, 8.4.2.2.1), `buf_h264_chroma_mc(...)` (same arguments, eighth-sample bilinear, 8.4.2.2.2), `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (8.7.2.3 / 8.7.2.4; bs and tc0 lists, one value per 4 luma / 2 chroma lines); 0, or -1 on a wrong argument; coordinates clamped to the picture | stable |\n" +
-"| `hash` | `crc32`, `adler32`, `md5`, `sha1`, `sha256` (strings; `*_buf` for buffers), `hex32` | stable |\n" +
-"| `csv` | `csv_parse(text)` (RFC 4180: quotes, separators and line breaks inside fields), `csv_format(rows)`, `csv_parse_sep` / `csv_format_sep`, `csv_field` | stable |\n" +
-"| `utf8` | `utf8_len`, `utf8_decode` / `utf8_encode`, `utf8_char`, `utf8_cp`, `utf8_slice`, `utf8_upper` / `utf8_lower` (ASCII + Latin-1), `utf8_reverse`, `utf8_valid` (strings are bytes; these count characters) | stable |\n" +
-"| `datetime` | `dt_from_unix`, `dt_to_unix`, `dt_iso`, `dt_parse_iso`, `dt_weekday`, `dt_add_days` / `dt_add_months`, `dt_offset(zone, t)` / `dt_local` / `dt_iso_local` (fixed offsets, US / EU / Sydney daylight rules) | stable |\n" +
-"| `regex` | `re_match`, `re_search`, `re_find`, `re_find_all`, `re_groups`, `re_replace` (`$1`), `re_split`: classes, `\\d \\w \\s`, anchors, groups, alternation, greedy and lazy quantifiers | stable |\n" +
-"| `deflate` | `inflate_buf` / `deflate_buf`, `zlib_decompress` / `zlib_compress`, `gunzip` / `gzip`, `gunzip_str` / `gzip_str` (Adler-32 / CRC-32 checked) | stable |\n" +
+"| `hash` | `crc32`, `adler32`, `md5`, `sha1`, `sha224`, `sha256`, `sha384`, `sha512` (strings; `*_buf` for buffers), `hash_hex` / `hash_raw(name, s)`, `hmac_md5` / `hmac_sha1` / `hmac_sha256` / `hmac_sha384` / `hmac_sha512(key, msg)` and `hmac_hex` / `hmac_raw(name, key, msg)` (RFC 2104), `pbkdf2_sha256` / `pbkdf2_hex` (RFC 8018), `crc32c`, `fnv1a32`, `fnv1a64` (16 hex digits), `hex32`; checked against the FIPS 180-4, RFC 4231 / 2202 / 2104 / 7914 / 6070 vectors | stable |\n" +
+"| `encoding` | `hex_encode` / `hex_decode`, `base64_encode` / `base64_decode` (RFC 4648 section 4, strict padding and trailing bits), `base64url_encode` / `base64url_decode` (section 5, padding optional), `base64_decode_mime` (white space ignored); decoders answer `{{ok, bytes}}` | experimental |\n" +
+"| `json` | `json_parse(text)` -> `{{ok, value, err, pos, line, col}}` (strict RFC 8259: number grammar, every escape, `\\u` surrogate pairs, lone surrogates and ill-formed UTF-8 refused, depth 512), values `{{k, s, items, fields}}` (numbers keep their exact text), `json_get` / `json_has` / `json_at` / `json_len` / `json_keys` / `json_pointer` (RFC 6901), `json_str` / `json_int` / `json_f64` / `json_bool` / `json_is_null`, builders `jv_*`, `json_set` / `json_remove` / `json_push`, `json_write` / `json_write_ascii` / `json_pretty` / `json_quote` | experimental |\n" +
+"| `csv` | `csv_parse(text)` (RFC 4180: quotes, separators and line breaks inside fields), `csv_format(rows)`, `csv_parse_sep` / `csv_format_sep`, `csv_parse_checked` / `csv_parse_checked_sep` (strict: `{{ok, rows, err, line}}` on an unterminated quote or text after a closing quote), `csv_field`, `csv_index` / `csv_get(header, row, name)` | stable |\n" +
+"| `utf8` | `utf8_len`, `utf8_decode` / `utf8_encode` / `utf8_encode_cp`, `utf8_char`, `utf8_cp`, `utf8_slice`, `utf8_offset`, `utf8_next` / `utf8_fold` (walk by code point without a list), `utf8_valid` / `utf8_check` (offset of the first ill-formed byte) / `utf8_sanitize` (U+FFFD), `utf8_to_utf16` / `utf8_from_utf16`, `utf8_upper` / `utf8_lower` (ASCII, Latin-1, Latin Extended-A, Greek, Cyrillic), `utf8_reverse` (strings are bytes; these count characters) | stable |\n" +
+"| `datetime` | `dt_from_unix`, `dt_to_unix`, `dt_iso`, `dt_parse_iso`, `dt_parse` (ISO 8601 / RFC 3339 extended and basic forms, nanoseconds, the written offset), `dt_format(t, off, pattern)` (strftime subset), `dt_weekday`, `dt_yday`, `dt_iso_week`, `dt_add_days` / `dt_add_months`, `dt_offset(zone, t)` / `dt_local` / `dt_iso_local` (fixed offsets, US / EU / Sydney daylight rules) | stable |\n" +
+"| `tz` | `tz_zone(spec)`: a fixed offset, a POSIX TZ rule (`EST5EDT,M3.2.0,M11.1.0`, Jn / n / Mm.w.d dates) or an IANA name read from tzdata; `tz_load(name)` (TZif files, RFC 8536 versions 1-4, the footer rule; `$TZDIR`, `/usr/share/zoneinfo`, ...), `tz_from_tzif(bytes, name)`, `tz_offset`, `tz_abbr`, `tz_is_dst`, `tz_local`, `tz_iso`, `tz_from_local` (gaps and overlaps resolved) | experimental; Windows has no tzdata: `tz_load` needs `TZDIR` there (fixed offsets and POSIX rules work everywhere) |\n" +
+"| `regex` | `re_match`, `re_search`, `re_find`, `re_find_all`, `re_find_all_groups`, `re_groups`, `re_named`, `re_group_names`, `re_replace` (`$1`), `re_split`: classes (ranges across UTF-8 lengths), `\\d \\w \\s`, `\\xHH`, anchors, `\\b \\B`, groups, named groups `(?<n>...)`, backreferences `\\1`..`\\9`, lookahead `(?=...)` `(?!...)`, alternation, greedy and lazy quantifiers, `(?i)` (ASCII); a backtracking matcher (no lookbehind) | stable |\n" +
+"| `deflate` | `inflate_buf` / `deflate_buf` (the smaller of stored, fixed and dynamic Huffman blocks; zlib reads what it writes), `zlib_decompress` / `zlib_compress`, `gunzip` / `gzip`, `gunzip_str` / `gzip_str` (Adler-32 / CRC-32 checked); no zstd | stable |\n" +
 "| `http` | `http_get`, `http_post`, `http_request(method, url, headers, body, ms)`, `http_header`: chunked, gzip, redirects, deadlines; `https://` through `tls` | stable |\n" +
 "| `tls` | `tls_request(host, port, data, ms)`: TLS 1.3 client (X25519, AES-128-GCM / ChaCha20-Poly1305); the server certificate is checked against the system roots (`SSL_CERT_FILE`, the Linux bundle, the Windows stores through `lchameleon`) and the host name | stable |\n" +
 "| `tlspki`, `bignum` | RSA (PKCS #1 v1.5, PSS), ECDSA P-256 / P-384, SHA-384 / SHA-512, X.509 parsing and chain validation, PEM; integers of any size with Montgomery `bn_modexp` | stable |\n" +
@@ -2797,10 +2816,10 @@ fn man_en_ref() = "# Lume Reference (factual) — v1.2.0\n" +
 "\n" +
 "## 11. Changed in this version\n" +
 "\n" +
-"Added: `lume debug --dap` (the debugger over the Debug Adapter Protocol), `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc`, `buf_h264_cavlc_luma` / `chroma` (whole Intra4x4, inter luma and inter chroma macroblocks in one call), `buf_h264_me16` (motion search), the table of every diagnostic code (section 3a) and diagnostic examples for 68 codes, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS with TLS 1.3), `tlspki`, `bignum`, package versions (`lume pkg publish / add / install`, `[packages]` in lume.lock), `lume verify` (many files, N processes, per-file cache), the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and\n" +
+"Added: `use std/json` (strict RFC 8259 parser and writers, JSON Pointer), `use std/tz` (TZif tzdata and POSIX TZ rules), `use std/encoding` (hex, base64, base64url), `sha224` / `sha384` / `sha512`, HMAC, PBKDF2, `crc32c`, `fnv1a32` / `fnv1a64`, `dt_parse`, `dt_format`, `dt_yday`, `dt_iso_week`, `csv_parse_checked`, `csv_index` / `csv_get`, `utf8_next` / `utf8_fold` / `utf8_check` / `utf8_sanitize` / `utf8_offset` / `utf8_encode_cp` / `utf8_to_utf16` / `utf8_from_utf16`, regex `\\b \\B`, backreferences, lookahead, named groups, `(?i)`, `\\xHH`, `re_named`, `re_group_names`, `re_find_all_groups`, dynamic Huffman and stored blocks in `deflate_buf`, `lume debug --dap` (the debugger over the Debug Adapter Protocol), `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc`, `buf_h264_cavlc_luma` / `chroma` (whole Intra4x4, inter luma and inter chroma macroblocks in one call), `buf_h264_me16` (motion search), the table of every diagnostic code (section 3a) and diagnostic examples for 68 codes, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS with TLS 1.3), `tlspki`, `bignum`, package versions (`lume pkg publish / add / install`, `[packages]` in lume.lock), `lume verify` (many files, N processes, per-file cache), the call stack (`at NAME (file:LINE)`) after a run-time error, builtin contracts in the prover (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), official examples (`examples/topics`, `examples/diagnostics`, examples gate), `use std/NAME`, `buf_bits_write / read / ue / se`, `## Deprecated:` and warning [W0005], docs/STABILITY.md (semver, deprecation, LTS 1.2), `use math` (math names, f32, f32 buffers), f64 parameters, W0004, `lume run --profile`, `use h264` (motion compensation, deblocking), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` and\n" +
 "`chameleon_verify_boundary`, `priv fn`, warning [W0003], `LUME_FL`, constant literals in .rodata, per-site field\n" +
 "cache, collection pacing `max(8 MiB, 3 x live)`.\n" +
-"Changed: [E0305] lets an int or bool copied into or out of a sent record stay with the sender; a delimiter still open at the end of the file is [P0001] (was [P0002]); `lume agent kernel` examples run in the examples gate; W0004 also sees parameters typed `f64` and results of `f64(...)`; `buf_sad4x4` runs in SSE2; C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0\n" +
+"Changed: `dt_parse_iso` refuses text after the zone; `utf8_encode` writes U+FFFD for a surrogate or an out-of-range value and a NUL byte for 0 (it stopped before); `utf8_upper` / `utf8_lower` also map Latin Extended-A, Greek and Cyrillic; lenient `csv_parse` keeps text after a closing quote in the field (it started a new row); regex class ranges work across UTF-8 lengths and an empty match at the end no longer stops `re_find_all`; [E0305] lets an int or bool copied into or out of a sent record stay with the sender; a delimiter still open at the end of the file is [P0001] (was [P0002]); `lume agent kernel` examples run in the examples gate; W0004 also sees parameters typed `f64` and results of `f64(...)`; `buf_sad4x4` runs in SSE2; C0009 in a `ct_` function names the prefix as the reason; `lume fmt` refuses to run on the Stage-0\n" +
 "fallback; on Git Bash `lume` runs the native `lume.exe`; `fs_copy` keeps the source's permission bits.\n" +
 "Removed: nothing.\n"
 fn man_pt_ref() = "# Referencia da Lume (factual) — v1.2.0\n" +
@@ -2836,10 +2855,18 @@ fn man_pt_ref() = "# Referencia da Lume (factual) — v1.2.0\n" +
 "(`ok   a.src  (check 0.030 s, test 0.124 s, prove 0.014 s, fmt 0.017 s, certify 0.027 s)`), entao uma etapa lenta\n" +
 "aparece; um arquivo sem contratos nao tem o que certificar e passa nessa etapa.\n" +
 "\n" +
-"Pacotes: `lume pkg publish [dir] --store=DIR` roda os testes do pacote e guarda NOME/VERSAO imutavel com o SHA-256;\n" +
-"`lume pkg add NOME@REQ` grava `nome = \"REQ\"` em `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `*`);\n" +
-"`lume pkg install --store=DIR` instala as maiores versoes compativeis em `lume_modules/`, roda os testes delas e grava\n" +
-"versoes e hashes no `lume.lock`; `use NOME` encontra um pacote instalado.\n" +
+"Pacotes: `lume pkg publish [dir] --store=DIR` roda as verificacoes do proprio pacote (`lume test` em todo arquivo com\n" +
+"`fn test_`, `lume prove` em todo arquivo com contratos; um pacote com dependencias e verificado junto delas,\n" +
+"resolvidas no mesmo store) e guarda NOME/VERSAO imutavel com o SHA-256. `lume pkg add NOME@REQ` grava\n" +
+"`nome = \"REQ\"` em `[dependencies]` (REQ: `1.2.3`, `^1.2`, `~1.2.3`, `>=1.2`, `<2`, uma lista com virgulas como\n" +
+"`>=1.2, <2`, ou `*`). `lume pkg install --store=DIR` resolve o manifesto e as dependencias de cada pacote (a versao\n" +
+"que o `lume.lock` cita enquanto ela ainda serve, senao a maior versao do store que atende todos os requisitos; um\n" +
+"conflito cita cada requisito e quem o fez), confere cada copia com o hash publicado e com o hash do `lume.lock`, roda\n" +
+"os testes e as provas de cada pacote e so quando tudo passa preenche `lume_modules/` e grava versoes e hashes no\n" +
+"`lume.lock`. Uma instalacao recusada nao muda nada; `--allow-failing` instala mesmo assim, com um aviso. `--update`\n" +
+"ignora o lock e pega as versoes mais novas; `--locked` recusa qualquer mudanca no lock (CI).\n" +
+"`lume pkg resolve [dir] --store=DIR` mostra as versoes que o install pegaria e nao muda nada. `use NOME` encontra um\n" +
+"pacote instalado, tambem de dentro de outro. O store tambem pode ser dado por `LUME_PKG_STORE`.\n" +
 "\n" +
 "Exemplos oficiais: `examples/topics/*.src` (um arquivo por assunto, cada um rodado por `lume test`) e\n" +
 "`examples/diagnostics/` (para um codigo de diagnostico, `CODIGO_nome.bad` o mostra e `CODIGO_nome.fixed.src` e o\n" +
@@ -3087,7 +3114,11 @@ fn man_pt_ref() = "# Referencia da Lume (factual) — v1.2.0\n" +
 "`buf_new(n)` (n bytes zerados), `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),\n" +
 "`buf_copy(dst, d_off, src, s_off, n)`, `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,\n" +
 "`buf_addr(b)` (endereco do byte 0, para chamadas de sistema). Indice fora do buffer ou valor fora de 0..255 para o\n" +
-"programa.\n" +
+"programa. `buf_shared(n)` e um buffer em memoria compartilhada com os processos que `os_fork` criar depois (o que\n" +
+"um escreve, todos leem). Com `use par`: `par_pool(n, fn(k, job) => ...)` cria n processos trabalhadores uma vez,\n" +
+"`par_run(pool, job)` roda a funcao em todos ao mesmo tempo e devolve a soma das respostas (as escritas deles nos\n" +
+"buffers compartilhados ficam visiveis), `par_slice(k, n, total)` e o primeiro item do trabalhador k, `par_close(pool)`\n" +
+"os encerra.\n" +
 "\n" +
 "```lume\n" +
 "let b = buf_new(4)\n" +
@@ -3240,12 +3271,15 @@ fn man_pt_ref() = "# Referencia da Lume (factual) — v1.2.0\n" +
 "| Modulo | O que oferece | Estado |\n" +
 "| --- | --- | --- |\n" +
 "| `h264` | `buf_h264_luma_mc(ref, ri, rs, rw, rh, x, y, mx, my, w, h, dst, di, ds)` (luma em 1/4 de amostra, 6 taps, 8.4.2.2.1), `buf_h264_chroma_mc(...)` (mesmos argumentos, croma bilinear em 1/8, 8.4.2.2.2), `buf_h264_deblock_edge(buf, q0, across, along, lines, bs, alpha, beta, tc0, chroma)` (8.7.2.3 / 8.7.2.4; bs e tc0 sao listas, um valor por 4 linhas de luma / 2 de croma); 0, ou -1 com argumento errado; coordenadas presas a figura | estavel |\n" +
-"| `hash` | `crc32`, `adler32`, `md5`, `sha1`, `sha256` (strings; `*_buf` para buffers), `hex32` | estavel |\n" +
-"| `csv` | `csv_parse(texto)` (RFC 4180: aspas, separadores e quebras de linha dentro de campos), `csv_format(linhas)`, `csv_parse_sep` / `csv_format_sep`, `csv_field` | estavel |\n" +
-"| `utf8` | `utf8_len`, `utf8_decode` / `utf8_encode`, `utf8_char`, `utf8_cp`, `utf8_slice`, `utf8_upper` / `utf8_lower` (ASCII + Latin-1), `utf8_reverse`, `utf8_valid` (strings sao bytes; estas contam caracteres) | estavel |\n" +
-"| `datetime` | `dt_from_unix`, `dt_to_unix`, `dt_iso`, `dt_parse_iso`, `dt_weekday`, `dt_add_days` / `dt_add_months`, `dt_offset(fuso, t)` / `dt_local` / `dt_iso_local` (deslocamentos fixos, horario de verao EUA / UE / Sydney) | estavel |\n" +
-"| `regex` | `re_match`, `re_search`, `re_find`, `re_find_all`, `re_groups`, `re_replace` (`$1`), `re_split`: classes, `\\d \\w \\s`, ancoras, grupos, alternancia, quantificadores gulosos e preguicosos | estavel |\n" +
-"| `deflate` | `inflate_buf` / `deflate_buf`, `zlib_decompress` / `zlib_compress`, `gunzip` / `gzip`, `gunzip_str` / `gzip_str` (Adler-32 / CRC-32 conferidos) | estavel |\n" +
+"| `hash` | `crc32`, `adler32`, `md5`, `sha1`, `sha224`, `sha256`, `sha384`, `sha512` (strings; `*_buf` para buffers), `hash_hex` / `hash_raw(nome, s)`, `hmac_md5` / `hmac_sha1` / `hmac_sha256` / `hmac_sha384` / `hmac_sha512(chave, msg)` e `hmac_hex` / `hmac_raw(nome, chave, msg)` (RFC 2104), `pbkdf2_sha256` / `pbkdf2_hex` (RFC 8018), `crc32c`, `fnv1a32`, `fnv1a64` (16 digitos hex), `hex32`; conferidos com os vetores da FIPS 180-4 e das RFC 4231 / 2202 / 2104 / 7914 / 6070 | estavel |\n" +
+"| `encoding` | `hex_encode` / `hex_decode`, `base64_encode` / `base64_decode` (RFC 4648 secao 4, preenchimento e bits finais estritos), `base64url_encode` / `base64url_decode` (secao 5, preenchimento opcional), `base64_decode_mime` (ignora espacos e quebras); os decodificadores respondem `{{ok, bytes}}` | experimental |\n" +
+"| `json` | `json_parse(texto)` -> `{{ok, value, err, pos, line, col}}` (RFC 8259 estrita: gramatica dos numeros, todos os escapes, pares substitutos `\\u`, substituto isolado e UTF-8 malformado recusados, profundidade 512), valores `{{k, s, items, fields}}` (numeros guardam o texto exato), `json_get` / `json_has` / `json_at` / `json_len` / `json_keys` / `json_pointer` (RFC 6901), `json_str` / `json_int` / `json_f64` / `json_bool` / `json_is_null`, construtores `jv_*`, `json_set` / `json_remove` / `json_push`, `json_write` / `json_write_ascii` / `json_pretty` / `json_quote` | experimental |\n" +
+"| `csv` | `csv_parse(texto)` (RFC 4180: aspas, separadores e quebras de linha dentro de campos), `csv_format(linhas)`, `csv_parse_sep` / `csv_format_sep`, `csv_parse_checked` / `csv_parse_checked_sep` (estrita: `{{ok, rows, err, line}}` com aspas sem fechar ou texto depois da aspa de fechamento), `csv_field`, `csv_index` / `csv_get(cabecalho, linha, nome)` | estavel |\n" +
+"| `utf8` | `utf8_len`, `utf8_decode` / `utf8_encode` / `utf8_encode_cp`, `utf8_char`, `utf8_cp`, `utf8_slice`, `utf8_offset`, `utf8_next` / `utf8_fold` (percorre por ponto de codigo sem lista), `utf8_valid` / `utf8_check` (posicao do primeiro byte malformado) / `utf8_sanitize` (U+FFFD), `utf8_to_utf16` / `utf8_from_utf16`, `utf8_upper` / `utf8_lower` (ASCII, Latin-1, Latin Extended-A, grego, cirilico), `utf8_reverse` (strings sao bytes; estas contam caracteres) | estavel |\n" +
+"| `datetime` | `dt_from_unix`, `dt_to_unix`, `dt_iso`, `dt_parse_iso`, `dt_parse` (ISO 8601 / RFC 3339 nas formas estendida e basica, nanossegundos, o deslocamento escrito), `dt_format(t, desl, padrao)` (subconjunto do strftime), `dt_weekday`, `dt_yday`, `dt_iso_week`, `dt_add_days` / `dt_add_months`, `dt_offset(fuso, t)` / `dt_local` / `dt_iso_local` (deslocamentos fixos, horario de verao EUA / UE / Sydney) | estavel |\n" +
+"| `tz` | `tz_zone(spec)`: deslocamento fixo, regra TZ POSIX (`EST5EDT,M3.2.0,M11.1.0`, datas Jn / n / Mm.w.d) ou nome IANA lido do tzdata; `tz_load(nome)` (arquivos TZif, RFC 8536 versoes 1-4, a regra do rodape; `$TZDIR`, `/usr/share/zoneinfo`, ...), `tz_from_tzif(bytes, nome)`, `tz_offset`, `tz_abbr`, `tz_is_dst`, `tz_local`, `tz_iso`, `tz_from_local` (lacunas e sobreposicoes resolvidas) | experimental; o Windows nao tem tzdata: la o `tz_load` precisa de `TZDIR` (deslocamentos fixos e regras POSIX funcionam em todo lugar) |\n" +
+"| `regex` | `re_match`, `re_search`, `re_find`, `re_find_all`, `re_find_all_groups`, `re_groups`, `re_named`, `re_group_names`, `re_replace` (`$1`), `re_split`: classes (faixas entre comprimentos UTF-8 diferentes), `\\d \\w \\s`, `\\xHH`, ancoras, `\\b \\B`, grupos, grupos nomeados `(?<n>...)`, retrorreferencias `\\1`..`\\9`, lookahead `(?=...)` `(?!...)`, alternancia, quantificadores gulosos e preguicosos, `(?i)` (ASCII); casamento com retrocesso (sem lookbehind) | estavel |\n" +
+"| `deflate` | `inflate_buf` / `deflate_buf` (o menor entre blocos armazenados, Huffman fixo e Huffman dinamico; o zlib le o que ele escreve), `zlib_decompress` / `zlib_compress`, `gunzip` / `gzip`, `gunzip_str` / `gzip_str` (Adler-32 / CRC-32 conferidos); sem zstd | estavel |\n" +
 "| `http` | `http_get`, `http_post`, `http_request(metodo, url, cabecalhos, corpo, ms)`, `http_header`: chunked, gzip, redirecionamentos, prazos; `https://` pelo `tls` | estavel |\n" +
 "| `tls` | `tls_request(host, porta, dados, ms)`: cliente TLS 1.3 (X25519, AES-128-GCM / ChaCha20-Poly1305); o certificado do servidor e conferido contra as raizes do sistema (`SSL_CERT_FILE`, o pacote do Linux, os repositorios do Windows pelo `lchameleon`) e o nome do host | estavel |\n" +
 "| `tlspki`, `bignum` | RSA (PKCS #1 v1.5, PSS), ECDSA P-256 / P-384, SHA-384 / SHA-512, parse X.509 e validacao de cadeia, PEM; inteiros de qualquer tamanho com `bn_modexp` de Montgomery | estavel |\n" +
@@ -3323,10 +3357,10 @@ fn man_pt_ref() = "# Referencia da Lume (factual) — v1.2.0\n" +
 "\n" +
 "## 11. Mudou nesta versao\n" +
 "\n" +
-"Entrou: `lume debug --dap` (o depurador pelo Debug Adapter Protocol), `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc`, `buf_h264_cavlc_luma` / `chroma` (macroblocos Intra4x4, inter luma e inter croma inteiros numa chamada), `buf_h264_me16` (busca de movimento), a tabela de todos os codigos de diagnostico (secao 3a) e exemplos de diagnostico para 68 codigos, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e\n" +
+"Entrou: `use std/json` (parser RFC 8259 estrito e escritores, JSON Pointer), `use std/tz` (tzdata TZif e regras TZ POSIX), `use std/encoding` (hex, base64, base64url), `sha224` / `sha384` / `sha512`, HMAC, PBKDF2, `crc32c`, `fnv1a32` / `fnv1a64`, `dt_parse`, `dt_format`, `dt_yday`, `dt_iso_week`, `csv_parse_checked`, `csv_index` / `csv_get`, `utf8_next` / `utf8_fold` / `utf8_check` / `utf8_sanitize` / `utf8_offset` / `utf8_encode_cp` / `utf8_to_utf16` / `utf8_from_utf16`, regex `\\b \\B`, retrorreferencias, lookahead, grupos nomeados, `(?i)`, `\\xHH`, `re_named`, `re_group_names`, `re_find_all_groups`, blocos Huffman dinamicos e armazenados no `deflate_buf`, `lume debug --dap` (o depurador pelo Debug Adapter Protocol), `buf_h264_mb_i4`, `buf_h264_mb_i16`, `buf_h264_mb_ic`, `buf_h264_mb_p`, `buf_h264_mb_pc`, `buf_h264_cavlc_luma` / `chroma` (macroblocos Intra4x4, inter luma e inter croma inteiros numa chamada), `buf_h264_me16` (busca de movimento), a tabela de todos os codigos de diagnostico (secao 3a) e exemplos de diagnostico para 68 codigos, `use std/hash`, `csv`, `utf8`, `datetime`, `regex`, `deflate`, `http`, `tls` (HTTPS com TLS 1.3), `tlspki`, `bignum`, versoes de pacotes (`lume pkg publish / add / install`, `[packages]` no lume.lock), `lume verify` (muitos arquivos, N processos, cache por arquivo), a pilha de chamadas (`at NOME (arquivo:LINHA)`) depois de um erro em tempo de execucao, contratos dos builtins no provador (`buf_bits_write`, `buf_get`, `buf_len`, `count`, `buf_sad*`, `buf_satd*`, `buf_h264_quant4x4`), exemplos oficiais (`examples/topics`, `examples/diagnostics`, gate dos exemplos), `use std/NOME`, `buf_bits_write / read / ue / se`, `## Deprecated:` e o aviso [W0005], docs/STABILITY.md (semver, obsolescencia, LTS 1.2), `use math` (funcoes matematicas, f32, buffers f32), parametros f64, W0004, `lume run --profile`, `use h264` (compensacao de movimento, desbloqueio), `buf_sad*`, `buf_satd*` (SSE2), `buf_h264_*`, `use tun`, `lchameleon` `chameleon_c_open / sym / call` e\n" +
 "`chameleon_verify_boundary`, `priv fn`, aviso [W0003], `LUME_FL`, literais constantes em .rodata, cache de campo por\n" +
 "ponto de leitura, ritmo de coleta `max(8 MiB, 3 x vivo)`.\n" +
-"Mudou: o [E0305] deixa com o remetente um int ou bool copiado para dentro ou para fora do registro enviado; um delimitador ainda aberto no fim do arquivo e [P0001] (era [P0002]); exemplos de `lume agent kernel` rodam no gate dos exemplos; o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git\n" +
+"Mudou: `dt_parse_iso` recusa texto depois do fuso; `utf8_encode` escreve U+FFFD para um substituto ou valor fora da faixa e um byte NUL para 0 (antes parava); `utf8_upper` / `utf8_lower` tambem mapeiam Latin Extended-A, grego e cirilico; o `csv_parse` tolerante mantem no campo o texto depois da aspa de fechamento (antes comecava outra linha); faixas de classe do regex funcionam entre comprimentos UTF-8 e um casamento vazio no fim nao para mais o `re_find_all`; o [E0305] deixa com o remetente um int ou bool copiado para dentro ou para fora do registro enviado; um delimitador ainda aberto no fim do arquivo e [P0001] (era [P0002]); exemplos de `lume agent kernel` rodam no gate dos exemplos; o W0004 tambem ve parametros `f64` e resultados de `f64(...)`; `buf_sad4x4` roda em SSE2; o C0009 numa funcao `ct_` diz que o motivo e o prefixo; `lume fmt` se recusa a rodar no Stage-0; no Git\n" +
 "Bash o `lume` roda o `lume.exe` nativo; `fs_copy` mantem as permissoes da origem.\n" +
 "Saiu: nada.\n"
 fn man_en_vision() = "# VISION AND RESEARCH MATERIAL (not a reference)\n" +

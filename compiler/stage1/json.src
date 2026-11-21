@@ -1,0 +1,529 @@
+## json.src -- JSON (RFC 8259) in Lume (`use std/json`): a strict parser, accessors, builders and a serializer.
+## A value is the record {k, s, items, fields}:
+##   k       "null" | "bool" | "num" | "str" | "arr" | "obj" ("none" for a member or element that is not there)
+##   s       "bool": "true" / "false"; "num": the number's text exactly as written (any size or precision is kept);
+##           "str": the decoded string (UTF-8 bytes; \u0000 gives a NUL byte); "null": "null"
+##   items   "arr": the elements, a list
+##   fields  "obj": the members in document order, a list of {key, value} (duplicate keys are kept)
+## Parsing
+##   json_parse(text)          -> {ok, value, err, pos, line, col}. Strict RFC 8259: exactly one value with white
+##                                space around it; numbers -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][+-]?[0-9]+)?; the escapes
+##                                \" \\ \/ \b \f \n \r \t \uXXXX, with a UTF-16 surrogate pair for a code point above
+##                                U+FFFF (a lone surrogate is an error); raw bytes must be well-formed UTF-8; no
+##                                control characters, comments, trailing commas, NaN or Infinity; nesting up to 512
+##                                levels. A leading UTF-8 byte order mark is skipped. On an error ok is false, err
+##                                says "line L, column C: what", pos is the byte offset.
+##   json_valid(text)          true when json_parse accepts it
+## Reading (a missing member, a wrong index or a value of another kind answers a "none" value, never a stop)
+##   json_kind(v)              v.k
+##   json_get(v, key)          an object's member (the last one when the key repeats, as JavaScript does)
+##   json_has(v, key)          true when the object has the member
+##   json_at(v, i)             an array's element i (0-based)
+##   json_len(v)               elements of an array, members of an object, else 0
+##   json_keys(v)              the member names of an object, in order
+##   json_pointer(v, ptr)      RFC 6901: "" is v itself, "/a/0/b" walks members and indexes (~1 is "/", ~0 is "~")
+##   json_str(v)               the string ("" when v is not a string)
+##   json_int(v)               the integer of a number (one with a fraction or exponent goes through f64 and is
+##                             truncated toward zero); 0 when v is not a number
+##   json_f64(v)               the number as an f64 (f64(0) when v is not a number)
+##   json_bool(v)              true for the JSON true
+##   json_is_null(v)           true for the JSON null
+## Building
+##   jv_null()  jv_bool(b)  jv_int(n)  jv_f64(x) (NaN and infinities become null)  jv_num(text) (checked: stops on a
+##   text that is not a JSON number)  jv_str(s)  jv_arr(list)  jv_obj(fields)  jv_field(key, value)
+##   json_set(obj, key, value) (replaces the member, or appends it)   json_remove(obj, key)   json_push(arr, value)
+## Writing
+##   json_write(v)             compact text; strings escape " \ and the control characters (\b \f \n \r \t, others as
+##                             \u00XX); bytes that are not UTF-8 are written as U+FFFD, so the output is always valid
+##   json_write_ascii(v)       the same with every non-ASCII character as \uXXXX (surrogate pairs above U+FFFF)
+##   json_pretty(v)            two-space indentation, one member or element per line
+##   json_quote(s)             s as a JSON string literal
+
+## --- values -----------------------------------------------------------------------------------------------------------
+fn js_mk(k, s, items, fields) = {k: k, s: s, items: items, fields: fields}
+fn js_none() = js_mk("none", "", Nil, Nil)
+fn jv_null() = js_mk("null", "null", Nil, Nil)
+fn jv_bool(b) = js_mk("bool", if b then "true" else "false", Nil, Nil)
+fn jv_int(n) = js_mk("num", str(n), Nil, Nil)
+fn jv_f64(x) = if f64_is_nan(x - x) then jv_null() else js_mk("num", js_f64text(str(x)), Nil, Nil)
+fn js_f64text(t) =
+    if js_numend(t, 0, count(t)) == count(t) then
+        t
+    else
+        ctfail("json: f64 text '" + t + "' is not a JSON number\n")
+fn jv_num(t) =
+    if count(t) > 0 and js_numend(t, 0, count(t)) == count(t) then
+        js_mk("num", t, Nil, Nil)
+    else
+        ctfail("json: '" + t + "' is not a JSON number\n")
+fn jv_str(s) = js_mk("str", s, Nil, Nil)
+fn jv_arr(xs) = js_mk("arr", "", xs, Nil)
+fn jv_obj(fs) = js_mk("obj", "", Nil, fs)
+fn jv_field(key, value) = {key: key, value: value}
+
+fn js_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => js_rev(t, Cons(h, acc))
+fn js_isnil(xs) = match xs
+    Nil        => true
+    Cons(h, t) => false
+## the strings of a list joined, by halves (each byte is copied about log2(k) times, never k times)
+fn js_join(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => if js_isnil(t) then h else js_join(js_pairs(xs, Nil))
+fn js_pairs(xs, acc) = match xs
+    Nil        => js_rev(acc, Nil)
+    Cons(a, t) => js_pair2(a, t, acc)
+fn js_pair2(a, t, acc) = match t
+    Nil        => js_rev(Cons(a, acc), Nil)
+    Cons(b, u) => js_pairs(u, Cons(a + b, acc))
+
+## --- parsing: results are {ok, v, i, err} -------------------------------------------------------------------------------
+fn js_maxdepth() = 512
+fn js_good(v, i) = {ok: true, v: v, i: i, err: ""}
+fn js_bad(i, m) = {ok: false, v: js_none(), i: i, err: m}
+fn js_isws(c) = c == 32 or c == 10 or c == 13 or c == 9
+fn js_ws(s, i, n) = if i < n and js_isws(ord_at(s, i)) then js_ws(s, i + 1, n) else i
+fn js_dig(s, i, n) = i < n and ord_at(s, i) >= 48 and ord_at(s, i) <= 57
+fn js_digits(s, i, n) = if js_dig(s, i, n) then js_digits(s, i + 1, n) else i
+
+fn json_parse(text) =
+    let n = count(text) in
+    let st = if n >= 3 and ord_at(text, 0) == 239 and ord_at(text, 1) == 187 and ord_at(text, 2) == 191 then 3 else 0 in
+    let r = js_value(text, st, n, 0) in
+    let p = if r.ok then js_ws(text, r.i, n) else r.i in
+    if r.ok and p == n then
+        {ok: true, value: r.v, err: "", pos: n, line: 0, col: 0}
+    else
+        let pos = if r.ok then p else r.i in
+        let m = if r.ok then "trailing data after the value" else r.err in
+        let lc = js_linecol(text, 0, pos, 1, 1) in
+        {ok: false, value: js_none(), err: "line " + str(lc.line) + ", column " + str(lc.col) + ": " + m, pos: pos, line: lc.line, col: lc.col}
+fn js_linecol(s, i, pos, line, col) =
+    if i >= pos or i >= count(s) then
+        {line: line, col: col}
+    else if ord_at(s, i) == 10 then
+        js_linecol(s, i + 1, pos, line + 1, 1)
+    else
+        js_linecol(s, i + 1, pos, line, col + 1)
+fn json_valid(text) = (json_parse(text)).ok
+
+fn js_value(s, i0, n, d) =
+    let i = js_ws(s, i0, n) in
+    if i >= n then
+        js_bad(i, "expected a value")
+    else
+        let c = ord_at(s, i) in
+        if c == 123 then
+            js_object(s, i + 1, n, d + 1)
+        else if c == 91 then
+            js_array(s, i + 1, n, d + 1)
+        else if c == 34 then
+            js_string(s, i + 1, n)
+        else if c == 116 then
+            js_lit(s, i, n, "true", jv_bool(true))
+        else if c == 102 then
+            js_lit(s, i, n, "false", jv_bool(false))
+        else if c == 110 then
+            js_lit(s, i, n, "null", jv_null())
+        else if c == 45 or c >= 48 and c <= 57 then
+            js_number(s, i, n)
+        else
+            js_bad(i, "unexpected character '" + at(s, i) + "'")
+fn js_lit(s, i, n, word, v) =
+    if i + count(word) <= n and slice(s, i, i + count(word)) == word then
+        js_good(v, i + count(word))
+    else
+        js_bad(i, "invalid literal")
+
+## the end of the number at i, or -1 when the text there is not a JSON number
+fn js_numend(s, i, n) =
+    let a = if i < n and ord_at(s, i) == 45 then i + 1 else i in
+    if not js_dig(s, a, n) then
+        0 - 1
+    else
+        let b = if ord_at(s, a) == 48 then a + 1 else js_digits(s, a, n) in
+        let c = if b < n and ord_at(s, b) == 46 then js_frac(s, b + 1, n) else b in
+        if c < 0 then
+            0 - 1
+        else if c < n and (ord_at(s, c) == 101 or ord_at(s, c) == 69) then
+            js_exp(s, if c + 1 < n and (ord_at(s, c + 1) == 43 or ord_at(s, c + 1) == 45) then c + 2 else c + 1, n)
+        else
+            c
+fn js_frac(s, i, n) = let e = js_digits(s, i, n) in if e == i then 0 - 1 else e
+fn js_exp(s, i, n) = let e = js_digits(s, i, n) in if e == i then 0 - 1 else e
+fn js_number(s, i, n) =
+    let e = js_numend(s, i, n) in
+    if e < 0 then
+        js_bad(i, "malformed number")
+    else if js_dig(s, e, n) then
+        js_bad(i, "a number cannot start with 0 followed by digits")
+    else
+        js_good(js_mk("num", slice(s, i, e), Nil, Nil), e)
+
+## --- strings ----------------------------------------------------------------------------------------------------------
+## the length of the well-formed UTF-8 sequence at i whose lead byte is c (>= 128), 0 when it is not one
+fn js_cont(s, i, n, lo, hi) = i < n and ord_at(s, i) >= lo and ord_at(s, i) <= hi
+fn js_u8len(s, i, n, c) =
+    if c >= 194 and c <= 223 then
+        (if js_cont(s, i + 1, n, 128, 191) then 2 else 0)
+    else if c >= 224 and c <= 239 then
+        let lo = if c == 224 then 160 else 128 in
+        let hi = if c == 237 then 159 else 191 in
+        if js_cont(s, i + 1, n, lo, hi) and js_cont(s, i + 2, n, 128, 191) then
+            3
+        else
+            0
+    else if c >= 240 and c <= 244 then
+        let lo = if c == 240 then 144 else 128 in
+        let hi = if c == 244 then 143 else 191 in
+        if js_cont(s, i + 1, n, lo, hi) and js_cont(s, i + 2, n, 128, 191) and js_cont(s, i + 3, n, 128, 191) then
+            4
+        else
+            0
+    else
+        0
+## the end of the run of plain characters from i; -(p + 1) when the byte at p is not UTF-8
+fn js_run(s, i, n) =
+    if i >= n then
+        i
+    else
+        let c = ord_at(s, i) in
+        if c >= 128 then
+            let l = js_u8len(s, i, n, c) in
+            if l == 0 then
+                0 - 1 - i
+            else
+                js_run(s, i + l, n)
+        else if c < 32 or c == 34 or c == 92 then
+            i
+        else
+            js_run(s, i + 1, n)
+fn js_string(s, i, n) = js_str_go(s, i, n, Nil)
+fn js_str_go(s, i, n, acc) =
+    let j = js_run(s, i, n) in
+    if j < 0 then
+        js_bad(0 - 1 - j, "invalid UTF-8 in a string")
+    else if j >= n then
+        js_bad(j, "unterminated string")
+    else
+        let acc2 = if j > i then Cons(slice(s, i, j), acc) else acc in
+        let c = ord_at(s, j) in
+        if c == 34 then
+            js_good(jv_str(js_join(js_rev(acc2, Nil))), j + 1)
+        else if c == 92 then
+            let e = js_escape(s, j + 1, n) in
+            if e.ok then
+                js_str_go(s, e.i, n, Cons(e.err, acc2))
+            else
+                e
+        else
+            js_bad(j, "control character in a string (write it as an escape)")
+## an escape after the backslash: {ok, i, err} where err carries the decoded text when ok
+fn js_esc_ok(t, i) = {ok: true, v: js_none(), i: i, err: t}
+fn js_escape(s, i, n) =
+    if i >= n then
+        js_bad(i, "unterminated escape")
+    else
+        let c = ord_at(s, i) in
+        if c == 34 then
+            js_esc_ok(chr(34), i + 1)
+        else if c == 92 then
+            js_esc_ok(chr(92), i + 1)
+        else if c == 47 then
+            js_esc_ok("/", i + 1)
+        else if c == 98 then
+            js_esc_ok(chr(8), i + 1)
+        else if c == 102 then
+            js_esc_ok(chr(12), i + 1)
+        else if c == 110 then
+            js_esc_ok(chr(10), i + 1)
+        else if c == 114 then
+            js_esc_ok(chr(13), i + 1)
+        else if c == 116 then
+            js_esc_ok(chr(9), i + 1)
+        else if c == 117 then
+            js_uesc(s, i, n)
+        else
+            js_bad(i - 1, "invalid escape")
+fn js_hexv(c) =
+    if c >= 48 and c <= 57 then
+        c - 48
+    else if c >= 97 and c <= 102 then
+        c - 87
+    else if c >= 65 and c <= 70 then
+        c - 55
+    else
+        0 - 1
+fn js_hex4(s, i, n) =
+    if i + 4 > n then
+        0 - 1
+    else
+        let a = js_hexv(ord_at(s, i)) in
+        let b = js_hexv(ord_at(s, i + 1)) in
+        let c = js_hexv(ord_at(s, i + 2)) in
+        let d = js_hexv(ord_at(s, i + 3)) in
+        if a < 0 or b < 0 or c < 0 or d < 0 then
+            0 - 1
+        else
+            a * 4096 + b * 256 + c * 16 + d
+## i is at the u of \uXXXX
+fn js_uesc(s, i, n) =
+    let h = js_hex4(s, i + 1, n) in
+    if h < 0 then
+        js_bad(i - 1, "\\u needs four hexadecimal digits")
+    else if h >= 55296 and h <= 56319 then
+        let lo = if i + 6 < n and ord_at(s, i + 5) == 92 and ord_at(s, i + 6) == 117 then js_hex4(s, i + 7, n) else 0 - 1 in
+        if lo >= 56320 and lo <= 57343 then
+            js_esc_ok(js_enc(65536 + (h - 55296) * 1024 + (lo - 56320)), i + 11)
+        else
+            js_bad(i - 1, "a high surrogate must be followed by a \\u low surrogate")
+    else if h >= 56320 and h <= 57343 then
+        js_bad(i - 1, "a low surrogate without a high surrogate before it")
+    else
+        js_esc_ok(js_enc(h), i + 5)
+## UTF-8 of a code point (0 included: a NUL byte)
+fn js_enc(cp) =
+    if cp < 128 then
+        chr(cp)
+    else if cp < 2048 then
+        chr(192 + cp / 64) + chr(128 + cp % 64)
+    else if cp < 65536 then
+        chr(224 + cp / 4096) + chr(128 + cp / 64 % 64) + chr(128 + cp % 64)
+    else
+        chr(240 + cp / 262144) + chr(128 + cp / 4096 % 64) + chr(128 + cp / 64 % 64) + chr(128 + cp % 64)
+
+## --- arrays and objects -----------------------------------------------------------------------------------------------
+fn js_array(s, i, n, d) =
+    if d > js_maxdepth() then
+        js_bad(i - 1, "nesting deeper than 512 levels")
+    else
+        let p = js_ws(s, i, n) in
+        if p < n and ord_at(s, p) == 93 then
+            js_good(jv_arr(Nil), p + 1)
+        else
+            js_items(s, p, n, d, Nil)
+fn js_items(s, i, n, d, acc) =
+    let r = js_value(s, i, n, d) in
+    if not r.ok then
+        r
+    else
+        let p = js_ws(s, r.i, n) in
+        if p >= n then
+            js_bad(p, "unterminated array")
+        else if ord_at(s, p) == 44 then
+            js_items(s, p + 1, n, d, Cons(r.v, acc))
+        else if ord_at(s, p) == 93 then
+            js_good(jv_arr(js_rev(Cons(r.v, acc), Nil)), p + 1)
+        else
+            js_bad(p, "expected ',' or ']' in an array")
+fn js_object(s, i, n, d) =
+    if d > js_maxdepth() then
+        js_bad(i - 1, "nesting deeper than 512 levels")
+    else
+        let p = js_ws(s, i, n) in
+        if p < n and ord_at(s, p) == 125 then
+            js_good(jv_obj(Nil), p + 1)
+        else
+            js_members(s, p, n, d, Nil)
+fn js_members(s, i0, n, d, acc) =
+    let i = js_ws(s, i0, n) in
+    if i >= n or ord_at(s, i) != 34 then
+        js_bad(i, "expected a member name (a string)")
+    else
+        let k = js_string(s, i + 1, n) in
+        if not k.ok then
+            k
+        else
+            let c = js_ws(s, k.i, n) in
+            if c >= n or ord_at(s, c) != 58 then
+                js_bad(c, "expected ':' after the member name")
+            else
+                let r = js_value(s, c + 1, n, d) in
+                if not r.ok then
+                    r
+                else
+                    let p = js_ws(s, r.i, n) in
+                    let acc2 = Cons(jv_field(k.v.s, r.v), acc) in
+                    if p >= n then
+                        js_bad(p, "unterminated object")
+                    else if ord_at(s, p) == 44 then
+                        js_members(s, p + 1, n, d, acc2)
+                    else if ord_at(s, p) == 125 then
+                        js_good(jv_obj(js_rev(acc2, Nil)), p + 1)
+                    else
+                        js_bad(p, "expected ',' or '" + chr(125) + "' in an object")
+
+## --- reading ----------------------------------------------------------------------------------------------------------
+fn json_kind(v) = v.k
+fn json_get(v, key) = if v.k == "obj" then js_last(v.fields, key, js_none()) else js_none()
+fn js_last(fs, key, found) = match fs
+    Nil        => found
+    Cons(h, t) => js_last(t, key, if h.key == key then h.value else found)
+fn json_has(v, key) = v.k == "obj" and js_hask(v.fields, key)
+fn js_hask(fs, key) = match fs
+    Nil        => false
+    Cons(h, t) => if h.key == key then true else js_hask(t, key)
+fn json_at(v, i) = if v.k == "arr" and i >= 0 then js_nth(v.items, i) else js_none()
+fn js_nth(xs, i) = match xs
+    Nil        => js_none()
+    Cons(h, t) => if i == 0 then h else js_nth(t, i - 1)
+fn js_count(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => js_count(t, n + 1)
+fn json_len(v) = if v.k == "arr" then js_count(v.items, 0) else if v.k == "obj" then js_count(v.fields, 0) else 0
+fn json_keys(v) = if v.k == "obj" then js_keys(v.fields) else Nil
+fn js_keys(fs) = match fs
+    Nil        => Nil
+    Cons(h, t) => Cons(h.key, js_keys(t))
+fn json_str(v) = if v.k == "str" then v.s else ""
+fn json_bool(v) = v.k == "bool" and v.s == "true"
+fn json_is_null(v) = v.k == "null"
+fn js_isint(t, i) =
+    if i >= count(t) then
+        true
+    else if at(t, i) == "." or at(t, i) == "e" or at(t, i) == "E" then
+        false
+    else
+        js_isint(t, i + 1)
+fn json_int(v) = if v.k != "num" then 0 else if js_isint(v.s, 0) then toint(v.s) else f64_int(f64(v.s))
+fn json_f64(v) = if v.k == "num" then f64(v.s) else f64(0)
+
+## RFC 6901 JSON Pointer
+fn json_pointer(v, ptr) = if ptr == "" then v else if at(ptr, 0) != "/" then js_none() else js_ptr(v, ptr, 1)
+fn js_ptr(v, p, i) =
+    let j = js_slash(p, i) in
+    let tok = js_unesc(slice(p, i, j), 0, "") in
+    let nv = if v.k == "obj" then json_get(v, tok) else if v.k == "arr" and js_isindex(tok) then json_at(v, toint(tok)) else js_none() in
+    if j >= count(p) or nv.k == "none" then
+        nv
+    else
+        js_ptr(nv, p, j + 1)
+fn js_slash(p, i) = if i >= count(p) or at(p, i) == "/" then i else js_slash(p, i + 1)
+fn js_unesc(t, i, acc) =
+    if i >= count(t) then
+        acc
+    else if at(t, i) == "~" and i + 1 < count(t) and at(t, i + 1) == "1" then
+        js_unesc(t, i + 2, acc + "/")
+    else if at(t, i) == "~" and i + 1 < count(t) and at(t, i + 1) == "0" then
+        js_unesc(t, i + 2, acc + "~")
+    else
+        js_unesc(t, i + 1, acc + at(t, i))
+fn js_isindex(t) = count(t) > 0 and count(t) < 19 and js_digits(t, 0, count(t)) == count(t) and (count(t) == 1 or at(t, 0) != "0")
+
+## --- building ---------------------------------------------------------------------------------------------------------
+fn json_set(o, key, value) =
+    if json_has(o, key) then
+        jv_obj(js_repl(o.fields, key, value))
+    else
+        jv_obj(js_rev(Cons(jv_field(key, value), js_rev(o.fields, Nil)), Nil))
+fn js_repl(fs, key, value) = match fs
+    Nil        => Nil
+    Cons(h, t) => Cons(if h.key == key then jv_field(key, value) else h, js_repl(t, key, value))
+fn json_remove(o, key) = jv_obj(js_drop(o.fields, key))
+fn js_drop(fs, key) = match fs
+    Nil        => Nil
+    Cons(h, t) => if h.key == key then js_drop(t, key) else Cons(h, js_drop(t, key))
+fn json_push(a, value) = jv_arr(js_rev(Cons(value, js_rev(a.items, Nil)), Nil))
+
+## --- writing: pieces are gathered in reverse and joined once ------------------------------------------------------------
+fn js_hexd(d) = at("0123456789abcdef", d)
+fn js_u4(v) = chr(92) + "u" + js_hexd(v / 4096) + js_hexd(v / 256 % 16) + js_hexd(v / 16 % 16) + js_hexd(v % 16)
+fn js_escch(c) =
+    if c == 34 then
+        chr(92) + chr(34)
+    else if c == 92 then
+        chr(92) + chr(92)
+    else if c == 10 then
+        chr(92) + "n"
+    else if c == 13 then
+        chr(92) + "r"
+    else if c == 9 then
+        chr(92) + "t"
+    else if c == 8 then
+        chr(92) + "b"
+    else if c == 12 then
+        chr(92) + "f"
+    else
+        js_u4(c)
+fn js_cp(s, i, l) =
+    let c = ord_at(s, i) in
+    if l == 2 then
+        bit_and(c, 31) * 64 + bit_and(ord_at(s, i + 1), 63)
+    else if l == 3 then
+        bit_and(c, 15) * 4096 + bit_and(ord_at(s, i + 1), 63) * 64 + bit_and(ord_at(s, i + 2), 63)
+    else
+        bit_and(c, 7) * 262144 + bit_and(ord_at(s, i + 1), 63) * 4096 + bit_and(ord_at(s, i + 2), 63) * 64 + bit_and(ord_at(s, i + 3), 63)
+fn js_uasc(cp) =
+    if cp < 65536 then
+        js_u4(cp)
+    else
+        js_u4(55296 + (cp - 65536) / 1024) + js_u4(56320 + (cp - 65536) % 1024)
+fn js_qgo(s, i, n, st, ascii, acc) =
+    if i >= n then
+        (if i > st then Cons(slice(s, st, i), acc) else acc)
+    else
+        let c = ord_at(s, i) in
+        if c >= 32 and c < 128 and c != 34 and c != 92 then
+            js_qgo(s, i + 1, n, st, ascii, acc)
+        else
+            let acc1 = if i > st then Cons(slice(s, st, i), acc) else acc in
+            if c >= 128 then
+                let l = js_u8len(s, i, n, c) in
+                if l == 0 then
+                    js_qgo(s, i + 1, n, i + 1, ascii, Cons(if ascii then js_u4(65533) else js_enc(65533), acc1))
+                else if ascii then
+                    js_qgo(s, i + l, n, i + l, ascii, Cons(js_uasc(js_cp(s, i, l)), acc1))
+                else
+                    js_qgo(s, i + l, n, st, ascii, acc)
+            else
+                js_qgo(s, i + 1, n, i + 1, ascii, Cons(js_escch(c), acc1))
+fn js_q(s, ascii, acc) = Cons(chr(34), js_qgo(s, 0, count(s), 0, ascii, Cons(chr(34), acc)))
+fn json_quote(s) = js_join(js_rev(js_q(s, false, Nil), Nil))
+fn js_w(v, ascii, acc) =
+    if v.k == "str" then
+        js_q(v.s, ascii, acc)
+    else if v.k == "arr" then
+        Cons("]", js_witems(v.items, ascii, Cons("[", acc)))
+    else if v.k == "obj" then
+        Cons(chr(125), js_wfields(v.fields, ascii, Cons(chr(123), acc)))
+    else if v.k == "num" or v.k == "bool" then
+        Cons(v.s, acc)
+    else
+        Cons("null", acc)
+fn js_witems(xs, ascii, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => let a = js_w(h, ascii, acc) in if js_isnil(t) then a else js_witems(t, ascii, Cons(",", a))
+fn js_wfields(fs, ascii, acc) = match fs
+    Nil        => acc
+    Cons(h, t) => let a = js_w(h.value, ascii, Cons(":", js_q(h.key, ascii, acc))) in
+        if js_isnil(t) then
+            a
+        else
+            js_wfields(t, ascii, Cons(",", a))
+fn json_write(v) = js_join(js_rev(js_w(v, false, Nil), Nil))
+fn json_write_ascii(v) = js_join(js_rev(js_w(v, true, Nil), Nil))
+
+fn js_ind(k) = if k <= 0 then "" else "  " + js_ind(k - 1)
+fn js_wp(v, d, acc) =
+    if v.k == "arr" and not js_isnil(v.items) then
+        Cons("]", Cons(js_ind(d), Cons(chr(10), js_pitems(v.items, d + 1, Cons(chr(10), Cons("[", acc))))))
+    else if v.k == "obj" and not js_isnil(v.fields) then
+        Cons(chr(125), Cons(js_ind(d), Cons(chr(10), js_pfields(v.fields, d + 1, Cons(chr(10), Cons(chr(123), acc))))))
+    else
+        js_w(v, false, acc)
+fn js_pitems(xs, d, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => let a = js_wp(h, d, Cons(js_ind(d), acc)) in
+        if js_isnil(t) then
+            a
+        else
+            js_pitems(t, d, Cons("," + chr(10), a))
+fn js_pfields(fs, d, acc) = match fs
+    Nil        => acc
+    Cons(h, t) => let a = js_wp(h.value, d, Cons(": ", js_q(h.key, false, Cons(js_ind(d), acc)))) in
+        if js_isnil(t) then
+            a
+        else
+            js_pfields(t, d, Cons("," + chr(10), a))
+fn json_pretty(v) = js_join(js_rev(js_wp(v, 0, Nil), Nil))

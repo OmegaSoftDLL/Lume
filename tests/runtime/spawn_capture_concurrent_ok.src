@@ -1,0 +1,22 @@
+## os_spawn_capture while another process reads the capture files. The child (this test binary started again with
+## LUME_CAPTURE_CONC_CHILD=1) writes numbered lines to stdout and stderr, a little at a time; the parent polls both
+## files with fs_read_file the whole time. Every byte must reach the files, in order:
+## - Windows: fs_read_file takes flock(LOCK_SH); flock was a mandatory byte-range lock over the whole file, so the
+##   child's WriteFile calls failed with ERROR_LOCK_VIOLATION while the parent read and their bytes were lost.
+## - every system: an error path equal to the output path was opened twice, two file offsets, and stdout and stderr
+##   overwrote each other; now the child's fd 2 is the same open file as its fd 1 (as `> f 2>&1`).
+
+fn cc_lines() = 120
+fn cc_child_mode() = os_getenv("LUME_CAPTURE_CONC_CHILD") == "1"
+fn cc_put(fd, s) = let b = buf_from_str(s) in sys_call(1, fd, buf_addr(b), buf_len(b), 0, 0)
+fn cc_child(i, n) = if i > n then os_exit(0) else let a = cc_put(1, "out " + str(i) + "\n") in let b = cc_put(2, "err " + str(i) + "\n") in let z = os_sleep_ms(1) in cc_child(i + 1, n)
+fn cc_guard() = if cc_child_mode() then cc_child(1, cc_lines()) else 0
+fn cc_expect(tag, i, n, acc) = if i > n then acc else cc_expect(tag, i + 1, n, acc + tag + " " + str(i) + "\n")
+fn cc_both(i, n, acc) = if i > n then acc else cc_both(i + 1, n, acc + "out " + str(i) + "\nerr " + str(i) + "\n")
+fn cc_poll(out, err, want, k, reads) = if k <= 0 then reads else let a = fs_read_file(out) in let b = (if err == out then "" else fs_read_file(err)) in if count(a) + count(b) >= want then reads else cc_poll(out, err, want, k - 1, reads + 1)
+fn cc_run(out, err, want) = let e = os_setenv("LUME_CAPTURE_CONC_CHILD", "1") in let pid = os_spawn_capture(os_arg_at(0), Nil, out, err) in let u = os_unsetenv("LUME_CAPTURE_CONC_CHILD") in let r = cc_poll(out, err, want, 20000, 0) in os_waitpid_status(pid)
+fn cc_name(tag) = "spawn_capture_conc_" + str(os_getpid()) + "_" + tag
+
+fn test_capture_complete_while_polled() = let g = cc_guard() in let out = cc_name("out") in let err = cc_name("err") in let eo = cc_expect("out", 1, cc_lines(), "") in let ee = cc_expect("err", 1, cc_lines(), "") in let s = cc_run(out, err, count(eo) + count(ee)) in let fo = fs_read_file(out) in let fe = fs_read_file(err) in let z = fs_remove(out) + fs_remove(err) in s == 0 and fo == eo and fe == ee
+
+fn test_same_capture_file_keeps_both_streams() = let g = cc_guard() in let out = cc_name("both") in let eb = cc_both(1, cc_lines(), "") in let s = cc_run(out, out, count(eb)) in let fb = fs_read_file(out) in let z = fs_remove(out) in s == 0 and fb == eb

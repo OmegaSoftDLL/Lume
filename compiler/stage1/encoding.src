@@ -1,0 +1,185 @@
+## encoding.src -- binary-to-text encodings in Lume (`use std/encoding`). Strings are bytes throughout.
+##   hex_encode(s)              lowercase hexadecimal, two digits per byte
+##   hex_decode(h)              -> {ok, bytes}: upper or lower case digits; ok false on an odd length or a non-digit
+##   base64_encode(s)           RFC 4648 section 4 (A-Z a-z 0-9 + /, padded with =)
+##   base64url_encode(s)        RFC 4648 section 5 (- and _ instead of + and /, no padding: JWT, URLs)
+##   base64_decode(t)           -> {ok, bytes}: strict RFC 4648 section 4: padding required, nothing but the
+##                              alphabet; the unused bits of the last character must be zero
+##   base64url_decode(t)        -> {ok, bytes}: section 5, padding optional
+##   base64_decode_mime(t)      -> {ok, bytes}: section 4 with line breaks and other white space ignored (PEM, MIME)
+
+fn en_isnil(xs) = match xs
+    Nil        => true
+    Cons(h, t) => false
+fn en_rev(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => en_rev(t, Cons(h, acc))
+
+## --- hex ------------------------------------------------------------------------------------------------------------------
+fn hex_encode(s) = let n = count(s) in let b = buf_new(n * 2) in buf_to_str(en_hexgo(s, b, 0, n), 0, n * 2)
+fn en_hexgo(s, b, i, n) =
+    if i >= n then
+        b
+    else
+        let v = ord_at(s, i) in
+        let a = buf_set(b, 2 * i, ord_at("0123456789abcdef", v / 16)) in
+        let c = buf_set(b, 2 * i + 1, ord_at("0123456789abcdef", v % 16)) in
+        en_hexgo(s, b, i + 1, n)
+fn en_hexv(c) =
+    if c >= 48 and c <= 57 then
+        c - 48
+    else if c >= 97 and c <= 102 then
+        c - 87
+    else if c >= 65 and c <= 70 then
+        c - 55
+    else
+        0 - 1
+fn hex_decode(h) =
+    let n = count(h) in
+    if n % 2 != 0 then
+        {ok: false, bytes: ""}
+    else
+        let b = buf_new(n / 2) in
+        if en_unhex(h, b, 0, n / 2) then
+            {ok: true, bytes: buf_to_str(b, 0, n / 2)}
+        else
+            {ok: false, bytes: ""}
+fn en_unhex(h, b, i, m) =
+    if i >= m then
+        true
+    else
+        let x = en_hexv(ord_at(h, 2 * i)) in
+        let y = en_hexv(ord_at(h, 2 * i + 1)) in
+        if x < 0 or y < 0 then
+            false
+        else
+            let w = buf_set(b, i, x * 16 + y) in
+            en_unhex(h, b, i + 1, m)
+
+## --- base64 -------------------------------------------------------------------------------------------------------------
+fn en_std() = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+fn en_url() = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+fn base64_encode(s) = en_b64(s, en_std(), true)
+fn base64url_encode(s) = en_b64(s, en_url(), false)
+fn en_b64(s, al, pad) =
+    let n = count(s) in
+    let full = n / 3 in
+    let rest = n - full * 3 in
+    let m = full * 4 + (if rest == 0 then 0 else if pad then 4 else rest + 1) in
+    let b = buf_new(m) in
+    let a = en_b64go(s, al, b, 0, full) in
+    let z = en_b64tail(s, al, b, full, rest, pad) in
+    buf_to_str(b, 0, m)
+fn en_put4(b, o, al, v, k) =
+    let a = buf_set(b, o, ord_at(al, bit_and(bit_shr(v, 18), 63))) in
+    let c = buf_set(b, o + 1, ord_at(al, bit_and(bit_shr(v, 12), 63))) in
+    let d = if k >= 3 then buf_set(b, o + 2, ord_at(al, bit_and(bit_shr(v, 6), 63))) else b in
+    if k >= 4 then
+        buf_set(b, o + 3, ord_at(al, bit_and(v, 63)))
+    else
+        b
+fn en_b64go(s, al, b, i, full) =
+    if i >= full then
+        b
+    else
+        let v = ord_at(s, 3 * i) * 65536 + ord_at(s, 3 * i + 1) * 256 + ord_at(s, 3 * i + 2) in
+        let w = en_put4(b, 4 * i, al, v, 4) in
+        en_b64go(s, al, b, i + 1, full)
+fn en_b64tail(s, al, b, full, rest, pad) =
+    if rest == 0 then
+        b
+    else
+        let v = ord_at(s, 3 * full) * 65536 + (if rest == 2 then ord_at(s, 3 * full + 1) * 256 else 0) in
+        let w = en_put4(b, 4 * full, al, v, rest + 1) in
+        if not pad then
+            b
+        else if rest == 1 then
+            (let x = buf_set(b, 4 * full + 2, 61) in buf_set(b, 4 * full + 3, 61))
+        else
+            buf_set(b, 4 * full + 3, 61)
+## the 6-bit value of a character code in the alphabet, -1 otherwise
+fn en_val(c, url) =
+    if c >= 65 and c <= 90 then
+        c - 65
+    else if c >= 97 and c <= 122 then
+        c - 71
+    else if c >= 48 and c <= 57 then
+        c + 4
+    else if c == (if url then 45 else 43) then
+        62
+    else if c == (if url then 95 else 47) then
+        63
+    else
+        0 - 1
+fn en_bad() = {ok: false, bytes: ""}
+fn base64_decode(t) = en_dec(t, false, true)
+fn base64url_decode(t) = en_dec(t, true, false)
+fn base64_decode_mime(t) = en_dec(en_nows(t), false, true)
+fn en_nows(t) = en_join(en_rev(en_nowsgo(t, 0, 0, Nil), Nil))
+fn en_isws(c) = c == 32 or c == 9 or c == 10 or c == 13
+fn en_nowsgo(t, i, st, acc) =
+    if i >= count(t) then
+        (if i > st then Cons(slice(t, st, i), acc) else acc)
+    else if en_isws(ord_at(t, i)) then
+        en_nowsgo(t, i + 1, i + 1, if i > st then Cons(slice(t, st, i), acc) else acc)
+    else
+        en_nowsgo(t, i + 1, st, acc)
+fn en_join(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => if en_isnil(t) then h else en_join(en_pairs(xs, Nil))
+fn en_pairs(xs, acc) = match xs
+    Nil        => en_rev(acc, Nil)
+    Cons(a, t) => en_pair2(a, t, acc)
+fn en_pair2(a, t, acc) = match t
+    Nil        => en_rev(Cons(a, acc), Nil)
+    Cons(b, u) => en_pairs(u, Cons(a + b, acc))
+## padding: required (a multiple of 4 with one or two =) or, for base64url, optional
+fn en_dec(t, url, needpad) =
+    let n = count(t) in
+    let p = if n >= 2 and ord_at(t, n - 1) == 61 and ord_at(t, n - 2) == 61 then 2 else if n >= 1 and ord_at(t, n - 1) == 61 then 1 else 0 in
+    let body = n - p in
+    let rest = body % 4 in
+    if needpad and n % 4 != 0 or p > 0 and n % 4 != 0 or rest == 1 or p > 0 and rest != 4 - p then
+        en_bad()
+    else
+        let full = body / 4 in
+        let m = full * 3 + (if rest == 0 then 0 else rest - 1) in
+        let b = buf_new(m) in
+        if en_decgo(t, url, b, 0, full) and en_dectail(t, url, b, full, rest) then
+            {ok: true, bytes: buf_to_str(b, 0, m)}
+        else
+            en_bad()
+fn en_decgo(t, url, b, i, full) =
+    if i >= full then
+        true
+    else
+        let a = en_val(ord_at(t, 4 * i), url) in
+        let c = en_val(ord_at(t, 4 * i + 1), url) in
+        let d = en_val(ord_at(t, 4 * i + 2), url) in
+        let e = en_val(ord_at(t, 4 * i + 3), url) in
+        if a < 0 or c < 0 or d < 0 or e < 0 then
+            false
+        else
+            let v = a * 262144 + c * 4096 + d * 64 + e in
+            let x = buf_set(b, 3 * i, bit_shr(v, 16)) in
+            let y = buf_set(b, 3 * i + 1, bit_and(bit_shr(v, 8), 255)) in
+            let z = buf_set(b, 3 * i + 2, bit_and(v, 255)) in
+            en_decgo(t, url, b, i + 1, full)
+## 2 or 3 characters left: 1 or 2 bytes; the bits past them must be zero (one encoding per byte string)
+fn en_dectail(t, url, b, full, rest) =
+    if rest == 0 then
+        true
+    else
+        let a = en_val(ord_at(t, 4 * full), url) in
+        let c = en_val(ord_at(t, 4 * full + 1), url) in
+        let d = if rest == 3 then en_val(ord_at(t, 4 * full + 2), url) else 0 in
+        if a < 0 or c < 0 or d < 0 then
+            false
+        else if rest == 2 then
+            (if bit_and(c, 15) != 0 then false else let x = buf_set(b, 3 * full, a * 4 + bit_shr(c, 4)) in true)
+        else if bit_and(d, 3) != 0 then
+            false
+        else
+            let x = buf_set(b, 3 * full, a * 4 + bit_shr(c, 4)) in
+            let y = buf_set(b, 3 * full + 1, bit_and(c, 15) * 16 + bit_shr(d, 2)) in
+            true

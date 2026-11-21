@@ -1,0 +1,386 @@
+## lpkg — package versions, the version resolver and lume.lock (item 19).
+##
+## Pure functions over texts and lists; lume_driver does the file work (reading the store, staging, running each
+## package's `lume test` / `lume prove`, writing lume.lock). tests/registry/pkg_resolve_ok.src tests this module.
+##
+## A store (the registry) is a directory: STORE/NAME/VERSION/ holds a published package: its lume.toml, its .src
+## files and PKG.sha256, the hash `lpk_hash` gives over all of them. lume.toml lists dependencies under
+## [dependencies] as `name = "REQ"`: REQ is an exact version "1.2.3", "^1.2" (same major, at least 1.2), "~1.2.3"
+## (same major.minor, at least 1.2.3), ">=1.2" (at least 1.2) or "*". A requirement may join several with commas:
+## ">=1.2, <2" (every part must hold; "<V", "<=V", ">V" are accepted too).
+## The [packages] block of lume.lock holds one `name version hash` line per installed package.
+use fs_sha256_file
+
+## --- text helpers ------------------------------------------------------------------------------------------------
+fn lpk_line_end(s, i) = if i >= count(s) or at(s, i) == chr(10) then i else lpk_line_end(s, i + 1)
+fn lpk_lines(s, i) =
+    if i >= count(s) then
+        Nil
+    else
+        let e = lpk_line_end(s, i) in
+        Cons(slice(s, i, e), lpk_lines(s, e + 1))
+fn lpk_starts(s, p) = count(s) >= count(p) and slice(s, 0, count(p)) == p
+fn lpk_ends(s, p) = count(s) >= count(p) and slice(s, count(s) - count(p), count(s)) == p
+fn lpk_find(s, p, i) =
+    if i + count(p) > count(s) then
+        0 - 1
+    else if slice(s, i, i + count(p)) == p then
+        i
+    else
+        lpk_find(s, p, i + 1)
+fn lpk_contains(s, p) = lpk_find(s, p, 0) >= 0
+fn lpk_trim(s) = lpk_trimr(lpk_triml(s, 0))
+fn lpk_triml(s, i) =
+    if i < count(s) and (at(s, i) == " " or at(s, i) == chr(9)) then
+        lpk_triml(s, i + 1)
+    else
+        slice(s, i, count(s))
+fn lpk_trimr(s) =
+    if count(s) > 0 and (at(s, count(s) - 1) == " " or at(s, count(s) - 1) == chr(13) or at(s, count(s) - 1) == chr(9)) then
+        lpk_trimr(slice(s, 0, count(s) - 1))
+    else
+        s
+fn lpk_chomp(s) =
+    if count(s) > 0 and (at(s, count(s) - 1) == chr(10) or at(s, count(s) - 1) == chr(13)) then
+        lpk_chomp(slice(s, 0, count(s) - 1))
+    else
+        s
+fn lpk_append(xs, ys) = match xs
+    Nil        => ys
+    Cons(h, t) => Cons(h, lpk_append(t, ys))
+fn lpk_join(ls) = match ls
+    Nil        => ""
+    Cons(h, t) => h + chr(10) + lpk_join(t)
+fn lpk_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + lpk_len(t)
+fn lpk_has(xs, s) = match xs
+    Nil        => false
+    Cons(h, t) => if h == s then true else lpk_has(t, s)
+## insert s into the sorted list xs unless it is there
+fn lpk_insert_uniq(xs, s) = match xs
+    Nil        => Cons(s, Nil)
+    Cons(h, t) => if s == h then xs else if s < h then Cons(s, xs) else Cons(h, lpk_insert_uniq(t, s))
+fn lpk_sort(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => lpk_insert_uniq(lpk_sort(t), h)
+
+## --- lume.toml -----------------------------------------------------------------------------------------------------
+fn lpk_eq(s, i) = if i >= count(s) then 0 - 1 else if at(s, i) == "=" then i else lpk_eq(s, i + 1)
+fn lpk_kv_key(l) = let e = lpk_eq(l, 0) in if e < 0 then "" else lpk_trim(slice(l, 0, e))
+fn lpk_kv_val(l) = let e = lpk_eq(l, 0) in if e < 0 then "" else lpk_trim(slice(l, e + 1, count(l)))
+fn lpk_unq(v) =
+    if count(v) >= 2 and at(v, 0) == chr(34) and at(v, count(v) - 1) == chr(34) then
+        slice(v, 1, count(v) - 1)
+    else
+        v
+## the value of key in the [section] of a toml text ("" when absent)
+fn lpk_toml(text, section, key) = lpk_toml_go(lpk_lines(text, 0), "", section, key)
+fn lpk_toml_go(ls, cur, section, key) = match ls
+    Nil        => ""
+    Cons(h, t) => let l = lpk_trim(h) in
+        if lpk_starts(l, "[") then
+            lpk_toml_go(t, l, section, key)
+        else if cur == "[" + section + "]" and lpk_kv_key(l) == key then
+            lpk_unq(lpk_kv_val(l))
+        else
+            lpk_toml_go(t, cur, section, key)
+## the {name, req} entries of [dependencies]
+fn lpk_deps(text) = lpk_deps_go(lpk_lines(text, 0), "")
+fn lpk_deps_go(ls, cur) = match ls
+    Nil        => Nil
+    Cons(h, t) => let l = lpk_trim(h) in
+        if lpk_starts(l, "[") then
+            lpk_deps_go(t, l)
+        else if cur == "[dependencies]" and lpk_kv_key(l) != "" and not lpk_starts(l, "#") then
+            Cons({name: lpk_kv_key(l), req: lpk_unq(lpk_kv_val(l))}, lpk_deps_go(t, cur))
+        else
+            lpk_deps_go(t, cur)
+## add `name = "REQ"` under [dependencies] (the section is created when missing; an existing entry is replaced)
+fn lpk_set_dep(text, name, req) =
+    let line = name + " = " + chr(34) + req + chr(34) in
+    let ls = lpk_drop_dep(lpk_lines(text, 0), "", name) in
+    if lpk_has_sec(ls, "[dependencies]") then
+        lpk_join(lpk_insert_after(ls, "[dependencies]", line))
+    else
+        lpk_join(ls) + chr(10) + "[dependencies]" + chr(10) + line + chr(10)
+fn lpk_drop_dep(ls, cur, name) = match ls
+    Nil        => Nil
+    Cons(h, t) => let l = lpk_trim(h) in
+        let c2 = if lpk_starts(l, "[") then l else cur in
+        if c2 == "[dependencies]" and lpk_kv_key(l) == name then
+            lpk_drop_dep(t, c2, name)
+        else
+            Cons(h, lpk_drop_dep(t, c2, name))
+fn lpk_has_sec(ls, sec) = match ls
+    Nil        => false
+    Cons(h, t) => if lpk_trim(h) == sec then true else lpk_has_sec(t, sec)
+fn lpk_insert_after(ls, sec, line) = match ls
+    Nil        => Nil
+    Cons(h, t) => if lpk_trim(h) == sec then Cons(h, Cons(line, t)) else Cons(h, lpk_insert_after(t, sec, line))
+
+## --- versions and requirements -------------------------------------------------------------------------------------
+## "1.2.3" -> major * 1000000 + minor * 1000 + patch (each part below 1000), -1 when malformed
+fn lpk_part(s, i, acc, any) =
+    if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then
+        lpk_part(s, i + 1, acc * 10 + ord(at(s, i)) - 48, 1)
+    else
+        {v: if any == 1 and acc < 1000 then acc else 0 - 1, i: i}
+fn lpk_ver(s) =
+    let a = lpk_part(s, 0, 0, 0) in
+    if a.v < 0 then
+        0 - 1
+    else if a.i >= count(s) then
+        a.v * 1000000
+    else if at(s, a.i) != "." then
+        0 - 1
+    else
+        let b = lpk_part(s, a.i + 1, 0, 0) in
+        if b.v < 0 then
+            0 - 1
+        else if b.i >= count(s) then
+            a.v * 1000000 + b.v * 1000
+        else if at(s, b.i) != "." then
+            0 - 1
+        else
+            let c = lpk_part(s, b.i + 1, 0, 0) in
+            if c.v < 0 or c.i < count(s) then
+                0 - 1
+            else
+                a.v * 1000000 + b.v * 1000 + c.v
+## one requirement part: "*", "1.2.3", "^1.2", "~1.2.3", ">=1.2", ">1.2", "<=2", "<2"
+fn lpk_allows1(req, v) =
+    if req == "*" or req == "" then
+        true
+    else if lpk_starts(req, "^") then
+        let r = lpk_ver(slice(req, 1, count(req))) in
+        r >= 0 and v >= r and v / 1000000 == r / 1000000
+    else if lpk_starts(req, "~") then
+        let r = lpk_ver(slice(req, 1, count(req))) in
+        r >= 0 and v >= r and v / 1000 == r / 1000
+    else if lpk_starts(req, ">=") then
+        let r = lpk_ver(lpk_trim(slice(req, 2, count(req)))) in
+        r >= 0 and v >= r
+    else if lpk_starts(req, "<=") then
+        let r = lpk_ver(lpk_trim(slice(req, 2, count(req)))) in
+        r >= 0 and v <= r
+    else if lpk_starts(req, ">") then
+        let r = lpk_ver(lpk_trim(slice(req, 1, count(req)))) in
+        r >= 0 and v > r
+    else if lpk_starts(req, "<") then
+        let r = lpk_ver(lpk_trim(slice(req, 1, count(req)))) in
+        r >= 0 and v < r
+    else if lpk_starts(req, "=") then
+        lpk_ver(lpk_trim(slice(req, 1, count(req)))) == v
+    else
+        lpk_ver(req) == v
+## a whole requirement: comma-separated parts, every one must hold; a malformed version is never allowed
+fn lpk_allows(req, v) = if v < 0 then false else lpk_allows_parts(req, v, 0)
+fn lpk_allows_parts(req, v, i) =
+    let c = lpk_find(req, ",", i) in
+    if c < 0 then
+        lpk_allows1(lpk_trim(slice(req, i, count(req))), v)
+    else if lpk_allows1(lpk_trim(slice(req, i, c)), v) then
+        lpk_allows_parts(req, v, c + 1)
+    else
+        false
+## a requirement is well formed when each part names a valid version (or is "*")
+fn lpk_req_ok(req) = lpk_req_ok_go(req, 0)
+fn lpk_req_ok_go(req, i) =
+    let c = lpk_find(req, ",", i) in
+    let p = lpk_trim(slice(req, i, (if c < 0 then count(req) else c))) in
+    let ok = lpk_req_part_ok(p) in
+    if not ok then
+        false
+    else if c < 0 then
+        true
+    else
+        lpk_req_ok_go(req, c + 1)
+fn lpk_req_part_ok(p) = if p == "*" or p == "" then true else lpk_ver(lpk_strip_op(p)) >= 0
+fn lpk_strip_op(p) =
+    if lpk_starts(p, ">=") or lpk_starts(p, "<=") then
+        lpk_trim(slice(p, 2, count(p)))
+    else if lpk_starts(p, "^") or lpk_starts(p, "~") or lpk_starts(p, ">") or lpk_starts(p, "<") or lpk_starts(p, "=") then
+        lpk_trim(slice(p, 1, count(p)))
+    else
+        p
+## the highest version text of vs that req allows ("" when none)
+fn lpk_best(vs, req, best, bv) = match vs
+    Nil        => best
+    Cons(h, t) => let v = lpk_ver(h) in
+        if lpk_allows(req, v) and v > bv then
+            lpk_best(t, req, h, v)
+        else
+            lpk_best(t, req, best, bv)
+
+## --- the resolver ----------------------------------------------------------------------------------------------------
+## A catalog is the list of the store's packages: {name, ver, deps} (deps: the {name, req} of that version's
+## lume.toml). A constraint is {name, req, from}: `from` says who asks ("lume.toml" or "NAME VERSION").
+## A pick is {name, ver, locked}: locked is true when the version came from lume.lock.
+##
+## lpk_resolve(roots, catalog, locks, update) gives {ok, err, picks}. Each round gathers the constraints of the
+## manifest and of every package picked in the round before, then picks, for each name they mention, the version
+## lume.lock names (unless `update`) when it still meets every constraint on that name, else the highest stored
+## version that meets all of them. Rounds repeat until the picks stop changing; a name no stored version can satisfy
+## at that fixed point is a conflict, reported with every requirement on it and who made it. There is no search
+## over older versions of a package whose dependencies conflict: the fix is a narrower requirement in lume.toml.
+fn lpk_tag(ds, from) = match ds
+    Nil        => Nil
+    Cons(d, t) => Cons({name: d.name, req: d.req, from: from}, lpk_tag(t, from))
+fn lpk_entry_deps(cat, name, ver) = match cat
+    Nil        => Nil
+    Cons(e, t) => if e.name == name and e.ver == ver then e.deps else lpk_entry_deps(t, name, ver)
+fn lpk_versions(cat, name) = match cat
+    Nil        => Nil
+    Cons(e, t) => if e.name == name then Cons(e.ver, lpk_versions(t, name)) else lpk_versions(t, name)
+fn lpk_pick_cons(picks, cat) = match picks
+    Nil        => Nil
+    Cons(p, t) => if p.ver == "" then
+            lpk_pick_cons(t, cat)
+        else
+            lpk_append(lpk_tag(lpk_entry_deps(cat, p.name, p.ver), p.name + " " + p.ver), lpk_pick_cons(t, cat))
+fn lpk_constraints(roots, picks, cat) = lpk_append(lpk_tag(roots, "lume.toml"), lpk_pick_cons(picks, cat))
+fn lpk_names(cs, acc) = match cs
+    Nil        => acc
+    Cons(c, t) => lpk_names(t, lpk_insert_uniq(acc, c.name))
+fn lpk_allows_all(cs, name, v) = match cs
+    Nil        => true
+    Cons(c, t) => if c.name == name and not lpk_allows(c.req, v) then false else lpk_allows_all(t, name, v)
+fn lpk_best_all(vs, cs, name, best, bv) = match vs
+    Nil        => best
+    Cons(h, t) => let v = lpk_ver(h) in
+        if v > bv and lpk_allows_all(cs, name, v) then
+            lpk_best_all(t, cs, name, h, v)
+        else
+            lpk_best_all(t, cs, name, best, bv)
+fn lpk_pick1(name, cs, cat, locks, update) =
+    let vs = lpk_versions(cat, name) in
+    let lv = if update then "" else lpk_lock_ver(locks, name) in
+    if lv != "" and lpk_has(vs, lv) and lpk_allows_all(cs, name, lpk_ver(lv)) then
+        {name: name, ver: lv, locked: true}
+    else
+        {name: name, ver: lpk_best_all(vs, cs, name, "", 0 - 1), locked: false}
+fn lpk_pick_all(names, cs, cat, locks, update) = match names
+    Nil        => Nil
+    Cons(n, t) => Cons(lpk_pick1(n, cs, cat, locks, update), lpk_pick_all(t, cs, cat, locks, update))
+fn lpk_same(a, b) = match a
+    Nil        => lpk_len(b) == 0
+    Cons(p, t) => lpk_same_head(p, t, b)
+fn lpk_same_head(p, t, b) = match b
+    Nil        => false
+    Cons(q, u) => if p.name == q.name and p.ver == q.ver then lpk_same(t, u) else false
+fn lpk_first_empty(picks) = match picks
+    Nil        => ""
+    Cons(p, t) => if p.ver == "" then p.name else lpk_first_empty(t)
+fn lpk_reqs_on(cs, name) = match cs
+    Nil        => ""
+    Cons(c, t) => (if c.name == name then " " + chr(34) + c.req + chr(34) + " (" + c.from + ")" else "") + lpk_reqs_on(t, name)
+fn lpk_words(xs) = match xs
+    Nil        => ""
+    Cons(h, t) => " " + h + lpk_words(t)
+fn lpk_conflict(name, cs, cat) =
+    let vs = lpk_versions(cat, name) in
+    if lpk_len(vs) == 0 then
+        name + " is not in the store (required by" + lpk_reqs_on(cs, name) + ")"
+    else
+        "no stored version of " + name + " meets every requirement:" + lpk_reqs_on(cs, name) + "; stored:" + lpk_words(lpk_sort(vs))
+fn lpk_bad_req(cs) = match cs
+    Nil        => ""
+    Cons(c, t) => if lpk_req_ok(c.req) then
+            lpk_bad_req(t)
+        else
+            "malformed requirement " + chr(34) + c.req + chr(34) + " for " + c.name + " (" + c.from + ")"
+fn lpk_resolve(roots, cat, locks, update) = lpk_resolve_go(roots, cat, locks, update, Nil, 0)
+fn lpk_resolve_go(roots, cat, locks, update, picks, n) =
+    let cs = lpk_constraints(roots, picks, cat) in
+    let br = lpk_bad_req(cs) in
+    if br != "" then
+        {ok: false, err: br, picks: Nil}
+    else
+        let next = lpk_pick_all(lpk_names(cs, Nil), cs, cat, locks, update) in
+        if lpk_same(next, picks) then
+            let bad = lpk_first_empty(next) in
+            if bad != "" then
+                {ok: false, err: lpk_conflict(bad, cs, cat), picks: Nil}
+            else
+                {ok: true, err: "", picks: next}
+        else if n >= 64 then
+            {ok: false, err: "the requirements did not settle after 64 rounds", picks: Nil}
+        else
+            lpk_resolve_go(roots, cat, locks, update, next, n + 1)
+## one `name version` line per pick, with " (lume.lock)" when the version came from the lock
+fn lpk_plan(picks) = match picks
+    Nil        => ""
+    Cons(p, t) => p.name + " " + p.ver + (if p.locked then " (lume.lock)" else "") + chr(10) + lpk_plan(t)
+
+## --- lume.lock -------------------------------------------------------------------------------------------------------
+## the {name, ver, hash} lines of the [packages] block
+fn lpk_lock_parse(text) = lpk_lock_go(lpk_lines(text, 0), false)
+fn lpk_lock_go(ls, inside) = match ls
+    Nil        => Nil
+    Cons(h, t) => let l = lpk_trim(h) in
+        if lpk_starts(l, "[") then
+            lpk_lock_go(t, l == "[packages]")
+        else if inside and l != "" and not lpk_starts(l, "#") then
+            Cons(lpk_lock_entry(l), lpk_lock_go(t, inside))
+        else
+            lpk_lock_go(t, inside)
+fn lpk_word_end(s, i) = if i >= count(s) or at(s, i) == " " or at(s, i) == chr(9) then i else lpk_word_end(s, i + 1)
+fn lpk_lock_entry(l) =
+    let a = lpk_word_end(l, 0) in
+    let rest = lpk_trim(slice(l, a, count(l))) in
+    let b = lpk_word_end(rest, 0) in
+    {name: slice(l, 0, a), ver: slice(rest, 0, b), hash: lpk_trim(slice(rest, b, count(rest)))}
+fn lpk_lock_ver(locks, name) = match locks
+    Nil        => ""
+    Cons(e, t) => if e.name == name then e.ver else lpk_lock_ver(t, name)
+fn lpk_lock_hash(locks, name) = match locks
+    Nil        => ""
+    Cons(e, t) => if e.name == name then e.hash else lpk_lock_hash(t, name)
+## the [packages] block for {name, ver, hash} entries (sorted by name, the order lume_driver writes them)
+fn lpk_lock_block(entries) = match entries
+    Nil        => ""
+    Cons(e, t) => "[packages]" + chr(10) + lpk_lock_lines(entries)
+fn lpk_lock_lines(entries) = match entries
+    Nil        => ""
+    Cons(e, t) => e.name + " " + e.ver + " " + e.hash + chr(10) + lpk_lock_lines(t)
+## `--locked`: "" when the resolution is exactly what lume.lock holds, else why not
+fn lpk_locked_diff(picks, locks) =
+    let a = lpk_locked_picks(picks, locks) in
+    if a != "" then
+        a
+    else
+        lpk_locked_extra(locks, picks)
+fn lpk_locked_picks(picks, locks) = match picks
+    Nil        => ""
+    Cons(p, t) => let lv = lpk_lock_ver(locks, p.name) in
+        if lv == "" then
+            p.name + " " + p.ver + " is not in lume.lock"
+        else if lv != p.ver then
+            p.name + " is locked at " + lv + " but the requirements now give " + p.ver
+        else
+            lpk_locked_picks(t, locks)
+fn lpk_locked_extra(locks, picks) = match locks
+    Nil        => ""
+    Cons(e, t) => if lpk_pick_ver(picks, e.name) == "" then
+            e.name + " " + e.ver + " is in lume.lock but no longer required"
+        else
+            lpk_locked_extra(t, picks)
+fn lpk_pick_ver(picks, name) = match picks
+    Nil        => ""
+    Cons(p, t) => if p.name == name then p.ver else lpk_pick_ver(t, name)
+
+## --- package files, hashes and checks --------------------------------------------------------------------------------
+## the files of a package (lume.toml and its .src files), sorted, out of a directory listing
+fn lpk_pkg_files(names) = lpk_sort(lpk_srcs(names))
+fn lpk_srcs(xs) = match xs
+    Nil        => Nil
+    Cons(h, t) => if lpk_ends(h, ".src") or h == "lume.toml" then Cons(h, lpk_srcs(t)) else lpk_srcs(t)
+## the package hash: SHA-256 over each file's name and the SHA-256 of its contents, in name order
+fn lpk_hash(dir, fs) = lc_sha256(lpk_hash_text(dir, fs))
+fn lpk_hash_text(dir, fs) = match fs
+    Nil        => ""
+    Cons(h, t) => h + chr(10) + fs_sha256_file(dir + "/" + h) + chr(10) + lpk_hash_text(dir, t)
+## a file that states contracts is proved at install (`lume prove`); a file with a `fn test_` is tested
+fn lpk_has_contracts(text) = lpk_contains(text, "ensures") or lpk_contains(text, "requires") or lpk_starts(text, "law ") or lpk_contains(text, chr(10) + "law ")
+fn lpk_has_tests(text) = lpk_contains(text, "fn test_")

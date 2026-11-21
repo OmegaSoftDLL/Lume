@@ -547,6 +547,8 @@ DEPMAIN
     LUME_BIN_DIR="$ntmp" ../../lume pkg add mathx@^1.0 "$pw/app" >/dev/null 2>&1; LUME_BIN_DIR="$ntmp" ../../lume pkg install "$pw/app" --store="$pw/store" >/dev/null 2>&1
     if grep -q "^mathx 1.2.0 " "$pw/app/lume.lock" && LUME_BIN_DIR="$ntmp" ../../lume test "$pw/app/app.src" 2>&1 | grep -q " passed, 0 failed" && LUME_BIN_DIR="$ntmp" ../../lume pkg verify "$pw/app" >/dev/null 2>&1; then ok "packages: publish versions, add ^1.0, install the highest match with its tests, lume.lock, use"; else bad "packages: publish / add / install / lock"; cat "$pw/app/lume.lock" 2>/dev/null | tail -3; fi
     rm -rf "$pw"
+    # the resolver (dependencies of dependencies, conflicts), lume.lock honoured / --locked / --update, refused installs
+    if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/registry/pkg_resolve_ok.src 2>&1 | grep -q " passed, 0 failed"; then ok "packages: transitive resolution, lume.lock honoured, --locked / --update, failing tests or proofs refuse the install"; else bad "packages: tests/registry/pkg_resolve_ok.src"; fi
     # standard library modules of item 19: hash, csv, utf8, datetime, regex, deflate, http (local server), tlspki (openssl vectors)
     stdl_bad=""
     for m in hash_ok csv_utf8_ok datetime_ok regex_ok deflate_ok http_ok tlspki_ok; do LUME_BIN_DIR="$ntmp" ../../lume test ../../compiler/stage1/$m.src > "$ntmp/stdl.out" 2>&1; grep -q " passed, 0 failed" "$ntmp/stdl.out" || stdl_bad="$stdl_bad $m"; done

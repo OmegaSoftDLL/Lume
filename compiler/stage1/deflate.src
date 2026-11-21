@@ -1,6 +1,9 @@
 ## deflate.src -- DEFLATE (RFC 1951) with the zlib (RFC 1950) and gzip (RFC 1952) wrappers, in Lume (`use std/deflate`)
 ##   inflate_buf(b, off, n)    raw DEFLATE data -> {ok, buf, n, err}: stored, fixed and dynamic Huffman blocks
-##   deflate_buf(b, off, n)    -> {buf, n}: LZ77 (hash chains, 32 KiB window) with the fixed Huffman code
+##   deflate_buf(b, off, n)    -> {buf, n}: LZ77 (hash chains, 32 KiB window), then one block in the smallest form:
+##                             dynamic Huffman (code lengths built for the data, limited to 15 / 7 bits, run-length
+##                             coded header), the fixed code, or stored blocks (incompressible data grows by 5 bytes
+##                             per 64 KiB, never more)
 ##   zlib_decompress(b, n) / zlib_compress(b, n)    the 2-byte header and the Adler-32 trailer (checked)
 ##   gunzip(b, n) / gzip(b, n)                      the gzip header (FEXTRA, FNAME, FCOMMENT, FHCRC) and the CRC-32 /
 ##                                                  size trailer (checked)
@@ -199,7 +202,7 @@ fn df_rep(b, p, ct, lens, i, n, v, k) =
         let z = df_fill(lens, i, i + k, v) in
         df_lens(b, p, ct, lens, i + k, n, v)
 
-## --- deflate: LZ77 with hash chains, fixed Huffman ------------------------------------------------------------------
+## --- deflate: LZ77 with hash chains, then the smallest of stored / fixed / dynamic Huffman ------------------------
 ## bit writer {o, acc, k}: k pending bits in acc
 fn dw_new() = {o: df_out(), acc: 0, k: 0}
 fn dw_bits(w, v, k) = dw_flush({o: w.o, acc: w.acc + bit_shl(v, w.k), k: w.k + k})
@@ -266,25 +269,251 @@ fn dz_ins_run(st, i, k) =
     else
         let z = if i + 2 < st.e then dz_insert(st, i) else 0 in
         dz_ins_run(st, i + 1, k - 1)
-fn dz_go(st, i, w) =
+## LZ77 into tokens of 4 bytes in a growable {b, n}: [0, literal, 0, 0] or [1, length - 3, distance - 1 (16 bits LE)]
+fn dk_lit(t, v) = df_put(df_put(df_put(df_put(t, 0), v), 0), 0)
+fn dk_match(t, len, dist) = df_put(df_put(df_put(df_put(t, 1), len - 3), bit_and(dist - 1, 255)), bit_shr(dist - 1, 8))
+fn dz_tok(st, i, t) =
     if i >= st.e then
-        w
+        t
     else if i + 2 >= st.e then
-        dz_go(st, i + 1, dw_lit(w, buf_get(st.b, i)))
+        dz_tok(st, i + 1, dk_lit(t, buf_get(st.b, i)))
     else
         let m = dz_best(st, i, dz_r32(st.head, dz_hash(st.b, i)), 32, {len: 0, dist: 0}) in
         if m.len >= 3 then
             let z = dz_ins_run(st, i, m.len) in
-            dz_go(st, i + m.len, dw_match(w, m.len, m.dist))
+            dz_tok(st, i + m.len, dk_match(t, m.len, m.dist))
         else
             let z = dz_insert(st, i) in
-            dz_go(st, i + 1, dw_lit(w, buf_get(st.b, i)))
+            dz_tok(st, i + 1, dk_lit(t, buf_get(st.b, i)))
+
+## --- Huffman code lengths (limited) and canonical codes; counters are 32-bit words in buffers -------------------------
+fn hf_inc(f, i, k) = dz_w32(f, i, dz_r32(f, i) + k)
+## frequencies of the literal/length (fl, 286) and distance (fd, 30) symbols; answers the extra bits of the matches
+fn hf_freqs(t, fl, fd, i, extra) =
+    if i >= t.n then
+        extra
+    else if buf_get(t.b, i) == 0 then
+        let z = hf_inc(fl, buf_get(t.b, i + 1), 1) in
+        hf_freqs(t, fl, fd, i + 4, extra)
+    else
+        let len = buf_get(t.b, i + 1) + 3 in
+        let dist = buf_get(t.b, i + 2) + buf_get(t.b, i + 3) * 256 + 1 in
+        let li = dw_lenidx(len, 0) in
+        let di = dw_distidx(dist, 0) in
+        let z1 = hf_inc(fl, 257 + li, 1) in
+        let z2 = hf_inc(fd, di, 1) in
+        hf_freqs(t, fl, fd, i + 4, extra + df_lext(li) + df_dext(di))
+fn hf_used(f, i, n, k) = if i >= n then k else hf_used(f, i + 1, n, if dz_r32(f, i) > 0 then k + 1 else k)
+## the code lengths (one byte per symbol) of n frequencies, none longer than limit
+fn hf_lengths(f, n, limit) =
+    let used = hf_used(f, 0, n, 0) in
+    let lens = buf_new(n) in
+    if used == 0 then
+        let a = buf_set(lens, 0, 1) in
+        buf_set(lens, 1, 1)
+    else if used == 1 then
+        let u = hf_first(f, 0, n) in
+        let a = buf_set(lens, u, 1) in
+        buf_set(lens, if u == 0 then 1 else 0, 1)
+    else
+        hf_build(f, n, limit, lens)
+fn hf_first(f, i, n) = if i >= n or dz_r32(f, i) > 0 then i else hf_first(f, i + 1, n)
+fn hf_build(f, n, limit, lens) =
+    let w = buf_new(n * 8) in
+    let par = buf_new(n * 8) in
+    let alive = buf_new(n * 2) in
+    let a = hf_init(f, w, alive, 0, n) in
+    let k = hf_merge(w, par, alive, n) in
+    let mx = hf_depths(par, lens, f, 0, n, 0) in
+    if mx <= limit then
+        lens
+    else
+        hf_build(hf_halve(f, buf_new(n * 4), 0, n), n, limit, buf_new(n))
+fn hf_init(f, w, alive, i, n) =
+    if i >= n then
+        0
+    else
+        let a = dz_w32(w, i, dz_r32(f, i)) in
+        let b = buf_set(alive, i, if dz_r32(f, i) > 0 then 1 else 0) in
+        hf_init(f, w, alive, i + 1, n)
+## the alive node of least weight in 0..k-1 other than skip, -1 when none
+fn hf_min(w, alive, i, k, skip, best) =
+    if i >= k then
+        best
+    else if buf_get(alive, i) == 1 and i != skip and (best < 0 or dz_r32(w, i) < dz_r32(w, best)) then
+        hf_min(w, alive, i + 1, k, skip, i)
+    else
+        hf_min(w, alive, i + 1, k, skip, best)
+fn hf_merge(w, par, alive, k) =
+    let a = hf_min(w, alive, 0, k, 0 - 1, 0 - 1) in
+    let b = hf_min(w, alive, 0, k, a, 0 - 1) in
+    if b < 0 then
+        k
+    else
+        let z1 = dz_w32(w, k, dz_r32(w, a) + dz_r32(w, b)) in
+        let z2 = buf_set(alive, k, 1) in
+        let z3 = buf_set(alive, a, 0) in
+        let z4 = buf_set(alive, b, 0) in
+        let z5 = dz_w32(par, a, k + 1) in
+        let z6 = dz_w32(par, b, k + 1) in
+        hf_merge(w, par, alive, k + 1)
+fn hf_depth(par, i, d) = let p = dz_r32(par, i) in if p == 0 then d else hf_depth(par, p - 1, d + 1)
+fn hf_depths(par, lens, f, i, n, mx) =
+    if i >= n then
+        mx
+    else if dz_r32(f, i) == 0 then
+        hf_depths(par, lens, f, i + 1, n, mx)
+    else
+        let d = hf_depth(par, i, 0) in
+        let z = buf_set(lens, i, if d > 255 then 255 else d) in
+        hf_depths(par, lens, f, i + 1, n, if d > mx then d else mx)
+## too deep: halve the frequencies (a used symbol keeps at least 1) and build again
+fn hf_halve(f, g, i, n) =
+    if i >= n then
+        g
+    else
+        let v = dz_r32(f, i) in
+        let z = dz_w32(g, i, if v == 0 then 0 else (v + 1) / 2) in
+        hf_halve(f, g, i + 1, n)
+## canonical codes (RFC 1951 3.2.2) of n lengths: 32-bit words
+fn hf_codes(lens, n) =
+    let cnt = buf_new(16 * 4) in
+    let a = hf_cnt(lens, cnt, 0, n) in
+    let next = buf_new(16 * 4) in
+    let b = hf_next(cnt, next, 1, 0) in
+    hf_assign(lens, next, buf_new(n * 4), 0, n)
+fn hf_cnt(lens, cnt, i, n) =
+    if i >= n then
+        0
+    else
+        let l = buf_get(lens, i) in
+        let z = if l > 0 then hf_inc(cnt, l, 1) else 0 in
+        hf_cnt(lens, cnt, i + 1, n)
+fn hf_next(cnt, next, l, code) =
+    if l > 15 then
+        0
+    else
+        let c = (code + dz_r32(cnt, l - 1)) * 2 in
+        let z = dz_w32(next, l, c) in
+        hf_next(cnt, next, l + 1, c)
+fn hf_assign(lens, next, codes, i, n) =
+    if i >= n then
+        codes
+    else
+        let l = buf_get(lens, i) in
+        let z = if l > 0 then let c = dz_r32(next, l) in let y = dz_w32(codes, i, c) in dz_w32(next, l, c + 1) else 0 in
+        hf_assign(lens, next, codes, i + 1, n)
+fn hf_cost(f, lens, i, n, acc) =
+    if i >= n then
+        acc
+    else
+        hf_cost(f, lens, i + 1, n, acc + dz_r32(f, i) * buf_get(lens, i))
+fn hf_fixlen(s) = if s < 144 then 8 else if s < 256 then 9 else if s < 280 then 7 else 8
+fn hf_fixcost(f, i, n, acc) = if i >= n then acc else hf_fixcost(f, i + 1, n, acc + dz_r32(f, i) * hf_fixlen(i))
+fn hf_last(lens, i, lo) = if i < lo then lo else if buf_get(lens, i) > 0 then i + 1 else hf_last(lens, i - 1, lo)
+
+## the code-length sequence run-length coded with 16 / 17 / 18: tokens [symbol, extra value] in a growable {b, n}
+fn hr_run(a, i, n, v, k) = if i + k < n and buf_get(a, i + k) == v then hr_run(a, i, n, v, k + 1) else k
+fn hr_rle(a, i, n, o) =
+    if i >= n then
+        o
+    else
+        let v = buf_get(a, i) in
+        let run = hr_run(a, i, n, v, 1) in
+        if v == 0 and run >= 11 then
+            let k = if run > 138 then 138 else run in
+            hr_rle(a, i + k, n, df_put(df_put(o, 18), k - 11))
+        else if v == 0 and run >= 3 then
+            hr_rle(a, i + run, n, df_put(df_put(o, 17), run - 3))
+        else if v != 0 and run >= 4 then
+            let k = if run - 1 > 6 then 6 else run - 1 in
+            hr_rle(a, i + 1 + k, n, df_put(df_put(df_put(df_put(o, v), 0), 16), k - 3))
+        else
+            hr_rle(a, i + 1, n, df_put(df_put(o, v), 0))
+fn hr_ext(s) = if s == 16 then 2 else if s == 17 then 3 else if s == 18 then 7 else 0
+fn hr_freqs(r, f, i) = if i >= r.n then f else let z = hf_inc(f, buf_get(r.b, i), 1) in hr_freqs(r, f, i + 2)
+fn hr_bits(r, cl, i, acc) =
+    if i >= r.n then
+        acc
+    else
+        hr_bits(r, cl, i + 2, acc + buf_get(cl, buf_get(r.b, i)) + hr_ext(buf_get(r.b, i)))
+fn hr_hclen(cl, k) = if k <= 4 then 4 else if buf_get(cl, df_clorder(k - 1)) > 0 then k else hr_hclen(cl, k - 1)
+
+## --- writing the blocks ---------------------------------------------------------------------------------------------------
+fn dw_sym(w, codes, lens, s) = dw_code(w, dz_r32(codes, s), buf_get(lens, s))
+fn dw_toks(w, t, i, lc, ll, dc, dl) =
+    if i >= t.n then
+        w
+    else if buf_get(t.b, i) == 0 then
+        dw_toks(dw_sym(w, lc, ll, buf_get(t.b, i + 1)), t, i + 4, lc, ll, dc, dl)
+    else
+        let len = buf_get(t.b, i + 1) + 3 in
+        let dist = buf_get(t.b, i + 2) + buf_get(t.b, i + 3) * 256 + 1 in
+        let li = dw_lenidx(len, 0) in
+        let di = dw_distidx(dist, 0) in
+        let w1 = dw_bits(dw_sym(w, lc, ll, 257 + li), len - df_lbase(li), df_lext(li)) in
+        dw_toks(dw_bits(dw_sym(w1, dc, dl, di), dist - df_dbase(di), df_dext(di)), t, i + 4, lc, ll, dc, dl)
+fn dw_fixtoks(w, t, i) =
+    if i >= t.n then
+        w
+    else if buf_get(t.b, i) == 0 then
+        dw_fixtoks(dw_lit(w, buf_get(t.b, i + 1)), t, i + 4)
+    else
+        dw_fixtoks(dw_match(w, buf_get(t.b, i + 1) + 3, buf_get(t.b, i + 2) + buf_get(t.b, i + 3) * 256 + 1), t, i + 4)
+fn dw_cls(w, cl, i, k) = if i >= k then w else dw_cls(dw_bits(w, buf_get(cl, df_clorder(i)), 3), cl, i + 1, k)
+fn dw_rle(w, r, cc, cl, i) =
+    if i >= r.n then
+        w
+    else
+        let s = buf_get(r.b, i) in
+        dw_rle(dw_bits(dw_sym(w, cc, cl, s), buf_get(r.b, i + 1), hr_ext(s)), r, cc, cl, i + 2)
+## stored blocks of up to 65535 bytes (one empty block for empty input)
+fn dw_stored(w, b, i, e) =
+    let k = if e - i > 65535 then 65535 else e - i in
+    let last = if i + k >= e then 1 else 0 in
+    let w1 = dw_bits(dw_bits(w, last, 1), 0, 2) in
+    let w2 = if w1.k > 0 then dw_bits(w1, 0, 8 - w1.k) else w1 in
+    let o1 = df_put(df_put(df_put(df_put(w2.o, bit_and(k, 255)), bit_shr(k, 8)), bit_and(65535 - k, 255)), bit_shr(65535 - k, 8)) in
+    let g = df_grow(o1, k) in
+    let c = buf_copy(g.b, g.n, b, i, k) in
+    let w3 = {o: {b: g.b, n: g.n + k}, acc: 0, k: 0} in
+    if last == 1 then
+        w3
+    else
+        dw_stored(w3, b, i + k, e)
+## the smallest of the three block forms: stored, fixed Huffman, dynamic Huffman (RFC 1951 3.2.7)
 fn deflate_buf(b, off, n) =
     let st = {b: b, e: off + n, head: buf_new(32768 * 4), prev: buf_new(32768 * 4)} in
-    let w0 = dw_bits(dw_bits(dw_new(), 1, 1), 1, 2) in
-    let w = dz_go(st, off, w0) in
-    let o = dw_end(dw_lit(w, 256)) in
+    let t = dz_tok(st, off, {b: buf_new(4096), n: 0}) in
+    let fl = buf_new(286 * 4) in
+    let fd = buf_new(30 * 4) in
+    let extra = hf_freqs(t, fl, fd, 0, 0) in
+    let e = hf_inc(fl, 256, 1) in
+    let ll = hf_lengths(fl, 286, 15) in
+    let dl = hf_lengths(fd, 30, 15) in
+    let hlit = hf_last(ll, 285, 257) in
+    let hdist = hf_last(dl, 29, 1) in
+    let all = buf_new(hlit + hdist) in
+    let c1 = buf_copy(all, 0, ll, 0, hlit) in
+    let c2 = buf_copy(all, hlit, dl, 0, hdist) in
+    let r = hr_rle(all, 0, hlit + hdist, {b: buf_new(64), n: 0}) in
+    let cf = hr_freqs(r, buf_new(19 * 4), 0) in
+    let cl = hf_lengths(cf, 19, 7) in
+    let hclen = hr_hclen(cl, 19) in
+    let dynbits = 17 + hclen * 3 + hr_bits(r, cl, 0, 0) + hf_cost(fl, ll, 0, 286, 0) + hf_cost(fd, dl, 0, 30, 0) + extra in
+    let fixbits = 3 + hf_fixcost(fl, 0, 286, 0) + dz_dsum(fd, 0, 0) * 5 + extra in
+    let storedbits = (n + 5 * (if n == 0 then 1 else (n + 65534) / 65535)) * 8 in
+    let w = if storedbits <= fixbits and storedbits <= dynbits then dw_stored(dw_new(), b, off, off + n) else if fixbits <= dynbits then dw_lit(dw_fixtoks(dw_bits(dw_bits(dw_new(), 1, 1), 1, 2), t, 0), 256) else dw_dyn(t, ll, dl, cl, r, hlit, hdist, hclen) in
+    let o = dw_end(w) in
     {buf: o.b, n: o.n}
+fn dz_dsum(fd, i, acc) = if i >= 30 then acc else dz_dsum(fd, i + 1, acc + dz_r32(fd, i))
+fn dw_dyn(t, ll, dl, cl, r, hlit, hdist, hclen) =
+    let lc = hf_codes(ll, 286) in
+    let dc = hf_codes(dl, 30) in
+    let cc = hf_codes(cl, 19) in
+    let w0 = dw_bits(dw_bits(dw_bits(dw_bits(dw_bits(dw_new(), 1, 1), 2, 2), hlit - 257, 5), hdist - 1, 5), hclen - 4, 4) in
+    let w1 = dw_rle(dw_cls(w0, cl, 0, hclen), r, cc, cl, 0) in
+    dw_sym(dw_toks(w1, t, 0, lc, ll, dc, dl), lc, ll, 256)
 
 ## --- zlib and gzip wrappers -----------------------------------------------------------------------------------------
 fn df_be32(b, i) = buf_get(b, i) * 16777216 + buf_get(b, i + 1) * 65536 + buf_get(b, i + 2) * 256 + buf_get(b, i + 3)

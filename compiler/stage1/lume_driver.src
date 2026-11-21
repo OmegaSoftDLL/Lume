@@ -6,6 +6,7 @@ use lgenesis
 use lsentience
 use lmanual
 use hostio
+use lpkg
 
 fn ld_rfind_slash(path, i) = if i < 0 then 0 - 1 else if at(path, i) == "/" then i else ld_rfind_slash(path, i - 1)
 
@@ -572,100 +573,94 @@ fn ld_pkg_tree_sources(dir, paths) = match paths
 
 fn ld_pkg_tree(root, dir) = let manifest = ld_pkg_manifest(root, dir) in ld_request(root, "lmod", "@pkg-tree\n@manifest " + manifest + "\n" + ld_pkg_tree_sources(dir, ld_pkg_files(dir, 0)))
 
-## --- packages with versions (item 19): lume pkg add / install / publish ------------------------------------------------
-## A store is a directory: STORE/NAME/VERSION/ holds a published package (its lume.toml, its .src files and PKG.sha256,
-## the hash of all of them). `lume.toml` lists dependencies as `name = "REQ"` under [dependencies]: REQ is an exact
-## version "1.2.3", "^1.2" (same major, at least 1.2), "~1.2.3" (same major.minor, at least 1.2.3) or "*".
-## `install` takes the highest stored version each REQ allows, copies it to DIR/lume_modules/NAME/, checks its hash,
-## runs the package's own tests there (every file with `fn test_` passes `lume test`) and writes lume.lock, which now
-## names every installed package with its version and hash. `use NAME` finds lume_modules/NAME/NAME.src.
+## --- packages with versions (item 19): lume pkg add / resolve / install / publish -----------------------------------
+## The versions, the resolver and the lock format are in lpkg.src (pure, tested by tests/registry/pkg_resolve_ok.src);
+## this block does the file work. A store is a directory: STORE/NAME/VERSION/ holds a published package (its
+## lume.toml, its .src files and PKG.sha256). `install` resolves the manifest and every package's own dependencies
+## (preferring the versions lume.lock names), copies each picked version into a staging lume_modules/ under build/,
+## checks each copy against its published hash (and against lume.lock's hash when the lock chose it), runs each
+## package's own checks there (`lume test` on every file with `fn test_`, `lume prove` on every file with contracts),
+## and only when all pass replaces lume_modules/ and writes lume.lock. A refused install changes nothing.
+## `use NAME` finds lume_modules/NAME/NAME.src, also from inside another installed package.
 fn lp_opt(args, key) = match args
     Nil        => ""
     Cons(h, t) => if ld_starts(h, key) == 1 then slice(h, count(key), count(h)) else lp_opt(t, key)
+fn lp_flag(args, key) = match args
+    Nil        => false
+    Cons(h, t) => if h == key then true else lp_flag(t, key)
 fn lp_pos(args, k) = match args
     Nil        => ""
     Cons(h, t) => if ld_starts(h, "--") == 1 then lp_pos(t, k) else if k == 0 then h else lp_pos(t, k - 1)
 fn lp_store(args) = let s = lp_opt(args, "--store=") in if s != "" then s else let e = os_getenv("LUME_PKG_STORE") in if e != "" then e else ctfail("lume pkg: name the package store with --store=DIR or LUME_PKG_STORE\n")
-## the value of key in the [section] of a toml text ("" when absent); values are "quoted"
-fn lp_toml(text, section, key) = lp_toml_go(ld_lines(text, 0), "", section, key)
-fn lp_toml_go(ls, cur, section, key) = match ls
-    Nil        => ""
-    Cons(h, t) => let l = lp_trim(h) in if ld_starts(l, "[") == 1 then lp_toml_go(t, l, section, key) else if cur == "[" + section + "]" and lp_kv_key(l) == key then lp_unq(lp_kv_val(l)) else lp_toml_go(t, cur, section, key)
-fn lp_trim(s) = lp_trimr(lp_triml(s, 0))
-fn lp_triml(s, i) = if i < count(s) and (at(s, i) == " " or at(s, i) == chr(9)) then lp_triml(s, i + 1) else slice(s, i, count(s))
-fn lp_trimr(s) = if count(s) > 0 and (at(s, count(s) - 1) == " " or at(s, count(s) - 1) == chr(13) or at(s, count(s) - 1) == chr(9)) then lp_trimr(slice(s, 0, count(s) - 1)) else s
-fn lp_eq(s, i) = if i >= count(s) then 0 - 1 else if at(s, i) == "=" then i else lp_eq(s, i + 1)
-fn lp_kv_key(l) = let e = lp_eq(l, 0) in if e < 0 then "" else lp_trim(slice(l, 0, e))
-fn lp_kv_val(l) = let e = lp_eq(l, 0) in if e < 0 then "" else lp_trim(slice(l, e + 1, count(l)))
-fn lp_unq(v) = if count(v) >= 2 and at(v, 0) == chr(34) and at(v, count(v) - 1) == chr(34) then slice(v, 1, count(v) - 1) else v
-## the {name, req} entries of [dependencies]
-fn lp_deps(text) = lp_deps_go(ld_lines(text, 0), "")
-fn lp_deps_go(ls, cur) = match ls
-    Nil        => Nil
-    Cons(h, t) => let l = lp_trim(h) in if ld_starts(l, "[") == 1 then lp_deps_go(t, l) else if cur == "[dependencies]" and lp_kv_key(l) != "" and ld_starts(l, "#") == 0 then Cons({name: lp_kv_key(l), req: lp_unq(lp_kv_val(l))}, lp_deps_go(t, cur)) else lp_deps_go(t, cur)
-## versions: "1.2.3" -> major * 1000000 + minor * 1000 + patch (each part below 1000), -1 when malformed
-fn lp_part(s, i, acc, any) = if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then lp_part(s, i + 1, acc * 10 + ord(at(s, i)) - 48, 1) else {v: (if any == 1 then acc else 0 - 1), i: i}
-fn lp_ver(s) = let a = lp_part(s, 0, 0, 0) in if a.v < 0 then 0 - 1 else if a.i >= count(s) then a.v * 1000000 else let b = lp_part(s, a.i + 1, 0, 0) in if b.v < 0 then 0 - 1 else if b.i >= count(s) then a.v * 1000000 + b.v * 1000 else let c = lp_part(s, b.i + 1, 0, 0) in if c.v < 0 or c.i < count(s) then 0 - 1 else a.v * 1000000 + b.v * 1000 + c.v
-fn lp_allows(req, v) = if v < 0 then false else if req == "*" or req == "" then true else if ld_starts(req, "^") == 1 then (let r = lp_ver(slice(req, 1, count(req))) in r >= 0 and v >= r and v / 1000000 == r / 1000000) else if ld_starts(req, "~") == 1 then (let r = lp_ver(slice(req, 1, count(req))) in r >= 0 and v >= r and v / 1000 == r / 1000) else lp_ver(req) == v
-fn lp_best(vs, req, best, bv) = match vs
-    Nil        => best
-    Cons(h, t) => let v = lp_ver(h) in if lp_allows(req, v) and v > bv then lp_best(t, req, h, v) else lp_best(t, req, best, bv)
 fn lp_entries(dir) = if fs_path_exists(dir) == 0 then Nil else lp_nonempty(ld_lines(fs_read_dir(dir), 0))
 fn lp_nonempty(xs) = match xs
     Nil        => Nil
     Cons(h, t) => if h == "" or h == "." or h == ".." then lp_nonempty(t) else Cons(h, lp_nonempty(t))
-## the files of a package directory (lume.toml and its .src files, sorted), and the hash over names and contents
-fn lp_files(dir) = ld_pkg_sort(lp_srcs(lp_entries(dir)))
-fn lp_srcs(xs) = match xs
-    Nil        => Nil
-    Cons(h, t) => if ld_suffix(h, ".src") or h == "lume.toml" then Cons(h, lp_srcs(t)) else lp_srcs(t)
-fn lp_hash(dir, fs) = lc_sha256(lp_hash_text(dir, fs))
-fn lp_hash_text(dir, fs) = match fs
-    Nil        => ""
-    Cons(h, t) => h + chr(10) + fs_sha256_file(dir + "/" + h) + chr(10) + lp_hash_text(dir, t)
+fn lp_files(dir) = lpk_pkg_files(lp_entries(dir))
+fn lp_hash(dir, fs) = lpk_hash(dir, fs)
 fn lp_copy(from, to, fs) = match fs
     Nil        => 0
     Cons(h, t) => let c = fs_copy(from + "/" + h, to + "/" + h) in if c != 1 then ctfail("lume pkg: cannot copy " + from + "/" + h + "\n") else lp_copy(from, to, t)
+fn lp_head(s) = if count(s) > 1500 then slice(s, 0, 1500) + "..." + chr(10) else s
 ## every file of the package with a test passes `lume test`: "" or the first failure
 fn lp_tests(root, dir, fs) = match fs
     Nil        => ""
-    Cons(h, t) => if ld_suffix(h, ".src") and ld_contains_at(fs_read_file(dir + "/" + h), "fn test_", 0) == 1 then (let out = ld_scratch(root, "pkgtest") in let rc = os_run_capture_timeout(os_arg_at(0), Cons("test", Cons(dir + "/" + h, Nil)), out, out + ".err", 1800000) in if rc != 0 then h + ": " + fs_read_file(out) + fs_read_file(out + ".err") else lp_tests(root, dir, t)) else lp_tests(root, dir, t)
-fn lp_publish(root, dir, args) = let store = lp_store(args) in let toml = fs_read_file(dir + "/lume.toml") in let name = lp_toml(toml, "package", "name") in let ver = lp_toml(toml, "package", "version") in if name == "" or lp_ver(ver) < 0 then ctfail("lume pkg publish: " + dir + "/lume.toml needs [package] name and a version like 1.2.3\n") else let dest = store + "/" + name + "/" + ver in if fs_path_exists(dest + "/PKG.sha256") == 1 then ctfail("lume pkg publish: " + name + " " + ver + " is already in the store (a published version never changes)\n") else let fs = lp_files(dir) in let t = lp_tests(root, dir, fs) in if t != "" then ctfail("lume pkg publish: the package's tests fail, nothing published:\n" + t) else let m = hio_mkdir_p(dest) in let c = lp_copy(dir, dest, fs) in let h = lp_hash(dest, fs) in let w = fs_write_sync(dest + "/PKG.sha256", h + chr(10)) in "lume pkg: published " + name + " " + ver + " (" + h + ")"
-fn lp_install1(root, dir, store, d) = let vers = lp_entries(store + "/" + d.name) in let best = lp_best(vers, d.req, "", 0 - 1) in if best == "" then ctfail("lume pkg install: no version of " + d.name + " in " + store + " matches \"" + d.req + "\"\n") else let src = store + "/" + d.name + "/" + best in let fs = lp_files(src) in let want = lp_chomp(fs_read_file(src + "/PKG.sha256")) in let dest = dir + "/lume_modules/" + d.name in let m = hio_mkdir_p(dest) in let c = lp_copy(src, dest, fs) in let h = lp_hash(dest, fs) in if h != want then ctfail("lume pkg install: " + d.name + " " + best + " does not match its published hash\n") else let t = lp_tests(root, dest, fs) in if t != "" then ctfail("lume pkg install: the tests of " + d.name + " " + best + " fail:\n" + t) else d.name + " " + best + " " + h
-fn lp_chomp(s) = if count(s) > 0 and (at(s, count(s) - 1) == chr(10) or at(s, count(s) - 1) == chr(13)) then lp_chomp(slice(s, 0, count(s) - 1)) else s
-fn lp_install_all(root, dir, store, ds) = match ds
+    Cons(h, t) => if ld_suffix(h, ".src") and lpk_has_tests(fs_read_file(dir + "/" + h)) then (let out = ld_scratch(root, "pkgtest") in let rc = os_run_capture_timeout(os_arg_at(0), Cons("test", Cons(dir + "/" + h, Nil)), out, out + ".err", 1800000) in if rc != 0 then "lume test " + h + ": " + lp_head(fs_read_file(out) + fs_read_file(out + ".err")) else lp_tests(root, dir, t)) else lp_tests(root, dir, t)
+## every file of the package that states contracts passes `lume prove`: "" or the first failure
+fn lp_proofs(root, dir, fs) = match fs
     Nil        => ""
-    Cons(d, t) => let line = lp_install1(root, dir, store, d) in let w = fs_append_sync("/dev/stderr", "lume pkg: installed " + line + chr(10)) in line + chr(10) + lp_install_all(root, dir, store, t)
-fn lp_install(root, dir, args) = let store = lp_store(args) in let toml = fs_read_file(dir + "/lume.toml") in if toml == "" then ctfail("lume pkg install: no lume.toml in " + dir + "\n") else let lines = lp_install_all(root, dir, store, lp_deps(toml)) in let l = ld_pkg_lock(root, dir) in "lume pkg: " + str(lp_count(lines, 0, 0)) + " packages installed; " + l
-fn lp_count(s, i, acc) = if i >= count(s) then acc else if at(s, i) == chr(10) then lp_count(s, i + 1, acc + 1) else lp_count(s, i + 1, acc)
+    Cons(h, t) => if ld_suffix(h, ".src") and lpk_has_contracts(fs_read_file(dir + "/" + h)) then (let out = ld_scratch(root, "pkgprove") in let rc = os_run_capture_timeout(os_arg_at(0), Cons("prove", Cons(dir + "/" + h, Nil)), out, out + ".err", 1800000) in if rc != 0 then "lume prove " + h + ": " + lp_head(fs_read_file(out) + fs_read_file(out + ".err")) else lp_proofs(root, dir, t)) else lp_proofs(root, dir, t)
+fn lp_checks(root, dir, fs) = let t = lp_tests(root, dir, fs) in if t != "" then t else lp_proofs(root, dir, fs)
+fn lp_publish(root, dir, args) = let store = lp_store(args) in let toml = fs_read_file(dir + "/lume.toml") in let name = lpk_toml(toml, "package", "name") in let ver = lpk_toml(toml, "package", "version") in if name == "" or lpk_ver(ver) < 0 then ctfail("lume pkg publish: " + dir + "/lume.toml needs [package] name and a version like 1.2.3\n") else let dest = store + "/" + name + "/" + ver in if fs_path_exists(dest + "/PKG.sha256") == 1 then ctfail("lume pkg publish: " + name + " " + ver + " is already in the store (a published version never changes)\n") else let fs = lp_files(dir) in let t = lp_publish_checks(root, dir, store, name, fs) in if t != "" then ctfail("lume pkg publish: the package's checks fail, nothing published:\n" + t) else let m = hio_mkdir_p(dest) in let c = lp_copy(dir, dest, fs) in let h = lp_hash(dest, fs) in let w = fs_write_sync(dest + "/PKG.sha256", h + chr(10)) in "lume pkg: published " + name + " " + ver + " (" + h + ")"
+## the checks of a package being published: in place when it has no dependencies, else in a staging lume_modules/
+## that holds the package and its dependencies resolved from the same store (so its tests can `use` them)
+fn lp_publish_checks(root, dir, store, name, fs) = let deps = lpk_deps(fs_read_file(dir + "/lume.toml")) in if lpk_len(deps) == 0 then lp_checks(root, dir, fs) else let r = lpk_resolve(deps, lp_catalog(store), Nil, false) in if not r.ok then "cannot resolve the package's dependencies: " + r.err + chr(10) else let stage = dir + "/build/lume-pkg-stage" in let r0 = hio_remove_tree(stage) in let sm = stage + "/lume_modules" in let mk = hio_mkdir_p(sm + "/" + name) in let c = lp_copy(dir, sm + "/" + name, fs) in let s = lp_stage_all(store, sm, r.picks, Nil) in let e = (if s != "" then s else lp_checks(root, sm + "/" + name, fs)) in let x = lp_unstage(dir, stage) in e
+## the catalog of a store: {name, ver, deps} for every published version (one with PKG.sha256)
+fn lp_catalog(store) = lp_cat_names(store, ld_pkg_sort(lp_entries(store)))
+fn lp_cat_names(store, ns) = match ns
+    Nil        => Nil
+    Cons(n, t) => lpk_append(lp_cat_vers(store, n, lp_entries(store + "/" + n)), lp_cat_names(store, t))
+fn lp_cat_vers(store, n, vs) = match vs
+    Nil        => Nil
+    Cons(v, t) => let p = store + "/" + n + "/" + v in if lpk_ver(v) >= 0 and fs_path_exists(p + "/PKG.sha256") == 1 then Cons({name: n, ver: v, deps: lpk_deps(fs_read_file(p + "/lume.toml"))}, lp_cat_vers(store, n, t)) else lp_cat_vers(store, n, t)
+fn lp_locks(dir) = if fs_path_exists(dir + "/lume.lock") == 1 then lpk_lock_parse(fs_read_file(dir + "/lume.lock")) else Nil
+## resolve lume.toml against the store; --update ignores lume.lock, --locked refuses any change to it
+fn lp_resolve(dir, args) = let store = lp_store(args) in let toml = fs_read_file(dir + "/lume.toml") in if toml == "" then ctfail("lume pkg: no lume.toml in " + dir + "\n") else let update = lp_flag(args, "--update") in let locked = lp_flag(args, "--locked") in if update and locked then ctfail("lume pkg: --locked and --update exclude each other\n") else let locks = lp_locks(dir) in let r = lpk_resolve(lpk_deps(toml), lp_catalog(store), locks, update) in if not r.ok then ctfail("lume pkg: cannot resolve " + dir + "/lume.toml: " + r.err + "\n") else let d = (if locked then lpk_locked_diff(r.picks, locks) else "") in if d != "" then ctfail("lume pkg --locked: lume.lock is out of date: " + d + " (run `lume pkg install` without --locked)\n") else {store: store, picks: r.picks, locks: locks}
+## copy one picked version into the staging lume_modules/: "" or why it was refused
+fn lp_stage1(store, sm, p, locks) = let src = store + "/" + p.name + "/" + p.ver in let fs = lp_files(src) in let want = lpk_chomp(fs_read_file(src + "/PKG.sha256")) in let dest = sm + "/" + p.name in let m = hio_mkdir_p(dest) in let c = lp_copy(src, dest, fs) in let h = lp_hash(dest, fs) in let lh = lpk_lock_hash(locks, p.name) in if h != want then p.name + " " + p.ver + " does not match its published hash" + chr(10) else if p.locked and lh != "" and lh != h then p.name + " " + p.ver + " does not match the hash in lume.lock (the store changed a published version)" + chr(10) else ""
+fn lp_stage_all(store, sm, picks, locks) = match picks
+    Nil        => ""
+    Cons(p, t) => let e = lp_stage1(store, sm, p, locks) in if e != "" then e else lp_stage_all(store, sm, t, locks)
+## remove the staging tree, and build/ too when the staging tree was all it held
+fn lp_unstage(dir, stage) = let x = hio_remove_tree(stage) in let y = fs_rmdir(dir + "/build") in x
+## each staged package's own tests and proofs: "" or every failure, one block per package
+fn lp_check_all(root, sm, picks) = match picks
+    Nil        => ""
+    Cons(p, t) => let d = sm + "/" + p.name in let e = lp_checks(root, d, lp_files(d)) in (if e != "" then p.name + " " + p.ver + ": " + e + chr(10) else "") + lp_check_all(root, sm, t)
+## move the staged packages into lume_modules/; installed packages no longer required are removed
+fn lp_commit(dir, sm, picks) = let lm = dir + "/lume_modules" in let mk = hio_mkdir_p(lm) in let rm = lp_drop_stale(lm, lp_entries(lm), picks) in lp_commit_each(lm, sm, picks)
+fn lp_drop_stale(lm, ns, picks) = match ns
+    Nil        => 0
+    Cons(n, t) => let x = (if lpk_pick_ver(picks, n) == "" and fs_path_exists(lm + "/" + n + "/lume.toml") == 1 then hio_remove_tree(lm + "/" + n) else 0) in lp_drop_stale(lm, t, picks)
+fn lp_commit_each(lm, sm, picks) = match picks
+    Nil        => 0
+    Cons(p, t) => let x = hio_remove_tree(lm + "/" + p.name) in let c = hio_copy_tree(sm + "/" + p.name, lm + "/" + p.name) in if c != 1 then ctfail("lume pkg install: cannot copy " + p.name + " into " + lm + "\n") else let w = fs_append_sync("/dev/stderr", "lume pkg: installed " + p.name + " " + p.ver + " " + lp_hash(lm + "/" + p.name, lp_files(lm + "/" + p.name)) + chr(10)) in lp_commit_each(lm, sm, t)
+## lume pkg install [dir] --store=DIR [--locked|--update] [--allow-failing]
+fn lp_install(root, dir, args) = let r = lp_resolve(dir, args) in let stage = dir + "/build/lume-pkg-stage" in let r0 = hio_remove_tree(stage) in let sm = stage + "/lume_modules" in let mk = hio_mkdir_p(sm) in let staged = lp_stage_all(r.store, sm, r.picks, r.locks) in if staged != "" then (let x = lp_unstage(dir, stage) in ctfail("lume pkg install: refused, nothing changed: " + staged)) else let checks = lp_check_all(root, sm, r.picks) in let allow = lp_flag(args, "--allow-failing") in if checks != "" and not allow then (let x = lp_unstage(dir, stage) in ctfail("lume pkg install: refused, nothing changed: a package's own checks fail (install anyway with --allow-failing):" + chr(10) + checks)) else let warn = (if checks != "" then fs_append_sync("/dev/stderr", "lume pkg: warning: installed with failing checks (--allow-failing):" + chr(10) + checks) else 1) in let cm = lp_commit(dir, sm, r.picks) in let x = lp_unstage(dir, stage) in let l = ld_pkg_lock(root, dir) in "lume pkg: " + str(lpk_len(r.picks)) + " packages installed; " + l
+## lume pkg resolve [dir] --store=DIR [--locked|--update]: the versions install would take, changing nothing
+fn lp_resolve_cmd(dir, args) = let r = lp_resolve(dir, args) in lpk_chomp("lume pkg: resolution of " + dir + "/lume.toml (" + str(lpk_len(r.picks)) + " packages)" + chr(10) + lpk_plan(r.picks))
 ## the [packages] block of lume.lock: one `name version hash` line per installed package (sorted)
-fn lp_lock_block(dir) = let ns = ld_pkg_sort(lp_entries(dir + "/lume_modules")) in if lp_none(ns) then "" else "[packages]" + chr(10) + lp_lock_lines(dir, ns)
-fn lp_none(xs) = match xs
-    Nil        => true
-    Cons(h, t) => false
-fn lp_lock_lines(dir, ns) = match ns
-    Nil        => ""
-    Cons(h, t) => let p = dir + "/lume_modules/" + h in h + " " + lp_toml(fs_read_file(p + "/lume.toml"), "package", "version") + " " + lp_hash(p, lp_files(p)) + chr(10) + lp_lock_lines(dir, t)
+fn lp_lock_block(dir) = lpk_lock_block(lp_lock_entries(dir, ld_pkg_sort(lp_entries(dir + "/lume_modules"))))
+fn lp_lock_entries(dir, ns) = match ns
+    Nil        => Nil
+    Cons(h, t) => let p = dir + "/lume_modules/" + h in Cons({name: h, ver: lpk_toml(fs_read_file(p + "/lume.toml"), "package", "version"), hash: lp_hash(p, lp_files(p))}, lp_lock_entries(dir, t))
 ## add "name = REQ" under [dependencies] (the section is created when missing; an existing entry is replaced)
-fn lp_add(root, dir, args) = let spec = lp_pos(args, 1) in let at_i = lp_at(spec, 0) in let name = (if at_i < 0 then spec else slice(spec, 0, at_i)) in let req = (if at_i < 0 then "*" else slice(spec, at_i + 1, count(spec))) in if name == "" then ctfail("usage: lume pkg add NAME[@REQ] [dir]\n") else let p = dir + "/lume.toml" in let text = fs_read_file(p) in if text == "" then ctfail("lume pkg add: no lume.toml in " + dir + "\n") else let w = fs_write_sync(p, lp_set_dep(text, name, req)) in "lume pkg: " + name + " = \"" + req + "\" in " + p
+fn lp_add(root, dir, args) = let spec = lp_pos(args, 1) in let at_i = lp_at(spec, 0) in let name = (if at_i < 0 then spec else slice(spec, 0, at_i)) in let req = (if at_i < 0 then "*" else slice(spec, at_i + 1, count(spec))) in if name == "" then ctfail("usage: lume pkg add NAME[@REQ] [dir]\n") else if not lpk_req_ok(req) then ctfail("lume pkg add: malformed requirement \"" + req + "\" (use 1.2.3, ^1.2, ~1.2.3, >=1.2, <2, a comma-joined list, or *)\n") else let p = dir + "/lume.toml" in let text = fs_read_file(p) in if text == "" then ctfail("lume pkg add: no lume.toml in " + dir + "\n") else let w = fs_write_sync(p, lpk_set_dep(text, name, req)) in "lume pkg: " + name + " = \"" + req + "\" in " + p
 fn lp_at(s, i) = if i >= count(s) then 0 - 1 else if at(s, i) == "@" then i else lp_at(s, i + 1)
-fn lp_set_dep(text, name, req) = let line = name + " = " + chr(34) + req + chr(34) in let ls = lp_drop_dep(ld_lines(text, 0), "", name) in if lp_has_sec(ls, "[dependencies]") then lp_join(lp_insert_after(ls, "[dependencies]", line)) else lp_join(ls) + chr(10) + "[dependencies]" + chr(10) + line + chr(10)
-fn lp_drop_dep(ls, cur, name) = match ls
-    Nil        => Nil
-    Cons(h, t) => let l = lp_trim(h) in let c2 = (if ld_starts(l, "[") == 1 then l else cur) in if c2 == "[dependencies]" and lp_kv_key(l) == name then lp_drop_dep(t, c2, name) else Cons(h, lp_drop_dep(t, c2, name))
-fn lp_has_sec(ls, sec) = match ls
-    Nil        => false
-    Cons(h, t) => if lp_trim(h) == sec then true else lp_has_sec(t, sec)
-fn lp_insert_after(ls, sec, line) = match ls
-    Nil        => Nil
-    Cons(h, t) => if lp_trim(h) == sec then Cons(h, Cons(line, t)) else Cons(h, lp_insert_after(t, sec, line))
-fn lp_join(ls) = match ls
-    Nil        => ""
-    Cons(h, t) => h + chr(10) + lp_join(t)
-## lume pkg publish|install [dir] [--store=DIR], lume pkg add NAME[@REQ] [dir]
+## lume pkg publish|install|resolve [dir] [--store=DIR], lume pkg add NAME[@REQ] [dir]
 fn lp_dir(args, k) = let d = lp_pos(args, k) in if d == "" then "." else d
-fn ld_pkg_v(root, args) = let a = lp_pos(args, 0) in if a == "publish" then lp_publish(root, lp_dir(args, 1), args) else if a == "install" then lp_install(root, lp_dir(args, 1), args) else lp_add(root, lp_dir(args, 2), args)
-fn ld_pkg_entry(root) = if os_arg_count() >= 3 and (os_arg_at(2) == "publish" or os_arg_at(2) == "install" or os_arg_at(2) == "add") then ld_pkg_v(root, ld_args_from(2)) else if os_arg_count() == 3 then ld_pkg(root, os_arg_at(2), ".") else if os_arg_count() == 4 then ld_pkg(root, os_arg_at(2), os_arg_at(3)) else if os_arg_count() == 6 and os_arg_at(2) == "check-rot" then ld_agent_rot(root, os_arg_at(3), os_arg_at(4), os_arg_at(5)) else ctfail("usage: lume_driver pkg init|check|manifest|lock|verify|tree [dir]\n")
+fn ld_pkg_v(root, args) = let a = lp_pos(args, 0) in if a == "publish" then lp_publish(root, lp_dir(args, 1), args) else if a == "install" then lp_install(root, lp_dir(args, 1), args) else if a == "resolve" then lp_resolve_cmd(lp_dir(args, 1), args) else lp_add(root, lp_dir(args, 2), args)
+fn ld_pkg_entry(root) = if os_arg_count() >= 3 and (os_arg_at(2) == "publish" or os_arg_at(2) == "install" or os_arg_at(2) == "add" or os_arg_at(2) == "resolve") then ld_pkg_v(root, ld_args_from(2)) else if os_arg_count() == 3 then ld_pkg(root, os_arg_at(2), ".") else if os_arg_count() == 4 then ld_pkg(root, os_arg_at(2), os_arg_at(3)) else if os_arg_count() == 6 and os_arg_at(2) == "check-rot" then ld_agent_rot(root, os_arg_at(3), os_arg_at(4), os_arg_at(5)) else ctfail("usage: lume_driver pkg init|check|manifest|lock|verify|tree [dir] | add|resolve|install|publish ...\n")
 
 fn ld_pubkeys_lines(lines) = match lines
     Nil        => ""
@@ -1421,7 +1416,7 @@ fn ld_cmd_table_text() = "" +
 "verify;verify;--jobs=;;;;;<source.src>...\n" +
 "verify-cert;certify;--json --check-source;;;lcert;;[source.src] <certificate.json>\n" +
 "proof-cache;proof-cache;--require-all-hits;self-test|check|store;;lproof_cache;S;[source.src] [cache-dir]\n" +
-"pkg;pkg;--store=;init|check|manifest|lock|verify|tree|check-rot|publish|install|add|~audit;;;S;[dir]\n" +
+"pkg;pkg;--store= --locked --update --allow-failing;init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve|~audit;;;S;[dir]\n" +
 "registry;registry;--json --store= --target= --adapter= --source= --proof= --tests= --cid= --capability= --contract-signature=;publish|resolve|discover;;lregistry;S;\n" +
 "agent;agent;--json;check|compile|fill|prove|ast|expand|symbols|eval|witness|repair|impact|hashes|grammar|project|bind|skeleton|cegis|synthesize|trace|heal|morph|kernel|c-export|replay|lineage|patch|patch-fn|diff-semver|equiv|check-rot|@sentience;;lcaas;S;<source.src> [arguments]\n" +
 "adapt;adapt;--json --preprocess -o= --output=;c|c-raw|rust|python|js|ts|node|go|java|csharp|dotnet|sql|openapi|polyglot|all;;;S;[file]\n" +
@@ -1644,5 +1639,7 @@ fn ld_entry(root) = if os_arg_count() < 2 then ctfail(ld_general_usage()) else l
 fn test_ld_wave10_and_ui_layout_dispatch() = let d = ld_sentience_cmd("daemon-triad", "pub fn a(x: int) = x + 1\n") in let h = ld_sentience_cmd("hot-evolve", "pub fn a(x: int) = x + 0\n") in let c = ld_sentience_cmd("live-cockpit", "pub fn a(x: int) = x + 1\n") in let u = ld_sentience_cmd("ui-layout", "") in let ufe = ld_sentience_cmd("unified-field", "ufe") in let sng = ld_sentience_cmd("singularity", "ote") in let iec = ld_sentience_cmd("iec62443", "iec62443") in let cnd = ld_sentience_cmd("conduite", "conduite") in let msh = ld_sentience_cmd("omega-mesh", "omega-mesh") in let sbs = ld_sentience_cmd("subsea", "subsea") in let lp = ld_sentience_cmd("lumeputer", "lumeputer") in if ld_is_sentience_cmd("daemon-triad") == 1 and ld_is_sentience_cmd("hot-evolve") == 1 and ld_is_sentience_cmd("live-cockpit") == 1 and ld_is_sentience_cmd("ui-layout") == 1 and ld_is_default_self_cmd("ui-layout") == 1 and ld_is_sentience_cmd("unified-field") == 1 and ld_is_sentience_cmd("singularity") == 1 and ld_is_sentience_cmd("iec62443") == 1 and ld_is_sentience_cmd("conduite") == 1 and ld_is_sentience_cmd("omega-mesh") == 1 and ld_is_sentience_cmd("subsea") == 1 and ld_is_sentience_cmd("lumeputer") == 1 and ld_is_sentience_cmd("lumepu") == 1 and ld_is_sentience_cmd("qwenputer") == 1 and ld_contains_at(d, "\"mode\":\"daemon-triad\"", 0) == 1 and ld_contains_at(h, "\"mode\":\"hot-evolve\"", 0) == 1 and ld_contains_at(c, "\"mode\":\"live-cockpit\"", 0) == 1 and ld_contains_at(u, "\"engine\":\"@ui-layout\"", 0) == 1 and ld_contains_at(ufe, "\"mode\":\"cyber-physical-ufe-ote\"", 0) == 1 and ld_contains_at(sng, "\"tau_max_ms\":250", 0) == 1 and ld_contains_at(iec, "\"l4_to_l2_direct_blocked\":true", 0) == 1 and ld_contains_at(cnd, "\"conduit_ha_parity_ok\":true", 0) == 1 and ld_contains_at(msh, "\"mesh_raft_quorum_verified\":true", 0) == 1 and ld_contains_at(sbs, "\"catenary_top_tension_n\":650000", 0) == 1 and ld_contains_at(lp, "\"mode\":\"lumeputer-lumepu-vm\"", 0) == 1 then 1 else 0
 
 ## every program the driver starts (tests, gates, tools) finds the same lumec and lasm through LUME_BIN_DIR
-fn ld_export_bin_dir(root) = let d0 = ld_dir(ld_tool_file(ld_tool(root, "lumec"))) in let d = if d0 == "" or at(d0, 0) == "/" then d0 else fs_current_dir() + "/" + d0 in let s = if os_getenv("LUME_BIN_DIR") == "" and d != "" then os_setenv("LUME_BIN_DIR", d) else 1 in root
+fn ld_export_bin_dir(root) = let d0 = ld_dir(ld_tool_file(ld_tool(root, "lumec"))) in let d = if d0 == "" or at(d0, 0) == "/" then d0 else fs_current_dir() + "/" + d0 in let s = if os_getenv("LUME_BIN_DIR") == "" and d != "" then os_setenv("LUME_BIN_DIR", d) else 1 in let s2 = ld_export_driver(os_arg_at(0)) in root
+## LUME_DRIVER: the driver itself, so a test that runs `lume` (tests/registry/pkg_resolve_ok.src) runs the same one
+fn ld_export_driver(a0) = if ld_contains_at(a0, "/", 0) == 0 and ld_contains_at(a0, chr(92), 0) == 0 then 1 else os_setenv("LUME_DRIVER", if at(a0, 0) == "/" or count(a0) > 1 and at(a0, 1) == ":" then a0 else fs_current_dir() + "/" + a0)
 print ld_entry(ld_export_bin_dir(ld_root()))

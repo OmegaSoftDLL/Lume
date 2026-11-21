@@ -1,7 +1,11 @@
 ## regex.src -- regular expressions in Lume (`use std/regex`): a backtracking matcher over UTF-8 strings.
 ## Syntax: literals, . (any character but a line break), [abc] [a-z0-9_] [^...] classes, \d \w \s \D \W \S (also in
-## classes), \. \* \\ ... escapes, \n \t \r, ^ $ anchors, (group) with captures, (?:group) without, a|b alternation,
-## * + ? {m} {m,} {m,n} quantifiers (greedy; add ? for lazy: *? +? ?? {m,n}?).
+## classes), \. \* \\ ... escapes, \n \t \r \f \v, \xHH (U+00HH, also in classes), ^ $ anchors, \b \B word
+## boundaries (ASCII word characters), (group) with captures, (?<name>group) / (?P<name>group) named captures,
+## (?:group) without, \1 .. \9 backreferences (a group that has not matched makes them fail), (?=...) (?!...)
+## lookahead, a|b alternation, * + ? {m} {m,} {m,n} quantifiers (greedy; add ? for lazy: *? +? ?? {m,n}?), and
+## (?i) at the very start for ASCII case-insensitive matching. Class ranges work across UTF-8 lengths ([a-ž]).
+## Lookbehind is refused with a message.
 ##   re_match(p, s)          true when p matches the whole of s
 ##   re_search(p, s)         {start, end} of the first match (start -1 when none)
 ##   re_find(p, s)           the first matching text ("" when none)
@@ -9,6 +13,9 @@
 ##   re_groups(p, s)         the captures of the first match: [whole, group1, group2, ...] (Nil when none)
 ##   re_replace(p, s, r)     every match replaced by r; $0 .. $9 in r insert the captures
 ##   re_split(p, s)          the pieces of s between matches
+##   re_named(p, s, name)    the text of the named group in the first match ("" when none)
+##   re_group_names(p)       the capturing groups in order, by name ("" for an unnamed one)
+##   re_find_all_groups(p, s)  for every match the list [whole, group1, ...]
 ## A malformed pattern stops with "regex: ..." and the position.
 
 ## --- compiling: a node is {k, ...}: "c" char text, "any", "cls" (items, neg), "bol", "eol", "open"/"close" n,
@@ -16,7 +23,12 @@
 fn rx_err(p, i, m) = ctfail("regex: " + m + " at " + str(i) + " in '" + p + "'\n")
 fn rx_clen(s, i) = let c = ord_at(s, i) in if c < 192 then 1 else if c < 224 then 2 else if c < 240 then 3 else 4
 fn rx_ch(s, i) = slice(s, i, i + rx_clen(s, i))
-fn rx_compile(p) = let r = rx_alts(p, 0, {n: 1}) in if r.i < count(p) then rx_err(p, r.i, "unbalanced )") else r.nodes
+fn rx_compile(p) =
+    if count(p) >= 4 and slice(p, 0, 4) == "(?i)" then
+        rx_ci(rx_compile0(slice(p, 4, count(p))))
+    else
+        rx_compile0(p)
+fn rx_compile0(p) = let r = rx_alts(p, 0, {n: 1}) in if r.i < count(p) then rx_err(p, r.i, "unbalanced )") else r.nodes
 ## alternatives up to ) or the end: {nodes, i, g}
 fn rx_alts(p, i, g) =
     let a = rx_seq(p, i, g, Nil) in
@@ -60,6 +72,39 @@ fn rx_atom(p, i, g) =
     else
         {node: {k: "c", c: rx_ch(p, i)}, i: i + rx_clen(p, i), g: g}
 fn rx_group(p, i, g) =
+    if i + 2 < count(p) and at(p, i + 1) == "?" and (at(p, i + 2) == "=" or at(p, i + 2) == "!") then
+        rx_look(p, i, g, at(p, i + 2) == "!")
+    else if i + 3 < count(p) and at(p, i + 1) == "?" and at(p, i + 2) == "<" and (at(p, i + 3) == "=" or at(p, i + 3) == "!") then
+        rx_err(p, i, "lookbehind is not supported")
+    else if i + 2 < count(p) and at(p, i + 1) == "?" and (at(p, i + 2) == "<" or at(p, i + 2) == "P") then
+        rx_named(p, i, g)
+    else if i + 2 < count(p) and at(p, i + 1) == "?" and at(p, i + 2) != ":" then
+        rx_err(p, i, "unknown group syntax (?" + at(p, i + 2))
+    else
+        rx_group2(p, i, g)
+## (?<name>...) or (?P<name>...): a capturing group whose body starts after the >
+fn rx_named(p, i, g) =
+    let lt = if at(p, i + 2) == "P" then i + 3 else i + 2 in
+    let gt = rx_upto(p, lt + 1, ">") in
+    if lt >= count(p) or at(p, lt) != "<" or gt >= count(p) or gt == lt + 1 then
+        rx_err(p, i, "malformed group name")
+    else
+        rx_capgroup(p, i, gt + 1, g)
+fn rx_upto(p, i, c) = if i >= count(p) or at(p, i) == c then i else rx_upto(p, i + 1, c)
+fn rx_look(p, i, g, neg) =
+    let r = rx_alts(p, i + 3, g) in
+    if r.i >= count(p) or at(p, r.i) != ")" then
+        rx_err(p, i, "unclosed (")
+    else
+        {node: {k: "look", body: r.nodes, neg: neg}, i: r.i + 1, g: r.g}
+fn rx_capgroup(p, i, st, g) =
+    let n = g.n in
+    let r = rx_alts(p, st, {n: n + 1}) in
+    if r.i >= count(p) or at(p, r.i) != ")" then
+        rx_err(p, i, "unclosed (")
+    else
+        {node: {k: "alt", alts: Cons(Cons({k: "open", n: n}, rx_app(rx_one(r.nodes), Cons({k: "close", n: n}, Nil))), Nil)}, i: r.i + 1, g: r.g}
+fn rx_group2(p, i, g) =
     let cap = not(i + 2 < count(p) and at(p, i + 1) == "?" and at(p, i + 2) == ":") in
     let st = if cap then i + 1 else i + 3 in
     let n = g.n in
@@ -81,13 +126,51 @@ fn rx_esc_cls(c) =
         {items: Cons({lo: " ", hi: " "}, Cons({lo: chr(9), hi: chr(13)}, Nil)), neg: false}
     else
         {items: Nil, neg: false}
-fn rx_lit(c) = if c == "n" then chr(10) else if c == "t" then chr(9) else if c == "r" then chr(13) else c
+fn rx_lit(c) =
+    if c == "n" then
+        chr(10)
+    else if c == "t" then
+        chr(9)
+    else if c == "r" then
+        chr(13)
+    else if c == "f" then
+        chr(12)
+    else if c == "v" then
+        chr(11)
+    else
+        c
+fn rx_hexv(c) =
+    if c >= "0" and c <= "9" then
+        ord(c) - 48
+    else if c >= "a" and c <= "f" then
+        ord(c) - 87
+    else if c >= "A" and c <= "F" then
+        ord(c) - 55
+    else
+        0 - 1
+## \xHH: the character U+00HH (as UTF-8)
+fn rx_hex(p, i) =
+    if i + 2 < count(p) and rx_hexv(at(p, i + 1)) >= 0 and rx_hexv(at(p, i + 2)) >= 0 then
+        rx_hexv(at(p, i + 1)) * 16 + rx_hexv(at(p, i + 2))
+    else
+        0 - 1
+fn rx_cpstr(v) = if v < 128 then chr(v) else chr(192 + v / 64) + chr(128 + v % 64)
 fn rx_escape(p, i, g) =
     if i >= count(p) then
         rx_err(p, i, "trailing backslash")
     else
         let c = at(p, i) in
-        if c == "d" or c == "w" or c == "s" then
+        if c == "b" or c == "B" then
+            {node: {k: "wb", neg: c == "B"}, i: i + 1, g: g}
+        else if c >= "1" and c <= "9" then
+            {node: {k: "bref", n: ord(c) - 48}, i: i + 1, g: g}
+        else if c == "x" then
+            let v = rx_hex(p, i) in
+            if v < 0 then
+                rx_err(p, i, "\\x needs two hexadecimal digits")
+            else
+                {node: {k: "c", c: rx_cpstr(v)}, i: i + 3, g: g}
+        else if c == "d" or c == "w" or c == "s" then
             {node: {k: "cls", items: (rx_esc_cls(c)).items, neg: false}, i: i + 1, g: g}
         else if c == "D" or c == "W" or c == "S" then
             {node: {k: "cls", items: (rx_esc_cls(rx_lowc(c))).items, neg: true}, i: i + 1, g: g}
@@ -106,7 +189,7 @@ fn rx_items(p, i, acc, first) =
     else if at(p, i) == chr(92) and i + 1 < count(p) and (at(p, i + 1) == "d" or at(p, i + 1) == "w" or at(p, i + 1) == "s") then
         rx_items(p, i + 2, rx_app((rx_esc_cls(at(p, i + 1))).items, acc), false)
     else
-        let a = (if at(p, i) == chr(92) and i + 1 < count(p) then {c: rx_lit(rx_ch(p, i + 1)), n: 1 + rx_clen(p, i + 1)} else {c: rx_ch(p, i), n: rx_clen(p, i)}) in
+        let a = (if at(p, i) == chr(92) and i + 1 < count(p) then (if at(p, i + 1) == "x" and rx_hex(p, i + 1) >= 0 then {c: rx_cpstr(rx_hex(p, i + 1)), n: 4} else {c: rx_lit(rx_ch(p, i + 1)), n: 1 + rx_clen(p, i + 1)}) else {c: rx_ch(p, i), n: rx_clen(p, i)}) in
         if i + a.n + 1 < count(p) and at(p, i + a.n) == "-" and at(p, i + a.n + 1) != "]" then
             (let b = rx_ch(p, i + a.n + 1) in rx_items(p, i + a.n + 1 + count(b), Cons({lo: a.c, hi: b}, acc), false))
         else
@@ -150,12 +233,46 @@ fn rx_lazy(p, i, node, lo, hi) =
     {node: {k: "rep", body: Cons(node, Nil), lo: lo, hi: hi, lazy: lz, at: 0 - 1}, i: if lz then i + 1 else i}
 
 ## --- matching: m(ns, s, i, caps) -> {e, caps}, e = -1 when it fails; caps is a list of {n, st, en} ---------------------
+## UTF-8 byte order is code point order and no character is a prefix of another, so a range compares the strings
 fn rx_incls(items, c) = match items
     Nil        => false
-    Cons(h, t) => if h.lo == c or count(c) == count(h.lo) and count(c) == count(h.hi) and c >= h.lo and c <= h.hi then
-            true
-        else
-            rx_incls(t, c)
+    Cons(h, t) => if h.lo == c or c >= h.lo and c <= h.hi then true else rx_incls(t, c)
+## ASCII case folding for (?i)
+fn rx_lower(c) = if count(c) == 1 and c >= "A" and c <= "Z" then chr(ord(c) + 32) else c
+fn rx_upper(c) = if count(c) == 1 and c >= "a" and c <= "z" then chr(ord(c) - 32) else c
+fn rx_lowers(s, i, acc) = if i >= count(s) then acc else rx_lowers(s, i + 1, acc + rx_lower(at(s, i)))
+fn rx_inclsi(items, c) = rx_incls(items, c) or rx_incls(items, rx_lower(c)) or rx_incls(items, rx_upper(c))
+fn rx_isw(s, i) =
+    if i < 0 or i >= count(s) then
+        false
+    else
+        let c = ord_at(s, i) in
+        c >= 97 and c <= 122 or c >= 65 and c <= 90 or c >= 48 and c <= 57 or c == 95
+fn rx_capof(caps, k) = match caps
+    Nil        => {st: 0 - 1, en: 0 - 1}
+    Cons(h, t) => if h.n == k and h.en >= 0 then {st: h.st, en: h.en} else rx_capof(t, k)
+## (?i): literal characters and classes of the tree become their case-insensitive forms
+fn rx_ci(ns) = match ns
+    Nil        => Nil
+    Cons(n, r) => Cons(rx_ci1(n), rx_ci(r))
+fn rx_ci1(n) =
+    if n.k == "c" then
+        {k: "ci", c: rx_lowers(n.c, 0, "")}
+    else if n.k == "cls" then
+        {k: "clsi", items: n.items, neg: n.neg}
+    else if n.k == "alt" then
+        {k: "alt", alts: rx_cialts(n.alts)}
+    else if n.k == "rep" then
+        {k: "rep", body: rx_ci(n.body), lo: n.lo, hi: n.hi, lazy: n.lazy, at: n.at}
+    else if n.k == "look" then
+        {k: "look", body: rx_ci(n.body), neg: n.neg}
+    else if n.k == "bref" then
+        {k: "brefi", n: n.n}
+    else
+        n
+fn rx_cialts(xs) = match xs
+    Nil        => Nil
+    Cons(a, t) => Cons(rx_ci(a), rx_cialts(t))
 fn rx_fail(caps) = {e: 0 - 1, caps: caps}
 fn rx_m(ns, s, i, caps) = match ns
     Nil        => {e: i, caps: caps}
@@ -177,8 +294,33 @@ fn rx_m1(n, r, s, i, caps) =
         rx_m(r, s, i, rx_close(caps, n.n, i))
     else if n.k == "alt" then
         rx_alt(n.alts, r, s, i, caps)
-    else
+    else if n.k == "rep" then
         rx_rep(n, r, s, i, caps)
+    else
+        rx_m2(n, r, s, i, caps)
+fn rx_m2(n, r, s, i, caps) =
+    if n.k == "ci" then
+        (if i + count(n.c) <= count(s) and rx_lowers(slice(s, i, i + count(n.c)), 0, "") == n.c then rx_m(r, s, i + count(n.c), caps) else rx_fail(caps))
+    else if n.k == "clsi" then
+        (if i < count(s) and rx_inclsi(n.items, rx_ch(s, i)) != n.neg then rx_m(r, s, i + rx_clen(s, i), caps) else rx_fail(caps))
+    else if n.k == "wb" then
+        (if (rx_isw(s, i - 1) != rx_isw(s, i)) != n.neg then rx_m(r, s, i, caps) else rx_fail(caps))
+    else if n.k == "bref" or n.k == "brefi" then
+        let c = rx_capof(caps, n.n) in
+        let t = if c.st < 0 then "" else slice(s, c.st, c.en) in
+        let e = i + count(t) in
+        if c.st < 0 or e > count(s) then
+            rx_fail(caps)
+        else if (if n.k == "bref" then slice(s, i, e) == t else rx_lowers(slice(s, i, e), 0, "") == rx_lowers(t, 0, "")) then
+            rx_m(r, s, e, caps)
+        else
+            rx_fail(caps)
+    else
+        let x = rx_m(n.body, s, i, caps) in
+        if (x.e >= 0) != n.neg then
+            rx_m(r, s, i, if n.neg then caps else x.caps)
+        else
+            rx_fail(caps)
 fn rx_close(caps, k, i) = match caps
     Nil        => Nil
     Cons(h, t) => if h.n == k and h.en < 0 then Cons({n: k, st: h.st, en: i}, t) else Cons(h, rx_close(t, k, i))
@@ -219,24 +361,56 @@ fn re_match(p, s) = let x = rx_m(rx_app(rx_compile(p), Cons({k: "eol"}, Nil)), s
 fn re_search(p, s) = let r = rx_from(rx_compile(p), s, 0) in {start: r.st, end: r.e}
 fn re_find(p, s) = let r = rx_from(rx_compile(p), s, 0) in if r.st < 0 then "" else slice(s, r.st, r.e)
 fn re_find_all(p, s) = rx_all(rx_compile(p), s, 0)
+## where the next search starts: after the match, or one character on after an empty one (past the end at the end)
+fn rx_step(s, r) = if r.e > r.st then r.e else if r.e >= count(s) then r.e + 1 else r.e + rx_clen(s, r.e)
 fn rx_all(ns, s, i) =
     let r = rx_from(ns, s, i) in
     if r.st < 0 then
         Nil
     else
-        Cons(slice(s, r.st, r.e), rx_all(ns, s, if r.e > r.st then r.e else r.e + rx_clen(s, r.e)))
+        Cons(slice(s, r.st, r.e), rx_all(ns, s, rx_step(s, r)))
 fn rx_cap(caps, k, s) = match caps
     Nil        => ""
     Cons(h, t) => if h.n == k and h.en >= 0 then slice(s, h.st, h.en) else rx_cap(t, k, s)
-fn rx_ngroups(p, i, n) =
+## the capturing groups of a pattern in order: a list of names ("" for an unnamed group); brackets and escapes skipped
+fn rx_ngroups(p, i, n) = rx_len(rx_gnames(p, 0, false, Nil), 0)
+fn rx_len(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => rx_len(t, n + 1)
+fn rx_gnames(p, i, incls, acc) =
     if i >= count(p) then
-        n
+        rx_rev(acc, Nil)
     else if at(p, i) == chr(92) then
-        rx_ngroups(p, i + 2, n)
+        rx_gnames(p, i + 2, incls, acc)
+    else if incls then
+        rx_gnames(p, i + 1, at(p, i) != "]", acc)
+    else if at(p, i) == "[" then
+        rx_gnames(p, if i + 1 < count(p) and at(p, i + 1) == "]" then i + 2 else if i + 2 < count(p) and at(p, i + 1) == "^" and at(p, i + 2) == "]" then i + 3 else i + 1, true, acc)
     else if at(p, i) == "(" and not(i + 1 < count(p) and at(p, i + 1) == "?") then
-        rx_ngroups(p, i + 1, n + 1)
+        rx_gnames(p, i + 1, false, Cons("", acc))
+    else if at(p, i) == "(" and i + 3 < count(p) and at(p, i + 1) == "?" and (at(p, i + 2) == "<" and at(p, i + 3) != "=" and at(p, i + 3) != "!" or at(p, i + 2) == "P") then
+        let lt = if at(p, i + 2) == "P" then i + 3 else i + 2 in
+        rx_gnames(p, lt + 1, false, Cons(slice(p, lt + 1, rx_upto(p, lt + 1, ">")), acc))
     else
-        rx_ngroups(p, i + 1, n)
+        rx_gnames(p, i + 1, false, acc)
+fn rx_gindex(names, name, k) = match names
+    Nil        => 0 - 1
+    Cons(h, t) => if h == name and name != "" then k else rx_gindex(t, name, k + 1)
+fn re_named(p, s, name) =
+    let k = rx_gindex(rx_gnames(p, 0, false, Nil), name, 1) in
+    let r = rx_from(rx_compile(p), s, 0) in
+    if k < 0 or r.st < 0 then
+        ""
+    else
+        rx_cap(r.caps, k, s)
+fn re_group_names(p) = rx_gnames(p, 0, false, Nil)
+fn re_find_all_groups(p, s) = rx_allg(rx_compile(p), s, 0, rx_ngroups(p, 0, 0))
+fn rx_allg(ns, s, i, ng) =
+    let r = rx_from(ns, s, i) in
+    if r.st < 0 then
+        Nil
+    else
+        Cons(Cons(slice(s, r.st, r.e), rx_glist(r.caps, s, 1, ng)), rx_allg(ns, s, rx_step(s, r), ng))
 fn rx_glist(caps, s, k, n) = if k > n then Nil else Cons(rx_cap(caps, k, s), rx_glist(caps, s, k + 1, n))
 fn re_groups(p, s) =
     let r = rx_from(rx_compile(p), s, 0) in

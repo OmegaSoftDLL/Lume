@@ -1,0 +1,62 @@
+## json_ok.src -- `use std/json`: the strict parser (RFC 8259 grammar, escapes, surrogate pairs, UTF-8, depth), the
+## accessors, JSON Pointer (RFC 6901), the builders and the three writers
+use json
+
+## a JSON text written with ' for " (so the tests stay readable); a backslash is written \\ as usual
+fn jq(s) = jq_go(s, 0, "")
+fn jq_go(s, i, acc) = if i >= count(s) then acc else jq_go(s, i + 1, acc + (if at(s, i) == "'" then chr(34) else at(s, i)))
+fn ok(s) = (json_parse(jq(s))).ok
+fn bad(s) = (json_parse(jq(s))).ok == false
+fn pv(s) = (json_parse(jq(s))).value
+## the compact text after a parse (the canonical form of what was read)
+fn rt(s) = json_write(pv(s))
+## raw bytes, for ill-formed UTF-8
+fn bytes(xs) = bytes_go(buf_new(bytes_n(xs, 0)), xs, 0)
+fn bytes_n(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => bytes_n(t, n + 1)
+fn bytes_go(b, xs, i) = match xs
+    Nil        => buf_to_str(b, 0, buf_len(b))
+    Cons(h, t) => let w = buf_set(b, i, h) in bytes_go(b, t, i + 1)
+fn bs() = chr(92)
+
+fn test_scalars() = rt("null") == "null" and rt("true") == "true" and rt(" false ") == "false" and rt("0") == "0" and rt("-12") == "-12" and json_kind(pv("'x'")) == "str" and json_str(pv("'x'")) == "x"
+fn test_numbers_valid() = ok("0") and ok("-0") and ok("1.5") and ok("-0.0e+10") and ok("1E5") and ok("12e-3") and ok("123456789012345678901234567890") and rt("1.50e+3") == "1.50e+3"
+fn test_numbers_invalid() = bad("01") and bad("+1") and bad(".5") and bad("1.") and bad("1e") and bad("1e+") and bad("-") and bad("--1") and bad("0x10") and bad("NaN") and bad("Infinity") and bad("-Infinity") and bad("1.e5")
+fn test_number_values() = json_int(pv("42")) == 42 and json_int(pv("-7")) == 0 - 7 and json_int(pv("2.9")) == 2 and json_int(pv("1e3")) == 1000 and json_f64(pv("0.25")) == f64("0.25") and json_int(pv("'1'")) == 0
+fn test_literals_invalid() = bad("nul") and bad("True") and bad("nulls") and bad("") and bad("   ") and bad("'abc") and bad("[1,]") and bad("[,1]") and bad("{{'a':1,}}") and bad("{{a:1}}") and bad("{{'a' 1}}") and bad("[1 2]") and bad("'a' 'b'") and bad("/* c */ 1")
+fn test_escapes() = json_str(pv("'a" + bs() + "nb" + bs() + "t" + bs() + bs() + bs() + "/" + bs() + "'" + "'")) == "a" + chr(10) + "b" + chr(9) + bs() + "/" + chr(34) and json_str(pv("'" + bs() + "b" + bs() + "f" + bs() + "r'")) == chr(8) + chr(12) + chr(13)
+fn test_bad_escapes() = bad("'" + bs() + "x'") and bad("'" + bs() + "u12'") and bad("'" + bs() + "u12G4'") and bad("'" + bs() + "'") and bad("'" + bs() + "U0041'")
+fn test_unicode_escapes() = json_str(pv("'" + bs() + "u0041" + bs() + "u00e9" + bs() + "u20AC'")) == "A" + utf8_chr(233) + utf8_chr(8364) and json_str(pv("'" + bs() + "u0000'")) == chr(0) and count(json_str(pv("'a" + bs() + "u0000b'"))) == 3
+## U+1F600 is the pair D83D DE00; U+10FFFF is DBFF DFFF
+fn test_surrogate_pairs() = json_str(pv("'" + bs() + "ud83d" + bs() + "ude00'")) == utf8_chr(128512) and json_str(pv("'" + bs() + "uDBFF" + bs() + "uDFFF'")) == utf8_chr(1114111) and json_str(pv("'" + bs() + "uD834" + bs() + "uDD1E'")) == utf8_chr(119070)
+fn test_lone_surrogates() = bad("'" + bs() + "ud83d'") and bad("'" + bs() + "ude00'") and bad("'" + bs() + "ud83d" + bs() + "u0041'") and bad("'" + bs() + "ud83dx'") and bad("'" + bs() + "udc00" + bs() + "ud83d'")
+fn test_control_chars() = bad("'a" + chr(10) + "b'") and bad("'" + chr(9) + "'") and bad("'" + chr(0) + "'") and bad("'" + chr(31) + "'") and ok("'" + chr(127) + "'")
+fn test_utf8_raw() = json_str(pv("'ação €𝄞'")) == "ação €𝄞" and (json_parse(chr(34) + bytes([195]) + chr(34))).ok == false and (json_parse(chr(34) + bytes([192, 128]) + chr(34))).ok == false and (json_parse(chr(34) + bytes([237, 160, 128]) + chr(34))).ok == false and (json_parse(chr(34) + bytes([244, 144, 128, 128]) + chr(34))).ok == false and (json_parse(chr(34) + bytes([255]) + chr(34))).ok == false
+fn test_bom_and_ws() = (json_parse(bytes([239, 187, 191]) + "[1]")).ok and rt(" " + chr(9) + chr(13) + chr(10) + "[ 1 , 2 ]" + chr(10)) == "[1,2]" and bad(chr(12) + "1")
+fn test_arrays_objects() = rt("[]") == "[]" and rt("{{}}") == "{{}}" and rt("[1,[2,[3]],{{'a':[]}}]") == jq("[1,[2,[3]],{{'a':[]}}]") and rt("{{ 'a' : 1 , 'b' : {{ 'c' : null }} }}") == jq("{{'a':1,'b':{{'c':null}}}}")
+fn test_errors_position() = let r = json_parse("[1," + chr(10) + "  x]") in r.ok == false and r.line == 2 and r.col == 3 and r.pos == 6 and slice(r.err, 0, 17) == "line 2, column 3:"
+fn test_trailing() = let r = json_parse("1 2") in r.ok == false and r.pos == 2 and (json_parse("{{}} x")).ok == false
+fn nest(k, open, close) = if k == 0 then "" else open + nest(k - 1, open, close) + close
+fn test_depth() = ok(nest(512, "[", "]")) and bad(nest(513, "[", "]")) and ok(nest(100, "[", "]"))
+fn test_get() = let v = pv("{{'a':1,'b':'x','a':2,'n':null,'t':true}}") in json_int(json_get(v, "a")) == 2 and json_str(json_get(v, "b")) == "x" and json_has(v, "n") and json_is_null(json_get(v, "n")) and json_bool(json_get(v, "t")) and json_has(v, "z") == false and json_kind(json_get(v, "z")) == "none" and json_len(v) == 5 and json_keys(v) == ["a", "b", "a", "n", "t"]
+fn test_at() = let v = pv("[10,'s',[1]]") in json_int(json_at(v, 0)) == 10 and json_str(json_at(v, 1)) == "s" and json_len(json_at(v, 2)) == 1 and json_kind(json_at(v, 3)) == "none" and json_kind(json_at(v, 0 - 1)) == "none" and json_kind(json_get(v, "a")) == "none" and json_len(pv("3")) == 0
+## RFC 6901 section 5
+fn rfc6901() = jq("{{'foo': ['bar', 'baz'], '': 0, 'a/b': 1, 'c%d': 2, 'e^f': 3, 'g|h': 4, 'i" + bs() + bs() + "j': 5, 'k" + bs() + "'l': 6, ' ': 7, 'm~n': 8}}")
+fn ptr(p) = json_pointer((json_parse(rfc6901())).value, p)
+fn test_pointer() = json_len(ptr("")) == 10 and json_write(ptr("/foo")) == jq("['bar','baz']") and json_str(ptr("/foo/0")) == "bar" and json_int(ptr("/")) == 0 and json_int(ptr("/a~1b")) == 1 and json_int(ptr("/c%d")) == 2 and json_int(ptr("/e^f")) == 3 and json_int(ptr("/g|h")) == 4 and json_int(ptr("/i" + bs() + "j")) == 5 and json_int(ptr("/k" + chr(34) + "l")) == 6 and json_int(ptr("/ ")) == 7 and json_int(ptr("/m~0n")) == 8
+fn test_pointer_missing() = json_kind(ptr("/foo/2")) == "none" and json_kind(ptr("/foo/01")) == "none" and json_kind(ptr("/foo/-")) == "none" and json_kind(ptr("/nope/x")) == "none" and json_kind(ptr("foo")) == "none"
+fn test_build_write() = json_write(jv_obj([jv_field("name", jv_str("Ana")), jv_field("age", jv_int(41)), jv_field("tags", jv_arr([jv_str("a"), jv_bool(true), jv_null()])), jv_field("pi", jv_num("3.14"))])) == jq("{{'name':'Ana','age':41,'tags':['a',true,null],'pi':3.14}}")
+fn test_write_escapes() = json_quote("a" + chr(34) + bs() + chr(10) + chr(13) + chr(9) + chr(8) + chr(12) + chr(1) + chr(31) + "/" + chr(0)) == chr(34) + "a" + bs() + chr(34) + bs() + bs() + bs() + "n" + bs() + "r" + bs() + "t" + bs() + "b" + bs() + "f" + bs() + "u0001" + bs() + "u001f/" + bs() + "u0000" + chr(34)
+fn test_write_utf8() = json_quote("ação €𝄞") == chr(34) + "ação €𝄞" + chr(34) and json_quote(bytes([97, 255, 98])) == chr(34) + "a" + utf8_chr(65533) + "b" + chr(34)
+fn test_write_ascii() = json_write_ascii(jv_str("é€" + utf8_chr(128512))) == chr(34) + bs() + "u00e9" + bs() + "u20ac" + bs() + "ud83d" + bs() + "ude00" + chr(34) and json_write_ascii(jv_str(bytes([255]))) == chr(34) + bs() + "ufffd" + chr(34)
+fn test_round_trip_strings() = let s = "q" + chr(34) + " b" + bs() + " nl" + chr(10) + " nul" + chr(0) + " c" + chr(1) + " ç€𝄞" in json_str(pv(json_quote(s))) == s and json_str((json_parse(json_write_ascii(jv_str(s)))).value) == s
+fn doc() = jq("{{'id':7,'items':[{{'n':'a','q':[1,2]}},{{'n':'b','q':[]}}],'meta':{{}},'ok':false,'x':-1.5e-7}}")
+fn test_round_trip_doc() = json_write((json_parse(doc())).value) == doc() and json_write((json_parse(json_pretty((json_parse(doc())).value))).value) == doc() and json_write((json_parse(json_write_ascii((json_parse(doc())).value))).value) == doc()
+fn test_pretty() = json_pretty(pv("{{'a':[1,2],'b':{{}},'c':[]}}")) == jq("{{" + chr(10) + "  'a': [" + chr(10) + "    1," + chr(10) + "    2" + chr(10) + "  ]," + chr(10) + "  'b': {{}}," + chr(10) + "  'c': []" + chr(10) + "}}") and json_pretty(jv_int(5)) == "5"
+fn test_set_remove_push() = let o = pv("{{'a':1,'b':2}}") in json_write(json_set(o, "a", jv_int(9))) == jq("{{'a':9,'b':2}}") and json_write(json_set(o, "c", jv_str("z"))) == jq("{{'a':1,'b':2,'c':'z'}}") and json_write(json_remove(o, "a")) == jq("{{'b':2}}") and json_write(json_push(pv("[1]"), jv_null())) == "[1,null]"
+fn test_f64() = json_write(jv_f64(f64("0.5"))) == "0.5" and json_write(jv_f64(f64("1e300") * f64("1e300"))) == "null" and json_write(jv_f64(f64("nan"))) == "null" and json_valid(json_write(jv_f64(f64("1e-9")))) and json_f64(jv_f64(f64("1e-9"))) == f64("1e-9")
+fn test_valid() = json_valid("[1]") and json_valid("[1") == false
+## a larger document: 2000 elements in, the same text out
+fn many(k, acc) = if k == 0 then acc else many(k - 1, Cons(jv_obj([jv_field("k", jv_int(k)), jv_field("s", jv_str("v" + str(k)))]), acc))
+fn test_large() = let t = json_write(jv_arr(many(2000, Nil))) in let r = json_parse(t) in r.ok and json_len(r.value) == 2000 and json_write(r.value) == t and json_str(json_pointer(r.value, "/1999/s")) == "v2000"

@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Captured output lost on Windows while another process reads it.** The Win64 layer emulated flock with a
+  mandatory byte-range lock over the whole file, so a child's writes into its capture file failed while a reader
+  (fs_read_file takes LOCK_SH) held it; flock now locks one byte at offset 2^62, beyond any data, so it stays
+  advisory as on Linux. And on every system os_run_capture / os_spawn_capture (and the timeout / input forms) with
+  the same path for out and err opened it twice, the two streams overwriting each other; the child now duplicates
+  the one descriptor. Test tests/runtime/spawn_capture_concurrent_ok.src.
+
 ### Added
+- **Package resolver and a lock that is honoured (item 19, part A).** The versions, the resolver and the lock format
+  moved into `compiler/stage1/lpkg.src` (pure, tested by `tests/registry/pkg_resolve_ok.src`). `lume pkg install`
+  now resolves the dependencies of dependencies too: each round picks, for every package named by the manifest or by
+  a package picked before, the version lume.lock names while it still meets every requirement, else the highest
+  stored version that meets all of them, until the picks settle; a conflict names each requirement and who made it
+  (there is no search over older versions of a package whose own dependencies conflict). Requirements gained `>=`,
+  `>`, `<=`, `<`, `=` and comma-joined lists (`">=1.2, <2"`); `lume pkg add` refuses a malformed one. Installs are
+  reproducible: a later install keeps the locked versions, `--update` takes the newest, `--locked` refuses any change
+  to lume.lock (CI), and a copy whose hash differs from lume.lock's is refused. Each picked package is staged under
+  build/ and its own checks run there (`lume test` on every file with `fn test_`, now also `lume prove` on every file
+  with contracts); a failure refuses the install and changes nothing (no lume_modules/ or lume.lock change) unless
+  `--allow-failing`. Packages no longer required leave lume_modules/. `lume pkg resolve` prints the plan without
+  changing anything. `lume pkg publish` runs the proofs too and checks a package with dependencies beside them,
+  resolved from the same store.
+- **`use par` and `buf_shared(n)`: data-parallel work on all cores (item 15).** buf_shared(n) is a buffer of n zero
+  bytes in memory shared with the processes os_fork starts afterwards (outside the heap: never moved or freed).
+  compiler/stage1/par.src starts a pool of worker processes once (`par_pool(n, fn(k, job) => ...)`); `par_run(pool,
+  job)` runs the function in every worker at the same time and returns the sum of their answers once all are done, so
+  their writes into shared buffers are visible; `par_slice(k, n, total)` cuts work into runs; `par_close` stops and
+  waits for the workers. A video frame cut into slices (one per worker) encodes on every core. Test par_ok.src.
+- **A larger standard library (item 19, part B), in Lume with tests next to each module:**
+  `use std/json` (new, experimental): a strict RFC 8259 parser (number grammar, every escape, `\u` surrogate pairs,
+  lone surrogates and ill-formed UTF-8 refused, `\u0000` kept as a NUL byte, depth limit 512, errors with line and
+  column), values that keep each number's exact text, accessors, RFC 6901 JSON Pointer, builders, and compact /
+  ASCII-only / pretty writers (json_ok.src, 32 tests). `use std/tz` (new, experimental): IANA zones from tzdata TZif
+  files (RFC 8536 v1-v4 with the footer rule; `$TZDIR`, `/usr/share/zoneinfo`, ...), POSIX TZ rules (Jn / n / Mm.w.d,
+  quoted names, times up to 167 h), fixed offsets, abbreviations, DST flag, and wall-clock to instant with gaps and
+  overlaps resolved; checked against the system tzdata and against std/datetime's own rules over 20 years
+  (tz_ok.src). `use std/encoding` (new, experimental): hex, base64 and base64url (RFC 4648 vectors, strict padding and
+  trailing bits, MIME white space). `hash` gains SHA-224, SHA-384, SHA-512, HMAC (MD5 / SHA-1 / SHA-2), PBKDF2,
+  CRC-32C and FNV-1a 32/64, checked against the FIPS 180-4 and RFC 4231 / 2202 / 2104 / 7914 / 6070 vectors. `deflate_buf`
+  now writes the smallest of a dynamic Huffman block (length-limited codes, run-length coded header), the fixed code
+  or stored blocks; Python's zlib reads its output, and random data grows by only 5 bytes per 64 KiB. `datetime` gains
+  `dt_parse` (extended and basic ISO 8601 / RFC 3339, nanoseconds, the written offset), `dt_format` (strftime
+  subset), `dt_yday`, `dt_iso_week`. `regex` gains `\b \B`, backreferences, lookahead, named groups, `(?i)`, `\xHH`,
+  `re_named`, `re_group_names`, `re_find_all_groups`. `utf8` gains `utf8_next` / `utf8_fold` (walking by code point
+  without a list), `utf8_check`, `utf8_sanitize`, `utf8_offset`, `utf8_encode_cp`, UTF-16 conversion, and case mapping
+  for Latin Extended-A, Greek and Cyrillic. `csv` gains the strict `csv_parse_checked` and `csv_index` / `csv_get`;
+  quoted fields are sliced instead of copied byte by byte.
 - **`lume debug --dap`: the real debugger over the Debug Adapter Protocol (item 21).** A DAP server on stdin / stdout
   (Content-Length framing or one JSON object per line) for editors and AI agents: launch (program, args, stopOnEntry)
   builds the program with the debugger's hooks and runs it under a monitor process; setBreakpoints (by line: the
@@ -213,6 +260,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off (it is part of the driver's cache key).
 
 ### Changed
+- **Standard library behaviour (item 19, part B):** `dt_parse_iso` refuses text after the zone; `utf8_encode` writes
+  U+FFFD for a surrogate or an out-of-range code point and a NUL byte for 0 (it stopped before); lenient `csv_parse`
+  keeps text after a closing quote in the field (`"a"b` gives `ab`; it started a new row before); regex class ranges
+  work across UTF-8 lengths (`[a-ž]`), and `re_find_all` no longer stops on an empty match at the end of the text.
 - **Runtime in Lume: try / fail and the runtime stops** (new compiler/stage1/rt/rt_fail.src, ordinary programs only):
   __lume_try_begin / end / msg, __rt_try_fail, ctfail, __rt_die3, __rt_die_now and the error stops (__rt_not_str,
   __rt_not_int, __rt_need_int, __rt_ovf, __rt_div0 ...), over the frame_ptr / long_jump intrinsics. Same messages,

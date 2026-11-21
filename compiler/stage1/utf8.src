@@ -3,11 +3,22 @@
 ##   utf8_valid(s)          true when s is well-formed UTF-8 (no overlong forms, no surrogates, nothing above U+10FFFF)
 ##   utf8_len(s)            the number of code points (an invalid byte counts as one)
 ##   utf8_decode(s)         the list of code points (an invalid byte decodes as U+FFFD)
-##   utf8_encode(cps)       a string from a list of code points
+##   utf8_encode(cps)       a string from a list of code points (0 gives a NUL byte; a surrogate, a negative value or
+##                          one above U+10FFFF gives U+FFFD)
+##   utf8_encode_cp(cp)     the UTF-8 of one code point, "" when it is not a Unicode scalar value (0 is a NUL byte)
 ##   utf8_char(s, k)        the k-th character as a string ("" past the end)
 ##   utf8_cp(s, k)          the k-th code point (-1 past the end)
 ##   utf8_slice(s, a, b)    characters a .. b-1
-##   utf8_upper(s) / utf8_lower(s)   case mapping for ASCII and Latin-1 (a-z, à-þ)
+##   utf8_offset(s, k)      the byte offset where character k starts (count(s) past the end)
+##   utf8_next(s, i)        the character at byte i: {cp, len} (len 1 and cp U+FFFD on an ill-formed byte; past the
+##                          end {cp: -1, len: 0}); `i = i + r.len` walks a string by code point without a list
+##   utf8_fold(s, acc, f)   f(acc, cp) for every code point, left to right; the final acc
+##   utf8_check(s)          the byte offset of the first ill-formed sequence, -1 when s is valid
+##   utf8_sanitize(s)       s with every ill-formed byte replaced by U+FFFD (valid text comes back unchanged)
+##   utf8_to_utf16(s)       the UTF-16 code units of s (a list; surrogate pairs above U+FFFF)
+##   utf8_from_utf16(us)    the string of a list of UTF-16 code units (an unpaired surrogate gives U+FFFD)
+##   utf8_upper(s) / utf8_lower(s)   simple case mapping (one code point to one) for ASCII, Latin-1, Latin
+##                          Extended-A, Greek and Cyrillic (U+0400..U+04FF); other characters are kept
 ##   utf8_reverse(s)        the characters in reverse order
 
 fn u8_b(s, i) = ord_at(s, i)
@@ -49,11 +60,44 @@ fn u8_valid_go(s, i) =
             u8_valid_go(s, i + r.len)
 fn utf8_len(s) = u8_len_go(s, 0, 0)
 fn u8_len_go(s, i, n) = if i >= count(s) then n else u8_len_go(s, i + (u8_at(s, i)).len, n + 1)
-fn utf8_decode(s) = u8_dec(s, 0)
-fn u8_dec(s, i) = if i >= count(s) then Nil else let r = u8_at(s, i) in Cons(r.cp, u8_dec(s, i + r.len))
-fn utf8_encode(cps) = match cps
+fn utf8_decode(s) = u8_dec(s, 0, count(s), Nil)
+fn u8_dec(s, i, n, acc) =
+    if i >= n then
+        u8_revl(acc, Nil)
+    else
+        let r = u8_at(s, i) in
+        u8_dec(s, i + r.len, n, Cons(r.cp, acc))
+fn utf8_encode(cps) = u8_join(u8_encs(cps, Nil))
+fn u8_encs(cps, acc) = match cps
+    Nil        => u8_revl(acc, Nil)
+    Cons(h, t) => u8_encs(t, Cons(u8_enc(if u8_scalar(h) then h else 65533), acc))
+fn u8_scalar(cp) = cp >= 0 and cp <= 1114111 and (cp < 55296 or cp > 57343)
+fn utf8_encode_cp(cp) = if u8_scalar(cp) then u8_enc(cp) else ""
+fn u8_enc(cp) =
+    if cp < 128 then
+        chr(cp)
+    else if cp < 2048 then
+        chr(192 + cp / 64) + chr(128 + cp % 64)
+    else if cp < 65536 then
+        chr(224 + cp / 4096) + chr(128 + cp / 64 % 64) + chr(128 + cp % 64)
+    else
+        chr(240 + cp / 262144) + chr(128 + cp / 4096 % 64) + chr(128 + cp / 64 % 64) + chr(128 + cp % 64)
+fn u8_revl(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => u8_revl(t, Cons(h, acc))
+fn u8_isnil(xs) = match xs
+    Nil        => true
+    Cons(h, t) => false
+## the strings of a list joined by halves (linear-logarithmic, not quadratic)
+fn u8_join(xs) = match xs
     Nil        => ""
-    Cons(h, t) => utf8_chr(h) + utf8_encode(t)
+    Cons(h, t) => if u8_isnil(t) then h else u8_join(u8_pairs(xs, Nil))
+fn u8_pairs(xs, acc) = match xs
+    Nil        => u8_revl(acc, Nil)
+    Cons(a, t) => u8_pair2(a, t, acc)
+fn u8_pair2(a, t, acc) = match t
+    Nil        => u8_revl(Cons(a, acc), Nil)
+    Cons(b, u) => u8_pairs(u, Cons(a + b, acc))
 ## the byte offset of character k (count(s) past the end)
 fn u8_off(s, i, k) = if k <= 0 or i >= count(s) then i else u8_off(s, i + (u8_at(s, i)).len, k - 1)
 fn utf8_char(s, k) = let o = u8_off(s, 0, k) in if o >= count(s) then "" else slice(s, o, o + (u8_at(s, o)).len)
@@ -65,13 +109,99 @@ fn utf8_slice(s, a, b) =
         ""
     else
         slice(s, oa, ob)
-fn u8_upcp(c) = if c >= 97 and c <= 122 then c - 32 else if c >= 224 and c <= 254 and c != 247 then c - 32 else c
-fn u8_lowcp(c) = if c >= 65 and c <= 90 then c + 32 else if c >= 192 and c <= 222 and c != 215 then c + 32 else c
-fn u8_map(cps, up) = match cps
-    Nil        => Nil
-    Cons(h, t) => Cons(if up == 1 then u8_upcp(h) else u8_lowcp(h), u8_map(t, up))
-fn utf8_upper(s) = utf8_encode(u8_map(utf8_decode(s), 1))
-fn utf8_lower(s) = utf8_encode(u8_map(utf8_decode(s), 0))
+## simple case mapping. Latin Extended-A pairs a capital with the small letter after it (even/odd, or odd/even in
+## U+0139..U+0148 and U+0179..U+017E); Greek capitals are 32 below the small letters, Cyrillic U+0410..U+042F are 32
+## below and U+0400..U+040F are 80 below; U+0460..U+0481 and U+048A..U+04BF pair even/odd.
+fn u8_even(c) = c % 2 == 0
+fn u8_upcp(c) =
+    if c < 128 then
+        (if c >= 97 and c <= 122 then c - 32 else c)
+    else if c < 256 then
+        (if c >= 224 and c <= 254 and c != 247 then c - 32 else if c == 255 then 376 else if c == 181 then 924 else c)
+    else if c < 384 then
+        u8_upa(c)
+    else if c >= 940 and c <= 974 then
+        u8_upgr(c)
+    else if c >= 1072 and c <= 1103 then
+        c - 32
+    else if c >= 1104 and c <= 1119 then
+        c - 80
+    else if c >= 1120 and c <= 1153 or c >= 1162 and c <= 1215 then
+        (if u8_even(c) then c else c - 1)
+    else
+        c
+fn u8_upa(c) =
+    if c == 305 then
+        73
+    else if c == 383 then
+        83
+    else if c >= 256 and c <= 311 or c >= 330 and c <= 375 then
+        (if u8_even(c) then c else c - 1)
+    else if c >= 313 and c <= 328 or c >= 377 and c <= 382 then
+        (if u8_even(c) then c - 1 else c)
+    else
+        c
+fn u8_upgr(c) =
+    if c >= 945 and c <= 971 and c != 962 then
+        c - 32
+    else if c == 962 then
+        931
+    else if c == 940 then
+        902
+    else if c >= 941 and c <= 943 then
+        c - 37
+    else if c == 972 then
+        908
+    else if c == 973 or c == 974 then
+        c - 63
+    else
+        c
+fn u8_lowcp(c) =
+    if c < 128 then
+        (if c >= 65 and c <= 90 then c + 32 else c)
+    else if c < 256 then
+        (if c >= 192 and c <= 222 and c != 215 then c + 32 else c)
+    else if c < 384 then
+        u8_lowa(c)
+    else if c >= 902 and c <= 939 then
+        u8_lowgr(c)
+    else if c >= 1040 and c <= 1071 then
+        c + 32
+    else if c >= 1024 and c <= 1039 then
+        c + 80
+    else if c >= 1120 and c <= 1153 or c >= 1162 and c <= 1215 then
+        (if u8_even(c) then c + 1 else c)
+    else
+        c
+fn u8_lowa(c) =
+    if c == 304 then
+        105
+    else if c == 376 then
+        255
+    else if c >= 256 and c <= 311 or c >= 330 and c <= 375 then
+        (if u8_even(c) then c + 1 else c)
+    else if c >= 313 and c <= 328 or c >= 377 and c <= 382 then
+        (if u8_even(c) then c else c + 1)
+    else
+        c
+fn u8_lowgr(c) =
+    if c >= 913 and c <= 939 and c != 930 then
+        c + 32
+    else if c == 902 then
+        940
+    else if c >= 904 and c <= 906 then
+        c + 37
+    else if c == 908 then
+        972
+    else if c == 910 or c == 911 then
+        c + 63
+    else
+        c
+fn u8_map(cps, up, acc) = match cps
+    Nil        => u8_revl(acc, Nil)
+    Cons(h, t) => u8_map(t, up, Cons(if up == 1 then u8_upcp(h) else u8_lowcp(h), acc))
+fn utf8_upper(s) = utf8_encode(u8_map(utf8_decode(s), 1, Nil))
+fn utf8_lower(s) = utf8_encode(u8_map(utf8_decode(s), 0, Nil))
 fn utf8_reverse(s) = u8_rev(s, 0, "")
 fn u8_rev(s, i, acc) =
     if i >= count(s) then
@@ -79,3 +209,49 @@ fn u8_rev(s, i, acc) =
     else
         let r = u8_at(s, i) in
         u8_rev(s, i + r.len, slice(s, i, i + r.len) + acc)
+
+## --- walking, checking, repairing, UTF-16 -------------------------------------------------------------------------------
+fn utf8_offset(s, k) = u8_off(s, 0, k)
+fn utf8_next(s, i) = if i < 0 or i >= count(s) then {cp: 0 - 1, len: 0} else u8_at(s, i)
+fn utf8_fold(s, acc, f) = u8_fold(s, 0, count(s), acc, f)
+fn u8_fold(s, i, n, acc, f) = if i >= n then acc else let r = u8_at(s, i) in u8_fold(s, i + r.len, n, f(acc, r.cp), f)
+fn utf8_check(s) = u8_check(s, 0, count(s))
+fn u8_check(s, i, n) =
+    if i >= n then
+        0 - 1
+    else
+        let r = u8_at(s, i) in
+        if r.len == 1 and r.cp == 65533 then
+            i
+        else
+            u8_check(s, i + r.len, n)
+## valid runs are sliced; only the bad bytes are replaced
+fn utf8_sanitize(s) = if utf8_check(s) < 0 then s else u8_join(u8_revl(u8_san(s, 0, count(s), 0, Nil), Nil))
+fn u8_san(s, i, n, st, acc) =
+    if i >= n then
+        (if i > st then Cons(slice(s, st, i), acc) else acc)
+    else
+        let r = u8_at(s, i) in
+        if r.len == 1 and r.cp == 65533 then
+            u8_san(s, i + 1, n, i + 1, Cons(u8_enc(65533), if i > st then Cons(slice(s, st, i), acc) else acc))
+        else
+            u8_san(s, i + r.len, n, st, acc)
+fn u8_u16push(acc, cp) =
+    if cp < 65536 then
+        Cons(cp, acc)
+    else
+        Cons(56320 + (cp - 65536) % 1024, Cons(55296 + (cp - 65536) / 1024, acc))
+fn utf8_to_utf16(s) = u8_revl(u8_fold(s, 0, count(s), Nil, u8_u16push), Nil)
+fn utf8_from_utf16(us) = utf8_encode(u8_u16(us, Nil))
+fn u8_u16(us, acc) = match us
+    Nil        => u8_revl(acc, Nil)
+    Cons(h, t) => if h >= 55296 and h <= 56319 then
+            u8_u16hi(h, t, acc)
+        else
+            u8_u16(t, Cons(if h >= 56320 and h <= 57343 then 65533 else h, acc))
+fn u8_u16hi(h, t, acc) = match t
+    Nil        => u8_revl(Cons(65533, acc), Nil)
+    Cons(l, r) => if l >= 56320 and l <= 57343 then
+            u8_u16(r, Cons(65536 + (h - 55296) * 1024 + (l - 56320), acc))
+        else
+            u8_u16(t, Cons(65533, acc))

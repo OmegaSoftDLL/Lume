@@ -17,6 +17,11 @@ is the short version.
   step while a bug, a correction or an improvement found in the current one is still open: close it, test it on
   every system, then advance.** The Windows port and its
   remaining work are in `docs/42-windows-native-toolchain.md` (§9).
+- **Golden rules (owner, 2026-11-21), binding on every person and agent:** (1) while a test or battery runs, keep
+  working on every item that does not depend on it, never idle; (2) install everything that is ready at once (the
+  Linux homes and C:\Lume, through native_installer / update_install.ps1); (3) Lume generates Lume, 100 % Lume, for
+  everything and every system; (4) always build Lume with the newest Lume compilation, so each generation makes a
+  better and faster Lume.
 - **Do not use Rust** to implement Lume.
 - **Edit the self-hosted compiler in `compiler/stage1/lume/NN_*.src`, never the generated
   `compiler/stage1/lumec.src`.** `lumec.src` is a build artifact (git-ignored), amalgamated

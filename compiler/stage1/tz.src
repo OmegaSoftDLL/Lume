@@ -1,0 +1,327 @@
+## tz.src -- time zones from the IANA tz database and POSIX TZ rules, in Lume (`use std/tz`). Times are Unix seconds;
+## offsets are seconds east of UTC (Sao Paulo is -10800).
+##   tz_zone(spec)             -> a zone {ok, err, kind, name, ...}; spec is "UTC" / "Z" / "GMT", a fixed offset
+##                                ("+05:30", "-0300", "+09"), a POSIX TZ rule ("EST5EDT,M3.2.0,M11.1.0", "<-03>3",
+##                                "CET-1CEST,M3.5.0,M10.5.0/3") or an IANA name read from tzdata by tz_load
+##   tz_load(name)             the IANA zone "Area/City" from the TZif file under $TZDIR, /usr/share/zoneinfo,
+##                                /usr/lib/zoneinfo, /usr/share/lib/zoneinfo or /etc/zoneinfo (Windows has no tzdata:
+##                                set TZDIR to a copy of the zoneinfo tree); ok false with err when absent or damaged
+##   tz_from_tzif(bytes, name) a zone from the bytes of a TZif file (RFC 8536, versions 1 to 4; 32- and 64-bit data,
+##                                the POSIX footer for instants after the last transition)
+##   tz_posix(rule)            a zone from a POSIX TZ rule: std offset [dst [offset] [,start[/time],end[/time]]] with
+##                                names of letters or <+-0123> quoted, Jn (1..365, February 29 never counted), n
+##                                (0..365) and Mm.w.d dates, times from -167 to 167 hours (RFC 8536 extension); a
+##                                daylight name without dates uses the US rule M3.2.0,M11.1.0
+##   tz_offset(z, t)           the offset in force at instant t
+##   tz_abbr(z, t)             the abbreviation in force ("EST", "-03", "CEST"; "UTC" or the offset text for fixed zones)
+##   tz_is_dst(z, t)           true when daylight saving time is in force
+##   tz_local(z, t)            {y, mo, d, h, mi, s} wall-clock time at t
+##   tz_iso(z, t)              "2026-11-19T10:05:00-03:00"
+##   tz_from_local(z, y, mo, d, h, mi, s)
+##                             the instant of a wall-clock time: in an overlap (clocks set back) the earlier instant,
+##                             in a gap (clocks set forward) the time is read with the offset before the gap, so it
+##                             lands after it (02:30 in a 02:00 -> 03:00 gap gives 03:30)
+use datetime
+
+fn tz_bad(err) = {ok: false, err: err, kind: "none", name: "", off: 0, abbr: "", rule: tz_norule(), data: "", tcnt: 0, tbase: 0, ibase: 0, ybase: 0, abase: 0, tsize: 0, tycnt: 0, hasrule: false}
+fn tz_norule() = {ok: false, err: "", std: "", dst: "", so: 0, dof: 0, hasdst: false, sk: 0, sm: 0, sw: 0, sd: 0, stime: 0, ek: 0, em: 0, ew: 0, ed: 0, etime: 0}
+fn tz_fixed(name, off, abbr) = {ok: true, err: "", kind: "fixed", name: name, off: off, abbr: abbr, rule: tz_norule(), data: "", tcnt: 0, tbase: 0, ibase: 0, ybase: 0, abase: 0, tsize: 0, tycnt: 0, hasrule: false}
+fn tz_mkrule(name, r) = {ok: true, err: "", kind: "posix", name: name, off: r.so, abbr: r.std, rule: r, data: "", tcnt: 0, tbase: 0, ibase: 0, ybase: 0, abase: 0, tsize: 0, tycnt: 0, hasrule: true}
+
+## --- the zone of a spec -------------------------------------------------------------------------------------------------
+fn tz_zone(spec) =
+    if spec == "UTC" or spec == "Z" or spec == "GMT" or spec == "Etc/UTC" then
+        tz_fixed(spec, 0, "UTC")
+    else if count(spec) > 0 and (at(spec, 0) == "+" or at(spec, 0) == "-") then
+        tz_fixedspec(spec)
+    else if tz_hasdigit(spec, 0) and not tz_hasslash(spec, 0) then
+        tz_posix(spec)
+    else
+        tz_load(spec)
+fn tz_fixedspec(spec) =
+    let off = dt_pzone(spec, 0) in
+    if off == 0 - 1000000 then
+        tz_bad("malformed offset '" + spec + "'")
+    else
+        tz_fixed(spec, off, dt_zext(off))
+fn tz_hasdigit(s, i) =
+    if i >= count(s) then
+        false
+    else if at(s, i) >= "0" and at(s, i) <= "9" then
+        true
+    else
+        tz_hasdigit(s, i + 1)
+fn tz_hasslash(s, i) =
+    if i >= count(s) then
+        false
+    else if at(s, i) == "/" and (i + 1 >= count(s) or at(s, i + 1) < "0" or at(s, i + 1) > "9") and tz_noncomma(s, i) then
+        true
+    else
+        tz_hasslash(s, i + 1)
+## a "/" before any "," belongs to a path (Area/City); after a "," it starts a rule time
+fn tz_noncomma(s, i) = if i < 0 then true else if at(s, i) == "," then false else tz_noncomma(s, i - 1)
+
+## --- tzdata files -------------------------------------------------------------------------------------------------------
+fn tz_dirs() = Cons(os_getenv("TZDIR"), ["/usr/share/zoneinfo", "/usr/lib/zoneinfo", "/usr/share/lib/zoneinfo", "/etc/zoneinfo"])
+fn tz_safe(name, i) =
+    if i + 1 >= count(name) then
+        true
+    else if at(name, i) == "." and at(name, i + 1) == "." then
+        false
+    else
+        tz_safe(name, i + 1)
+fn tz_load(name) =
+    if name == "" or not tz_safe(name, 0) or at(name, 0) == "/" then
+        tz_bad("invalid zone name '" + name + "'")
+    else
+        tz_find(name, tz_dirs())
+fn tz_find(name, dirs) = match dirs
+    Nil        => tz_bad("time zone '" + name + "' not found in tzdata (set TZDIR to a zoneinfo directory)")
+    Cons(d, t) => if d != "" and fs_path_exists(d + "/" + name) == 1 then
+            tz_from_tzif(fs_read_file(d + "/" + name), name)
+        else
+            tz_find(name, t)
+
+fn tz_b32(s, i) = ord_at(s, i) * 16777216 + ord_at(s, i + 1) * 65536 + ord_at(s, i + 2) * 256 + ord_at(s, i + 3)
+fn tz_s32(s, i) = let v = tz_b32(s, i) in if v >= 2147483648 then v - 4294967296 else v
+## a signed 64-bit big-endian value; the extreme sentinels are clamped to +-2^62
+fn tz_s64(s, i) =
+    let hi = tz_s32(s, i) in
+    if hi >= 1073741824 then
+        4611686018427387904
+    else if hi < 0 - 1073741824 then
+        0 - 4611686018427387904
+    else
+        hi * 4294967296 + tz_b32(s, i + 4)
+fn tz_from_tzif(b, name) =
+    if count(b) < 44 or slice(b, 0, 4) != "TZif" then
+        tz_bad("'" + name + "' is not a TZif file")
+    else
+        let v1 = tz_counts(b, 0) in
+        let v1len = 44 + v1.tcnt * 5 + v1.tycnt * 6 + v1.ccnt + v1.lcnt * 8 + v1.stdcnt + v1.utcnt in
+        if ord_at(b, 4) == 0 then
+            tz_body(b, name, 0, v1, 4, v1len)
+        else if count(b) < v1len + 44 or slice(b, v1len, v1len + 4) != "TZif" then
+            tz_bad("'" + name + "': damaged TZif (no second header)")
+        else
+            let v2 = tz_counts(b, v1len) in
+            tz_body(b, name, v1len, v2, 8, v1len + 44 + v2.tcnt * 9 + v2.tycnt * 6 + v2.ccnt + v2.lcnt * 12 + v2.stdcnt + v2.utcnt)
+fn tz_counts(b, h) = {utcnt: tz_b32(b, h + 20), stdcnt: tz_b32(b, h + 24), lcnt: tz_b32(b, h + 28), tcnt: tz_b32(b, h + 32), tycnt: tz_b32(b, h + 36), ccnt: tz_b32(b, h + 40)}
+## h: the header of the block used; sz: 4 or 8 bytes per time; e: the end of the block (the footer starts there)
+fn tz_body(b, name, h, c, sz, e) =
+    if count(b) < e or c.tycnt == 0 then
+        tz_bad("'" + name + "': damaged TZif (truncated data)")
+    else
+        let tb = h + 44 in
+        let ib = tb + c.tcnt * sz in
+        let yb = ib + c.tcnt in
+        let ab = yb + c.tycnt * 6 in
+        let foot = if sz == 8 then tz_footer(b, e) else "" in
+        let r = if foot == "" then tz_norule() else tz_rule(foot) in
+        {ok: true, err: "", kind: "tzif", name: name, off: tz_s32(b, yb), abbr: "", rule: r, data: b, tcnt: c.tcnt, tbase: tb, ibase: ib, ybase: yb, abase: ab, tsize: sz, tycnt: c.tycnt, hasrule: r.ok}
+## the POSIX rule between the two newlines after the data ("" when absent)
+fn tz_footer(b, e) = if e < count(b) and ord_at(b, e) == 10 then tz_footend(b, e + 1, e + 1) else ""
+fn tz_footend(b, st, i) =
+    if i >= count(b) then
+        ""
+    else if ord_at(b, i) == 10 then
+        slice(b, st, i)
+    else
+        tz_footend(b, st, i + 1)
+fn tz_time(z, k) = if z.tsize == 8 then tz_s64(z.data, z.tbase + k * 8) else tz_s32(z.data, z.tbase + k * 4)
+## the largest k with time(k) <= t, or -1
+fn tz_search(z, t, lo, hi) =
+    if lo > hi then
+        hi
+    else
+        let mid = (lo + hi) / 2 in
+        if tz_time(z, mid) <= t then
+            tz_search(z, t, mid + 1, hi)
+        else
+            tz_search(z, t, lo, mid - 1)
+## the local time type in force at t: {off, dst, abbr}
+fn tz_ttype(z, k) =
+    let ty = if k < z.tycnt then k else 0 in
+    let p = z.ybase + ty * 6 in
+    {off: tz_s32(z.data, p), dst: ord_at(z.data, p + 4) == 1, abbr: tz_cstr(z.data, z.abase + ord_at(z.data, p + 5), z.abase + ord_at(z.data, p + 5))}
+fn tz_cstr(b, st, i) = if i >= count(b) or ord_at(b, i) == 0 then slice(b, st, i) else tz_cstr(b, st, i + 1)
+fn tz_at(z, t) =
+    if z.kind == "fixed" then
+        {off: z.off, dst: false, abbr: z.abbr}
+    else if z.kind == "posix" then
+        tz_rat(z.rule, t)
+    else if z.kind != "tzif" then
+        {off: 0, dst: false, abbr: ""}
+    else if z.tcnt == 0 then
+        (if z.hasrule then tz_rat(z.rule, t) else tz_ttype(z, 0))
+    else if z.hasrule and t >= tz_time(z, z.tcnt - 1) then
+        tz_rat(z.rule, t)
+    else
+        let k = tz_search(z, t, 0, z.tcnt - 1) in
+        if k < 0 then
+            tz_ttype(z, 0)
+        else
+            tz_ttype(z, ord_at(z.data, z.ibase + k))
+
+## --- POSIX TZ rules ----------------------------------------------------------------------------------------------------
+fn tz_posix(spec) =
+    let r = tz_rule(spec) in
+    if r.ok then
+        tz_mkrule(spec, r)
+    else
+        tz_bad("malformed TZ rule '" + spec + "': " + r.err)
+fn tz_rbad(m) = {ok: false, err: m, std: "", dst: "", so: 0, dof: 0, hasdst: false, sk: 0, sm: 0, sw: 0, sd: 0, stime: 0, ek: 0, em: 0, ew: 0, ed: 0, etime: 0}
+## a name: letters, or anything but > between < and >: {ok, name, i}
+fn tz_name(s, i) =
+    if i < count(s) and at(s, i) == "<" then
+        let e = tz_upto(s, i + 1, ">") in
+        if e >= count(s) or e == i + 1 then
+            {ok: false, name: "", i: i}
+        else
+            {ok: true, name: slice(s, i + 1, e), i: e + 1}
+    else
+        let e = tz_letters(s, i) in
+        if e - i < 3 then
+            {ok: false, name: "", i: i}
+        else
+            {ok: true, name: slice(s, i, e), i: e}
+fn tz_upto(s, i, c) = if i >= count(s) or at(s, i) == c then i else tz_upto(s, i + 1, c)
+fn tz_isletter(c) = c >= "a" and c <= "z" or c >= "A" and c <= "Z"
+fn tz_letters(s, i) = if i < count(s) and tz_isletter(at(s, i)) then tz_letters(s, i + 1) else i
+fn tz_num(s, i, v, k) =
+    if i < count(s) and at(s, i) >= "0" and at(s, i) <= "9" then
+        tz_num(s, i + 1, v * 10 + ord_at(s, i) - 48, k + 1)
+    else
+        {v: v, i: i, k: k}
+## [+-]hh[:mm[:ss]] in seconds: {ok, v, i}; hours up to 167
+fn tz_hms(s, i0) =
+    let neg = i0 < count(s) and at(s, i0) == "-" in
+    let i = if i0 < count(s) and (at(s, i0) == "-" or at(s, i0) == "+") then i0 + 1 else i0 in
+    let h = tz_num(s, i, 0, 0) in
+    if h.k == 0 or h.k > 3 or h.v > 167 then
+        {ok: false, v: 0, i: i0}
+    else
+        let m = if h.i < count(s) and at(s, h.i) == ":" then tz_num(s, h.i + 1, 0, 0) else {v: 0, i: h.i, k: 2} in
+        let sx = if m.i < count(s) and at(s, m.i) == ":" and m.k > 0 then tz_num(s, m.i + 1, 0, 0) else {v: 0, i: m.i, k: 2} in
+        if m.k == 0 or m.v > 59 or sx.k == 0 or sx.v > 59 then
+            {ok: false, v: 0, i: i0}
+        else
+            {ok: true, v: (if neg then 0 - 1 else 1) * (h.v * 3600 + m.v * 60 + sx.v), i: sx.i}
+fn tz_rule(s) =
+    let a = tz_name(s, 0) in
+    let o = tz_hms(s, a.i) in
+    if not a.ok then
+        tz_rbad("no standard-time name")
+    else if not o.ok then
+        tz_rbad("no standard-time offset")
+    else if o.i >= count(s) then
+        {ok: true, err: "", std: a.name, dst: "", so: 0 - o.v, dof: 0 - o.v, hasdst: false, sk: 0, sm: 0, sw: 0, sd: 0, stime: 0, ek: 0, em: 0, ew: 0, ed: 0, etime: 0}
+    else
+        let b = tz_name(s, o.i) in
+        if not b.ok then
+            tz_rbad("text after the standard-time offset")
+        else
+            let hasdo = b.i < count(s) and at(s, b.i) != "," in
+            let d = if hasdo then tz_hms(s, b.i) else {ok: true, v: o.v - 3600, i: b.i} in
+            if not d.ok then
+                tz_rbad("malformed daylight offset")
+            else if d.i >= count(s) then
+                tz_rdates(a.name, b.name, 0 - o.v, 0 - d.v, "M3.2.0,M11.1.0", 0)
+            else if at(s, d.i) != "," then
+                tz_rbad("expected ',' before the rule dates")
+            else
+                tz_rdates(a.name, b.name, 0 - o.v, 0 - d.v, s, d.i + 1)
+## start and end dates: {k (1 Jn, 2 n, 3 Mm.w.d), m, w, d, time, i}
+fn tz_rdates(sn, dn, so, dof, s, i) =
+    let p = tz_date(s, i) in
+    if not p.ok or p.i >= count(s) or at(s, p.i) != "," then
+        tz_rbad("malformed start date")
+    else
+        let q = tz_date(s, p.i + 1) in
+        if not q.ok or q.i != count(s) then
+            tz_rbad("malformed end date")
+        else
+            {ok: true, err: "", std: sn, dst: dn, so: so, dof: dof, hasdst: true, sk: p.k, sm: p.m, sw: p.w, sd: p.d, stime: p.time, ek: q.k, em: q.m, ew: q.w, ed: q.d, etime: q.time}
+fn tz_date(s, i) =
+    let d = tz_date0(s, i) in
+    if not d.ok then
+        d
+    else if d.i < count(s) and at(s, d.i) == "/" then
+        (let t = tz_hms(s, d.i + 1) in if t.ok then {ok: true, k: d.k, m: d.m, w: d.w, d: d.d, time: t.v, i: t.i} else {ok: false, k: 0, m: 0, w: 0, d: 0, time: 0, i: i})
+    else
+        d
+fn tz_dbad(i) = {ok: false, k: 0, m: 0, w: 0, d: 0, time: 0, i: i}
+fn tz_date0(s, i) =
+    if i < count(s) and at(s, i) == "J" then
+        let n = tz_num(s, i + 1, 0, 0) in
+        if n.k == 0 or n.v < 1 or n.v > 365 then
+            tz_dbad(i)
+        else
+            {ok: true, k: 1, m: 0, w: 0, d: n.v, time: 7200, i: n.i}
+    else if i < count(s) and at(s, i) == "M" then
+        tz_mdate(s, i)
+    else
+        let n = tz_num(s, i, 0, 0) in
+        if n.k == 0 or n.v > 365 then
+            tz_dbad(i)
+        else
+            {ok: true, k: 2, m: 0, w: 0, d: n.v, time: 7200, i: n.i}
+fn tz_mdate(s, i) =
+    let m = tz_num(s, i + 1, 0, 0) in
+    let w = if m.i < count(s) and at(s, m.i) == "." then tz_num(s, m.i + 1, 0, 0) else {v: 0, i: m.i, k: 0} in
+    let d = if w.i < count(s) and at(s, w.i) == "." then tz_num(s, w.i + 1, 0, 0) else {v: 0, i: w.i, k: 0} in
+    if m.k == 0 or m.v < 1 or m.v > 12 or w.k == 0 or w.v < 1 or w.v > 5 or d.k == 0 or d.v > 6 then
+        tz_dbad(i)
+    else
+        {ok: true, k: 3, m: m.v, w: w.v, d: d.v, time: 7200, i: d.i}
+## the local (wall-clock) second of the rule date in year y, measured from 1970-01-01 00:00 local
+fn tz_rday(k, m, w, d, y) =
+    if k == 1 then
+        dt_days_from_civil(y, 1, 1) + d - 1 + (if dt_leap(y) and d >= 60 then 1 else 0)
+    else if k == 2 then
+        dt_days_from_civil(y, 1, 1) + d
+    else
+        tz_mday(y, m, w, d)
+## day d (0 Sunday) of week w (5 = the last) of month m
+fn tz_mday(y, m, w, d) =
+    let first = dt_days_from_civil(y, m, 1) in
+    let fw = dt_weekday(first * 86400) in
+    let day1 = first + (d - fw + 7) % 7 in
+    let cand = day1 + (w - 1) * 7 in
+    if w == 5 and cand >= first + dt_days_in_month(y, m) then
+        cand - 7
+    else if w == 5 then
+        tz_lastw(cand, first + dt_days_in_month(y, m))
+    else
+        cand
+fn tz_lastw(c, lim) = if c + 7 < lim then tz_lastw(c + 7, lim) else c
+fn tz_rat(r, t) =
+    if not r.hasdst then
+        {off: r.so, dst: false, abbr: r.std}
+    else
+        let y = (dt_from_unix(t + r.so)).y in
+        let st = tz_rday(r.sk, r.sm, r.sw, r.sd, y) * 86400 + r.stime - r.so in
+        let en = tz_rday(r.ek, r.em, r.ew, r.ed, y) * 86400 + r.etime - r.dof in
+        let indst = if st < en then t >= st and t < en else t < en or t >= st in
+        if indst then {off: r.dof, dst: true, abbr: r.dst} else {off: r.so, dst: false, abbr: r.std}
+
+## --- the API -------------------------------------------------------------------------------------------------------------
+fn tz_offset(z, t) = (tz_at(z, t)).off
+fn tz_abbr(z, t) = (tz_at(z, t)).abbr
+fn tz_is_dst(z, t) = (tz_at(z, t)).dst
+fn tz_local(z, t) = dt_from_unix(t + tz_offset(z, t))
+fn tz_iso(z, t) = let off = tz_offset(z, t) in dt_fmt(dt_from_unix(t + off)) + dt_zext(off)
+fn tz_from_local(z, y, mo, d, h, mi, s) =
+    let lt = dt_to_unix(y, mo, d, h, mi, s) in
+    let a = tz_offset(z, lt - 129600) in
+    let b = tz_offset(z, lt + 129600) in
+    let ta = lt - a in
+    let tb = lt - b in
+    let va = tz_offset(z, ta) == a in
+    let vb = tz_offset(z, tb) == b in
+    if va and vb then
+        (if ta < tb then ta else tb)
+    else if vb then
+        tb
+    else
+        ta

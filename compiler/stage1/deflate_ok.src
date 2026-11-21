@@ -25,6 +25,27 @@ fn rt(s) = let b = buf_from_str(s) in let d = deflate_buf(b, 0, buf_len(b)) in l
 fn test_round_trip() = rt("") and rt("a") and rt("hello hello hello hello") and rt(rep("x", 1000)) and rt(rep("abcdefghij", 500) + "tail")
 fn test_compresses() = let s = rep("the same line again and again" + chr(10), 200) in let b = buf_from_str(s) in let d = deflate_buf(b, 0, buf_len(b)) in d.n * 10 < buf_len(b)
 fn test_zlib_gzip_round_trip() = let s = rep("zlib and gzip wrappers ", 80) in let b = buf_from_str(s) in let z = zlib_compress(b, buf_len(b)) in let r = zlib_decompress(z.buf, z.n) in r.ok == 1 and buf_to_str(r.buf, 0, r.n) == s and gunzip_str(gzip_str(s)) == s
+## the block form deflate_buf chose: bits 1-2 of the first byte (0 stored, 1 fixed, 2 dynamic)
+fn btype(d) = bit_and(bit_shr(buf_get(d.buf, 0), 1), 3)
+fn lcg(b, i, n, x) = if i >= n then b else let w = buf_set(b, i, bit_shr(x, 16) % 256) in lcg(b, i + 1, n, (x * 1103515245 + 12345) % 2147483648)
+fn skew(b, i, n, x) = if i >= n then b else let w = buf_set(b, i, if bit_shr(x, 16) % 7 == 0 then 97 + bit_shr(x, 8) % 26 else 101) in skew(b, i + 1, n, (x * 1103515245 + 12345) % 2147483648)
+fn rtb(b) = let d = deflate_buf(b, 0, buf_len(b)) in let r = inflate_buf(d.buf, 0, d.n) in r.ok == 1 and bufeq(r.buf, r.n, b, buf_len(b))
+## skewed bytes: the dynamic code wins and beats the fixed code by far (zlib -9 writes 4007 bytes for the same input)
+fn test_dynamic_block() = let b = skew(buf_new(20000), 0, 20000, 3) in let d = deflate_buf(b, 0, 20000) in btype(d) == 2 and d.n < 5000 and rtb(b)
+## random bytes: stored blocks, 5 bytes of overhead per 65535 bytes (two blocks here)
+fn test_stored_blocks() = let b = lcg(buf_new(70000), 0, 70000, 7) in let d = deflate_buf(b, 0, 70000) in btype(d) == 0 and d.n == 70010 and rtb(b) and (zlib_decompress((zlib_compress(b, 70000)).buf, 70016)).ok == 1
+fn test_small_inputs() = btype(deflate_buf(buf_from_str("abcabcabcabcabc fixed huffman"), 0, 29)) == 1 and rtb(buf_new(0)) and rtb(buf_from_str("a")) and rtb(buf_from_str("ab")) and (deflate_buf(buf_new(0), 0, 0)).n <= 5
+## code lengths stay within the limit for frequencies that would build a deeper tree (Fibonacci weights), and the
+## code is complete (Kraft sum exactly 1)
+fn fibs(f, i, n, a, b) = if i >= n then f else let z = dz_w32(f, i, a) in fibs(f, i + 1, n, b, a + b)
+fn kraft(l, i, n, acc) = if i >= n then acc else kraft(l, i + 1, n, acc + (if buf_get(l, i) == 0 then 0 else bit_shl(1, 15 - buf_get(l, i))))
+fn maxl(l, i, n, m) = if i >= n then m else maxl(l, i + 1, n, if buf_get(l, i) > m then buf_get(l, i) else m)
+fn test_length_limit() = let f = fibs(buf_new(30 * 4), 0, 30, 1, 1) in let l = hf_lengths(f, 30, 15) in maxl(l, 0, 30, 0) == 15 and kraft(l, 0, 30, 0) == 32768 and kraft(hf_lengths(f, 30, 7), 0, 30, 0) == 32768 and maxl(hf_lengths(f, 30, 7), 0, 30, 0) == 7 and maxl(hf_lengths(fibs(buf_new(19 * 4), 0, 19, 1, 1), 19, 7), 0, 19, 0) <= 7
+## the canonical codes of RFC 1951 3.2.2's example (lengths 3 3 3 3 3 2 4 4 -> 010 011 100 101 110 00 1110 1111)
+fn test_canonical_codes() = let l = buf_new(8) in let z = setl(l, [3, 3, 3, 3, 3, 2, 4, 4], 0) in let c = hf_codes(l, 8) in dz_r32(c, 0) == 2 and dz_r32(c, 4) == 6 and dz_r32(c, 5) == 0 and dz_r32(c, 6) == 14 and dz_r32(c, 7) == 15
+fn setl(l, xs, i) = match xs
+    Nil        => l
+    Cons(h, t) => let w = buf_set(l, i, h) in setl(l, t, i + 1)
 ## a distance past 4 KiB and binary bytes
 fn test_far_match() = let all = allbytes() in let big = buf_new(256 * 40) in let f = fill40(big, all, 0) in let d = deflate_buf(big, 0, buf_len(big)) in let r = inflate_buf(d.buf, 0, d.n) in r.ok == 1 and bufeq(r.buf, r.n, big, buf_len(big))
 fn fill40(big, all, k) = if k >= 40 then 0 else let c = buf_copy(big, k * 256, all, 0, 256) in fill40(big, all, k + 1)

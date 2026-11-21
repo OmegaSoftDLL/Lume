@@ -259,6 +259,13 @@ Design decisions:
   `/tmp/...` is the Windows temporary directory, `/dev/null` is `NUL`, `/dev/stdin|stdout|stderr` are fds 0-2,
   `/dev/urandom` is `BCryptGenRandom`. Lume code written for Linux runs unchanged, including the repository test
   that requires `fs_current_dir()` to start with `/`.
+- **flock is advisory, as on Linux.** Windows byte-range locks are mandatory, so `flock` locks one byte at offset
+  2^62 (beyond any real data), not the file's bytes: flock callers still exclude each other, and a reader's
+  `LOCK_SH` (every `fs_read_file`) no longer fails another process's writes with `ERROR_LOCK_VIOLATION` (a child
+  of `os_spawn_capture` polled by its parent used to lose output). Test: `tests/runtime/spawn_capture_concurrent_ok.src`.
+- **One capture file for both streams.** When the `out` and `err` paths of `os_run_capture`, `os_spawn_capture`,
+  `os_run_capture_timeout` and `os_run_input_capture*` are the same string, the child's fd 2 is its fd 1 (as
+  `> f 2>&1`); two opens had two file offsets and the streams overwrote each other, on Linux too.
 - **Processes.** The `os_run*` builtins (fork + open/dup2 + execve) use vfork semantics: the "child" runs inside
   the process until `execve`, then `CreateProcessW` with the redirected handles and the envp, and the parent resumes
   after its `fork` with the real pid; this is exact and costs no copy. `os_fork` (rdi = 'FORK', which Linux ignores)

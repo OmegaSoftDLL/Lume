@@ -263,7 +263,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
 ## 4.4 Autonomous Verification & Self-Healing Commands
 - `lume prove <file.src>`              Prove all contracts and laws (`QF_LIA` / `QF_ALIA`).
 - `lume verify [--jobs=N] <file.src>...`  check, test, prove, the format check and certify many files; per-file cache by bundle hash; each step timed.
-- `lume pkg publish|add|install [--store=DIR]` package versions: store with tests, `^`/`~` requirements, lume_modules/, lume.lock;
+- `lume pkg publish|add|resolve|install [--store=DIR] [--locked|--update] [--allow-failing]` package versions: store with tests and proofs, `^`/`~`/`>=`/`<` requirements, transitive resolution, lume_modules/, lume.lock honoured on later installs, refused when a package's own tests or proofs fail;
   `lume pkg audit [dir]` checks the lock file hashes and the package proof certificate.
 - `use std/hash|csv|utf8|datetime|regex|deflate|http|tls`  standard library: digests, CSV, UTF-8, dates and zones, regex, gzip, HTTP and HTTPS.
   Builtin contracts: `buf_bits_write` is `p + n` or `-1`, `buf_get` 0..255, `buf_len` / `count` >= 0 (when the
@@ -808,7 +808,7 @@ it (`a/main.src` -> `a/m.src`, inside `d/q.src` -> `d/m.src`). Record fields are
                                     functions, and on a run-time error, and takes text commands from the file,
                                     from each -x (in order) or from standard input: break NAME | break FILE:LINE,
                                     delete [NAME], continue, step, next, finish, bt (each frame's arguments),
-                                    args, locals, print NAME, frame N, up, down, quit, help. It writes to stderr;
+                                    args, locals, print NAME, frame N, up, down, mark, output FILE, quit, help. It writes to stderr;
                                     the program's output is unchanged. When the commands run out, the program
                                     runs to its end. Steps go from call to call (a function's start or return),
                                     not expression by expression; nothing is inlined in a debug build.
@@ -1233,7 +1233,7 @@ listed here is refused (`unknown native driver command`, `unknown subcommand`, `
   lume verify [--jobs <value>] <source.src>...
   lume verify-cert [--json] [--check-source] [source.src] <certificate.json>
   lume proof-cache <self-test|check|store> [--require-all-hits] [source.src] [cache-dir]
-  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add> [--store <value>] [dir]
+  lume pkg <init|check|manifest|lock|verify|tree|check-rot|publish|install|add|resolve> [--store <value>] [--locked] [--update] [--allow-failing] [dir]
   lume pkg <audit> (served by the POSIX shim, scripts/lume_legacy.sh)
   lume registry <publish|resolve|discover> [--json] [--store <value>] [--target <value>] [--adapter <value>] [--source <value>] [--proof <value>] [--tests <value>] [--cid <value>] [--capability <value>] [--contract-signature <value>]
   lume agent <check|compile|fill|prove|ast|expand|symbols|eval|witness|repair|impact|hashes|grammar|project|bind|skeleton|cegis|synthesize|trace|heal|morph|kernel|c-export|replay|lineage|patch|patch-fn|diff-semver|equiv|check-rot> [--json] <source.src> [arguments] (the name of any `sentience` command is accepted in place of the subcommand)

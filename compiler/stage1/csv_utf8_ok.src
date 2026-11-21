@@ -21,4 +21,27 @@ fn bytes_n(xs, n) = match xs
 fn bytes_go(b, xs, i) = match xs
     Nil        => buf_to_str(b, 0, buf_len(b))
     Cons(h, t) => let w = buf_set(b, i, h) in bytes_go(b, t, i + 1)
-fn test_utf8_valid() = utf8_valid("ação €") and utf8_valid(bytes([192, 128])) == false and utf8_valid(bytes([237, 160, 128])) == false and utf8_valid(bytes([244, 144, 128, 128])) == false and utf8_len(bytes([97, 255, 98])) == 3
+## --- CSV: the strict reading, stray text, headers, long quoted fields ---
+fn test_csv_checked_ok() = let r = csv_parse_checked(q() + "a" + q() + q() + "b" + q() + ",c" + crlf() + "d,e") in r.ok and r.rows == [["a" + q() + "b", "c"], ["d", "e"]] and r.err == ""
+fn test_csv_checked_unterminated() = let r = csv_parse_checked("x,y" + chr(10) + "1," + q() + "open" + chr(10) + "more") in r.ok == false and r.err == "unterminated quoted field" and r.line == 2
+fn test_csv_checked_stray() = let r = csv_parse_checked("a,b" + chr(10) + "c,d" + chr(10) + q() + "x" + q() + "y,z") in r.ok == false and r.err == "text after a closing quote" and r.line == 3
+fn test_csv_lenient_stray() = csv_parse(q() + "a" + q() + "b,c" + chr(10) + "d") == [["ab", "c"], ["d"]] and csv_parse(q() + "open,x") == [["open,x"]]
+fn test_csv_bom_and_sep() = let r = csv_parse_checked_sep(bytes([239, 187, 191]) + "a;b" + chr(10) + "1;2", ";") in r.ok and r.rows == [["a", "b"], ["1", "2"]]
+fn test_csv_header() = let rows = csv_parse("name,age" + crlf() + "Ana,41" + crlf()) in csv_index(csv_field_row(rows, 0), "age") == 1 and csv_get(csv_field_row(rows, 0), csv_field_row(rows, 1), "name") == "Ana" and csv_get(csv_field_row(rows, 0), csv_field_row(rows, 1), "zip") == "" and csv_index(["a"], "b") == 0 - 1
+fn csv_field_row(rows, k) = match rows
+    Nil        => Nil
+    Cons(h, t) => if k == 0 then h else csv_field_row(t, k - 1)
+fn test_csv_empty_fields() = csv_parse(",," + chr(10) + q() + q() + ",x") == [["", "", ""], ["", "x"]] and csv_format([["", "a b", ""]]) == ",a b," + crlf() and csv_format([Nil]) == crlf()
+fn rep(s, k) = if k == 0 then "" else s + rep(s, k - 1)
+fn test_csv_long_quoted() = let f = rep("ab" + q() + "c,d" + chr(10), 400) in let rows = csv_parse(csv_format([[f, "z"]])) in rows == [[f, "z"]] and count(csv_format([[f]])) == count(f) + 400 + 4
+## --- UTF-8: walking, checking, repairing, UTF-16, encoding edge cases, case mapping beyond Latin-1 ---
+fn test_utf8_next_walk() = let s = "a€𝄞" in (utf8_next(s, 0)).cp == 97 and (utf8_next(s, 1)).cp == 8364 and (utf8_next(s, 1)).len == 3 and (utf8_next(s, 4)).len == 4 and (utf8_next(s, 8)).len == 0 and (utf8_next(s, 8)).cp == 0 - 1 and (utf8_next(bytes([255]), 0)).cp == 65533
+fn test_utf8_fold_offset() = utf8_fold("aç€", 0, fn(acc, cp) => acc + cp) == 97 + 231 + 8364 and utf8_fold("", 5, fn(acc, cp) => acc + 1) == 5 and utf8_offset("aç€x", 3) == 6 and utf8_offset("ab", 7) == 2
+fn test_utf8_check() = utf8_check("ação €𝄞") == 0 - 1 and utf8_check("ab" + bytes([192, 128])) == 2 and utf8_check(bytes([97, 237, 160, 128])) == 1 and utf8_check("a" + bytes([226, 130])) == 1 and utf8_check("") == 0 - 1
+fn test_utf8_sanitize() = utf8_sanitize("ok ç") == "ok ç" and utf8_sanitize(bytes([97, 255, 98])) == "a" + utf8_chr(65533) + "b" and utf8_valid(utf8_sanitize(bytes([192, 128, 237, 160, 128, 244, 144, 128, 128]))) and utf8_len(utf8_sanitize(bytes([192, 128]))) == 2
+fn test_utf8_encode_edges() = utf8_encode([0]) == chr(0) and utf8_encode([55296, 97]) == utf8_chr(65533) + "a" and utf8_encode([1114112]) == utf8_chr(65533) and utf8_encode_cp(1114111) == utf8_chr(1114111) and utf8_encode_cp(57343) == "" and utf8_encode_cp(0 - 1) == "" and count(utf8_encode_cp(0)) == 1 and utf8_encode_cp(2047) == utf8_chr(2047) and utf8_encode_cp(2048) == utf8_chr(2048) and utf8_encode_cp(65535) == utf8_chr(65535) and utf8_encode_cp(65536) == utf8_chr(65536)
+fn test_utf8_utf16() = utf8_to_utf16("A€𝄞") == [65, 8364, 55348, 56606] and utf8_from_utf16([65, 8364, 55348, 56606]) == "A€𝄞" and utf8_from_utf16([55348]) == utf8_chr(65533) and utf8_from_utf16([56606, 65]) == utf8_chr(65533) + "A" and utf8_from_utf16([55348, 66]) == utf8_chr(65533) + "B" and utf8_to_utf16("") == Nil
+fn test_utf8_case_extended() = utf8_upper("ÿ") == "Ÿ" and utf8_lower("ŁÓDŹ") == "łódź" and utf8_upper("łódź") == "ŁÓDŹ" and utf8_upper("ąčęšžőű") == "ĄČĘŠŽŐŰ" and utf8_lower("İI") == "ii" and utf8_upper("ıi") == "II"
+fn test_utf8_case_greek_cyrillic() = utf8_upper("αβγ ως") == "ΑΒΓ ΩΣ" and utf8_lower("ΑΒΓ Ω") == "αβγ ω" and utf8_upper("άέήίόύώ") == "ΆΈΉΊΌΎΏ" and utf8_lower("ΆΈΉΊΌΎΏ") == "άέήίόύώ" and utf8_upper("привет ёж") == "ПРИВЕТ ЁЖ" and utf8_lower("МОСКВА Ї") == "москва ї" and utf8_upper("ѣ") == "Ѣ"
+fn test_utf8_long() = let s = rep("ação€", 3000) in utf8_len(s) == 15000 and utf8_encode(utf8_decode(s)) == s and utf8_upper(s) == rep("AÇÃO€", 3000)
+fn test_utf8_valid() =utf8_valid("ação €") and utf8_valid(bytes([192, 128])) == false and utf8_valid(bytes([237, 160, 128])) == false and utf8_valid(bytes([244, 144, 128, 128])) == false and utf8_len(bytes([97, 255, 98])) == 3

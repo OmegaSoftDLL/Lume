@@ -1,0 +1,149 @@
+## Package versions, the resolver and lume.lock (item 19): the pure functions of lpkg.src, then a whole
+## publish / install / lock / refuse scenario through the `lume pkg` command line.
+use lpkg
+use hostio
+
+## --- versions and requirements -------------------------------------------------------------------------------------
+fn test_versions_parse() = lpk_ver("1.2.3") == 1002003 and lpk_ver("1.2") == 1002000 and lpk_ver("3") == 3000000 and lpk_ver("0.0.1") == 1
+fn test_versions_malformed() = lpk_ver("1.x") == 0 - 1 and lpk_ver("1.2.3.4") == 0 - 1 and lpk_ver("") == 0 - 1 and lpk_ver("1000.0.0") == 0 - 1 and lpk_ver("1.2.3-beta") == 0 - 1 and lpk_ver("1-2") == 0 - 1
+fn test_caret_and_tilde() = lpk_allows("^1.2", lpk_ver("1.5.0")) and not lpk_allows("^1.2", lpk_ver("2.0.0")) and not lpk_allows("^1.2", lpk_ver("1.1.9")) and lpk_allows("~1.2.3", lpk_ver("1.2.9")) and not lpk_allows("~1.2.3", lpk_ver("1.3.0")) and not lpk_allows("~1.2.3", lpk_ver("1.2.2"))
+fn test_ranges_and_exact() = lpk_allows(">=1.2, <2", lpk_ver("1.9.9")) and not lpk_allows(">=1.2, <2", lpk_ver("2.0.0")) and not lpk_allows(">=1.2, <2", lpk_ver("1.1.0")) and lpk_allows("1.2.3", lpk_ver("1.2.3")) and not lpk_allows("1.2.3", lpk_ver("1.2.4")) and lpk_allows("*", lpk_ver("9.9.9")) and lpk_allows("<=1.0", lpk_ver("1.0.0")) and not lpk_allows(">1.0", lpk_ver("1.0.0"))
+fn test_malformed_requirement() = not lpk_req_ok("^x") and not lpk_req_ok(">=1.2, <two") and lpk_req_ok(">=1.2, <2") and lpk_req_ok("*") and not lpk_allows("^1.2", 0 - 1)
+
+## --- manifest ----------------------------------------------------------------------------------------------------
+fn pt_toml() = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nutil = \"^1\"\n"
+fn test_manifest_deps_and_add() =
+    let t2 = lpk_set_dep(pt_toml(), "base", "~1.0.0") in
+    let t3 = lpk_set_dep(t2, "util", "^2") in
+    let ds = lpk_deps(t3) in
+    lpk_len(ds) == 2 and pt_dep_req(ds, "base") == "~1.0.0" and pt_dep_req(ds, "util") == "^2" and lpk_toml(t3, "package", "name") == "app"
+fn pt_dep_req(ds, name) = match ds
+    Nil        => ""
+    Cons(d, t) => if d.name == name then d.req else pt_dep_req(t, name)
+
+## --- the resolver ----------------------------------------------------------------------------------------------------
+fn pt_dep(name, req) = {name: name, req: req}
+fn pt_e(name, ver, deps) = {name: name, ver: ver, deps: deps}
+fn pt_cat() = Cons(pt_e("base", "1.0.0", Nil), Cons(pt_e("base", "1.0.5", Nil), Cons(pt_e("base", "1.1.0", Nil), Cons(pt_e("base", "2.0.0", Nil), Cons(pt_e("util", "1.0.0", Cons(pt_dep("base", "^1.0"), Nil)), Cons(pt_e("old", "1.0.0", Cons(pt_dep("base", "~1.0.0"), Nil)), Nil))))))
+fn pt_lock(name, ver) = {name: name, ver: ver, hash: "h-" + name}
+fn test_resolve_transitive_highest() =
+    let r = lpk_resolve(Cons(pt_dep("util", "^1"), Nil), pt_cat(), Nil, false) in
+    r.ok and lpk_plan(r.picks) == "base 1.1.0\nutil 1.0.0\n"
+## a package picked in a later round narrows a version picked earlier: base ^1.0 alone gives 1.1.0, old needs ~1.0.0
+fn test_resolve_settles_on_narrower() =
+    let r = lpk_resolve(Cons(pt_dep("base", "^1.0"), Cons(pt_dep("old", "*"), Nil)), pt_cat(), Nil, false) in
+    r.ok and lpk_plan(r.picks) == "base 1.0.5\nold 1.0.0\n"
+fn test_resolve_prefers_lock() =
+    let r = lpk_resolve(Cons(pt_dep("util", "^1"), Nil), pt_cat(), Cons(pt_lock("base", "1.0.0"), Cons(pt_lock("util", "1.0.0"), Nil)), false) in
+    r.ok and lpk_plan(r.picks) == "base 1.0.0 (lume.lock)\nutil 1.0.0 (lume.lock)\n"
+fn test_resolve_update_ignores_lock() =
+    let r = lpk_resolve(Cons(pt_dep("util", "^1"), Nil), pt_cat(), Cons(pt_lock("base", "1.0.0"), Nil), true) in
+    r.ok and lpk_plan(r.picks) == "base 1.1.0\nutil 1.0.0\n"
+fn test_resolve_lock_outside_requirement() =
+    let r = lpk_resolve(Cons(pt_dep("base", ">=1.1"), Nil), pt_cat(), Cons(pt_lock("base", "1.0.0"), Nil), false) in
+    r.ok and lpk_plan(r.picks) == "base 2.0.0\n"
+fn test_resolve_conflict_names_every_requirement() =
+    let r = lpk_resolve(Cons(pt_dep("base", "^2"), Cons(pt_dep("util", "*"), Nil)), pt_cat(), Nil, false) in
+    not r.ok and lpk_contains(r.err, "no stored version of base meets every requirement") and lpk_contains(r.err, "\"^2\" (lume.toml)") and lpk_contains(r.err, "\"^1.0\" (util 1.0.0)") and lpk_contains(r.err, "stored: 1.0.0 1.0.5 1.1.0 2.0.0")
+fn test_resolve_missing_package() =
+    let r = lpk_resolve(Cons(pt_dep("nothere", "*"), Nil), pt_cat(), Nil, false) in
+    not r.ok and r.err == "nothere is not in the store (required by \"*\" (lume.toml))"
+fn test_resolve_malformed() =
+    let r = lpk_resolve(Cons(pt_dep("base", "^one"), Nil), pt_cat(), Nil, false) in
+    not r.ok and lpk_contains(r.err, "malformed requirement \"^one\" for base")
+fn test_resolve_empty() =
+    let r = lpk_resolve(Nil, pt_cat(), Cons(pt_lock("base", "1.0.0"), Nil), false) in
+    r.ok and lpk_len(r.picks) == 0
+
+## --- lume.lock -------------------------------------------------------------------------------------------------------
+fn pt_entries() = Cons({name: "base", ver: "1.0.0", hash: "aa11"}, Cons({name: "util", ver: "1.2.3", hash: "bb22"}, Nil))
+fn pt_lock_text() = "# lume.lock\nversion = 1\nmanifest = {\"name\":\"app\",\"deps\":[\"x\"]}\nmodule \"app.src\" sha256 = \"00\"\n" + lpk_lock_block(pt_entries())
+fn test_lock_round_trip() =
+    let back = lpk_lock_parse(pt_lock_text()) in
+    lpk_lock_block(back) == lpk_lock_block(pt_entries()) and lpk_lock_ver(back, "util") == "1.2.3" and lpk_lock_hash(back, "base") == "aa11" and lpk_lock_ver(back, "app") == ""
+fn test_lock_block_format() = lpk_lock_block(pt_entries()) == "[packages]\nbase 1.0.0 aa11\nutil 1.2.3 bb22\n" and lpk_lock_block(Nil) == "" and lpk_len(lpk_lock_parse("version = 1\n")) == 0
+fn pt_pick(name, ver) = {name: name, ver: ver, locked: false}
+fn test_locked_diff() =
+    let locks = lpk_lock_parse(pt_lock_text()) in
+    lpk_locked_diff(Cons(pt_pick("base", "1.0.0"), Cons(pt_pick("util", "1.2.3"), Nil)), locks) == "" and lpk_locked_diff(Cons(pt_pick("base", "1.1.0"), Cons(pt_pick("util", "1.2.3"), Nil)), locks) == "base is locked at 1.0.0 but the requirements now give 1.1.0" and lpk_locked_diff(Cons(pt_pick("base", "1.0.0"), Nil), locks) == "util 1.2.3 is in lume.lock but no longer required" and lpk_locked_diff(Cons(pt_pick("base", "1.0.0"), Cons(pt_pick("new", "1.0.0"), Cons(pt_pick("util", "1.2.3"), Nil))), locks) == "new 1.0.0 is not in lume.lock"
+fn test_contract_detection() = lpk_has_contracts("fn f(x: int) -> int ensures result > x = x + 1\n") and lpk_has_contracts("law l(x: int) = x == x\n") and not lpk_has_contracts("fn f(x: int) -> int = x\n") and lpk_has_tests("fn test_a() = true\n")
+
+## --- the command line: publish, install with the lock, --locked, --update, refused installs -------------------------
+## the driver that runs this test (it exports LUME_DRIVER), else the one beside LUME_BIN_DIR's tools, else the install
+fn pt_lume() =
+    let a = os_getenv("LUME_DRIVER") in
+    if a != "" and fs_path_exists(a) == 1 then
+        a
+    else
+        let d = os_getenv("LUME_BIN_DIR") in
+        let p = hio_exe_path(hio_posix(d) + "/lume_driver") in
+        if d != "" and fs_path_exists(p) == 1 then
+            p
+        else
+            hio_exe_path(hio_lume_bin())
+fn pt_run(w, args) =
+    let rc = os_run_capture_timeout(pt_lume(), Cons("pkg", args), w + "/out.txt", w + "/err.txt", 1800000) in
+    rc
+fn pt_pkg(dir, name, ver, deps, src) =
+    let m = hio_mkdir_p(dir) in
+    let a = fs_write_sync(dir + "/lume.toml", "[package]\nname = \"" + name + "\"\nversion = \"" + ver + "\"\nedition = \"2026\"\n\n[dependencies]\n" + deps) in
+    fs_write_sync(dir + "/" + name + ".src", src)
+## a package put into the store by hand (publish would refuse it: its checks fail)
+fn pt_stored(store, name, ver, src) =
+    let d = store + "/" + name + "/" + ver in
+    let p = pt_pkg(d, name, ver, "", src) in
+    fs_write_sync(d + "/PKG.sha256", lpk_hash(d, lpk_sort(Cons("lume.toml", Cons(name + ".src", Nil)))) + "\n")
+fn pt_lockv(w, name) = lpk_lock_ver(lpk_lock_parse(fs_read_file(w + "/app/lume.lock")), name)
+fn pt_fail(step, w) = "step " + step + ": " + fs_read_file(w + "/out.txt") + fs_read_file(w + "/err.txt")
+fn pt_setup(w) =
+    let r = hio_remove_tree(w) in
+    let m = hio_mkdir_p(w) in
+    let b1 = pt_pkg(w + "/src/base1", "base", "1.0.0", "", "fn b_one() -> int = 1\nfn test_one() = b_one() == 1\n") in
+    let b2 = pt_pkg(w + "/src/base2", "base", "1.1.0", "", "fn b_one() -> int = 1\nfn b_two() -> int = 2\nfn test_two() = b_two() == 2\n") in
+    let u = pt_pkg(w + "/src/util", "util", "1.0.0", "base = \"^1.0\"\n", "use base\nfn u_three() -> int = b_one() + 2\nfn test_three() = u_three() == 3\n") in
+    let bad = pt_pkg(w + "/src/bad", "bad", "1.0.0", "", "fn bad_v() -> int = 1\nfn test_bad() = bad_v() == 2\n") in
+    let f = pt_stored(w + "/store", "flaky", "1.0.0", "fn fl() -> int = 1\nfn test_fl() = fl() == 2\n") in
+    let l = pt_stored(w + "/store", "liar", "1.0.0", "fn li(x: int) -> int ensures result > x = x\n") in
+    pt_pkg(w + "/app", "app", "0.1.0", "util = \"^1\"\n", "fn a() -> int = 0\n")
+fn pt_scenario(w) =
+    let s = pt_setup(w) in
+    let st = "--store=" + w + "/store" in
+    if pt_run(w, Cons("publish", Cons(w + "/src/bad", Cons(st, Nil)))) == 0 or fs_path_exists(w + "/store/bad") == 1 then
+        pt_fail("publish must refuse a package whose tests fail", w)
+    else if pt_run(w, Cons("publish", Cons(w + "/src/base1", Cons(st, Nil)))) != 0 then
+        pt_fail("publish base 1.0.0", w)
+    else if pt_run(w, Cons("publish", Cons(w + "/src/util", Cons(st, Nil)))) != 0 then
+        pt_fail("publish util 1.0.0", w)
+    else if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Nil)))) != 0 then
+        pt_fail("first install", w)
+    else if pt_lockv(w, "base") != "1.0.0" or pt_lockv(w, "util") != "1.0.0" or fs_path_exists(w + "/app/lume_modules/base/base.src") == 0 then
+        pt_fail("first install must lock util and its dependency base", w)
+    else if pt_run(w, Cons("publish", Cons(w + "/src/base2", Cons(st, Nil)))) != 0 then
+        pt_fail("publish base 1.1.0", w)
+    else if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Nil)))) != 0 or pt_lockv(w, "base") != "1.0.0" then
+        pt_fail("a second install must keep the locked base 1.0.0", w)
+    else if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Cons("--locked", Nil))))) != 0 then
+        pt_fail("install --locked with an up-to-date lock", w)
+    else if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Cons("--update", Nil))))) != 0 or pt_lockv(w, "base") != "1.1.0" then
+        pt_fail("install --update must move base to 1.1.0", w)
+    else if pt_run(w, Cons("verify", Cons(w + "/app", Nil))) != 0 then
+        pt_fail("pkg verify after install", w)
+    else
+        pt_refusals(w, st, fs_read_file(w + "/app/lume.lock"))
+fn pt_refusals(w, st, lock0) = let a = pt_run(w, Cons("add", Cons("flaky@1.0.0", Cons(w + "/app", Nil)))) in
+    if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Cons("--locked", Nil))))) == 0 then pt_fail("install --locked must refuse a manifest the lock does not cover", w) else
+    if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Nil)))) == 0 or not lpk_contains(fs_read_file(w + "/err.txt"), "lume test flaky.src") then pt_fail("install must refuse a package whose tests fail", w) else
+    if fs_read_file(w + "/app/lume.lock") != lock0 or fs_path_exists(w + "/app/lume_modules/flaky") == 1 then pt_fail("a refused install must leave lume.lock and lume_modules unchanged", w) else
+    if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Cons("--allow-failing", Nil))))) != 0 or pt_lockv(w, "flaky") != "1.0.0" then pt_fail("install --allow-failing", w) else
+    let b = pt_run(w, Cons("add", Cons("liar@^1", Cons(w + "/app", Nil)))) in let lock1 = fs_read_file(w + "/app/lume.lock") in
+    if pt_run(w, Cons("install", Cons(w + "/app", Cons(st, Nil)))) == 0 or not lpk_contains(fs_read_file(w + "/err.txt"), "lume prove liar.src") then pt_fail("install must refuse a package whose contract is refuted", w) else
+    if fs_read_file(w + "/app/lume.lock") != lock1 then pt_fail("a refused install must leave lume.lock unchanged (prove)", w) else ""
+fn test_install_scenario() =
+    let w = hio_tmp() + "/lume-pkg-resolve-" + str(os_getpid()) in
+    let r = pt_scenario(w) in
+    let c = if r == "" then hio_remove_tree(w) else 0 in
+    if r == "" then
+        true
+    else
+        let e = fs_append_sync("/dev/stderr", "pkg_resolve_ok: " + r + "\n") in
+        false

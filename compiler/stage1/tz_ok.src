@@ -1,0 +1,59 @@
+## tz_ok.src -- `use std/tz`: POSIX TZ rules (checked against the hand-written US / EU / Sydney rules of std/datetime
+## at every sampled instant and at the transitions), TZif files built byte by byte (version 1 and 2 data, the
+## footer), the system tzdata when present, wall-clock conversion in gaps and overlaps
+use tz
+
+fn okz(s) = (tz_zone(s)).ok
+fn okl(s) = (tz_load(s)).ok
+fn okf(b) = (tz_from_tzif(b, "x")).ok
+## every step seconds from t to e: the POSIX zone and the built-in zone agree
+fn agree(z, zone, t, e, step) = if t >= e then true else if tz_offset(z, t) != dt_offset(zone, t) then false else agree(z, zone, t + step, e, step)
+fn y2015() = dt_to_unix(2015, 1, 1, 0, 0, 0)
+fn y2035() = dt_to_unix(2035, 1, 1, 0, 0, 0)
+fn test_posix_us() = let z = tz_zone("EST5EDT,M3.2.0,M11.1.0") in z.ok and z.kind == "posix" and agree(z, "America/New_York", y2015(), y2035(), 3600 * 61) and tz_offset(z, dt_to_unix(2024, 3, 10, 6, 59, 59)) == 0 - 18000 and tz_offset(z, dt_to_unix(2024, 3, 10, 7, 0, 0)) == 0 - 14400 and tz_offset(z, dt_to_unix(2024, 11, 3, 5, 59, 59)) == 0 - 14400 and tz_offset(z, dt_to_unix(2024, 11, 3, 6, 0, 0)) == 0 - 18000
+fn test_posix_eu() = let z = tz_zone("CET-1CEST,M3.5.0,M10.5.0/3") in z.ok and agree(z, "Europe/Paris", y2015(), y2035(), 3600 * 59) and tz_offset(z, dt_to_unix(2024, 3, 31, 0, 59, 59)) == 3600 and tz_offset(z, dt_to_unix(2024, 3, 31, 1, 0, 0)) == 7200 and tz_offset(z, dt_to_unix(2024, 10, 27, 0, 59, 59)) == 7200 and tz_offset(z, dt_to_unix(2024, 10, 27, 1, 0, 0)) == 3600 and tz_abbr(z, dt_to_unix(2024, 7, 1, 0, 0, 0)) == "CEST" and tz_abbr(z, dt_to_unix(2024, 1, 1, 0, 0, 0)) == "CET"
+fn test_posix_sydney() = let z = tz_zone("AEST-10AEDT,M10.1.0,M4.1.0/3") in z.ok and agree(z, "Australia/Sydney", y2015(), y2035(), 3600 * 67) and tz_is_dst(z, dt_to_unix(2024, 1, 15, 0, 0, 0)) and tz_is_dst(z, dt_to_unix(2024, 6, 15, 0, 0, 0)) == false
+fn test_posix_default_rule() = let z = tz_zone("PST8PDT") in z.ok and agree(z, "America/Los_Angeles", y2015(), y2035(), 3600 * 97)
+fn test_posix_fixed() = let z = tz_zone("<-03>3") in z.ok and tz_offset(z, 0) == 0 - 10800 and tz_abbr(z, 0) == "-03" and tz_is_dst(z, 0) == false and tz_offset(tz_zone("IST-5:30"), 0) == 19800 and tz_offset(tz_zone("<+0545>-5:45"), 0) == 20700 and tz_offset(tz_zone("XXX-5:30:15"), 0) == 19815
+## J60 is March 1 in every year; 59 (zero-based) is February 29 in a leap year
+fn test_posix_julian() = let a = tz_zone("AAA3BBB,J60/0,J300/0") in let b = tz_zone("AAA3BBB,59/0,299/0") in tz_is_dst(a, dt_to_unix(2024, 2, 29, 12, 0, 0)) == false and tz_is_dst(a, dt_to_unix(2024, 3, 1, 12, 0, 0)) and tz_is_dst(b, dt_to_unix(2024, 2, 29, 12, 0, 0)) and tz_is_dst(b, dt_to_unix(2023, 2, 28, 12, 0, 0)) == false and tz_is_dst(b, dt_to_unix(2023, 3, 1, 12, 0, 0))
+fn test_posix_malformed() = okz("EST5EDT,M3.2.0") == false and okz("E5") == false and okz("EST5EDT,M13.1.0,M11.1.0") == false and okz("EST5EDT,M3.6.0,M11.1.0") == false and okz("EST5x") == false and okz("+25:00") == false and okz("EST5EDT,M3.2.0,M11.1.0junk") == false
+fn test_fixed_zones() = tz_offset(tz_zone("UTC"), 0) == 0 and tz_offset(tz_zone("+05:30"), 0) == 19800 and tz_offset(tz_zone("-0300"), 0) == 0 - 10800 and tz_offset(tz_zone("+09"), 0) == 32400 and tz_abbr(tz_zone("-03:00"), 0) == "-03:00" and tz_iso(tz_zone("-03:00"), 1700000000) == "2023-11-14T19:13:20-03:00"
+
+## --- TZif built byte by byte ----------------------------------------------------------------------------------------------
+fn bytes(xs) = bytes_go(buf_new(bytes_n(xs, 0)), xs, 0)
+fn bytes_n(xs, n) = match xs
+    Nil        => n
+    Cons(h, t) => bytes_n(t, n + 1)
+fn bytes_go(b, xs, i) = match xs
+    Nil        => buf_to_str(b, 0, buf_len(b))
+    Cons(h, t) => let w = buf_set(b, i, h) in bytes_go(b, t, i + 1)
+fn u32(v0) = let v = if v0 < 0 then v0 + 4294967296 else v0 in bytes([v / 16777216, v / 65536 % 256, v / 256 % 256, v % 256])
+fn s64(v) = if v < 0 then u32(4294967295) + u32(v + 4294967296) else u32(0) + u32(v)
+fn zeros(k) = if k == 0 then "" else chr(0) + zeros(k - 1)
+fn hdr(ver, tcnt, tycnt, ccnt) = "TZif" + ver + zeros(15) + u32(0) + u32(0) + u32(0) + u32(tcnt) + u32(tycnt) + u32(ccnt)
+fn ttinfo(off, dst, idx) = u32(off) + bytes([dst, idx])
+## types: 0 LMT -1000, 1 AAA +3600 (dst), 2 BBB +7200; transitions -2e9 -> BBB, 1e9 -> AAA, 1.5e9 -> BBB
+fn types() = ttinfo(0 - 1000, 0, 0) + ttinfo(3600, 1, 4) + ttinfo(7200, 0, 8)
+fn chars() = "LMT" + chr(0) + "AAA" + chr(0) + "BBB" + chr(0)
+fn v1block() = hdr(chr(0), 3, 3, 12) + u32(0 - 2000000000) + u32(1000000000) + u32(1500000000) + bytes([2, 1, 2]) + types() + chars()
+fn v2file(footer) = hdr("2", 0, 1, 4) + ttinfo(0, 0, 0) + "UTC" + chr(0) + hdr("2", 3, 3, 12) + s64(0 - 2000000000) + s64(1000000000) + s64(1500000000) + bytes([2, 1, 2]) + types() + chars() + chr(10) + footer + chr(10)
+fn test_tzif_v2() = let z = tz_from_tzif(v2file("<+02>-2"), "Test/Zone") in z.ok and z.kind == "tzif" and z.tsize == 8 and tz_offset(z, 0 - 2000000001) == 0 - 1000 and tz_abbr(z, 0 - 2000000001) == "LMT" and tz_offset(z, 0 - 2000000000) == 7200 and tz_abbr(z, 0) == "BBB" and tz_offset(z, 999999999) == 7200 and tz_offset(z, 1000000000) == 3600 and tz_is_dst(z, 1200000000) and tz_offset(z, 1500000000) == 7200 and tz_abbr(z, 1600000000) == "+02" and tz_is_dst(z, 1600000000) == false
+## the footer carries a daylight rule after the last transition
+fn test_tzif_footer_rule() = let z = tz_from_tzif(v2file("CET-1CEST,M3.5.0,M10.5.0/3"), "T") in z.ok and z.hasrule and tz_offset(z, dt_to_unix(2030, 7, 1, 0, 0, 0)) == 7200 and tz_offset(z, dt_to_unix(2030, 1, 1, 0, 0, 0)) == 3600 and tz_offset(z, 1200000000) == 3600
+fn test_tzif_v1() = let z = tz_from_tzif(v1block(), "V1") in z.ok and z.tsize == 4 and tz_offset(z, 0 - 2000000001) == 0 - 1000 and tz_offset(z, 1000000000) == 3600 and tz_offset(z, 1700000000) == 7200 and tz_abbr(z, 1700000000) == "BBB"
+fn test_tzif_damaged() = okf("TZif") == false and okf(slice(v2file("<+02>-2"), 0, 80)) == false and okf("not a zone file at all, longer than forty-four bytes") == false
+
+## --- the system tzdata: real files on Linux; on a system without tzdata, a clear failure ------------------------------
+fn sysz() = fs_path_exists("/usr/share/zoneinfo/America/New_York") == 1 or os_getenv("TZDIR") != ""
+fn test_system_new_york() = let z = tz_load("America/New_York") in if not sysz() then z.ok == false and count(z.err) > 0 else z.ok and agree(z, "America/New_York", y2015(), y2035(), 3600 * 61) and tz_offset(z, 0) == 0 - 18000 and tz_abbr(z, 0) == "EST" and tz_abbr(z, dt_to_unix(2024, 7, 1, 0, 0, 0)) == "EDT"
+fn test_system_sao_paulo() = let z = tz_zone("America/Sao_Paulo") in if not sysz() then z.ok == false else z.ok and tz_offset(z, dt_to_unix(2018, 1, 15, 12, 0, 0)) == 0 - 7200 and tz_offset(z, dt_to_unix(2024, 1, 15, 12, 0, 0)) == 0 - 10800 and tz_abbr(z, dt_to_unix(2024, 1, 15, 12, 0, 0)) == "-03"
+fn test_system_paris_kolkata() = if not sysz() then okl("Europe/Paris") == false else agree(tz_load("Europe/Paris"), "Europe/Paris", y2015(), y2035(), 3600 * 59) and tz_offset(tz_load("Asia/Kolkata"), 1700000000) == 19800
+fn test_load_rejects() = okl("../etc/passwd") == false and okl("/etc/passwd") == false and okl("No/Such_Zone") == false and okl("") == false
+
+## --- wall-clock time to an instant -----------------------------------------------------------------------------------------
+fn us() = tz_zone("EST5EDT,M3.2.0,M11.1.0")
+fn test_from_local() = tz_from_local(us(), 2024, 1, 15, 12, 0, 0) == dt_to_unix(2024, 1, 15, 17, 0, 0) and tz_from_local(us(), 2024, 7, 15, 12, 0, 0) == dt_to_unix(2024, 7, 15, 16, 0, 0) and tz_from_local(tz_zone("+05:30"), 2024, 1, 1, 0, 0, 0) == dt_to_unix(2023, 12, 31, 18, 30, 0)
+## 2024-03-10 02:30 does not exist in New York (lands at 03:30 EDT); 2024-11-03 01:30 happens twice (the EDT one first)
+fn test_from_local_gap_overlap() = tz_from_local(us(), 2024, 3, 10, 2, 30, 0) == dt_to_unix(2024, 3, 10, 7, 30, 0) and tz_iso(us(), tz_from_local(us(), 2024, 3, 10, 2, 30, 0)) == "2024-03-10T03:30:00-04:00" and tz_from_local(us(), 2024, 11, 3, 1, 30, 0) == dt_to_unix(2024, 11, 3, 5, 30, 0)
+fn test_local() = let r = tz_local(us(), dt_to_unix(2024, 7, 4, 16, 0, 0)) in r.y == 2024 and r.mo == 7 and r.d == 4 and r.h == 12 and r.mi == 0
