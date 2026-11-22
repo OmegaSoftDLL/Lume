@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compiled by `lumec --raw` into `rt_lume_dec` (linked on demand through `has_dec`, like `rt_f64`/`rt_lume_f64`). The
   decimal-shape detection (`__rt_anyd`) stays in `runtime_core.lume` because the typed-runtime verifier parses its
   span. No behaviour change — identical outputs, one more piece of the runtime is Lume rather than asm (golden rule).
+- **`lume verify` leads a failing step with its diagnostic, not the code dump.** A `FAIL` line now shows the error
+  code and message first (e.g. `[T0604] type error …`, `lume fmt: … is not canonically formatted`, or the kernel's
+  `reason` for `certify`), extracted from the step's output, then the previous ~600-character tail for context.
+  Before, the line showed only the last ~600 characters — often the expanded-code dump — hiding the diagnostic.
 
 ### Fixed
 - **`[W0003]` (duplicate name) warns only on a real ambiguity.** It now fires only where a shared name is used

@@ -1586,7 +1586,7 @@ fn lv_key(root, f, tools) = let bm = ld_bundle_text_map(root, f, "verify") in lc
 fn lv_run(root, self, f, steps, out) = lv_runt(root, self, f, steps, out, "")
 fn lv_runt(root, self, f, steps, out, acc) = match steps
     Nil        => {fail: "", times: acc}
-    Cons(s, t) => let t0 = os_monotonic_ns() in let rc = os_run_capture_timeout(self, lv_args(s, f), out, out + ".err", 1800000) in let acc2 = (if acc == "" then "" else acc + ", ") + s + " " + lv_secs(os_monotonic_ns() - t0) in if rc != 0 and lv_nothing_to_certify(s, out) == 0 then {fail: s + " (exit " + str(if rc % 256 == 0 then rc / 256 else rc) + "): " + lv_tail(fs_read_file(out) + fs_read_file(out + ".err")), times: acc2} else lv_runt(root, self, f, t, out, acc2)
+    Cons(s, t) => let t0 = os_monotonic_ns() in let rc = os_run_capture_timeout(self, lv_args(s, f), out, out + ".err", 1800000) in let acc2 = (if acc == "" then "" else acc + ", ") + s + " " + lv_secs(os_monotonic_ns() - t0) in if rc != 0 and lv_nothing_to_certify(s, out) == 0 then {fail: s + " (exit " + str(if rc % 256 == 0 then rc / 256 else rc) + "): " + lv_fail_detail(fs_read_file(out) + fs_read_file(out + ".err")), times: acc2} else lv_runt(root, self, f, t, out, acc2)
 fn lv_secs(ns) = let ms = ns / 1000000 in str(ms / 1000) + "." + lv_pad3(ms % 1000) + " s"
 fn lv_pad3(v) = if v < 10 then "00" + str(v) else if v < 100 then "0" + str(v) else str(v)
 ## a file without requires / ensures / laws has nothing to certify: lcert answers "unverified" with 0 obligations, which
@@ -1598,6 +1598,18 @@ fn lv_cachedline(l) = let b = (if count(l) > 0 and at(l, count(l) - 1) == chr(10
 ## the failure text on one line, so a report line is one file
 fn lv_oneline(s) = lv_ol(s, 0, "")
 fn lv_ol(s, i, acc) = if i >= count(s) then acc else lv_ol(s, i + 1, acc + (if at(s, i) == chr(10) or at(s, i) == chr(13) then " | " else at(s, i)))
+## the diagnostic a step printed, so a FAIL line leads with the error code and message, not the ~600-char code dump:
+## the first bracketed diagnostic code line ([R0201], [W0003], ...), or, for certify, the kernel's "reason" field
+fn lv_isup(c) = ord(c) >= 65 and ord(c) <= 90
+fn lv_isdg(c) = ord(c) >= 48 and ord(c) <= 57
+fn lv_is_code(s, i) = i + 6 < count(s) and at(s, i) == "[" and lv_isup(at(s, i + 1)) and lv_isdg(at(s, i + 2)) and lv_isdg(at(s, i + 3)) and lv_isdg(at(s, i + 4)) and lv_isdg(at(s, i + 5)) and at(s, i + 6) == "]"
+fn lv_find_code(s, i) = if i + 6 >= count(s) then 0 - 1 else if lv_is_code(s, i) then i else lv_find_code(s, i + 1)
+fn lv_lstart(s, p) = if p <= 0 then 0 else if at(s, p - 1) == "\n" then p else lv_lstart(s, p - 1)
+## the end of a JSON string value (handles backslash escapes), and the value of the first `"key":"..."` in the output
+fn lv_strend(s, i) = if i >= count(s) then i else if at(s, i) == "\\" then lv_strend(s, i + 2) else if at(s, i) == "\"" then i else lv_strend(s, i + 1)
+fn lv_jval(s, key) = let k = "\"" + key + "\":\"" in let p = ld_find_sub(s, k, 0) in if p >= count(s) then "" else let st = p + count(k) in slice(s, st, lv_strend(s, st))
+fn lv_diag(s) = let code = lv_jval(s, "code") in let msg = lv_jval(s, "message") in if code != "" then (if lv_find_code(msg, 0) >= 0 then msg else "[" + code + "] " + msg) else let reason = lv_jval(s, "reason") in if reason != "" then "certify: " + reason else let p = lv_find_code(s, 0) in if p >= 0 then ld_trim(slice(s, lv_lstart(s, p), ld_line_end(s, p))) else ""
+fn lv_fail_detail(s) = let d = lv_diag(s) in if d == "" then lv_tail(s) else d + "  ::  " + lv_tail(s)
 fn lv_tail(s) = if count(s) > 600 then slice(s, count(s) - 600, count(s)) else s
 fn lv_one(root, self, f, tools, cdir, out) = if fs_path_exists(f) == 0 then "FAIL " + f + ": cannot read the file\n" else let key = lv_key(root, f, tools) in let mark = cdir + "/" + lv_hex(key) in if fs_path_exists(mark) == 1 then lv_cachedline(fs_read_file(mark)) else let r = lv_run(root, self, f, lv_steps(), out) in let line = (if r.fail == "" then "ok   " + f + "  (" + r.times + ")\n" else "FAIL " + f + ": " + lv_oneline(r.fail) + "  (" + r.times + ")\n") in let w = fs_write_sync(mark, line) in line
 fn lv_list(root, self, fs, tools, cdir, out, acc) = match fs
