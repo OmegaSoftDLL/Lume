@@ -76,6 +76,7 @@ Em um arquivo `.src`, tudo no nivel de topo deve ser uma das seguintes declaraco
 - `fn nome(a, b) = expr`       Define uma funcao.
 - `pub fn nome(a, b) = expr`   Define uma funcao publica exportada.
 - `priv fn nome(a, b) = expr`  Funcao privada do modulo: outros modulos nao a chamam e ela nunca colide com os nomes deles.
+- `priv const NOME: T = expr`  Constante privada do modulo; `priv law nome(a) = expr` e uma law privada. Mesma regra: escondidas dos outros modulos, nunca colidem com os nomes deles.
 - `fn f(x: any) -> any = x`    `any` desliga a checagem estatica: qualquer valor serve, o runtime confere o uso.
 - `const NOME: T = expr`       Define uma constante de modulo (disponivel em funcoes e contratos).
 - `law nome(a: int) = expr`    Define uma lei matematica universal provada pelo compilador.
@@ -1199,7 +1200,7 @@ print run_lumeputer_demo()
 | `[L0010]` | Ligacao              | Um simbolo definido duas vezes na mesma imagem, o que mandaria chamadas para a rotina errada. |
 | `[L0002]` | Escape de String     | Sequencia de escape desconhecida em string (validos: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | Scanner de Segredos  | Chave privada ou token detectado no codigo-fonte durante `--protect`; remova o segredo literal. |
-| `[W0003]` | Nome Duplicado       | Um nome definido em dois modulos do mesmo programa (aviso: cada modulo fica com o seu). Renomeie um, use `priv fn` ou escreva `modulo.nome` onde os dois sao visiveis. |
+| `[W0003]` | Nome Duplicado       | Um nome definido em dois modulos do mesmo programa e usado sem qualificar onde dois deles sao visiveis (aviso: cada modulo fica com o seu; usos totalmente qualificados nao avisam). Renomeie um, use `priv` em um, ou escreva `modulo.nome`. |
 | `[W0004]` | f64 com int          | Um operador aritmetico mistura f64 e int (aviso: o int e convertido em execucao). Escreva `f64(n)` para deixar explicito, ou `f64_int(x)` para um resultado int. |
 | `[W0005]` | Obsoleto             | A funcao esta marcada com `## Deprecated: <mensagem>` (comentario logo acima dela) e e chamada de outro modulo. Ela continua funcionando por pelo menos uma versao MINOR inteira (docs/STABILITY.md); passe para a substituta indicada. |
 

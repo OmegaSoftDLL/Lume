@@ -546,6 +546,24 @@ DEPMAIN
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/runtime/linear_imm_ok.src 2>&1 | grep -q "2 passed, 0 failed"; then ok "[E0305] linear send: an int or bool copied into or out of the record stays with the sender"; else bad "[E0305] immediates copied around a linear send"; fi
     # a call through a parameter is the local function, not another module's global of the same name
     if LUME_BIN_DIR="$ntmp" ../../lume test ../../tests/namespaces/localcall/localcall_ok.src 2>&1 | grep -q "3 passed, 0 failed"; then ok "a call through a parameter or let name is never checked against a global of the same name"; else bad "local callee vs global function"; fi
+    # priv const / priv law (LumeDesk 2026-11-22): accepted in a single file, and cross-module they rename so a name
+    # clash is resolved without renaming by hand; a record field of the same name stays a field
+    pw2=$(mktemp -d); mkdir -p "$pw2/m"
+    printf 'priv const K: int = 1\npriv law pos(x: int) = x + 0 == x\nfn test_k() = K + 1 == 2\n' > "$pw2/single.src"
+    printf 'priv const LIMIT: int = 10\npub fn ca_cap(x) = if x > LIMIT then LIMIT else x\npub fn ca_mk(x) = ({LIMIT: x}).LIMIT + LIMIT\n' > "$pw2/m/ca.src"
+    printf 'priv const LIMIT: int = 20\npub fn cb_cap(x) = if x > LIMIT then LIMIT else x\n' > "$pw2/m/cb.src"
+    printf 'use ca\nuse cb\nfn test_caps() = ca_cap(15) + cb_cap(15) == 25\nfn test_field() = ca_mk(3) == 13\n' > "$pw2/m/app.src"
+    LUME_BIN_DIR="$ntmp" ../../lume test "$pw2/single.src" > "$pw2/single.out" 2>&1
+    LUME_BIN_DIR="$ntmp" ../../lume test "$pw2/m/app.src" > "$pw2/app.out" 2>&1
+    if grep -q "1 passed, 0 failed" "$pw2/single.out" && grep -q "2 passed, 0 failed" "$pw2/app.out" && ! grep -q "W0003" "$pw2/app.out"; then ok "priv const / priv law: parse in a single file, resolve a cross-module name clash, keep a same-named record field"; else bad "priv const / priv law"; tail -n 3 "$pw2/single.out" "$pw2/app.out"; fi
+    # W0003 warns only on an unqualified use where two definitions are visible: fully-qualified uses raise none
+    printf 'fn parse(x) = x + 1\n' > "$pw2/m/qa.src"; printf 'fn parse(x) = x + 2\n' > "$pw2/m/qb.src"
+    printf 'use qa\nuse qb\nfn test_q() = qa.parse(1) + qb.parse(1) == 5\n' > "$pw2/m/qapp.src"
+    printf 'use qa\nfn parse(x) = x + 9\nfn test_s() = parse(1) == 10\n' > "$pw2/m/sapp.src"
+    LUME_BIN_DIR="$ntmp" ../../lume test "$pw2/m/qapp.src" > "$pw2/q.out" 2>&1
+    LUME_BIN_DIR="$ntmp" ../../lume build "$pw2/m/sapp.src" -o "$pw2/s.bin" > "$pw2/s.out" 2>&1
+    if grep -q "1 passed, 0 failed" "$pw2/q.out" && ! grep -q "W0003" "$pw2/q.out" && grep -q "W0003" "$pw2/s.out"; then ok "W0003 fires only on an unqualified use with two definitions visible, never on fully-qualified calls"; else bad "W0003 qualified vs unqualified"; tail -n 3 "$pw2/q.out" "$pw2/s.out"; fi
+    rm -rf "$pw2"
     # packages with versions: publish two versions, add ^1.0, install picks 1.2.0, runs its tests, locks it, use finds it
     pw=$(mktemp -d); cp -r ../../tests/registry/pkgver/* "$pw/"
     LUME_BIN_DIR="$ntmp" ../../lume pkg publish "$pw/mathx_v1" --store="$pw/store" >/dev/null 2>&1; LUME_BIN_DIR="$ntmp" ../../lume pkg publish "$pw/mathx_v2" --store="$pw/store" >/dev/null 2>&1

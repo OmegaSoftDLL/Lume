@@ -341,21 +341,25 @@ fn resolve_one(nm, mods, grant, visiting, visited, chunks) = if contains(visited
 
 fn resolve_mod(m, mods, grant, visiting, visited, chunks) = let chk = checkcap(m.name, m.lines, grant) in let r = resolve_list(m.uses, mods, grant, visiting, visited, chunks) in {visited: Cons(m.name, r.visited), chunks: app(r.chunks, Cons(nsrec(m), Nil))}
 
-## --- module-private functions (`priv fn name`, LumeDesk 2026-11-18) ----------------------------------------------------
-## In a module, `priv fn name` is renamed name__priv_<module> in every line of that module, and `priv` is dropped: other
-## modules cannot call it and it never collides with their names. Strings, `##` comments, `.name` field reads and
-## `name:` record keys are left alone. In the entry file `priv` is only dropped (there is nothing to hide it from).
-fn pv_name(line) = if startswith(line, "fn ") or startswith(line, "pub ") or startswith(line, "    Cons(") then "" else let s = trim(line) in if startswith(s, "priv fn ") then pv_name2(s, count(s)) else ""
-fn pv_name2(s, n) = let a = skipws(s, 8, n) in slicen(s, n, a, id_end(s, a, n))
+## --- module-private declarations (`priv fn`, `priv const`, `priv law`; LumeDesk 2026-11-18 / 2026-11-22) --------------
+## In a module, a `priv fn name` / `priv const name` / `priv law name` is renamed name__priv_<module> in every line of
+## that module, and `priv` is dropped: other modules cannot name it and it never collides with their names. Strings,
+## `##` comments, `.name` field reads and `name:` record keys are left alone. In the entry file `priv` is only dropped
+## (there is nothing to hide it from). The standalone (no-`use`) single file keeps `priv` and the parser drops it.
+fn pv_kwlen(s) = if startswith(s, "priv fn ") then 8 else if startswith(s, "priv const ") then 11 else if startswith(s, "priv law ") then 9 else 0
+fn pv_name(line) = if startswith(line, "fn ") or startswith(line, "pub ") or startswith(line, "    Cons(") then "" else let s = trim(line) in let k = pv_kwlen(s) in if k == 0 then "" else let a = skipws(s, k, count(s)) in slicen(s, count(s), a, id_end(s, a, count(s)))
 fn pv_names(lines) = match lines
     Nil        => Nil
     Cons(h, t) => let nm = pv_name(h) in if nm == "" then pv_names(t) else Cons(nm, pv_names(t))
-fn pv_strip(line) = if startswith(line, "priv fn ") then slice(line, 5, count(line)) else line
-## rewrite one line: whole identifiers in names get the suffix, outside strings and comments
-fn pv_line(s, names, suf) = pv_go(s, count(s), 0, names, suf, "")
-fn pv_go(s, n, i, names, suf, acc) = if i >= n then acc else let c = at(s, i) in if c == "\"" then pv_str(s, n, i + 1, names, suf, acc + c) else if c == "#" and i + 1 < n and at(s, i + 1) == "#" then acc + slice(s, i, n) else if isalpha(c) and (i == 0 or isidch(at(s, i - 1)) == 0) then pv_id(s, n, i, id_end(s, i, n), names, suf, acc) else pv_go(s, n, i + 1, names, suf, acc + c)
-fn pv_str(s, n, i, names, suf, acc) = if i >= n then acc else let c = at(s, i) in if c == "\\" and i + 1 < n then pv_str(s, n, i + 2, names, suf, acc + slice(s, i, i + 2)) else if c == "\"" then pv_go(s, n, i + 1, names, suf, acc + c) else pv_str(s, n, i + 1, names, suf, acc + c)
-fn pv_id(s, n, i, e, names, suf, acc) = let w = slice(s, i, e) in let field = i > 0 and at(s, i - 1) == "." in let key = e < n and at(s, e) == ":" and (e + 1 >= n or at(s, e + 1) != ":") in if contains(names, w) == 1 and field == false and key == false then pv_go(s, n, e, names, suf, acc + w + suf) else pv_go(s, n, e, names, suf, acc + w)
+fn pv_strip(line) = if startswith(line, "priv fn ") or startswith(line, "priv const ") or startswith(line, "priv law ") then slice(line, 5, count(line)) else line
+## rewrite one line: whole identifiers in names get the suffix, outside strings and comments. `d` is the `{}` nesting:
+## a `name:` is a record key (left alone) only inside a brace or as the first token of a line (a multi-line record key),
+## never for a `const NAME: type` / annotated declaration, whose name must be renamed like the fn case.
+fn pv_bos(s, i) = if i <= 0 then 1 else if isws(at(s, i - 1)) then pv_bos(s, i - 1) else 0
+fn pv_line(s, names, suf) = pv_go(s, count(s), 0, names, suf, "", 0)
+fn pv_go(s, n, i, names, suf, acc, d) = if i >= n then acc else let c = at(s, i) in if c == "\"" then pv_str(s, n, i + 1, names, suf, acc + c, d) else if c == "#" and i + 1 < n and at(s, i + 1) == "#" then acc + slice(s, i, n) else if c == "{" then pv_go(s, n, i + 1, names, suf, acc + c, d + 1) else if c == "}" then pv_go(s, n, i + 1, names, suf, acc + c, if d > 0 then d - 1 else 0) else if isalpha(c) and (i == 0 or isidch(at(s, i - 1)) == 0) then pv_id(s, n, i, id_end(s, i, n), names, suf, acc, d) else pv_go(s, n, i + 1, names, suf, acc + c, d)
+fn pv_str(s, n, i, names, suf, acc, d) = if i >= n then acc else let c = at(s, i) in if c == "\\" and i + 1 < n then pv_str(s, n, i + 2, names, suf, acc + slice(s, i, i + 2), d) else if c == "\"" then pv_go(s, n, i + 1, names, suf, acc + c, d) else pv_str(s, n, i + 1, names, suf, acc + c, d)
+fn pv_id(s, n, i, e, names, suf, acc, d) = let w = slice(s, i, e) in let field = i > 0 and at(s, i - 1) == "." in let colon = e < n and at(s, e) == ":" and (e + 1 >= n or at(s, e + 1) != ":") in let key = colon and (d > 0 or pv_bos(s, i) == 1) in if contains(names, w) == 1 and field == false and key == false then pv_go(s, n, e, names, suf, acc + w + suf, d) else pv_go(s, n, e, names, suf, acc + w, d)
 fn pv_lines(lines, names, suf) = match lines
     Nil        => Nil
     Cons(h, t) => Cons(pv_line(pv_strip(h), names, suf), pv_lines(t, names, suf))
@@ -373,9 +377,23 @@ fn pv_mods(ms) = match ms
 fn dup_drop(groups, privs) = match groups
     Nil        => Nil
     Cons(g, t) => if contains(privs, g.n) == 1 then dup_drop(t, privs) else Cons(g, dup_drop(t, privs))
-fn dup_warn(groups) = match groups
+## a bare (unqualified) use of nm on a line: nm as a whole identifier, not `.nm` (field/`module.nm`), not a `nm:` record
+## key, outside strings and `#` comments. `module.nm` and `alias.nm` are excluded by the "not preceded by '.'" test.
+fn dup_use_line(s, nm, n, i) = if i >= n then 0 else let c = at(s, i) in if c == "\"" then dup_use_line(s, nm, n, strend(s, i + 1, n)) else if c == "#" then 0 else if isalpha(c) and (i == 0 or (isidch(at(s, i - 1)) == 0 and at(s, i - 1) != ".")) then (let e = id_end(s, i, n) in if slicen(s, n, i, e) == nm and (e >= n or at(s, e) != ":" or (e + 1 < n and at(s, e + 1) == ":")) then 1 else dup_use_line(s, nm, n, e)) else dup_use_line(s, nm, n, i + 1)
+## does module/entry r use nm unqualified anywhere (its own definition line excluded: an owner always binds to itself)?
+fn dup_use(lines, nm) = match lines
     Nil        => 0
-    Cons(g, t) => let w = fs_append_sync("/dev/stderr", "lume: warning [W0003]: '" + g.n + "' is defined in modules " + joinsep(g.owners, ", ") + "; each module uses its own, and a use where two of them are visible is an ambiguity error (fix-it: rename one, make it `priv fn`, or write module.name)\n") in dup_warn(t)
+    Cons(h, t) => if startswith(ltrim(h), "use ") or ns_defname(h) == nm then dup_use(t, nm) else if dup_use_line(h, nm, count(h), 0) == 1 then 1 else dup_use(t, nm)
+## the owners of nm that r can see: the ones it reaches through `use`, plus r itself when r is one of them
+fn dup_visible(g, r, recs) = ns_inter(g.owners, Cons(r.name, ns_reach(r.uses, recs, Nil)))
+## a group warrants W0003 only where it would actually bite: some module/entry sees two of the owners *and* names it
+## unqualified there. All-qualified uses (`a.parse`, `b.parse`) and two unrelated same-named defs raise no warning.
+fn dup_sites(g, recs, all) = match recs
+    Nil        => 0
+    Cons(r, t) => if ns_len(dup_visible(g, r, all)) >= 2 and dup_use(r.lines, g.n) == 1 then 1 else dup_sites(g, t, all)
+fn dup_warn(groups, recs) = match groups
+    Nil        => 0
+    Cons(g, t) => let w = (if dup_sites(g, recs, recs) == 1 then fs_append_sync("/dev/stderr", "lume: warning [W0003]: '" + g.n + "' is defined in modules " + joinsep(g.owners, ", ") + ", and a use where two of them are visible is an ambiguity error (fix-it: rename one, make one `priv`, or write module.name)\n") else 0) in dup_warn(t, recs)
 
 ## --- deprecation (W0005): a comment `## Deprecated: <message>` directly above a function marks it; every module that
 ## calls it from outside its own module gets one warning per name, with the message (the Go convention, so no tool has
@@ -406,7 +424,7 @@ fn dp_warn(ds, ms) = match ms
     Nil        => 0
     Cons(m, t) => let w = dp_warn1(ds, m) in dp_warn(ds, t)
 
-fn bundle(lines) = let st0 = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let st = {mods: pv_mods(st0.mods), entry: {name: st0.entry.name, uses: st0.entry.uses, lines: pv_drop(st0.entry.lines)}, grant: st0.grant} in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in let dw = dup_warn(dup_drop(ns_groups(ns_sort(ns_keys(recs, Nil)), Nil), pv_names(st0.entry.lines))) in let dpw = dp_warn(dp_all(Cons(st.entry, st0.mods), Nil), Cons(st.entry, st0.mods)) in ns_qdefs(joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n"))
+fn bundle(lines) = let st0 = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let st = {mods: pv_mods(st0.mods), entry: {name: st0.entry.name, uses: st0.entry.uses, lines: pv_drop(st0.entry.lines)}, grant: st0.grant} in let r = resolve_list(st.entry.uses, st.mods, st.grant, Cons(st.entry.name, Nil), Nil, Nil) in let chk_e = checkcap(st.entry.name, st.entry.lines, st.grant) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in let dw = dup_warn(dup_drop(ns_groups(ns_sort(ns_keys(recs, Nil)), Nil), pv_names(st0.entry.lines)), recs) in let dpw = dp_warn(dp_all(Cons(st.entry, st0.mods), Nil), Cons(st.entry, st0.mods)) in ns_qdefs(joinsep(ns_texts(ns_apply(recs, st.entry.name), st.entry.name), "\n\n"))
 fn ns_needed(lines) = let st = parseblocks(lines, "io", Nil, {name: "main", uses: Nil, lines: Nil}) in let r = resolve_list(st.entry.uses, st.mods, "io", Cons(st.entry.name, Nil), Nil, Nil) in let recs = app(r.chunks, Cons(nsrec(st.entry), Nil)) in if ns_changed(recs, ns_apply(recs, st.entry.name)) == 1 then "needed" else "none"
 
 ## --- `@manifest` mode: parse & validate `lume.toml` in Lume-Core ---

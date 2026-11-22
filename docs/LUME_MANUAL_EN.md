@@ -79,6 +79,7 @@ In `.src` files compiled by `lumec`, every top-level item must be one of:
 - `fn name(a, b) = expr`       Function definition (optional type annotations & contracts).
 - `pub fn name(a, b) = expr`   Public exported function.
 - `priv fn name(a, b) = expr`  Module-private function: other modules cannot call it and it never collides with their names.
+- `priv const NAME: T = expr`  Module-private constant; `priv law name(a) = expr` is a module-private law. Same rule: hidden from other modules, never clashes with their names.
 - `fn f(x: any) -> any = x`    `any` opts out of static typing: any value fits, the runtime checks its use.
 - `const NAME: T = expr`       Module-level constant (inlined into functions & contracts).
 - `law name(a: int) = expr`    Universal mathematical law proven across all inputs.
@@ -1241,7 +1242,7 @@ print run_lumeputer_demo()
 | `[L0010]` | Link                 | A symbol is defined twice in one image, which would otherwise send calls to the wrong routine. |
 | `[L0002]` | String Escape        | Unknown escape sequence in string literal (valid escapes: `\n`, `\r`, `\t`, `\b`, `\f`, `\0`, `\xHH`, `\'`, `\"`, `\\`, `\{`, `\}`, `\$`). |
 | `[W0002]` | P33 Secret Scanner   | Hardcoded private key/token detected before binary emission; move secrets out of source. |
-| `[W0003]` | Duplicate Name       | One name is defined in two modules of the same program (a warning: each module keeps its own). Rename one, make it `priv fn`, or write `module.name` where both are visible. |
+| `[W0003]` | Duplicate Name       | One name is defined in two modules of the same program, and it is actually used unqualified where two of them are visible (a warning: each module keeps its own; fully-qualified uses raise none). Rename one, make one `priv`, or write `module.name`. |
 | `[W0004]` | f64 Meets int        | An arithmetic operator mixes an f64 and an int (a warning: the int is converted at run time). Write `f64(n)` to say so, or `f64_int(x)` for an int result. |
 | `[W0005]` | Deprecated           | The function is marked `## Deprecated: <message>` (comment directly above it) and is called from another module. It keeps working for at least one whole MINOR release (docs/STABILITY.md); move to the replacement the message names. |
 

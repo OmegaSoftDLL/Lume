@@ -78,7 +78,7 @@ print square(7)
 
 ## 2. Sintaxe
 
-- `fn nome(a, b) = expr`, `pub fn` (exportada), `priv fn` (privada do modulo), `const NOME: T = expr`,
+- `fn nome(a, b) = expr`, `pub fn` (exportada), `priv fn` / `priv const` / `priv law` (privada do modulo), `const NOME: T = expr`,
   `type T = A(x) | B(x, y)`, `use modulo`, `use modulo as apelido`, `use std/NOME` (sempre o NOME da biblioteca padrao, mesmo que o projeto tenha um NOME.src), `## comentario` (ate o fim da linha).
 - Expressoes: `let x = e in corpo`, `if c then a else b`, `match v` com um `Padrao => expr` por linha,
   `fn(x) => expr` (closure; captura variaveis), `{a: 1, b: 2}` (registro), `r.a` (campo), `{ r with a: 3 }`

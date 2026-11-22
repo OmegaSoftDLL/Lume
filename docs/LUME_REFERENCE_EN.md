@@ -78,7 +78,7 @@ print square(7)
 
 ## 2. Syntax
 
-- `fn name(a, b) = expr`, `pub fn` (exported), `priv fn` (private to its module), `const NAME: T = expr`,
+- `fn name(a, b) = expr`, `pub fn` (exported), `priv fn` / `priv const` / `priv law` (private to its module), `const NAME: T = expr`,
   `type T = A(x) | B(x, y)`, `use module`, `use module as alias`, `use std/NAME` (always the standard library's NAME, even when the project has a NAME.src), `## comment` (to the end of the line).
 - Expressions: `let x = e in body`, `if c then a else b`, `match v` with one `Pattern => expr` per line,
   `fn(x) => expr` (a closure; captures variables), `{a: 1, b: 2}` (record), `r.a` (field), `{ r with a: 3 }`

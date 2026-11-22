@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`priv const` and `priv law`, module-private like `priv fn`.** A `priv const NAME: T = expr` or
+  `priv law name(a) = expr` is hidden from other modules and renamed per module, so two modules can each define a
+  constant or a law of the same name without a hand rename (previously only `priv fn` existed, so a `const`/`law`
+  clash across modules could be resolved only by renaming, and `priv const` itself did not parse — `[P0003]`). Works
+  in a single file, across modules, and under `lume fmt`; a record field of the same name stays a field.
 - **A trust-root gate (`tests/harness/trust_root_gate.src`).** Turns the self-hosting toolchain into its own
   independently verifiable trust root (the answer to "trusting trust" and to a single-maintainer anchor): on every run
   it proves the toolchain is reproducible (`lumec` compiling itself and `lasm` assembling it are byte-identical across
@@ -24,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the compiler, now fails in milliseconds with the exact mnemonic and line instead of surfacing late. Self-test inside.
 
 ### Fixed
+- **`[W0003]` (duplicate name) warns only on a real ambiguity.** It now fires only where a shared name is used
+  *unqualified* with two of its definitions visible — the one case that is otherwise an ambiguity error. Fully
+  qualified uses (`a.parse(…)`, `b.parse(…)`) and two unrelated modules that merely happen to share a name no longer
+  draw a warning. Its fix-it is now kind-agnostic ("make one `priv`"), since `priv` applies to `fn`, `const` and `law`.
 - **`--protect` identifies user functions by an explicit runtime boundary, not by position.** The compiler emits a
   `## __lume_rt_boundary` marker at the seam between the user's functions and the runtime tail, and the protector
   treats everything after it as runtime (never renamed). Previously it assumed user code ended at `alloc:`; once a
