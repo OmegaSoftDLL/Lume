@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A trust-root gate (`tests/harness/trust_root_gate.src`).** Turns the self-hosting toolchain into its own
+  independently verifiable trust root (the answer to "trusting trust" and to a single-maintainer anchor): on every run
+  it proves the toolchain is reproducible (`lumec` compiling itself and `lasm` assembling it are byte-identical across
+  builds, so determinism is proven not assumed), self-verifying (assembling the compiler's own source with the shipped
+  toolchain reproduces the shipped `lumec` binary byte for byte), and anchored on a small, bounded Stage-0 C seed
+  (fails if that audited surface grows past a line bound or gains a file). Diverse double-compilation (self-hosted
+  `lumec`, the seed's independent Lume codegen, and `lcaas`) stays covered by `runtime_sync_gate`; external-oracle
+  corroboration by `lasm_gate` (GNU as) and `multi_arch_gate` (LLVM). Together: reproduce the bytes, don't trust the
+  maintainer. See `docs/43-trust-root-and-reproducibility.md`.
 - **A seed-safety gate (`tests/harness/seed_safe_gate.src`).** The frozen Stage-0 seed assembler knows a fixed set of
   instruction forms; one it does not know (an `xchgq`, a port `outb`/`inb` pulled in by a builtin) breaks a whole seed
   bootstrap, which only the full seed battery used to reveal. The gate compiles the compiler itself and checks that

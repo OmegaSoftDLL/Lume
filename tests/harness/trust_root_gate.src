@@ -1,0 +1,58 @@
+## trust_root_gate.src -- the toolchain is its own, independently verifiable trust root.
+##
+## A self-hosting compiler asks everyone to trust one thing: that the binary you run is the binary the public sources
+## produce, and nothing was slipped in between (Ken Thompson's "trusting trust"). This gate turns that trust into a
+## property anyone can check from a clone, with no faith in the maintainer:
+##
+##   1. Reproducible, so determinism is proven, not assumed. `lumec` compiling itself twice yields byte-identical
+##      assembly, and `lasm` assembling it twice yields a byte-identical ELF. Any nondeterminism a change introduces
+##      (a timestamp, a hash-map order, an address leak) breaks this immediately.
+##   2. Self-verifying: assembling the compiler's own source with the shipped toolchain reproduces the shipped
+##      `lumec` binary byte for byte. The binary you run provably equals the source you read.
+##   3. A small, bounded trust root: the entire Stage-0 seed is a handful of auditable C files. The gate fails if that
+##      surface grows past a bound or gains a file, so the anchor a newcomer must read stays small on purpose.
+##
+## Diverse double-compilation (the self-hosted `lumec`, the seed's independent Lume codegen `data_asmgen`, and `lcaas`
+## all agreeing) is checked by runtime_sync_gate; external-oracle corroboration (GNU as, LLVM) by lasm_gate and
+## multi_arch_gate. Together they mean: do not trust the maintainer -- reproduce the bytes.
+##
+## Input: `@root DIR`. Linux x86-64 only (it runs the Linux toolchain); on another system it says so and passes.
+use hostio
+
+## the frozen Stage-0 C seed: the complete trust root. A new .c/.h here, or growth past the bound, must be deliberate.
+fn trg_seed_files() = Cons("main.c", Cons("lexer.c", Cons("diag.c", Cons("ast.c", Cons("parser.c", Cons("value.c", Cons("interp.c", Cons("lbe.c", Cons("asmgen.c", Cons("elf.c", Cons("resolve.c", Cons("lume0.h", Cons("value.h", Cons("ast.h", Nil))))))))))))))
+fn trg_seed_bound() = 7000
+
+fn trg_count_lines(s, i, n) = if i >= count(s) then n else if at(s, i) == "\n" then trg_count_lines(s, i + 1, n + 1) else trg_count_lines(s, i + 1, n)
+fn trg_seed_lines(root, fs, acc) = match fs
+    Nil        => acc
+    Cons(h, t) => let p = root + "/bootstrap/lume0/" + h in if fs_path_exists(p) == 0 then 0 - 1 else trg_seed_lines(root, t, acc + trg_count_lines(fs_read_file(p), 0, 0))
+
+fn trg_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else trg_rl(input, 6, 6)
+fn trg_rl(s, a, i) = if i >= count(s) or at(s, i) == "\n" then slice(s, a, i) else trg_rl(s, a, i + 1)
+
+## compile compiler/stage1/lumec.src to assembly with the shipped lumec
+fn trg_compile(root, out) = hio_osrun_ict(hio_bin_dir(root) + "/lumec", Nil, root + "/compiler/stage1/lumec.src", out, out + ".err", 180000)
+## assemble a .s to an ELF with the shipped lasm
+fn trg_assemble(root, s, elf) = hio_osrun_ct(hio_bin_dir(root) + "/lasm", Cons(s, Nil), elf, elf + ".err", 180000)
+
+fn trg_run(root) = let tmp = root + "/build/trust-root-gate" in let mk = hio_osrun_ct("/bin/mkdir", Cons("-p", Cons(tmp, Nil)), tmp + ".mk", tmp + ".mk.err", 30000) in trg_repro(root, tmp)
+
+## 1. reproducible compiler: two compiles of lumec.src agree; two assembles of the result agree
+fn trg_repro(root, tmp) = let s1 = tmp + "/c1.s" in let s2 = tmp + "/c2.s" in let a = trg_compile(root, s1) in let b = trg_compile(root, s2) in if a != 0 or b != 0 then "the shipped lumec could not compile lumec.src: " + fs_read_file(s1 + ".err") + fs_read_file(s2 + ".err") else if fs_files_equal(s1, s2) == 0 then "lumec is not deterministic: two compiles of lumec.src differ" else trg_asm(root, tmp, s1)
+fn trg_asm(root, tmp, s1) = let e1 = tmp + "/c1.elf" in let e2 = tmp + "/c2.elf" in let a = trg_assemble(root, s1, e1) in let b = trg_assemble(root, s1, e2) in if a != 0 or b != 0 then "lasm failed on the compiler's own assembly: " + fs_read_file(e1 + ".err") + fs_read_file(e2 + ".err") else if fs_files_equal(e1, e2) == 0 then "lasm is not deterministic: two assembles of lumec.s differ" else trg_selfverify(root, tmp, e1)
+
+## 2. self-verifying: the freshly assembled compiler equals the shipped lumec binary
+fn trg_selfverify(root, tmp, e1) = let shipped = hio_bin_dir(root) + "/lumec" in if fs_files_equal(e1, shipped) == 0 then "the shipped lumec is not reproducible from its source: lasm(lumec(lumec.src)) differs from " + shipped else trg_audit(root)
+
+## 3. small, bounded trust root
+fn trg_audit(root) = let n = trg_seed_lines(root, trg_seed_files(), 0) in if n < 0 then "a Stage-0 seed file in the audited set is missing (the trust root changed shape)" else if n > trg_seed_bound() then "the Stage-0 C trust root grew to " + str(n) + " lines, past the audited bound of " + str(trg_seed_bound()) + " (keep the anchor small, or raise the bound deliberately)" else "OK: the toolchain is reproducible (lumec and lasm byte-identical across builds), the shipped lumec equals its source, and the Stage-0 trust root is " + str(n) + " lines of C across " + str(trg_len(trg_seed_files())) + " files"
+fn trg_len(xs) = match xs
+    Nil        => 0
+    Cons(h, t) => 1 + trg_len(t)
+
+fn trg_main(root) = if os_platform() != "linux" then "OK: trust-root gate runs on Linux x86-64 only (skipped here)" else let e = trg_run(root) in if slice(e, 0, 3) != "OK:" then ctfail("trust-root gate failed: " + e + "\n") else e
+
+fn trg_dispatch(input) = let root = trg_root(input) in if root == "" then ctfail("trust-root gate requires @root\n") else trg_main(root)
+
+print trg_dispatch(readall())

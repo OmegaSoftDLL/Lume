@@ -457,7 +457,7 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -z "${LUME0_
     # #404: real memory management -- heap observability, scoped arenas, heap cap.
     # the guarantees that span several front-ends have their own Lume gates
     # the gates start build/bin/lumec themselves: LUME_BIN_DIR (exported above for the probes) must name that directory
-    for gate in ownership_gate runtime_sync_gate gc_gate raw_abi_gate builtins_gate seed_safe_gate; do
+    for gate in ownership_gate runtime_sync_gate gc_gate raw_abi_gate builtins_gate seed_safe_gate trust_root_gate; do
         if LUME_BIN_DIR="$ntmp" ../../lume build ../../tests/harness/$gate.src -o ../../build/bin/$gate 2>"$ntmp/$gate.err" && printf '@root %s\n' "$(cd ../.. && pwd)" | LUME_BIN_DIR="$(cd ../.. && pwd)/build/bin" ../../build/bin/$gate >"$ntmp/$gate.out" 2>>"$ntmp/$gate.err"; then ok "$(cat "$ntmp/$gate.out")"; else bad "$gate"; tail -n 3 "$ntmp/$gate.err"; fi
     done
     # every documented builtin called once (a builtin missing from a release fails to compile here), on every platform
