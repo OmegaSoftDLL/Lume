@@ -125,3 +125,30 @@ fn rta_k(h) =
         rta_die("lume: arena error: no live arena at this handle (arena_new first)\n")
     else
         k
+
+## --- the table of global values (__lume_global_set / __lume_global_get, the slots of top-level lets) ----------------
+## __rt_gtab holds __rt_gcap words (a heap cell the collector reaches through .bss); a slot past the end grows it to
+## 2 i + 16; an index outside 0..4095 is a runtime stop; reading a slot before it is set stops with the early message
+fn __lume_global_set(iv, v) =
+    let i = rt_int(iv) in
+    if i < 0 or i >= 4096 then
+        __rt_goob()
+    else
+        let g = (if i >= load64(sym_addr("__rt_gcap")) then rta_ggrow(2 * i + 16) else 0) in
+        let w = store64(load64(sym_addr("__rt_gtab")) + 8 * i, v) in
+        v
+fn rta_ggrow(n) =
+    let t = alloc(8 * n) in
+    let c = rt_copyn(t, load64(sym_addr("__rt_gtab")), 0, 8 * load64(sym_addr("__rt_gcap"))) in
+    let a = store64(sym_addr("__rt_gtab"), t) in
+    store64(sym_addr("__rt_gcap"), n)
+fn __lume_global_get(iv) =
+    let i = rt_int(iv) in
+    if i < 0 or i >= 4096 then
+        __rt_goob()
+    else if i >= load64(sym_addr("__rt_gcap")) then
+        rta_early()
+    else
+        let v = load64(load64(sym_addr("__rt_gtab")) + 8 * i) in
+        if v == 0 then rta_early() else v
+fn rta_early() = let w = sys_call(1, 2, sym_addr("__rt_early_msg"), strlen(sym_addr("__rt_early_msg")), 0, 0) in sys_call(60, 3, 0, 0, 0, 0)

@@ -1,0 +1,64 @@
+## seed_safe_gate.src -- the compiler stays assemblable by the frozen Stage-0 seed.
+##
+## The seed assembler (bootstrap/lume0/elf.c, `elf_assemble`) knows a fixed, frozen set of x86-64 instruction forms
+## and answers "unsupported instruction: <m>" for anything else. During a bootstrap it assembles the compiler's own
+## generated assembly, so a single instruction the seed does not know (an `xchgq`, a port `outb`/`inb` pulled in by a
+## builtin) breaks the whole seed bootstrap -- and only the full seed battery used to reveal it. This gate predicts
+## that failure in milliseconds: it compiles compiler/stage1/lumec.src with the installed `lumec` (a hosted program,
+## so its assembly carries both the compiler's own code and the runtime tail, including the raw-compiled runtime
+## routines) and checks that every instruction mnemonic is one the frozen seed can assemble. A migration that moves a
+## routine to `lumec --raw`, or uses a seed-unsafe builtin in the compiler, now fails here with the exact mnemonic and
+## line, instead of surfacing late as a cryptic bootstrap error.
+##
+## Input: `@root DIR`. Linux only (it runs the Linux `lumec`); on another system it says so and passes.
+## The seed's instruction set is mirrored from elf.c below; the seed is frozen, so the mirror never drifts.
+use hostio
+
+## --- the frozen seed's instruction set (elf.c emit_ins), mnemonic by mnemonic ---
+fn ssg_seed_ok(m) = ssg_fixed(m) == 1 or ssg_jcc(m) == 1 or ssg_setcc(m) == 1 or ssg_alu(m) == 1
+fn ssg_fixed(m) = if m == "syscall" or m == "ret" or m == "cqto" or m == "pushq" or m == "popq" or m == "jmp" or m == "call" or m == "movzbq" or m == "movzbl" or m == "negq" or m == "notq" or m == "mulq" or m == "divq" or m == "idivq" or m == "incq" or m == "decq" or m == "salq" or m == "shlq" or m == "sarq" or m == "shrq" or m == "testq" or m == "testb" or m == "imulq" or m == "movq" or m == "movl" or m == "movb" or m == "leaq" then 1 else 0
+fn ssg_jcc(m) = if m == "je" or m == "jz" or m == "jne" or m == "jnz" or m == "jo" or m == "jno" or m == "jc" or m == "jnc" or m == "jl" or m == "jg" or m == "jle" or m == "jge" or m == "js" or m == "jns" then 1 else 0
+fn ssg_setcc(m) = if m == "sete" or m == "setne" or m == "setl" or m == "setg" or m == "setle" or m == "setge" or m == "sets" or m == "setns" then 1 else 0
+## ALU add/or/and/sub/xor/cmp with a q/l/b suffix (elf.c strips the suffix and matches the core by prefix)
+fn ssg_alu(m) = if count(m) < 3 then 0 else let suf = at(m, count(m) - 1) in if suf != "q" and suf != "l" and suf != "b" then 0 else let c = slice(m, 0, count(m) - 1) in if c == "add" or c == "or" or c == "and" or c == "sub" or c == "xor" or c == "cmp" then 1 else 0
+
+## --- the mnemonic of one instruction line (the first whitespace-separated token) ---
+fn ssg_mnem(s, i) = if i >= count(s) or at(s, i) == " " or at(s, i) == "\t" then slice(s, 0, i) else ssg_mnem(s, i + 1)
+
+## --- scan: a line is an instruction unless it is blank, a comment (#), a directive (.) or a label (ends with :) ---
+fn ssg_scan(lines, lno, bad) = match lines
+    Nil        => bad
+    Cons(h, t) => let s = ssg_trim(h) in if s == "" or at(s, 0) == "#" or at(s, 0) == "." or lp_ends_colon(s) == 1 then ssg_scan(t, lno + 1, bad) else let m = ssg_mnem(s, 0) in if ssg_seed_ok(m) == 1 then ssg_scan(t, lno + 1, bad) else Cons("line " + str(lno) + ": " + m, ssg_scan(t, lno + 1, bad))
+fn lp_ends_colon(s) = if count(s) == 0 then 0 else if at(s, count(s) - 1) == ":" then 1 else 0
+fn ssg_trim(s) = ssg_rtrim(ssg_ltrim(s))
+fn ssg_ltrim(s) = if count(s) > 0 and (at(s, 0) == " " or at(s, 0) == "\t") then ssg_ltrim(slice(s, 1, count(s))) else s
+fn ssg_rtrim(s) = if count(s) > 0 and (at(s, count(s) - 1) == " " or at(s, count(s) - 1) == "\t" or at(s, count(s) - 1) == "\r") then ssg_rtrim(slice(s, 0, count(s) - 1)) else s
+
+fn ssg_lines(s) = ssg_lines2(s, 0, 0, Nil)
+fn ssg_lines2(s, a, i, acc) = if i >= count(s) then lp_rev2(Cons(slice(s, a, i), acc)) else if at(s, i) == "\n" then ssg_lines2(s, i + 1, i + 1, Cons(slice(s, a, i), acc)) else ssg_lines2(s, a, i + 1, acc)
+fn lp_rev2(xs) = lp_rev2a(xs, Nil)
+fn lp_rev2a(xs, acc) = match xs
+    Nil        => acc
+    Cons(h, t) => lp_rev2a(t, Cons(h, acc))
+
+fn ssg_join(xs, sep) = match xs
+    Nil        => ""
+    Cons(h, t) => if lp_isnil2(t) == 1 then h else h + sep + ssg_join(t, sep)
+fn lp_isnil2(xs) = match xs
+    Nil        => 1
+    Cons(h, t) => 0
+
+fn ssg_root(input) = if count(input) < 6 or slice(input, 0, 6) != "@root " then "" else ssg_rl(input, 6, 6)
+fn ssg_rl(s, a, i) = if i >= count(s) or at(s, i) == "\n" then slice(s, a, i) else ssg_rl(s, a, i + 1)
+
+## --- self-test: the scanner must flag a seed-unsafe instruction and accept the seed-safe ones ---
+fn ssg_selftest() = let bad = ssg_scan(ssg_lines("    movq %rax, %rbx\n    xchgq %rax, %rcx\n    addq $1, %rax\n    outb %al, %dx\nfoo:\n    ret\n"), 1, Nil) in count(ssg_join(bad, " | "))
+fn ssg_selftest_ok() = let bad = ssg_scan(ssg_lines("    movq %rax, %rbx\n    xchgq %rax, %rcx\n    addq $1, %rax\n    outb %al, %dx\nfoo:\n    ret\n"), 1, Nil) in ssg_join(bad, " | ")
+
+fn ssg_run(root) = let tmp = root + "/build/seed-safe-gate" in let m = hio_osrun_ct("/bin/mkdir", Cons("-p", Cons(tmp, Nil)), tmp + ".mk", tmp + ".mk.err", 30000) in let src = root + "/compiler/stage1/lumec.src" in let out = tmp + "/lumec.s" in let st = hio_osrun_ict(hio_bin_dir(root) + "/lumec", Nil, src, out, out + ".err", 180000) in if st != 0 then "the installed lumec could not compile lumec.src: " + fs_read_file(out + ".err") else let bad = ssg_scan(ssg_lines(fs_read_file(out)), 1, Nil) in if lp_isnil2(bad) == 0 then "lumec.s has instructions the frozen seed cannot assemble: " + ssg_join(bad, " | ") else ""
+
+fn ssg_main(root) = if ssg_selftest_ok() != "line 2: xchgq | line 4: outb" then ctfail("seed-safe gate self-test failed: scanner did not flag xchgq/outb (" + ssg_selftest_ok() + ")\n") else if os_platform() != "linux" then "OK: seed-safe gate runs the Linux lumec only (self-test passed; scan skipped here)" else let e = ssg_run(root) in if e != "" then ctfail("seed-safe gate failed: " + e + "\n") else "OK: the compiler's assembly stays within the frozen Stage-0 seed instruction set"
+
+fn ssg_dispatch(input) = let root = ssg_root(input) in if root == "" then ctfail("seed-safe gate requires @root\n") else ssg_main(root)
+
+print ssg_dispatch(readall())

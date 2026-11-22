@@ -128,3 +128,20 @@ fn rtm_num(p, v, n) =
     else
         rtm_num(p - 1, v / 10, n + 1)
 fn __rt_alloc_oom() = let w = sys_call(1, 2, sym_addr(".Lrt_oom_msg"), 36, 0, 0) in sys_call(60, 12, 0, 0, 0, 0)
+
+## --- the signal set-up of every hosted program (was runtime_core assembly) -------------------------------------------
+## an integer division fault (SIGFPE, or the Windows layer's exception filter): the message, exit 3
+fn __rt_on_fpe() = let w = sys_call(1, 2, sym_addr("__rt_div_msg"), strlen(sym_addr("__rt_div_msg")), 0, 0) in sys_call(60, 3, 0, 0, 0, 0)
+## a 32 KiB alternate stack (sigaltstack), then SIGSEGV -> __rt_on_segv and SIGFPE -> __rt_on_fpe through
+## rt_sigaction (flags SA_SIGINFO | SA_ONSTACK | SA_RESTORER, the restorer __rt_sigret calling rt_sigreturn)
+fn __rt_stack_guard() =
+    let a = store64(sym_addr("__rt_ss"), sym_addr("__rt_altstack")) in
+    let b = store64(sym_addr("__rt_ss") + 16, 32768) in
+    let c = sys_call(131, sym_addr("__rt_ss"), 0, 0, 0, 0) in
+    let d = store64(sym_addr("__rt_sa"), sym_addr("__rt_on_segv")) in
+    let e = store64(sym_addr("__rt_sa") + 16, sym_addr("__rt_sigret")) in
+    let f = store64(sym_addr("__rt_sa") + 8, 201326596) in
+    let g = sys_call(13, 11, sym_addr("__rt_sa"), 0, 8, 0) in
+    let h = store64(sym_addr("__rt_sa"), sym_addr("__rt_on_fpe")) in
+    let i = store64(sym_addr("__rt_sa") + 16, sym_addr("__rt_on_fpe")) in
+    sys_call(13, 8, sym_addr("__rt_sa"), 0, 8, 0)

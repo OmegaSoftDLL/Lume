@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A seed-safety gate (`tests/harness/seed_safe_gate.src`).** The frozen Stage-0 seed assembler knows a fixed set of
+  instruction forms; one it does not know (an `xchgq`, a port `outb`/`inb` pulled in by a builtin) breaks a whole seed
+  bootstrap, which only the full seed battery used to reveal. The gate compiles the compiler itself and checks that
+  every instruction mnemonic is one the seed can assemble, so a migration to `lumec --raw`, or a seed-unsafe builtin in
+  the compiler, now fails in milliseconds with the exact mnemonic and line instead of surfacing late. Self-test inside.
+
+### Fixed
+- **`--protect` identifies user functions by an explicit runtime boundary, not by position.** The compiler emits a
+  `## __lume_rt_boundary` marker at the seam between the user's functions and the runtime tail, and the protector
+  treats everything after it as runtime (never renamed). Previously it assumed user code ended at `alloc:`; once a
+  routine such as `__rt_on_fpe` moved to `lumec --raw` it sat before `alloc:` and was renamed as if it were a user
+  function, but the `leaq` reaching it was not, so `--protect hardened`/`max` failed to link ([L0001] undefined
+  `__rt_on_fpe`). The protector also never renames a reserved `__` label. A future runtime reordering can no longer be
+  mistaken for user code. Fixes the P33 software-protection gate.
+
 ### Changed
+- **Runtime 100% Lume: output capture and the signal set-up are Lume** (`__rt_show_str` / `__rt_cap_mem`, the
+  capture behind `str` of any value, in rt/rt_buf.src; `__rt_stack_guard`, the alternate stack and the SIGSEGV /
+  SIGFPE handlers, and `__rt_on_fpe`, in rt/rt_fail.src). Same output, same stack-overflow stop (exit 12).
+- **Runtime 100% Lume: the table of computed constants is Lume** (`__lume_global_set` / `__lume_global_get`, the
+  slots of `const` values computed at start-up, in rt/rt_arena.src; same growth, same stops).
 - **Runtime 100% Lume: the arenas are Lume now.** rt/rt_arena.src (freeze with LZ compression, thaw, the page
   brought back by the fault handler, the idle tick after each collection, __rt_peak; in every hosted program) and
   rt/rt_mem.src (heap_stats, heap_peak_used, gc_collect, gc_count, arena_new / alloc / reset / destroy / freeze /

@@ -180,6 +180,30 @@ fn rt_utf8_bad() = __rt_die3(0, 0, 0, 0, sym_addr(".Lrt_utf8_msg"))
 ## (__rt_cap_mem: bytes in %rsi, count in %rcx), else to fd 1 (__rt_write_fd1: bytes in %rsi, count in %rdx);
 ## print_int always writes to fd 1, with a newline. Digits are produced from a negative value (the most negative int
 ## needs no special case), backwards into .Lrt_pbuf.
+## the capture of print output into a string (str / show of any value): __rt_show_str turns capture on, prints the
+## value with showval and makes a string of what was written; __rt_cap_mem appends n bytes at p to the capture
+## buffer (a heap cell kept in .bss, grown to twice the need), the bytes in its 2nd argument and the count in its
+## 4th, as rt_wout calls it
+fn __rt_show_str(v) =
+    let a = store64(sym_addr("__rt_cap_len"), 0) in
+    let b = store64(sym_addr("__rt_cap_cap"), 0) in
+    let c = store64(sym_addr("__rt_cap_buf"), 0) in
+    let d = store64(sym_addr("__rt_cap_on"), 1) in
+    let e = showval(v) in
+    let f = store64(sym_addr("__rt_cap_on"), 0) in
+    let r = __rt_mkstrn(load64(sym_addr("__rt_cap_buf")), load64(sym_addr("__rt_cap_len"))) in
+    let g = store64(sym_addr("__rt_cap_buf"), 0) in
+    r
+fn __rt_cap_mem(x, p, y, n) =
+    let need = load64(sym_addr("__rt_cap_len")) + n + 1 in
+    let g = (if need > load64(sym_addr("__rt_cap_cap")) then rtb_capgrow(2 * need) else 0) in
+    let c = rt_copyn(load64(sym_addr("__rt_cap_buf")) + load64(sym_addr("__rt_cap_len")), p, 0, n) in
+    store64(sym_addr("__rt_cap_len"), load64(sym_addr("__rt_cap_len")) + n)
+fn rtb_capgrow(c) =
+    let a = store64(sym_addr("__rt_cap_cap"), c) in
+    let nb = __lume_alloc_a(c) in
+    let k = rt_copyn(nb, load64(sym_addr("__rt_cap_buf")), 0, load64(sym_addr("__rt_cap_len"))) in
+    store64(sym_addr("__rt_cap_buf"), nb)
 fn rt_wout(p, n) = if load64(sym_addr("__rt_cap_on")) != 0 then __rt_cap_mem(0, p, 0, n) else __rt_write_fd1(0, p, n)
 fn wch(c) = let p = sym_addr(".Lrt_pbuf") in let w = store8(p, c) in rt_wout(p, 1)
 fn wint(n) =
