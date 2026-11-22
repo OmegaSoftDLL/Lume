@@ -1,0 +1,270 @@
+## compiler/stage1/rt/rt_gc.src -- the mark & lazy-sweep garbage collector written in Lume, compiled by `lumec --raw`
+## into runtime_lume.lume (rt_lume_os group, linked into every program). This replaces the hand-written x86-64 of
+## __gc_collect / __gc_scan / __gc_unmark / __gc_sweep / __gc_flush that lived in runtime_core.lume (rt_gc_mark,
+## rt_gc_sweep). Same heap layout, same chunk table, same behaviour, byte for byte of semantics.
+##
+## __gc_collect itself stays a 12-line assembly shim in runtime_core (rt_gc_mark): it pushes the six callee-saved
+## registers so the mutator's register roots become scannable stack words, then passes %rsp to __gc_collect_lume.
+## Reading %rsp is the one thing `lumec --raw` cannot express yet (RUNTIME QUEUE item 4, stack intrinsics); every
+## other step of the collector is this file.
+##
+## HEAP LAYOUT (unchanged from the assembly):
+##   __gc_lo        base of the heap; every object address is __gc_lo + offset, offset in [0, __gc_span)
+##   __gc_tab[idx]  one word per 64 KiB chunk (idx = offset >> 16): 0 free, 1 small-chunk head, 2 large-chunk head,
+##                  negative = a large chunk's continuation (the value is ~headindex)
+##   a 64 KiB chunk header, at the chunk's aligned base:
+##     +0  element size (small) / total size (large)      +32 class pointer (small)
+##     +8  slot count (large: 1)                           +40 leaf flag (no pointers inside -> never enqueued)
+##     +16 reciprocal of the element size (small)          +48 live-slot mark count
+##     +24 data offset (first slot; large: 72)             +56 next chunk in the class live list / run length (large)
+##     +64 one mark byte per slot
+##   a size class, __gc_cls + 48 * k (86 classes):
+##     +0 free-list head  +8 carve cursor  +16 carve end  +24 element size  +32 leaf flag  +40 live-chunk list head
+
+## ---- scanning: for every word in [p, hi) treat it as a candidate pointer, mark the object it lands in, and (unless
+## the object is a leaf) push the object onto the mark stack. `top` is the mark-stack top; the new top is returned.
+fn __gc_scan(p, hi, top) =
+    if p >= hi then
+        top
+    else
+        __gc_scan(p + 8, hi, __gc_mark(load64(p), top))
+
+fn __gc_mark(w, top) =
+    let lo = load64(sym_addr("__gc_lo")) in
+    let off = w - lo in
+    if off < 0 then
+        top
+    else if off >= load64(sym_addr("__gc_span")) then
+        top
+    else
+        let e = load64(load64(sym_addr("__gc_tab")) + bit_shr(off, 16) * 8) in
+        if e == 0 then
+            top
+        else if e < 0 then
+            __gc_mark_large(bit_xor(e, 0 - 1), off, lo, top)
+        else if e == 2 then
+            __gc_mark_large(bit_shr(off, 16), off, lo, top)
+        else
+            __gc_mark_small(bit_and(off, 0 - 65536) + lo, bit_and(off, 65535), top)
+
+## large object: hidx is the head chunk index; the interior offset is the pointer minus the head chunk base.
+fn __gc_mark_large(hidx, off, lo, top) =
+    let head = hidx * 65536 + lo in
+    let d = off - hidx * 65536 - load64(head + 24) in
+    if d < 0 then
+        top
+    else if d >= load64(head) then
+        top
+    else if load8(head + 64) != 0 then
+        top
+    else
+        let m = store8(head + 64, 1) in
+        let c = store64(head + 48, load64(head + 48) + 1) in
+        if load64(head + 40) != 0 then
+            top
+        else
+            let w = store64(top, head + load64(head + 24)) in
+            top + 8
+
+## small object: base is the chunk header, offreg the offset within the 64 KiB chunk.
+fn __gc_mark_small(base, offreg, top) =
+    let d = offreg - load64(base + 24) in
+    if d < 0 then
+        top
+    else
+        let slot = d / load64(base) in
+        if slot >= load64(base + 8) then
+            top
+        else if load8(base + 64 + slot) != 0 then
+            top
+        else
+            let m = store8(base + 64 + slot, 1) in
+            let c = store64(base + 48, load64(base + 48) + 1) in
+            if load64(base + 40) != 0 then
+                top
+            else
+                let w = store64(top, base + load64(base + 24) + slot * load64(base)) in
+                top + 8
+
+## ---- the collection, called from the assembly shim with sp = %rsp after the six callee-saved pushes.
+fn __gc_collect_lume(sp) =
+    let n = store64(sym_addr("__gc_count"), load64(sym_addr("__gc_count")) + 1) in
+    let pk = __rt_peak() in
+    let um = __gc_unmark() in
+    let msz = load64(sym_addr("__gc_nchunks")) * 32768 + 4096 in
+    let ssz = store64(sym_addr("__gc_ms_size"), msz) in
+    let base = sys_call(9, 0, msz, 3, 16418, 0 - 1) in
+    if base < 0 then
+        __gc_ms_oom()
+    else
+        let sb = store64(sym_addr("__gc_ms_base"), base) in
+        let t1 = __gc_scan(sp, load64(sym_addr("__gc_stack_top")), base) in
+        let t2 = __gc_scan(sym_addr("__gc_bss_lo"), sym_addr("__gc_bss_hi"), t1) in
+        let t3 = __gc_scan_arenas(sym_addr(".Lrt_ar_table"), sym_addr("__rt_az"), sym_addr(".Lrt_ar_table") + 96, t2) in
+        let t4 = __gc_drain(base, t3) in
+        let sw = __gc_sweep() in
+        let mu = sys_call(11, base, msz, 0, 0, 0) in
+        __rt_az_tick()
+
+## the four arena table entries (24 bytes each) with their parallel __rt_az entries (64 bytes each): an arena is a
+## root when its az slot's +32 is zero (not cold / not secret) and the arena holds data (+16 != 0).
+fn __gc_scan_arenas(ar, az, arend, top) =
+    if ar >= arend then
+        top
+    else if load64(az + 32) != 0 or load64(ar + 16) == 0 then
+        __gc_scan_arenas(ar + 24, az + 64, arend, top)
+    else
+        __gc_scan_arenas(ar + 24, az + 64, arend, __gc_scan(load64(ar), load64(ar + 8), top))
+
+## drain the mark stack: pop an object, scan its own fields (which may push more), until the stack is empty. Kept in
+## the same shape as __gc_scan (no leading lets, the inner call nested in the self-call's argument) so `lumec --raw`
+## turns the self-recursion into a loop rather than a deep call chain (one frame per live object would overflow).
+fn __gc_drain(base, top) =
+    if top == base then
+        base
+    else
+        __gc_drain(base, __gc_scan(load64(top - 8), load64(top - 8) + load64(__gc_cbase(load64(top - 8))), top - 8))
+
+fn __gc_cbase(obj) = bit_and(obj - load64(sym_addr("__gc_lo")), 0 - 65536) + load64(sym_addr("__gc_lo"))
+
+fn __gc_ms_oom() =
+    let w = sys_call(1, 2, sym_addr("__gc_ms_msg"), strlen(sym_addr("__gc_ms_msg")), 0, 0) in
+    sys_call(60, 12, 0, 0, 0, 0)
+
+## ---- unmark: clear every live chunk's mark bytes and mark count, walking each class's live-chunk list.
+fn __gc_unmark() = __gc_unmark_cls(sym_addr("__gc_cls"), 86)
+
+fn __gc_unmark_cls(cls, n) =
+    if n == 0 then
+        0
+    else
+        let h = __gc_unmark_chunks(load64(cls + 40)) in
+        __gc_unmark_cls(cls + 48, n - 1)
+
+fn __gc_unmark_chunks(ch) =
+    if ch == 0 then
+        0
+    else
+        let z = __gc_unmark_bytes(ch + 64, load64(ch + 8)) in
+        let c = store64(ch + 48, 0) in
+        __gc_unmark_chunks(load64(ch + 56))
+
+fn __gc_unmark_bytes(p, k) =
+    if k == 0 then
+        0
+    else
+        let w = store8(p, 0) in
+        __gc_unmark_bytes(p + 1, k - 1)
+
+## ---- sweep: reset the classes, walk every chunk, re-list the live ones, free the dead ones (coalescing runs for
+## __gc_flush), total the used bytes, and set the next collection limit.
+fn __gc_sweep() =
+    let r = __gc_sweep_reset(sym_addr("__gc_cls"), 86) in
+    let run = store64(sym_addr("__gc_run"), 0 - 1) in
+    let used = __gc_sweep_loop(0, 0) in
+    let fl = __gc_flush(load64(sym_addr("__gc_nchunks"))) in
+    let hu = store64(sym_addr(".Lrt_heap_used"), used) in
+    let lim = used * 3 in
+    let l2 = if lim >= 8388608 then lim else 8388608 in
+    let sl = store64(sym_addr("__gc_limit"), l2) in
+    store64(sym_addr("__gc_cursor"), 0)
+
+fn __gc_sweep_reset(cls, n) =
+    if n == 0 then
+        0
+    else
+        let a = store64(cls, 0) in
+        let b = store64(cls + 8, 0) in
+        let c = store64(cls + 16, 0) in
+        let d = store64(cls + 40, 0) in
+        __gc_sweep_reset(cls + 48, n - 1)
+
+fn __gc_sweep_loop(i, used) =
+    if i >= load64(sym_addr("__gc_nchunks")) then
+        used
+    else
+        let e = load64(load64(sym_addr("__gc_tab")) + i * 8) in
+        if e == 0 then
+            __gc_sweep_loop(i + 1, used)
+        else
+            let base = i * 65536 + load64(sym_addr("__gc_lo")) in
+            if e == 2 then
+                __gc_sweep_large(i, base, used)
+            else
+                __gc_sweep_small(i, base, used)
+
+fn __gc_sweep_small(i, base, used) =
+    if load64(base + 48) == 0 then
+        __gc_sweep_dead(i, used)
+    else
+        let f = __gc_flush(i) in
+        let u2 = used + load64(base + 48) * load64(base) in
+        let cls = load64(base + 32) in
+        let nx = store64(base + 56, load64(cls + 40)) in
+        let lv = store64(cls + 40, base) in
+        __gc_sweep_loop(i + 1, u2)
+
+fn __gc_sweep_dead(i, used) =
+    let z = store64(load64(sym_addr("__gc_tab")) + i * 8, 0) in
+    let nf = store64(sym_addr("__gc_nfree"), load64(sym_addr("__gc_nfree")) + 1) in
+    let r = if load64(sym_addr("__gc_run")) < 0 then store64(sym_addr("__gc_run"), i) else 0 in
+    __gc_sweep_loop(i + 1, used)
+
+fn __gc_sweep_large(i, base, used) =
+    if load64(base + 48) == 0 then
+        __gc_sweep_large_dead(i, base, used)
+    else
+        let f = __gc_flush(i) in
+        let rc = load64(base + 56) in
+        let u2 = used + load64(base) in
+        let m1 = store64(base + 48, 0) in
+        let m2 = store8(base + 64, 0) in
+        __gc_sweep_loop(i + rc, u2)
+
+fn __gc_sweep_large_dead(i, base, used) =
+    let rc = load64(base + 56) in
+    let nf = store64(sym_addr("__gc_nfree"), load64(sym_addr("__gc_nfree")) + rc) in
+    let r = if load64(sym_addr("__gc_run")) < 0 then store64(sym_addr("__gc_run"), i) else 0 in
+    let z = __gc_sweep_zero_tab(load64(sym_addr("__gc_tab")), i, rc) in
+    __gc_sweep_loop(i + rc, used)
+
+fn __gc_sweep_zero_tab(tab, i, rc) =
+    if rc == 0 then
+        0
+    else
+        let z = store64(tab + i * 8, 0) in
+        __gc_sweep_zero_tab(tab, i + 1, rc - 1)
+
+## flush the open run of free chunks [run, cur): keep (lazily zeroed, counted in __gc_rfree) as many as the limit
+## allows, hand the rest back to the kernel with madvise(MADV_DONTNEED). A set heap cap skips the keep path.
+fn __gc_flush(cur) =
+    let run = load64(sym_addr("__gc_run")) in
+    if run < 0 then
+        0
+    else
+        let total = cur - run in
+        let keep = __gc_flush_keep(total) in
+        let rf = if keep > 0 then store64(sym_addr("__gc_rfree"), load64(sym_addr("__gc_rfree")) + keep) else 0 in
+        let zz = if keep > 0 then __gc_flush_zero(run * 65536 + load64(sym_addr("__gc_lo")), keep * 8192) else 0 in
+        let rem = total - keep in
+        let md = if rem > 0 then sys_call(28, (run + keep) * 65536 + load64(sym_addr("__gc_lo")), rem * 65536, 4, 0, 0) else 0 in
+        store64(sym_addr("__gc_run"), 0 - 1)
+
+fn __gc_flush_keep(total) =
+    if load64(sym_addr(".Lrt_heap_cap")) != 0 then
+        0
+    else
+        let avail = bit_shr(load64(sym_addr("__gc_limit")), 16) - load64(sym_addr("__gc_rfree")) in
+        if avail <= 0 then
+            0
+        else if avail >= total then
+            total
+        else
+            avail
+
+fn __gc_flush_zero(p, words) =
+    if words == 0 then
+        0
+    else
+        let z = store64(p, 0) in
+        __gc_flush_zero(p + 8, words - 1)
