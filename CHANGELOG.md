@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every instruction mnemonic is one the seed can assemble, so a migration to `lumec --raw`, or a seed-unsafe builtin in
   the compiler, now fails in milliseconds with the exact mnemonic and line instead of surfacing late. Self-test inside.
 
+### Changed
+- **The decimal-arithmetic runtime trampolines are Lume source now, not hand-written assembly.** The five dynamic
+  decimal entry points — `__rt_dadd`, `__rt_dsub`, `__rt_dmul`, `__rt_ddiv`, `__rt_dcmp`, which forward a decimal
+  `+ - * / <` reached through an operand the compiler could not type (a parameter, a list element) to the program's
+  `__lume_dyn_*` functions — moved from assembly text in `runtime_core.lume` to `compiler/stage1/rt/rt_dec.src`,
+  compiled by `lumec --raw` into `rt_lume_dec` (linked on demand through `has_dec`, like `rt_f64`/`rt_lume_f64`). The
+  decimal-shape detection (`__rt_anyd`) stays in `runtime_core.lume` because the typed-runtime verifier parses its
+  span. No behaviour change — identical outputs, one more piece of the runtime is Lume rather than asm (golden rule).
+
 ### Fixed
 - **`[W0003]` (duplicate name) warns only on a real ambiguity.** It now fires only where a shared name is used
   *unqualified* with two of its definitions visible — the one case that is otherwise an ambiguity error. Fully
