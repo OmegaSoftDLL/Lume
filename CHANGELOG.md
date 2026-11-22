@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not use it (the committed runtime text is seed-safe — no new instruction reaches the frozen Stage-0 seed).
 
 ### Changed
+- **The garbage collector is Lume source now, not hand-written assembly.** The mark & lazy-sweep collector — the body
+  of `__gc_collect` (clear marks, scan the roots, drain the mark stack, sweep), `__gc_scan` with interior-pointer
+  marking for small and large chunks, `__gc_unmark`, `__gc_sweep` and `__gc_flush` — moved from assembly text in
+  `runtime_core.lume` (`rt_gc_mark`, `rt_gc_sweep`) to `compiler/stage1/rt/rt_gc.src`, compiled by `lumec --raw`. Same
+  heap layout, same chunk table (0 free / 1 small / 2 large head / negative continuation), same chunk-header and class
+  offsets and the same behaviour; the reciprocal magic-division of the slot index becomes a plain `/`. `__gc_collect`
+  keeps a twelve-line assembly shim that pushes the six callee-saved registers — so the mutator's register roots become
+  scannable stack words — then passes `%rsp` to the Lume `__gc_collect_lume`; reading `%rsp` is the one primitive
+  `lumec --raw` cannot express yet (RUNTIME QUEUE item 4). The allocator fast path (span-locked by `ltv_rt`) and
+  `__gc_sweep_chunk` (the allocator's lazy per-chunk sweep) stay assembly. Validated by the stage 2 == stage 3
+  bit-identical fixpoint and the frozen-seed battery (438 / 438).
 - **The decimal-arithmetic runtime trampolines are Lume source now, not hand-written assembly.** The five dynamic
   decimal entry points — `__rt_dadd`, `__rt_dsub`, `__rt_dmul`, `__rt_ddiv`, `__rt_dcmp`, which forward a decimal
   `+ - * / <` reached through an operand the compiler could not type (a parameter, a list element) to the program's
