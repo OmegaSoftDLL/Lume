@@ -1,0 +1,97 @@
+## compiler/stage1/rt/rt_mem.src - the arena and heap builtins (heap_stats, gc_collect, gc_count, arena_new /
+## alloc / reset / destroy / freeze / thaw / secret / frozen), compiled by `lumec --raw` into rt_lume_mem: only a
+## program that names one of them gets it (has_mem), as it got runtime_mem_tail's assembly before. The arena
+## machinery they share with the collector (freeze, thaw, the fault path) is rt_arena.src.
+
+fn __lume_heap_stats() =
+    let r = alloc(32) in
+    let a = store64(r, sym_addr("__r_hs")) in
+    let b = store64(r + 8, mkint(load64(sym_addr(".Lrt_heap_used")) + load64(sym_addr(".Lrt_heap_arena_used")))) in
+    let c = store64(r + 16, mkint(if load64(sym_addr(".Lrt_heap_cap")) != 0 then load64(sym_addr(".Lrt_heap_cap")) else load64(sym_addr(".Lrt_brk_end")) - load64(sym_addr(".Lrt_heap_base")) + load64(sym_addr("__gc_arena_mapped")))) in
+    let d = store64(r + 24, mkint(load64(sym_addr(".Lrt_heap_allocs")))) in
+    r
+fn __lume_heap_peak_used() = let a = __rt_peak() in mkint(load64(sym_addr(".Lrt_heap_peak")))
+fn __lume_gc_collect() =
+    let a = (if load64(sym_addr("__gc_off")) == 0 then __gc_collect() else 0) in
+    mkint(load64(sym_addr(".Lrt_heap_used")) + load64(sym_addr(".Lrt_heap_arena_used")))
+fn __lume_gc_count() = mkint(load64(sym_addr("__gc_count")))
+fn rta_free(k) = if k >= 4 then 0 - 1 else if load64(rta_tab(k) + 16) == 0 then k else rta_free(k + 1)
+fn __lume_arena_new(sz) =
+    let k = rta_free(0) in
+    if k < 0 then
+        rta_die("lume: arena error: too many live arenas (the runtime supports 4)\n")
+    else
+        let a = store64(rta_az(k) + 40, 0) in
+        let n0 = rt_int(sz) in
+        rta_new2(k, if n0 > 0 then n0 else 1048576)
+fn rta_new2(k, n) =
+    let a = store64(sym_addr("__gc_retry"), 0) in
+    let b = (if load64(sym_addr(".Lrt_heap_cap")) != 0 then rta_capck(n) else 0) in
+    let p = sys_call(9, 0, n, 3, 34, -1) in
+    if p < 0 then
+        __rt_alloc_oom()
+    else
+        let c = store64(sym_addr("__gc_arena_mapped"), load64(sym_addr("__gc_arena_mapped")) + n) in
+        let d = store64(rta_tab(k), p) in
+        let f = store64(rta_tab(k) + 8, p) in
+        let g = store64(rta_tab(k) + 16, p + n) in
+        mkint(k + 1)
+## under LUME_HEAP_CAP: the chunks in use + the arenas + n must fit, after one collection at most
+fn rta_capck(n) =
+    if (load64(sym_addr("__gc_nchunks")) - load64(sym_addr("__gc_nfree"))) * 65536 + load64(sym_addr("__gc_arena_mapped")) + n <= load64(sym_addr(".Lrt_heap_cap")) then
+        0
+    else if load64(sym_addr("__gc_off")) != 0 or load64(sym_addr("__gc_retry")) != 0 then
+        __rt_cap_oom()
+    else
+        let a = store64(sym_addr("__gc_retry"), 1) in
+        let b = __gc_collect() in
+        rta_capck(n)
+fn __lume_arena_alloc(h, sz) =
+    let k = rta_k(h) in
+    let a = rta_live(k) in
+    let n = rt_int(sz) in
+    if n <= 0 then
+        rta_die("lume: arena error: arena_alloc size must be positive\n")
+    else
+        rta_alloc2(rta_tab(k), n)
+fn rta_alloc2(e, n) =
+    let cur = load64(e + 8) in
+    if n > load64(e + 16) - cur then
+        rta_die("lume: arena error: arena capacity exceeded (arena_new cap_hint is a hard budget)\n")
+    else
+        let a = store64(e + 8, cur + n) in
+        let b = store64(sym_addr(".Lrt_heap_allocs"), load64(sym_addr(".Lrt_heap_allocs")) + 1) in
+        let c = rta_addused(n) in
+        let d = __rt_peak() in
+        mkint(cur)
+fn __lume_arena_reset(h) =
+    let k = rta_k(h) in
+    let a = rta_drop(k) in
+    let b = __rt_peak() in
+    let e = rta_tab(k) in
+    let c = rta_addused(0 - (load64(e + 8) - load64(e))) in
+    let d = store64(e + 8, load64(e)) in
+    h
+fn __lume_arena_destroy(h) =
+    let k = rta_k(h) in
+    let a = rta_drop(k) in
+    let b = __rt_peak() in
+    let e = rta_tab(k) in
+    let base = load64(e) in
+    let len = load64(e + 16) - base in
+    let c = rta_addused(0 - (load64(e + 8) - base)) in
+    let d = store64(sym_addr("__gc_arena_mapped"), load64(sym_addr("__gc_arena_mapped")) - len) in
+    let f = store64(e, 0) in
+    let g = store64(e + 8, 0) in
+    let i = store64(e + 16, 0) in
+    let j = sys_call(11, base, len, 0, 0, 0) in
+    h
+fn __lume_arena_freeze(h) =
+    let k = rta_k(h) in
+    if load64(rta_az(k) + 40) != 0 then
+        rta_die("lume: arena error: a secret arena is never compressed (decompression timing leaks it, [C0009])\n")
+    else
+        mkint(__rt_az_freeze(rta_tab(k), rta_az(k)))
+fn __lume_arena_thaw(h) = let k = rta_k(h) in let a = __rt_az_thaw(rta_tab(k), rta_az(k), 0) in h
+fn __lume_arena_secret(h) = let k = rta_k(h) in let a = store64(rta_az(k) + 40, 1) in h
+fn __lume_arena_frozen(h) = let k = rta_k(h) in mkint(load64(rta_az(k) + 32))

@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Runtime 100% Lume: the arenas are Lume now.** rt/rt_arena.src (freeze with LZ compression, thaw, the page
+  brought back by the fault handler, the idle tick after each collection, __rt_peak; in every hosted program) and
+  rt/rt_mem.src (heap_stats, heap_peak_used, gc_collect, gc_count, arena_new / alloc / reset / destroy / freeze /
+  thaw / secret / frozen; a new generated group rt_lume_mem, linked when a program names one, as runtime_mem_tail
+  was) replace about 580 lines of runtime_core assembly with the same messages and exit code 12. The fault
+  handler passes the page to __rt_az_in in the argument registers (no private register contract any more).
+  gen_runtime knows the labels the code generator emits for them (.Lrt_ar_table, __r_hs).
+
 ### Added
+- **`use sysinfo`: `cpu_cores()` -> `{logical, performance, efficiency}`**: the logical processors of performance
+  and efficiency cores (Linux: the kernel's cpu_core / cpu_atom lists; Windows: GetLogicalProcessorInformationEx and
+  EfficiencyClass). On the reference laptop (Core Ultra 5 135U) Windows reports 14 = 4 performance + 10 efficiency.
+- **lumec --raw: the five callee-saved registers go to the values a routine uses most** (a count of the uses of
+  every parameter and let, in the order the code generator numbers them), not to the first five; a parameter
+  without a register gets its own frame slot. Stack loads in the generated runtime 3616 -> 3065, stack stores
+  575 -> 457.
 - **`buf_copy` takes a string as the source** (a 1080p frame that arrives as a string goes into an existing buffer;
   `buf_from_str` made a new 8 MB buffer per frame, ~2.9 ms). LumeDesk request.
 - **`buf_bgra_to_i420_rows(src, stride, w, h, dst, r0, r1)`**: only rows r0 .. r1 - 1 (r0 even), written where the

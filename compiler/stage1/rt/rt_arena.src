@@ -1,0 +1,127 @@
+## compiler/stage1/rt/rt_arena.src - the arenas, the heap counters and their compression (freeze / thaw), compiled by
+## `lumec --raw` into rt_lume_os (every hosted program; kernels have no arenas). They were runtime_core assembly
+## (rt_pack's freeze / thaw / tick and runtime_mem_tail's builtins); same behaviour, same messages, same exit code 12.
+##
+## Data (kept in the runtime's .bss): .Lrt_ar_table, four arenas of 24 bytes (base, cur, end; end 0 = free);
+## __rt_az, their freeze states, 64 bytes each: 0 the store of the compressed pages, 8 its size, 16 the page table
+## (16 bytes a page: the offset in the store, then the code: 0 a zero page, 4096 * 4 + 1 stored raw, n * 4 + 2 n
+## compressed bytes, 3 back in place), 24 pages, 32 frozen, 40 secret (never compressed), 48 idle collections,
+## 56 stored bytes. __rt_az_cold: after this many collections without a touch an arena is frozen (0: never).
+## A frozen arena's pages are PROT_NONE; the first touch faults and __rt_on_segv (runtime_core) calls __rt_az_in for
+## that page, so the program never sees the difference.
+
+fn rta_tab(k) = sym_addr(".Lrt_ar_table") + 24 * k
+fn rta_az(k) = sym_addr("__rt_az") + 64 * k
+## the counters every collection and allocation keeps: the highest used + arena bytes so far
+fn __rt_peak() =
+    let u = load64(sym_addr(".Lrt_heap_used")) + load64(sym_addr(".Lrt_heap_arena_used")) in
+    if u > load64(sym_addr(".Lrt_heap_peak")) then store64(sym_addr(".Lrt_heap_peak"), u) else 0
+fn rta_addused(d) = store64(sym_addr(".Lrt_heap_arena_used"), load64(sym_addr(".Lrt_heap_arena_used")) + d)
+## private anonymous memory (MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE), out of memory stops the program
+fn rta_map(n) = let p = sys_call(9, 0, n, 3, 16418, -1) in if p < 0 then __rt_alloc_oom() else p
+
+## --- freeze: compress every page of the used part into a new store, give the pages back, protect them ------------
+fn __rt_az_freeze(e, z) =
+    if load64(z + 32) != 0 then
+        load64(z + 56)
+    else
+        let np = bit_shr(load64(e + 8) - load64(e) + 4095, 12) in
+        if np == 0 then
+            0
+        else
+            let pt = store64(z + 16, rta_map(np * 16)) in
+            let st = store64(z, rta_map(np * 4384)) in
+            let sz = store64(z + 8, np * 4384) in
+            rta_frz2(e, z, np, rta_fzpages(e, z, 0, np, 0))
+fn rta_frz2(e, z, np, stored) =
+    let a = sys_call(28, load64(e), np * 4096, 4, 0, 0) in
+    let b = sys_call(10, load64(e), np * 4096, 0, 0, 0) in
+    let c = store64(z + 24, np) in
+    let d = store64(z + 32, 1) in
+    let f = store64(z + 56, stored) in
+    let g = __rt_peak() in
+    let h = rta_addused(0 - (load64(e + 8) - load64(e) - stored)) in
+    stored
+## page i of np, the store filled up to o; answers the stored bytes
+fn rta_fzpages(e, z, i, np, o) =
+    if i >= np then
+        o
+    else
+        let src = load64(e) + bit_shl(i, 12) in
+        let pe = load64(z + 16) + bit_shl(i, 4) in
+        let w = store64(pe, o) in
+        rta_fzpages(e, z, i + 1, np, rta_fzpage(src, pe, load64(z) + o, o))
+fn rta_fzpage(src, pe, dst, o) =
+    if rta_zero(src, 0) == 1 then
+        let w = store64(pe + 8, 0) in
+        o
+    else
+        let n = __rt_lz_enc(dst, src, 4096) in
+        if n >= 4096 then
+            let c = rt_copyn(dst, src, 0, 4096) in
+            let w = store64(pe + 8, 16385) in
+            o + 4096
+        else
+            let w = store64(pe + 8, n * 4 + 2) in
+            o + n
+fn rta_zero(p, k) = if k >= 512 then 1 else if load64(p + 8 * k) != 0 then 0 else rta_zero(p, k + 1)
+
+## --- one page back: make it writable again and restore its bytes (called by the fault handler and by thaw) ---------
+fn __rt_az_in(e, z, i) =
+    let pe = load64(z + 16) + bit_shl(i, 4) in
+    let code = load64(pe + 8) in
+    if bit_and(code, 3) == 3 then
+        0
+    else
+        let dst = load64(e) + bit_shl(i, 12) in
+        let a = sys_call(10, dst, 4096, 3, 0, 0) in
+        let b = (if bit_and(code, 3) == 1 then rt_copyn(dst, load64(z) + load64(pe), 0, 4096) else if bit_and(code, 3) == 2 then __rt_lz_dec(dst, load64(z) + load64(pe), bit_shr(code, 2), 4096) else 0) in
+        store64(pe + 8, 3)
+
+## --- thaw: every page back (drop 0) or the pages given up for a reset (drop 1), the store freed --------------------
+fn __rt_az_thaw(e, z, drop) =
+    if load64(z + 32) == 0 then
+        0
+    else
+        let a = (if drop == 0 then rta_inall(e, z, 0, load64(z + 24)) else 0) in
+        let b = sys_call(10, load64(e), bit_shl(load64(z + 24), 12), 3, 0, 0) in
+        let c = sys_call(11, load64(z), load64(z + 8), 0, 0, 0) in
+        let d = sys_call(11, load64(z + 16), bit_shl(load64(z + 24), 4), 0, 0, 0) in
+        let f = rta_addused(load64(e + 8) - load64(e) - load64(z + 56)) in
+        rta_clear(z)
+fn rta_inall(e, z, i, n) = if i >= n then 0 else let a = __rt_az_in(e, z, i) in rta_inall(e, z, i + 1, n)
+fn rta_clear(z) =
+    let a = store64(z + 32, 0) in
+    let b = store64(z + 48, 0) in
+    let c = store64(z + 56, 0) in
+    let d = store64(z, 0) in
+    store64(z + 16, 0)
+## an arena in use again: its idle count restarts and it is thawed if it was frozen; a reset or destroy drops it
+fn rta_live(k) = let a = store64(rta_az(k) + 48, 0) in __rt_az_thaw(rta_tab(k), rta_az(k), 0)
+fn rta_drop(k) = __rt_az_thaw(rta_tab(k), rta_az(k), 1)
+
+## --- after each collection: an arena idle for __rt_az_cold collections (not secret, not frozen) is frozen ----------
+fn __rt_az_tick() = if load64(sym_addr("__rt_az_cold")) == 0 then 0 else rta_tick(0)
+fn rta_tick(k) =
+    if k >= 4 then
+        0
+    else
+        let z = rta_az(k) in
+        let a = (if load64(rta_tab(k) + 16) != 0 and load64(z + 32) == 0 and load64(z + 40) == 0 then rta_idle(k, z) else 0) in
+        rta_tick(k + 1)
+fn rta_idle(k, z) =
+    let a = store64(z + 48, load64(z + 48) + 1) in
+    if load64(z + 48) >= load64(sym_addr("__rt_az_cold")) then __rt_az_freeze(rta_tab(k), z) else 0
+
+## --- the builtins ---------------------------------------------------------------------------------------------------
+## an arena error: the message on stderr, exit 12 (as an out-of-memory stop)
+fn rta_die(msg) = let w = sys_call(1, 2, msg, strlen(msg), 0, 0) in sys_call(60, 12, 0, 0, 0, 0)
+## the arena index of a handle (1..4), stopping on a bad or dead one
+fn rta_k(h) =
+    let k = rt_int(h) - 1 in
+    if k < 0 or k > 3 then
+        rta_die("lume: arena error: invalid arena handle\n")
+    else if load64(rta_tab(k) + 16) == 0 then
+        rta_die("lume: arena error: no live arena at this handle (arena_new first)\n")
+    else
+        k

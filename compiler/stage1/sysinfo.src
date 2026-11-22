@@ -12,6 +12,12 @@
 ##     up (1 / 0), and its IPv4 (family 4) and IPv6 (family 6) addresses with the prefix length. Linux:
 ##     /sys/class/net, SIOCGIFFLAGS, SIOCGIFCONF + SIOCGIFNETMASK (every IPv4 address, aliases included) and
 ##     /proc/net/if_inet6; Windows: GetAdaptersAddresses.
+## cpu_cores() -> {logical, performance, efficiency}
+##     The logical processors and how many of them belong to performance and to efficiency cores (hybrid CPUs:
+##     Intel P / E cores, ARM big.LITTLE), so a pool can size itself or give the heavy work to the fast cores. A CPU
+##     whose cores are all alike reports them all as performance (efficiency 0). Linux: os_cpu_count() and the
+##     kernel's /sys/devices/cpu_core/cpus and cpu_atom/cpus lists; Windows: GetLogicalProcessorInformationEx
+##     (RelationProcessorCore), the cores of the highest EfficiencyClass being the performance ones.
 ## Written in Lume over sys_call; the programs that use them never name a system call.
 
 fn si_win() = os_platform() == "windows"
@@ -109,6 +115,40 @@ fn si_ads(b, o, lim) = if o < 0 then Nil else let rest = si_ads(b, si_off(b, si_
 fn si_if_win2(cap) = let b = buf_new(cap) in let sz = si_put64(buf_new(8), 0, cap, 0) in let r = bit_and(si_call("iphlpapi.dll", "GetAdaptersAddresses", Cons(0, Cons(14, Cons(0, Cons(buf_addr(b), Cons(buf_addr(sz), Nil)))))), 4294967295) in if r == 111 and cap < 4194304 then si_if_win2(si_u32(sz, 0) + 4096) else if r != 0 then Nil else si_ads(b, 0, cap)
 fn net_interfaces() = if si_win() then si_if_win2(65536) else si_if_linux()
 
+## --- cpu_cores -------------------------------------------------------------------------------------------------------
+## a Linux CPU list ("0-3,8-11"): how many processors it names
+fn si_cpulist(s, i, acc) = if i >= count(s) then acc else (let a = si_numat(s, i) in let j = si_numend(s, i) in if j < count(s) and at(s, j) == "-" then (let b = si_numat(s, j + 1) in si_cpulist(s, si_skipc(s, si_numend(s, j + 1)), acc + b - a + 1)) else if j > i then si_cpulist(s, si_skipc(s, j), acc + 1) else acc)
+fn si_numend(s, i) = if i < count(s) and ord_at(s, i) >= 48 and ord_at(s, i) <= 57 then si_numend(s, i + 1) else i
+fn si_numat(s, i) = si_numv(s, i, si_numend(s, i), 0)
+fn si_numv(s, i, e, acc) = if i >= e then acc else si_numv(s, i + 1, e, acc * 10 + ord_at(s, i) - 48)
+fn si_skipc(s, i) = if i < count(s) and at(s, i) == "," then i + 1 else count(s)
+fn si_cores_linux() =
+    let n = os_cpu_count() in
+    let p = (if fs_path_exists("/sys/devices/cpu_core/cpus") then si_cpulist(fs_read_file("/sys/devices/cpu_core/cpus"), 0, 0) else 0) in
+    let e = (if fs_path_exists("/sys/devices/cpu_atom/cpus") then si_cpulist(fs_read_file("/sys/devices/cpu_atom/cpus"), 0, 0) else 0) in
+    if p > 0 and p + e == n then {logical: n, performance: p, efficiency: e} else {logical: n, performance: n, efficiency: 0}
+## Windows: SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX records (Relationship 0 = a core): EfficiencyClass at +9, GroupCount
+## at +30, then GROUP_AFFINITY entries of 16 bytes from +32 (the 8-byte mask first)
+fn si_pop8(x) = if x == 0 then 0 else x % 2 + si_pop8(x / 2)
+fn si_maskbits(b, o, k, acc) = if k >= 8 then acc else si_maskbits(b, o, k + 1, acc + si_pop8(buf_get(b, o + k)))
+fn si_corelp(b, o, g, n, acc) = if g >= n then acc else si_corelp(b, o, g + 1, n, acc + si_maskbits(b, o + 32 + 16 * g, 0, 0))
+## the cores as [{c: EfficiencyClass, n: logical processors}]
+fn si_corelist(b, o, len) = if o + 32 > len then Nil else (let sz = si_u32(b, o + 4) in if sz < 32 then Nil else if si_u32(b, o) == 0 then Cons({c: buf_get(b, o + 9), n: si_corelp(b, o, 0, buf_get(b, o + 30) + 256 * buf_get(b, o + 31), 0)}, si_corelist(b, o + sz, len)) else si_corelist(b, o + sz, len))
+fn si_cmax(xs, m) = match xs
+    Nil        => m
+    Cons(h, t) => si_cmax(t, if h.c > m then h.c else m)
+fn si_csum(xs, c, any) = match xs
+    Nil        => 0
+    Cons(h, t) => (if any or h.c == c then h.n else 0) + si_csum(t, c, any)
+fn si_cores_win() =
+    let b = buf_new(65536) in
+    let lb = si_put64(buf_new(8), 0, 65536, 0) in
+    let ok = si_call("kernel32.dll", "GetLogicalProcessorInformationEx", Cons(0, Cons(buf_addr(b), Cons(buf_addr(lb), Nil)))) in
+    let cs = (if ok > 0 then si_corelist(b, 0, si_u32(lb, 0)) else Nil) in
+    let n = si_csum(cs, 0, true) in
+    if n == 0 then {logical: os_cpu_count(), performance: os_cpu_count(), efficiency: 0} else (let p = si_csum(cs, si_cmax(cs, 0), false) in {logical: n, performance: p, efficiency: n - p})
+fn cpu_cores() = if si_win() then si_cores_win() else si_cores_linux()
+
 ## --- tests -----------------------------------------------------------------------------------------------------------
 fn test_statvfs_of_the_current_dir() = let r = fs_statvfs(".") in r.ok == 1 and r.total_bytes > 0 and r.free_bytes <= r.total_bytes and r.available_bytes <= r.free_bytes and count(r.type) > 0
 fn test_statvfs_missing_path() = (fs_statvfs("no_such_dir_sysinfo_probe/x")).ok == 0 and (fs_statvfs("")).ok == 0
@@ -132,3 +172,5 @@ fn si_macs(xs) = match xs
     Cons(h, t) => if h.mac == "" or count(h.mac) == 17 or count(h.mac) == 23 then si_macs(t) else false
 fn test_utf16_round_trip() = let b = si_wstr("C:" + chr(92) + "dados") in si_wtext(b, 0, 64) == "C:" + chr(92) + "dados" and si_winpath("/c/x/y") == "C:" + chr(92) + "x" + chr(92) + "y" and si_winpath("D:/a") == "D:" + chr(92) + "a"
 fn test_v6_text() = si_v6text("fe800000000000000000000000000001") == "fe80::1" and si_v6text("20010db8000000000000000000000000") == "2001:db8::"
+fn test_cpu_cores_add_up() = let c = cpu_cores() in c.logical >= 1 and c.performance >= 1 and c.efficiency >= 0 and c.performance + c.efficiency == c.logical
+fn test_cpu_list_parse() = si_cpulist("0-3,8-11" + chr(10), 0, 0) == 8 and si_cpulist("0", 0, 0) == 1 and si_cpulist("0,2,4-5", 0, 0) == 4 and si_cpulist("", 0, 0) == 0

@@ -91,6 +91,9 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
      at, slice, slicen, str, strni, toint, utf8_chr, emit/flush/wch/wstr/wint/print_int, printval/showval.
   4. [ ] --raw stack intrinsics (read/set %rsp/%rbp, jump) -> ctfail, __lume_try_begin/end/msg, __rt_die*.
   5. [ ] --raw f64 intrinsics (SSE2 movq/addsd/mulsd/divsd/sqrtsd/cvt...) -> f64_* builtins and rt_f64.
+  5b.[x] (2026-11-21) arenas and heap counters: rt/rt_arena.src + rt/rt_mem.src (group rt_lume_mem, has_mem);
+     the fault handler calls __rt_az_in(entry, az, page) in the argument registers. Left in runtime_core: the
+     Win64 layer (~5800), crypto (~800), the collector (~1100), rt_boxes (~180), decimals (~170).
   6. [ ] value-model builtins (addv, cmpv*, eqv*, mkint/mkstr/mklist/mkarray, lidx/lset/recget, alloc) and the GC
      (__gc_*), then crypto_sha256_blocks/chacha20_xor/poly1305 (with (2) they can match the asm).
   7. [ ] Windows layer win64_layer.s to Lume over the generic Win32 call (pseudo calls 1010 / 1011), routine by

@@ -379,6 +379,7 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             drained; the tree killed at the deadline)
 - System inventory: `use sysinfo` -> `fs_statvfs(path)` -> `{ok, total_bytes, free_bytes, available_bytes, type}`,
             `net_interfaces()` -> a list of records (name, mac, up, addresses: ip, prefix, family; no loopback)
+            `cpu_cores()` -> `{logical, performance, efficiency}` (hybrid CPUs: P / E cores; all alike: efficiency 0)
 - Windows system (`use winsys`; on Linux every answer is "absent"): registry `reg_get_string(root, key, name)`,
             `reg_get_dword`, `reg_key_exists(root, key)`, `reg_value_exists` (root "HKLM", "HKCU", "HKCR", "HKU");
             sessions `wts_active_console_session()`, `wts_sessions()` (id, state, name), `wts_session_user(id)` (user,
