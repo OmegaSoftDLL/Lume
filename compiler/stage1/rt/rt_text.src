@@ -82,6 +82,21 @@ fn rt_slen(v) =
         bit_shr(load64(v), 8)
 ## the address of its bytes; a short string is first copied into the 8 bytes at tmp
 fn rt_sptr(v, tmp) = if bit_and(v, 7) == 2 then let a = store64(tmp, bit_shr(v, 8)) in tmp else v + 8
+## __rt_sv0/__rt_sv1 return a string's byte address in %rax and its length in %rcx together (ret2), for the assembly
+## callers that need both at once (the crypto string API lcs_*, ctfail). __rt_sv0 uses the scratch __rt_sb0 and
+## __rt_sv1 the scratch __rt_sb1, so two string views stay live at the same time; a short string's bytes are copied
+## into the scratch first, exactly as rt_sptr does. This replaces the hand-written __rt_sv assembly in runtime_core.
+fn __rt_sv0(x) = __rt_sv_at(x, sym_addr("__rt_sb0"))
+fn __rt_sv1(x) = __rt_sv_at(x, sym_addr("__rt_sb1"))
+fn __rt_sv_at(x, tmp) =
+    if bit_and(x, 7) == 2 then
+        let a = store64(tmp, bit_shr(x, 8)) in ret2(tmp, bit_shr(bit_and(x, 56), 3))
+    else if bit_and(x, 7) != 0 or x == 0 then
+        __rt_not_str()
+    else if load8(x) != 1 then
+        __rt_not_str()
+    else
+        ret2(x + 8, bit_shr(load64(x), 8))
 ## copy n bytes from s to d, eight at a time, then the rest one by one (front to back)
 fn rt_copyn(d, s, i, n) =
     if i + 8 <= n then

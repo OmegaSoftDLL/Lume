@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap, which only the full seed battery used to reveal. The gate compiles the compiler itself and checks that
   every instruction mnemonic is one the seed can assemble, so a migration to `lumec --raw`, or a seed-unsafe builtin in
   the compiler, now fails in milliseconds with the exact mnemonic and line instead of surfacing late. Self-test inside.
+- **A `ret2(lo, hi)` two-register return for `lumec --raw`.** A runtime glue routine can now yield two values at once
+  — `lo` in `%rax`, `hi` in `%rcx` — which plain `--raw` (one value in `%rax`) could not express. This is the
+  capability the remaining value-model glue needs to leave hand-written assembly; `__rt_sv` (string-view unbox,
+  below) is its first consumer. `ret2` compiles inline to two moves and a return, so it adds nothing to a program that
+  does not use it (the committed runtime text is seed-safe — no new instruction reaches the frozen Stage-0 seed).
 
 ### Changed
 - **The decimal-arithmetic runtime trampolines are Lume source now, not hand-written assembly.** The five dynamic
@@ -36,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compiled by `lumec --raw` into `rt_lume_dec` (linked on demand through `has_dec`, like `rt_f64`/`rt_lume_f64`). The
   decimal-shape detection (`__rt_anyd`) stays in `runtime_core.lume` because the typed-runtime verifier parses its
   span. No behaviour change — identical outputs, one more piece of the runtime is Lume rather than asm (golden rule).
+- **The string-view unbox (`__rt_sv0`/`__rt_sv1`) is Lume source now, not hand-written assembly.** These return a
+  string's byte address in `%rax` and its length in `%rcx` at once — for the assembly callers that need both (the
+  native crypto string API behind `crypto_sha256`/`chacha20`/`poly1305`, and the contract-failure path) — and moved
+  from assembly in `runtime_core.lume` to `compiler/stage1/rt/rt_text.src`, compiled by `lumec --raw` through the new
+  `ret2` two-register return. No behaviour change — identical outputs, with the scratch-buffer handling and the
+  heap/short-string split kept exactly; one more piece of the runtime is Lume rather than asm (golden rule).
 - **`lume verify` leads a failing step with its diagnostic, not the code dump.** A `FAIL` line now shows the error
   code and message first (e.g. `[T0604] type error …`, `lume fmt: … is not canonically formatted`, or the kernel's
   `reason` for `certify`), extracted from the step's output, then the previous ~600-character tail for context.
