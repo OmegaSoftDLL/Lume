@@ -1092,10 +1092,40 @@ fn cs_p35_has_test(nm, prog) = match prog
 fn cs_p35_has_test_stmt(st, nm) = match st
     Fn(test_nm, ps, body) => if (test_nm == "test_" + nm or test_nm == "example_" + nm) and cs_isnil(ps) == 1 then 1 else 0
     _                     => 0
-fn cs_p35_diags_mode(osigs, prog, strict) = match osigs
+## P35 is about the USER'S package: `lume check` sends the whole bundle (entry + `## --- module NAME ---` sections),
+## so a public function of an imported stdlib module (e.g. buf_h264_luma_mc in h264) used to draw a P35 warning. The
+## names below are only those defined in the entry section (outside every module marker), so P35 skips the rest.
+fn cs_p35_lineend(s, i, n) = if i >= n then i else if at(s, i) == "\n" then i else cs_p35_lineend(s, i + 1, n)
+fn cs_p35_entry_names(src) = cs_p35_scan(src, 0, count(src), 0, Nil)
+fn cs_p35_scan(s, i, n, inmod, acc) =
+    if i >= n then
+        acc
+    else
+        let e = cs_p35_lineend(s, i, n) in
+        let line = slice(s, i, e) in
+        if cs_startswith(line, "## --- module ") == 1 then
+            cs_p35_scan(s, e + 1, n, 1, acc)
+        else if cs_startswith(line, "## --- entry ") == 1 then
+            cs_p35_scan(s, e + 1, n, 0, acc)
+        else if inmod == 0 then
+            cs_p35_scan(s, e + 1, n, 0, cs_p35_fnadd(line, acc))
+        else
+            cs_p35_scan(s, e + 1, n, inmod, acc)
+## the name after a top-level `fn ` (a named function; a `fn(` lambda has no space so it is not matched)
+fn cs_p35_fnadd(line, acc) =
+    let p = cs_p35_fnpos(line, 0, count(line)) in
+    if p < 0 then acc else Cons(slice(line, p, cs_idend(line, p, count(line))), acc)
+fn cs_p35_fnpos(line, i, n) =
+    if i + 3 > n then 0 - 1
+    else if slice(line, i, i + 3) == "fn " and (i == 0 or cs_isalnum(at(line, i - 1)) == 0) then i + 3
+    else cs_p35_fnpos(line, i + 1, n)
+fn cs_p35_has(names, nm) = match names
+    Nil        => 0
+    Cons(h, t) => if h == nm then 1 else cs_p35_has(t, nm)
+fn cs_p35_diags_mode(osigs, prog, strict, entry) = match osigs
     Nil        => Nil
-    Cons(h, t) => if h.pubf == 1 and cs_p35_has_test(h.nm, prog) == 0 then Cons(if strict == 1 then cs_mkdiag("P35", "test_coverage", "public function '" + h.nm + "' has no associated test; add 'fn test_" + h.nm + "()'", "add a 'test_" + h.nm + "' function that exercises the public API") else cs_mkwarn("P35", "test_coverage", "public function '" + h.nm + "' has no associated test; add 'fn test_" + h.nm + "()'", "add a 'test_" + h.nm + "' function that exercises the public API"), cs_p35_diags_mode(t, prog, strict)) else cs_p35_diags_mode(t, prog, strict)
-fn cs_p35_diags(osigs, prog) = cs_p35_diags_mode(osigs, prog, 0)
+    Cons(h, t) => if h.pubf == 1 and cs_p35_has(entry, h.nm) == 1 and cs_p35_has_test(h.nm, prog) == 0 then Cons(if strict == 1 then cs_mkdiag("P35", "test_coverage", "public function '" + h.nm + "' has no associated test; add 'fn test_" + h.nm + "()'", "add a 'test_" + h.nm + "' function that exercises the public API") else cs_mkwarn("P35", "test_coverage", "public function '" + h.nm + "' has no associated test; add 'fn test_" + h.nm + "()'", "add a 'test_" + h.nm + "' function that exercises the public API"), cs_p35_diags_mode(t, prog, strict, entry)) else cs_p35_diags_mode(t, prog, strict, entry)
+fn cs_p35_diags(osigs, prog) = cs_p35_diags_mode(osigs, prog, 0, Nil)
 fn cs_osiglookup(nm, osigs) = match osigs
     Nil        => Nil
     Cons(h, t) => if h.nm == nm then Cons(h, Nil) else cs_osiglookup(nm, t)
@@ -3828,7 +3858,7 @@ fn caas_compile(src) = caas_compile_in(src, src)
 ## an analysis that stops is reported, never a reply cut short
 fn caas_compile_in(src, whole) = if __lume_try_begin() == 0 then let r = caas_compile_run(src, whole) in let z = __lume_try_end() in r else caas_compile_stopped(__lume_try_msg())
 fn caas_compile_stopped(msg) = {ok: 0, diagnostics: Cons(cs_mkdiag("E0002", "oracle", "an analysis stopped: " + cs_real_text(msg), "report this with the program that caused it"), Nil), holes: Nil, proofs: Nil, symbols: Nil, ast: Nil, ast_sexpr: "", expanded: Nil, expanded_sexpr: "", asm: "", result: ""}
-fn caas_compile_run(src, whole) = let pf = cs_parse_full(src) in let ast0 = pf.prog in let syntax_diags = cs_syntax_merge(pf.fail, cs_app(pf.diags, cs_unclosed_param_diags(ast0))) in let real = if pf.fail == "" then cs_real_compile(whole) else {ok: 1, asm: "", msg: ""} in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kb = cs_kmemo_build(ast, cs_kcollect_effdecls(ast), tt.ft, cs_kcollect_effsigs(ast)) in let kt = {ksigs: cs_kcollect_effsigs(ast), kmemo: kb.kmemo, kx: kb.kx, kx0: kb.kx0, edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(ast), ft: tt.ft} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast0)) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast)) in let vr = cs_vprove_plus_term(ast_filled, vsigs, invs, wcets, osigs) in let diags = cs_diags_spanned(src, cs_real_verdict(real, cs_app(syntax_diags, cs_app(cs_name_phase(real, whole), cs_app(cs_p35_diags_mode(osigs, ast0, cs_startswith(src, "## @strict_p35")), cs_app(d_ad, cs_app(cs_app(cs_rf_diags(ast_filled), cs_diagnose_stmts(ast_filled, tt, cs_mk_ctcx(osigs, tt.ft))), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil)))))))), if src == whole then 1 else 0)) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
+fn caas_compile_run(src, whole) = let pf = cs_parse_full(src) in let ast0 = pf.prog in let syntax_diags = cs_syntax_merge(pf.fail, cs_app(pf.diags, cs_unclosed_param_diags(ast0))) in let real = if pf.fail == "" then cs_real_compile(whole) else {ok: 1, asm: "", msg: ""} in let syms = cs_symbols(ast0) in let ft0 = cs_buildft(ast0) in let gnms = cs_n4_collect_grads_prog(ast0, Nil) in let d_ad = cs_n4_chk_grad_fns(gnms, ft0) in let gfns = cs_n4_synth_grad_fns(gnms, ft0) in let ast = cs_app(gfns, ast0) in let tt = cs_tcollect(ast) in let osigs = cs_ocollects(ast) in let vsigs = cs_vcollect_vsigs(ast) in let invs = cs_vcollect_invs(ast) in let laws = cs_vcollect_laws(ast) in let wcets = cs_vcollect_wcets(ast) in let kb = cs_kmemo_build(ast, cs_kcollect_effdecls(ast), tt.ft, cs_kcollect_effsigs(ast)) in let kt = {ksigs: cs_kcollect_effsigs(ast), kmemo: kb.kmemo, kx: kb.kx, kx0: kb.kx0, edecls: cs_kcollect_effdecls(ast), caps: cs_kcollect_caps(ast), recs: tt.recs, vsigs: vsigs, osigs: osigs, otypes: oa_collect_types(ast), ft: tt.ft} in let hr = cs_collect_holes_stmts(ast0, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast0)) in let ast_filled = cs_fill_prog_holes(ast, tt.sigs, osigs, vsigs, laws, cs_ft_decls(tt.ft, ast)) in let vr = cs_vprove_plus_term(ast_filled, vsigs, invs, wcets, osigs) in let diags = cs_diags_spanned(src, cs_real_verdict(real, cs_app(syntax_diags, cs_app(cs_name_phase(real, whole), cs_app(cs_p35_diags_mode(osigs, ast0, cs_startswith(src, "## @strict_p35"), cs_p35_entry_names(src)), cs_app(d_ad, cs_app(cs_app(cs_rf_diags(ast_filled), cs_diagnose_stmts(ast_filled, tt, cs_mk_ctcx(osigs, tt.ft))), cs_app(hr.diags, cs_app(vr.diags, cs_odiagnose_stmts(ast_filled, osigs, tt.sigs, kt, Nil)))))))), if src == whole then 1 else 0)) in let raw_sexpr = cs_prog_sexpr(ast0) in if cs_has_error_diags(diags) == 1 then {ok: 0, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: Nil, expanded_sexpr: "", asm: "", result: ""} else let exp = cs_expand(ast_filled) in {ok: 1, diagnostics: diags, holes: hr.holes, proofs: vr.proofs, symbols: syms, ast: ast0, ast_sexpr: raw_sexpr, expanded: exp, expanded_sexpr: cs_prog_sexpr(exp), asm: cs_asm_gen(exp), result: cs_eval_prog(exp)}
 
 fn caas_check(src) = caas_compile(src)
 fn caas_fill(src) = (caas_compile(src)).holes
