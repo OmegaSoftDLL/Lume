@@ -669,6 +669,7 @@ one.txt
 | Builtin | Resposta | Plataformas |
 | --- | --- | --- |
 | `os_cpu_count()` | os processadores em que este processo pode rodar (a mascara de afinidade no Linux, NUMBER_OF_PROCESSORS no Windows), no minimo 1 | estavel |
+| `os_fd_write(fd, s)` | escreve os bytes da string `s` no descritor de arquivo `fd` (2 e a saida de erro, 1 a saida padrao), depois de esvaziar o buffer de saida para manter a ordem; devolve a contagem de bytes. Uma escrita curta continua, `EINTR` repete, qualquer outra falha encerra o programa com saida 3 | estavel |
 | `os_env_has(nome)` | 1 quando a variavel existe (tambem com valor `""`), senao 0; 0 para `""` | estavel; no Windows os nomes se comparam sem diferenca de caixa ASCII |
 | `os_setenv(nome, valor)` | 1; 0 quando nome e `""` ou contem `=` (ou a memoria nao pode ser mapeada). A nova tabela passa a ser o ambiente deste processo (`os_getenv`, `os_env_has`) e todo filho iniciado depois a herda | estavel; veja a nota sobre caixa abaixo |
 | `os_unsetenv(nome)` | 1, tambem quando a variavel nao existia; 0 quando nome e `""` ou contem `=` | estavel |

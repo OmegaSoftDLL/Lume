@@ -665,6 +665,7 @@ one.txt
 | Builtin | Answer | Platforms |
 | --- | --- | --- |
 | `os_cpu_count()` | the processors this process may run on (the CPU affinity mask on Linux, NUMBER_OF_PROCESSORS on Windows), at least 1 | stable |
+| `os_fd_write(fd, s)` | writes the bytes of string `s` to file descriptor `fd` (2 is standard error, 1 standard output), after flushing buffered output so it stays ordered; returns the byte count. A short write continues, `EINTR` retries, any other failure ends the program with exit 3 | stable |
 | `os_env_has(name)` | 1 when the variable is set (also to `""`), else 0; 0 for `""` | stable; Windows compares names without regard to ASCII case |
 | `os_setenv(name, value)` | 1; 0 when name is `""` or holds `=` (or memory cannot be mapped). The new table is this process's environment from then on (`os_getenv`, `os_env_has`) and every child started afterwards inherits it | stable; see the note on case below |
 | `os_unsetenv(name)` | 1, also when the variable was not set; 0 when name is `""` or holds `=` | stable |
