@@ -90,14 +90,19 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
      to Lume after (2) and (2b): buf_new/len/get/set/copy/slice/from_str/to_str, ord, ord_at, chr, count,
      at, slice, slicen, str, strni, toint, utf8_chr, emit/flush/wch/wstr/wint/print_int, printval/showval.
   4. [ ] --raw stack intrinsics (read/set %rsp/%rbp, jump) -> ctfail, __lume_try_begin/end/msg, __rt_die*.
-  5. [ ] --raw f64 intrinsics (SSE2 movq/addsd/mulsd/divsd/sqrtsd/cvt...) -> f64_* builtins and rt_f64.
+  5. [x] --raw f64 intrinsics (fp_* on bits, x87_* on 16-byte slots) -> every f64_* builtin is def lume in
+     rt/rt_f64.src (rt_lume_f64, has_f64). Done (was already done when this line said [ ]).
   5b.[x] (2026-11-21) arenas and heap counters: rt/rt_arena.src + rt/rt_mem.src (group rt_lume_mem, has_mem);
-     the fault handler calls __rt_az_in(entry, az, page) in the argument registers. Left in runtime_core: the
-     Win64 layer (~5800), crypto (~800), the collector (~1100), rt_boxes (~180), decimals (~170).
-  6. [ ] value-model builtins (addv, cmpv*, eqv*, mkint/mkstr/mklist/mkarray, lidx/lset/recget, alloc) and the GC
-     (__gc_*), then crypto_sha256_blocks/chacha20_xor/poly1305 (with (2) they can match the asm).
-  7. [ ] Windows layer win64_layer.s to Lume over the generic Win32 call (pseudo calls 1010 / 1011), routine by
-     routine, keeping the syscall numbers.
+     the fault handler calls __rt_az_in(entry, az, page) in the argument registers.
+  6. [~] the GC collector (__gc_*) is in rt/rt_gc.src (commit 1c767cc5); crypto_sha256_blocks/chacha20_xor/poly1305
+     in rt/rt_crypto_blocks.src (commit 57e5cc64). LEFT: the value-model builtins (addv, cmpv*, eqv*, mkint/mkstr/
+     mklist/mkarray, lidx/lset/recget) and the span-locked allocator fast path (__lume_alloc_a/__gc_pop/__gc_refill,
+     ltv_rt-locked -- intentional asm), plus the 14-line __gc_collect ABI thunk + __gc_sweep_chunk (intentional asm:
+     spills callee-saved roots + captures live %rsp, which a Lume fn cannot do for itself).
+  7. [ ] Windows layer win64_layer.s (6131 lines) to Lume over the generic Win32 call (pseudo calls 1010 / 1011),
+     routine by routine, keeping the syscall numbers. The one large, multi-session A item.
+  STATE 2026-11-23: runtime_core.lume is 203 lines total; the computational runtime is Lume. What remains is
+  intentional ABI-boundary asm (allocator, GC thunk) and item 7 (the Windows ABI layer).
   After each item: both batteries compared, commit, install /root/.lume, update C:\Lume.
 - New crypto (lcrypto_tls): AES-128/256 + GCM, ECDSA P-256 (verify/sign RFC 6979), X25519 and Ed25519 point math in
   Lume runtime routines; tests crypto_{aes,p256,x25519,ed25519}_ok.src. Module fixes: lmod segment aliases, driver keeps
