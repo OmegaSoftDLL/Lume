@@ -99,8 +99,12 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
      mklist/mkarray, lidx/lset/recget) and the span-locked allocator fast path (__lume_alloc_a/__gc_pop/__gc_refill,
      ltv_rt-locked -- intentional asm), plus the 14-line __gc_collect ABI thunk + __gc_sweep_chunk (intentional asm:
      spills callee-saved roots + captures live %rsp, which a Lume fn cannot do for itself).
-  7. [ ] Windows layer win64_layer.s (6131 lines) to Lume over the generic Win32 call (pseudo calls 1010 / 1011),
-     routine by routine, keeping the syscall numbers. The one large, multi-session A item.
+  7. [=] Windows layer win64_layer.s (6131 lines). INSPECTED 2026-11-23: this is the Windows ABI FLOOR, not deferred
+     Lume logic -- __win_syscall (~1800, emulates the Linux syscalls sys_call maps to), __win_ffi_resolve (~3600, DLL
+     resolution + Win64 calling-convention marshalling = the 1010/1011 generic call), __win_start (_start), __win_veh
+     (exception handler), + data. Irreducible like the Linux _start / GC thunk / syscall boundary (writing it in Lume
+     is circular). The Lume-expressible Windows surface is already Lume (winsys.src, net.src, ... over ws_call). Not a
+     migration backlog; the Windows anchor. Leave as asm.
   STATE 2026-11-23: runtime_core.lume is 203 lines total; the computational runtime is Lume. What remains is
   intentional ABI-boundary asm (allocator, GC thunk) and item 7 (the Windows ABI layer).
   After each item: both batteries compared, commit, install /root/.lume, update C:\Lume.
