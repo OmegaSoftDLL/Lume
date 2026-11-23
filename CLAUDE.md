@@ -112,6 +112,10 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 
 Everything lives in `build/windows-native/` (git-ignored; the sources there were added with `git add -f`).
 
+- **One entry point for a validated change:** `wsl ... bash build/windows-native/mem/dev_rebuild_validate.sh`
+  regenerates the runtime, bootstraps to the fixpoint, rebuilds lcaas/lcert/lume_driver, and runs the frozen-seed
+  battery in an isolated clone; it prints `ok=438 fail=0` when the change is validated. Use it instead of
+  re-assembling the steps.
 - Layer source: `win64_layer.s`. `sync_win64_layer.src` turns it into `rt_win64_imports` / `rt_win64_layer` inside
   `compiler/stage1/runtime_core.lume`. Edit the `.s` (by hand or with a small perl script), never the generated text.
 - `rebuild_all.sh` (run inside WSL): rebuilds `lumec` / `lasm`, the Windows test programs (`t/*.src` -> `t/*.exe`)
