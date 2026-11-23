@@ -1,0 +1,406 @@
+## compiler/stage1/rt/rt_crypto_blocks.src -- the bulk crypto loops (SHA-256 block compression, ChaCha20 keystream
+## XOR, Poly1305 MAC) written in Lume, compiled by `lumec --raw`. Migrated from the hand-written x86-64 of
+## crypto_sha256_blocks / crypto_chacha20_xor / crypto_poly1305 in runtime_core.lume (rt_crypto). Bit-exact with the
+## assembly: same inputs, same outputs, same error paths (__rt_die3 with the same message). Linked only when a
+## program names a crypto_ builtin (rt_crypto_sources / has_crypto). SHA round constants stay in rt_crypto_rodata
+## (.Lrt_sha_k). Message schedule / working scratch live in .bss (__rt_sha_w), reused each call (single-threaded).
+
+## --- 32-bit helpers. A word is kept masked to 32 bits (u32) so bit_shr (arithmetic sarq) acts as a logical shift. ---
+fn u32(x) = bit_and(x, 4294967295)
+fn rotr32(x, n) = u32(bit_or(bit_shr(x, n), bit_shl(x, 32 - n)))
+fn bswap32(x) =
+    bit_or(bit_or(bit_shl(bit_and(x, 255), 24), bit_shl(bit_and(x, 65280), 8)),
+           bit_or(bit_and(bit_shr(x, 8), 65280), bit_and(bit_shr(x, 24), 255)))
+
+## the state / output must be a byte buffer (buf_new, kind 15) of at least 32 bytes
+fn __rt_cr_buf32(b) =
+    if bit_and(b, 7) != 0 or b == 0 then
+        __rt_die3(0, 0, 0, 0, sym_addr("__rt_crbuf_msg"))
+    else if load8(b) != 15 then
+        __rt_die3(0, 0, 0, 0, sym_addr("__rt_crbuf_msg"))
+    else if bit_shr(load64(b), 8) < 32 then
+        __rt_die3(0, 0, 0, 0, sym_addr("__rt_crbuf_msg"))
+    else
+        0
+
+## ======================= SHA-256 =======================
+## crypto_sha256_blocks(state, data, lo, hi): fold the 64-byte blocks of data in [lo, hi) into the 8-word state.
+fn crypto_sha256_blocks(state, data, lo_v, hi_v) =
+    let lo = rt_int(lo_v) in
+    let hi = rt_int(hi_v) in
+    let dl = rt_slen(data) in
+    let dp = rt_sptr(data, sym_addr("__rt_sb0")) in
+    let ck = __rt_cr_buf32(state) in
+    if lo < 0 or hi < lo or hi > dl or bit_and(hi - lo, 63) != 0 then
+        __rt_die3(0, 0, 0, 0, sym_addr("__rt_crrange_msg"))
+    else
+        let r = __rt_sha_loop(state, dp, lo, hi) in
+        state
+
+fn __rt_sha_loop(state, dp, cur, hi) =
+    if cur >= hi then
+        0
+    else
+        let b = __rt_sha_block(state, dp + cur) in
+        __rt_sha_loop(state, dp, cur + 64, hi)
+
+fn __rt_sha_block(state, blk) =
+    let ld = __rt_sha_load(blk, 0) in
+    let ex = __rt_sha_ext(16) in
+    __rt_sha_rounds(state, 0,
+        load32(state + 8), load32(state + 12), load32(state + 16), load32(state + 20),
+        load32(state + 24), load32(state + 28), load32(state + 32), load32(state + 36))
+
+## load the 16 big-endian message words into __rt_sha_w[0..15]
+fn __rt_sha_load(blk, i) =
+    if i >= 16 then
+        0
+    else
+        let w = store32(sym_addr("__rt_sha_w") + i * 4, bswap32(load32(blk + i * 4))) in
+        __rt_sha_load(blk, i + 1)
+
+## extend to __rt_sha_w[16..63]
+fn __rt_sha_ext(i) =
+    if i >= 64 then
+        0
+    else
+        let wp = sym_addr("__rt_sha_w") in
+        let a = load32(wp + (i - 15) * 4) in
+        let b = load32(wp + (i - 2) * 4) in
+        let s0 = bit_xor(bit_xor(rotr32(a, 7), rotr32(a, 18)), bit_shr(a, 3)) in
+        let s1 = bit_xor(bit_xor(rotr32(b, 17), rotr32(b, 19)), bit_shr(b, 10)) in
+        let v = u32(load32(wp + (i - 16) * 4) + s0 + load32(wp + (i - 7) * 4) + s1) in
+        let st = store32(wp + i * 4, v) in
+        __rt_sha_ext(i + 1)
+
+## the 64 rounds, threading the eight working words a..h, then fold them back into the state
+fn __rt_sha_rounds(state, i, a, b, c, d, e, f, g, h) =
+    if i >= 64 then
+        __rt_sha_add(state, a, b, c, d, e, f, g, h)
+    else
+        let s1 = bit_xor(bit_xor(rotr32(e, 6), rotr32(e, 11)), rotr32(e, 25)) in
+        let ch = bit_xor(bit_and(e, f), bit_and(u32(bit_xor(e, 4294967295)), g)) in
+        let t1 = u32(h + s1 + ch + load32(sym_addr(".Lrt_sha_k") + i * 8) + load32(sym_addr("__rt_sha_w") + i * 4)) in
+        let s0 = bit_xor(bit_xor(rotr32(a, 2), rotr32(a, 13)), rotr32(a, 22)) in
+        let mj = bit_xor(bit_xor(bit_and(a, b), bit_and(a, c)), bit_and(b, c)) in
+        let t2 = u32(s0 + mj) in
+        __rt_sha_rounds(state, i + 1, u32(t1 + t2), a, b, c, u32(d + t1), e, f, g)
+
+fn __rt_sha_add(state, a, b, c, d, e, f, g, h) =
+    let s0 = store32(state + 8, u32(load32(state + 8) + a)) in
+    let s1 = store32(state + 12, u32(load32(state + 12) + b)) in
+    let s2 = store32(state + 16, u32(load32(state + 16) + c)) in
+    let s3 = store32(state + 20, u32(load32(state + 20) + d)) in
+    let s4 = store32(state + 24, u32(load32(state + 24) + e)) in
+    let s5 = store32(state + 28, u32(load32(state + 28) + f)) in
+    let s6 = store32(state + 32, u32(load32(state + 32) + g)) in
+    let s7 = store32(state + 36, u32(load32(state + 36) + h)) in
+    0
+
+## ======================= ChaCha20 =======================
+## crypto_chacha20_xor(out, data, key, nonce, counter): XOR the ChaCha20 keystream (RFC 8439) into out = data.
+## The 16-word state and the per-block working / keystream words live in __rt_cc (0..63 state, 64..127 work,
+## 128..191 keystream).
+fn rotl32(x, n) = u32(bit_or(bit_shl(x, n), bit_shr(x, 32 - n)))
+
+fn crypto_chacha20_xor(out, data, key, nonce, ctr_v) =
+    let ctr = rt_int(ctr_v) in
+    let kl = rt_slen(key) in
+    if kl != 32 then
+        __rt_die3(0, 0, 0, 0, sym_addr("__rt_crsize_msg"))
+    else
+        let kp = rt_sptr(key, sym_addr("__rt_sb0")) in
+        let nl = rt_slen(nonce) in
+        if nl != 12 then
+            __rt_die3(0, 0, 0, 0, sym_addr("__rt_crsize_msg"))
+        else
+            let np = rt_sptr(nonce, sym_addr("__rt_sb1")) in
+            let dl = rt_slen(data) in
+            let dp = rt_sptr(data, sym_addr("__rt_sb2")) in
+            if bit_and(out, 7) != 0 or out == 0 or load8(out) != 15 then
+                __rt_die3(0, 0, 0, 0, sym_addr("__rt_crbuf_msg"))
+            else if bit_shr(load64(out), 8) < dl then
+                __rt_die3(0, 0, 0, 0, sym_addr("__rt_crout_msg"))
+            else
+                let si = __rt_cc_init(kp, np, ctr) in
+                let xr = __rt_cc_blocks(out + 8, dp, 0, dl) in
+                out
+
+## build the initial 16-word state: 4 constants, 8 key words, counter, 3 nonce words
+fn __rt_cc_init(kp, np, ctr) =
+    let st = sym_addr("__rt_cc") in
+    let c0 = store32(st, 1634760805) in
+    let c1 = store32(st + 4, 857760878) in
+    let c2 = store32(st + 8, 2036477234) in
+    let c3 = store32(st + 12, 1797285236) in
+    let k = __rt_cc_cpk(st + 16, kp, 0) in
+    let cc = store32(st + 48, u32(ctr)) in
+    let n0 = store32(st + 52, load32(np)) in
+    let n1 = store32(st + 56, load32(np + 4)) in
+    let n2 = store32(st + 60, load32(np + 8)) in
+    0
+
+fn __rt_cc_cpk(dst, kp, i) =
+    if i >= 8 then
+        0
+    else
+        let w = store32(dst + i * 4, load32(kp + i * 4)) in
+        __rt_cc_cpk(dst, kp, i + 1)
+
+## for each 64-byte region of data [j, dl): one keystream block XORed in; the state counter word rises by one
+fn __rt_cc_blocks(out, dp, j, dl) =
+    if j >= dl then
+        0
+    else
+        let ks = __rt_cc_keystream() in
+        let n = if dl - j >= 64 then 64 else dl - j in
+        let x = __rt_cc_xor(out, dp, j, 0, n) in
+        let st = sym_addr("__rt_cc") in
+        let inc = store32(st + 48, u32(load32(st + 48) + 1)) in
+        __rt_cc_blocks(out, dp, j + 64, dl)
+
+## copy state -> work, 10 double-rounds, add the original state -> keystream words at __rt_cc+128
+fn __rt_cc_keystream() =
+    let st = sym_addr("__rt_cc") in
+    let cp = __rt_cc_cp(st + 64, st, 0) in
+    let dr = __rt_cc_rounds(10) in
+    __rt_cc_add(st + 128, st + 64, st, 0)
+
+fn __rt_cc_cp(dst, src, i) =
+    if i >= 16 then
+        0
+    else
+        let w = store32(dst + i * 4, load32(src + i * 4)) in
+        __rt_cc_cp(dst, src, i + 1)
+
+fn __rt_cc_rounds(n) =
+    if n == 0 then
+        0
+    else
+        let w = sym_addr("__rt_cc") + 64 in
+        let a0 = __rt_cc_qr(w, 0, 4, 8, 12) in
+        let a1 = __rt_cc_qr(w, 1, 5, 9, 13) in
+        let a2 = __rt_cc_qr(w, 2, 6, 10, 14) in
+        let a3 = __rt_cc_qr(w, 3, 7, 11, 15) in
+        let b0 = __rt_cc_qr(w, 0, 5, 10, 15) in
+        let b1 = __rt_cc_qr(w, 1, 6, 11, 12) in
+        let b2 = __rt_cc_qr(w, 2, 7, 8, 13) in
+        let b3 = __rt_cc_qr(w, 3, 4, 9, 14) in
+        __rt_cc_rounds(n - 1)
+
+fn __rt_cc_qr(w, ia, ib, ic, id) =
+    let a0 = load32(w + ia * 4) in
+    let b0 = load32(w + ib * 4) in
+    let c0 = load32(w + ic * 4) in
+    let d0 = load32(w + id * 4) in
+    let a1 = u32(a0 + b0) in
+    let d1 = rotl32(bit_xor(d0, a1), 16) in
+    let c1 = u32(c0 + d1) in
+    let b1 = rotl32(bit_xor(b0, c1), 12) in
+    let a2 = u32(a1 + b1) in
+    let d2 = rotl32(bit_xor(d1, a2), 8) in
+    let c2 = u32(c1 + d2) in
+    let b2 = rotl32(bit_xor(b1, c2), 7) in
+    let wa = store32(w + ia * 4, a2) in
+    let wb = store32(w + ib * 4, b2) in
+    let wc = store32(w + ic * 4, c2) in
+    let wd = store32(w + id * 4, d2) in
+    0
+
+fn __rt_cc_add(ks, work, st, i) =
+    if i >= 16 then
+        0
+    else
+        let w = store32(ks + i * 4, u32(load32(work + i * 4) + load32(st + i * 4))) in
+        __rt_cc_add(ks, work, st, i + 1)
+
+## XOR n bytes of keystream (__rt_cc+128) with data[j+k] into out[j+k]
+fn __rt_cc_xor(out, dp, j, k, n) =
+    if k >= n then
+        0
+    else
+        let ksb = load8(sym_addr("__rt_cc") + 128 + k) in
+        let db = load8(dp + j + k) in
+        let w = store8(out + j + k, bit_xor(ksb, db)) in
+        __rt_cc_xor(out, dp, j, k + 1, n)
+
+## ======================= Poly1305 =======================
+## crypto_poly1305(key, data): the one-time MAC (RFC 8439). r (clamped), r*5 and s live in __rt_py; the accumulator
+## h0..h4 and the padded-block / output scratch too. Limbs are 26-bit, so every product (< 2^54) and limb sum
+## (< 2^57) fits a signed 64-bit word without an overflow trap.
+fn crypto_poly1305(key, data) =
+    let kl = rt_slen(key) in
+    if kl != 32 then
+        __rt_die3(0, 0, 0, 0, sym_addr("__rt_crsize_msg"))
+    else
+        let kp = rt_sptr(key, sym_addr("__rt_sb0")) in
+        let s = __rt_py_setup(kp) in
+        let dl = rt_slen(data) in
+        let dp = rt_sptr(data, sym_addr("__rt_sb1")) in
+        let z = __rt_py_zero_h() in
+        let b = __rt_py_blocks(dp, dl, 0) in
+        __rt_py_final()
+
+## parse r into five clamped 26-bit limbs, precompute r1..r4 * 5, and keep s (the 16-byte pad) as four words
+fn __rt_py_setup(kp) =
+    let py = sym_addr("__rt_py") in
+    let w0 = load32(kp) in
+    let r0 = bit_and(w0, 67108863) in
+    let a0 = store64(py, r0) in
+    let w1 = load32(kp + 4) in
+    let r1 = bit_and(bit_or(bit_shr(w0, 26), bit_shl(w1, 6)), 67108611) in
+    let a1 = store64(py + 8, r1) in
+    let w2 = load32(kp + 8) in
+    let r2 = bit_and(bit_or(bit_shr(w1, 20), bit_shl(w2, 12)), 67092735) in
+    let a2 = store64(py + 16, r2) in
+    let w3 = load32(kp + 12) in
+    let r3 = bit_and(bit_or(bit_shr(w2, 14), bit_shl(w3, 18)), 66076671) in
+    let a3 = store64(py + 24, r3) in
+    let r4 = bit_and(bit_shr(w3, 8), 1048575) in
+    let a4 = store64(py + 32, r4) in
+    let b1 = store64(py + 40, r1 * 5) in
+    let b2 = store64(py + 48, r2 * 5) in
+    let b3 = store64(py + 56, r3 * 5) in
+    let b4 = store64(py + 64, r4 * 5) in
+    let p0 = store32(py + 72, load32(kp + 16)) in
+    let p1 = store32(py + 76, load32(kp + 20)) in
+    let p2 = store32(py + 80, load32(kp + 24)) in
+    let p3 = store32(py + 84, load32(kp + 28)) in
+    0
+
+fn __rt_py_zero_h() =
+    let py = sym_addr("__rt_py") in
+    let a = store64(py + 112, 0) in
+    let b = store64(py + 120, 0) in
+    let c = store64(py + 128, 0) in
+    let d = store64(py + 136, 0) in
+    let e = store64(py + 144, 0) in
+    0
+
+fn __rt_py_blocks(dp, dl, cur) =
+    if cur >= dl then
+        0
+    else
+        let rem = dl - cur in
+        let bp = if rem >= 16 then dp + cur else __rt_py_pad(dp + cur, rem) in
+        let hib = if rem >= 16 then 16777216 else 0 in
+        let m = __rt_py_mul(bp, hib) in
+        if rem >= 16 then __rt_py_blocks(dp, dl, cur + 16) else 0
+
+## zero the 16-byte scratch, copy the rem tail bytes, set the 0x01 terminator; return the scratch pointer
+fn __rt_py_pad(src, rem) =
+    let pb = sym_addr("__rt_py") + 96 in
+    let z = store64(pb, 0) in
+    let z2 = store64(pb + 8, 0) in
+    let c = __rt_py_cpn(pb, src, 0, rem) in
+    let one = store8(pb + rem, 1) in
+    pb
+
+fn __rt_py_cpn(dst, src, i, n) =
+    if i >= n then
+        0
+    else
+        let w = store8(dst + i, load8(src + i)) in
+        __rt_py_cpn(dst, src, i + 1, n)
+
+## add the 16-byte block (plus the high bit) to h, then h = (h * r) mod 2^130-5
+fn __rt_py_mul(bp, hib) =
+    let py = sym_addr("__rt_py") in
+    let w0 = load32(bp) in
+    let h0 = load64(py + 112) + bit_and(w0, 67108863) in
+    let w1 = load32(bp + 4) in
+    let h1 = load64(py + 120) + bit_and(bit_or(bit_shr(w0, 26), bit_shl(w1, 6)), 67108863) in
+    let w2 = load32(bp + 8) in
+    let h2 = load64(py + 128) + bit_and(bit_or(bit_shr(w1, 20), bit_shl(w2, 12)), 67108863) in
+    let w3 = load32(bp + 12) in
+    let h3 = load64(py + 136) + bit_and(bit_or(bit_shr(w2, 14), bit_shl(w3, 18)), 67108863) in
+    let h4 = load64(py + 144) + bit_or(bit_shr(w3, 8), hib) in
+    let r0 = load64(py) in
+    let r1 = load64(py + 8) in
+    let r2 = load64(py + 16) in
+    let r3 = load64(py + 24) in
+    let r4 = load64(py + 32) in
+    let f1 = load64(py + 40) in
+    let f2 = load64(py + 48) in
+    let f3 = load64(py + 56) in
+    let f4 = load64(py + 64) in
+    let d0 = h0 * r0 + h1 * f4 + h2 * f3 + h3 * f2 + h4 * f1 in
+    let d1 = h0 * r1 + h1 * r0 + h2 * f4 + h3 * f3 + h4 * f2 in
+    let d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * f4 + h4 * f3 in
+    let d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * f4 in
+    let d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0 in
+    let c0 = bit_shr(d0, 26) in
+    let dd1 = d1 + c0 in
+    let c1 = bit_shr(dd1, 26) in
+    let dd2 = d2 + c1 in
+    let c2 = bit_shr(dd2, 26) in
+    let dd3 = d3 + c2 in
+    let c3 = bit_shr(dd3, 26) in
+    let dd4 = d4 + c3 in
+    let c4 = bit_shr(dd4, 26) in
+    let g0 = bit_and(d0, 67108863) + c4 * 5 in
+    let c5 = bit_shr(g0, 26) in
+    let s0 = store64(py + 112, bit_and(g0, 67108863)) in
+    let s1 = store64(py + 120, bit_and(dd1, 67108863) + c5) in
+    let s2 = store64(py + 128, bit_and(dd2, 67108863)) in
+    let s3 = store64(py + 136, bit_and(dd3, 67108863)) in
+    let s4 = store64(py + 144, bit_and(dd4, 67108863)) in
+    0
+
+## final carry, conditional subtract of 2^130-5, add s, serialize 16 little-endian bytes -> a 16-byte string
+fn __rt_py_final() =
+    let py = sym_addr("__rt_py") in
+    let h0a = load64(py + 112) in
+    let h1a = load64(py + 120) in
+    let h2a = load64(py + 128) in
+    let h3a = load64(py + 136) in
+    let h4a = load64(py + 144) in
+    let c1 = bit_shr(h1a, 26) in
+    let h1 = bit_and(h1a, 67108863) in
+    let h2b = h2a + c1 in
+    let c2 = bit_shr(h2b, 26) in
+    let h2 = bit_and(h2b, 67108863) in
+    let h3b = h3a + c2 in
+    let c3 = bit_shr(h3b, 26) in
+    let h3 = bit_and(h3b, 67108863) in
+    let h4b = h4a + c3 in
+    let c4 = bit_shr(h4b, 26) in
+    let h4 = bit_and(h4b, 67108863) in
+    let h0b = h0a + c4 * 5 in
+    let c0 = bit_shr(h0b, 26) in
+    let h0 = bit_and(h0b, 67108863) in
+    let h1c = h1 + c0 in
+    let g0a = h0 + 5 in
+    let gc0 = bit_shr(g0a, 26) in
+    let g0 = bit_and(g0a, 67108863) in
+    let g1a = h1c + gc0 in
+    let gc1 = bit_shr(g1a, 26) in
+    let g1 = bit_and(g1a, 67108863) in
+    let g2a = h2 + gc1 in
+    let gc2 = bit_shr(g2a, 26) in
+    let g2 = bit_and(g2a, 67108863) in
+    let g3a = h3 + gc2 in
+    let gc3 = bit_shr(g3a, 26) in
+    let g3 = bit_and(g3a, 67108863) in
+    let g4a = h4 + gc3 - 67108864 in
+    let msk = bit_shr(g4a, 63) in
+    let g4 = bit_and(g4a, 67108863) in
+    let nm = bit_xor(msk, 0 - 1) in
+    let o0 = bit_or(bit_and(h0, msk), bit_and(g0, nm)) in
+    let o1 = bit_or(bit_and(h1c, msk), bit_and(g1, nm)) in
+    let o2 = bit_or(bit_and(h2, msk), bit_and(g2, nm)) in
+    let o3 = bit_or(bit_and(h3, msk), bit_and(g3, nm)) in
+    let o4 = bit_or(bit_and(h4, msk), bit_and(g4, nm)) in
+    let ax = bit_and(bit_or(bit_shl(o1, 26), o0), 4294967295) in
+    let bx = bit_and(bit_or(bit_shl(o2, 20), bit_shr(o1, 6)), 4294967295) in
+    let cx = bit_and(bit_or(bit_shl(o3, 14), bit_shr(o2, 12)), 4294967295) in
+    let dx = bit_and(bit_or(bit_shl(o4, 8), bit_shr(o3, 18)), 4294967295) in
+    let a1 = ax + load32(py + 72) in
+    let w0 = store32(py + 144, bit_and(a1, 4294967295)) in
+    let b1 = bx + load32(py + 76) + bit_shr(a1, 32) in
+    let w1 = store32(py + 148, bit_and(b1, 4294967295)) in
+    let cc = cx + load32(py + 80) + bit_shr(b1, 32) in
+    let w2 = store32(py + 152, bit_and(cc, 4294967295)) in
+    let dd = dx + load32(py + 84) + bit_shr(cc, 32) in
+    let w3 = store32(py + 156, bit_and(dd, 4294967295)) in
+    __rt_mkstrn(py + 144, 16)
