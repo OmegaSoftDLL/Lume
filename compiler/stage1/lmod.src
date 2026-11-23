@@ -138,6 +138,19 @@ fn ns_usemods(lines) = match lines
 fn ns_segcount(ms, seg) = match ms
     Nil        => 0
     Cons(h, t) => (if ns_lastseg(h) == seg then 1 else 0) + ns_segcount(t, seg)
+## the last segments that name two or more imported modules (so `seg.name` is ambiguous without an `as`). A line that
+## uses one must still be visited by the rewrite pass, so `ns_segamb` can report it instead of the parser silently
+## reading `seg.name(x)` as the method call `name(seg, x)`.
+fn ns_ambsegs(mods) = ns_ambsegs_go(mods, mods, Nil)
+fn ns_ambsegs_go(all, rest, acc) = match rest
+    Nil        => acc
+    Cons(h, t) => let seg = ns_lastseg(h) in if seg != h and ns_segcount(all, seg) >= 2 and contains(acc, seg) == 0 then ns_ambsegs_go(all, t, Cons(seg, acc)) else ns_ambsegs_go(all, t, acc)
+fn ns_has_any_ambseg(s, n, segs) = match segs
+    Nil        => 0
+    Cons(seg, t) => if ns_has(s, n, seg + ".", count(seg) + 1, 0) == 1 then 1 else ns_has_any_ambseg(s, n, t)
+fn ns_any_line_ambseg(lines, segs) = match lines
+    Nil        => 0
+    Cons(h, t) => if ns_has_any_ambseg(h, count(h), segs) == 1 then 1 else ns_any_line_ambseg(t, segs)
 fn extractaliases(lines) = extractaliases_go(lines, ns_usemods(lines))
 fn extractaliases_go(lines, mods) = match lines
     Nil        => Nil
@@ -313,8 +326,8 @@ fn ns_qdefs(text) = let ws = ns_qnames(text, count(text), 0, Nil) in if isnil(ws
 
 fn ns_lines(lines, k, mp, cx) = match lines
     Nil        => Nil
-    Cons(h, t) => let n = count(h) in let tr = ltrim(h) in let nh = if startswith(tr, "use ") then h else if ns_has_any_map(h, n, mp) == 1 or ns_has_any_alias(h, n, cx.als) == 1 then ns_rw(h, n, 0, 0, Nil, Nil, {mp: cx.mp, als: cx.als, recs: cx.recs, gs: cx.gs, entry: cx.entry, mod: cx.mod, line: k, bnd: cx.bnd}) else h in Cons(nh, ns_lines(t, k + 1, mp, cx))
-fn ns_rec(r, recs, gs, entry) = let mp = ns_map(gs, r, ns_reach(r.uses, recs, Nil), entry, Nil) in let qual = ns_any_qual(r.lines, r.aliases) in if isnil(mp) == 1 and qual == 0 then r else {name: r.name, uses: r.uses, lines: ns_lines(r.lines, 1, mp, {mp: mp, als: r.aliases, recs: recs, gs: gs, entry: entry, mod: r.name, line: 0, bnd: ns_binders(r.lines, Nil)}), aliases: r.aliases, defs: r.defs}
+    Cons(h, t) => let n = count(h) in let tr = ltrim(h) in let nh = if startswith(tr, "use ") then h else if ns_has_any_map(h, n, mp) == 1 or ns_has_any_alias(h, n, cx.als) == 1 or ns_has_any_ambseg(h, n, cx.ambsegs) == 1 then ns_rw(h, n, 0, 0, Nil, Nil, {mp: cx.mp, als: cx.als, recs: cx.recs, gs: cx.gs, entry: cx.entry, mod: cx.mod, line: k, bnd: cx.bnd}) else h in Cons(nh, ns_lines(t, k + 1, mp, cx))
+fn ns_rec(r, recs, gs, entry) = let mp = ns_map(gs, r, ns_reach(r.uses, recs, Nil), entry, Nil) in let qual = ns_any_qual(r.lines, r.aliases) in let ambsegs = ns_ambsegs(ns_usemods(r.lines)) in if isnil(mp) == 1 and qual == 0 and ns_any_line_ambseg(r.lines, ambsegs) == 0 then r else {name: r.name, uses: r.uses, lines: ns_lines(r.lines, 1, mp, {mp: mp, als: r.aliases, recs: recs, gs: gs, entry: entry, mod: r.name, line: 0, bnd: ns_binders(r.lines, Nil), ambsegs: ambsegs}), aliases: r.aliases, defs: r.defs}
 fn ns_any_qual(lines, als) = if isnil(als) == 1 then 0 else match lines
     Nil        => 0
     Cons(h, t) => if ns_has_any_alias(h, count(h), als) == 1 then 1 else ns_any_qual(t, als)
