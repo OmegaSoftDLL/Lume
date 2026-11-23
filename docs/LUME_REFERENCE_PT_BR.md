@@ -894,7 +894,7 @@ invlpg, a IDT, interrupcoes, boot de AP, troca de tarefa, `vga_*`) sao recusados
 | `netctl`, `dns` | TCP com timeout, sockets nao bloqueantes, epoll, DNS | estavel |
 | `tun` | interfaces TUN: `tun_open`, `tun_read`, `tun_write`, `tun_wait`, `tun_set_ipv4`, `tun_set_mtu`, `tun_set_up`, `tun_close` | linux + windows, privilegiado; no Windows o Wintun so entra pelo `lchameleon` |
 | `lchameleon` | fronteiras externas: `chameleon_c_open(caminho)` (Windows: DLL assinada dentro de System32 / Program Files), `chameleon_c_sym`, `chameleon_c_call` (devolvem `unverified[int]`), `chameleon_verify_boundary` | `chameleon_c_*`: windows; guardas: estavel |
-| `winsys` | monitores, captura, entrada, janelas, registro, servicos, sessoes, named pipes | windows |
+| `winsys` | monitores, captura, entrada, janelas, area de transferencia, foco, arrastar-e-soltar, registro, servicos, sessoes, named pipes | windows |
 | `lcrypto_tls` | AES-GCM, ECDSA P-256, X25519, Ed25519, SHA-256 | estavel |
 
 ```lume

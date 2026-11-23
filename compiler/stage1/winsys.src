@@ -451,3 +451,26 @@ fn ws_absd(a) = if a < 0 then 0 - a else a
 fn test_mouse_move_in_place() = if ws_win() == 0 then win_send_mouse_move(0, 0) == 0 else let c = win_cursor() in if c.visible == 0 then true else let r = win_send_mouse_move(c.x, c.y) in let z = os_sleep_ms(30) in let d = win_cursor() in r == 0 or ws_absd(d.x - c.x) <= 1 and ws_absd(d.y - c.y) <= 1
 fn test_viewer_window_when_asked() = if ws_win() == 0 or os_getenv("LUME_TEST_GUI") != "1" then win_window_open("x", 10, 10) == 0 or ws_win() != 0 else let w = win_window_open("Lume viewer test", 320, 200) in let s = win_window_client_size(w) in let img = buf_new(64 * 64 * 4) in let d = win_window_draw(w, img, 64, 64, 256) in let e = win_window_events(w) in let t = win_window_set_title(w, "Lume viewer ok") in let alive = win_window_alive(w) in let x = win_window_destroy(w) in w != 0 and s.width == 320 and s.height == 200 and d == 1 and t == 1 and alive == 1 and win_window_alive(w) == 0
 fn test_text_input_units() = ws_len(ws_units("a" + chr(240) + chr(159) + chr(152) + chr(128), 0, Nil), 0) == 3
+
+## --- clipboard (CF_UNICODETEXT), window focus, and drag-and-drop file primitives (user32/kernel32/shell32) ---
+## clipboard_set_text(s): put UTF-16 text on the clipboard; 1 on success, 0 otherwise. clipboard_get_text(): the
+## clipboard's text as UTF-8, "" when empty or not text. On non-Windows both are no-ops (0 / "").
+fn clipboard_set_text(s) = if ws_win() == 0 then 0 else let w = ws_wstr(s) in let nb = buf_len(w) in if ws_call("user32.dll", "OpenClipboard", ws_l1(0)) == 0 then 0 else let e = ws_call("user32.dll", "EmptyClipboard", Nil) in let h = ws_callq("kernel32.dll", "GlobalAlloc", ws_l2(2, nb)) in if h == 0 then (let c = ws_call("user32.dll", "CloseClipboard", Nil) in 0) else let p = ws_callq("kernel32.dll", "GlobalLock", ws_l1(h)) in let m = ws_callq("kernel32.dll", "RtlMoveMemory", ws_l3(p, buf_addr(w), nb)) in let u = ws_call("kernel32.dll", "GlobalUnlock", ws_l1(h)) in let r = ws_callq("user32.dll", "SetClipboardData", ws_l2(13, h)) in let c = ws_call("user32.dll", "CloseClipboard", Nil) in if r == 0 then 0 else 1
+fn clipboard_get_text() = if ws_win() == 0 then "" else if ws_call("user32.dll", "OpenClipboard", ws_l1(0)) == 0 then "" else let h = ws_callq("user32.dll", "GetClipboardData", ws_l1(13)) in if h == 0 then (let c = ws_call("user32.dll", "CloseClipboard", Nil) in "") else let p = ws_callq("kernel32.dll", "GlobalLock", ws_l1(h)) in let t = ws_wtext_at(p) in let u = ws_call("kernel32.dll", "GlobalUnlock", ws_l1(h)) in let c = ws_call("user32.dll", "CloseClipboard", Nil) in t
+## win_get_foreground(): the foreground window handle (0 if none). win_set_foreground(hwnd): give it the foreground;
+## 1 on success. win_show(hwnd, how): ShowWindow (9 = restore, 5 = show, 0 = hide). win_focus(hwnd): restore + raise +
+## foreground, the reliable "bring to front".
+fn win_get_foreground() = if ws_win() == 0 then 0 else ws_callq("user32.dll", "GetForegroundWindow", Nil)
+fn win_set_foreground(hwnd) = if ws_win() == 0 then 0 else ws_call("user32.dll", "SetForegroundWindow", ws_l1(hwnd))
+fn win_show(hwnd, how) = if ws_win() == 0 then 0 else ws_call("user32.dll", "ShowWindow", ws_l2(hwnd, how))
+fn win_focus(hwnd) = if ws_win() == 0 then 0 else let s = win_show(hwnd, 9) in let b = ws_call("user32.dll", "BringWindowToTop", ws_l1(hwnd)) in win_set_foreground(hwnd)
+## drag-and-drop: win_drag_accept(hwnd, on) registers a window to receive dropped files. On WM_DROPFILES the message's
+## wParam is an HDROP: win_drop_count(hdrop) is the number of files, win_drop_path(hdrop, i) the i-th path (UTF-8),
+## win_drop_finish(hdrop) frees it. On non-Windows all are no-ops (0 / "").
+fn win_drag_accept(hwnd, on) = if ws_win() == 0 then 0 else ws_call("shell32.dll", "DragAcceptFiles", ws_l2(hwnd, on))
+fn win_drop_count(hdrop) = if ws_win() == 0 then 0 else ws_call("shell32.dll", "DragQueryFileW", ws_l4(hdrop, 4294967295, 0, 0))
+fn win_drop_path(hdrop, i) = if ws_win() == 0 then "" else let cap = 1040 in let b = buf_new(2 * cap + 2) in let n = ws_call("shell32.dll", "DragQueryFileW", ws_l4(hdrop, i, buf_addr(b), cap)) in if n <= 0 then "" else ws_wtext(b, 0, 2 * n + 2)
+fn win_drop_finish(hdrop) = if ws_win() == 0 then 0 else ws_call("shell32.dll", "DragFinish", ws_l1(hdrop))
+fn test_clipboard_roundtrip() = if ws_win() == 0 then clipboard_set_text("x") == 0 and clipboard_get_text() == "" else if os_getenv("LUME_TEST_GUI") != "1" then true else let s = clipboard_set_text("Lume clip " + str(os_getpid())) in s == 1 and clipboard_get_text() == "Lume clip " + str(os_getpid())
+fn test_window_focus() = if ws_win() == 0 then win_get_foreground() == 0 and win_set_foreground(0) == 0 and win_show(0, 5) == 0 and win_focus(0) == 0 else let f = win_get_foreground() in win_set_foreground(f) == 0 or win_set_foreground(f) == 1
+fn test_drag_drop_primitives() = if ws_win() == 0 then win_drag_accept(0, 1) == 0 and win_drop_count(0) == 0 and win_drop_path(0, 0) == "" and win_drop_finish(0) == 0 else win_drop_count(0) == 0

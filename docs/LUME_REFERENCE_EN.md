@@ -886,7 +886,7 @@ AP boot, task switch, `vga_*`) are refused in a hosted program with [K0007].
 | `netctl`, `dns` | TCP with timeouts, non-blocking sockets, epoll, DNS | stable |
 | `tun` | TUN interfaces: `tun_open`, `tun_read`, `tun_write`, `tun_wait`, `tun_set_ipv4`, `tun_set_mtu`, `tun_set_up`, `tun_close` | linux + windows, privileged; Windows loads Wintun only through `lchameleon` |
 | `lchameleon` | foreign boundaries: `chameleon_c_open(path)` (Windows: a signed DLL inside System32 / Program Files), `chameleon_c_sym`, `chameleon_c_call` (answer `unverified[int]`), `chameleon_verify_boundary` | `chameleon_c_*`: windows; guards: stable |
-| `winsys` | displays, capture, input, windows, registry, services, sessions, named pipes | windows |
+| `winsys` | displays, capture, input, windows, clipboard, focus, drag-and-drop, registry, services, sessions, named pipes | windows |
 | `lcrypto_tls` | AES-GCM, ECDSA P-256, X25519, Ed25519, SHA-256 | stable |
 
 ```lume
