@@ -29,6 +29,13 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 
 ## State on 2026-11-24 (newest first)
 
+- macOS target (roadmap item C) is being UNBLOCKED: the owner is bringing a Mac onto Tailscale as the macOS
+  build/validate host (the way `notacer` is the Acer host). Design plan written: `docs/44-macos-darwin-and-swift-
+  interop.md`. Owner directive: **Lume must emit Swift-compilable output**, and once the Mac compiler exists
+  everything must work perfectly (parity rule extended to the Mac target). The chameleon reaches Apple via the C ABI +
+  Objective-C runtime (`objc_msgSend`), NOT Swift directly; Swift-only APIs go through a generated `@_cdecl`/`@objc`
+  shim; `darwin_layer.s` is the irreducible Darwin ABI floor (same category as `win64_layer.s`). Needs `lasm --macho`
+  + ad-hoc `codesign`. Awaiting the Mac's Tailscale hostname/ssh user to start.
 - Branch `windows-native-toolchain` == `origin/main` == **9c583fa7** (pushed to both; push is automatic). The current
   package is installed on all four targets: Linux `/root/.lume`, `C:\Users\Ricardo.Bueno\.lume`, the Windows tool
   trees and `C:\Lume`. The frozen-seed battery is 438/0.
