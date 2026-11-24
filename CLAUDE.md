@@ -27,6 +27,27 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 - "Tested" means the full universe, not a sample: 111 files with `fn test_` (`mem/tests_all.txt`), 205 programs
   (`mem/progs_all.txt`), the memory battery, then the gates and the 114 CLI commands — on both systems, compared.
 
+## State on 2026-11-24 (newest first)
+
+- Branch `windows-native-toolchain` == `origin/main` == **9c583fa7** (pushed to both; push is automatic). The current
+  package is installed on all four targets: Linux `/root/.lume`, `C:\Users\Ricardo.Bueno\.lume`, the Windows tool
+  trees and `C:\Lume`. The frozen-seed battery is 438/0.
+- LumeDesk developer features shipped (each 438/0, installed, pushed): #22 resolver (ambiguous `M.name(x)` is an
+  error, not a silent method call), #13 (P35 fires only on the user package's public fns), #2 `os_fd_write(fd, s)`,
+  #3 winsys clipboard/focus/drag-drop (via `ws_call`, no new asm), #5 `buf_get_u64le`/`buf_set_u64le`, #17
+  (`lume verify` lists FAIL files first), #12 (an unqualified use of a name defined in two visible modules is now a
+  compile error, keeping the `[W0003]` code). Still pending, none blocked: #16 udp multicast/broadcast and #4 sysinfo
+  (small/medium), then the Win64-layer ones (#1 `fs_size`/`fs_is_dir`, #14, #15), and the big #24 `bn_modexp`
+  (buffer-backed bignum rewrite). #23 needs the dev's exact repro.
+- Windows<->Linux parity: DONE — 438 tests identical on both systems; measured performance Windows >= Linux
+  (X25519 593 vs 733 us, buf 8 vs 10 ns, 1080p BGRA->I420 8.2 vs 9.3 ms, identical checksum). Report:
+  `docs/43-performance-parity.md`.
+- Runtime in Lume: the computational runtime is 100 % Lume; `runtime_core.lume` is ~203 lines. What remains is the
+  intentional ABI floor (the `__gc_collect` thunk + `__gc_sweep_chunk`, `_start`, BSS decls) plus item 7, the Windows
+  ABI layer `win64_layer.s` — a Lume rewrite of either is circular, not a backlog (see RUNTIME QUEUE item 7).
+- `lmod` is a SEPARATE tool (`build/bin/lmod`), invoked by `lume_driver` at module resolution; a change to `lmod.src`
+  needs `build/bin/lmod` rebuilt or the local smoke uses stale behaviour. `dev_rebuild_validate.sh` now rebuilds it.
+
 ## State on 2026-11-18 (newest first)
 
 - RULE (owner, inviolable): the repository is 100 % Lume. 192 non-Lume helper files under build/windows-native
