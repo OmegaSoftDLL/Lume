@@ -356,6 +356,7 @@ failed: too big
 ## 5. Buffers de bytes (estavel)
 
 `buf_new(n)` (n bytes zerados), `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (devolve b),
+`buf_get_u64le(b, off)` / `buf_set_u64le(b, off, v)` (8 bytes little-endian em off como inteiro de 64 bits com sinal; off precisa deixar 8 bytes dentro),
 `buf_copy(dst, d_off, src, s_off, n)` (src um buffer ou uma string: um quadro que chega como string vai para um
 buffer que ja existe, sem criar outro), `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,
 `buf_addr(b)` (endereco do byte 0, para chamadas de sistema). Indice fora do buffer ou valor fora de 0..255 para o

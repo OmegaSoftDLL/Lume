@@ -355,6 +355,7 @@ failed: too big
 ## 5. Byte buffers (stable)
 
 `buf_new(n)` (n bytes, all zero), `buf_len(b)`, `buf_get(b, i)` (0..255), `buf_set(b, i, v)` (answers b),
+`buf_get_u64le(b, off)` / `buf_set_u64le(b, off, v)` (8 little-endian bytes at off as a signed 64-bit int; off must leave 8 bytes inside),
 `buf_copy(dst, d_off, src, s_off, n)` (src a buffer or a string: a frame that arrives as a string goes into an
 existing buffer without a new one), `buf_slice(b, off, n)`, `buf_from_str(s)`, `buf_to_str(b, off, n)`,
 `buf_addr(b)` (the address of byte 0, for system calls). An index outside the buffer or a value outside
