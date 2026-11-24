@@ -370,3 +370,26 @@ fork or larger. Order of work: 1 to 12, unless the owner sets another priority.
   computations improves Lume itself and is separate from Windows parity.
 - The false claims found in the documentation and in the external catalogue (listed in
   `build/windows-native/audit/PLANO_DE_CORRECOES.md` §6) are to be corrected in the texts.
+
+## 10. macOS / Apple Silicon target and Swift interop (roadmap item C)
+
+Owner directive (2026-11-24): extend the parity goal to a macOS target, **Lume must emit Swift-compilable output**,
+and once the Mac compiler exists everything must work perfectly (bit-identical to Linux/Windows, performance never
+below them). Full design: `docs/44-macos-darwin-and-swift-interop.md`. The Mac is being put on Tailscale as the
+build/validate host (like `notacer` for the Acer). "Draft on Linux" = writable now without a Mac; "Mac-only" = needs
+the Mac to build/validate.
+
+| # | Item | Where | Size | Status |
+| --- | --- | --- | --- | --- |
+| C1 | `lasm --macho`: Mach-O object/executable emission (mirror of `--pe`) | draft on Linux, validate on Mac | large | [ ] |
+| C2 | `cocoa.src`: the Apple surface over `objc_msg`/`objc_get_class`/`sel_register_name` (mirror of `winsys.src`/`ws_call`) | draft on Linux | medium | [ ] |
+| C3 | FFI marshaller for the Apple AArch64 ABI + `objc_msgSend` variants (`_stret`/`_fpret` on x86-64; single entry on arm64) | Mac-only to validate | large | [ ] |
+| C4 | `darwin_layer.s`: the irreducible Darwin ABI floor — Mach-O `_start`, BSD/Mach syscall boundary (class `0x2000000`), dyld symbol resolver (`dlopen`/`dlsym`) | Mac-only | large | [ ] |
+| C5 | Swift export (3a): emit C-ABI exports + `.h` + `module.modulemap` + optional generated `.swift` shim so `swiftc` compiles against a Lume library | draft on Linux, compile on Mac | large | [ ] |
+| C6 | Swift import (3b): generated `@_cdecl`/`@objc` shim `.dylib` for Swift-only APIs (SwiftUI) the chameleon calls as C | Mac-only to validate | medium | [ ] |
+| C7 | Code signing in `lume build`: ad-hoc `codesign -s -` (required to launch on Apple Silicon); optional `arm64`+`x86_64` universal binary | Mac-only | medium | [ ] |
+| C8 | Validation: frozen-seed battery 438/0 on macOS, full test universe + programs byte-identical to Linux/Windows, measured perf not below Linux, `swiftc` bridge compiles and matches, `codesign --verify` + clean launch | Mac-only | — | [ ] |
+
+Order: start C2 and the C5 emitter + C1 scaffolding on Linux now (no Mac needed to write them); C3/C4/C6/C7 and all of
+C8 close on the Mac once it is on Tailscale. C4/C3 are the same irreducible-ABI category as the Windows
+`win64_layer.s` (item 7 of the RUNTIME QUEUE) — intentional asm, not a "migrate to Lume" backlog.
