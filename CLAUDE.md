@@ -29,6 +29,11 @@ outputs, performance never below Linux — and only then start the LumeDesk proj
 
 ## State on 2026-11-24 (newest first)
 
+- Depth-hardening checklist written: `docs/45-depth-hardening.md` — the debt between what Lume claims and what it
+  computes/proves today (the verified core is NOT in it). P1 prune/substantiate the overclaim (sovereign sentience,
+  quantum, 1-bit LLM, self-evolution); P2 the 39 model-only + 10 mixed domains (named by audit index) → real
+  computation vs a reference oracle; P3 perf debt (#24 bn_modexp 60x, hot builtins 1.5x, GC 64MiB floor, SIMD); P4
+  macOS/Swift (= §10). Source: `build/windows-native/audit/domains_122_map.md:170`.
 - macOS target (roadmap item C) is being UNBLOCKED: the owner is bringing a Mac onto Tailscale as the macOS
   build/validate host (the way `notacer` is the Acer host). Design plan written: `docs/44-macos-darwin-and-swift-
   interop.md`. Owner directive: **Lume must emit Swift-compilable output**, and once the Mac compiler exists
