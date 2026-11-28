@@ -366,7 +366,9 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   drenado; arvore morta no prazo; status, exit_code, out, err, out_truncated, err_truncated, timed_out)
 - Inventario: `use sysinfo` -> `fs_statvfs(caminho)` (total, livre, disponivel, tipo), `net_interfaces()` (nome,
                   MAC, up, enderecos com prefixo; sem loopback; Linux e Windows), `cpu_cores()` -> `{logical,
-                  performance, efficiency}` (CPUs hibridos: nucleos P / E; todos iguais: efficiency 0)
+                  performance, efficiency}` (CPUs hibridos: nucleos P / E; todos iguais: efficiency 0),
+                  `mem_info()` -> `{total_bytes, available_bytes, free_bytes}`, `uptime_secs()` (segundos desde o
+                  boot), `process_names()` -> lista de `{pid, name}` (Linux e Windows)
 - Sistema Windows (`use winsys`; no Linux tudo responde "ausente"): registro `reg_get_string(raiz, chave, nome)`,
                   `reg_get_dword`, `reg_key_exists`, `reg_value_exists`; sessoes `wts_active_console_session()`,
                   `wts_sessions()`, `wts_session_user(id)`, `process_session_id(pid)`; `services_running()`

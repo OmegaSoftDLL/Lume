@@ -18,6 +18,16 @@
 ##     whose cores are all alike reports them all as performance (efficiency 0). Linux: os_cpu_count() and the
 ##     kernel's /sys/devices/cpu_core/cpus and cpu_atom/cpus lists; Windows: GetLogicalProcessorInformationEx
 ##     (RelationProcessorCore), the cores of the highest EfficiencyClass being the performance ones.
+## mem_info() -> {total_bytes, available_bytes, free_bytes}
+##     Physical memory: the total installed, the bytes a new allocation may still take (available), and the bytes
+##     wholly unused (free). On Windows available and free are the same figure (the OS reports one). Linux:
+##     /proc/meminfo (MemTotal / MemAvailable / MemFree, kB -> bytes); Windows: GlobalMemoryStatusEx (ullTotalPhys /
+##     ullAvailPhys) through the layer's generic Win32 call.
+## uptime_secs() -> int
+##     Seconds since the machine booted. Linux: the first field of /proc/uptime; Windows: GetTickCount64 / 1000.
+## process_names() -> [{pid, name}]
+##     Every process the caller may see: its pid and its short image name ("lume", "explorer.exe"). Linux: the numeric
+##     entries of /proc with /proc/<pid>/comm; Windows: CreateToolhelp32Snapshot + Process32FirstW/Process32NextW.
 ## Written in Lume over sys_call; the programs that use them never name a system call.
 
 fn si_win() = os_platform() == "windows"
@@ -149,6 +159,47 @@ fn si_cores_win() =
     if n == 0 then {logical: os_cpu_count(), performance: os_cpu_count(), efficiency: 0} else (let p = si_csum(cs, si_cmax(cs, 0), false) in {logical: n, performance: p, efficiency: n - p})
 fn cpu_cores() = if si_win() then si_cores_win() else si_cores_linux()
 
+## --- mem_info --------------------------------------------------------------------------------------------------------
+fn si_allnum(s) = if count(s) == 0 then false else si_allnum2(s, 0)
+fn si_allnum2(s, i) = if i >= count(s) then true else if ord_at(s, i) >= 48 and ord_at(s, i) <= 57 then si_allnum2(s, i + 1) else false
+fn si_memv(ls, key) = match ls
+    Nil        => 0
+    Cons(l, t) => let w = si_words(l, 0, 0, Nil) in if si_nth(w, 0) == key then si_numat(si_nth(w, 1), 0) else si_memv(t, key)
+fn si_mem_linux() = let ls = si_lines(fs_read_file("/proc/meminfo"), 0, 0, Nil) in {total_bytes: si_memv(ls, "MemTotal:") * 1024, available_bytes: si_memv(ls, "MemAvailable:") * 1024, free_bytes: si_memv(ls, "MemFree:") * 1024}
+fn si_mem_win() = let b = si_put64(buf_new(64), 0, 64, 0) in let ok = bit_and(si_call("kernel32.dll", "GlobalMemoryStatusEx", Cons(buf_addr(b), Nil)), 4294967295) in if ok == 0 then {total_bytes: 0, available_bytes: 0, free_bytes: 0} else {total_bytes: si_u64(b, 8), available_bytes: si_u64(b, 16), free_bytes: si_u64(b, 16)}
+fn mem_info() = if si_win() then si_mem_win() else si_mem_linux()
+
+## --- uptime_secs -----------------------------------------------------------------------------------------------------
+fn si_uptime_win() = si_call("kernel32.dll", "GetTickCount64", Nil) / 1000
+fn uptime_secs() = if si_win() then si_uptime_win() else si_numat(fs_read_file("/proc/uptime"), 0)
+
+## --- process_names ---------------------------------------------------------------------------------------------------
+fn si_procs_lin(names) = match names
+    Nil        => Nil
+    Cons(n, t) => if si_allnum(n) then Cons({pid: toint(n), name: si_trim(fs_read_file("/proc/" + n + "/comm"))}, si_procs_lin(t)) else si_procs_lin(t)
+fn si_procs_linux() = si_procs_lin(si_lines(fs_read_dir("/proc"), 0, 0, Nil))
+## PROCESSENTRY32W: dwSize +0 (set 568), th32ProcessID +8, szExeFile (UTF-16, MAX_PATH) +44; TH32CS_SNAPPROCESS = 2
+fn si_procs_win_loop(snap, b, acc) =
+    let pid = si_u32(b, 8) in
+    let nm = si_wtext(b, 44, 568) in
+    let rec = Cons({pid: pid, name: nm}, acc) in
+    let nx = bit_and(si_call("kernel32.dll", "Process32NextW", Cons(snap, Cons(buf_addr(b), Nil))), 4294967295) in
+    if nx == 0 then si_rev(rec, Nil) else si_procs_win_loop(snap, b, rec)
+fn si_procs_win() =
+    let snap = si_call("kernel32.dll", "CreateToolhelp32Snapshot", Cons(2, Cons(0, Nil))) in
+    if snap <= 0 then Nil else
+    let b = si_put64(buf_new(568), 0, 568, 0) in
+    let first = bit_and(si_call("kernel32.dll", "Process32FirstW", Cons(snap, Cons(buf_addr(b), Nil))), 4294967295) in
+    let r = (if first == 0 then Nil else si_procs_win_loop(snap, b, Nil)) in
+    let c = si_call("kernel32.dll", "CloseHandle", Cons(snap, Nil)) in r
+fn process_names() = if si_win() then si_procs_win() else si_procs_linux()
+fn si_haspid(ps, pid) = match ps
+    Nil        => false
+    Cons(h, t) => if h.pid == pid then true else si_haspid(t, pid)
+fn si_procname(ps, pid) = match ps
+    Nil        => ""
+    Cons(h, t) => if h.pid == pid then h.name else si_procname(t, pid)
+
 ## --- tests -----------------------------------------------------------------------------------------------------------
 fn test_statvfs_of_the_current_dir() = let r = fs_statvfs(".") in r.ok == 1 and r.total_bytes > 0 and r.free_bytes <= r.total_bytes and r.available_bytes <= r.free_bytes and count(r.type) > 0
 fn test_statvfs_missing_path() = (fs_statvfs("no_such_dir_sysinfo_probe/x")).ok == 0 and (fs_statvfs("")).ok == 0
@@ -174,3 +225,7 @@ fn test_utf16_round_trip() = let b = si_wstr("C:" + chr(92) + "dados") in si_wte
 fn test_v6_text() = si_v6text("fe800000000000000000000000000001") == "fe80::1" and si_v6text("20010db8000000000000000000000000") == "2001:db8::"
 fn test_cpu_cores_add_up() = let c = cpu_cores() in c.logical >= 1 and c.performance >= 1 and c.efficiency >= 0 and c.performance + c.efficiency == c.logical
 fn test_cpu_list_parse() = si_cpulist("0-3,8-11" + chr(10), 0, 0) == 8 and si_cpulist("0", 0, 0) == 1 and si_cpulist("0,2,4-5", 0, 0) == 4 and si_cpulist("", 0, 0) == 0
+fn test_mem_info_sane() = let m = mem_info() in m.total_bytes > 0 and m.available_bytes > 0 and m.available_bytes <= m.total_bytes and m.free_bytes <= m.total_bytes
+fn test_uptime_is_positive() = uptime_secs() > 0
+fn test_process_names_list_self() = let ps = process_names() in si_len(ps, 0) > 0 and si_haspid(ps, os_getpid()) and count(si_procname(ps, os_getpid())) > 0
+fn test_allnum_helper() = si_allnum("1234") and si_allnum("0") and not si_allnum("12a") and not si_allnum("") and not si_allnum("self")
