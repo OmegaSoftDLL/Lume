@@ -379,6 +379,15 @@ below them). Full design: `docs/44-macos-darwin-and-swift-interop.md`. The Mac i
 build/validate host (like `notacer` for the Acer). "Draft on Linux" = writable now without a Mac; "Mac-only" = needs
 the Mac to build/validate.
 
+**Mac is LIVE (2026-11-28).** Host: `ssh ricardobueno@100.66.199.59` (Tailscale `macbook-pro-de-ricardo-1`). It is a
+genuine **Intel Mac** (Core i7-6820HQ, `x86_64-apple-darwin`, macOS 26.7.3), NOT Apple Silicon — so the target ABI is
+**x86-64 System V** (same family as Linux, not AArch64 Apple quirks) and **code signing is not mandatory** (that is
+Apple-Silicon-only). Toolchain: Xcode 17 / clang 17 / **Swift 6.2.4** / git. Started: `~/lume` cloned at the current
+HEAD, and the **Stage-0 seed builds natively and clean with clang** (`make` in `bootstrap/lume0` → a Mach-O x86_64
+`lume0`). Finding: the seed's `asm` emits ELF only, so native macOS executables need the Mach-O path (C1); and
+`ltarget.src` already ships an **x86_64-macos-macho** writer in its verified-core universal backend — the foothold to
+validate on real hardware and then wire into `lasm --macho`.
+
 | # | Item | Where | Size | Status |
 | --- | --- | --- | --- | --- |
 | C1 | `lasm --macho`: Mach-O object/executable emission (mirror of `--pe`) | draft on Linux, validate on Mac | large | [ ] |
