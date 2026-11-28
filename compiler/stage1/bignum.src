@@ -173,8 +173,8 @@ fn bn_mmgo(a, b, c, t, n) =
 fn bn_tomont(x, c) = bn_mm(bn_mod(x, c.m), c.r2, c)
 fn bn_frommont(x, c) = bn_norm(bn_mm(x, bn_small(1), c))
 fn bn_mulmod(a, b, c) = bn_mm(a, b, c)
-## left-to-right square and multiply on Montgomery forms
-fn bn_modexp(b, e, m) =
+## left-to-right square and multiply on Montgomery forms (reference; the fast buffer path below is the public one)
+fn bn_modexp_ref(b, e, m) =
     let c = bn_mont(m) in
     let bm = bn_tomont(b, c) in
     let one = bn_tomont(bn_small(1), c) in
@@ -186,3 +186,146 @@ fn bn_pw(bm, e, i, acc, c) =
         let s = bn_mm(acc, acc, c) in
         bn_pw(bm, e, i - 1, if bn_bit(e, i) == 1 then bn_mm(s, bm, c) else s, c)
 fn bn_invmod(a, p) = bn_modexp(a, bn_sub(p, bn_small(2)), p)
+
+## --- fast bn_modexp: buffer-backed CIOS Montgomery + sliding window --------------------------------------------------
+## The list form above (bn_mont/bn_mm/bn_pw) allocates a Cons cell per limb per op -> O(k^2) allocations -> the 616 ms.
+## Here a number is a contiguous buffer of k 24-bit limbs, one limb per 8-byte little-endian slot (buf_get/set_u64le,
+## shipped builtins -- no new runtime). The CIOS inner loops mutate the accumulator buffer in place (buf_set returns
+## the same cell): ZERO allocation in the hot loop. The public EC API (bn_mm/bn_tomont/... used by tlspki) is untouched;
+## only bn_modexp/bn_invmod take this path. bn_modexp_ref is the list oracle the tests check against.
+fn bn_lbnew(n) = buf_new(8 * n)
+fn bn_lbget(b, j) = buf_get_u64le(b, 8 * j)
+fn bn_lbset(b, j, v) = buf_set_u64le(b, 8 * j, v)
+fn bn_lbfill(b, x, n, j) = if j >= n then b else bn_lbfill(bn_lbset(b, j, bn_hd(x)), bn_tl(x), n, j + 1)
+fn bn_lbfrom(x, n) = bn_lbfill(bn_lbnew(n), x, n, 0)
+fn bn_lblist(b, n, j) = if j >= n then Nil else Cons(bn_lbget(b, j), bn_lblist(b, n, j + 1))
+fn bn_lbtolist(b, n) = bn_norm(bn_lblist(b, n, 0))
+fn bn_lbcopy(out, t, n, j) = if j >= n then out else bn_lbcopy(bn_lbset(out, j, bn_lbget(t, j)), t, n, j + 1)
+## compare t (k+1 limbs) with m (k limbs, implicit 0 at index k), from the high limb down
+fn bn_lbcmpm(t, mb, k, i) =
+    if i < 0 then
+        0
+    else
+        let tv = bn_lbget(t, i) in
+        let mv = if i >= k then 0 else bn_lbget(mb, i) in
+        if tv > mv then 1 else if tv < mv then 0 - 1 else bn_lbcmpm(t, mb, k, i - 1)
+fn bn_lbsubm(out, t, mb, k, j, borrow) =
+    if j >= k then
+        out
+    else
+        let d = bn_lbget(t, j) - bn_lbget(mb, j) - borrow in
+        if d < 0 then
+            bn_lbsubm(bn_lbset(out, j, d + 16777216), t, mb, k, j + 1, 1)
+        else
+            bn_lbsubm(bn_lbset(out, j, d), t, mb, k, j + 1, 0)
+## CIOS step 1: t[0..k-1] += a_i * b, returns the out-carry above limb k-1
+fn bn_mml1(t, ai, bb, k, j, carry) =
+    if j >= k then
+        carry
+    else
+        let p = bn_lbget(t, j) + ai * bn_lbget(bb, j) + carry in
+        let t2 = bn_lbset(t, j, bit_and(p, 16777215)) in
+        bn_mml1(t2, ai, bb, k, j + 1, bit_shr(p, 24))
+## CIOS step 2 (reduction): for j in 1..k-1, t[j-1] = (t[j] + u*m[j] + carry) low; returns the out-carry
+fn bn_mml2(t, u, mb, k, j, carry) =
+    if j >= k then
+        carry
+    else
+        let p = bn_lbget(t, j) + u * bn_lbget(mb, j) + carry in
+        let t2 = bn_lbset(t, j - 1, bit_and(p, 16777215)) in
+        bn_mml2(t2, u, mb, k, j + 1, bit_shr(p, 24))
+## one CIOS outer iteration for limb a_i of a (classic Koc CIOS; t has k+2 slots)
+fn bn_mmstep(t, ai, bb, c) =
+    let c1 = bn_mml1(t, ai, bb, c.k, 0, 0) in
+    let sK = bn_lbget(t, c.k) + c1 in
+    let ta = bn_lbset(t, c.k, bit_and(sK, 16777215)) in
+    let tb = bn_lbset(ta, c.k + 1, bit_shr(sK, 24)) in
+    let u = bit_and(bn_lbget(tb, 0) * c.minv, 16777215) in
+    let p0 = bn_lbget(tb, 0) + u * bn_lbget(c.mb, 0) in
+    let c2 = bn_mml2(tb, u, c.mb, c.k, 1, bit_shr(p0, 24)) in
+    let sK2 = bn_lbget(tb, c.k) + c2 in
+    let tc = bn_lbset(tb, c.k - 1, bit_and(sK2, 16777215)) in
+    bn_lbset(tc, c.k, bn_lbget(tc, c.k + 1) + bit_shr(sK2, 24))
+fn bn_mmouter(t, ab, bb, c, i) =
+    if i >= c.k then
+        t
+    else
+        bn_mmouter(bn_mmstep(t, bn_lbget(ab, i), bb, c), ab, bb, c, i + 1)
+## Montgomery product of two k-limb buffers -> a k-limb buffer
+fn bn_mmb(ab, bb, c) =
+    let t = bn_mmouter(bn_lbnew(c.k + 2), ab, bb, c, 0) in
+    let out = bn_lbnew(c.k) in
+    if bn_lbcmpm(t, c.mb, c.k, c.k) >= 0 then
+        bn_lbsubm(out, t, c.mb, c.k, 0, 0)
+    else
+        bn_lbcopy(out, t, c.k, 0)
+## buffer Montgomery context built once from the list context (reuses bn_newton / r2 of bn_mont)
+fn bn_mont_buf(m) =
+    let c0 = bn_mont(m) in
+    {k: c0.k, minv: c0.minv, ml: bn_norm(m), mb: bn_lbfrom(c0.m, c0.k), r2b: bn_lbfrom(c0.r2, c0.k), oneb: bn_lbfrom(bn_small(1), c0.k)}
+fn bn_tomont_buf(x, c) = bn_mmb(bn_lbfrom(bn_mod(x, c.ml), c.k), c.r2b, c)
+fn bn_frommont_buf(x, c) = bn_lbtolist(bn_mmb(x, c.oneb, c), c.k)
+## sliding window (odd powers), window width bn_w()
+fn bn_w() = 5
+fn bn_pow2(k) = if k <= 0 then 1 else 2 * bn_pow2(k - 1)
+fn bn_sqn(a, n, c) = if n <= 0 then a else bn_sqn(bn_mmb(a, a, c), n - 1, c)
+## table of g^1, g^3, g^5, ...  (g2 = g^2); left entries, most-significant Cons first after bn_rev
+fn bn_tbl(cur, g2, c, left, acc) = if left <= 0 then bn_rev(acc, Nil) else bn_tbl(bn_mmb(cur, g2, c), g2, c, left - 1, Cons(cur, acc))
+fn bn_nthb(xs, k) = match xs
+    Nil        => Nil
+    Cons(h, t) => if k == 0 then h else bn_nthb(t, k - 1)
+fn bn_trim(e, l) = if bn_bit(e, l) == 0 then bn_trim(e, l + 1) else l
+fn bn_wval(e, l, i, b, acc) = if b > i then acc else bn_wval(e, l, i, b + 1, acc + bit_shl(bn_bit(e, b), b - l))
+fn bn_sw(acc, i, e, tbl, c) =
+    if i < 0 then
+        acc
+    else if bn_bit(e, i) == 0 then
+        bn_sw(bn_mmb(acc, acc, c), i - 1, e, tbl, c)
+    else
+        let l0 = if i - bn_w() + 1 > 0 then i - bn_w() + 1 else 0 in
+        let l = bn_trim(e, l0) in
+        let wv = bn_wval(e, l, i, l, 0) in
+        let a1 = bn_sqn(acc, i - l + 1, c) in
+        let a2 = bn_mmb(a1, bn_nthb(tbl, (wv - 1) / 2), c) in
+        bn_sw(a2, l - 1, e, tbl, c)
+fn bn_pw_buf(bm, e, onem, c) =
+    let n = bn_bits(e) in
+    if n == 0 then
+        onem
+    else
+        let g2 = bn_mmb(bm, bm, c) in
+        let tbl = bn_tbl(bm, g2, c, bn_pow2(bn_w() - 1), Nil) in
+        bn_sw(onem, n - 1, e, tbl, c)
+fn bn_modexp(b, e, m) =
+    let c = bn_mont_buf(m) in
+    let bm = bn_tomont_buf(b, c) in
+    let onem = bn_tomont_buf(bn_small(1), c) in
+    bn_frommont_buf(bn_pw_buf(bm, e, onem, c), c)
+
+## --- tests ----------------------------------------------------------------------------------------------------------
+fn bn_eqv(a, b) = bn_cmp(a, b) == 0
+fn test_bn_modexp_tiny_vectors() =
+    bn_eqv(bn_modexp(bn_small(3), bn_small(7), bn_small(7)), bn_small(3))
+    and bn_eqv(bn_modexp(bn_small(2), bn_small(10), bn_small(1000003)), bn_small(1024))
+    and bn_eqv(bn_modexp(bn_small(0), bn_small(5), bn_small(7)), bn_small(0))
+    and bn_eqv(bn_modexp(bn_small(5), bn_small(0), bn_small(7)), bn_small(1))
+    and bn_eqv(bn_modexp(bn_small(7), bn_small(1), bn_small(97)), bn_small(7))
+fn test_bn_modexp_matches_ref_onelimb() =
+    let m = bn_small(16777181) in
+    bn_eqv(bn_modexp(bn_small(123456), bn_small(65537), m), bn_modexp_ref(bn_small(123456), bn_small(65537), m))
+    and bn_eqv(bn_modexp(bn_small(2), bn_small(16777180), m), bn_modexp_ref(bn_small(2), bn_small(16777180), m))
+fn test_bn_modexp_matches_ref_multilimb() =
+    let m = bn_from_hex("c7d8e9fab1234567890abcdef0123457") in
+    let b = bn_from_hex("123456789abcdef0fedcba9876543210") in
+    bn_eqv(bn_modexp(b, bn_from_hex("10001"), m), bn_modexp_ref(b, bn_from_hex("10001"), m))
+    and bn_eqv(bn_modexp(b, bn_from_hex("fedcba98"), m), bn_modexp_ref(b, bn_from_hex("fedcba98"), m))
+fn test_bn_modexp_matches_ref_p256() =
+    let m = bn_from_hex("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff") in
+    let b = bn_from_hex("7cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc47669978") in
+    bn_eqv(bn_modexp(b, bn_from_hex("10001"), m), bn_modexp_ref(b, bn_from_hex("10001"), m))
+    and bn_eqv(bn_modexp(b, bn_from_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63254f"), m), bn_modexp_ref(b, bn_from_hex("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63254f"), m))
+fn test_bn_invmod_roundtrip() =
+    let p = bn_small(1000003) in
+    let a = bn_small(12345) in
+    let inv = bn_invmod(a, p) in
+    bn_eqv(bn_mod(bn_mul(a, inv), p), bn_small(1))
