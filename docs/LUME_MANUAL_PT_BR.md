@@ -368,10 +368,12 @@ continua com 64 bits) + tail-call `jmp` + arenas regionais `O(1)`:
                   MAC, up, enderecos com prefixo; sem loopback; Linux e Windows), `cpu_cores()` -> `{logical,
                   performance, efficiency}` (CPUs hibridos: nucleos P / E; todos iguais: efficiency 0),
                   `mem_info()` -> `{total_bytes, available_bytes, free_bytes}`, `uptime_secs()` (segundos desde o
-                  boot), `process_names()` -> lista de `{pid, name}` (Linux e Windows)
+                  boot), `process_names()` -> lista de `{pid, name}`; `fs_size(caminho)` -> bytes (0 se ausente),
+                  `fs_is_dir(caminho)` -> 1 / 0 (Linux e Windows)
 - Sistema Windows (`use winsys`; no Linux tudo responde "ausente"): registro `reg_get_string(raiz, chave, nome)`,
                   `reg_get_dword`, `reg_key_exists`, `reg_value_exists`; sessoes `wts_active_console_session()`,
-                  `wts_sessions()`, `wts_session_user(id)`, `process_session_id(pid)`; `services_running()`
+                  `wts_sessions()`, `wts_session_user(id)`, `process_session_id(pid)`, `win_notify(titulo, texto)`,
+                  `win_session_ask(titulo, texto)` (6 sim / 7 nao, bloqueia); `services_running()`
                   servicos: `svc_install`, `svc_start`, `svc_stop`, `svc_remove`, `svc_state`; como servico:
                   `svc_dispatch_start`, `svc_next_event`, `svc_set_status`, `svc_finish`; sessao do usuario:
                   `win_find_session_process`, `win_spawn_as_session`, `win_proc_alive`, `win_proc_exit_code`,

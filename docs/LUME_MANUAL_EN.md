@@ -382,11 +382,13 @@ For real-time kernels and interrupt handlers (`@interrupt`), annotate cycle budg
             `net_interfaces()` -> a list of records (name, mac, up, addresses: ip, prefix, family; no loopback)
             `cpu_cores()` -> `{logical, performance, efficiency}` (hybrid CPUs: P / E cores; all alike: efficiency 0)
             `mem_info()` -> `{total_bytes, available_bytes, free_bytes}`, `uptime_secs()` (seconds since boot),
-            `process_names()` -> a list of `{pid, name}` (Linux and Windows)
+            `process_names()` -> a list of `{pid, name}`; `fs_size(path)` -> bytes (0 if missing),
+            `fs_is_dir(path)` -> 1 / 0 (Linux and Windows)
 - Windows system (`use winsys`; on Linux every answer is "absent"): registry `reg_get_string(root, key, name)`,
             `reg_get_dword`, `reg_key_exists(root, key)`, `reg_value_exists` (root "HKLM", "HKCU", "HKCR", "HKU");
             sessions `wts_active_console_session()`, `wts_sessions()` (id, state, name), `wts_session_user(id)` (user,
-            domain), `process_session_id(pid)`; `services_running()` (short names of the running services)
+            domain), `process_session_id(pid)`; `win_notify(title, text)` (1 shown), `win_session_ask(title, text)`
+            (6 yes / 7 no, blocks); `services_running()` (short names of the running services)
             services: `svc_install(name, display, description, exe, args, auto_start)`, `svc_start`, `svc_stop`,
             `svc_remove`, `svc_state(name)`; running as one: `svc_dispatch_start(name)` -> fd of events,
             `svc_next_event(fd)` (start, stop, shutdown, sessionchange with reason and session), `svc_set_status(state,

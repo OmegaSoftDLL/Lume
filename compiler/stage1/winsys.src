@@ -12,6 +12,10 @@
 ##   wts_sessions() -> [{id, state, name}]       state: "active", "connected", "disconnected", "listen", ...
 ##   wts_session_user(id) -> {user, domain}      "" when no one is logged on in that session
 ##   process_session_id(pid) -> int              -1 when the process does not exist
+##   win_notify(title, text) -> int              show a message to the interactive user (WTSSendMessageW, non-blocking);
+##                                               1 shown, 0 when no interactive session / on Linux
+##   win_session_ask(title, text) -> int         ask the interactive user yes/no and wait (MB_YESNO); 6 = yes, 7 = no,
+##                                               0 when no interactive session / on Linux (BLOCKS until the user answers)
 ## Services (inventory).
 ##   services_running() -> [str]                 short names of the Win32 services that are running
 ## Services (management, running as a service), processes in a user's session, local named pipes, desktops and the
@@ -78,6 +82,12 @@ fn ws_sess(b, i, n) = if i >= n then Nil else Cons({id: ws_u32(b, 24 * i), state
 fn ws_query(id, cls) = let pp = buf_new(8) in let pn = buf_new(8) in let ok = ws_call("wtsapi32.dll", "WTSQuerySessionInformationW", ws_l5(0, id, cls, buf_addr(pp), buf_addr(pn))) in if ok == 0 then "" else let p = ws_u64(pp, 0) in let t = ws_wtext_at(p) in let f = ws_callq("wtsapi32.dll", "WTSFreeMemory", ws_l1(p)) in t
 fn wts_session_user(id) = if ws_win() == 0 or id < 0 then {user: "", domain: ""} else {user: ws_query(id, 5), domain: ws_query(id, 7)}
 fn process_session_id(pid) = if ws_win() == 0 then 0 - 1 else let out = buf_new(8) in let ok = ws_call("kernel32.dll", "ProcessIdToSessionId", ws_l2(pid, buf_addr(out))) in if ok == 0 then 0 - 1 else ws_u32(out, 0)
+## WTSSendMessageW(server 0, SessionId, pTitle, TitleBytes, pMessage, MsgBytes, Style, Timeout, &Response, bWait): with
+## bWait 0 it returns at once (notify); with bWait 1 it blocks until the user answers and writes IDYES 6 / IDNO 7.
+fn ws_wbytes(s) = 2 * ws_len(ws_units(s, 0, Nil), 0)
+fn ws_msg_args(session, wt, tlen, wm, mlen, style, resp, wait) = Cons(0, Cons(session, Cons(buf_addr(wt), Cons(tlen, Cons(buf_addr(wm), Cons(mlen, Cons(style, Cons(0, Cons(resp, Cons(wait, Nil))))))))))
+fn win_notify(title, text) = if ws_win() == 0 then 0 else let s = wts_active_console_session() in if s < 0 then 0 else let wt = ws_wstr(title) in let wm = ws_wstr(text) in let r = ws_call("wtsapi32.dll", "WTSSendMessageW", ws_msg_args(s, wt, ws_wbytes(title), wm, ws_wbytes(text), 0, 0, 0)) in if r != 0 then 1 else 0
+fn win_session_ask(title, text) = if ws_win() == 0 then 0 else let s = wts_active_console_session() in if s < 0 then 0 else let wt = ws_wstr(title) in let wm = ws_wstr(text) in let resp = buf_new(8) in let r = ws_call("wtsapi32.dll", "WTSSendMessageW", ws_msg_args(s, wt, ws_wbytes(title), wm, ws_wbytes(text), 4, buf_addr(resp), 1)) in if r == 0 then 0 else ws_u32(resp, 0)
 
 ## --- services (inventory) --------------------------------------------------------------------------------------------
 ## OpenSCManagerW(0, 0, SC_MANAGER_ENUMERATE_SERVICE); EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32,
@@ -411,6 +421,11 @@ fn ws_has_id(xs, id) = match xs
     Nil        => false
     Cons(h, t) => if h.id == id then true else ws_has_id(t, id)
 fn test_session_user() = if ws_win() == 0 then (wts_session_user(1)).user == "" else count((wts_session_user(process_session_id(os_getpid()))).user) > 0
+## win_notify is non-blocking, so it is exercised on Windows only under LUME_TEST_GUI (it pops a message to the user);
+## win_session_ask BLOCKS until the user answers, so it is NEVER called on Windows in a test -- only the Linux-absent
+## path is asserted there, and it is validated by hand on Windows.
+fn test_win_notify_absent_and_guarded() = if ws_win() == 0 then win_notify("t", "m") == 0 else if os_getenv("LUME_TEST_GUI") != "1" then true else let r = win_notify("Lume", "winsys self-test " + str(os_getpid())) in r == 0 or r == 1
+fn test_win_session_ask_absent_on_linux() = if ws_win() == 0 then win_session_ask("t", "m") == 0 else true
 fn test_services_running() = if ws_win() == 0 then ws_len(services_running(), 0) == 0 else let s = services_running() in ws_len(s, 0) > 5 and (ws_has(s, "EventLog") or ws_has(s, "RpcSs") or ws_has(s, "Dhcp"))
 fn test_utf16_round_trip() = let t = "ação " + chr(240) + chr(159) + chr(152) + chr(128) in ws_wtext(ws_wstr(t), 0, 64) == t
 fn ws_rd_until(h, n) = if n <= 0 then "" else let r = pipe_read_some(h, 256) in if r.n > 0 then r.data else let z = os_sleep_ms(20) in ws_rd_until(h, n - 1)
